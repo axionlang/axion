@@ -28,6 +28,8 @@ pub enum Tok {
     Else,
     #[token("case")]
     Case,
+    #[token("data")]
+    Data,
 
     // --- pontuação e símbolos ---
     #[token("::")]
@@ -44,6 +46,10 @@ pub enum Tok {
     LBracket,
     #[token("]")]
     RBracket,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
     #[token(",")]
     Comma,
     #[token("|")]

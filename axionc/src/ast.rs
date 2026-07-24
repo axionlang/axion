@@ -56,6 +56,10 @@ pub enum Expr {
     Let(Vec<Func>, Box<Expr>, Span),
     Case(Box<Expr>, Vec<(Pat, Expr)>, Span),
     Tuple(Vec<Expr>, Span),
+    /// Construção de registo: `Con { campo = expr, ... }`.
+    RecordCon(String, Vec<(String, Expr)>, Span),
+    /// Actualização de registo: `base { campo = expr, ... }` (Listagem 2.1).
+    RecordUpd(Box<Expr>, Vec<(String, Expr)>, Span),
 }
 
 impl Expr {
@@ -70,7 +74,9 @@ impl Expr {
             | Expr::If(_, _, _, s)
             | Expr::Let(_, _, s)
             | Expr::Case(_, _, s)
-            | Expr::Tuple(_, s) => *s,
+            | Expr::Tuple(_, s)
+            | Expr::RecordCon(_, _, s)
+            | Expr::RecordUpd(_, _, s) => *s,
         }
     }
 }
@@ -97,7 +103,37 @@ pub struct Func {
     pub span: Span,
 }
 
+/// Um campo de registo: nome, tipo e multiplicidade (`%1` marca campo linear).
+#[derive(Debug, Clone)]
+pub struct Field {
+    pub name: String,
+    pub ty: Type,
+    pub mult: Mult,
+}
+
+/// Um construtor de dados, com campos nomeados (registo) ou posicionais.
+#[derive(Debug, Clone)]
+pub struct ConDecl {
+    pub name: String,
+    pub fields: Vec<Field>, // nome vazio ("") para campos posicionais
+}
+
+impl ConDecl {
+    pub fn field_names(&self) -> Vec<String> {
+        self.fields.iter().map(|f| f.name.clone()).collect()
+    }
+}
+
+/// `data T = Con { ... } | ...`
+#[derive(Debug, Clone)]
+pub struct DataDecl {
+    pub name: String,
+    pub cons: Vec<ConDecl>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct Module {
     pub funcs: Vec<Func>,
+    pub datas: Vec<DataDecl>,
 }

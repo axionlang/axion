@@ -20,21 +20,24 @@ type PResult<T> = Result<T, Diagnostic>;
 pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
     let mut p = Parser { toks, pos: 0 };
     let items = p.block(Parser::top_item)?;
-    Ok(Module {
-        funcs: merge(items),
-    })
+    let (funcs, datas) = assemble(items);
+    Ok(Module { funcs, datas })
 }
 
 enum TopItem {
     Sig(String, Type),
     Clause(String, Clause),
+    Data(DataDecl),
 }
 
-fn merge(items: Vec<TopItem>) -> Vec<Func> {
+/// Junta assinaturas e cláusulas por nome (funções) e separa as `data`.
+fn assemble(items: Vec<TopItem>) -> (Vec<Func>, Vec<DataDecl>) {
     let mut funcs: Vec<Func> = Vec::new();
+    let mut datas: Vec<DataDecl> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for it in items {
         match it {
+            TopItem::Data(d) => datas.push(d),
             TopItem::Sig(name, ty) => {
                 let sp = (0, 0);
                 let i = *index.entry(name.clone()).or_insert_with(|| {
@@ -66,7 +69,12 @@ fn merge(items: Vec<TopItem>) -> Vec<Func> {
             }
         }
     }
-    funcs
+    (funcs, datas)
+}
+
+/// Como `assemble`, mas para blocos `where`/`let` (só funções).
+fn merge_funcs(items: Vec<TopItem>) -> Vec<Func> {
+    assemble(items).0
 }
 
 impl<'a> Parser<'a> {
@@ -173,6 +181,9 @@ impl<'a> Parser<'a> {
 
     // --- declarações de topo (assinatura ou cláusula) ---
     fn top_item(&mut self) -> PResult<TopItem> {
+        if self.at(&Tok::Data) {
+            return Ok(TopItem::Data(self.parse_data()?));
+        }
         let (name, start) = self.var_name("nome de função")?;
         if self.eat(&Tok::ColonColon) {
             let ty = self.parse_type()?;
@@ -186,7 +197,7 @@ impl<'a> Parser<'a> {
             let body = self.parse_rhs()?;
             let wher = if self.at(&Tok::Where) {
                 self.bump();
-                self.block(Parser::top_item).map(merge)?
+                self.block(Parser::top_item).map(merge_funcs)?
             } else {
                 Vec::new()
             };
@@ -231,20 +242,101 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn con_name(&mut self, what: &str) -> PResult<String> {
+        match self.cur() {
+            Some(LTok::Tok(Tok::ConId(n))) => {
+                let n = n.clone();
+                self.pos += 1;
+                Ok(n)
+            }
+            _ => Err(self.syntax_err(what)),
+        }
+    }
+
+    // --- declarações de dados / registos ---
+    fn parse_data(&mut self) -> PResult<DataDecl> {
+        let (s, _) = self.span_here();
+        self.bump(); // 'data'
+        let name = self.con_name("nome do tipo")?;
+        // parâmetros de tipo (ex.: `data Maybe a`) — ignorados na Fase 1
+        while matches!(self.cur(), Some(LTok::Tok(Tok::VarId(_)))) {
+            self.pos += 1;
+        }
+        self.expect(&Tok::Equals, "'=' na declaração 'data'")?;
+        let mut cons = vec![self.parse_con()?];
+        while self.eat(&Tok::Bar) {
+            cons.push(self.parse_con()?);
+        }
+        let end = self.span_here().0;
+        Ok(DataDecl {
+            name,
+            cons,
+            span: (s, end),
+        })
+    }
+
+    fn parse_con(&mut self) -> PResult<ConDecl> {
+        let name = self.con_name("nome do construtor")?;
+        if self.eat(&Tok::LBrace) {
+            // construtor com campos nomeados (registo)
+            let mut fields = Vec::new();
+            if !self.at(&Tok::RBrace) {
+                fields.push(self.parse_field()?);
+                while self.eat(&Tok::Comma) {
+                    fields.push(self.parse_field()?);
+                }
+            }
+            self.expect(&Tok::RBrace, "'}' no registo")?;
+            Ok(ConDecl { name, fields })
+        } else {
+            // construtor posicional: Con atype*
+            let mut fields = Vec::new();
+            while self.starts_atype() {
+                let ty = self.parse_atype()?;
+                fields.push(Field {
+                    name: String::new(),
+                    ty,
+                    mult: Mult::Many,
+                });
+            }
+            Ok(ConDecl { name, fields })
+        }
+    }
+
+    fn parse_field(&mut self) -> PResult<Field> {
+        let (name, _) = self.var_name("nome do campo")?;
+        self.expect(&Tok::ColonColon, "'::' no campo")?;
+        let ty = self.parse_btype()?;
+        // multiplicidade do campo: `campo :: Buffer U8 %1` marca campo linear
+        let mult = if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
+            let m = parse_mult(m);
+            self.pos += 1;
+            m
+        } else {
+            Mult::Many
+        };
+        Ok(Field { name, ty, mult })
+    }
+
     // --- tipos ---
     fn parse_type(&mut self) -> PResult<Type> {
         let from = self.parse_btype()?;
-        // seta (opcionalmente com multiplicidade)
+        // multiplicidade: numa seta (`A %1 -> B`) marca o parâmetro; num tipo
+        // terminal (`... -> Process %1`) marca o resultado linear.
         if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
             let mult = parse_mult(m);
             self.pos += 1;
-            self.expect(&Tok::Arrow, "'->' após a multiplicidade")?;
-            let to = self.parse_type()?;
-            return Ok(Type::Arrow {
-                mult,
-                from: Box::new(from),
-                to: Box::new(to),
-            });
+            if self.eat(&Tok::Arrow) {
+                let to = self.parse_type()?;
+                return Ok(Type::Arrow {
+                    mult,
+                    from: Box::new(from),
+                    to: Box::new(to),
+                });
+            }
+            // `%1` num tipo de retorno (sem seta a seguir): a análise de
+            // parâmetros só olha às setas, por isso a anotação é ignorada aqui.
+            return Ok(from);
         }
         if self.eat(&Tok::Arrow) {
             let to = self.parse_type()?;
@@ -388,7 +480,7 @@ impl<'a> Parser<'a> {
     fn parse_let(&mut self) -> PResult<Expr> {
         let (s, _) = self.span_here();
         self.bump(); // let
-        let binds = self.block(Parser::top_item).map(merge)?;
+        let binds = self.block(Parser::top_item).map(merge_funcs)?;
         self.expect(&Tok::In, "'in' após o bloco 'let'")?;
         let body = self.parse_expr()?;
         let end = self.span_here().0;
@@ -493,6 +585,42 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_atom(&mut self) -> PResult<Expr> {
+        let (s, _) = self.span_here();
+        let mut base = self.parse_atom_base()?;
+        // registos ligam mais forte do que a aplicação: `Con { ... }` constrói,
+        // `expr { ... }` actualiza (Listagem 2.1).
+        while self.at(&Tok::LBrace) {
+            let fields = self.parse_record_fields()?;
+            let end = self.span_here().0;
+            base = match base {
+                Expr::Con(name, _) => Expr::RecordCon(name, fields, (s, end)),
+                other => Expr::RecordUpd(Box::new(other), fields, (s, end)),
+            };
+        }
+        Ok(base)
+    }
+
+    fn parse_record_fields(&mut self) -> PResult<Vec<(String, Expr)>> {
+        self.expect(&Tok::LBrace, "'{' no registo")?;
+        let mut fields = Vec::new();
+        if !self.at(&Tok::RBrace) {
+            fields.push(self.parse_field_assign()?);
+            while self.eat(&Tok::Comma) {
+                fields.push(self.parse_field_assign()?);
+            }
+        }
+        self.expect(&Tok::RBrace, "'}' no registo")?;
+        Ok(fields)
+    }
+
+    fn parse_field_assign(&mut self) -> PResult<(String, Expr)> {
+        let (name, _) = self.var_name("nome do campo")?;
+        self.expect(&Tok::Equals, "'=' no campo do registo")?;
+        let value = self.parse_expr()?;
+        Ok((name, value))
+    }
+
+    fn parse_atom_base(&mut self) -> PResult<Expr> {
         let (s, e) = self.span_here();
         match self.cur() {
             Some(LTok::Tok(Tok::Int(n))) => {

@@ -61,6 +61,39 @@ fn dropped_linear_is_rejected_ax0002() {
 }
 
 #[test]
+fn listing_2_1_typechecks() {
+    // 04 (Listagem 2.1): registo com campo linear + actualização de registo,
+    // param Process %1 consumido uma vez. Sem main -> só --check.
+    let out = axionc()
+        .args(["--check", &example("04_process_inplace.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "04 devia compilar; saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn records_construct_update_and_select() {
+    let out = axionc().arg(fixture("record_run.axi")).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "99\n");
+}
+
+#[test]
+fn linear_record_used_twice_is_rejected_ax0001() {
+    let out = axionc()
+        .args(["--check", &fixture("record_use_twice.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0001"), "esperava AX0001, saída: {text}");
+}
+
+#[test]
 fn json_diagnostics_are_emitted() {
     let out = axionc()
         .args(["--emit", "json", &fixture("use_after_consume.axi")])

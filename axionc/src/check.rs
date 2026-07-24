@@ -15,6 +15,17 @@ pub fn check(module: &Module, diags: &mut Diagnostics) {
     for f in &module.funcs {
         globals.insert(f.name.clone());
     }
+    // construtores e selectores de campo tornam-se nomes globais chamáveis
+    for d in &module.datas {
+        for c in &d.cons {
+            globals.insert(c.name.clone());
+            for f in &c.fields {
+                if !f.name.is_empty() {
+                    globals.insert(f.name.clone());
+                }
+            }
+        }
+    }
     for f in &module.funcs {
         check_func(f, &globals, diags);
     }
@@ -182,6 +193,17 @@ fn resolve_expr(
                 resolve_expr(body, &s, globals, diags);
             }
         }
+        Expr::RecordCon(_, fields, _) => {
+            for (_, e) in fields {
+                resolve_expr(e, scope, globals, diags);
+            }
+        }
+        Expr::RecordUpd(base, fields, _) => {
+            resolve_expr(base, scope, globals, diags);
+            for (_, e) in fields {
+                resolve_expr(e, scope, globals, diags);
+            }
+        }
     }
 }
 
@@ -227,6 +249,14 @@ fn count_expr(e: &Expr, var: &str) -> usize {
                 .map(|c| count_clause(c, var))
                 .sum();
             in_binds + count_expr(body, var)
+        }
+        Expr::RecordCon(_, fields, _) => fields.iter().map(|(_, e)| count_expr(e, var)).sum(),
+        Expr::RecordUpd(base, fields, _) => {
+            count_expr(base, var)
+                + fields
+                    .iter()
+                    .map(|(_, e)| count_expr(e, var))
+                    .sum::<usize>()
         }
     }
 }

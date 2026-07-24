@@ -17,9 +17,11 @@ decl        = dataDecl
             | funDef ;
 
 (* --- Declarações de tipo de dados (L0; campos lineares em L1) --- *)
-dataDecl    = "data" conName "=" conName [ recordBody ] ;
+dataDecl    = "data" conName { varName } "=" con { "|" con } ;
+con         = conName ( recordBody | { atype } ) ; (* registo ou posicional *)
 recordBody  = "{" fieldDecl { "," fieldDecl } "}" ;
-fieldDecl   = varName "::" type ;
+fieldDecl   = varName "::" btype [ mult ] ;        (* campo %1 = linear     *)
+mult        = "%1" | "%0.5" ;
 
 (* --- Assinaturas: a multiplicidade vive na SETA (L1) --- *)
 typeSig     = varName "::" type ;
@@ -50,10 +52,14 @@ expr        = "let" { funDef } "in" expr
             | opExpr ;
 opExpr      = appExpr { binop appExpr } ;   (* +  -  *  ==  .  `mod` …      *)
 appExpr     = atom { atom } ;               (* aplicação: f x y            *)
-atom        = varName | conName | literal
-            | recordUpd
+atom        = atomBase { recordFields } ;   (* registo liga mais forte que a aplicação *)
+atomBase    = varName | conName | literal
             | "(" expr { "," expr } ")"
             | "[" [ expr [ ".." expr ] ] "]" ; (* literal/range de lista   *)
+recordFields = "{" [ fieldAssign { "," fieldAssign } ] "}" ;
+fieldAssign  = varName "=" expr ;
+(* conName recordFields  → construção: Point { x = 1, y = 2 }              *)
+(* expr    recordFields  → actualização: p { status = "Running" } (List. 2.1) *)
 recordUpd   = atom "{" varName "=" expr { "," varName "=" expr } "}" ;
 
 alt         = pat "->" expr ;

@@ -22,14 +22,11 @@ pub struct LSpanned {
     pub end: usize,
 }
 
-fn opens_block(t: &Tok) -> bool {
-    matches!(t, Tok::Where | Tok::Let | Tok::Of)
-}
-
 /// Aplica o layout. `lines` fornece (linha, coluna) de cada offset.
 pub fn layout(tokens: &[Spanned], lines: &LineMap) -> Vec<LSpanned> {
     let mut out: Vec<LSpanned> = Vec::new();
-    let mut ctx: Vec<usize> = Vec::new(); // pilha de colunas de indentação
+    // pilha de contextos: (coluna de indentação, foi aberto por `let`)
+    let mut ctx: Vec<(usize, bool)> = Vec::new();
     if tokens.is_empty() {
         return out;
     }
@@ -40,31 +37,31 @@ pub fn layout(tokens: &[Spanned], lines: &LineMap) -> Vec<LSpanned> {
         (l, c)
     };
     push(&mut out, LTok::VLBrace, &tokens[0]);
-    ctx.push(first_col);
+    ctx.push((first_col, false));
 
-    let mut expect_open = false;
+    // bloco pendente de abrir: Some(is_let) após where/let/of
+    let mut open_kind: Option<bool> = None;
 
     for t in tokens {
         let (line, col) = lines.pos(t.start);
 
-        if expect_open {
+        if let Some(is_let) = open_kind.take() {
             // este token inicia o novo bloco (aberto por where/let/of)
             push(&mut out, LTok::VLBrace, t);
-            ctx.push(col);
-            expect_open = false;
+            ctx.push((col, is_let));
             last_line = line;
         } else if line != last_line {
             // primeiro token de uma nova linha: regra do "offside"
             loop {
                 match ctx.last() {
-                    Some(&m) if col < m => {
+                    Some(&(m, _)) if col < m => {
                         push(&mut out, LTok::VRBrace, t);
                         ctx.pop();
                         if ctx.is_empty() {
                             break;
                         }
                     }
-                    Some(&m) if col == m => {
+                    Some(&(m, _)) if col == m => {
                         push(&mut out, LTok::VSemi, t);
                         break;
                     }
@@ -74,17 +71,20 @@ pub fn layout(tokens: &[Spanned], lines: &LineMap) -> Vec<LSpanned> {
             last_line = line;
         }
 
-        // `in` fecha o bloco `let` mais próximo antes de ser emitido
-        if t.tok == Tok::In && !ctx.is_empty() {
+        // `in` fecha o bloco `let` mais próximo — mas só se ainda estiver aberto
+        // (num `in` dedentado, a regra do offside já o fechou).
+        if t.tok == Tok::In && matches!(ctx.last(), Some((_, true))) {
             push(&mut out, LTok::VRBrace, t);
             ctx.pop();
         }
 
         push(&mut out, LTok::Tok(t.tok.clone()), t);
 
-        if opens_block(&t.tok) {
-            expect_open = true;
-        }
+        open_kind = match t.tok {
+            Tok::Let => Some(true),
+            Tok::Where | Tok::Of => Some(false),
+            _ => open_kind,
+        };
     }
 
     // fecha todos os blocos ainda abertos no fim do ficheiro

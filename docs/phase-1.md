@@ -23,11 +23,16 @@
   (Cranelift/LLVM) fica para a fase seguinte.
 - [~] **Meta:** «a Listagem 2.1 compila e corre; um uso-após-consumo é
   rejeitado. Property tests a verificar preservação/progresso.»
-  - Rejeição de uso-após-consumo: **feito** (`AX0001`).
-  - Correr programas: **feito** para `examples/01_hello.axi` e `02_fib.axi`.
-  - Listagem 2.1 *completa* (registos com campo `%1`, mutação in-place): **por
-    fazer** — precisa de `data`/registos e mais typechecking; cresce a partir
-    do esqueleto.
+  - Rejeição de uso-após-consumo: **feito** (`AX0001`), incl. sobre registos
+    (`tests/fixtures/record_use_twice.axi`).
+  - Correr programas: **feito** para `examples/01_hello.axi`, `02_fib.axi`, e
+    registos (`tests/fixtures/record_run.axi`: construção, actualização, selector).
+  - **Listagem 2.1 (`examples/04`) compila** (`--check`): `data`/registos com
+    campo linear `%1`, actualização de registo `p { status = ... }`, param
+    `Process %1` consumido uma vez. Não *corre* por não ter `main` e usar
+    `Buffer` nativo (Fase 2); a semântica de registos está validada por
+    `record_run.axi`.
+  - Property tests de preservação/progresso: **por fazer** (próximo passo).
 
 ## Verificação
 

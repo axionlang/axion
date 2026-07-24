@@ -4,7 +4,7 @@
 
 use crate::ast::*;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 type Env = Rc<Scope>;
@@ -14,9 +14,11 @@ struct Scope {
     parent: Option<Env>,
 }
 
-/// Tabela de funções de topo (globais), resolvidas por nome durante a execução.
+/// Tabela de funções e construtores de topo, resolvidos por nome em execução.
 pub struct Program {
     funcs: HashMap<String, Rc<Func>>,
+    cons: HashMap<String, Vec<String>>, // construtor → nomes dos campos (por ordem)
+    selectors: HashSet<String>,         // nomes de campo usáveis como selectores
 }
 
 #[derive(Clone)]
@@ -35,6 +37,21 @@ enum Value {
     Builtin {
         name: &'static str,
         args: Vec<Value>,
+    },
+    /// Um registo: construtor + campos (por ordem de construção).
+    Record {
+        con: String,
+        fields: Vec<(String, Value)>,
+    },
+    /// Um construtor por aplicar (aridade = nº de campos).
+    Ctor {
+        name: String,
+        field_names: Vec<String>,
+        args: Vec<Value>,
+    },
+    /// Um selector de campo (`pid`, `status`, …), aridade 1.
+    Selector {
+        field: String,
     },
 }
 
@@ -71,7 +88,36 @@ pub fn run(module: &Module) -> Result<(), RunError> {
     for f in &module.funcs {
         funcs.insert(f.name.clone(), Rc::new(f.clone()));
     }
-    let prog = Program { funcs };
+    let mut cons = HashMap::new();
+    let mut selectors = HashSet::new();
+    for d in &module.datas {
+        for c in &d.cons {
+            // campos posicionais recebem nomes sintéticos "_0", "_1", …
+            let names: Vec<String> = c
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    if f.name.is_empty() {
+                        format!("_{i}")
+                    } else {
+                        f.name.clone()
+                    }
+                })
+                .collect();
+            for f in &c.fields {
+                if !f.name.is_empty() {
+                    selectors.insert(f.name.clone());
+                }
+            }
+            cons.insert(c.name.clone(), names);
+        }
+    }
+    let prog = Program {
+        funcs,
+        cons,
+        selectors,
+    };
 
     let main = prog
         .funcs
@@ -100,7 +146,11 @@ fn type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "Bool",
         Value::Unit => "()",
         Value::Io(_) => "IO",
-        Value::Closure { .. } | Value::Builtin { .. } => "função",
+        Value::Record { .. } => "registo",
+        Value::Closure { .. }
+        | Value::Builtin { .. }
+        | Value::Ctor { .. }
+        | Value::Selector { .. } => "função",
     }
 }
 
@@ -166,6 +216,33 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             }
             Err("nenhum ramo do 'case' encaixou".to_string())
         }
+        Expr::RecordCon(con, fields, _) => {
+            let mut vals = Vec::with_capacity(fields.len());
+            for (name, e) in fields {
+                vals.push((name.clone(), eval(prog, env, e)?));
+            }
+            Ok(Value::Record {
+                con: con.clone(),
+                fields: vals,
+            })
+        }
+        Expr::RecordUpd(base, updates, _) => {
+            let base = eval(prog, env, base)?;
+            let Value::Record { con, mut fields } = base else {
+                return Err(format!(
+                    "actualização de registo sobre um {} (não é registo)",
+                    type_name(&base)
+                ));
+            };
+            for (name, e) in updates {
+                let v = eval(prog, env, e)?;
+                match fields.iter_mut().find(|(f, _)| f == name) {
+                    Some(slot) => slot.1 = v,
+                    None => fields.push((name.clone(), v)),
+                }
+            }
+            Ok(Value::Record { con, fields })
+        }
     }
 }
 
@@ -181,6 +258,19 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         };
         return force(prog, v);
     }
+    if let Some(field_names) = prog.cons.get(name) {
+        let v = Value::Ctor {
+            name: name.to_string(),
+            field_names: field_names.clone(),
+            args: Vec::new(),
+        };
+        return force(prog, v);
+    }
+    if prog.selectors.contains(name) {
+        return Ok(Value::Selector {
+            field: name.to_string(),
+        });
+    }
     match name {
         "putStrLn" | "show" => Ok(Value::Builtin {
             name: if name == "putStrLn" {
@@ -194,13 +284,26 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
     }
 }
 
-/// Força CAFs (funções de aridade 0, como `main`) avaliando o corpo.
+/// Força CAFs (funções de aridade 0, como `main`, e construtores nulários)
+/// avaliando o corpo / construindo o registo.
 fn force(prog: &Program, v: Value) -> Result<Value, RunError> {
     match v {
         Value::Closure { def, env, args } if args.len() >= clause_arity(&def) => {
             run_func(prog, &def, &env, args)
         }
+        Value::Ctor {
+            name,
+            field_names,
+            args,
+        } if args.len() >= field_names.len() => Ok(build_record(name, field_names, args)),
         other => Ok(other),
+    }
+}
+
+fn build_record(con: String, field_names: Vec<String>, args: Vec<Value>) -> Value {
+    Value::Record {
+        con,
+        fields: field_names.into_iter().zip(args).collect(),
     }
 }
 
@@ -222,6 +325,33 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
                 Ok(Value::Builtin { name, args })
             }
         }
+        Value::Ctor {
+            name,
+            field_names,
+            mut args,
+        } => {
+            args.push(arg);
+            if args.len() >= field_names.len() {
+                Ok(build_record(name, field_names, args))
+            } else {
+                Ok(Value::Ctor {
+                    name,
+                    field_names,
+                    args,
+                })
+            }
+        }
+        Value::Selector { field } => match arg {
+            Value::Record { fields, .. } => fields
+                .into_iter()
+                .find(|(f, _)| *f == field)
+                .map(|(_, v)| v)
+                .ok_or_else(|| format!("registo sem o campo '{field}'")),
+            other => Err(format!(
+                "selector '.{field}' aplicado a um {} (não é registo)",
+                type_name(&other)
+            )),
+        },
         other => Err(format!(
             "tentou aplicar algo que não é função: {}",
             type_name(&other)
