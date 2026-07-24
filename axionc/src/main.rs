@@ -23,6 +23,9 @@ mod layout;
 mod lexer;
 mod parser;
 
+#[cfg(test)]
+mod props;
+
 use diag::{Diagnostic, Diagnostics};
 use lexer::LineMap;
 use std::process::ExitCode;

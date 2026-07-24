@@ -82,8 +82,8 @@ fn lookup(env: &Env, name: &str) -> Option<Value> {
     None
 }
 
-/// Compila o módulo para um `Program` e corre `main`, executando o IO resultante.
-pub fn run(module: &Module) -> Result<(), RunError> {
+/// Constrói a tabela de topo (funções, construtores, selectores) do módulo.
+fn build_program(module: &Module) -> Program {
     let mut funcs = HashMap::new();
     for f in &module.funcs {
         funcs.insert(f.name.clone(), Rc::new(f.clone()));
@@ -113,12 +113,16 @@ pub fn run(module: &Module) -> Result<(), RunError> {
             cons.insert(c.name.clone(), names);
         }
     }
-    let prog = Program {
+    Program {
         funcs,
         cons,
         selectors,
-    };
+    }
+}
 
+/// Compila o módulo para um `Program` e corre `main`, executando o IO resultante.
+pub fn run(module: &Module) -> Result<(), RunError> {
+    let prog = build_program(module);
     let main = prog
         .funcs
         .get("main")
@@ -433,10 +437,13 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
 fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
     use Value::*;
     match (op, a, b) {
-        ("+", Int(x), Int(y)) => Ok(Int(x + y)),
-        ("-", Int(x), Int(y)) => Ok(Int(x - y)),
-        ("*", Int(x), Int(y)) => Ok(Int(x * y)),
-        ("mod", Int(x), Int(y)) => Ok(Int(x.rem_euclid(y))),
+        // Int é de largura fixa (§ Listagem 1.4): a aritmética faz wrapping,
+        // semântica total que evita panics de overflow.
+        ("+", Int(x), Int(y)) => Ok(Int(x.wrapping_add(y))),
+        ("-", Int(x), Int(y)) => Ok(Int(x.wrapping_sub(y))),
+        ("*", Int(x), Int(y)) => Ok(Int(x.wrapping_mul(y))),
+        ("mod", Int(x), Int(y)) if y != 0 => Ok(Int(x.rem_euclid(y))),
+        ("mod", Int(_), Int(_)) => Err("mod por zero".to_string()),
         ("==", Int(x), Int(y)) => Ok(Bool(x == y)),
         ("<", Int(x), Int(y)) => Ok(Bool(x < y)),
         (">", Int(x), Int(y)) => Ok(Bool(x > y)),
@@ -455,4 +462,42 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("show", [Value::Bool(b)]) => Ok(Value::Str(b.to_string())),
         (name, _) => Err(format!("builtin '{name}' recebeu argumentos inválidos")),
     }
+}
+
+/// Tipo de runtime de um valor — usado pelos property tests de preservação.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RtType {
+    Int,
+    Bool,
+    Str,
+    Unit,
+    Io,
+    Record,
+    Fun,
+}
+
+/// Avalia a definição de topo `name` (aridade 0) e devolve o tipo de runtime do
+/// valor. Ponto de entrada para os property tests de progresso/preservação.
+#[cfg(test)]
+pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunError> {
+    let prog = build_program(module);
+    let def = prog
+        .funcs
+        .get(name)
+        .ok_or_else(|| format!("sem definição '{name}'"))?
+        .clone();
+    let v = run_func(&prog, &def, &empty_env(), Vec::new())?;
+    Ok(match v {
+        Value::Int(_) => RtType::Int,
+        Value::Bool(_) => RtType::Bool,
+        Value::Str(_) => RtType::Str,
+        Value::Unit => RtType::Unit,
+        Value::Io(_) => RtType::Io,
+        Value::Record { .. } => RtType::Record,
+        Value::Closure { .. }
+        | Value::Builtin { .. }
+        | Value::Ctor { .. }
+        | Value::Selector { .. } => RtType::Fun,
+    })
 }

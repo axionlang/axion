@@ -27,6 +27,7 @@ Tudo o resto cresce daí.
 | `src/check.rs` | Resolução de nomes (`AX0101`) + **linearidade** (`AX0001`/`AX0002`). |
 | `src/infer.rs` | **Inferência de tipos** HM / Algoritmo W (`AX0200`/`AX0201`). |
 | `src/interp.rs` | Interpretador tree-walking. |
+| `src/props.rs` | Property tests de **preservação/progresso** (só em `cargo test`). |
 | `src/diag.rs` | Diagnósticos `AXnnnn` estáveis: render texto (estilo rustc) e JSON. |
 
 Adiado por decisão (arquitectura "AST enxuto primeiro"): `salsa` (motor

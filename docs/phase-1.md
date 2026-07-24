@@ -41,7 +41,11 @@
     `Process %1` consumido uma vez. Não *corre* por não ter `main` e usar
     `Buffer` nativo (Fase 2); a semântica de registos está validada por
     `record_run.axi`.
-  - Property tests de preservação/progresso: **por fazer** (próximo passo).
+  - **Property tests de preservação/progresso: feito.** `axionc/src/props.rs`
+    gera termos bem-tipados por construção (Int/Bool: aritmética, comparações,
+    `if`, `let`+variáveis) e verifica, em 4000 termos aleatórios: (1) o
+    typechecker aceita-os, (2) avaliam sem encravar (**progresso**), (3) o valor
+    tem o tipo estático (**preservação**). Não-vacuidade confirmada por mutação.
 
 ## Verificação
 

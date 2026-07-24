@@ -53,8 +53,8 @@ jobs:
       - name: Formatação (rustfmt)
         run: cargo fmt --check
 
-      - name: Lint (clippy)
-        run: cargo clippy -- -D warnings
+      - name: Lint (clippy, incl. testes)
+        run: cargo clippy --all-targets -- -D warnings
 
   # Diferencial (§17): axionc e o oráculo GHC (bancada EDSL) têm de dar o mesmo
   # veredito de linearidade. Precisa de Rust (axionc) e Nix (GHC).
