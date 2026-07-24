@@ -18,6 +18,9 @@
   de nomes (`AX0101`) + análise de linearidade (`AX0001` uso-após-consumo,
   `AX0002` largado sem consumo). É o mesmo invariante validado na bancada da
   Fase 0 (`../prototype/test/negative/UseTwice.hs`).
+  - **Validado por diferencial** contra o oráculo GHC: `differential/` +
+    `scripts/differential.sh` correm cada cenário nos dois verificadores e
+    exigem o mesmo veredito. Estado: 3 cenários, concordância total.
 - [x] **Baixar para um backend: interpretador próprio** (o futuro fast-path de
   `--dev`). `axionc/src/interp.rs` (tree-walking). Backend nativo
   (Cranelift/LLVM) fica para a fase seguinte.

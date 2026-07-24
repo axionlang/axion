@@ -55,3 +55,18 @@ jobs:
 
       - name: Lint (clippy)
         run: cargo clippy -- -D warnings
+
+  # Diferencial (§17): axionc e o oráculo GHC (bancada EDSL) têm de dar o mesmo
+  # veredito de linearidade. Precisa de Rust (axionc) e Nix (GHC).
+  differential:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: axionc vs oráculo GHC
+        run: ./scripts/differential.sh
