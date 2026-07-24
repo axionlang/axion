@@ -21,6 +21,12 @@
   - **Validado por diferencial** contra o oráculo GHC: `differential/` +
     `scripts/differential.sh` correm cada cenário nos dois verificadores e
     exigem o mesmo veredito. Estado: 3 cenários, concordância total.
+- [x] **Inferência de tipos (HM / Algoritmo W).** `axionc/src/infer.rs`:
+  variáveis de tipo, unificação com occurs-check, esquemas, generalização em
+  `let`/`where`, tipos dos builtins, registos (construção/actualização/
+  selectores). Corre a par da linearidade; emite `AX0200` (incompatibilidade) e
+  `AX0201` (tipo infinito). Funções com assinatura são verificadas em modo de
+  *checking* (parâmetros herdam os tipos declarados).
 - [x] **Baixar para um backend: interpretador próprio** (o futuro fast-path de
   `--dev`). `axionc/src/interp.rs` (tree-walking). Backend nativo
   (Cranelift/LLVM) fica para a fase seguinte.

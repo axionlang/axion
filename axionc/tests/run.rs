@@ -94,6 +94,28 @@ fn linear_record_used_twice_is_rejected_ax0001() {
 }
 
 #[test]
+fn type_mismatch_is_rejected_ax0200() {
+    let out = axionc()
+        .args(["--check", &fixture("type_mismatch.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0200"), "esperava AX0200, saída: {text}");
+}
+
+#[test]
+fn inference_accepts_where_and_runs() {
+    let out = axionc().arg(fixture("type_ok_poly.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "55\n");
+}
+
+#[test]
 fn json_diagnostics_are_emitted() {
     let out = axionc()
         .args(["--emit", "json", &fixture("use_after_consume.axi")])

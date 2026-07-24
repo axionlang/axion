@@ -11,11 +11,11 @@ Tudo o resto cresce daí.
 ## Pipeline
 
 ```
-.axi ─▶ lexer ─▶ layout ─▶ parser ─▶ check ─────────▶ interp
-       (logos)  (indent.)  (AST)    (nomes +          (tree-walking;
-                                     linearidade)      futuro fast-path --dev)
-                                        │
-                                        ▼
+.axi ─▶ lexer ─▶ layout ─▶ parser ─▶ check ────▶ infer ────▶ interp
+       (logos)  (indent.)  (AST)    (nomes +     (tipos HM;  (tree-walking;
+                                     linearidade) AX0200)     futuro fast-path --dev)
+                                        │           │
+                                        ▼           ▼
                               diagnósticos AXnnnn (texto | JSON, §8)
 ```
 
@@ -25,6 +25,7 @@ Tudo o resto cresce daí.
 | `src/layout.rs` | Regra de layout (indentação → chavetas/`;` virtuais). |
 | `src/parser.rs` | Recursivo-descendente → AST (`src/ast.rs`). |
 | `src/check.rs` | Resolução de nomes (`AX0101`) + **linearidade** (`AX0001`/`AX0002`). |
+| `src/infer.rs` | **Inferência de tipos** HM / Algoritmo W (`AX0200`/`AX0201`). |
 | `src/interp.rs` | Interpretador tree-walking. |
 | `src/diag.rs` | Diagnósticos `AXnnnn` estáveis: render texto (estilo rustc) e JSON. |
 

@@ -17,6 +17,7 @@ mod ast;
 mod check;
 #[allow(dead_code)]
 mod diag;
+mod infer;
 mod interp;
 mod layout;
 mod lexer;
@@ -142,6 +143,7 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
         }
     };
     check::check(&module, diags);
+    infer::infer(&module, diags);
     Some(module)
 }
 

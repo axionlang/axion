@@ -17,14 +17,16 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | reservado (Fase 2) |
 | `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
 | `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
+| `AX0200` | Tipos | Incompatibilidade de tipos (unificação falhou) | **imposto pelo `axionc`** (Fase 1) |
+| `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
 
-Reservado mas ainda não implementado: `AX0003`. Próximo livre na banda de
-linguagem: `AX0004`; na banda de front-end: `AX0102`.
+Reservado mas ainda não implementado: `AX0003`. Próximo livre por banda —
+linguagem: `AX0004`; front-end: `AX0102`; tipos: `AX0202`.
 
-> **Nota de bandas.** `AX0001`–`AX0099` são reservados para invariantes de
-> *semântica da linguagem* (linearidade, regiões, sessões); `AX0100`+ para
-> erros de *front-end* (sintaxe, resolução de nomes). Os códigos são estáveis:
-> um número nunca muda de significado nem é reutilizado.
+> **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
+> linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*
+> (sintaxe, resolução de nomes); `AX0200`+ para *tipos* (inferência HM). Os
+> códigos são estáveis: um número nunca muda de significado nem é reutilizado.
 
 ---
 
@@ -88,3 +90,19 @@ análise. `axionc --explain AX0100`.
 
 Um identificador que não é parâmetro, local (`where`/`let`), função de topo nem
 builtin. Emitido pela resolução de nomes em `axionc/src/check.rs`.
+
+---
+
+## `AX0200` — incompatibilidade de tipos
+
+A inferência Hindley-Milner (`axionc/src/infer.rs`) não conseguiu unificar dois
+tipos. Exemplo: `bad :: Int` com corpo `putStrLn "olá"` (que é `IO ()`).
+
+```
+error[AX0200]: incompatibilidade de tipos: IO () vs Int
+```
+
+## `AX0201` — tipo infinito (occurs-check)
+
+A unificação exigiria um tipo recursivo (uma variável que ocorre dentro do tipo
+a que seria ligada), o que a inferência HM rejeita. Emitido por `infer.rs`.
