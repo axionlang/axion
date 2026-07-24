@@ -1,0 +1,7 @@
+dist-newstyle/
+*.hi
+*.o
+result
+result-*
+.direnv/
+.ghc.environment.*

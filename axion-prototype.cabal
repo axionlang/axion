@@ -1,0 +1,53 @@
+cabal-version:      3.0
+name:               axion-prototype
+version:            0.0.0
+synopsis:           Fase 0 — protótipo EDSL descartável de validação semântica da Axión
+description:
+  Bancada de validação semântica da linguagem Axión (§17 da spec), NÃO o embrião
+  do compilador. Usa a extensão LinearTypes do GHC + linear-base para validar o
+  núcleo linear %1 (níveis L0/L1): um @Buffer %1@ que o typechecker recusa usar
+  duas vezes. Descartável por design; o axionc real (em Rust) nasce na Fase 1.
+
+license:            NONE
+author:             Axión
+build-type:         Simple
+extra-doc-files:    README.md
+
+common warnings
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wredundant-constraints
+
+library
+  import:           warnings
+  hs-source-dirs:   prototype/src
+  default-language: GHC2021
+  build-depends:
+    , base        >=4.16 && <5
+    , linear-base
+    , vector
+  exposed-modules:
+    Axion.Prototype.Buffer
+    Axion.Prototype.Examples
+
+executable axion-prototype
+  import:           warnings
+  hs-source-dirs:   prototype/app
+  main-is:          Main.hs
+  default-language: GHC2021
+  build-depends:
+    , base
+    , axion-prototype
+    , linear-base
+
+test-suite prototype-tests
+  import:           warnings
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   prototype/test
+  main-is:          Spec.hs
+  default-language: GHC2021
+  build-depends:
+    , base
+    , axion-prototype
+    , linear-base
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck

@@ -1,0 +1,1534 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<title>Axión V0.2</title>
+<style>
+*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+@page{size:A4;margin:14mm 13mm}
+@page coverpg{margin:0}
+body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,'DejaVu Sans',sans-serif;font-size:9.6pt;line-height:1.52;color:#27272f}
+p{margin:7px 0}
+strong{color:#1c1c24}
+em{color:#4c4560}
+ul{margin:6px 0;padding-left:20px}
+li{margin:4px 0}
+a{color:#6d28d9;text-decoration:none}
+.section{page-break-before:always}
+.sechead{display:flex;align-items:flex-start;gap:10px;margin:2px 0 4px}
+.secnum{background:#6d28d9;color:#fff;font-weight:700;font-size:10pt;border-radius:7px;padding:3px 9px;margin-top:3px;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace}
+.sechead h1{font-size:15.5pt;margin:0;color:#17171f;line-height:1.3}
+.secrule{border:none;border-top:2px solid #7c3aed;margin:8px 0 14px}
+.lead{font-style:italic;color:#585177}
+.sub{border-left:3px solid #7c3aed;color:#6d28d9;font-weight:650;font-size:11pt;padding-left:9px;margin:20px 0 8px}
+.sub small{font-weight:400}
+h3.mini{color:#1c1c24;font-size:10.5pt;margin:16px 0 6px}
+code.i{background:#ede9fe;color:#6d28d9;border-radius:4px;padding:0.5px 5px;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:8pt}
+.listing{break-inside:avoid;background:#171c33;border-radius:9px;margin:13px 0;overflow:hidden}
+.listing .hd{background:#332c66;color:#d6cff7;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:8pt;padding:6px 13px}
+.listing pre{margin:0;padding:12px 15px;color:#c9d1e3;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:8.2pt;line-height:1.6;white-space:pre;overflow:hidden}
+.c{color:#68718a;font-style:italic}
+.k{color:#b9a8fb;font-weight:600}
+.t{color:#7cc7f8}
+.s{color:#7fe0a2}
+.n{color:#f9c74f}
+.m{color:#fbbf24;font-weight:700}
+.e{color:#f87171;font-weight:700}
+.box{border-radius:9px;padding:11px 15px;margin:13px 0;break-inside:avoid;font-size:9.1pt}
+.box p{margin:5px 0}
+.box.solid{background:#ecfdf3;border:1px solid #bcecca}
+.box.warm{background:#fff8ec;border:1px solid #f8e2b8}
+.box.note{background:#f7f7fb;border:1px solid #e5e5ef}
+.box.intent{background:#f3eefc;border-left:4px solid #7c3aed;border-radius:4px}
+.fig{background:#fbfbfe;border:1px solid #ebebf4;border-radius:11px;padding:18px 16px;margin:14px 0 4px;break-inside:avoid;text-align:center}
+.cap{text-align:center;color:#8f8fa3;font-style:italic;font-size:8.5pt;margin:6px 0 16px}
+.fignote{color:#8f8fa3;font-size:7.6pt;margin-top:12px}
+.node{display:inline-block;border:1.5px solid #b9aef2;background:#f4f1fd;border-radius:7px;padding:8px 13px;font-size:8pt;color:#3b3355;vertical-align:middle}
+.node b{display:block;font-size:8.5pt;color:#2a2344}
+.node small{color:#7a6fa3;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:6.8pt}
+.node.cy{border-color:#67e0e8;background:#effcfd}
+.arr{color:#0ea5b7;font-weight:600;font-size:8pt;display:inline-block;vertical-align:middle;padding:0 8px}
+.arr small{display:block;color:#6d28d9;font-size:7pt}
+table{width:100%;border-collapse:collapse;font-size:8.7pt;margin:11px 0}
+th{background:#4c1d95;color:#fff;text-align:left;padding:7px 11px;font-weight:600}
+td{padding:7px 11px;border-bottom:1px solid #ececf2;vertical-align:top}
+td.rowh{background:#f5eefc;color:#5b21b6;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:8pt;white-space:nowrap}
+td.rowhs{background:#f5eefc;color:#3d3355;font-weight:600}
+tr:nth-child(even) td:not(.rowh):not(.rowhs):not(.ax){background:#fafafd}
+.cmp td{font-size:8.2pt}
+.cmp td small{display:block;color:#8a8a9c;font-size:7pt;font-weight:400}
+.cmp td.ax{background:#fffbea;border-left:2px solid #a78bfa}
+.cmp{break-inside:avoid}
+tr{break-inside:avoid}
+.sub{break-after:avoid}
+thead{display:table-header-group}
+.ic{font-weight:700}
+.g{color:#22c55e}.y{color:#d9a406}.r{color:#ef4444}.w{color:#c99700}.na{color:#9ca3af}
+.pillstat{float:right;font-size:7.4pt;font-weight:700;padding:2.5px 11px;border-radius:11px;letter-spacing:.4px}
+.pv{background:#fef3c7;color:#92400e}
+.vd{background:#fee2e2;color:#b91c1c}
+.mt{background:#fdf5c9;color:#a16207}
+.df{background:#dcfce7;color:#15803d}
+.obj{border:1px solid #f0e2c9;border-left:4px solid #f59e0b;border-radius:9px;padding:12px 17px;margin:13px 0;break-inside:avoid;font-size:9.1pt}
+.obj .onum{background:#f59e0b;color:#fff;font-weight:700;font-size:8.5pt;border-radius:6px;padding:2px 8px;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;margin-right:8px}
+.obj h4{display:inline;font-size:10pt;color:#1c1c24}
+.obj p{margin:7px 0}
+.stat{font-weight:700}
+.st-s{color:#16a34a}.st-p{color:#d97706}.st-d{color:#0891b2}
+.steps li{margin:7px 0}
+.nlist{list-style:none;padding-left:0;counter-reset:nn}
+.nlist>li{counter-increment:nn;margin:9px 0;padding-left:34px;position:relative}
+.nlist>li::before{content:counter(nn);position:absolute;left:0;top:1px;background:#ede9fe;color:#6d28d9;font-weight:700;font-size:8.5pt;border-radius:6px;padding:1px 8px}
+.twocol{display:flex;gap:12px;margin:12px 0}
+.twocol .col{flex:1;border:1px solid #e5e5ef;border-radius:9px;padding:10px 14px;background:#fbfbfd;font-size:9pt}
+.twocol .col h4{margin:0 0 5px;color:#6d28d9;font-size:9.5pt}
+.cards{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
+.cards .card{flex:1 1 44%;border:1px solid #e5e5ef;border-radius:9px;padding:11px 15px;background:#fbfbfd;font-size:9pt;break-inside:avoid}
+.cards .card h4{margin:0 0 5px;color:#5b21b6;font-size:9.8pt}
+.stackfig{display:flex;flex-direction:column;align-items:center;gap:2px}
+.stagebox{width:78%;border:1.5px solid #b9aef2;background:#f1edfc;border-radius:9px;padding:8px 12px}
+.stagebox b{color:#2a2344;font-size:8.8pt}
+.stagebox small{display:block;color:#7c6fae;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:6.9pt;margin-top:2px}
+.stagebox.dark{background:#221d43;border-color:#221d43}
+.stagebox.dark b{color:#efeafe}
+.stagebox.dark small{color:#a99ad8}
+.varrow{color:#6d28d9;font-size:11pt;font-weight:700;line-height:1.1}
+.circ{display:inline-block;width:82px;height:82px;border-radius:50%;border:2px solid #d4d4ea;background:#fff;vertical-align:top;padding-top:16px;margin:0 22px}
+.circ b{display:block;font-size:14pt}
+.circ span{display:block;font-size:8pt;color:#3d3355;font-weight:600}
+.circ small{display:block;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:6.8pt;color:#8a7fb5}
+.circlab{display:inline-block;width:126px;text-align:center;color:#6b6b80;font-size:7.6pt;margin-top:8px}
+.tritbox{display:inline-block;border:1.5px solid #b9aef2;background:#fff;border-radius:7px;padding:9px 13px;margin:0 5px}
+.tritbox b{display:block;color:#2a2344;font-size:9pt}
+.tritbox small{color:#8a7fb5;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:6.8pt}
+.dashwrap{border:1.5px dashed #a78bfa;border-radius:9px;display:inline-block;padding:12px 14px}
+.toc{page-break-before:always}
+.toc h2{color:#6d28d9;font-size:17pt;margin:14px 0 20px}
+.toc .row{display:flex;gap:16px;align-items:baseline;border-bottom:1px dashed #c9c9d8;padding:9px 2px}
+.toc .tn{color:#7c3aed;font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;font-size:7.5pt;font-weight:700;min-width:18px}
+.toc .tt{font-size:9.8pt;color:#26262e}
+.toc a.tocrow{color:inherit;text-decoration:none;display:block}
+.cover{page:coverpg;width:210mm;height:297mm;position:relative;color:#fff;background:
+ linear-gradient(150deg,#0d051f 0%,#1d0940 34%,#341070 62%,#5b21b6 100%);overflow:hidden;page-break-after:always}
+.cover .grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);background-size:26mm 26mm}
+.cover .inner{position:absolute;left:16mm;right:16mm;top:0;bottom:0}
+.cover .eyebrow{position:absolute;top:105mm;letter-spacing:2.2px;font-size:7.4pt;color:#cabffb;white-space:nowrap}
+.cover .titlebox{position:absolute;top:110mm;border-left:5px solid #a78bfa;padding-left:6mm}
+.cover h1{font-size:46pt;margin:0;font-weight:750;color:#e6ddfd;letter-spacing:1px}
+.cover .ver{font-family:'JetBrains Mono','DejaVu Sans Mono',monospace;color:#b6a6f4;font-size:11pt;letter-spacing:3px;margin-top:1mm}
+.cover .subtitle{position:absolute;top:152mm;font-size:11pt;color:#ece6fd;max-width:130mm;line-height:1.5}
+.cover .chips{position:absolute;top:180mm;max-width:120mm}
+.chip{display:inline-block;border:1px solid #8f7ce0;border-radius:12px;padding:3px 12px;font-size:8pt;color:#dcd2fb;margin:0 6px 7px 0;background:rgba(255,255,255,.05)}
+.cover .foot{position:absolute;bottom:16mm;left:0;right:0;border-top:1px solid rgba(255,255,255,.25);padding-top:5mm;display:flex;justify-content:space-between;font-size:8pt;color:#cfc4f7}
+.atom{position:absolute;top:28mm;right:8mm}
+</style>
+</head>
+<body>
+
+<!-- ============ CAPA ============ -->
+<div class="cover">
+ <div class="grid"></div>
+ <svg class="atom" width="230" height="230" viewBox="0 0 230 230">
+  <g fill="none" stroke="rgba(255,255,255,.55)" stroke-width="1.4">
+   <ellipse cx="115" cy="115" rx="92" ry="34" transform="rotate(0 115 115)"/>
+   <ellipse cx="115" cy="115" rx="92" ry="34" transform="rotate(60 115 115)"/>
+   <ellipse cx="115" cy="115" rx="92" ry="34" transform="rotate(120 115 115)"/>
+  </g>
+  <circle cx="115" cy="115" r="13" fill="#e9e2fc"/>
+  <circle cx="52" cy="70" r="5" fill="#f97350"/>
+  <circle cx="205" cy="122" r="5" fill="#34d399"/>
+  <circle cx="88" cy="182" r="5" fill="#94a3b8"/>
+ </svg>
+ <div class="inner">
+  <div class="eyebrow">E S P E C I F I C A C A O&nbsp;&nbsp;T E C N I C A&nbsp;&nbsp;E&nbsp;&nbsp;A R Q U I T E T U R A L&nbsp;&nbsp;M A S T E R</div>
+  <div class="titlebox">
+   <h1>Axión</h1>
+   <div class="ver">V0.2</div>
+  </div>
+  <div class="subtitle">Linguagem Funcional de Sistemas — Estrita, Linear, Segura e com Latência Zero</div>
+  <div class="chips">
+   <span class="chip">Tipos Lineares %1</span>
+   <span class="chip">Sem Garbage Collector</span>
+   <span class="chip">Ternário Balanceado</span>
+   <span class="chip">Topologia de Tipos de Custo Zero</span>
+   <span class="chip">Compilador e Runtime de Raiz</span>
+  </div>
+  <div class="foot">
+   <span>Compilador, backend e runtime escritos de raiz — herdeira da linhagem do GHC</span>
+   <span>Revisao V0.2 — reescrita do GHC explicita · 2026</span>
+  </div>
+ </div>
+</div>
+
+<!-- ============ SUMÁRIO ============ -->
+<div class="toc">
+ <h2>Sumário</h2>
+ <a href="#sumario" class="tocrow"><div class="row"><span class="tn">—</span><span class="tt">Sumário Executivo (TL;DR)</span></div></a>
+ <a href="#sec00" class="tocrow"><div class="row"><span class="tn">00</span><span class="tt">Análise Crítica e Guia de Leitura</span></div></a>
+ <a href="#sec01" class="tocrow"><div class="row"><span class="tn">01</span><span class="tt">Visão Geral e Filosofia</span></div></a>
+ <a href="#sec02" class="tocrow"><div class="row"><span class="tn">02</span><span class="tt">Gestão de Memória e Automação da Linearidade</span></div></a>
+ <a href="#sec03" class="tocrow"><div class="row"><span class="tn">03</span><span class="tt">Avaliação Híbrida e Co-Propriedade de Dados</span></div></a>
+ <a href="#sec04" class="tocrow"><div class="row"><span class="tn">04</span><span class="tt">Mutação Local Encapsulada</span></div></a>
+ <a href="#sec05" class="tocrow"><div class="row"><span class="tn">05</span><span class="tt">Interoperabilidade Nativa Segura (FFI Linear)</span></div></a>
+ <a href="#sec06" class="tocrow"><div class="row"><span class="tn">06</span><span class="tt">Concorrência Espacial: Canais e Session Types</span></div></a>
+ <a href="#sec07" class="tocrow"><div class="row"><span class="tn">07</span><span class="tt">Erros e Pânicos Sem Fugas (Linear Unwinding)</span></div></a>
+ <a href="#sec08" class="tocrow"><div class="row"><span class="tn">08</span><span class="tt">Compilador: Velocidade e Ergonomia (Salsa)</span></div></a>
+ <a href="#sec09" class="tocrow"><div class="row"><span class="tn">09</span><span class="tt">Paradigma de Design: Topologia de Tipos</span></div></a>
+ <a href="#sec10" class="tocrow"><div class="row"><span class="tn">10</span><span class="tt">O Tipo Trit e a Compactação Ternária</span></div></a>
+ <a href="#sec11" class="tocrow"><div class="row"><span class="tn">11</span><span class="tt">Pipeline de Compilação Consolidado</span></div></a>
+ <a href="#sec12" class="tocrow"><div class="row"><span class="tn">12</span><span class="tt">Gramática (EBNF)</span></div></a>
+ <a href="#sec13" class="tocrow"><div class="row"><span class="tn">13</span><span class="tt">Grandes Quadros Comparativos de Engenharia</span></div></a>
+ <a href="#sec14" class="tocrow"><div class="row"><span class="tn">14</span><span class="tt">Análise Crítica e Objecções de Mercado (O Fogo Amigo)</span></div></a>
+ <a href="#sec15" class="tocrow"><div class="row"><span class="tn">15</span><span class="tt">Apêndice: Riscos, Trade-offs e Trabalho Futuro</span></div></a>
+ <a href="#sec16" class="tocrow"><div class="row"><span class="tn">16</span><span class="tt">Referências e Prior Art</span></div></a>
+ <a href="#sec17" class="tocrow"><div class="row"><span class="tn">17</span><span class="tt">Plano de Implementação (do Início ao Fim)</span></div></a>
+ <a href="#sec18" class="tocrow"><div class="row"><span class="tn">18</span><span class="tt">Decisões de Implementação (Stack e Auto-Hospedagem)</span></div></a>
+ <a href="#sec19" class="tocrow"><div class="row"><span class="tn">19</span><span class="tt">Exemplo Completo: um Módulo de Ponta a Ponta</span></div></a>
+</div>
+<!-- ============ Sumário Executivo ============ -->
+<div class="section">
+ <div class="sechead" id="sumario"><span class="secnum" style="background:#0891b2">TL;DR</span><h1>Sumário Executivo</h1></div>
+ <hr class="secrule">
+ <p class="lead">A Axión numa página — antes da densidade que se segue.</p>
+ <div class="twocol">
+  <div class="col"><h4>O que é</h4>Uma linguagem funcional de sistemas: sintaxe de Haskell estrito, <strong>sem GC</strong>, com posse e tipos lineares <em>inferidos</em> (sem lifetimes explícitos), regiões/arenas, session types e latência zero.</div>
+  <div class="col"><h4>Para quem</h4>Nichos onde o jitter do GC é inaceitável e a segurança é crítica: HFT, kernels, motores de crypto, tempo-real, drivers. <strong>Não</strong> é de propósito geral (§1, Não-objetivos).</div>
+ </div>
+ <div class="sub">Os três argumentos</div>
+ <ol class="nlist">
+  <li><strong>Segurança de Haskell, controlo de C.</strong> Sem uso-após-livre, sem data races, sem fugas — provado por tipos, não por convenção; e sem GC, com libertação em pontos estáticos exatos (Auto-Drop, §2).</li>
+  <li><strong>Linearidade sem a luta do borrow checker.</strong> A posse e as regiões são inferidas; o compilador Socrático mostra o grafo e sugere a correção. Divulgação progressiva L0–L3: 90% do código nunca vê linearidade (§8).</li>
+  <li><strong>Feedback sub-milissegundo.</strong> Compilador reativo (Salsa), backend instantâneo em dev (Cranelift) e otimizado em release (LLVM) (§8, §11).</li>
+ </ol>
+ <div class="box solid">
+  <p><strong>Estado (honesto).</strong> Este documento fixa a <em>visão arquitetural</em>, não uma implementação. O núcleo (linear + memória + session types) é engenharia estabelecida (§16); a metateoria mecanizada, os benchmarks e as camadas opcionais (compactação ternária, topologia avançada) estão <em>por provar</em> e assim marcados. Ver §14 (fogo amigo) e §17 (plano).</p>
+ </div>
+ <div class="box note">
+  <p><strong>Percursos de leitura.</strong> Céptico de sistemas → §13 (quadros), §14 (objecções), §16 (posicionamento). Curioso de FP → §1, §2, §9. Implementador → §11, §12, §17, §18, §19 (exemplo completo).</p>
+ </div>
+</div>
+
+<!-- ============ 00 ============ -->
+<div class="section">
+ <div class="sechead" id="sec00"><span class="secnum">00</span><h1>Análise Crítica e Guia de Leitura</h1></div>
+ <hr class="secrule">
+ <p class="lead">Este documento fixa a visão arquitetural da Axión (V0.2), clarifica cada mecanismo com intuição e diagramas, e separa honestamente o que é <em>engenharia estabelecida</em> do que é <em>investigação em aberto</em>.</p>
+ <p>A Axión combina três linhagens reais e bem fundamentadas:</p>
+ <ul>
+  <li><strong>Tipos lineares e de unicidade</strong> — a base teórica existe (lógica linear de Girard, tipos de unicidade da linguagem Clean, e a extensão <code class="i">LinearTypes</code> do GHC com a multiplicidade <code class="i">%1</code>). A gestão de memória sem GC por regiões/arenas é território conhecido (Cyclone, MLKit, Rust).</li>
+  <li><strong>Ternário balanceado</strong> — um sistema numérico real (o computador soviético Setun, 1958) com uma propriedade elegante de compactação: <code class="i">3^5 = 243 ≤ 256</code>, logo cinco trits cabem num byte.</li>
+  <li><strong>Compilador reativo</strong> — o motor de consultas «Salsa» é a mesma arquitetura que sustenta o <code class="i">rust-analyzer</code>; a incrementalidade sub-milissegundo é plausível.</li>
+ </ul>
+ <div class="box solid">
+  <p><strong>O que está sólido:</strong> linearidade + Auto-Drop, arenas com reset não-léxico, Stream Fusion, defuncionalização de <code class="i">Susp</code>, FFI com <code class="i">@cleanup</code>, canais com session types, e o tipo <code class="i">Trit</code> (um enum de três estados para <code class="i">observe</code>/Kleene). Tudo isto é implementável com técnicas conhecidas. <strong>Opcional e por medir:</strong> a <em>compactação ternária base-243</em> não é engenharia estabelecida — é uma otimização de biblioteca (<code class="i">TritVec</code>), desligada por omissão e condicionada a benchmarks (§10, §14 #07).</p>
+ </div>
+ <div class="box warm">
+  <p><strong>Concorrência e a topologia de tipos:</strong> os operadores <code class="i">~</code> e <code class="i">Maybe~</code> são açúcar sintático que <em>desugar</em> para os canais lineares da §06 — o efeito «não-local» entre threads é sempre mediado por um canal linear, com a posse a mover-se em vez de ser partilhada. Por isso «zero data races» é um corolário da Fidelidade de Sessão. <code class="i">&amp;</code> é a <strong>conjunção aditiva</strong> da lógica linear (escolhe-se um de dois potenciais) e não há leitura literal de «computação quântica»: não há qubits, há uma <strong>topologia de tipos</strong> inspirada na mecânica quântica. A ausência de deadlocks vem do bloco <code class="i">bound</code> — um <em>nursery</em> de concorrência estruturada cujos canais formam uma árvore (topologia de comunicação acíclica por construção).</p>
+ </div>
+ <div class="box note">
+  <p><strong>Espectro de permissões (<code class="i">%1</code>, <code class="i">%0.5</code>):</strong> a multiplicidade qualifica o tipo de um recurso e determina o acesso. <code class="i">%1</code> é posse plena — leitura e escrita exclusivas; <code class="i">%0.5</code> é uma permissão fracionária ao estilo de Boyland — metades que concedem leitura partilhada e recombinam em <code class="i">%1</code> para recuperar a escrita (ver §2). A Elisão de Empréstimos é a forma implícita deste modelo; <code class="i">%0.5</code>, a forma explícita e de primeira classe.</p>
+ </div>
+ <div class="box intent">
+  <p><strong>Nota normativa — relação com o GHC e o Haskell.</strong> A Axión não é um dialecto do Haskell nem corre sobre o GHC: é uma <strong>reescrita completa</strong> — parser, typechecker, IR, backend e runtime próprios. O GC e a laziness do GHC são estruturalmente incompatíveis com as garantias da linguagem (latência zero, arenas, Linear Unwinding), pelo que <strong>não há, por decisão de design, compatibilidade com código ou bibliotecas Haskell existentes</strong>: as bibliotecas do Hackage pressupõem um runtime lazy com GC e não linkam com o runtime da Axión. Do Haskell herda-se a sintaxe, o modelo mental e a linhagem teórica (Linear Haskell, POPL 2018); a estratégia de ecossistema é a FFI Linear para C e Rust (§05). O Linear Haskell serve ainda de bancada de validação semântica no protótipo descartável da Fase 0 (§17).</p>
+ </div>
+</div>
+
+<!-- ============ 01 ============ -->
+<div class="section">
+ <div class="sechead" id="sec01"><span class="secnum">01</span><h1>Visão Geral e Filosofia</h1></div>
+ <hr class="secrule">
+ <p>A Axión é uma linguagem funcional pura de sistemas — uma <strong>reescrita de raiz da linhagem do GHC</strong> (Glasgow Haskell Compiler): compilador, backend e runtime próprios, desenhados desde a primeira linha para uma semântica estrita, linear e sem GC. Do Haskell herda a sintaxe e o modelo mental; <strong>não herda o runtime, a compatibilidade binária, nem o ecossistema Hackage</strong>. A premissa fundamental é <strong>unificar dois mundos</strong> que raramente coexistem:</p>
+ <div class="twocol">
+  <div class="col"><h4>Do Haskell</h4>Elegância matemática, minimalismo sintático, pureza e desacoplamento lógico.</div>
+  <div class="col"><h4>Do Rust e do C</h4>Determinismo de memória, latência zero e controlo direto do hardware.</div>
+ </div>
+ <p>Para o conseguir, a Axión <strong>elimina por completo o Garbage Collector</strong>, abolindo o seu <em>overhead</em> e as pausas de execução (<code class="i">jitter</code>). No lugar do GC entra um paradigma de <strong>posse (ownership) e tipos lineares</strong> (<code class="i">%1</code>): o compilador rastreia estaticamente o ciclo de vida de cada dado e automatiza a sua libertação — sem as anotações manuais de tempo de vida (<em>lifetimes</em>) que caracterizam o Rust.</p>
+ <div class="box note">
+  <p><strong>Intuição:</strong> onde o Rust exige lifetimes explícitos (<code class="i">&lt;'a&gt;</code>) quando as regras de elisão não chegam, a Axión <em>infere</em> a região. Onde o Haskell paga um GC, a Axión insere <code class="i">free</code> em pontos exatos determinados por análise de fluxo.</p>
+ </div>
+ <div class="sub">Primeiros Exemplos (nível L0)</div>
+ <p>Antes de qualquer mecanismo avançado, eis a linguagem no nível <strong>L0</strong> — sintaxe e semântica familiares de um Haskell estrito, <strong>sem uma única anotação de linearidade</strong>. Quem sabe programação funcional já lê isto no dia 1.</p>
+ <div class="listing"><div class="hd">Listagem 1.1 — Olá Mundo</div><pre>
+<span class="k">main</span> :: <span class="t">IO</span> ()
+main = putStrLn <span class="s">"Hello, Axión!"</span>
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 1.2 — Fibonacci: recursão e o «loop» funcional (acumulador)</div><pre>
+<span class="c">-- Recursive definition: pattern matching + recursion.</span>
+fib :: <span class="t">Int</span> -&gt; <span class="t">Int</span>
+fib <span class="n">0</span> = <span class="n">0</span>
+fib <span class="n">1</span> = <span class="n">1</span>
+fib n = fib (n - <span class="n">1</span>) + fib (n - <span class="n">2</span>)
+
+<span class="c">-- Fast iterative version: an accumulator is a functional "loop" (O(n)).</span>
+fibFast :: <span class="t">Int</span> -&gt; <span class="t">Int</span>
+fibFast n = go n <span class="n">0</span> <span class="n">1</span>
+    <span class="k">where</span>
+     go <span class="n">0</span> a _ = a
+     go k a b = go (k - <span class="n">1</span>) b (a + b)
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 1.3 — FizzBuzz: guardas, operador mod e iteração 1..N</div><pre>
+<span class="c">-- Guards = an if/else chain; `mod` is the remainder operator (%).</span>
+fizzbuzz :: <span class="t">Int</span> -&gt; <span class="t">String</span>
+fizzbuzz n
+  | n `mod` <span class="n">15</span> == <span class="n">0</span> = <span class="s">"FizzBuzz"</span>
+  | n `mod` <span class="n">3</span>  == <span class="n">0</span> = <span class="s">"Fizz"</span>
+  | n `mod` <span class="n">5</span>  == <span class="n">0</span> = <span class="s">"Buzz"</span>
+  | <span class="k">otherwise</span>       = show n
+
+<span class="c">-- Loop over 1..100 (a strict range; Stream Fusion, no heap allocation).</span>
+main :: <span class="t">IO</span> ()
+main = mapM_ (putStrLn . fizzbuzz) [<span class="n">1</span> .. <span class="n">100</span>]
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 1.4 — Fatorial: funções e tipos numéricos (Int vs Integer / overflow)</div><pre>
+<span class="c">-- 'Int' is fixed-width and WOULD overflow for large n.</span>
+<span class="c">-- 'Integer' is arbitrary-precision: no overflow, at a small runtime cost.</span>
+factorial :: <span class="t">Integer</span> -&gt; <span class="t">Integer</span>
+factorial <span class="n">0</span> = <span class="n">1</span>
+factorial n = n * factorial (n - <span class="n">1</span>)
+
+<span class="c">-- factorial 20 fits in an Int; factorial 50 needs Integer.</span>
+</pre></div>
+ <div class="sub">Mapa dos mecanismos (a «topologia»)</div>
+ <p>Tudo deriva de uma disciplina substrutural única; as peças encaixam assim — e é este grafo que o compilador infere, mostra e chama «topologia de tipos»:</p>
+ <div class="fig">
+  <span class="node"><b>Posse linear</b><small>%1 / %0.5 · §2</small></span>
+  <span class="arr">⟶<small>onde vive</small></span>
+  <span class="node"><b>Regiões / Arenas</b><small>NLL · §3</small></span>
+  <span class="arr">⟶<small>entre threads</small></span>
+  <span class="node cy"><b>Canais / Session Types</b><small>§6</small></span>
+  <span class="arr">⟶<small>açúcar</small></span>
+  <span class="node cy"><b>Acoplamento</b><small>~ / Maybe~ · §9</small></span>
+  <div class="fignote">Atravessam tudo: Auto-Drop (§2), Linear Unwinding (§7) e a divulgação progressiva L0-L3 (§8). Cada peca deriva da mesma regra linear.</div>
+ </div>
+ <div class="sub">Não-objetivos (o que a Axión <em>não</em> é)</div>
+ <p>Tão importante como o que promete é o que recusa fazer — declarado à cabeça, porque uma linguagem que sabe onde não vai é mais fiável:</p>
+ <ul>
+  <li><strong>Não é de propósito geral.</strong> É de nicho, alto desempenho. Para prototipagem rápida, scripts ou a maioria do software de aplicação, Python/Go/TypeScript continuam a ser a escolha certa.</li>
+  <li><strong>Não troca segurança por conveniência.</strong> Sem GC, não há a rede que o esconde; a disciplina linear é obrigatória em L1+.</li>
+  <li><strong>Não é compatível com o Haskell.</strong> Sem Hackage, sem runtime lazy, sem código GHC reutilizável — herda a sintaxe e a linhagem teórica, não o ecossistema (§0, §16).</li>
+  <li><strong>FFI não é seguro por omissão.</strong> O <code class="i">@cleanup</code> governa fugas; contra escritas selvagens de C, o isolamento é <strong>opt-in e em camadas</strong> (<code class="i">@isolate(mpk)</code> / <code class="i">@sandbox(wasm)</code>, §5) — declarado por biblioteca, não mágico nem grátis. O default (<code class="i">@trusted</code>) confia, como o <code class="i">unsafe</code> FFI do Rust.</li>
+  <li><strong>Não promete os números ainda.</strong> As garantias de performance são desenho, não medição — ficam sob benchmark (§13).</li>
+ </ul>
+</div>
+
+<!-- ============ 02 ============ -->
+<div class="section">
+ <div class="sechead" id="sec02"><span class="secnum">02</span><h1>Gestão de Memória e Automação da Linearidade</h1></div>
+ <hr class="secrule">
+ <p>O pipeline executa três análises estáticas que, em conjunto, eliminam cópias ocultas e anotações manuais de ciclo de vida:</p>
+ <ol class="nlist">
+  <li><strong>Elisão de Empréstimos</strong> (<em>Implicit Borrowing</em>) — quando uma função apenas <em>lê</em> um dado imutável sem o consumir, o verificador converte o tipo linear numa vista de baixo nível (<code class="i">slice</code>). A posse regressa ao escopo original de forma invisível.</li>
+  <li><strong>Destruição Automática</strong> (<em>Auto-Drop</em>) — uma análise de vivacidade (<em>Liveness</em>) identifica o ponto exato em que uma variável morre e injeta aí a instrução nativa <code class="i">free</code>.</li>
+  <li><strong>Atualização Destrutiva In-Place</strong> (<em>Linear Elision</em>) — se um recurso é linear (<code class="i">%1</code>) e a atualização de registo é a sua última menção viva, o compilador transmuta o código funcional numa mutação imperativa direta.</li>
+ </ol>
+ <div class="fig">
+  <span class="node"><b>chamador</b><small>detem Process %1</small></span>
+  <span class="arr">⟶<small>move %1</small></span>
+  <span class="node cy"><b>updateKernel</b><small>muta in-place</small></span>
+  <span class="arr">⟶<small>devolve %1</small></span>
+  <span class="node"><b>chamador</b><small>recupera Process %1</small></span>
+  <div class="fignote">A posse e transferida estaticamente: nunca ha duas referencias vivas ao mesmo buffer.</div>
+ </div>
+ <div class="cap">Fig. 2.1 — Transferência de posse: a linearidade garante uma única referência viva.</div>
+ <div class="listing"><div class="hd">Listagem 2.1 — Auto-Drop e mutação in-place inferidos pelo compilador</div><pre>
+<span class="k">data</span> <span class="t">Process</span> = <span class="t">Process</span>
+  { pid    :: <span class="t">Int</span>
+  , status :: <span class="t">String</span>
+  , buffer :: <span class="t">Buffer U8</span> <span class="m">%1</span>      <span class="c">-- linear field embedded in the record</span>
+  }
+
+<span class="c">-- 'p' is consumed (%1) and returned (%1): ownership goes in and out, never cloned.</span>
+updateKernel :: <span class="t">Process</span> <span class="m">%1</span> -&gt; <span class="t">Process</span> <span class="m">%1</span>
+updateKernel p =
+    <span class="k">let</span> p' = p { status = <span class="s">"Running"</span> }   <span class="c">-- last live mention of 'p'</span>
+    <span class="k">in</span> p'
+    <span class="c">-- 1. The inner buffer is never copied (borrow elision).</span>
+    <span class="c">-- 2. 'p' dies here -&gt; the compiler MUTATES the 'status' field in place.</span>
+    <span class="c">-- 3. If 'p'' were not returned, Auto-Drop would inject free(p'.buffer).</span>
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 2.2 — Elisão de Empréstimos: ler sem consumir</div><pre>
+<span class="c">-- 'checksum' only READS the buffer: no '%1' on its argument =&gt; the compiler</span>
+<span class="c">-- borrows it as a low-level view (slice); ownership never leaves the caller.</span>
+checksum :: <span class="t">Buffer U8</span> -&gt; <span class="t">U32</span>            <span class="c">-- borrow: no '%1', so 'buf' is NOT consumed</span>
+checksum buf = foldBytes (+) <span class="n">0</span> buf
+
+encrypt :: <span class="t">Buffer U8</span> <span class="m">%1</span> -&gt; <span class="t">Buffer U8</span> <span class="m">%1</span>   <span class="c">-- consumes and returns ownership</span>
+encrypt buf = imperative $ <span class="k">do</span> …
+
+process :: <span class="t">Buffer U8</span> <span class="m">%1</span> -&gt; (<span class="t">U32</span>, <span class="t">Buffer U8</span> <span class="m">%1</span>)
+process buf =
+    <span class="k">let</span> sig = checksum buf     <span class="c">-- implicit borrow: 'buf' is STILL owned after this line</span>
+    <span class="k">in</span> (sig, encrypt buf)      <span class="c">-- ownership flows on into 'encrypt'; no clone, no AX0001</span>
+</pre></div>
+ <div class="box intent">
+  <p><strong>A regra da linearidade (destruidor como consumidor).</strong> Todo o valor <code class="i">%1</code> é consumido <strong>exatamente uma vez — pelo programador, ou pelo seu destruidor (<code class="i">Drop</code>)</strong>. A contração (usar duas vezes) é proibida para todos os <code class="i">%1</code>, sempre; o enfraquecimento (descartar) só é permitido para tipos com instância <code class="i">Drop</code>, e o Auto-Drop materializa-o como a chamada ao destruidor no ponto de morte. Tipos sem <code class="i">Drop</code> — endpoints de sessão (<code class="i">Ep</code>), <code class="i">Token</code>, handles de transação — são <em>must-use</em>: esquecê-los é erro de compilação (é disto que depende a Fidelidade de Sessão da §9). <code class="i">Drop</code> propaga estruturalmente: um registo é droppable se todos os campos o forem; uma closure (e um <code class="i">Susp</code>) herda a obrigação do que captura. O <code class="i">@cleanup</code> da §5 é a instância <code class="i">Drop</code> de um <code class="i">LinearPtr</code>, declarada na importação.</p>
+ </div>
+ <div class="sub">Permissões Fracionárias ( <small><code class="i">%0.5</code></small> )</div>
+ <p>A multiplicidade de um recurso exprime <em>quem lhe acede</em>. <code class="i">%1</code> é posse plena — leitura e escrita exclusivas. <code class="i">%0.5</code> é uma <strong>permissão fracionária</strong> ao estilo de Boyland: um <code class="i">%1</code> divide-se (<code class="i">split</code>) em metades que concedem leitura partilhada (nunca escrita) e recombinam-se (<code class="i">join</code>) em <code class="i">%1</code> para recuperar a escrita e a posse. A Elisão de Empréstimos é a forma implícita deste modelo; <code class="i">%0.5</code> é a sua forma explícita e de primeira classe. O Auto-Drop só liberta o recurso quando as metades voltam a formar <code class="i">%1</code> ou quando todas morrem.</p>
+ <div class="listing"><div class="hd">Listagem 2.3 — Split/join de permissões fracionárias</div><pre>
+<span class="c">-- 'split' divides %1 into two shared-read halves.</span>
+<span class="k">let</span> (a, b) = split cfg        <span class="c">-- cfg : Config %1 =&gt; a, b : Config %0.5</span>
+readOnly a                    <span class="c">-- safe concurrent reads; neither one writes</span>
+readOnly b
+<span class="k">let</span> cfg' = join a b           <span class="c">-- recombines into Config %1; write access returns</span>
+<span class="c">-- Auto-Drop of 'cfg' only fires after the join (or once both halves die).</span>
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 2.4 — Um recurso must-use esquecido (AX0002)</div><pre>
+<span class="e">error[AX0002]</span>: recurso linear sem Drop descartado sem ser consumido
+  <span class="c">--&gt; src/Session.axi:31:5</span>
+   |
+28 |     ep &lt;- openChannel svc
+   |     <span class="n">--- 'ep' : Ep %1 (Send Request End) — endpoint de sessão (sem Drop)</span>
+   |
+31 |     pure result
+   |     <span class="e">^^^^^^^^^^ 'ep' ainda está vivo aqui e nunca foi consumido</span>
+   |
+   = <span class="t">porquê</span>: endpoints, <code>Token</code> e handles de transação são <em>must-use</em> — não têm
+     instância <code>Drop</code>, logo esquecê-los é erro, não uma fuga silenciosa (§2).
+   = <span class="s">ajuda [machine-applicable — o LSP aplica com um clique]:</span>
+     <span class="s">consome a sessão antes de devolver:</span>
+       30 |     sentEp &lt;- send ep request
+       31 |     close sentEp
+   = explicação completa: axion --explain AX0002
+</pre></div>
+</div>
+
+<!-- ============ 03 ============ -->
+<div class="section">
+ <div class="sechead" id="sec03"><span class="secnum">03</span><h1>Avaliação Híbrida e Co-Propriedade de Dados</h1></div>
+ <hr class="secrule">
+ <div class="sub">A. Preguiça Linear Dirigida ( <small><code class="i">Susp</code></small> )</div>
+ <p>A Axión é <strong>estrita por omissão</strong>, com preguiça <em>explícita e validada</em> através do tipo primitivo <code class="i">Susp a</code> — um fecho (<em>closure</em>) que encapsula uma computação adiada. Sendo linear, a suspensão obedece à regra da §2: <strong>tem de ser consumida exatamente uma vez</strong> — por <code class="i">force</code>, ou pelo destruidor se todas as capturas forem droppable; um <code class="i">Susp</code> que capture um endpoint herda o <em>must-use</em>. Ao ser disparada por <code class="i">force</code>, os seus recursos intermediários são limpos pelo Auto-Drop.</p>
+ <p><strong>Otimização de unboxing:</strong> em <code class="i">Release</code>, a <em>defuncionalização estática</em> compacta as variáveis capturadas numa estrutura contígua na Stack (ou arena local), convertendo a chamada dinâmica num salto de hardware direto — sem indireção de ponteiros.</p>
+ <div class="listing"><div class="hd">Listagem 3.1 — Susp: computação adiada com custo zero de runtime</div><pre>
+<span class="c">-- Heavy deferred computation, with zero runtime cost.</span>
+generateCryptoKey :: <span class="t">Buffer U8</span> <span class="m">%1</span> -&gt; <span class="t">Susp</span> (<span class="t">Buffer U8</span> <span class="m">%1</span>)
+generateCryptoKey buf = susp $ <span class="k">do</span>
+    sha256Algorithm buf         <span class="c">-- 'buf' lives directly on the Stack (unboxing)</span>
+
+<span class="c">-- Deterministic consumption: 'force' fires exactly once.</span>
+processSecurity :: <span class="t">Susp</span> (<span class="t">Buffer U8</span> <span class="m">%1</span>) <span class="m">%1</span> -&gt; <span class="t">Buffer U8</span> <span class="m">%1</span>
+processSecurity suspKey =
+    <span class="k">let</span> key = force suspKey     <span class="c">-- direct jump, no pointer indirection</span>
+    <span class="k">in</span> key
+    <span class="c">-- Auto-Drop sweeps the suspension allocation right after the 'force'.</span>
+</pre></div>
+ <div class="sub">B. <em>Linear Streams</em> para Processamento Infinito</div>
+ <p>Com <strong>Stream Fusion</strong>, cadeias de transformações sobre fluxos contínuos colapsam num único <em>loop</em> imperativo nativo, sem alocação extra na Heap.</p>
+ <div class="listing"><div class="hd">Listagem 3.2 — Pipeline de pacotes fundido num único loop</div><pre>
+<span class="c">-- "Infinite" network stream with 0 extra bytes on the Heap.</span>
+filterPackets :: <span class="t">LinearStream Packet</span> <span class="m">%1</span> -&gt; <span class="t">LinearStream Packet</span> <span class="m">%1</span>
+filterPackets stream =
+    stream
+      |&gt; stream_filter (\p -&gt; packet_port p == <span class="n">443</span>)
+      |&gt; stream_map    (\p -&gt; apply_decryption p)
+    <span class="c">-- Stream Fusion collapses it all into a single 'while' loop in native Assembly.</span>
+</pre></div>
+ <div class="sub">C. Arenas Hierárquicas com Reset Não-Léxico (NLL)</div>
+ <p>As regiões de memória expandem-se e contraem-se dinamicamente. Os dados temporários são eliminados no instante em que a última célula dependente sai de uso — <strong>ignorando os limites de indentação léxica</strong>.</p>
+ <div class="fig">
+  <div style="text-align:left;display:inline-block;border:1.5px solid #b9aef2;border-radius:9px;padding:12px 16px;background:#f6f3fe;min-width:75%">
+   <div style="font-size:8pt;color:#3b3355;margin-bottom:8px">a-pai (parentArena)</div>
+   <div class="dashwrap" style="background:#fff">
+    <div style="font-size:7.6pt;color:#6d28d9;text-align:left;margin-bottom:6px">sub-arena</div>
+    <span class="node" style="padding:5px 12px"><small>nodeA</small></span>
+    <span class="node" style="padding:5px 12px"><small>nodeB</small></span>
+   </div>
+   <span style="font-size:7.6pt;color:#4b4b60;padding-left:10px;display:inline-block;max-width:44%;vertical-align:middle;text-align:left"><b>executeLongIndependentOperation</b><br>corre com a RAM da sub-arena JA libertada</span>
+   <div style="text-align:center;color:#dc2626;font-size:7.6pt;margin-top:10px;border-top:1.5px dashed #dc2626;padding-top:5px;width:46%">reset NLL aqui</div>
+  </div>
+  <div class="fignote">Liveness deteta a morte de nodeA/nodeB antes do fim lexico -&gt; ponteiro da sub-arena recua numa unica instrucao.</div>
+ </div>
+ <div class="cap">Fig. 3.1 — O reset da sub-arena é injetado no ponto de morte real, não no fim do bloco.</div>
+ <div class="listing"><div class="hd">Listagem 3.3 — Sub-arena descartável com reset antecipado</div><pre>
+buildTemporaryGraph :: <span class="t">Arena</span> <span class="m">%1</span> -&gt; <span class="t">IO</span> ()
+buildTemporaryGraph parentArena = withSubArena parentArena $ \subArena -&gt; <span class="k">do</span>
+    <span class="k">let</span> nodeA = allocateCell subArena <span class="s">"Node A"</span>
+    <span class="k">let</span> nodeB = allocateCell subArena <span class="s">"Node B"</span>
+    linkNodes nodeA nodeB
+    processGraphData nodeA
+    <span class="c">-- Liveness detects that nodeA/nodeB die on this line.</span>
+    <span class="c">-- The sub-arena reset is injected HERE (not at the lexical end of the block):</span>
+    executeLongIndependentOperation  <span class="c">-- already runs with the sub-arena RAM cleared</span>
+</pre></div>
+ <h3 class="mini">Escape estático é erro de compilação (<code class="i">promote</code>)</h3>
+ <p>A mesma análise de <em>liveness</em> que injeta o reset NLL deteta valores cuja vida ultrapassa o reset da sub-arena. Um valor que <em>escapa</em> (por retorno ou captura em closure) é <strong>rejeitado pelo typechecker</strong> — nunca copiado em silêncio. Para o manter vivo, move-se explicitamente para a arena-pai com <code class="i">promote</code>: o custo fica visível e a retenção por escape torna-se impossível por construção.</p>
+ <div class="listing"><div class="hd">Listagem 3.4 — 'promote' move um valor para a arena-pai antes do reset</div><pre>
+withSubArena parentArena $ \subArena -&gt; <span class="k">do</span>
+    <span class="k">let</span> node = allocateCell subArena <span class="s">"alive after reset"</span>
+    <span class="c">-- 'node' would die at the subArena reset: the typechecker demands promotion.</span>
+    <span class="k">let</span> node' = promote parentArena node  <span class="c">-- moves to the parent arena; survives</span>
+    subArena_reset                        <span class="c">-- reclaims the rest; 'node'' stays valid</span>
+    node'
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 3.5 — Escape de sub-arena é erro de compilação (AX0003)</div><pre>
+<span class="e">error[AX0003]</span>: um valor escapa da sua sub-arena
+  <span class="c">--&gt; src/Graph.axi:12:5</span>
+   |
+10 |     <span class="k">let</span> node = allocateCell subArena <span class="s">"escapes"</span>
+   |         <span class="n">--- 'node' vive na sub-arena 'subArena'</span>
+   |
+12 |     node
+   |     <span class="e">^^^^ devolvido daqui — sobreviveria ao reset da sub-arena</span>
+   |
+   = <span class="t">porquê</span>: no reset a RAM da sub-arena é recuperada; um valor que escapa
+     ficaria pendurado. O escape é rejeitado, nunca copiado em silêncio (§3C).
+   = <span class="s">ajuda [machine-applicable — o LSP aplica com um clique]:</span>
+     <span class="s">move-o para a arena-pai antes do reset:</span>
+       11 |     <span class="k">let</span> node' = promote parentArena node
+       12 |     node'
+   = sem cópia? em L1+, <code>box node</code> (RC determinístico, §3) — ou <span class="m">&amp;?</span> para só espreitar
+   = explicação completa: axion --explain AX0003
+</pre></div>
+ <h3 class="mini">Marcas de arena (<code class="i">arena_mark</code> / <code class="i">arena_release</code>)</h3>
+ <p>Para reclamar memória <em>dentro</em> de uma arena sem criar uma sub-arena, uma <strong>marca</strong> guarda o topo do <em>bump pointer</em> e o <code class="i">arena_release</code> recua-o — reclamação intra-escopo ao custo de uma instrução. Tudo o que é alocado depois da marca é consumido linearmente ou libertado no release.</p>
+ <div class="listing"><div class="hd">Listagem 3.6 — Reclamação intra-escopo por marca/release</div><pre>
+<span class="k">let</span> mark = arena_mark arena      <span class="c">-- saves the top of the bump pointer</span>
+<span class="k">let</span> tmp = allocateCell arena <span class="s">"temporary"</span>
+process tmp
+arena_release mark               <span class="c">-- rewinds the pointer; reclaims without a sub-arena</span>
+</pre></div>
+ <h3 class="mini">Decommit no reset</h3>
+ <p>No reset, as páginas acima de um limiar são devolvidas ao sistema operativo (<code class="i">madvise(DONTNEED)</code> ou equivalente), pelo que o <em>high-water mark</em> não permanece residente. Não altera a correção — reduz a pegada de RAM sob picos de alocação.</p>
+ <h3 class="mini">Escape-hatch opt-in: <code class="i">Boxed a</code> (RC determinístico, estilo Perceus)</h3>
+ <div class="box note">
+  <p>Para a minoria de valores cuja vida não cabe na disciplina de regiões, o tipo opt-in <code class="i">Boxed a</code> oferece <em>reference counting</em> preciso e determinístico (Perceus, PLDI 2021): sem GC, sem pausas, custo visível no tipo. A análise de linearidade já dá os pontos de drop estaticamente, pelo que a maioria das operações de RC se elide em compilação; e um <code class="i">Boxed</code> imutável <strong>não pode formar ciclos</strong> (a mutação interior vive nos Tokens Fantasma, §3D) — logo não é preciso coletor de ciclos. Honestidade: o drop de uma estrutura grande é uma cascata O(n) — determinística e escalonável, não «custo zero». Guardas contra a erosão da disciplina: <code class="i">Boxed</code> é L1+ e um lint conta os <code class="i">Boxed</code> por módulo — o caminho fácil não pode vencer o caminho certo. Estado: definido; implementação pós-Fase 2, condicionada à telemetria de erros (§8) — se o escape não for a fricção prevista, o subsistema não se constrói. API e uso na Listagem 3.7.</p>
+ </div>
+ <div class="listing"><div class="hd">Listagem 3.7 — Boxed: a API e um escape sem promote</div><pre>
+<span class="c">-- 'Boxed a' TEM instância Drop — o decref — logo o Auto-Drop gere os handles;</span>
+<span class="c">-- não existe 'free' de Boxed. A análise de linearidade elide a maioria dos incr/decr.</span>
+box   :: a <span class="m">%1</span> -&gt; <span class="t">Boxed</span> a                    <span class="c">-- um único move para a heap RC</span>
+share :: <span class="t">Boxed</span> a <span class="m">%1</span> -&gt; (<span class="t">Boxed</span> a, <span class="t">Boxed</span> a)   <span class="c">-- dois donos (incref, muitas vezes elidido)</span>
+<span class="c">-- Leituras usam a elisão de empréstimos normal (§2): espreitar um Boxed</span>
+<span class="c">-- nunca toca no contador.</span>
+
+<span class="c">-- Uso: uma config escapa da sub-arena SEM promote (sem cópia para a arena-pai):</span>
+withSubArena parentArena $ \subArena -&gt; <span class="k">do</span>
+    <span class="k">let</span> cfg  = buildConfig subArena   <span class="c">-- morreria no reset (AX0003)</span>
+    <span class="k">let</span> bcfg = box cfg                <span class="c">-- um move para a heap RC; só em L1+</span>
+    <span class="k">let</span> (a, b) = share bcfg           <span class="c">-- posse partilhada, determinística</span>
+    spawnLogger a                     <span class="c">-- vive enquanto algum handle viver</span>
+    pure b                            <span class="c">-- Auto-Drop faz decref quando cada handle morre</span>
+</pre></div>
+ <div class="sub">D. Tokens Fantasma de Co-Propriedade e o bloco <small><code class="i">using</code></small></div>
+ <p>Para modelar grafos cíclicos ou tabelas interligadas na Heap sem abdicar da segurança linear, os <strong>Tokens Fantasma</strong> separam a topologia dos dados da sua permissão de mutação. O bloco <code class="i">using</code> oculta o encadeamento manual do token.</p>
+ <div class="listing"><div class="hd">Listagem 3.8 — Mutação de grafo sob um único token de controlo</div><pre>
+<span class="c">-- Phantom Tokens separate the data TOPOLOGY from the mutation PERMISSION.</span>
+updateTopology :: <span class="t">Token s</span> <span class="m">%1</span> -&gt; <span class="t">Cell s Server</span> -&gt; <span class="t">Cell s Server</span> -&gt; <span class="t">Token s</span> <span class="m">%1</span>
+updateTopology token s1 s2 = using token $ <span class="k">do</span>
+    mutate s1 (\srv -&gt; srv { connections = connections srv + <span class="n">1</span> })
+    mutate s2 (\srv -&gt; srv { active = <span class="t">True</span> })
+    <span class="c">-- 'using' returns the token at the end; the manual threading stays hidden.</span>
+</pre></div>
+</div>
+
+<!-- ============ 04 ============ -->
+<div class="section">
+ <div class="sechead" id="sec04"><span class="secnum">04</span><h1>Mutação Local Encapsulada e Otimização de Loops</h1></div>
+ <hr class="secrule">
+ <p>O bloco <code class="i">imperative</code> desbloqueia uma região isolada de fronteiras puras, desenhada para computação numérica pesada e manipulação contígua de buffers com vetorização nativa (AVX/SSE). Por fora, a função continua a ser pura e referencialmente transparente.</p>
+ <div class="listing"><div class="hd">Listagem 4.1 — Escalonamento de vetor com SIMD e loop unrolling</div><pre>
+<span class="c">-- Isolated imperative region, with pure boundaries and native vectorization.</span>
+blasScale :: <span class="t">F64</span> -&gt; <span class="t">Buffer F64</span> <span class="m">%1</span> -&gt; <span class="t">Buffer F64</span> <span class="m">%1</span>
+blasScale factor vec = imperative $ <span class="k">do</span>
+    <span class="k">let</span> len = buffer_length vec
+    for <span class="n">0</span> len $ \i -&gt; <span class="k">do</span>
+        <span class="k">let</span> v = mut_read vec i
+        mut_write vec i (v * factor)
+    vec
+    <span class="c">-- Loop Unrolling + packed SIMD (AVX/SSE) instructions.</span>
+</pre></div>
+</div>
+<!-- ============ 05 ============ -->
+<div class="section">
+ <div class="sechead" id="sec05"><span class="secnum">05</span><h1>Interoperabilidade Nativa Segura (FFI Linear Autogovernada)</h1></div>
+ <hr class="secrule">
+ <p>A Axión integra ponteiros brutos de bibliotecas externas (C/Rust) no motor de inferência de linearidade através do tipo primitivo <code class="i">LinearPtr a</code>, associando funções de limpeza diretamente na importação via <code class="i">@cleanup</code>. O programador nunca escreve boilerplate de libertação.</p>
+ <div class="listing"><div class="hd">Listagem 5.1 — Recurso OpenSSL com cleanup injetado pelo compilador</div><pre>
+<span class="c">-- FFI with automatic lifecycle governance via @cleanup.</span>
+<span class="k">foreign import ccall</span> <span class="s">"openssl_ctx_free"</span> <span class="m">@cleanup</span>
+    freeSSL :: <span class="t">LinearPtr SSL_CTX</span> -&gt; <span class="t">IO</span> ()
+
+<span class="k">foreign import ccall</span> <span class="s">"openssl_ctx_init"</span>
+    initSSL :: <span class="t">IO</span> (<span class="t">LinearPtr SSL_CTX</span>)
+
+executeTransaction :: <span class="t">String</span> -&gt; <span class="t">IO</span> ()
+executeTransaction payload = <span class="k">do</span>
+    ctx &lt;- initSSL              <span class="c">-- allocated in C's memory space</span>
+    sendSecureData ctx payload
+    <span class="c">-- No boilerplate: the compiler injects openssl_ctx_free(ctx)</span>
+    <span class="c">-- as soon as 'ctx' is no longer live.</span>
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 5.2 — A fronteira de confiança: trusted, assume e o efeito Raw</div><pre>
+<span class="c">-- Sem 'unsafe': o acesso cru é um EFEITO visível no tipo de retorno ('Raw'),</span>
+<span class="c">-- e a fronteira de confiança irredutível marca-se com 'trusted' (a TCB auditada).</span>
+readDevice :: <span class="t">LinearPtr MMIO</span> -&gt; <span class="t">Int</span> -&gt; <span class="t">Raw</span> <span class="t">U32</span>   <span class="c">-- 'Raw': lê memória mapeada</span>
+readDevice reg off = <span class="k">trusted</span> $ <span class="k">do</span>          <span class="c">-- bloco auditado; entra na TCB</span>
+    peekOffU32 reg off
+
+<span class="c">-- 'assume' descarrega UM facto pontual que o compilador não prova,</span>
+<span class="c">-- com justificação obrigatória (fica no registo de auditoria).</span>
+alignedLoad :: <span class="t">LinearPtr F64</span> <span class="m">%1</span> -&gt; <span class="t">Vec4 F64</span>
+alignedLoad p =
+    <span class="k">assume</span> (aligned64 p) <span class="s">"libc garante malloc alinhado a 64 bytes"</span> $
+      loadVectorAligned p
+    <span class="c">-- Fora de 'trusted'/'assume' tudo é verificado; estes são os ÚNICOS pontos de confiança.</span>
+</pre></div>
+ <div class="box note">
+  <p><strong>Modelo de confiança (sem <code class="i">unsafe</code>):</strong> a Axión não tem blocos <code class="i">unsafe</code> ao estilo do Rust. O que o Rust confia por asserção decompõe-se em três: operações com prova (descarregam uma obrigação verificada — sem etiqueta, porque são seguras); acesso cru rastreado por capacidade (efeito <code class="i">Foreign</code> / <code class="i">Raw</code> visível no tipo); e a fronteira de confiança irredutível, marcada honestamente por <code class="i">trusted</code> (a TCB que se audita) ou <code class="i">assume</code> para um facto pontual. A chamada foreign corre numa arena dedicada, o que confina os modos de falha bem-comportados — fugas e frees esquecidos (o <code class="i">@cleanup</code> é a instância <code class="i">Drop</code> do <code class="i">LinearPtr</code>, §2) — e limpa o estado estrangeiro num reset. Honestidade: um ponteiro selvagem em C pode escrever em qualquer endereço do processo — e por isso o isolamento é uma <strong>política em camadas, opcional e declarada no <code class="i">foreign</code></strong> (abaixo); o default é a arena auditada (<code class="i">trusted</code>).</p>
+ </div>
+ <div class="sub">Isolamento em camadas (opt-in, declarado no <code class="i">foreign</code>)</div>
+ <p>A arena dedicada confina <em>bugs</em> — uma escrita acidental fora do buffer fica na arena — mas não um ponteiro que o C <em>fabrique</em> de propósito. Por isso o isolamento real é uma <strong>política escolhida por biblioteca</strong>, visível na declaração e com o custo à vista. Dois modelos de ameaça, respostas distintas:</p>
+ <table>
+  <tr><th>Anotação</th><th>Mecanismo</th><th>Custo</th><th>Protege contra</th></tr>
+  <tr><td class="rowh">@trusted</td><td>TCB auditada, sem isolamento (o default)</td><td>Zero</td><td>— (confia-se; equivale ao <code class="i">unsafe</code> FFI do Rust)</td></tr>
+  <tr><td class="rowh">@isolate(mpk)</td><td>Memory Protection Keys: heap da Axión e arena <em>foreign</em> em domínios PKRU distintos</td><td>~dezenas de ciclos/chamada; sem recompilar a lib</td><td>Escritas selvagens na heap (x86; ARM: MTE)</td></tr>
+  <tr><td class="rowh">@sandbox(wasm)</td><td>SFI: a lib compila para WASM (<code class="i">wasm2c</code>) e corre in-process com memória própria</td><td><em>Bounds checks</em> + cópia na fronteira (moderado)</td><td>C malicioso — portável, sem hardware especial</td></tr>
+  <tr><td class="rowh">(CHERI)</td><td>Capabilities com limites em hardware (Arm Morello) — plataforma, não anotação</td><td>~zero em hardware CHERI</td><td>Endgame: segurança espacial imposta pelo silício</td></tr>
+ </table>
+ <div class="listing"><div class="hd">Listagem 5.3 — Isolamento escolhido por biblioteca</div><pre>
+<span class="c">-- C não-confiável (parser de imagem): isolado num sandbox WASM.</span>
+<span class="k">foreign import ccall</span> <span class="s">"png_read"</span>    <span class="m">@sandbox(wasm)</span> readPng :: <span class="t">LinearPtr Bytes</span> <span class="m">%1</span> -&gt; <span class="t">IO</span> (<span class="t">Image</span> <span class="m">%1</span>)
+
+<span class="c">-- Confia-se, mas protegem-se as páginas da Axión durante a chamada (~1 write ao PKRU).</span>
+<span class="k">foreign import ccall</span> <span class="s">"fast_memcpy"</span> <span class="m">@isolate(mpk)</span>  memcpy  :: <span class="t">LinearPtr Bytes</span> <span class="m">%1</span> -&gt; <span class="t">LinearPtr Bytes</span> -&gt; <span class="t">Int</span> -&gt; <span class="t">IO</span> ()
+
+<span class="c">-- TCB auditada: velocidade máxima, sem isolamento (o default).</span>
+<span class="k">foreign import ccall</span> <span class="s">"malloc"</span>      <span class="m">@trusted</span>       cmalloc :: <span class="t">Int</span> -&gt; <span class="t">IO</span> (<span class="t">LinearPtr Bytes</span>)
+
+<span class="c">-- Sem anotação de isolamento =&gt; @trusted implícito. A escolha (e o custo) ficam à vista no código.</span>
+</pre></div>
+ <div class="box intent">
+  <p><strong>A regra de ouro.</strong> O default é rápido e auditado (<code class="i">@trusted</code>); o isolamento é um botão que se liga por biblioteca, pagando o custo conscientemente. A Axión não promete «FFI seguro por magia» — promete uma <strong>fronteira de confiança explícita, mínima e escalável</strong>: de auditoria (<code class="i">@trusted</code>) a páginas por hardware (<code class="i">@isolate</code>) a sandbox portável (<code class="i">@sandbox</code>) a capabilities (CHERI). A arena confina <em>bugs</em>; MPK/WASM confinam <em>ataques</em>. <em>Prior art: RLBox (USENIX Security 2020), ERIM/Hodor (MPK), CHERI/Morello.</em></p>
+ </div>
+</div>
+
+<!-- ============ 06 ============ -->
+<div class="section">
+ <div class="sechead" id="sec06"><span class="secnum">06</span><h1>Concorrência Espacial: Canais Lineares e Session Types</h1></div>
+ <hr class="secrule">
+ <p>Para um ambiente multi-core <strong>livre de data races</strong> sem o custo de <em>locks</em>, mutexes ou barreiras atómicas em runtime, a Axión adota <strong>Canais Lineares</strong> governados por <strong>Session Types</strong> ao nível do compilador. Quando uma thread transfere dados, a posse física do endereço é <em>movida estaticamente</em>: a thread remetente fica proibida pelo typechecker de tocar no ponteiro a partir do envio. Os canais garantem <em>race-freedom</em>; a <em>deadlock-freedom</em> por construção (concorrência estruturada) surge na §9.</p>
+ <div class="fig">
+  <span class="node cy" style="padding:12px 16px"><b>Thread A (worker)</b><small style="display:block;border:1px solid #9adde3;border-radius:5px;padding:4px 10px;margin-top:6px;background:#fff">buf : Buffer U8 %1</small><small style="display:block;margin-top:6px;color:#0e7490">apos sendData: buf e chan<br>CONGELADOS pelo typechecker</small></span>
+  <span class="arr">⟶<small>Send (move fisico do endereco)</small></span>
+  <span class="node" style="padding:12px 16px"><b>Thread B</b><small style="display:block;border:1px solid #c4b8f2;border-radius:5px;padding:4px 10px;margin-top:6px;background:#fff">recebe posse de buf</small></span>
+  <div class="fignote">Session Type = Ep %1 (Send (Buffer U8 %1) End). Sem locks, sem mutexes: a ausencia de data race e provada em compilacao.</div>
+ </div>
+ <div class="cap">Fig. 6.1 — Handoff linear: o remetente congela, o recetor recebe posse exclusiva.</div>
+ <div class="listing"><div class="hd">Listagem 6.1 — Protocolo tipado: envia um buffer e termina</div><pre>
+<span class="c">-- Session Type: the channel sends ONE linear Buffer and then ends (End).</span>
+<span class="k">type</span> <span class="t">CryptoService</span> = <span class="t">Ep</span> <span class="m">%1</span> (<span class="t">Send</span> (<span class="t">Buffer U8</span> <span class="m">%1</span>) <span class="t">End</span>)
+
+workerThread :: <span class="t">Channel CryptoService</span> <span class="m">%1</span> -&gt; <span class="t">IO</span> ()
+workerThread chan = <span class="k">do</span>
+    <span class="k">let</span> buf = allocateLocalBuffer <span class="n">4096</span>
+    sentChan &lt;- sendData chan buf  <span class="c">-- 'buf' AND 'chan' are consumed here</span>
+    closeChannel sentChan
+    <span class="c">-- Any later read of 'buf' or 'chan' is REJECTED at compile time.</span>
+</pre></div>
+</div>
+
+<!-- ============ 07 ============ -->
+<div class="section">
+ <div class="sechead" id="sec07"><span class="secnum">07</span><h1>Erros e Pânicos Sem Fugas (Linear Unwinding)</h1></div>
+ <hr class="secrule">
+ <p>Em linguagens de sistemas sem GC, um pânico costuma provocar fugas de memória. A Axión resolve-o com o <strong>Linear Unwinding</strong>: quando ocorre um pânico, o runtime executa um salto estruturado para o limite da sub-arena mais próxima na Stack.</p>
+ <p>Em vez de percorrer e desalocar objetos um a um, o CPU <strong>recua o ponteiro de alocação da arena numa única instrução</strong>. Toda a memória volátil evapora instantaneamente, e os recursos externos controlados por <code class="i">LinearPtr</code> disparam os respetivos ganchos <code class="i">@cleanup</code>.</p>
+ <div class="box solid">
+  <p><strong>Porque importa:</strong> a recuperação de erros passa a ter custo O(1) na arena, em vez de O(n) no número de objetos vivos — e sem qualquer risco de recurso órfão.</p>
+ </div>
+ <div class="box warm">
+  <p><strong>Endpoints em pânico (cancelamento, não drop):</strong> os endpoints de sessão não têm <code class="i">Drop</code> (§2) — no unwinding, o runtime não os descarta em silêncio: envia ao par o <strong>sinal de cancelamento</strong>, recebido como um ramo normal do protocolo (em <code class="i">Maybe~</code>, o rótulo <code class="i">Closed</code> já é esse ramo). A recuperação mantém-se O(1) na memória da arena e O(filhos) nas mensagens de cancelamento. (Prior art: <em>Exceptional Asynchronous Session Types</em> — Fowler, Lindley, Morris &amp; Decova, POPL 2019.)</p>
+ </div>
+ <div class="listing"><div class="hd">Listagem 7.1 — Pânico numa sub-arena: recuo O(1) e cleanup disparado</div><pre>
+processBatch :: <span class="t">Arena</span> <span class="m">%1</span> -&gt; <span class="t">Channel Ack</span> <span class="m">%1</span> -&gt; <span class="t">IO</span> ()
+processBatch parent ack = withSubArena parent $ \sub -&gt; <span class="k">do</span>
+    ctx &lt;- initSSL                       <span class="c">-- LinearPtr com @cleanup (§5)</span>
+    <span class="k">let</span> buf = allocateCell sub <span class="n">65536</span>     <span class="c">-- vive na sub-arena</span>
+    <span class="k">when</span> (corrupt buf) $ panic <span class="s">"lote inválido"</span>
+    <span class="c">-- ── se 'panic' dispara, o Linear Unwinding executa, nesta ordem: ──</span>
+    <span class="c">-- 1. o ponteiro da sub-arena recua numa instrução -&gt; 'buf' evapora (O(1)).</span>
+    <span class="c">-- 2. o @cleanup de 'ctx' corre: openssl_ctx_free(ctx).</span>
+    <span class="c">-- 3. 'ack' (endpoint, sem Drop) NÃO é descartado: envia Closed ao par (§7, §9).</span>
+    sendAck ack
+</pre></div>
+</div>
+
+<!-- ============ 08 ============ -->
+<div class="section">
+ <div class="sechead" id="sec08"><span class="secnum">08</span><h1>Arquitetura do Compilador: Velocidade e Ergonomia (Salsa Engine)</h1></div>
+ <hr class="secrule">
+ <p>Para um ciclo de <em>feedback</em> sub-milissegundo, o compilador rejeita a compilação em lote e assenta em quatro pilares:</p>
+ <div class="cards">
+  <div class="card"><h4>Separabilidade de Interfaces</h4>Interface de assinaturas e implementação são rigidamente separadas. Alterar o corpo sem mudar a assinatura linear evita recompilar os módulos a jusante.</div>
+  <div class="card"><h4>Avaliação por Consultas</h4>O compilador opera como base de dados reativa (Salsa). Muda um ficheiro → só o nó da AST afetado é invalidado.</div>
+  <div class="card"><h4>Typechecker Paralelo</h4>A pureza nas fronteiras dos módulos deixa a inferência e a validação linear correr por todos os núcleos.</div>
+  <div class="card"><h4>Fast-Path Backend</h4>Em <code class="i">axion build --dev</code> desligam-se as otimizações agressivas, gerando binários de teste instantâneos.</div>
+ </div>
+ <div class="sub">Ergonomia e Carga Cognitiva</div>
+ <p>A carga da Axión é <em>topológica</em>: exige raciocinar sobre grafos — de posse, de comunicação e de acoplamento — que são implícitos. O princípio de mitigação preserva todas as garantias: <strong>nenhum humano mantém na cabeça um grafo que o compilador já calcula</strong>. A topologia é inferida, mostrada, explicada no erro e escondida até ser precisa — a semântica linear não muda.</p>
+ <ol class="nlist">
+  <li><strong>Níveis de capacidade (divulgação progressiva).</strong> A Análise de Polaridade classifica cada módulo num nível e o compilador só expõe a maquinaria que o código usa — quem escreve L0 nunca vê linearidade nem topologia.</li>
+  <li><strong>Compilador Socrático que mostra a topologia.</strong> Sobre o Salsa (feedback sub-milissegundo), o LSP desenha o grafo inline — dono, ponto de morte (Auto-Drop), empréstimos, canal — convertendo simulação mental em consulta. Dois compromissos concretos desde a Fase 1: <strong>códigos de erro estáveis</strong> (<code class="i">axion --explain AX0042</code>), emitidos em formato estruturado (JSON) para o LSP, ferramentas externas e assistentes de IA; e <strong>sugestões <em>machine-applicable</em></strong> que o LSP aplica com um clique — foi isto, mais do que o texto dos erros, que decidiu a adoção do Rust. Exemplo completo na Listagem 8.3.</li>
+  <li><strong>Inferência que sugere, não que adivinha.</strong> O compilador infere escopos <code class="i">bound</code>, multiplicidades e pontos de <code class="i">promote</code>, e no erro indica a correção exata. O humano escreve intenção; a topologia é derivada e verificada.</li>
+  <li><strong>Biblioteca de padrões topológicos provados.</strong> Combinadores de alto nível (<code class="i">pipeline</code> / <code class="i">parMap</code> em árvore, construtores seguros de grafos cíclicos sobre Tokens Fantasma, <code class="i">withResource</code>) encapsulam o raciocínio difícil uma vez.</li>
+  <li><strong>Menos conceitos + notação legível.</strong> Tudo deriva de uma disciplina substrutural única; aliases por palavras (<code class="i">shared</code> para <code class="i">%0.5</code>, <code class="i">peek</code> para <code class="i">&amp;?</code>, <code class="i">coupled</code> para <code class="i">~</code>) deixam principiantes ler palavras e peritos usar símbolos.</li>
+ </ol>
+ <table>
+  <tr><th>Nível</th><th>O que o programador vê</th><th>Garantias acumuladas</th></tr>
+  <tr><td class="rowh">L0</td><td>Sintaxe de Haskell estrito puro; linearidade e regiões inferidas e invisíveis</td><td>Sem GC, sem fugas</td></tr>
+  <tr><td class="rowh">L1</td><td>Recursos lineares (<code class="i">%1</code> / <code class="i">%0.5</code>) e arenas</td><td>+ posse e reset determinístico</td></tr>
+  <tr><td class="rowh">L2</td><td>Canais e session types (<code class="i">bound</code>)</td><td>+ race- e deadlock-freedom</td></tr>
+  <tr><td class="rowh">L3</td><td>Acoplamento (<code class="i">~</code> / <code class="i">Maybe~</code>) e o tipo <code class="i">Trit</code> (observe/Kleene)</td><td>+ topologia de tipos; seleção branchless (geral)</td></tr>
+ </table>
+ <div class="box solid">
+  <p><strong>Teto de nível por pragma (firewall de complexidade).</strong> O nível é inferido pela Polaridade — e pode ser imposto: <code class="i">{-# LEVEL L1 #-}</code> num módulo, ou <code class="i">max-level</code> no manifesto do pacote (o pragma aperta o teto, nunca o alarga), transformam a divulgação progressiva de promessa cultural em <strong>garantia mecânica</strong>, à imagem do <code class="i">#![forbid(unsafe_code)]</code> do Rust: «neste pacote ninguém escreve L3». O teto governa o que se <em>escreve</em>, não o que se <em>chama</em> — um módulo L1 pode depender de uma biblioteca L3; sem esta regra, a firewall estrangularia o ecossistema. Exemplo do erro na Listagem 8.4.</p>
+ </div>
+ <h3 class="mini">Combinadores de padrões topológicos (solução 4)</h3>
+ <p>Cada combinador prova a topologia difícil <em>uma vez</em> e expõe uma assinatura simples. O tipo <code class="i">Bound s</code> marca as operações que têm de correr dentro de um nursery <code class="i">bound</code>, e o parâmetro fantasma <code class="i">s</code> impede que recursos escapem — o utilizador escreve a intenção, não o grafo.</p>
+ <div class="listing"><div class="hd">Listagem 8.1 — Combinadores que encapsulam a topologia (assinaturas)</div><pre>
+<span class="c">-- 'Bound s' is a computation that only runs inside a nursery 'bound arena $ do ...'.</span>
+<span class="c">-- The phantom parameter 's' prevents channels and resources from escaping the nursery.</span>
+
+<span class="c">-- withResource: acquires, uses and frees a linear resource at scope exit,</span>
+<span class="c">-- even on panic (Linear Unwinding). Hides the @cleanup threading.</span>
+withResource :: <span class="t">Acquire r</span> <span class="m">%1</span>          <span class="c">-- allocation + @cleanup bundled</span>
+             -&gt; (r <span class="m">%1</span> -&gt; <span class="t">IO</span> a)       <span class="c">-- body; consumes 'r' exactly once</span>
+             -&gt; <span class="t">IO</span> a
+
+<span class="c">-- parMap: applies 'f' in parallel; each worker is born as a CHILD of the nursery,</span>
+<span class="c">-- so the communication topology is a tree =&gt; deadlock-free by construction.</span>
+parMap :: (a <span class="m">%1</span> -&gt; b <span class="m">%1</span>)          <span class="c">-- linear per-element transformation</span>
+       -&gt; <span class="t">Vector</span> a <span class="m">%1</span>             <span class="c">-- input; ownership moves to the workers</span>
+       -&gt; <span class="t">Bound</span> s (<span class="t">Vector</span> b <span class="m">%1</span>)   <span class="c">-- results, collected in order</span>
+
+<span class="c">-- stage: wraps a linear function into a pipeline stage.</span>
+stage :: (a <span class="m">%1</span> -&gt; b <span class="m">%1</span>) -&gt; <span class="t">Stage</span> a b <span class="m">%1</span>
+
+<span class="c">-- pipeline: links stages by linear channels in a chain (a path = a tree),</span>
+<span class="c">-- each stage on its own thread. Hides channel creation and teardown.</span>
+pipeline :: <span class="t">Stage</span> a b <span class="m">%1</span>
+         -&gt; <span class="t">Stage</span> b c <span class="m">%1</span>
+         -&gt; <span class="t">LinearStream</span> a <span class="m">%1</span>           <span class="c">-- source</span>
+         -&gt; <span class="t">Bound</span> s (<span class="t">LinearStream</span> c <span class="m">%1</span>) <span class="c">-- output</span>
+
+<span class="c">-- Usage: inside a nursery, with the Telescope operator (|&gt;).</span>
+process :: <span class="t">Arena</span> <span class="m">%1</span> -&gt; <span class="t">LinearStream Packet</span> <span class="m">%1</span> -&gt; <span class="t">IO</span> (<span class="t">LinearStream Result</span> <span class="m">%1</span>)
+process arena src = bound arena $ <span class="k">do</span>
+    src |&gt; stage decode
+        |&gt; stage validate
+        |&gt; stage apply
+</pre></div>
+ <p>A outra metade da solução 4 é para <strong>dados</strong>: construir grafos cíclicos na heap sem <code class="i">Rc</code> / <code class="i">RefCell</code> nem coletor de ciclos. A chave (Tokens Fantasma, §3D) é separar os <em>handles</em> de topologia — <code class="i">Cell s a</code>, não-lineares, logo várias arestas podem apontar para o mesmo nó — da permissão de mutação <code class="i">Token s %1</code>, linear e única. O parâmetro fantasma <code class="i">s</code> impede que uma <code class="i">Cell</code> escape, pelo que o grafo inteiro se liberta num único reset de arena.</p>
+ <div class="listing"><div class="hd">Listagem 8.2 — Grafos cíclicos seguros sobre Tokens Fantasma (assinaturas)</div><pre>
+<span class="c">-- Cell s a : SHAREABLE handle to a node in region 's' (non-linear =&gt; allows cycles).</span>
+<span class="c">-- Region s : monad where the linear Token is threaded implicitly</span>
+<span class="c">--            (the first-class form of the 'using' block over Phantom Tokens).</span>
+
+<span class="c">-- withRegion: builds and reads, returning a PURE result. The 'forall s' (runST style)</span>
+<span class="c">-- prevents any Cell from escaping; the graph dies at the arena reset.</span>
+withRegion :: <span class="t">Arena</span> <span class="m">%1</span> -&gt; (<span class="k">forall</span> s. <span class="t">Region</span> s a) -&gt; a
+
+newCell :: a -&gt; <span class="t">Region</span> s (<span class="t">Cell</span> s a)           <span class="c">-- allocates a node</span>
+get     :: <span class="t">Cell</span> s a -&gt; <span class="t">Region</span> s a            <span class="c">-- reads the contents (borrow; no consume)</span>
+mutate  :: <span class="t">Cell</span> s a -&gt; (a -&gt; a) -&gt; <span class="t">Region</span> s () <span class="c">-- rewrites under the linear permission</span>
+
+<span class="c">-- Usage: two nodes pointing at each other (a cycle), safely.</span>
+<span class="k">data</span> <span class="t">Node</span> s = <span class="t">Node</span> { value :: <span class="t">Int</span>, next :: <span class="t">Maybe</span> (<span class="t">Cell</span> s (<span class="t">Node</span> s)) }
+
+twoCycle :: <span class="t">Arena</span> <span class="m">%1</span> -&gt; <span class="t">Int</span>
+twoCycle arena = withRegion arena $ <span class="k">do</span>
+    a &lt;- newCell (<span class="t">Node</span> <span class="n">1</span> <span class="t">Nothing</span>)
+    b &lt;- newCell (<span class="t">Node</span> <span class="n">2</span> <span class="t">Nothing</span>)
+    mutate a (\n -&gt; n { next = <span class="t">Just</span> b })   <span class="c">-- a -&gt; b</span>
+    mutate b (\n -&gt; n { next = <span class="t">Just</span> a })   <span class="c">-- b -&gt; a   (cycle!)</span>
+    va &lt;- get a
+    vb &lt;- get b
+    pure (value va + value vb)
+</pre></div>
+ <div class="box solid">
+  <p><strong>Efeito:</strong> a carga cognitiva deixa de ser constante e mental — passa a ser paga só quando se usa o poder e amparada pela ferramenta. A «K2» não vira colina, mas deixa de se subir às cegas.</p>
+ </div>
+ <div class="sub">Barreira de Entrada</div>
+ <p>Distinta da carga cognitiva (que pesa enquanto já se é fluente), a <strong>barreira de entrada</strong> é a primeira hora e a primeira semana. Cinco medidas baixam-na sem tocar nas garantias:</p>
+ <ol class="nlist">
+  <li><strong>L0 é o default e lê-se como Haskell estrito.</strong> No dia 1 não se aprende nenhum conceito novo: escreve-se código puro estrito e a linearidade é inferida; os erros de linearidade só surgem ao optar por L1. Se sabes Haskell estrito, já lês e escreves Axión — a sintaxe e o modelo mental transferem-se; o runtime por baixo é outro.</li>
+  <li><strong>Modo de ensino no compilador.</strong> No primeiro erro de linearidade/escape, o compilador Socrático não só aponta — explica o conceito, mostra a correção mínima e liga à ideia. Aprende-se a disciplina através dos erros.</li>
+  <li><strong>Playground sem instalação.</strong> O modo interpretado do compilador próprio (o fast-path de desenvolvimento), compilado para WASM, corre o primeiro programa no browser em segundos; o motor Salsa (sub-milissegundo) torna o ciclo escrever→ver vivo, sem fricção de toolchain.</li>
+  <li><strong>Caminho guiado L0→L3 («Axión by Example»).</strong> Cada passo introduz exatamente um conceito novo, com exemplo executável — nunca se vê <code class="i">~</code> / <code class="i">bound</code> / trits antes de dominar o núcleo linear.</li>
+  <li><strong>Pontes de transferência + scaffolding.</strong> Uma tabela «tu já sabes X, em Axión é Y» (os lifetimes do Rust são inferidos, <code class="i">IORef</code> ≈ <code class="i">Cell s</code>), e <code class="i">axion new</code> gera um projeto que já compila — edita-se código vivo, não uma página em branco.</li>
+ </ol>
+ <div class="box solid">
+  <p><strong>Alvo:</strong> a barreira desce de «O K2» para «O Muro, com vias fixas» — uma subida séria mas com percurso guiado, ao nível do Rust e não pior. O poder mantém um piso irredutível; a primeira experiência passa a ser suave.</p>
+ </div>
+ <h3 class="mini">O compilador Socrático e a firewall em ação</h3>
+ <p>As promessas acima em concreto — o texto exato que o programador vê. Cada diagnóstico tem o código estável, o porquê, a correção mínima (aplicável pelo LSP com um clique) e a porta para a explicação longa.</p>
+ <div class="box note">
+  <p><strong>Gamas de códigos de diagnóstico.</strong> Os códigos <code class="i">AXnnnn</code> são estáveis e agrupados por família: <code class="i">AX00xx</code> linearidade e posse (uso-após-consumo, <em>must-use</em>, escape); <code class="i">AX01xx</code> níveis e <em>firewall</em> de capacidade; <code class="i">AX02xx</code> regiões e arenas; <code class="i">AX03xx</code> canais e session types; <code class="i">AX04xx</code> FFI e fronteira de confiança. O registo nasce na Fase 1 (§17) e cada código tem <code class="i">--explain</code> + saída JSON.</p>
+ </div>
+ <div class="listing"><div class="hd">Listagem 8.3 — Um diagnóstico Socrático completo (AX0001)</div><pre>
+<span class="e">error[AX0001]</span>: uso após consumo de um valor linear
+  <span class="c">--&gt; src/Crypto.axi:42:24</span>
+   |
+40 |     <span class="k">let</span> key = deriveKey buf
+   |                         <span class="n">--- a posse de 'buf' moveu-se aqui</span>
+   |
+42 |     <span class="k">let</span> sum = checksum buf
+   |                        <span class="e">^^^ 'buf' já tinha sido consumido</span>
+   |
+   = <span class="t">porquê</span>: buf : Buffer U8 <span class="m">%1</span> — posse plena, exatamente um dono (§2)
+   = <span class="s">ajuda [machine-applicable — o LSP aplica com um clique]:</span>
+     <span class="s">usa a variante que devolve a posse:</span>
+       40 |     <span class="k">let</span> (key, buf') = deriveKeyKeep buf
+       42 |     <span class="k">let</span> sum = checksum buf'
+   = leitura partilhada? split para <span class="m">%0.5</span> (§2)
+   = explicação completa: axion --explain AX0001
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 8.4 — A firewall de nível a recusar L2 num módulo L1</div><pre>
+<span class="e">error[AX0101]</span>: construção de nível L2 num módulo com teto L1
+  <span class="c">--&gt; src/Pipeline.axi:14:5</span>
+   |
+14 |     bound arena $ <span class="k">do</span>
+   |     <span class="e">^^^^^ 'bound' (canais + session types) é uma construção L2</span>
+   |
+   = teto do módulo: L1  ({-# LEVEL L1 #-}, linha 1)
+   = teto do pacote: L2  (axion.toml: max-level = "L2")
+   = <span class="s">duas saídas:</span>
+     <span class="s">1. sobe o teto do módulo para {-# LEVEL L2 #-}; ou</span>
+     <span class="s">2. move a concorrência para um módulo L2 e expõe daqui uma função pura.</span>
+</pre></div>
+</div>
+
+<!-- ============ 09 ============ -->
+<div class="section">
+ <div class="sechead" id="sec09"><span class="secnum">09</span><h1>Paradigma de Design: Topologia de Tipos</h1></div>
+ <hr class="secrule">
+ <div class="box warm">
+  <p><strong>Nota de honestidade técnica:</strong> não há computação quântica real. «Quântico» é aqui uma metáfora para uma topologia de tipos derivada da lógica linear. O valor prático é representar escolhas exclusivas e leituras não-destrutivas com custo zero. Em concreto, <code class="i">~</code> e <code class="i">Maybe~</code> não transportam efeito não-local instantâneo (não há <em>no-signaling</em> quântico): são açúcar sintático sobre os canais lineares da §06 — todo o «impacto» remoto é uma mensagem entregue no próximo <code class="i">observe</code> (ver §09.D). Por isso o mecanismo chama-se <strong>acoplamento por sessão</strong> (alias <code class="i">coupled</code>), e não «emaranhamento»: o nome descreve o que é — dois <em>endpoints</em> duais de fim de vida ligado — sem prometer a não-localidade que a própria semântica nega. «Emaranhamento» fica só como intuição informal, nunca como termo normativo.</p>
+ </div>
+ <div class="sub">A. Conjunção Aditiva ( <small><code class="i">A &amp; B</code></small> ) e o Operador Telescópio ( <small><code class="i">|&gt;</code></small> )</div>
+ <p>O tipo <code class="i">A &amp; B</code> oferece <strong>dois potenciais alternativos</strong>: uma escolha adiada entre eles, sem <code class="i">.clone()</code>. Representação: quando ambos os potenciais são projeções dos mesmos dados base (o caso comum), partilham o mesmo espaço físico na Stack, sem tags de enumeração — custo zero; no caso geral, <code class="i">&amp;</code> compila para um fecho defuncionalizado (§3) que produz o potencial escolhido — custo de um fecho, nunca de uma cópia. A introdução de um valor <code class="i">A &amp; B</code> faz-se com <code class="i">superpose a b</code>; a eliminação é o <code class="i">case</code> (colapso) ou o <code class="i">&amp;?</code> (projeção). Na lógica linear, <code class="i">&amp;</code> significa «podes escolher um dos dois, mas não ambos». O <strong>Operador Telescópio</strong> <code class="i">|&gt;</code> transporta a massa do recurso de forma linear e contínua ao longo das cadeias de transformação.</p>
+ <div class="box note">
+  <p><strong>Intuição (analogia, não definição).</strong> Podes pensar num <code class="i">A &amp; B</code> como uma <em>superposição</em>: dois potenciais que coexistem até escolheres, e o <code class="i">case</code> é o <em>colapso</em> que fixa um e poda o outro. É uma boa muleta de memória — mas a analogia para aqui: a escolha é <strong>determinística</strong> (escolhe o consumidor, não o acaso), não há probabilidades nem física de partículas. Formalmente, é apenas a <strong>conjunção aditiva</strong> da lógica linear (§16).</p>
+ </div>
+ <div class="listing"><div class="hd">Listagem 9.1 — superpose introduz A &amp; B; &amp;? espreita, case colapsa</div><pre>
+<span class="c">-- 'superpose a b' builds an (A &amp; B): two potentials, NOT a copy, NOT a channel.</span>
+<span class="c">-- Common case: both are projections of the same base data =&gt; same physical</span>
+<span class="c">-- space on the Stack, no enum tag =&gt; zero cost (§9.A).</span>
+plan :: <span class="t">Config</span> <span class="m">%1</span> -&gt; (<span class="t">Report</span> &amp; <span class="t">Report</span>)
+plan cfg = superpose (draftReport cfg) (finalReport cfg)
+
+usePlan :: (<span class="t">Report</span> &amp; <span class="t">Report</span>) <span class="m">%1</span> -&gt; <span class="t">IO</span> ()
+usePlan p = <span class="k">do</span>
+    <span class="c">-- &amp;? peeks ONE potential without collapsing (read-only borrow, §2) — both survive.</span>
+    <span class="k">let</span> preview = p &amp;? <span class="t">Draft</span>
+    printSummary preview
+    <span class="c">-- 'case' collapses destructively: picking a branch PRUNES the other from the flow.</span>
+    <span class="k">case</span> p <span class="k">of</span>
+        <span class="t">Final</span> r -&gt; publish r          <span class="c">-- 'Draft' is now unreachable; touching it is AX0001</span>
+</pre></div>
+ <div class="sub">B. Colapso e Projeção (pattern matching linear)</div>
+ <p>O bloco <code class="i">case</code> realiza o <strong>colapso destrutivo</strong>: ao escolher um dos dois potenciais, o ramo oposto é podado do grafo de fluxo, impedindo o seu uso posterior. Para leituras não-destrutivas usa-se a <strong>Projeção Persistente</strong> <code class="i">&amp;?</code>, que espreita um potencial sem forçar o colapso. Formalmente, <code class="i">&amp;?</code> não é uma operação de canal: é um <em>borrow</em> apenas-leitura (a mesma elisão de empréstimos da §02), cujo tempo de vida não excede o do recurso e não transfere posse — por isso preserva a linearidade de <code class="i">&amp;</code>.</p>
+ <div class="fig">
+  <div><span class="node" style="background:#fff"><b>Term (A &amp; B)</b><small>"run" &amp; "running"</small></span></div>
+  <div style="margin:10px 0;color:#6d28d9;font-size:8pt">
+   <span style="display:inline-block;width:190px">↙ <b>&amp;? Original (peek)</b></span>
+   <span style="display:inline-block;width:190px"><b>case (colapso)</b> ↘</span>
+  </div>
+  <div>
+   <span class="node cy" style="margin-right:34px"><b>Projecao Persistente</b><small>le sem consumir; ambos os ramos sobrevivem</small></span>
+   <span class="node"><b>Estado colapsado</b><small>ramo oposto podado do grafo de fluxo</small></span>
+  </div>
+  <div class="fignote">"&amp;" e a conjuncao aditiva da logica linear: podes escolher UM potencial, nao ambos.</div>
+ </div>
+ <div class="cap">Fig. 9.1 — Peek (&amp;?) preserva ambos os ramos; case colapsa e poda o oposto.</div>
+ <div class="sub">C. Heurísticas de Escopo para Paradigmas Híbridos</div>
+ <table>
+  <tr><th>Bloco</th><th>Responsabilidade única</th></tr>
+  <tr><td class="rowh">imperative</td><td>Algoritmos puramente matemáticos e buffers de baixo nível (sem IO).</td></tr>
+  <tr><td class="rowh">using</td><td>Grafos dinâmicos sob um único Token de mutação numa arena.</td></tr>
+  <tr><td class="rowh">bound</td><td><em>Nursery</em> de concorrência estruturada: os canais nascem confinados ao nursery e só se ligam em topologias acíclicas, o que exclui a espera cíclica — deadlock-freedom por construção.</td></tr>
+ </table>
+ <div class="box intent">
+  <p><strong>Um conceito, quatro superfícies.</strong> Os quatro blocos (<code class="i">imperative</code>, <code class="i">using</code>, <code class="i">bound</code>, <code class="i">susp</code>) desugaram para uma única construção subjacente: um escopo que concede uma <strong>capacidade linear</strong> — buffer mutável, Token de mutação, nursery, suspensão — com o parâmetro fantasma <code class="i">s</code> a impedir que a capacidade escape. O typechecker tem uma regra com quatro instâncias, e o conceito ensina-se uma vez; as palavras-chave distintas mantêm-se à superfície porque dizem ao leitor a responsabilidade do bloco sem olhar para os tipos (tabela acima). Desugaring na Listagem 9.2.</p>
+ </div>
+ <div class="listing"><div class="hd">Listagem 9.2 — Desugaring normativo dos quatro blocos para scope[C]</div><pre>
+<span class="c">-- Todos os blocos com escopo reduzem à MESMA construção do Axión Core:</span>
+<span class="c">--   scope[C] s. e   — concede a capacidade linear C; o fantasma 's' impede o escape.</span>
+
+imperative  $ <span class="k">do</span> …   ==&gt;  scope[<span class="t">MutBuffer</span> s] s. …   <span class="c">-- mutação local (§4)</span>
+using tok   $ <span class="k">do</span> …   ==&gt;  scope[<span class="t">Token</span> s]     s. …   <span class="c">-- encadeia o token (§3D)</span>
+bound arena $ <span class="k">do</span> …   ==&gt;  scope[<span class="t">Nursery</span> s]   s. …   <span class="c">-- arena + scheduler (§11)</span>
+susp        $ <span class="k">do</span> …   ==&gt;  scope[<span class="t">Suspend</span> s]   s. …   <span class="c">-- constrói um Susp (§3A)</span>
+
+<span class="c">-- Uma regra de tipagem, quatro instâncias: o typechecker verifica 'scope'</span>
+<span class="c">-- uma vez; cada palavra-chave só escolhe a capacidade e o seu açúcar.</span>
+</pre></div>
+ <div class="listing"><div class="hd">Listagem 9.3 — String em A &amp; B e validador acoplado confinado</div><pre>
+<span class="c">-- Additive conjunction (&amp;): the same physical space holds two logical potentials.</span>
+<span class="k">data</span> <span class="t">Term</span> s      = <span class="t">Term</span> (<span class="t">String</span> &amp; <span class="t">String</span>) <span class="c">-- Original &amp; Modified</span>
+<span class="k">data</span> <span class="t">Validator</span> s = <span class="t">Validator</span> (<span class="t">Ptr HardwareScreen</span>)
+
+processTerm :: <span class="t">Arena</span> <span class="m">%1</span> -&gt; <span class="t">IO</span> ()
+processTerm arena = bound arena $ <span class="k">do</span>
+    <span class="c">-- Coupled pair (~): dual session endpoints, linked lifetimes.</span>
+    (term ~? validator) &lt;- makeCoupledPair arena <span class="s">"run"</span> <span class="s">"running"</span>
+
+    <span class="c">-- Persistent Projection (&amp;?): peeks WITHOUT collapsing the choice.</span>
+    <span class="k">let</span> baseText = term &amp;? <span class="t">Original</span>
+
+    <span class="c">-- 'case' collapses destructively; the opposite branch is pruned from the flow.</span>
+    <span class="k">case</span> term <span class="k">of</span>
+        <span class="t">Modified</span> <span class="s">"running"</span> -&gt; checkImpact validator
+
+<span class="c">-- 'validator' is the endpoint coupled with 'term' (the Validator side).</span>
+checkImpact :: (<span class="t">Validator</span> s <span class="m">%1</span> <span class="t">Maybe~</span> <span class="t">Term</span> s <span class="m">%1</span>) -&gt; <span class="t">IO</span> ()
+checkImpact validator =
+    <span class="k">case</span> observe validator <span class="k">of</span>
+        <span class="t">Live</span> v -&gt; renderText v <span class="s">"Term in base state."</span>
+        <span class="t">Closed</span> vOld      -&gt; adjustLayout vOld <span class="s">"running"</span> <span class="c">-- peer closed (cancel received)</span>
+        <span class="t">Pending</span> v       -&gt; deferRender v               <span class="c">-- message not arrived yet (poll)</span>
+</pre></div>
+ <div class="sub">D. <small><code class="i">~</code></small> e <small><code class="i">Maybe~</code></small> como Canais Lineares (a semântica do «acoplamento»)</div>
+ <p>O «acoplamento» entre <em>threads</em> não é um efeito físico nem instantâneo: é <strong>açúcar sintático</strong> que o compilador reduz, por <em>desugaring</em> normativo, aos <strong>endpoints lineares</strong> da §06. É essa redução que torna o efeito «não-local» <em>mediado por um canal linear</em> — e, por isso, seguro.</p>
+ <table>
+  <tr><th>Superfície (açúcar)</th><th>Semântica operacional (§06)</th></tr>
+  <tr><td class="rowh">A ~ B</td><td>Par de endpoints duais: <code class="i">(Ep %1 S) ⊗ (Ep %1 (dual S))</code>.</td></tr>
+  <tr><td class="rowh">A Maybe~ B</td><td>Canal com escolha de três rótulos, um por Trit: <code class="i">Ep %1 (Offer…)</code>.</td></tr>
+  <tr><td class="rowh">makeCoupledPair</td><td><code class="i">newChannel</code> — cria e devolve os dois endpoints duais.</td></tr>
+  <tr><td class="rowh">case … (colapso)</td><td><code class="i">send</code> no endpoint local (enfileira a mensagem).</td></tr>
+  <tr><td class="rowh">observe</td><td><code class="i">recv</code> / <code class="i">branch</code> não-bloqueante — devolve o Trit.</td></tr>
+  <tr><td class="rowh">&amp;?</td><td><em>Borrow</em> apenas-leitura local (§02) — não usa canal.</td></tr>
+ </table>
+ <div class="listing"><div class="hd">Listagem 9.4 — Desugaring normativo de ~ / Maybe~ para endpoints lineares</div><pre>
+<span class="c">-- '~' links the lifetimes through a pair of dual endpoints.</span>
+<span class="t">A</span> ~ <span class="t">B</span>        ==&gt; (<span class="t">Ep</span> <span class="m">%1</span> S) ⊗ (<span class="t">Ep</span> <span class="m">%1</span> (dual S))
+
+<span class="c">-- 'Maybe~' is a channel whose branch has exactly the 3 Trit labels (ternary engine).</span>
+<span class="t">A</span> <span class="t">Maybe~</span> <span class="t">B</span>   ==&gt; <span class="t">Ep</span> <span class="m">%1</span> (<span class="t">Offer</span> { <span class="t">Live</span> : S1   <span class="c">-- +1 TPlus</span>
+                              , <span class="t">Closed</span>      : S2   <span class="c">-- -1 TMinus</span>
+                              , <span class="t">Pending</span>        : S3 }) <span class="c">-- 0 TZero (not arrived)</span>
+</pre></div>
+ <div class="box solid">
+  <p><strong>Garantia (teorema):</strong> «zero data races» é corolário da <strong>Fidelidade de Sessão</strong> — cada endpoint pertence a exatamente uma thread (linearidade <code class="i">%1</code>), logo nunca existem dois acessos concorrentes ao mesmo endereço. O «impacto não-local» não é instantâneo: é uma mensagem entregue quando o par executa <code class="i">observe</code> — causal e ordenada pelo canal.</p>
+ </div>
+ <div class="box warm">
+  <p><strong>Deadlocks:</strong> a Fidelidade de Sessão garante ausência de data races; a ausência de deadlocks vem do bloco <code class="i">bound</code>, que é um <em>nursery</em> de concorrência estruturada: os canais nascem por spawn dentro do nursery e os combinadores da §8 só os ligam em configurações que preservam a aciclicidade — o invariante é a <strong>topologia de comunicação acíclica</strong> (uma floresta): as cadeias do <code class="i">pipeline</code> entre irmãos são caminhos, logo acíclicas, e a espera cíclica torna-se impossível de exprimir. Deadlock-freedom é um corolário da tipagem, não uma análise à parte. (Isto é ortogonal aos dados cíclicos da §3D: o grafo de <em>dados</em> na heap pode ter ciclos; o grafo de <em>comunicação</em> entre threads não.)</p>
+ </div>
+ <h3 class="mini">Metateoria e verificação (custo zero)</h3>
+ <p>As garantias acima (preservação, progresso, fidelidade de sessão e deadlock-freedom) são fundadas em lógica linear (<em>Propositions as Sessions</em>): a deadlock-freedom e o progresso são corolários da eliminação de cortes — a <em>proof net</em> acíclica é exatamente a árvore que o <code class="i">bound</code> impõe. A prova estabelece-se por uma escada estática: testes por propriedades, model-checking dos protocolos (CFSMs), metateoria mecanizada (Iris/Actris) e, por fim, um verificador de referência extraído, provado fiel à semântica.</p>
+ <p><strong>Sem monitores em runtime:</strong> a rede de segurança contra um erro de metateoria não vigia o programa em execução — vigia o compilador. É, por isso, um <strong>verificador de referência em tempo de compilação</strong> (<em>translation validation</em>) que faz cross-check das decisões do typechecker de produção. Custo de runtime: <strong>zero</strong> — a latência zero mantém-se de ponta a ponta. Um check dinâmico só pode surgir, opcional e apagável em <code class="i">--release</code>, na fronteira <code class="i">foreign</code> / <code class="i">trusted</code>, onde já se aceita confiança.</p>
+</div>
+<!-- ============ 10 ============ -->
+<div class="section">
+ <div class="sechead" id="sec10"><span class="secnum">10</span><h1>O Tipo <code class="i" style="font-size:0.8em">Trit</code> e a Compactação Ternária (Opcional)</h1></div>
+ <hr class="secrule">
+ <p>O <code class="i">Trit</code> é um <strong>enum de três estados</strong> — <code class="i">-1</code> (TMinus), <code class="i">0</code> (TZero), <code class="i">+1</code> (TPlus) — que dá corpo aos desfechos de <code class="i">observe</code> (§9) e ao terceiro valor da <strong>Lógica de Kleene</strong> no typechecker (o <code class="i">0</code> como «desconhecido/pendente»). <strong>Não é um «motor» nem uma inovação de hardware</strong>: é um tipo ordinário, o caso <em>N=3</em> do mecanismo geral de <em>sum types</em> — à imagem do <code class="i">Ordering</code> (Less/Equal/Greater) do Rust. Conserva o nome próprio porque tem operações próprias (negação por troca de sinal, os conectivos de Kleene). Duas propriedades merecem detalhe: a <strong>seleção <em>branchless</em></strong> — que é partilhada por <em>todos</em> os enums pequenos, não é específica do ternário — e a <strong>compactação de alta densidade</strong>, uma otimização <strong>opcional de biblioteca</strong>, não uma camada do núcleo.</p>
+ <div class="sub">A. Representação e Execução <em>Branchless</em></div>
+ <p>Em hardware clássico, um <code class="i">Trit</code> ocupa 2 bits de um registo (como qualquer enum de 3–4 variantes). Um <code class="i">case</code> sobre o Trit compila sem saltos <strong>quando os ramos selecionam valores</strong> (cmov/máscaras); ramos que executam código distinto continuam a ser saltos reais — o ganho <em>branchless</em> aplica-se à seleção de dados, não ao fluxo de controlo arbitrário. <strong>Nota importante:</strong> esta seleção sem saltos <strong>não é propriedade do ternário</strong> — é do backend de enums pequenos (é mais forte para <em>N</em>=2–4, acima disso vira <em>jump table</em>). O <code class="i">observe</code> devolve um Trit e beneficia dela como qualquer outro enum; o ternário não acrescenta nada aqui além da simetria −1/0/+1 conveniente para Kleene.</p>
+ <div class="fig">
+  <div>
+   <span class="circ"><b style="color:#dc2626">-1</b><span>TMinus</span><small>bits 11</small></span>
+   <span class="circ"><b style="color:#6b7280">0</b><span>TZero</span><small>bits 00</small></span>
+   <span class="circ"><b style="color:#16a34a">+1</b><span>TPlus</span><small>bits 01</small></span>
+  </div>
+  <div>
+   <span class="circlab">Closed</span>
+   <span class="circlab">Pending</span>
+   <span class="circlab">Live</span>
+  </div>
+  <div class="fignote">3 estados simetricos -&gt; 'observe' vira aritmetica de mascaras (selecao de valores sem saltos).</div>
+ </div>
+ <div class="cap">Fig. 10.1 — Os três trits balanceados e a sua codificação em 2 bits.</div>
+ <div class="listing"><div class="hd">Listagem 10.1 — observe devolve um Trit; seleção de valores por máscaras</div><pre>
+<span class="c">-- 'observe' returns a Trit; a value-selecting 'case' compiles to mask arithmetic.</span>
+checkLink :: <span class="t">Endpoint</span> s <span class="m">%1</span> -&gt; <span class="t">Trit</span>
+checkLink ep = observe ep
+<span class="c">-- TPlus  (+1 / bits 01) -&gt; Live : link intact</span>
+<span class="c">-- TMinus (-1 / bits 11) -&gt; Closed      : remote resource destroyed</span>
+<span class="c">-- TZero  ( 0 / bits 00) -&gt; Pending        : asynchronous indeterminacy</span>
+</pre></div>
+ <div class="sub">B. Trit-Packing de Alta Densidade (Compressão Base-243) <small>— biblioteca opcional <code class="i">TritVec</code></small></div>
+ <p>Esta é a <strong>única</strong> parte genuinamente específica do ternário — e vive numa <strong>biblioteca opcional (<code class="i">TritVec</code>)</strong>, não no núcleo da linguagem. Alocar 2 bits para 3 estados desperdiça 25%; agrupar <strong>cinco trits num único byte</strong> (<code class="i">3^5 = 243 ≤ 256</code>) eleva a ocupação a <strong>95%</strong> (densidade informacional 99,1% vs 79,2% no formato solto de 2 bits). <strong>O <em>trade-off</em>, honesto:</strong> o packing a 2 bits/trit (75%) é trivial — só <em>shifts</em>, sem conversão de radix; o base-243 (99%) exige conversão de radix no <em>unpack</em>, logo <strong>só compensa quando se está genuinamente limitado por largura de banda de memória</strong>. O caso de uso onde paga de facto é concreto e atual: <strong>arrays massivos de 3 estados — em particular ML quantizado ternário</strong> (redes de pesos {−1, 0, +1}, ~1,58 bits/peso), onde 5× menos <em>cache misses</em> engolem o custo do <em>unpack</em>. Fora daí, a densidade não justifica a complexidade — daí ser biblioteca, e não obrigatória.</p>
+ <div class="fig">
+  <div style="font-size:8pt;color:#3b3355;margin-bottom:10px">Trit-Packing Base-243: 5 trits -&gt; 1 byte (3^5 = 243 &lt;= 256)</div>
+  <div class="dashwrap">
+   <span class="tritbox"><b>T0</b><small>3^0</small></span>
+   <span class="tritbox"><b>T1</b><small>3^1</small></span>
+   <span class="tritbox"><b>T2</b><small>3^2</small></span>
+   <span class="tritbox"><b>T3</b><small>3^3</small></span>
+   <span class="tritbox"><b>T4</b><small>3^4</small></span>
+  </div>
+  <div style="font-size:7.6pt;color:#6d28d9;margin-top:10px">1 Byte compactado — ocupação 95% (vs 75% no formato 2 bits solto)</div>
+  <div class="fignote">Na RAM: guardado compactado. Nos registos (RAX/SIMD): unboxing transparente para 2 bits branchless<br>via LUT de 256 entradas + PDEP (x86_64) ou tabela + aritmética (ARM).</div>
+ </div>
+ <div class="cap">Fig. 10.2 — Cinco trits posicionais compactados num byte, expandidos sob demanda.</div>
+ <div class="sub">C. Fusão de Instruções e Análise de Polaridade</div>
+ <p><strong>Aceleração por silício (na biblioteca):</strong> o desempacotamento base-243 é uma <strong>conversão de radix</strong> (div/mod por potências de 3) — não uma extração de bits — e o codec ideal depende do alvo: LUT de 256 entradas → 10 bits, com <code class="i">PDEP (BMI2)</code> a espalhar os pares de bits em x86_64, ou <em>table lookups</em> SIMD (<code class="i">PSHUFB</code> / <code class="i">TBL</code>) para desempacotar vetores largos de uma vez. Nota de microarquitetura: PEXT/PDEP são rápidos em Intel e AMD Zen 3+, mas <strong>microcodificados (lentos) em Zen 1/2</strong> — daí a biblioteca não depender deles: seleciona por alvo um codec uniformemente rápido (LUT/SIMD).</p>
+ <p><strong>Análise de Polaridade Estática:</strong> o <code class="i">Trit</code> enquanto tipo está sempre disponível (é um enum); o que a Polaridade decide é apenas <strong>onde vale a pena usar o formato compactado</strong>. Se um valor é puramente linear e determinado estaticamente, nunca se paga <em>packing</em> — trabalha-se com o enum solto, Assembly clássico. A compactação é a exceção medida, não a regra.</p>
+</div>
+
+<!-- ============ 11 ============ -->
+<div class="section">
+ <div class="sechead" id="sec11"><span class="secnum">11</span><h1>Pipeline de Compilação Consolidado (Axión Core)</h1></div>
+ <hr class="secrule">
+ <p>O pipeline é uma cadeia própria, de raiz, em <strong>cinco estágios</strong> — a arquitetura conceptual (Core intermédio, passes de otimização, backend nativo) segue a escola do GHC, mas nenhum estágio reutiliza o seu código ou runtime. O <strong>Parser</strong> expande os blocos com escopo (<code class="i">using</code> / <code class="i">bound</code> / <code class="i">imperative</code> / <code class="i">susp</code>) e a sintaxe de Trits. O <strong>Typechecker</strong> (paralelo) corre a linearidade, a Análise de Polaridade e a Lógica de Kleene. A baixada para o <strong>Axión Core</strong> — um IR estrito e linear, sem <em>thunks</em> — injeta o Auto-Drop, os ganchos <code class="i">@cleanup</code> e os resets de arena. O <strong>Otimizador</strong> aplica Stream Fusion e defuncionalização (a compactação Base-243 é um passe <em>opcional</em>, só quando se usa <code class="i">TritVec</code>, §10). O <strong>Backend nativo</strong> emite Assembly com seleção branchless de enums pequenos (BMI2/ARM): fast-path interpretado/Cranelift em <code class="i">--dev</code>, LLVM em <code class="i">--release</code>. As garantias vivem no Typechecker; os estágios seguintes só as materializam.</p>
+ <div class="fig">
+  <div class="stackfig">
+   <div class="stagebox"><b>Parser Axión</b><small>expande using / bound / susp e a sintaxe de Trits &nbsp;·&nbsp; .axi</small></div>
+   <div class="varrow">↓</div>
+   <div class="stagebox"><b>Typechecker (paralelo)</b><small>linearidade, Analise de Polaridade, Logica de Kleene</small></div>
+   <div class="varrow">↓</div>
+   <div class="stagebox"><b>Axión Core (IR linear estrito)</b><small>injeta Auto-Drop, ganchos @cleanup e Resets de Arena</small></div>
+   <div class="varrow">↓</div>
+   <div class="stagebox"><b>Otimizador</b><small>Stream Fusion, Defuncionalizacao, Compressao Base-243</small></div>
+   <div class="varrow">↓</div>
+   <div class="stagebox dark"><b>Backend nativo</b><small>dev: fast-path interpretado/Cranelift · release: LLVM · Assembly branchless BMI2/ARM · binario</small></div>
+  </div>
+ </div>
+ <div class="cap">Fig. 11.1 — Do código-fonte ao binário branchless, em cinco estágios — num compilador próprio.</div>
+ <div class="sub">Runtime da Axión (execução e concorrência)</div>
+ <p>Sem o GC não há stacks móveis nem green threads herdadas — o runtime é definido por cinco decisões:</p>
+ <ol class="nlist">
+  <li><strong>Scheduler M:N com work-stealing:</strong> N threads do SO (uma por núcleo), com io_uring/epoll integrado para IO assíncrono.</li>
+  <li><strong>Tarefas = continuações defuncionalizadas</strong> (a mesma maquinaria do <code class="i">Susp</code>, §3), alocadas na arena do nursery: <strong>uma nursery é uma arena com scheduler</strong>. Spawn é bump-pointer; o fim do <code class="i">bound</code> liberta tudo num reset. Os pontos de suspensão são exatamente as operações de canal — visíveis nos tipos (<code class="i">Bound s</code>, endpoints <code class="i">%1</code>) — pelo que não há <code class="i">async/await</code> na superfície nem <em>function coloring</em>; <code class="i">imperative</code> nunca suspende (§9.C), logo computação pesada corre direta no worker.</li>
+  <li><strong>Stacks:</strong> recursão entre pontos de suspensão usa a stack do worker (com guard pages); recursão através de suspensões aloca os frames CPS na arena do nursery — sem stacks segmentadas nem cópia de stacks.</li>
+  <li><strong>Pânico e cancelamento:</strong> matar uma tarefa = sinal de cancelamento aos endpoints filhos (o ramo implícito do protocolo, §7) + reset da sua fatia de arena — O(1) na memória, O(filhos) nas mensagens.</li>
+  <li><strong>FFI bloqueante</strong> corre num pool dedicado de threads do SO; callbacks C que re-entram na Axión usam a stack de quem chama — fronteira documentada junto do <code class="i">trusted</code>.</li>
+ </ol>
+ <div class="box note">
+  <p><strong>Notas de honestidade:</strong> <code class="i">parMap</code> cria <code class="i">min(n, núcleos×k)</code> tarefas com <em>chunking</em> — não literalmente uma por elemento. E um dividendo do desenho: com escalonamento determinístico opcional (<code class="i">--deterministic</code>), gravar a ordem dos <code class="i">observe</code> chega para <em>record/replay</em> exato de execuções concorrentes.</p>
+ </div>
+</div>
+
+<!-- ============ 12 ============ -->
+<div class="section">
+ <div class="sechead" id="sec12"><span class="secnum">12</span><h1>Especificação Gramatical (EBNF)</h1></div>
+ <hr class="secrule">
+ <div class="listing"><div class="hd">Gramática EBNF (normalizada)</div><pre>
+<span class="c">(* Axion Language Grammar Specification - Version 0.2 *)</span>
+
+<span class="c">(* Core Type System and Constraints *)</span>
+AxionType            ::= PrimitiveType | CompositeType | LinearType | FractionalType
+                       | AdditiveType | CoupledType | ConditionalCoupled
+                       | TernaryPrimitive ;
+LinearType           ::= AxionType <span class="s">"%1"</span> ;
+FractionalType       ::= AxionType <span class="s">"%0.5"</span> ;      <span class="c">(* shared-read permission *)</span>
+AdditiveType         ::= AxionType <span class="s">"&amp;"</span> AxionType ;  <span class="c">(* additive conjunction: choose one *)</span>
+CoupledType        ::= AxionType <span class="s">"~"</span> AxionType ;
+ConditionalCoupled ::= AxionType <span class="s">"Maybe~"</span> AxionType ;
+TernaryPrimitive     ::= <span class="s">"Trit"</span> ;
+
+<span class="c">(* Block Structures and Contextual Scopes *)</span>
+AxionExpression      ::= ScopedBlock | ObserveExpression | ForceExpr
+                       | SuperposeExpr | PersistProjection
+                       | TrustBlock | AssumeExpr | StandardExpression ;
+ScopedBlock          ::= ScopeHead BlockArg ;
+ScopeHead            ::= <span class="s">"using"</span> Identifier | <span class="s">"bound"</span> Identifier
+                       | <span class="s">"imperative"</span> | <span class="s">"susp"</span> ;
+BlockArg             ::= <span class="s">"$"</span>? DoBlock ;          <span class="c">(* BlockArguments: '$' optional *)</span>
+DoBlock              ::= <span class="s">"do"</span> Statement { Statement } ;
+ObserveExpression    ::= <span class="s">"observe"</span> Expression ;
+PersistProjection    ::= Expression <span class="s">"&amp;?"</span> Identifier ;
+
+<span class="c">(* Prefix Forms and Introduction *)</span>
+ForceExpr            ::= <span class="s">"force"</span> Expression ;               <span class="c">(* forces a Susp *)</span>
+SuperposeExpr        ::= <span class="s">"superpose"</span> Expression Expression ; <span class="c">(* builds A &amp; B *)</span>
+
+<span class="c">(* Patterns and Binding *)</span>
+Pattern              ::= Identifier | CoupledPattern | WildcardPattern ;
+CoupledPattern     ::= <span class="s">"("</span> Pattern <span class="s">"~?"</span> Pattern <span class="s">")"</span> ;    <span class="c">(* dual coupled pair *)</span>
+BindStatement        ::= Pattern <span class="s">"&lt;-"</span> Expression ;
+
+<span class="c">(* Foreign Function Interface and Lifecycles *)</span>
+FFIDeclaration       ::= <span class="s">"foreign"</span> <span class="s">"import"</span> <span class="s">"ccall"</span> StringLiteral
+                         IsolationAttribute? CleanupAttribute? Identifier <span class="s">"::"</span> AxionType ;
+CleanupAttribute     ::= <span class="s">"@cleanup"</span> ;    <span class="c">(* binds to the next declaration *)</span>
+IsolationAttribute   ::= <span class="s">"@trusted"</span>                       <span class="c">(* default se omitido: audita, não isola *)</span>
+                       | <span class="s">"@isolate"</span> <span class="s">"("</span> IsoTarget <span class="s">")"</span>       <span class="c">(* páginas protegidas por hardware *)</span>
+                       | <span class="s">"@sandbox"</span> <span class="s">"("</span> IsoTarget <span class="s">")"</span> ;     <span class="c">(* SFI in-process *)</span>
+IsoTarget            ::= <span class="s">"mpk"</span> | <span class="s">"wasm"</span> ;
+
+<span class="c">(* Operators *)</span>
+PipeOperator         ::= <span class="s">"|&gt;"</span> ;
+
+<span class="c">(* Trust boundary — there is NO 'unsafe'; raw access is a visible effect *)</span>
+TrustBlock           ::= <span class="s">"trusted"</span> BlockArg ;                    <span class="c">(* audited TCB region *)</span>
+AssumeExpr           ::= <span class="s">"assume"</span> Expression StringLiteral <span class="s">"$"</span> Expression ;
+                                                     <span class="c">(* discharge one fact + mandatory justification *)</span>
+RawEffect            ::= <span class="s">"Raw"</span> | <span class="s">"Foreign"</span> ;                  <span class="c">(* capability effect in a return type *)</span>
+
+<span class="c">(* Capability-ceiling pragma (level firewall, §8) — top of module *)</span>
+LevelPragma          ::= <span class="s">"{-#"</span> <span class="s">"LEVEL"</span> ( <span class="s">"L0"</span> | <span class="s">"L1"</span> | <span class="s">"L2"</span> | <span class="s">"L3"</span> ) <span class="s">"#-}"</span> ;
+</pre></div>
+ <div class="box solid">
+  <p><strong>Cobertura da gramática:</strong> os blocos com escopo (<code class="i">using</code>, <code class="i">bound</code>, <code class="i">imperative</code>, <code class="i">susp</code>) são aplicação sobre um <code class="i">do</code>-block (<code class="i">$ do</code>, com <code class="i">$</code> opcional via <em>BlockArguments</em>). <code class="i">force</code> e <code class="i">superpose</code> têm produções próprias, e <code class="i">~?</code> é um <em>padrão</em> de desestruturação do par dual (não uma expressão). As primitivas de arena (<code class="i">promote</code>, <code class="i">arena_mark</code>, <code class="i">arena_release</code>, <code class="i">split</code> / <code class="i">join</code>) são funções normais, sem sintaxe dedicada. <code class="i">trusted</code> é um bloco e <code class="i">assume</code> uma expressão prefixa (fronteira de confiança, §5); <code class="i">Raw</code> / <code class="i">Foreign</code> são efeitos que aparecem no tipo de retorno.</p>
+ </div>
+ <div class="box note">
+  <p><strong>Base e layout (normativo).</strong> A EBNF acima especifica apenas as <em>deltas</em> da Axión. Tudo o resto — declarações <code class="i">data</code>, <code class="i">let</code> / <code class="i">where</code>, <code class="i">case … of</code>, assinaturas de tipo, módulos e <code class="i">import</code> — segue <strong>Haskell 2010</strong>, incluindo a <strong>regra de layout</strong> (indentação significativa). O <code class="i">{-# LEVEL #-}</code> é um pragma de topo de módulo (<code class="i">LevelPragma</code>).</p>
+  <p><strong>Desambiguação de <code class="i">case</code>.</strong> A mesma sintaxe <code class="i">case e of …</code> tem três semânticas, escolhidas pelo <strong>tipo de <code class="i">e</code></strong>, sem ambiguidade sintática: um ADT normal → <em>pattern match</em>; um <code class="i">A &amp; B</code> → colapso da escolha aditiva (§9.B); um <code class="i">Trit</code> → ramo ternário (§10). O typechecker resolve pela tipagem do escrutinado.</p>
+  <p><strong>Frações (V0.2).</strong> As multiplicidades fracionárias limitam-se a <strong>metades</strong>: <code class="i">split</code> divide <code class="i">%1</code> em dois <code class="i">%0.5</code> e <code class="i">join</code> recombina-os. A subdivisão adicional (<code class="i">%0.25</code>, frações de Boyland gerais) fica <em>fora</em> do âmbito da V0.2 — um <code class="i">%0.5</code> é leitura partilhada indivisível.</p>
+ </div>
+ <div class="sub">Núcleo herdado de Haskell 2010 (em vigor, não repetido acima)</div>
+ <p>Para um implementador, o subconjunto de Haskell 2010 que a Axión adota <strong>sem alterações sintáticas</strong> — só a semântica muda (estrita, sem GC):</p>
+ <ul>
+  <li><strong>Declarações:</strong> <code class="i">data</code> / <code class="i">newtype</code> / <code class="i">type</code>, classes e instâncias, assinaturas <code class="i">::</code>, definições de função com <em>guards</em> e <code class="i">where</code>.</li>
+  <li><strong>Expressões:</strong> <code class="i">let</code>/<code class="i">in</code>, <code class="i">case … of</code>, <code class="i">if/then/else</code>, lambdas <code class="i">\x -&gt;</code>, aplicação e secções de operador, <code class="i">do</code>-notation.</li>
+  <li><strong>Padrões:</strong> construtores, literais, <em>wildcards</em> <code class="i">_</code>, <em>as-patterns</em> <code class="i">@</code> — mais o <code class="i">~?</code> da Axión (acima).</li>
+  <li><strong>Módulos:</strong> <code class="i">module … where</code>, <code class="i">import</code> (qualificado/oculto), listas de exportação.</li>
+  <li><strong>Léxico e layout:</strong> literais numéricos/string/char, comentários <code class="i">--</code> / <code class="i">{- -}</code>, e a <strong>regra de layout</strong> por indentação.</li>
+ </ul>
+ <p><strong>Diferenças semânticas (não sintáticas):</strong> avaliação <strong>estrita</strong> por omissão (preguiça só via <code class="i">Susp</code>, §3A); sem GC; a linearidade e as regiões são inferidas e verificadas por cima desta sintaxe. Assim, quem lê Haskell lê Axión — o que muda está por baixo.</p>
+ <div class="sub">Notação de Referência</div>
+ <p>Os símbolos densos da Axión derivam todos de uma disciplina substrutural única. Cada um tem um <em>alias</em> por palavra, para principiantes lerem palavras e peritos usarem símbolos.</p>
+ <table>
+  <tr><th>Símbolo</th><th>Alias</th><th>Significado</th></tr>
+  <tr><td class="rowh">%1</td><td class="rowh">linear</td><td>Posse plena; consumido exatamente uma vez — pelo programador ou pelo <code class="i">Drop</code> (§2).</td></tr>
+  <tr><td class="rowh">%0.5</td><td class="rowh">shared</td><td>Permissão fracionária; leitura partilhada (<code class="i">split</code> / <code class="i">join</code>).</td></tr>
+  <tr><td class="rowh">&amp;</td><td class="rowh">with</td><td>Conjunção aditiva: dois potenciais, escolher um.</td></tr>
+  <tr><td class="rowh">&amp;?</td><td class="rowh">peek</td><td>Projeção persistente: espreita sem colapsar (<em>borrow</em>).</td></tr>
+  <tr><td class="rowh">~</td><td class="rowh">coupled</td><td>Par de <em>endpoints</em> lineares duais (açúcar de canal).</td></tr>
+  <tr><td class="rowh">Maybe~</td><td class="rowh">maybeCoupled</td><td>Canal com <em>branch</em> tri-estado (um por Trit).</td></tr>
+  <tr><td class="rowh">~?</td><td class="rowh">—</td><td>Padrão que desestrutura o par acoplado.</td></tr>
+  <tr><td class="rowh">|&gt;</td><td class="rowh">pipe</td><td>Operador Telescópio: encadeia transformações lineares.</td></tr>
+  <tr><td class="rowh">⊗</td><td class="rowh">—</td><td>Tensor (lógica linear): dois recursos independentes.</td></tr>
+  <tr><td class="rowh">Trit</td><td class="rowh">—</td><td>Ternário balanceado: −1 / 0 / +1 (TMinus/TZero/TPlus).</td></tr>
+  <tr><td class="rowh">@cleanup</td><td class="rowh">—</td><td>Gancho de limpeza automática de um <code class="i">LinearPtr</code> (FFI).</td></tr>
+  <tr><td class="rowh">@isolate / @sandbox</td><td class="rowh">—</td><td>Isolamento opt-in do <code class="i">foreign</code>: <code class="i">mpk</code> (páginas) / <code class="i">wasm</code> (SFI), §5.</td></tr>
+  <tr><td class="rowh">trusted</td><td class="rowh">assume</td><td>Fronteira de confiança auditada (TCB); não há <code class="i">unsafe</code>.</td></tr>
+ </table>
+</div>
+
+<!-- ============ 13 ============ -->
+<div class="section">
+ <div class="sechead" id="sec13"><span class="secnum">13</span><h1>Grandes Quadros Comparativos de Engenharia</h1></div>
+ <hr class="secrule">
+ <p class="lead">Posicionamento honesto face aos concorrentes diretos — incluindo o <strong>OCaml com <em>modes</em></strong>, o mais próximo da tese da Axión (§16). Legenda: 🏆 liderança (garantido hoje) · 🟢 bom · 🟡 médio · 🔴 fraco · — n/a · <strong>+🎯</strong> = a marca à esquerda é a <strong>posição teórica de desenho</strong>, ainda por provar/medir.</p>
+ <div class="sub">A. Segurança (Safety)</div>
+ <table class="cmp">
+  <tr><th></th><th>Linguagem C</th><th>Rust</th><th>Haskell Original</th><th>OCaml (modes)</th><th>Axión V0.2</th></tr>
+  <tr><td class="rowhs">Uso-Após-Livre / Double-Free</td><td>🔴 Unsafe</td><td>🏆 Zero</td><td>🏆 Zero</td><td>🏆 Zero<small>GC</small></td><td class="ax">🏆 Zero<small>Via Auto-Drop</small></td></tr>
+  <tr><td class="rowhs">Recurso esquecido (handle, socket, endpoint)</td><td>🔴 Nenhuma</td><td>🟡 Lint<small>#[must_use] é só aviso</small></td><td>🔴 Nenhuma</td><td>🟡 Parcial<small>modes: uniqueness; must-use fraco</small></td><td class="ax">🏆 Erro de compilação<small>Sem Drop ⇒ must-use (§2, AX0002)</small></td></tr>
+  <tr><td class="rowhs">Proteção contra Data Races</td><td>🔴 Nenhuma</td><td>🏆 Absoluta</td><td>🟡 Parcial<small>Puro sim; IORef/MVar sem sincronização</small></td><td>🟡 Parcial<small>multicore 5; sem session types</small></td><td class="ax">🏆 Absoluta<small>Canais Lineares</small></td></tr>
+  <tr><td class="rowhs">Proteção contra Deadlocks</td><td>🔴 Nenhuma</td><td>🔴 Nenhuma<small>Não previne</small></td><td>🟡 Parcial<small>Deteta em runtime</small></td><td>🔴 Nenhuma</td><td class="ax">🏆🎯 Por construção<small>bound (§9); metateoria a mecanizar</small></td></tr>
+  <tr><td class="rowhs">Exposição a blocos unsafe</td><td>🔴 Constante</td><td>🟡 Média</td><td>🟢 Mínima<small>Só no FFI</small></td><td>🟢 Mínima<small>Obj.magic / FFI</small></td><td class="ax">🟢 Mínima<small>Sem unsafe; trusted/foreign isolado</small></td></tr>
+  <tr><td class="rowhs">Fugas de RAM / Space Leaks</td><td>🔴 Alta</td><td>🟢 Mínima</td><td>🔴 Crítica<small>Thunks</small></td><td>🟢 Mínima<small>estrito + GC</small></td><td class="ax">🏆 Zero<small>Strict + NLL Arenas</small></td></tr>
+  <tr><td class="rowhs">Fugas de RAM em Pânicos</td><td>🔴 Alta</td><td>🟢 Mínima</td><td>🟢 Mínima</td><td>🟢 Mínima<small>GC; Fun.protect</small></td><td class="ax">🏆 Zero<small>Linear Unwinding</small></td></tr>
+ </table>
+ <div class="sub">B. Performance (Velocidade Bruta e RAM)</div>
+ <table class="cmp">
+  <tr><th></th><th>Linguagem C</th><th>Rust</th><th>Haskell Original</th><th>OCaml (modes)</th><th>Axión V0.2</th></tr>
+  <tr><td class="rowhs">Latência de Execução (Jitter)</td><td>🏆 Zero</td><td>🏆 Zero</td><td>🔴 Alta<small>Pausas GC</small></td><td>🟡 Baixo<small>GC incremental (5)</small></td><td class="ax">🏆🎯 Zero<small>Sem GC — por medir</small></td></tr>
+  <tr><td class="rowhs">Cálculo Numérico / Álgebra</td><td>🏆 Máxima</td><td>🏆 Máxima</td><td>🔴 Baixa</td><td>🟡 Boa<small>floats boxed; Flambda</small></td><td class="ax">🏆🎯 Máxima<small>SIMD imperativo — por medir</small></td></tr>
+  <tr><td class="rowhs">Alocações / Cópias Ocultas</td><td>🟢 Poucas</td><td>🟢 Poucas<small>Explícitas, como C</small></td><td>🔴 Muitas</td><td>🟡 Muitas<small>minor heap; modes reduzem</small></td><td class="ax">🏆🎯 Ótimas<small>Destructive Updates — por medir</small></td></tr>
+  <tr><td class="rowhs">Indireção em Closures</td><td>🏆 Zero</td><td>🟢 Baixa</td><td>🔴 Alta</td><td>🟡 Média<small>closures alocam</small></td><td class="ax">🏆🎯 Zero<small>Unboxing de Susp — por medir</small></td></tr>
+  <tr><td class="rowhs">Consumo de Memória RAM</td><td>🏆 Mínimo</td><td>🏆 Mínimo</td><td>🔴 Alto</td><td>🟡 Moderado<small>overhead do GC</small></td><td class="ax">🏆🎯 Mínimo<small>NLL Arenas — por medir</small></td></tr>
+ </table>
+ <div class="sub">C. Velocidade do Compilador e Feedback Loops</div>
+ <table class="cmp">
+  <tr><th></th><th>Linguagem C</th><th>Rust</th><th>Haskell Original</th><th>OCaml (modes)</th><th>Axión V0.2</th></tr>
+  <tr><td class="rowhs">Compilação Fria</td><td>🏆 O mais rápido<small>Tradução direta</small></td><td>🔴 O mais lento<small>Monomorfização pesada</small></td><td>🟢 Moderado<small>Core do GHC</small></td><td>🏆 Rápido<small>famosamente</small></td><td class="ax">🟢🎯 Rápido / Modular<small>Typechecker paralelo — por medir</small></td></tr>
+  <tr><td class="rowhs">Recompilação Incremental</td><td>🏆 Instantâneo<small>Relink de .o</small></td><td>🔴 Lento<small>Fronteiras grossas de crates</small></td><td>🟢 Rápido<small>Por módulo</small></td><td>🟢 Rápido<small>por módulo, dune</small></td><td class="ax">🏆🎯 Instantâneo<small>Salsa — por medir</small></td></tr>
+  <tr><td class="rowhs">Diagnósticos LSP</td><td>🟡 Lento<small>Reparse de headers</small></td><td>🟡 Moderado<small>Carga do rust-analyzer</small></td><td>🟢 Rápido<small>Bytecode GHCi</small></td><td>🏆 Rápido<small>merlin</small></td><td class="ax">🏆🎯 Sub-ms<small>Separabilidade — por medir</small></td></tr>
+  <tr><td class="rowhs">Custo das Otimizações</td><td>🟢 Baixo / Moderado</td><td>🔴 Extremo<small>Pipeline denso do LLVM</small></td><td>🟢 Moderado<small>Core padrão</small></td><td>🟢 Moderado<small>Flambda</small></td><td class="ax">🏆🎯 Zero em Dev<small>Fast-Path Toggle — por medir</small></td></tr>
+  <tr><td class="rowhs">Ciclo Edit-and-Run</td><td>🏆 Instantâneo<small>Compila+linca+corre</small></td><td>🔴 Doloroso<small>cargo run trava no linker</small></td><td>🟢 Rápido<small>via REPL/ghci</small></td><td>🟢 Rápido<small>utop</small></td><td class="ax">🏆🎯 Instantâneo<small>axion run --dev — por medir</small></td></tr>
+ </table>
+ <div class="sub">D. Ergonomia do Programador e Carga Cognitiva</div>
+ <table class="cmp">
+  <tr><th></th><th>Linguagem C</th><th>Rust</th><th>Haskell Original</th><th>OCaml (modes)</th><th>Axión V0.2</th></tr>
+  <tr><td class="rowhs">Verbosidade (Boilerplate)</td><td>🔴 Excessiva<small>Headers, macros</small></td><td>🟡 Alta<small>Lifetimes explícitos</small></td><td>🏆 Mínima</td><td>🟢 Baixa<small>conciso; modes anotam</small></td><td class="ax">🟢 Baixa<small>Sem manual drop</small></td></tr>
+  <tr><td class="rowhs">Rastreio Mental de Memória</td><td>🔴 Crítico<small>malloc/free manual</small></td><td>🔴 Alto<small>Luta com o borrow checker</small></td><td>🏆 Zero<small>O GC trata de tudo</small></td><td>🏆 Zero<small>GC</small></td><td class="ax">🏆 Zero<small>Auto-Drop estático</small></td></tr>
+  <tr><td class="rowhs">Fluidez do Modelo Arquitetural</td><td>🟢 Alta<small>Faz tudo, perigosamente</small></td><td>🔴 Baixa<small>Ownership rígida</small></td><td>🏆 Máxima</td><td>🟢 Alta<small>multi-paradigma</small></td><td class="ax">🟡 Moderada<small>Alterna entre modelos</small></td></tr>
+  <tr><td class="rowhs">Manipulação de Grafos Cíclicos</td><td>🏆 Trivial<small>Ponteiros brutos</small></td><td>🔴 Restritiva<small>Rc&lt;RefCell&gt;</small></td><td>🏆 Inerente</td><td>🏆 Inerente<small>GC</small></td><td class="ax">🏆 Limpa<small>using / withRegion (§8)</small></td></tr>
+  <tr><td class="rowhs">Manutenibilidade a Longo Prazo</td><td>🔴 Frágil</td><td>🏆 Excelente<small>Código sem medo</small></td><td>🟢 Alta</td><td>🟢 Alta<small>tipos fortes</small></td><td class="ax">🏆 Excelente<small>Se compila, corre no metal</small></td></tr>
+ </table>
+ <div class="sub">E. Bugs de Transbordo de Memória (Overflow)</div>
+ <table class="cmp">
+  <tr><th></th><th>Linguagem C</th><th>Rust</th><th>Haskell Original</th><th>OCaml (modes)</th><th>Axión V0.2</th></tr>
+  <tr><td class="rowhs">Stack: Thunks Pendentes</td><td><span class="na">—</span> Não existe</td><td><span class="na">—</span> Não existe</td><td>🔴 Risco Alto</td><td>🟢 Raro<small>estrito (Lazy opt-in)</small></td><td class="ax">🏆 Impossível<small>Strict por padrão</small></td></tr>
+  <tr><td class="rowhs">Heap: Space Leaks (Preguiça)</td><td><span class="na">—</span> Não existe</td><td><span class="na">—</span> Não existe</td><td>🔴 Risco Crítico</td><td>🟢 Raro<small>estrito</small></td><td class="ax">🏆 Impossível<small>Fim dos thunks livres</small></td></tr>
+  <tr><td class="rowhs">Heap: Ciclos de Referência (Rc)</td><td><span class="na">—</span> Não existe</td><td>🟡 Risco Médio</td><td>🏆 Imune<small>GC</small></td><td>🏆 Imune<small>GC</small></td><td class="ax">🏆 Seguros<small>Tokens Fantasma (§3D)</small></td></tr>
+  <tr><td class="rowhs">Heap: Retenção por Arena</td><td><span class="na">—</span> Não existe</td><td><span class="na">—</span> Não existe</td><td><span class="na">—</span> Não existe</td><td><span class="na">—</span> Não existe</td><td class="ax">🟢 Segura<small>Escape = erro de tipo (§3C)</small></td></tr>
+ </table>
+ <div class="sub">F. Curva de Aprendizagem (o «desafio» cognitivo)</div>
+ <table class="cmp">
+  <tr><th></th><th>Linguagem C</th><th>Rust</th><th>Haskell Original</th><th>OCaml (modes)</th><th>Axión V0.2</th></tr>
+  <tr><td class="rowhs">Barreira de Entrada</td><td>🟡 Moderada</td><td>🔴 «O Muro»</td><td>🟡 Moderada</td><td>🟡 Moderada<small>ML + módulos</small></td><td class="ax">🟡 «O Muro, com vias»<small>Onboarding guiado (§8)</small></td></tr>
+  <tr><td class="rowhs">Carga Cognitiva</td><td>🔴 Alta</td><td>🔴 Alta</td><td>🟡 Média</td><td>🟡 Média<small>modes adicionam</small></td><td class="ax">🟡 Alta (gerida)<small>Níveis L0–L3 + LSP (§8)</small></td></tr>
+  <tr><td class="rowhs">Natureza do Erro</td><td>💥 Runtime</td><td>🛠️ Compilação</td><td>🧩 Lógica</td><td>🛠️ Compilação</td><td class="ax">🧠 Topológica</td></tr>
+  <tr><td class="rowhs">Suporte do Compilador</td><td>⚪ Neutro</td><td>🛠️ Punitivo</td><td>🧩 Neutro</td><td>🧩 Neutro<small>merlin</small></td><td class="ax">💡 Socrático</td></tr>
+ </table>
+ <p><strong>Leitura honesta da tabela F:</strong> a Axión troca a latência e as fugas de memória por carga cognitiva na entrada. É deliberadamente uma linguagem de nicho de alto desempenho — não um substituto de propósito geral para Python ou Go.</p>
+ <div class="sub">G. Onde a Axión ainda perde (o reverso honesto)</div>
+ <p>Um quadro em que a equipa da casa vence tudo não é honesto — e desconfia-se dele. Eis os eixos onde a Axión está, hoje, atrás de todos os concorrentes maduros:</p>
+ <table class="cmp">
+  <tr><th>Aspeto</th><th>Axión</th><th>Porquê / face a quem</th></tr>
+  <tr><td class="rowhs">Ecossistema e bibliotecas</td><td class="ax">🔴 Inexistente</td><td>Sem Hackage nem crates; stdlib de raiz. C/Rust/OCaml têm décadas (§14 #03).</td></tr>
+  <tr><td class="rowhs">Tooling (debugger, profiler)</td><td class="ax">🔴 Por construir</td><td>gdb/lldb, perf, valgrind não suportam Axión; o LSP nasce só na Fase 4 (§17).</td></tr>
+  <tr><td class="rowhs">Maturidade / produção</td><td class="ax">🔴 Zero</td><td>É uma visão arquitetural, não um compilador. Rust/OCaml estão em produção há anos.</td></tr>
+  <tr><td class="rowhs">Massa crítica / comunidade</td><td class="ax">🔴 Nenhuma</td><td>Dia 1, sem utilizadores. Linguagens morrem por falta disto (§14 #02, #08).</td></tr>
+  <tr><td class="rowhs">Tamanho de binário / startup</td><td class="ax">🟡 Por medir</td><td>Runtime próprio, sem stdlib partilhada. Alvo, não medição.</td></tr>
+  <tr><td class="rowhs">Portabilidade de features</td><td class="ax">🟡 Limitada</td><td>LLVM dá alvos, mas MPK/BMI2/CHERI restringem features avançadas a x86/ARM recentes.</td></tr>
+ </table>
+ <p><strong>Regra:</strong> estes 🔴 não são desculpas — são o mapa do que a Fase 1–4 (§17) tem de resolver antes de a Axión sair do papel. A aposta é que o <em>núcleo</em> (segurança + latência) justifica pagar tudo isto.</p>
+ <div class="sub">Como estes quadros serão validados (metodologia)</div>
+ <p>Os troféus acima são <strong>desenho, não medição</strong> — e é assim que se tornam falsificáveis. O plano de validação por eixo:</p>
+ <table>
+  <tr><th>Eixo</th><th>Baselines</th><th>Métrica</th><th>Limiar de sucesso</th></tr>
+  <tr><td class="rowhs">Latência (jitter)</td><td>C, Rust, Go, Haskell/GHC</td><td>p99 / p99.9 de pausa sob carga sustentada</td><td>Sem pausas acima do ruído do SO; zero eventos de GC</td></tr>
+  <tr><td class="rowhs">Throughput numérico</td><td>C (−O3), Rust</td><td>GFLOP/s em kernels SIMD</td><td>Dentro de ~5% de C</td></tr>
+  <tr><td class="rowhs">Memória (RSS)</td><td>C, Rust, Haskell</td><td>pico e <em>high-water</em> de arena</td><td>≈ C/Rust; sem retenção por arena após reset</td></tr>
+  <tr><td class="rowhs">Feedback do compilador</td><td>rust-analyzer, GHCi</td><td>latência de rechecagem por edição</td><td>Sub-milissegundo por módulo (Salsa)</td></tr>
+  <tr><td class="rowhs">Ergonomia (carga)</td><td>Rust equivalente</td><td>LOC, nº de anotações, % de código L0/L1</td><td>Menos anotações que Rust; ≥90% L0/L1</td></tr>
+  <tr><td class="ax rowhs">Compactação ternária</td><td>2-bit, um-byte-por-enum</td><td><em>cache misses</em> / largura de banda (ML {−1,0,+1})</td><td>Ganho líquido após custo de <em>unpack</em>, ou não se constrói (§10)</td></tr>
+ </table>
+ <div class="box warm">
+  <p><strong>Regra de honestidade:</strong> nenhuma célula de troféu vira alegação pública antes de passar o seu limiar num benchmark reproduzível. Onde o número não existir, o quadro deve dizer «por medir», não 🏆.</p>
+ </div>
+</div>
+<!-- ============ 14 ============ -->
+<div class="section">
+ <div class="sechead" id="sec14"><span class="secnum">14</span><h1>Análise Crítica e Objecções de Mercado</h1></div>
+ <hr class="secrule">
+ <p class="lead">O Fogo Amigo — as críticas mais duras que a Axión ouviria de engenheiros cépticos, e a resposta franca a cada uma. Um projeto só sobrevive se souber onde é frágil.</p>
+ <div class="obj">
+  <span class="pillstat mt">MITIGADA</span>
+  <span class="onum">01</span><h4>«Ninguém pediu uma linguagem ‘quântica’»</h4>
+  <p><strong class="r">A objecção.</strong> O rótulo «quântico» soa a <em>marketing</em> e afasta engenheiros de sistemas sérios.</p>
+  <p><strong class="g">Resolvido (decisão de nome).</strong> Renomeado: o termo normativo é <strong>«topologia de tipos»</strong>, o <em>acoplamento por sessão</em> substituiu o «emaranhamento» e o <code class="i">Trit</code> é um enum (não um «motor»). «Quântico» fica só como intuição didática pontual (§9). O mecanismo sempre foi conjunção aditiva + session types — agora o nome di-lo.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat mt">MITIGADA</span>
+  <span class="onum">02</span><h4>A curva «K2» condena a adoção</h4>
+  <p><strong class="r">A objecção.</strong> Se o Rust já é «O Muro», uma carga cognitiva topológica ainda maior garante que quase ninguém sobe a montanha. Linguagens difíceis morrem por falta de massa crítica.</p>
+  <p><strong class="g">A resposta da Axión.</strong> Verdadeiro se tudo estiver sempre ligado — e por isso não está. A Ergonomia (§8) desliga a dificuldade por omissão em duas frentes. <strong>Carga cognitiva:</strong> níveis L0–L3 (a Polaridade Estática esconde a topologia até ser usada — 90% do código é L0/L1), compilador Socrático que mostra o grafo, e uma biblioteca de combinadores (<code class="i">pipeline</code>, <code class="i">parMap</code>, <code class="i">withRegion</code>) que prova a topologia difícil uma vez. <strong>Barreira de entrada:</strong> L0 lê-se como Haskell estrito (dia 1 sem conceitos novos), erros que ensinam, <em>playground</em> sem instalação e caminho guiado L0→L3. <strong>Resultado:</strong> a carga desce de <em>Extrema</em> a <em>Alta gerida</em> e a barreira de «O K2» a «O Muro, com vias» — ao nível do Rust, não pior (tabela F).</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat vd">VÁLIDA</span>
+  <span class="onum">03</span><h4>Sem ecossistema, morre à nascença</h4>
+  <p><strong class="r">A objecção.</strong> Uma linguagem sem bibliotecas, <em>package manager</em> maduro nem comunidade é um brinquedo académico. O Hackage e os <em>crates</em> demoraram uma década a existir.</p>
+  <p><strong class="g">A resposta da Axión.</strong> A resposta é assumida e sem atalhos: <strong>não há compatibilidade com o Hackage</strong> — as bibliotecas Haskell pressupõem laziness e GC, incompatíveis com o runtime de arenas — e a biblioteca padrão é desenhada de raiz, estrita e linear. A estratégia de ecossistema no dia 1 é a mesma do Zig e do Odin, com uma vantagem: a <strong>FFI Linear Autogovernada</strong> (<code class="i">@cleanup</code>) reaproveita, com segurança governada pelo sistema de tipos, todo o universo de bibliotecas C e Rust já existentes, módulo a módulo, em vez de as reescrever. Do GHC herda-se a investigação (Linear Haskell, Stream Fusion) e o protótipo de validação da Fase 0 — a linhagem, não o ecossistema.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat pv">PARCIALMENTE VÁLIDA</span>
+  <span class="onum">04</span><h4>A falácia do «compilador suficientemente inteligente»</h4>
+  <p><strong class="r">A objecção.</strong> Auto-Drop, Stream Fusion, defuncionalização e reset NLL prometem «custo zero mágico». Historicamente, otimizações que dependem do compilador ser esperto são <strong>frágeis e imprevisíveis</strong>.</p>
+  <p><strong class="g">A resposta da Axión.</strong> Diferença-chave: a Axión não <em>adivinha</em>, ela <strong>prova</strong>. As garantias vêm do sistema de tipos lineares (verificado, não heurístico) e as regiões de otimização são <strong>explícitas</strong> (<code class="i">imperative</code>, <code class="i">using</code>, <code class="i">bound</code>). O programador sabe onde a fusão acontece — não depende da sorte do inliner.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat mt">MITIGADA</span>
+  <span class="onum">05</span><h4>«Acoplamento» é uma data race com outro nome</h4>
+  <p><strong class="r">A objecção.</strong> Um efeito não-local que altera estado noutra thread é, por definição, exatamente aquilo que a promessa de «zero data races» devia proibir. Uma leitura ingénua do acoplamento parece contraditória.</p>
+  <p><strong class="g">A resposta da Axión.</strong> O efeito «acoplado» é mediado por um canal linear: <code class="i">~</code> e <code class="i">Maybe~</code> <em>desugar</em> para os endpoints da §06 (ver §9.D), a posse move-se e nunca é partilhada. «Zero data races» é, assim, um corolário da Fidelidade de Sessão, não uma promessa avulsa. A ausência de deadlocks vem do bloco <code class="i">bound</code>, um <em>nursery</em> estruturado cuja topologia de comunicação é acíclica por construção.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat vd">VÁLIDA</span>
+  <span class="onum">06</span><h4>Anos-homem impossíveis para um núcleo minúsculo</h4>
+  <p><strong class="r">A objecção.</strong> Salsa + tipos lineares + compactação ternária + fusão + backend nativo — e agora um compilador e runtime escritos de raiz — é o esforço de engenharia de uma década e de uma equipa: risco enorme de nunca sair do papel.</p>
+  <p><strong class="g">A resposta da Axión.</strong> Por isso o roteiro é faseado e cada fase entrega valor isolado: a Fase 0 valida a semântica num protótipo EDSL descartável sobre o Linear Haskell — aprende-se barato antes do grande build — e cada fase do compilador próprio entrega valor isolado. As camadas de topologia avançada e de compactação ternária são opcionais e desligadas por omissão — a linguagem é útil antes de estar completa.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat mt">MITIGADA</span>
+  <span class="onum">07</span><h4>O ternário balanceado não compensa em hardware binário</h4>
+  <p><strong class="r">A objecção.</strong> Emular trits com 2 bits, mais o custo de packing/unboxing base-243, pode comer o ganho branchless. Sem números reais, é otimização especulativa.</p>
+  <p><strong class="g">A resposta da Axión.</strong> Válida contra um <em>motor</em> ternário pervasivo — e por isso ele deixou de existir. O ternário foi <strong>demovido</strong> a duas peças separadas (§10): o tipo <code class="i">Trit</code> é apenas um <strong>enum de três estados</strong> (custo zero, como o <code class="i">Ordering</code> do Rust) para <code class="i">observe</code>/Kleene, e a seleção branchless não é sequer específica dele. A <strong>compactação base-243</strong> — a única parte que emula ternário — passou para uma <strong>biblioteca opcional (<code class="i">TritVec</code>)</strong>, desligada por omissão, dirigida ao caso onde a densidade paga mesmo (<strong>ML quantizado ternário</strong>, pesos {−1,0,+1}) e validada por benchmark contra baselines de 2 bits e de um-byte-por-enum. Onde não paga, não existe — logo não há custo especulativo a comer ganho nenhum.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat pv">PARCIALMENTE VÁLIDA</span>
+  <span class="onum">08</span><h4>Mercado inexistente: quem migra?</h4>
+  <p><strong class="r">A objecção.</strong> Ninguém reescreve um sistema em produção para uma linguagem nova de risco. O custo de migração esmaga qualquer ganho teórico.</p>
+  <p><strong class="g">A resposta da Axión.</strong> A Axión não disputa o mercado geral. O alvo são nichos onde o jitter do GC é inaceitável e a segurança é crítica: HFT, kernels, motores de crypto, sistemas de tempo-real e drivers. Aí o valor é concreto e a FFI permite migração incremental, módulo a módulo.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat mt">MITIGADA</span>
+  <span class="onum">09</span><h4>«O Boxed é um garbage collector envergonhado»</h4>
+  <p><strong class="r">A objecção.</strong> Se a linguagem precisa de <em>reference counting</em> para os casos difíceis, a promessa «sem GC» é marketing: RC é gestão automática de memória, com custos escondidos nos incr/decr e nas cascatas de drop.</p>
+  <p><strong class="g">A resposta da Axión.</strong> RC determinístico não é tracing GC: não há pausas, não há <em>heap scans</em>, e cada decref acontece num ponto estático conhecido — o jitter zero mantém-se. O <code class="i">Boxed</code> é opt-in, visível no tipo, restrito a L1+ e vigiado por lint (§3); a análise de linearidade elide a maioria dos contadores, e a imutabilidade elimina os ciclos — logo não há coletor de ciclos. A cascata O(n) do drop é assumida na spec, não escondida, e o subsistema só se constrói se a telemetria (AX0003) o justificar. O caso por omissão continua a ser arenas com custo zero.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat pv">PARCIALMENTE VÁLIDA</span>
+  <span class="onum">10</span><h4>Tarefas leves sem GC é uma fantasia</h4>
+  <p><strong class="r">A objecção.</strong> O Go e o GHC só têm milhões de green threads porque o GC lhes move as stacks. Sem GC, ou se pagam threads do SO, ou reaparece o <code class="i">async/await</code> com o seu <em>function coloring</em>. Prometer as duas coisas ao mesmo tempo é fantasia.</p>
+  <p><strong class="g">A resposta da Axión.</strong> A Axión não usa stacks móveis: as tarefas são continuações defuncionalizadas — máquinas de estado — alocadas na arena do nursery (§11), e os pontos de suspensão são exatamente as operações de canal, já visíveis nos tipos (<code class="i">Bound s</code>), pelo que não há <code class="i">async/await</code> na superfície nem coloring. A recursão através de suspensões vai para frames CPS na arena; <code class="i">imperative</code> nunca suspende (§9.C). O risco que resta é de engenharia, não de conceito — por isso o runtime é entregável da Fase 3, com benchmarks de escalabilidade antes de qualquer promessa numérica.</p>
+ </div>
+ <div class="obj">
+  <span class="pillstat pv">PARCIALMENTE VÁLIDA</span>
+  <span class="onum">11</span><h4>«Já existe OCaml com <em>modes</em> — porquê Axión?»</h4>
+  <p><strong class="r">A objecção.</strong> O trabalho de <em>modes</em> do OCaml («Oxidizing OCaml») já dá uniqueness/linearidade inferida e alocação em stack sem lifetimes — a tese central da Axión. Reinventar uma linguagem inteira para isso é desperdício.</p>
+  <p><strong class="g">A resposta da Axión.</strong> Objeção justa — é o concorrente mais próximo (§16), e a Axión não reclama ineditismo na peça isolada. A diferença é de <strong>combinação e ponto de partida</strong>: os <em>modes</em> do OCaml acrescentam-se a um runtime <strong>com GC</strong>, ao passo que a Axión é sem-GC <em>por construção</em>; e integra <em>session types</em> lineares, concorrência estruturada e divulgação progressiva L0–L3 no núcleo, não como extensões. Se a necessidade é «OCaml um pouco mais linear», usa-se OCaml. Se é «latência zero garantida + concorrência sem data races por tipos», é aí que a Axión se justifica.</p>
+ </div>
+ <div class="box intent">
+  <p><strong>Veredicto.</strong> Das onze objecções, quatro são de comunicação e mercado/posicionamento (mitigáveis com comunicação) e sete são de engenharia — todas com defesa técnica concreta. As mais sérias — o acoplamento por sessão (05) e as tarefas leves sem GC (10) — têm resposta operacional na §9.D e na §11, e ambas ficam sob prova: metateoria mecanizada para uma, benchmarks de escalabilidade para a outra. Uma visão que sobrevive ao seu próprio fogo amigo está pronta para começar a ser construída.</p>
+ </div>
+</div>
+
+<!-- ============ 15 ============ -->
+<div class="section">
+ <div class="sechead" id="sec15"><span class="secnum">15</span><h1>Apêndice: Riscos, Trade-offs e Trabalho Futuro</h1></div>
+ <hr class="secrule">
+ <table>
+  <tr><th>Área</th><th>Estado</th><th>Risco / Trabalho futuro</th></tr>
+  <tr><td class="rowhs">Tipos lineares + Auto-Drop</td><td><span class="stat st-s">Sólido</span></td><td>Ergonomia da inferência de regiões em código altamente polimórfico.</td></tr>
+  <tr><td class="rowhs">Regra Drop (destruidor como consumidor)</td><td><span class="stat st-d">Definido</span></td><td>Must-use vs droppable (§2); endpoints cancelam em pânico, não se descartam (§7); formalizar na Fase 3 (<em>Exceptional GV</em>).</td></tr>
+  <tr><td class="rowhs">Arenas NLL</td><td><span class="stat st-s">Sólido</span></td><td>Escape de sub-arena é erro de compilação (<code class="i">promote</code>); marcas de arena e <em>decommit</em> no reset reclamam a memória residual.</td></tr>
+  <tr><td class="rowhs">Session Types</td><td><span class="stat st-s">Sólido</span></td><td>Race-freedom por Fidelidade de Sessão e deadlock-freedom pelo <code class="i">bound</code> estruturado; resta afinar a inferência de protocolos e mensagens de erro legíveis.</td></tr>
+  <tr><td class="rowhs">Runtime (scheduler M:N)</td><td><span class="stat st-d">Definido</span></td><td>Tarefas defuncionalizadas em arenas de nursery (§11); cancelamento por ramo de protocolo (§7); implementação na Fase 3, com benchmarks de escalabilidade.</td></tr>
+  <tr><td class="rowhs">FFI (isolamento real)</td><td><span class="stat st-d">Definido</span></td><td>Isolamento em camadas opt-in, declarado no <code class="i">foreign</code> (§5): <code class="i">@trusted</code> (arena, confina fugas) → <code class="i">@isolate(mpk)</code> → <code class="i">@sandbox(wasm)</code> → CHERI. Implementação faseada; a arena confina bugs, MPK/WASM confinam ataques.</td></tr>
+  <tr><td class="rowhs"><code class="i">Boxed a</code> (RC Perceus)</td><td><span class="stat st-d">Definido</span></td><td>Escape-hatch opt-in com RC determinístico (§3); sem coletor de ciclos (imutável); pós-Fase 2, condicionado à telemetria de erros (§8).</td></tr>
+  <tr><td class="rowhs">Tipo <code class="i">Trit</code> (observe/Kleene)</td><td><span class="stat st-s">Sólido</span></td><td>Enum de três estados, caso <em>N=3</em> dos sum types; seleção branchless geral de enums pequenos. Custo zero, sem maquinaria dedicada (§10).</td></tr>
+  <tr><td class="rowhs">Compactação base-243 (<code class="i">TritVec</code>)</td><td><span class="stat st-p">Opcional</span></td><td>Biblioteca, não núcleo; desligada por omissão. Ganho depende da microarquitetura e do workload (ML ternário); medir vs. 2-bit e vs. um-byte-por-enum antes de investir (§14 #07).</td></tr>
+  <tr><td class="rowhs">Acoplamento por sessão (<code class="i">~</code> / <code class="i">Maybe~</code>)</td><td><span class="stat st-p">Parcial</span></td><td>Semântica operacional na §9.D; deadlock-freedom por construção (<code class="i">bound</code> estruturado). Metateoria fundada em lógica linear (<em>Propositions as Sessions</em>), a mecanizar (Iris/Actris) e a validar por <strong>verificador de referência em compilação</strong> — sem monitores em runtime, custo zero.</td></tr>
+  <tr><td class="rowhs">Permissões fracionárias (<code class="i">%0.5</code>)</td><td><span class="stat st-d">Definido</span></td><td>Split/join ao estilo de Boyland (§2): leitura partilhada em <code class="i">%0.5</code>, escrita recuperada no <em>join</em> para <code class="i">%1</code>.</td></tr>
+  <tr><td class="rowhs">Ergonomia / carga cognitiva</td><td><span class="stat st-p">Parcial</span></td><td>Níveis L0–L3, compilador Socrático e biblioteca de combinadores (§8) tornam a carga topológica paga-quando-se-usa; a implementação do LSP e da biblioteca é trabalho de engenharia.</td></tr>
+  <tr><td class="rowhs">Firewall de níveis (<code class="i">LEVEL</code>)</td><td><span class="stat st-d">Definido</span></td><td>Pragma <code class="i">{-# LEVEL #-}</code> + <code class="i">max-level</code> no manifesto (§8); custo ~zero sobre a Polaridade; entra com o LSP (Fase 4).</td></tr>
+  <tr><td class="rowhs">Diagnósticos AXnnnn</td><td><span class="stat st-p">Em curso</span></td><td>Códigos estáveis, JSON e fixes <em>machine-applicable</em> (§8); o registo nasce na Fase 1; a telemetria decide o <code class="i">Boxed</code> (§3).</td></tr>
+ </table>
+ <div class="sub">Roteiro sugerido <small>— numeração canónica e detalhe completo na §17</small></div>
+ <ol class="nlist">
+  <li><strong>Fase 0 — Fundações:</strong> protótipo EDSL descartável sobre <code class="i">LinearTypes</code> (bancada de validação semântica, não o produto), repositório, CI e subconjunto mínimo.</li>
+  <li><strong>Fase 1 — Núcleo linear (L0/L1):</strong> esqueleto ambulante (<em>parse → typecheck → correr</em>); Auto-Drop e linearidade no compilador próprio. Sem topologia avançada.</li>
+  <li><strong>Fase 2 — Modelo de memória:</strong> arenas NLL, escape via <code class="i">promote</code>, permissões fracionárias e FFI; benchmark vs C/Rust.</li>
+  <li><strong>Fase 3 — Concorrência (+ trilho formal):</strong> canais + session types com prova de ausência de data races e deadlock-freedom estrutural.</li>
+  <li><strong>Fase 4 — Ergonomia e tooling:</strong> LSP, diagnósticos <code class="i">AXnnnn</code>, playground e níveis L0–L3.</li>
+  <li><strong>Fase 5a — Compactação ternária (biblioteca):</strong> o tipo <code class="i">Trit</code> (enum) existe desde a Fase 1; o entregável aqui é a biblioteca <code class="i">TritVec</code> (packing base-243 + kernels SIMD) — só se o benchmark o justificar, com alvo em ML ternário.</li>
+  <li><strong>Fase 5b — Topologia de tipos avançada:</strong> o acoplamento (<code class="i">~</code> / <code class="i">Maybe~</code>) tem semântica operacional na §9.D e deadlock-freedom por construção via <code class="i">bound</code> estruturado; falta <strong>mecanizar</strong> a metateoria (via <em>Propositions as Sessions</em>, em Iris/Actris), <strong>extrair o verificador de referência</strong> em compilação (custo zero, sem monitores em runtime) e dar semântica denotacional a <code class="i">&amp;</code> / <code class="i">&amp;?</code> antes de estabilizar a API.</li>
+ </ol>
+ <div class="box intent">
+  <p>Esta especificação (V0.2) fixa a <strong>visão arquitetural</strong> da Axión — legível, ilustrada e implementável por fases — convertendo as abstrações da lógica linear e ternária balanceada em instruções de máquina puras, <em>branchless</em> e de custo nulo sobre hardware clássico.</p>
+ </div>
+</div>
+
+<!-- ============ 16 ============ -->
+<div class="section">
+ <div class="sechead" id="sec16"><span class="secnum">16</span><h1>Referências e Prior Art</h1></div>
+ <hr class="secrule">
+ <p class="lead">A Axión não inventa fundamentos: combina linhagens estabelecidas. Estas são as obras que sustentam cada mecanismo.</p>
+ <div class="sub">Tipos lineares e de unicidade</div>
+ <ul>
+  <li>JY. Girard. <em>Linear Logic.</em> Theoretical Computer Science, 1987.</li>
+  <li>E. Barendsen, S. Smetsers. <em>Uniqueness Typing for Functional Languages</em> (Clean). MSCS, 1996.</li>
+  <li>JP. Bernardy, M. Boespflug, R. Newton, S. Peyton Jones, A. Spiwack. <em>Linear Haskell.</em> POPL 2018.</li>
+  <li>D. Orchard, VB. Liepelt, H. Eades III. <em>Quantitative Program Reasoning with Graded Modal Types</em> (Granule). ICFP 2019.</li>
+ </ul>
+ <div class="sub">Memória por regiões (sem GC)</div>
+ <ul>
+  <li>M. Tofte, JP. Talpin. <em>Region-Based Memory Management.</em> Information and Computation, 1997.</li>
+  <li>D. Grossman et al. <em>Region-Based Memory Management in Cyclone.</em> PLDI 2002.</li>
+  <li>J. Boyland. <em>Checking Interference with Fractional Permissions.</em> SAS 2003.</li>
+  <li>A. Reinking, N. Xie, L. de Moura, D. Leijen. <em>Perceus: Garbage Free Reference Counting with Reuse.</em> PLDI 2021.</li>
+  <li>S. Ullrich, L. de Moura. <em>Counting Immutable Beans: Reference Counting Optimized for Purely Functional Programming</em> (Lean). IFL 2019.</li>
+  <li>EZ. Yang, G. Campagna, Ö. Ağacan et al. <em>Efficient Communication and Collection with Compact Normal Forms</em> (GHC Compact Regions). ICFP 2015.</li>
+  <li>E. Ovadia. <em>Vale</em> — <em>region borrowing</em> e <em>generational references</em> (linguagem).</li>
+ </ul>
+ <div class="sub">Session types e concorrência</div>
+ <ul>
+  <li>K. Honda, V. Vasconcelos, M. Kubo. <em>Language Primitives and Type Discipline for Structured Communication-Based Programming.</em> ESOP 1998.</li>
+  <li>K. Honda, N. Yoshida, M. Carbone. <em>Multiparty Asynchronous Session Types.</em> POPL 2008.</li>
+  <li>PM. Deniélou, N. Yoshida. <em>Multiparty Session Types Meet Communicating Automata.</em> ESOP 2012.</li>
+ </ul>
+ <div class="sub">Proposições como sessões e deadlock-freedom</div>
+ <ul>
+  <li>L. Caires, F. Pfenning. <em>Session Types as Intuitionistic Linear Propositions.</em> CONCUR 2010.</li>
+  <li>P. Wadler. <em>Propositions as Sessions.</em> ICFP 2012.</li>
+  <li>N. Kobayashi. <em>A Type System for Lock-Free Processes.</em> Information and Computation, 2002.</li>
+  <li>L. Padovani. <em>Deadlock and Lock Freedom in the Linear π-Calculus.</em> CSL-LICS 2014.</li>
+  <li>A. Igarashi, P. Thiemann, V. Vasconcelos, P. Wadler. <em>Gradual Session Types.</em> ICFP 2017.</li>
+  <li>S. Fowler, S. Lindley, J.G. Morris, S. Decova. <em>Exceptional Asynchronous Session Types: Session Types without Tiers.</em> POPL 2019.</li>
+ </ul>
+ <div class="sub">Verificação mecanizada</div>
+ <ul>
+  <li>R. Jung et al. <em>Iris from the Ground Up.</em> JFP 2018.</li>
+  <li>JK. Hinrichsen, J. Bengtson, R. Krebbers. <em>Actris: Session-Type Based Reasoning in Separation Logic.</em> POPL 2020.</li>
+  <li>R. Jung, JH. Jourdan, R. Krebbers, D. Dreyer. <em>RustBelt: Securing the Foundations of the Rust Programming Language.</em> POPL 2018.</li>
+  <li>A. Pnueli, M. Siegel, E. Singerman. <em>Translation Validation.</em> TACAS 1998.</li>
+  <li>X. Leroy. <em>Formal Verification of a Realistic Compiler</em> (CompCert). CACM 2009.</li>
+ </ul>
+ <div class="sub">Otimização, incrementalidade e ternário</div>
+ <ul>
+  <li>D. Coutts, R. Leshchinskiy, D. Stewart. <em>Stream Fusion: From Lists to Streams to Nothing at All.</em> ICFP 2007.</li>
+  <li>JC. Reynolds. <em>Definitional Interpreters for Higher-Order Programming Languages</em> (defuncionalização). 1972.</li>
+  <li>DE. Knuth. <em>The Art of Computer Programming, Vol. 2</em> (ternário balanceado; computador Setun, 1958).</li>
+  <li>Salsa / rust-analyzer — computação incremental orientada a consultas (N. Matsakis et al.).</li>
+ </ul>
+ <div class="sub">Linearidade sem lifetimes — sistemas próximos (posicionamento)</div>
+ <ul>
+  <li>A. Lorenzen et al. <em>Oxidizing OCaml with Modal Memory Management</em> — modos de uniqueness/linearidade e alocação em stack, inferidos, sem lifetimes. ICFP 2024 (e a série «Oxidizing OCaml» da Jane Street).</li>
+  <li>F. Borretti. <em>Austral</em> — linguagem de sistemas com tipos lineares e capacidades; linearidade minimalista (spec).</li>
+  <li>D. Racordon et al. <em>Implementation Strategies for Mutable Value Semantics</em> (Hylo / Val). JOT / Programming 2022.</li>
+ </ul>
+ <div class="box note">
+  <p><strong>Posicionamento honesto.</strong> A tese central da Axión — <em>linearidade e regiões inferidas, sem lifetimes explícitos</em> — <strong>não é única</strong>. O concorrente vivo mais próximo são os <strong>modos do OCaml</strong> («Oxidizing OCaml»): uniqueness/linearidade e <em>stack allocation</em> por <em>modes</em> inferidos, sem as anotações de tempo de vida do Rust. A Axión distingue-se por <strong>combinação</strong>, não por exclusividade: (1) é estrita e <strong>sem GC por construção</strong> — o OCaml mantém o runtime com GC; (2) integra <em>session types</em> lineares e concorrência estruturada no núcleo; (3) aposta na divulgação progressiva L0–L3. <strong>Austral</strong> é o melhor prior art de ergonomia linear minimalista; <strong>Granule</strong> fundamenta as multiplicidades graduadas (<code class="i">%1</code>/<code class="i">%0.5</code>); <strong>Vale</strong> e <strong>Hylo</strong> exploram regiões e semântica de valores mutáveis — parente das atualizações destrutivas (§2/§4).</p>
+ </div>
+ <div class="sub">Isolamento e sandboxing (FFI)</div>
+ <ul>
+  <li>S. Narayan, C. Disselkoen, T. Garfinkel et al. <em>Retrofitting Fine Grain Isolation in the Firefox Renderer</em> (RLBox / wasm2c). USENIX Security 2020.</li>
+  <li>A. Vahldiek-Oberwagner, E. Elnikety, N. Duarte et al. <em>ERIM: Secure, Efficient In-process Isolation with Protection Keys</em> (MPK). USENIX Security 2019.</li>
+  <li>RNM. Watson, J. Woodruff, PG. Neumann et al. <em>CHERI: A Hybrid Capability-System Architecture for Scalable Software Compartmentalization</em>. IEEE S&amp;P 2015.</li>
+ </ul>
+</div>
+
+<!-- ============ 17 ============ -->
+<div class="section">
+ <div class="sechead" id="sec17"><span class="secnum">17</span><h1>Plano de Implementação (do Início ao Fim)</h1></div>
+ <hr class="secrule">
+ <p class="lead">O ativo real da Axión é o núcleo linear-funcional; a compactação ternária (<code class="i">TritVec</code>) e a topologia de tipos avançada vêm no fim, atrás de um interruptor. O plano é <strong>faseado para que cada etapa entregue valor sozinha</strong> — se parar a meio, resta à mesma uma linguagem de sistemas útil.</p>
+ <div class="sub">Princípios de execução</div>
+ <ol class="nlist">
+  <li><strong>Esqueleto ambulante primeiro.</strong> A Fase 1 não entrega uma feature, mas <em>parse → typecheck → correr</em> de ponta a ponta num subconjunto mínimo. Tudo cresce daí.</li>
+  <li><strong>Núcleo antes da plumagem.</strong> Linear + memória + concorrência antes de ternário/topologia avançada. Se o projeto parar a meio, resta um «Rust funcional» útil.</li>
+  <li><strong>Provar antes de construir (onde é barato).</strong> Para a concorrência, formalizar o cálculo <em>antes</em> de o implementar — a teoria dita o desenho certo.</li>
+  <li><strong>Prototipar no GHC, construir de raiz.</strong> O Linear Haskell é a bancada de validação semântica da Fase 0; o compilador, o backend e o runtime da Axión são escritos de novo — o GC e a laziness do GHC são incompatíveis com as garantias da linguagem.</li>
+  <li><strong>Testes e <em>dogfooding</em> desde o dia 1.</strong> Property-based tests a acompanhar cada regra; escrever exemplos reais na própria Axión à medida que cresce.</li>
+ </ol>
+ <div class="sub">Roteiro em relance</div>
+ <table>
+  <tr><th>Fase</th><th>Foco</th><th>Duração</th><th>Entrega isolada</th></tr>
+  <tr><td class="rowh">0</td><td>Decisões e fundações</td><td>1–2 sem</td><td>Estratégia, repo, subconjunto mínimo</td></tr>
+  <tr><td class="rowh">1</td><td>Esqueleto ambulante (L0/L1)</td><td>1–3 meses</td><td>Compilador mínimo: linearidade end-to-end</td></tr>
+  <tr><td class="rowh">2</td><td>Modelo de memória</td><td>3–6 meses</td><td>Segurança de memória sem GC</td></tr>
+  <tr><td class="rowh">3</td><td>Concorrência + trilho formal</td><td>4–8 meses</td><td>Race- e deadlock-freedom</td></tr>
+  <tr><td class="rowh">4</td><td>Ergonomia e tooling</td><td>contínuo</td><td>Usabilidade: LSP, erros, playground</td></tr>
+  <tr><td class="rowh">5a</td><td>Compactação ternária (<code class="i">TritVec</code>)</td><td>após núcleo</td><td>base-243 / codecs SIMD (medido)</td></tr>
+  <tr><td class="rowh">5b</td><td>Topologia de tipos avançada</td><td>após metateoria</td><td><code class="i">~</code> / <code class="i">Maybe~</code> (experimental)</td></tr>
+ </table>
+ <div class="sub">Fase 0 — Decisões e fundações (1–2 semanas)</div>
+ <p><strong>O quê:</strong> fixar âmbito e infraestrutura antes de uma linha de compilador.</p>
+ <ul class="steps">
+  <li><strong>Decisão-chave (estratégia):</strong> começar como EDSL sobre Linear Haskell (<code class="i">LinearTypes</code> + <code class="i">linear-base</code>) para validar a semântica em semanas — um <strong>protótipo descartável, não o embrião do compilador</strong>; migrar depois para o compilador autónomo (frontend próprio → Axión Core, IR linear estrito → backend nativo). De-risca: aprende-se barato antes do grande build. <strong>Limites da bancada:</strong> o EDSL valida o núcleo <code class="i">%1</code> (L0/L1); <code class="i">%0.5</code>, <code class="i">&amp;</code>, <code class="i">~</code> e os session types não são exprimíveis no <code class="i">LinearTypes</code> do GHC (multiplicidades só nas setas) — validam-se no trilho formal da Fase 3 e no typechecker próprio.</li>
+  <li><code class="i">git init</code>, projeto Cabal (protótipo), CI, formatador, linter.</li>
+  <li>Escrever a gramática mínima (subconjunto L0/L1) e os programas-alvo que definem o sucesso da Fase 1.</li>
+  <li>A spec (este documento) passa a estar versionada ao lado do código.</li>
+ </ul>
+ <div class="sub">Fase 1 — Esqueleto ambulante (núcleo L0/L1) (1–3 meses)</div>
+ <p><strong>O quê:</strong> o compilador mínimo que corre um programa linear.</p>
+ <ul class="steps">
+  <li>Parser do subconjunto mínimo (tipos, funções, <code class="i">let</code>, <code class="i">%1</code>).</li>
+  <li>Registo de <strong>códigos de erro estáveis</strong> + diagnósticos estruturados (JSON) desde o primeiro erro emitido — retrofitar um registo depois de existirem centenas de erros é doloroso (§8).</li>
+  <li>Typechecker próprio com linearidade — validado por diferencial contra o protótipo EDSL da Fase 0 (§2).</li>
+  <li>Baixar para um backend: interpretador próprio (o futuro fast-path de <code class="i">--dev</code>), com o backend LLVM como alvo da fase seguinte.</li>
+  <li><strong>Meta:</strong> a Listagem 2.1 compila e corre; um uso-após-consumo é rejeitado. Property tests a verificar preservação/progresso.</li>
+ </ul>
+ <div class="sub">Fase 2 — Modelo de memória (o diferenciador) (3–6 meses)</div>
+ <p><strong>O quê:</strong> o que torna a Axión ≠ «só mais um Haskell».</p>
+ <ul class="steps">
+  <li><strong>Auto-Drop</strong> — análise de liveness que injeta <code class="i">free</code> no ponto de morte (§2).</li>
+  <li><strong>Arenas + reset NLL + análise de escape</strong> (<code class="i">promote</code>, §3) — validar que o escape é erro de compilação.</li>
+  <li><strong>Permissões fracionárias</strong> (<code class="i">%0.5</code>): <code class="i">split</code> / <code class="i">join</code>.</li>
+  <li><strong>Benchmark contra baseline (C/Rust)</strong> — a «latência zero» tem de ser medida, não afirmada.</li>
+ </ul>
+ <div class="sub">Fase 3 — Concorrência (canais + session types) (4–8 meses)</div>
+ <p><strong>O quê:</strong> race-freedom e deadlock-freedom.</p>
+ <ul class="steps">
+  <li><strong>Trilho formal</strong> (começa antes do código): formalizar o cálculo via <em>Propositions as Sessions</em> — incluindo o cancelamento em pânico (<em>Exceptional Asynchronous Session Types</em>, §7); a eliminação de cortes dá o desenho correto do <code class="i">bound</code>.</li>
+  <li>Implementar canais lineares + session types + <code class="i">bound</code> (nursery, topologia acíclica, §9).</li>
+  <li>Implementar o runtime da §11: scheduler M:N, tarefas defuncionalizadas em arenas de nursery, pool dedicado para FFI bloqueante.</li>
+  <li><strong>Validar:</strong> property tests + model-checking (CFSMs) → metateoria mecanizada (Iris/Actris) como objetivo de médio prazo.</li>
+ </ul>
+ <div class="sub">Fase 4 — Ergonomia e tooling (decide a adoção) (contínuo, começa cedo)</div>
+ <p><strong>O quê:</strong> transformar «poderoso» em «usável» — a barreira K2→Muro (§8).</p>
+ <ul class="steps">
+  <li><strong>Mensagens de erro que ensinam</strong> (o compilador Socrático) — investir aqui mais do que parece razoável; foi o que salvou o Rust. Com códigos estáveis (<code class="i">--explain</code>), diagnósticos JSON e fixes <em>machine-applicable</em> (§8); a telemetria de erros daqui decide o <code class="i">Boxed</code> (§3).</li>
+  <li>Níveis L0–L3 impostos pela Polaridade Estática; teto por pragma <code class="i">{-# LEVEL … #-}</code> e <code class="i">max-level</code> no manifesto (§8).</li>
+  <li>LSP + playground em browser (sobre o Salsa); <code class="i">axion new</code>, exemplos «Axión by Example».</li>
+ </ul>
+ <div class="sub">Fase 5a — Compactação ternária, biblioteca <code class="i">TritVec</code> (atrás de um interruptor)</div>
+ <p><strong>O quê:</strong> o tipo <code class="i">Trit</code> já é um enum disponível desde a Fase 1; o entregável é a <strong>biblioteca opcional</strong> <code class="i">TritVec</code> — packing base-243 + codecs SIMD (§10), desligada por omissão. <strong>Como:</strong> implementar e medir se o ganho existe mesmo (largura de banda vs. custo de <em>unpack</em>, em BMI2/ARM) contra baselines de 2 bits e de um-byte-por-enum, com alvo em ML quantizado ternário, antes de investir.</p>
+ <div class="sub">Fase 5b — Topologia de tipos avançada (a última, e só se ganhar o direito)</div>
+ <p><strong>O quê:</strong> <code class="i">~</code> / <code class="i">Maybe~</code> (§9). <strong>Como:</strong> só depois da metateoria mecanizada + verificador de referência em compilação (custo zero, §9.D). Manter marcado <em>experimental</em> até a prova aterrar — é a peça mais memorável e a menos urgente.</p>
+ <div class="sub">Transversais (a correr o tempo todo)</div>
+ <ul class="steps">
+  <li>FFI cedo (<code class="i">LinearPtr</code> / <code class="i">@cleanup</code>, §5) — reaproveitar bibliotecas C/Rust para não morrer sem ecossistema.</li>
+  <li>Benchmarks contínuos, testes por propriedades, e a spec versionada junto ao código.</li>
+ </ul>
+ <div class="sub">As primeiras 2 semanas</div>
+ <ol class="nlist">
+  <li><code class="i">git init</code> + projeto Cabal do protótipo EDSL com <code class="i">LinearTypes</code> ligado (o repositório do compilador próprio nasce na Fase 1).</li>
+  <li>Escrever 5 programas-alvo Axión que definem «sucesso da Fase 1».</li>
+  <li>Protótipo EDSL: um <code class="i">Buffer %1</code> que o typechecker recusa usar duas vezes — a semântica de linearidade validada antes de se escrever o compilador.</li>
+  <li>Montar CI + a estrutura de property tests (o andaime, não os testes ainda).</li>
+ </ol>
+ <div class="box solid">
+  <p><strong>Nota honesta de esforço:</strong> isto é, realisticamente, um esforço de anos — mais ainda com compilador e runtime próprios — mas faseado para dar valor a cada passo. No fim da Fase 2 já existe algo publicável e útil (memória segura sem GC), muito antes de tocar na topologia avançada. A ordem protege o projeto: cada fase entrega sozinha.</p>
+ </div>
+</div>
+
+<!-- ============ 18 ============ -->
+<div class="section">
+ <div class="sechead" id="sec18"><span class="secnum">18</span><h1>Decisões de Implementação (Stack e Auto-Hospedagem)</h1></div>
+ <hr class="secrule">
+ <p class="lead">A §8 fixa a arquitetura (motor de consultas Salsa) e a §11 o pipeline (Cranelift em <code class="i">--dev</code>, LLVM em <code class="i">--release</code>); esta secção fecha o <em>como</em> concreto que faltava — a linguagem de implementação e os <em>crates</em> — e declara a intenção de longo prazo: <strong>reescrever tudo na própria Axión</strong>.</p>
+
+ <div class="sub">Três camadas, uma regra</div>
+ <p>A toolchain separa-se em três camadas com pares diretos noutras linguagens. A estratégia de construção decorre de um princípio único: <strong>forkar nada; escrever de raiz o que carrega a semântica da linguagem; reutilizar como biblioteca o que é genérico e sem semântica.</strong></p>
+ <table>
+  <tr><th>Camada</th><th>Par (Rust / Haskell)</th><th>Estratégia</th></tr>
+  <tr><td class="rowhs">Driver / gestor de pacotes <br><code class="i">axion</code></td><td>cargo / cabal</td><td><strong>De raiz</strong>, imitando o <em>modelo</em> do cargo: CLI única + manifesto <code class="i">axion.toml</code> (com <code class="i">max-level</code>, §8). Forkar o cargo daria mais trabalho — está acoplado a crates e à CLI do <code class="i">rustc</code>.</td></tr>
+  <tr><td class="rowhs">Compilador <br><code class="i">axionc</code></td><td>rustc / GHC</td><td><strong>De raiz, em Rust.</strong> Não forkar nenhum: são enormes e semanticamente opostos — o GHC é <em>lazy</em>+GC (§17.4), o <code class="i">rustc</code> traz o seu modelo de crates e IR próprios.</td></tr>
+  <tr><td class="rowhs">Motor incremental <br>Salsa</td><td>salsa (rust-analyzer)</td><td><strong>Reutilizar o <em>crate</em></strong> como dependência. É substrato genérico, sem semântica de linguagem; não se reescreve nem se forka — constrói-se por cima, como o rust-analyzer.</td></tr>
+ </table>
+ <div class="box note">
+  <p><strong>Porquê Rust para o <code class="i">axionc</code>.</strong> O documento já nomeia <strong>Salsa</strong>, <strong>rust-analyzer</strong>, <strong>Cranelift</strong> e <strong>LLVM</strong> — todos do ecossistema Rust. Escrever o compilador em Rust não é uma escolha nova: é herdar diretamente a linhagem do rust-analyzer para que os requisitos de LSP, incrementalidade e diagnósticos venham resolvidos de fábrica, em vez de reimplementados.</p>
+ </div>
+
+ <div class="sub">Stack concreta em Rust <small>— cada requisito, um crate maduro</small></div>
+ <table>
+  <tr><th>Requisito (secção)</th><th>Crate</th><th>Papel</th></tr>
+  <tr><td class="rowhs">Motor de consultas incremental (§8)</td><td><code class="i">salsa</code></td><td>Invalidação por nó, sub-milissegundo; o mesmo motor do rust-analyzer. Usar a geração atual (salsa 2022+), não a API clássica.</td></tr>
+  <tr><td class="rowhs">Análise léxica</td><td><code class="i">logos</code></td><td>Lexer gerado por macro, muito rápido, para o <code class="i">.axi</code>.</td></tr>
+  <tr><td class="rowhs">Árvore sintática <em>lossless</em></td><td><code class="i">rowan</code></td><td>CST resiliente a erros (do rust-analyzer) — essencial para o LSP e para o compilador Socrático (§8). Emparelha com o Salsa: o <em>parse</em> é uma consulta memoizada sobre o texto-fonte.</td></tr>
+  <tr><td class="rowhs">Servidor LSP (grafo inline, §8)</td><td><code class="i">lsp-server</code> / <code class="i">tower-lsp</code></td><td><code class="i">lsp-server</code> é o que o rust-analyzer usa.</td></tr>
+  <tr><td class="rowhs">Diagnósticos <code class="i">AXnnnn</code> + <code class="i">--explain</code> (§8)</td><td><code class="i">annotate-snippets</code></td><td>Render de erros com spans/setas — a biblioteca extraída do <code class="i">rustc</code>. Emissão JSON e fixes <em>machine-applicable</em> por cima.</td></tr>
+  <tr><td class="ax rowhs">Backend <code class="i">--dev</code> (§11)</td><td class="ax"><code class="i">cranelift</code></td><td class="ax">Codegen desenhado para compilar depressa — o «Fast-Path Backend» da tabela C.</td></tr>
+  <tr><td class="ax rowhs">Backend <code class="i">--release</code> (§11)</td><td class="ax">LLVM via <code class="i">inkwell</code></td><td class="ax">O caminho otimizado (Assembly branchless BMI2/ARM), ligado só em <em>release</em>.</td></tr>
+ </table>
+ <div class="box note">
+  <p><strong>Coerência com o roteiro.</strong> A Fase 0 mantém-se um protótipo EDSL em Haskell/Cabal (validação semântica, §17), descartável; o <code class="i">axionc</code> real em Rust nasce na Fase 1. As escolhas acima são a camada de implementação que assenta por baixo da arquitetura já fixada — não a alteram.</p>
+ </div>
+
+ <div class="sub">Auto-hospedagem — o objetivo de longo prazo</div>
+ <div class="box intent">
+  <p><strong>A intenção final é reescrever toda a toolchain na própria Axión.</strong> A implementação em Rust é o <strong>compilador de arranque (Stage 0)</strong>, não o destino. Quando a linguagem amadurecer o suficiente — depois do núcleo linear, do modelo de memória sem GC, da FFI (§5) e do <em>tooling</em> (§17, Fases 1–4) — o <code class="i">axionc</code>, o <code class="i">axion</code> e o runtime são reescritos <strong>em Axión</strong>: usa-se a versão Rust para compilar a primeira versão em Axión (Stage 1) e, a partir daí, o compilador compila-se a si próprio (Stage 2, <em>fixpoint</em>).</p>
+  <p>Isto é o <em>dogfooding</em> levado ao limite (§17.5): as garantias da linguagem — linearidade, Auto-Drop, ausência de GC, latência zero — validadas pela prova mais dura de todas, o compilador a compilar-se a si mesmo. O Rust é o andaime que se retira quando a Axión se sustém sozinha; até lá, permanece o <em>bootstrap</em> estável.</p>
+ </div>
+ <div class="box warm">
+  <p><strong>Nota de honestidade.</strong> A auto-hospedagem é trabalho de longo prazo, posterior às Fases 1–4 — depende de a Axión já ter FFI robusta e maturidade de biblioteca para exprimir um compilador. É a direção declarada, não um marco do roteiro imediato.</p>
+ </div>
+</div>
+
+<!-- ============ 19 ============ -->
+<div class="section">
+ <div class="sechead" id="sec19"><span class="secnum">19</span><h1>Exemplo Completo: um Módulo de Ponta a Ponta</h1></div>
+ <hr class="secrule">
+ <p class="lead">As peças isoladas das secções anteriores, compostas num módulo realista — o texto que um programador escreveria de facto. Processa um fluxo de pacotes cifrados, num pipeline concorrente, sem GC, sem fugas e à prova de pânico.</p>
+ <div class="listing"><div class="hd">Listagem 19.1 — Processador de pacotes: FFI + arena + stream + canal + unwinding</div><pre>
+<span class="k">{-# LEVEL L2 #-}</span>   <span class="c">-- este módulo usa concorrência (canais); a firewall permite L2 (§8)</span>
+<span class="k">module</span> <span class="t">PacketPipe</span> (runPipe) <span class="k">where</span>
+
+<span class="c">-- FFI: contexto OpenSSL com limpeza automática (§5). O @cleanup é o Drop do handle.</span>
+<span class="k">foreign import ccall</span> <span class="s">"ssl_ctx_new"</span>  ssl_new  :: <span class="t">IO</span> (<span class="t">LinearPtr SSL_CTX</span>)
+<span class="k">foreign import ccall</span> <span class="s">"ssl_ctx_free"</span> <span class="m">@cleanup</span> freeCtx :: <span class="t">LinearPtr SSL_CTX</span> -&gt; <span class="t">IO</span> ()
+
+<span class="c">-- Um estágio decifra um pacote LENDO (borrow, §2) o contexto partilhado — não o consome.</span>
+decrypt :: <span class="t">SSL_CTX</span> -&gt; <span class="t">Packet</span> <span class="m">%1</span> -&gt; <span class="t">Packet</span> <span class="m">%1</span>
+decrypt ctx pkt = imperative $ <span class="k">do</span>        <span class="c">-- região imperativa, fronteiras puras (§4)</span>
+    ssl_decrypt_inplace ctx pkt              <span class="c">-- muta o buffer no sítio (destructive update)</span>
+    pkt
+
+<span class="c">-- O pipeline corre num nursery 'bound': topologia acíclica =&gt; deadlock-free (§6, §9).</span>
+runPipe :: <span class="t">Arena</span> <span class="m">%1</span> -&gt; <span class="t">LinearStream Packet</span> <span class="m">%1</span> -&gt; <span class="t">IO</span> ()
+runPipe arena source = withResource (<span class="t">Acquire</span> ssl_new) $ \ctx -&gt;   <span class="c">-- fecha mesmo em pânico</span>
+  bound arena $ <span class="k">do</span>                          <span class="c">-- concorrência estruturada; canais confinados</span>
+    source
+      |&gt; stage (\p -&gt; decrypt ctx p)          <span class="c">-- estágio 1 (thread própria)</span>
+      |&gt; stage validate                       <span class="c">-- estágio 2 (canal linear entre estágios)</span>
+      |&gt; sink  emit                           <span class="c">-- consome; a posse termina aqui</span>
+    <span class="c">-- Se 'validate' entrar em pânico: Linear Unwinding (§7) recua a arena numa</span>
+    <span class="c">-- instrução (os buffers evaporam, O(1)), dispara freeCtx(ctx), e envia o</span>
+    <span class="c">-- sinal de cancelamento (Closed) aos endpoints filhos. Zero recursos órfãos.</span>
+</pre></div>
+ <div class="box solid">
+  <p><strong>O que este módulo demonstra, tudo junto:</strong> FFI linear com limpeza injetada (§5), leitura por empréstimo sem consumir (§2), mutação in-place numa região imperativa (§4), <em>Stream Fusion</em> a colapsar o pipeline num único loop (§3B), canais com session types confinados a um <em>nursery</em> acíclico (§6, §9) e recuperação de pânico O(1) sem fugas (§7). <strong>Nenhuma anotação de <em>lifetime</em>, nenhum <code class="i">free</code> manual, nenhum GC</strong> — e o nível <code class="i">L2</code> é imposto pela <em>firewall</em> (§8). É a tese da Axión numa página de código.</p>
+ </div>
+</div>
+</body>
+</html>

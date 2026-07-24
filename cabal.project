@@ -1,0 +1,6 @@
+packages: .
+
+-- O dev shell (flake.nix) fornece todas as dependências dentro do GHC
+-- (ghcWithPackages), pelo que o cabal resolve apenas contra os pacotes já
+-- instalados, sem tocar no índice do Hackage nem na rede.
+active-repositories: none
