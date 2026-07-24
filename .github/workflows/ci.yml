@@ -1,14 +1,13 @@
 name: ci
 
-# Fase 0 — o andaime de CI. Tudo corre dentro do dev shell reprodutível do
-# flake (mesmo GHC + linear-base em toda a parte), sem instalar toolchain à mão.
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  build:
+  # Fase 0 — a bancada EDSL (Haskell) corre no dev shell reprodutível do flake.
+  prototype:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,3 +31,27 @@ jobs:
 
       - name: Lint (hlint)
         run: nix develop --command hlint prototype
+
+  # Fase 1 — o compilador próprio (axionc, Rust): parse → typecheck → correr.
+  axionc:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: axionc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Testes de integração (corre 01/02, rejeita AX0001/AX0002)
+        run: cargo test --verbose
+
+      - name: Formatação (rustfmt)
+        run: cargo fmt --check
+
+      - name: Lint (clippy)
+        run: cargo clippy -- -D warnings

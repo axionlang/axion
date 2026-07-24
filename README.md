@@ -17,7 +17,8 @@ especificada em [`spec/Axion-V0.2.pdf`](spec/Axion-V0.2.pdf) (versão legível:
 | Caminho | Papel |
 |---------|-------|
 | [`spec/`](spec/) | A especificação, versionada ao lado do código (§17). |
-| [`prototype/`](prototype/) | Protótipo EDSL descartável: o `Buffer %1` que o typechecker recusa usar duas vezes. |
+| [`axionc/`](axionc/) | **O compilador próprio (Fase 1), de raiz em Rust:** `parse → typecheck → correr`. |
+| [`prototype/`](prototype/) | Protótipo EDSL descartável (Fase 0): o `Buffer %1` que o typechecker recusa usar duas vezes. |
 | [`examples/`](examples/) | Os **5 programas-alvo** `.axi` que definem «sucesso da Fase 1». |
 | [`docs/grammar.md`](docs/grammar.md) | Gramática mínima do subconjunto L0/L1. |
 | [`docs/error-codes.md`](docs/error-codes.md) | Registo de códigos de erro `AXnnnn` estáveis (semente). |
@@ -49,9 +50,12 @@ ficheiro como um teste que tem de passar.
 
 ## Roteiro (§17)
 
-- **Fase 0 — Fundações** ← *estás aqui*: estratégia, repo, subconjunto mínimo.
-- **Fase 1 — Esqueleto ambulante (L0/L1)**: `axionc` mínimo em Rust, linearidade
-  end-to-end; os 5 programas de `examples/` compilam e correm.
+- **Fase 0 — Fundações** ✅: estratégia, repo, subconjunto mínimo, bancada EDSL.
+- **Fase 1 — Esqueleto ambulante (L0/L1)** ← *estás aqui*: `axionc` mínimo em
+  Rust ([`axionc/`](axionc/)), `parse → typecheck → correr`. **Esqueleto
+  ambulante feito**: `examples/01_hello` e `02_fib` correm; uso-após-consumo é
+  rejeitado com `AX0001`. A crescer: `data`/registos + Listagem 2.1 completa,
+  inferência de tipos, os restantes `examples/`. Ver [`docs/phase-1.md`](docs/phase-1.md).
 - **Fase 2 — Modelo de memória**: Auto-Drop, arenas, `%0.5`.
 - **Fase 3 — Concorrência**: canais + session types, com trilho formal.
 - **Fase 4+ — Tooling, ternário (`TritVec`), topologia avançada.**
