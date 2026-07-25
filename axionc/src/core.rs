@@ -104,6 +104,9 @@ pub struct CoreFn {
     /// nomes capturados (vazio para não-lambdas); carregados do env em codegen
     pub captures: Vec<String>,
     pub is_closure: bool,
+    /// parâmetros `%1` de tipo-heap: o callee **possui-os** e liberta-os no seu
+    /// ponto de morte (reclamação entre funções — Auto-Drop, §2)
+    pub owned_params: Vec<String>,
     pub body: Term,
 }
 
@@ -128,6 +131,16 @@ pub fn result_type(sig: &Type) -> &Type {
         t = to;
     }
     t
+}
+
+/// Tipo alocado na heap por `axion_alloc` (registo/`data` ou tuplo). Exclui
+/// `Int`/`IO` (i64 puro), `String` (C-string do runtime, não é nossa) e funções
+/// (as closures são reclamadas conservadoramente — podem ser chamadas).
+fn heap_ty(t: &Type, data_types: &HashSet<String>) -> bool {
+    match t {
+        Type::Tuple(_) => true,
+        _ => t.head_con().is_some_and(|h| data_types.contains(h)),
+    }
 }
 
 pub fn is_int(t: &Type) -> bool {
@@ -547,6 +560,70 @@ fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
     (cur, args)
 }
 
+/// Baixa uma função (de topo ou `where`), devolvendo `(params, corpo,
+/// params-possuídos)`. Funções de cláusula única com padrões só variável/`_`
+/// nomeiam os parâmetros directamente (sem o alias redundante `let n = _p0`),
+/// o que dá um Core mais legível e nomes limpos para a reclamação de params.
+#[allow(clippy::too_many_arguments)]
+fn lower_func(
+    f: &ast::Func,
+    arity: usize,
+    locals: &HashMap<String, String>,
+    globals: &HashSet<String>,
+    fields: &HashSet<String>,
+    lam_meta: &LamMeta,
+    data_types: &HashSet<String>,
+) -> (Vec<String>, Term, Vec<String>) {
+    let mut lw = Lower {
+        globals,
+        fields,
+        lam_meta,
+        locals: locals.clone(),
+        tmp: 0,
+    };
+    let single_var = f.clauses.len() == 1
+        && f.clauses[0]
+            .pats
+            .iter()
+            .all(|p| matches!(p, Pat::Var(_, _) | Pat::Wild(_)));
+    let (params, body) = if single_var {
+        let params: Vec<String> = f.clauses[0]
+            .pats
+            .iter()
+            .enumerate()
+            .map(|(k, p)| match p {
+                Pat::Var(n, _) => n.clone(),
+                _ => format!("_w{k}"),
+            })
+            .collect();
+        let body = match &f.clauses[0].body {
+            Body::Plain(e) => lw.term(e),
+            Body::Guarded(_) => Term::Ret(Rhs::Op(Op::Unsupported("guardas".into()))),
+        };
+        (params, body)
+    } else {
+        let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
+        let body = lw.clauses(&f.clauses, &params, 0);
+        (params, body)
+    };
+    // parâmetros `%1` de tipo-heap → o callee possui-os e liberta-os
+    let owned: Vec<String> = match &f.sig {
+        Some(sig) => {
+            let mults = sig.param_mults();
+            let ptypes = sig.param_types();
+            (0..params.len())
+                .filter(|&i| {
+                    mults.get(i) == Some(&ast::Mult::One)
+                        && ptypes.get(i).is_some_and(|t| heap_ty(t, data_types))
+                })
+                .map(|i| params[i].clone())
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    (params, body, owned)
+}
+
 /// Baixa o módulo para o Core: funções de topo candidatas, os seus locais de
 /// `where` (mangled) e as lambdas liftadas (com captura).
 pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
@@ -562,6 +639,18 @@ pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
             }
         }
     }
+    // funções cujo retorno é um objecto de heap → o resultado da chamada passa
+    // a ser propriedade do chamador (reclamável quando morre e não escapa)
+    let heap_ret: HashSet<String> = module
+        .funcs
+        .iter()
+        .filter(|f| {
+            f.sig
+                .as_ref()
+                .is_some_and(|s| heap_ty(result_type(s), &data_types))
+        })
+        .map(|f| f.name.clone())
+        .collect();
 
     // pré-passo: nomeia + calcula capturas de todas as lambdas (por span)
     let mut lam_meta: LamMeta = HashMap::new();
@@ -614,38 +703,35 @@ pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
             locals.insert(w.name.clone(), format!("{}${}", f.name, w.name));
         }
 
-        let mut lw = Lower {
-            globals: &globals,
-            fields: &fields,
-            lam_meta: &lam_meta,
-            locals: locals.clone(),
-            tmp: 0,
-        };
-        let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
+        let (params, body, owned) =
+            lower_func(f, arity, &locals, &globals, &fields, &lam_meta, &data_types);
         out.push(CoreFn {
             name: f.name.clone(),
-            params: params.clone(),
+            params,
             captures: Vec::new(),
             is_closure: false,
-            body: lw.clauses(&f.clauses, &params, 0),
+            owned_params: owned,
+            body,
         });
 
         for w in &wheres {
             let warity = w.clauses.first().map(|c| c.pats.len()).unwrap_or(0);
-            let wparams: Vec<String> = (0..warity).map(|k| format!("_p{k}")).collect();
-            let mut lw = Lower {
-                globals: &globals,
-                fields: &fields,
-                lam_meta: &lam_meta,
-                locals: locals.clone(),
-                tmp: 0,
-            };
+            let (wp, wb, wo) = lower_func(
+                w,
+                warity,
+                &locals,
+                &globals,
+                &fields,
+                &lam_meta,
+                &data_types,
+            );
             out.push(CoreFn {
                 name: locals[&w.name].clone(),
-                params: wparams.clone(),
+                params: wp,
                 captures: Vec::new(),
                 is_closure: false,
-                body: lw.clauses(&w.clauses, &wparams, 0),
+                owned_params: wo,
+                body: wb,
             });
         }
     }
@@ -676,11 +762,14 @@ pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
             params,
             captures,
             is_closure: true,
+            owned_params: Vec::new(),
             body: lw.term(body),
         });
     }
 
-    out.into_iter().map(insert_drops).collect()
+    out.into_iter()
+        .map(|f| insert_drops(f, &heap_ret))
+        .collect()
 }
 
 // --- análise de reclamação: Drop estrutural (Auto-Drop §2) ---
@@ -743,42 +832,59 @@ fn fv_op(op: &Op, drp: &HashSet<String>, out: &mut HashSet<String>) {
     }
 }
 
-/// O conjunto droppable de uma função: alocados localmente menos os que escapam.
-fn droppable_vars(f: &CoreFn) -> HashSet<String> {
-    let mut allocated = HashSet::new();
+/// O conjunto droppable de uma função: objectos que ela **possui** — alocados
+/// localmente (`Make*`), resultados de chamadas que devolvem heap (`heap_ret`),
+/// e os seus parâmetros `%1` de heap — menos os que escapam.
+fn droppable_vars(f: &CoreFn, heap_ret: &HashSet<String>) -> HashSet<String> {
+    let mut allocated: HashSet<String> = f.owned_params.iter().cloned().collect();
     let mut escaped = HashSet::new();
-    scan_body(&f.body, &mut allocated, &mut escaped);
+    scan_body(&f.body, heap_ret, &mut allocated, &mut escaped);
     allocated.difference(&escaped).cloned().collect()
 }
 
-fn scan_body(t: &Term, alloc: &mut HashSet<String>, esc: &mut HashSet<String>) {
+fn scan_body(
+    t: &Term,
+    heap_ret: &HashSet<String>,
+    alloc: &mut HashSet<String>,
+    esc: &mut HashSet<String>,
+) {
     match t {
         Term::Let(x, rhs, body) => {
             match rhs {
                 Rhs::Op(op) => {
-                    if is_heap_alloc(op) {
+                    // alocação local, ou resultado de chamada que devolve heap
+                    if is_heap_alloc(op) || returns_owned_heap(op, heap_ret) {
                         alloc.insert(x.clone());
                     }
                     scan_op_escapes(op, esc);
                 }
                 Rhs::If(_, t2, e2) => {
-                    scan_body(t2, alloc, esc);
-                    scan_body(e2, alloc, esc);
+                    scan_body(t2, heap_ret, alloc, esc);
+                    scan_body(e2, heap_ret, alloc, esc);
                 }
-                Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| scan_body(b, alloc, esc)),
+                Rhs::Case(_, arms) => arms
+                    .iter()
+                    .for_each(|(_, b)| scan_body(b, heap_ret, alloc, esc)),
             }
-            scan_body(body, alloc, esc);
+            scan_body(body, heap_ret, alloc, esc);
         }
-        Term::Drop(_, body) => scan_body(body, alloc, esc),
+        Term::Drop(_, body) => scan_body(body, heap_ret, alloc, esc),
         Term::Ret(rhs) => match rhs {
             Rhs::Op(op) => scan_op_escapes_ret(op, esc),
             Rhs::If(_, t2, e2) => {
-                scan_body(t2, alloc, esc);
-                scan_body(e2, alloc, esc);
+                scan_body(t2, heap_ret, alloc, esc);
+                scan_body(e2, heap_ret, alloc, esc);
             }
-            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| scan_body(b, alloc, esc)),
+            Rhs::Case(_, arms) => arms
+                .iter()
+                .for_each(|(_, b)| scan_body(b, heap_ret, alloc, esc)),
         },
     }
+}
+
+/// Uma chamada directa a uma função que devolve heap → o resultado é do chamador.
+fn returns_owned_heap(op: &Op, heap_ret: &HashSet<String>) -> bool {
+    matches!(op, Op::CallDirect(name, _) if heap_ret.contains(name))
 }
 
 fn is_heap_alloc(op: &Op) -> bool {
@@ -820,9 +926,9 @@ fn scan_op_escapes_ret(op: &Op, esc: &mut HashSet<String>) {
     }
 }
 
-/// Insere os `drop`s numa função (Drop estrutural dos objectos locais).
-fn insert_drops(mut f: CoreFn) -> CoreFn {
-    let drp = droppable_vars(&f);
+/// Insere os `drop`s numa função (Drop estrutural + reclamação entre funções).
+fn insert_drops(mut f: CoreFn, heap_ret: &HashSet<String>) -> CoreFn {
+    let drp = droppable_vars(&f, heap_ret);
     if drp.is_empty() {
         return f;
     }

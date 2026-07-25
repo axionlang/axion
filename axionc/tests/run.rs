@@ -505,6 +505,37 @@ fn auto_drop_frees_local_heap_at_runtime() {
 }
 
 #[test]
+fn cross_function_reclamation_frees_moved_linear_object() {
+    // 'make' aloca um Box e devolve-o; 'take' recebe-o por %1 e liberta-o. O
+    // objecto atravessa a fronteira e é libertado exactamente uma vez.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("linear_move.axi")])
+        .env("AXION_HEAP_STATS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+    let stats = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stats.contains("1 allocs, 1 frees"),
+        "esperava reclamação entre funções (1==1), stats: {stats}"
+    );
+    // o param %1 é libertado no callee (nó de drop no Core)
+    let core = axionc()
+        .args(["--emit", "core", &fixture("linear_move.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&core.stdout).contains("drop b"),
+        "esperava 'drop b' no corpo de 'take'"
+    );
+}
+
+#[test]
 fn auto_drop_inserts_drop_nodes_in_core() {
     // o tuplo local do 'case' é libertado à cabeça do braço (após destructuração).
     let out = axionc()

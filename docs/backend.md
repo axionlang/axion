@@ -76,18 +76,32 @@ JIT). `--emit clif` mostra o IR (blocos, `brif`, `call` recursivo).
 
 A heap deixou de ser toda *leaked*: `axion_alloc` prefixa cada bloco com um
 cabeçalho de tamanho e `axion_free` liberta-o. A análise de reclamação (em
-`core.rs`) insere nós `drop x` no Core que libertam os objectos de heap **locais**
-no seu ponto de morte — um objecto é *droppable* se for alocado na função
-(`MakeTuple`/`MakeRecord`/`UpdateRecord`/`MakeClosure`) e **nunca escapar**
-(devolvido, embebido, passado a uma chamada, ou aliased). A disciplina linear
-garante que libertar após a última leitura é são (sem aliasing → sem
-uso-após-free nem dupla-libertação); os `if`/`case` são equilibrados para libertar
-uma vez por caminho. Vê-se com `--emit core` (nós `drop`) e mede-se com
-`AXION_HEAP_STATS=1` (imprime `allocs`/`frees`): `heap_loop.axi` (300 chamadas que
-alocam+libertam um tuplo) dá **300 allocs == 300 frees**, memória constante, sem
-GC. **Ainda por reclamar (conservador — são):** objectos que escapam ou mudam de
-dono (reclamação **entre funções**), o **reset de arena**, e os `%1`/arenas —
-próximos incrementos.
+`core.rs`) insere nós `drop x` no Core que libertam os objectos que a função
+**possui** no seu ponto de morte. Um objecto é *droppable* se for **possuído** —
+alocado localmente (`MakeTuple`/`MakeRecord`/`UpdateRecord`/`MakeClosure`), o
+resultado de uma chamada que devolve heap (`data`/tuplo), ou um parâmetro `%1` de
+tipo-heap — e **nunca escapar** (devolvido, embebido, passado a uma chamada, ou
+aliased). Os `if`/`case` são equilibrados para libertar uma vez por caminho, e o
+escrutínio de um `case` é libertado à cabeça de cada braço.
+
+Isto dá **reclamação entre funções** para valores lineares: quem devolve heap
+transfere a posse ao chamador (que o liberta), e um parâmetro `%1` é possuído e
+libertado pelo callee. A soberania é a chave da soundness — a disciplina linear
+garante ausência de aliasing (`%1` não pode ser duplicado), pelo que libertar
+após a última leitura nunca é uso-após-free nem dupla-libertação.
+
+Vê-se com `--emit core` (nós `drop`) e mede-se com `AXION_HEAP_STATS=1` (imprime
+`allocs`/`frees`):
+
+- `heap_loop.axi` (300 chamadas que alocam+libertam um tuplo) → **300==300**,
+  memória constante, sem GC.
+- `linear_move.axi` (`make` aloca um `Box`, `take` recebe-o por `%1`) → **1==1**:
+  o objecto atravessa a fronteira e é libertado uma vez.
+
+**Ainda por reclamar (conservador — são):** valores **irrestritos** (`Many`)
+passados entre funções — podem ser aliased, logo a posse não basta (precisam de
+disciplina linear ou RC/GC); as **closures** (podem ser chamadas); o **reset de
+arena** e os `%1`/arenas — próximos incrementos.
 
 O codegen recusa o que não cabe com um erro claro; para esses programas, usa-se
 o interpretador (`axionc programa.axi`, sem `--backend`).
