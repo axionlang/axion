@@ -206,6 +206,32 @@ fn inplace_update_on_linear_base_reported() {
 }
 
 #[test]
+fn arena_escape_is_rejected_ax0003() {
+    // Um valor alocado numa sub-arena, devolvido do withSubArena → AX0003.
+    let out = axionc()
+        .args(["--check", &fixture("arena_escape.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0003"), "esperava AX0003, saída: {text}");
+}
+
+#[test]
+fn arena_promote_is_accepted() {
+    // 'promote parent node' move o valor para a arena-pai → não escapa.
+    let out = axionc()
+        .args(["--check", &fixture("arena_promote_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "promote devia ser aceite; saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn use_after_move_is_rejected_ax0004() {
     // Ler um %1 depois de a posse ter sido movida (consumida) → AX0004.
     let out = axionc()

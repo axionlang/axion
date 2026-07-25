@@ -226,6 +226,12 @@ fn explain(code: &str) -> ExitCode {
             "AX0100 — erro de sintaxe. O parser não conseguiu reconhecer\n\
              a construção. Verifique parênteses, '=' e indentação."
         }
+        "AX0003" => {
+            "AX0003 — escape de sub-arena. Um valor alocado numa sub-arena\n\
+             (allocateCell sub) não pode ser devolvido do withSubArena — no reset\n\
+             a RAM da sub-arena é recuperada e o valor ficaria pendurado. Mova-o\n\
+             para a arena-pai antes do reset com 'promote parent valor' (§3)."
+        }
         "AX0004" => {
             "AX0004 — uso-após-move. Depois de mover a posse de um %1 (consumir:\n\
              argumento %1, campo %1, ou retorno), não se pode voltar a lê-lo nem\n\

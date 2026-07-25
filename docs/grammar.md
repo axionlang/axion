@@ -48,6 +48,7 @@ pat         = varName | "_" | literal
 expr        = "let" { funDef } "in" expr
             | "if" expr "then" expr "else" expr
             | "case" expr "of" { alt }
+            | "\" { apat } "->" expr           (* lambda; arenas §3         *)
             | "do" { stmt }
             | opExpr ;
 opExpr      = appExpr { binop appExpr } ;   (* +  -  *  ==  .  `mod` …      *)

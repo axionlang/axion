@@ -14,15 +14,15 @@ e explicáveis por `axion --explain AXnnnn`.
 |--------|-----------|--------------------|--------|
 | `AX0001` | Linearidade | Contração: um `%1` **consumido** >1 vez (ler/emprestar é livre) | **imposto pelo `axionc`** (Fase 1/2) |
 | `AX0002` | Linearidade | *Must-use*: um `%1` **sem `Drop`** descartado sem consumo (tipos droppable ⇒ Auto-Drop, não erro) | **imposto pelo `axionc`** (Fase 1/2) |
-| `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | reservado (Fase 2) |
+| `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | **imposto pelo `axionc`** (Fase 2) |
 | `AX0004` | Linearidade | Uso-após-move: ler/consumir um `%1` depois de a posse ter sido movida | **imposto pelo `axionc`** (Fase 2) |
 | `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
 | `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0200` | Tipos | Incompatibilidade de tipos (unificação falhou) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
 
-Reservado mas ainda não implementado: `AX0003`. Próximo livre por banda —
-linguagem: `AX0005`; front-end: `AX0102`; tipos: `AX0202`.
+Próximo livre por banda — linguagem: `AX0005`; front-end: `AX0102`;
+tipos: `AX0202`.
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
 > linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*
@@ -94,6 +94,25 @@ error[AX0002]: recurso must-use 'x' largado sem ser consumido
 **Regra (§3).** Um valor alocado numa sub-arena não pode escapar ao seu escopo;
 o escape tem de ser erro de *compilação* (usar `promote` para o mover à
 arena-pai antes do reset). Exemplo na Listagem 3.5.
+
+**`axionc` (Fase 2).** Um rastreio de proveniência de região
+(`axionc/src/check.rs`) segue os valores ligados à sub-arena de um
+`withSubArena parent (\sub -> …)`: `allocateCell sub …` liga o valor à sub-arena;
+`promote parent v` re-liga-o à arena-pai (corta a proveniência). Se o valor de
+retorno ainda estiver ligado à sub-arena → `AX0003`, com o span do retorno e o
+da alocação.
+
+```
+error[AX0003]: um valor escapa da sua sub-arena
+  --> arena_escape.axi:4:78
+  |
+4 | escapes parent = withSubArena parent (\sub -> let node = allocateCell sub in node)
+  |                                                          ^^^^^^^^^^^^^^^^ vive na sub-arena 'sub'
+  |                                        (…)                                     ^^^^ devolvido daqui
+```
+
+Fixtures: `arena_escape.axi` (escapa → `AX0003`), `arena_promote_ok.axi`
+(`promote` → aceite).
 
 ---
 

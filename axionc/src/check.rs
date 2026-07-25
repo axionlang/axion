@@ -21,6 +21,11 @@
 //! A ORDEM também é verificada: uma travessia na ordem de avaliação detecta o
 //! uso de um `%1` **depois** de a posse ter sido movida (uso-após-move ⇒
 //! `AX0004`). `x + sink x` (ler antes de consumir) é aceite; `sink x + x` não.
+//!
+//! Regiões (§3): a análise de escape de sub-arena (`AX0003`) segue a
+//! proveniência dos valores de `withSubArena parent (\sub -> …)` — um valor
+//! `allocateCell sub` que seja devolvido escapa, salvo se `promote parent` o
+//! mover à arena-pai.
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
@@ -119,10 +124,20 @@ fn build_must_use_types(module: &Module) -> HashSet<String> {
 }
 
 fn builtins() -> HashSet<String> {
-    ["putStrLn", "show", "otherwise", "True", "False"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    [
+        "putStrLn",
+        "show",
+        "otherwise",
+        "True",
+        "False",
+        // arenas (§3)
+        "withSubArena",
+        "allocateCell",
+        "promote",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Estado de um recurso linear após a análise de uma cláusula/âmbito.
@@ -171,6 +186,11 @@ fn check_func(
                 report_resource(name, &class, *span, &use_, &f.name, diags, out);
                 lin.insert(name.clone(), class);
             }
+        }
+
+        // --- escape de sub-arena (§3): valores que sobreviveriam ao reset ---
+        if let Body::Plain(body) = &clause.body {
+            check_arena_escapes(body, diags);
         }
 
         // --- linearidade + Auto-Drop de valores 'let' lineares + in-place (§2) ---
@@ -382,6 +402,13 @@ fn resolve_expr(
                 resolve_expr(e, scope, globals, diags);
             }
         }
+        Expr::Lam(pats, body, _) => {
+            let mut s = scope.clone();
+            for p in pats {
+                collect_pat_vars(p, &mut s);
+            }
+            resolve_expr(body, &s, globals, diags);
+        }
     }
 }
 
@@ -528,7 +555,24 @@ fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
             analyze(base, x, Mode::Consume, ctx), // a actualização toma posse do base
             analyze_assigns(assigns, x, ctx),
         ),
+        // uma lambda que sombreie x não o refere; caso contrário conta o corpo
+        Expr::Lam(pats, body, _) => {
+            if binds_var(pats, x) {
+                (0, 0)
+            } else {
+                analyze(body, x, mode, ctx)
+            }
+        }
     }
+}
+
+/// Verdade se algum dos padrões liga o nome `x` (sombreamento).
+fn binds_var(pats: &[Pat], x: &str) -> bool {
+    let mut s = HashSet::new();
+    for p in pats {
+        collect_pat_vars(p, &mut s);
+    }
+    s.contains(x)
 }
 
 fn analyze_assigns(assigns: &[(String, Expr)], x: &str, ctx: &Ctx) -> Uses {
@@ -639,6 +683,11 @@ fn collect_last(e: &Expr, x: &str, best: &mut Option<Span>) {
             collect_last(base, x, best);
             assigns.iter().for_each(|(_, e)| collect_last(e, x, best));
         }
+        Expr::Lam(pats, body, _) => {
+            if !binds_var(pats, x) {
+                collect_last(body, x, best);
+            }
+        }
     }
 }
 
@@ -735,6 +784,13 @@ fn walk(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, mut st: MoveState) -> MoveStat
         Expr::RecordUpd(base, assigns, _) => {
             st = walk(base, x, Mode::Consume, ctx, st);
             walk_assigns(assigns, x, ctx, st)
+        }
+        Expr::Lam(pats, body, _) => {
+            if binds_var(pats, x) {
+                st
+            } else {
+                walk(body, x, mode, ctx, st)
+            }
         }
     }
 }
@@ -860,6 +916,140 @@ fn scan_lets<'a>(
                 scan_lets(a, lin, ctx, lets, inplace, func);
             }
         }
+        Expr::Lam(_, body, _) => scan_lets(body, lin, ctx, lets, inplace, func),
         Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+    }
+}
+
+// --- análise de escape de sub-arena (AX0003, §3) ---
+//
+// Um valor alocado numa sub-arena (`allocateCell sub …`) não pode escapar ao
+// escopo do `withSubArena sub … -> corpo` (por ser devolvido). O escape é erro
+// de compilação; `promote parent v` re-liga o valor à arena-pai e safa-o.
+// Rastreio de proveniência de região, análogo à análise de move.
+
+/// Reconhece `withSubArena <parent> (\sub -> corpo)` e devolve `(sub, corpo)`.
+fn as_with_sub_arena(e: &Expr) -> Option<(&str, &Expr)> {
+    let (head, args) = spine(e);
+    let is_wsa = matches!(head, Expr::Var(n, _) if n == "withSubArena");
+    if is_wsa && args.len() >= 2 {
+        if let Expr::Lam(pats, body, _) = args[1] {
+            if let [Pat::Var(sub, _)] = pats.as_slice() {
+                return Some((sub, body));
+            }
+        }
+    }
+    None
+}
+
+/// Procura recursivamente formas `withSubArena` e verifica o escape em cada uma.
+fn check_arena_escapes(e: &Expr, diags: &mut Diagnostics) {
+    if let Some((sub, body)) = as_with_sub_arena(e) {
+        check_sub_scope(body, sub, diags);
+    }
+    match e {
+        Expr::App(f, a, _) => {
+            check_arena_escapes(f, diags);
+            check_arena_escapes(a, diags);
+        }
+        Expr::BinOp(_, l, r, _) => {
+            check_arena_escapes(l, diags);
+            check_arena_escapes(r, diags);
+        }
+        Expr::If(c, t, el, _) => {
+            check_arena_escapes(c, diags);
+            check_arena_escapes(t, diags);
+            check_arena_escapes(el, diags);
+        }
+        Expr::Let(binds, body, _) => {
+            for c in binds.iter().flat_map(|b| &b.clauses) {
+                if let Body::Plain(e2) = &c.body {
+                    check_arena_escapes(e2, diags);
+                }
+            }
+            check_arena_escapes(body, diags);
+        }
+        Expr::Case(s, arms, _) => {
+            check_arena_escapes(s, diags);
+            for (_, b) in arms {
+                check_arena_escapes(b, diags);
+            }
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|e| check_arena_escapes(e, diags)),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => assigns
+            .iter()
+            .for_each(|(_, e)| check_arena_escapes(e, diags)),
+        Expr::Lam(_, body, _) => check_arena_escapes(body, diags),
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+    }
+}
+
+/// Verifica um corpo de `withSubArena`: os valores ligados à sub-arena não podem
+/// aparecer no valor de retorno.
+fn check_sub_scope(body: &Expr, sub: &str, diags: &mut Diagnostics) {
+    let mut sub_bound: HashMap<String, Span> = HashMap::new();
+    let tail = peel_arena_lets(body, sub, &mut sub_bound);
+    if let Some(origin) = region_of(tail, sub, &sub_bound) {
+        let esc = tail.span();
+        diags.push(
+            Diagnostic::error("AX0003", "um valor escapa da sua sub-arena")
+                .label(
+                    esc.0,
+                    esc.1,
+                    "devolvido daqui — sobreviveria ao reset da sub-arena",
+                )
+                .label(origin.0, origin.1, format!("vive na sub-arena '{sub}'"))
+                .with_help(
+                    "no reset a RAM da sub-arena é recuperada; mova o valor para a \
+                     arena-pai antes do reset com 'promote parent valor' (§3).",
+                ),
+        );
+    }
+}
+
+/// Percorre a cadeia de `let`, registando os nomes ligados à sub-arena, e
+/// devolve a expressão-cauda (o valor de retorno).
+fn peel_arena_lets<'a>(e: &'a Expr, sub: &str, sub_bound: &mut HashMap<String, Span>) -> &'a Expr {
+    let mut cur = e;
+    while let Expr::Let(binds, body, _) = cur {
+        for b in binds {
+            if let Some(rhs) = simple_bind_rhs(b) {
+                if let Some(sp) = region_of(rhs, sub, sub_bound) {
+                    sub_bound.insert(b.name.clone(), sp);
+                }
+            }
+        }
+        cur = body;
+    }
+    cur
+}
+
+/// Se `e` produz um valor ligado à sub-arena `sub`, devolve o span da sua
+/// origem (a alocação). `promote` re-liga à arena-pai, cortando a proveniência.
+fn region_of(e: &Expr, sub: &str, sub_bound: &HashMap<String, Span>) -> Option<Span> {
+    match e {
+        Expr::Var(n, _) => sub_bound.get(n).copied(),
+        Expr::App(_, _, _) => {
+            let (head, args) = spine(e);
+            match head {
+                Expr::Var(n, _) if n == "allocateCell" => {
+                    // allocateCell sub … → vive na sub-arena
+                    if matches!(args.first(), Some(Expr::Var(a, _)) if a == sub) {
+                        Some(e.span())
+                    } else {
+                        None
+                    }
+                }
+                // promote corta a proveniência: o resultado vive na arena-pai
+                Expr::Var(n, _) if n == "promote" => None,
+                // outra função: conservador — pode devolver um valor da sub-arena
+                _ => args.iter().find_map(|a| region_of(a, sub, sub_bound)),
+            }
+        }
+        Expr::Tuple(es, _) => es.iter().find_map(|e| region_of(e, sub, sub_bound)),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => assigns
+            .iter()
+            .find_map(|(_, e)| region_of(e, sub, sub_bound)),
+        _ => None,
     }
 }

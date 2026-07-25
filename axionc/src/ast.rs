@@ -80,6 +80,8 @@ pub enum Expr {
     RecordCon(String, Vec<(String, Expr)>, Span),
     /// Actualização de registo: `base { campo = expr, ... }` (Listagem 2.1).
     RecordUpd(Box<Expr>, Vec<(String, Expr)>, Span),
+    /// Abstracção lambda: `\p1 p2 -> corpo` (usada por `withSubArena`, §3).
+    Lam(Vec<Pat>, Box<Expr>, Span),
 }
 
 impl Expr {
@@ -96,7 +98,8 @@ impl Expr {
             | Expr::Case(_, _, s)
             | Expr::Tuple(_, s)
             | Expr::RecordCon(_, _, s)
-            | Expr::RecordUpd(_, _, s) => *s,
+            | Expr::RecordUpd(_, _, s)
+            | Expr::Lam(_, _, s) => *s,
         }
     }
 }

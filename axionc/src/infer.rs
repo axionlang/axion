@@ -224,6 +224,37 @@ impl<'a> Infer<'a> {
                 )),
             );
         }
+        // arenas (§3). O arg da arena é emprestado (não %1): allocateCell e
+        // promote lêem a arena para bump-allocate, muitas vezes.
+        let arena = || Ty::Con("Arena".into(), vec![]);
+        let cell = || Ty::Con("Cell".into(), vec![]);
+        // allocateCell :: Arena -> Cell
+        env.insert(
+            "allocateCell".into(),
+            mono(Ty::Fun(Box::new(arena()), Box::new(cell()))),
+        );
+        // promote :: Arena -> Cell -> Cell
+        env.insert(
+            "promote".into(),
+            mono(Ty::Fun(
+                Box::new(arena()),
+                Box::new(Ty::Fun(Box::new(cell()), Box::new(cell()))),
+            )),
+        );
+        // withSubArena :: forall a. Arena -> (Arena -> a) -> a
+        env.insert(
+            "withSubArena".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(arena()),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Fun(Box::new(arena()), Box::new(Ty::Var(0)))),
+                        Box::new(Ty::Var(0)),
+                    )),
+                ),
+            },
+        );
         env
     }
 
@@ -601,6 +632,15 @@ impl<'a> Infer<'a> {
                     }
                 }
                 tb
+            }
+            Expr::Lam(pats, body, _) => {
+                let mut local = env.clone();
+                let params: Vec<Ty> = pats.iter().map(|p| self.infer_pat(&mut local, p)).collect();
+                let mut ty = self.infer_expr(&local, body);
+                for p in params.into_iter().rev() {
+                    ty = Ty::Fun(Box::new(p), Box::new(ty));
+                }
+                ty
             }
         }
     }

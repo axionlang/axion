@@ -247,6 +247,9 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             }
             Ok(Value::Record { con, fields })
         }
+        // lambdas surgem em programas de arena (§3), verificados com --check;
+        // o interpretador ainda não as executa.
+        Expr::Lam(_, _, _) => Err("lambdas ainda não são executáveis (usar --check)".to_string()),
     }
 }
 

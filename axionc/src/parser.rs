@@ -461,8 +461,22 @@ impl<'a> Parser<'a> {
             Some(LTok::Tok(Tok::If)) => self.parse_if(),
             Some(LTok::Tok(Tok::Let)) => self.parse_let(),
             Some(LTok::Tok(Tok::Case)) => self.parse_case(),
+            Some(LTok::Tok(Tok::Backslash)) => self.parse_lam(),
             _ => self.parse_cmp(),
         }
+    }
+
+    fn parse_lam(&mut self) -> PResult<Expr> {
+        let (s, _) = self.span_here();
+        self.bump(); // '\'
+        let mut pats = Vec::new();
+        while !self.at(&Tok::Arrow) {
+            pats.push(self.parse_apat()?);
+        }
+        self.expect(&Tok::Arrow, "'->' na lambda")?;
+        let body = self.parse_expr()?;
+        let end = self.span_here().0;
+        Ok(Expr::Lam(pats, Box::new(body), (s, end)))
     }
 
     fn parse_if(&mut self) -> PResult<Expr> {
