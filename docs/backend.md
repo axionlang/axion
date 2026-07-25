@@ -4,10 +4,11 @@
 > estrito/linear — ver `axionc/src/core.rs`) e daí emite código nativo:
 > **Cranelift em `--dev`** (compila depressa — «zero otimizações em dev») e
 > **LLVM em `--release`** (`axionc --release`; baixa o mesmo Core para LLVM IR
-> textual e compila com `clang -O2` — a par do C, ver
-> [benchmarks](benchmarks.md)). Ambos partilham o mesmo Core; vê-lo com
-> `axionc --emit core`, e o LLVM IR com `axionc --emit llvm`. O `--release`
-> cobre por agora o núcleo Int (o resto cresce do mesmo Core).
+> textual e compila com `clang -O2 -flto` + um pequeno runtime C — a par do C, ver
+> [benchmarks](benchmarks.md)). Ambos partilham o mesmo Core e cobrem o **mesmo
+> subconjunto** (Int, registos/tuplos, strings/IO, `case`, closures, arenas,
+> Auto-Drop). Vê-se o Core com `axionc --emit core` e o LLVM IR com
+> `axionc --emit llvm`.
 
 Este backend `--dev`, sobre `cranelift-jit`, é um **mero emissor Core→Cranelift**:
 o desugar de multi-cláusula, o *lifting* de `where` e a conversão de closures já

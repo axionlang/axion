@@ -10,7 +10,7 @@
 //! LLVM `--release` (incremento seguinte).
 
 use crate::ast;
-use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, Rhs, Term};
+use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term};
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
 use cranelift::prelude::{
@@ -155,42 +155,6 @@ extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> 
     let dst = st.alloc(size as usize);
     unsafe { std::ptr::copy_nonoverlapping(cell, dst, size as usize) };
     dst
-}
-
-/// Layout dos registos: campos por construtor (na ordem declarada).
-#[derive(Default)]
-struct RecordInfo {
-    con_fields: HashMap<String, Vec<String>>, // construtor → campos (ordem)
-    field_owner: HashMap<String, String>,     // nome de campo → construtor
-}
-
-impl RecordInfo {
-    fn build(module: &ast::Module) -> RecordInfo {
-        let mut r = RecordInfo::default();
-        for d in &module.datas {
-            for c in &d.cons {
-                let fields: Vec<String> = c
-                    .fields
-                    .iter()
-                    .filter(|f| !f.name.is_empty())
-                    .map(|f| f.name.clone())
-                    .collect();
-                for f in &fields {
-                    r.field_owner.insert(f.clone(), c.name.clone());
-                }
-                r.con_fields.insert(c.name.clone(), fields);
-            }
-        }
-        r
-    }
-
-    /// Offset (em bytes) de um campo, e a lista de campos do seu registo.
-    fn field(&self, name: &str) -> Option<(i32, &[String])> {
-        let con = self.field_owner.get(name)?;
-        let fields = self.con_fields.get(con)?;
-        let idx = fields.iter().position(|f| f == name)?;
-        Some((idx as i32 * 8, fields))
-    }
 }
 
 /// Os `FuncId` do runtime de arena (§3).
@@ -592,10 +556,8 @@ impl Fx<'_, '_> {
             Op::MakeRecord { con, fields } => {
                 let nfields = self
                     .records
-                    .con_fields
-                    .get(con)
-                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?
-                    .len();
+                    .con_len(con)
+                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
                 let ptr = self.alloc(nfields);
                 for (fname, a) in fields {
                     let off = self

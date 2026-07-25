@@ -165,29 +165,50 @@ pub fn is_int(t: &Type) -> bool {
     matches!(t.head_con(), Some("Int"))
 }
 
-/// Nome curto de um `Op` para mensagens de erro dos backends.
-pub fn op_kind(op: &Op) -> &'static str {
-    match op {
-        Op::Atom(_) => "átomo",
-        Op::Prim(_, _, _) => "operação",
-        Op::CallDirect(_, _) => "chamada",
-        Op::CallClosure(_, _) => "chamada indirecta",
-        Op::MakeClosure { .. } => "closure",
-        Op::MakeTuple(_) => "tuplo",
-        Op::MakeRecord { .. } | Op::UpdateRecord { .. } => "registo",
-        Op::Field { .. } => "selector",
-        Op::PutStrLn(_) | Op::ShowInt(_) => "IO",
-        Op::WithArena { .. }
-        | Op::ArenaAlloc(_)
-        | Op::Promote(_, _)
-        | Op::ArenaMark(_)
-        | Op::ArenaRelease(_) => "arena",
-        Op::Unsupported(_) => "não-suportado",
-    }
-}
-
 pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
     module.datas.iter().map(|d| d.name.clone()).collect()
+}
+
+/// Layout dos registos: campos por construtor (ordem declarada). Partilhado
+/// pelos backends (offset = índice × 8 bytes; um `i64` por campo).
+#[derive(Default)]
+pub struct RecordInfo {
+    con_fields: HashMap<String, Vec<String>>,
+    field_owner: HashMap<String, String>,
+}
+
+impl RecordInfo {
+    pub fn build(module: &ast::Module) -> RecordInfo {
+        let mut r = RecordInfo::default();
+        for d in &module.datas {
+            for c in &d.cons {
+                let fields: Vec<String> = c
+                    .fields
+                    .iter()
+                    .filter(|f| !f.name.is_empty())
+                    .map(|f| f.name.clone())
+                    .collect();
+                for f in &fields {
+                    r.field_owner.insert(f.clone(), c.name.clone());
+                }
+                r.con_fields.insert(c.name.clone(), fields);
+            }
+        }
+        r
+    }
+
+    /// Nº de campos de um construtor.
+    pub fn con_len(&self, con: &str) -> Option<usize> {
+        self.con_fields.get(con).map(Vec::len)
+    }
+
+    /// Offset (em bytes) de um campo, e a lista de campos do seu registo.
+    pub fn field(&self, name: &str) -> Option<(i32, &[String])> {
+        let con = self.field_owner.get(name)?;
+        let fields = self.con_fields.get(con)?;
+        let idx = fields.iter().position(|f| f == name)?;
+        Some((idx as i32 * 8, fields))
+    }
 }
 
 /// Candidata a nativa: todos os parâmetros e o retorno são `i64`-representáveis.

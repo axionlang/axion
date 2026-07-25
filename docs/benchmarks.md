@@ -49,6 +49,23 @@ E na comparação **mesmo compilador** (o `fib.c` compilado com o *mesmo* clang-
 - Confirma a premissa dos **dois backends** (§11/§18): Cranelift para o ciclo
   edit-run instantâneo, LLVM para performance **competitiva com C** em release.
 
+### Código intensivo em alocação (arenas)
+
+Aqui o `-flto` do `--release` compensa a sério: liga o runtime C na mesma
+compilação, pelo que o **bump-allocator da arena inlina** no laço quente (e o
+`-O2` otimiza a recursão). Num micro-benchmark que aloca 40 M de células em
+arenas (`loop 2000 (withArena (\a -> allocN a 20000))`):
+
+```
+  Axión --release (LLVM -O2 -flto)     31 ms
+  Axión --dev (Cranelift)            1467 ms     (~47×)
+```
+
+O `--dev` paga chamada opaca ao runtime em cada `allocateCell` e não otimiza; o
+`--release` inlina-a e fá-la desaparecer. É exactamente o cenário onde o modelo
+de arenas (§3) da Axión deve brilhar — e onde a escolha de um **runtime C com
+`-flto`** (em vez de um `staticlib` Rust não-inlinável) se paga.
+
 ## Reproduzir
 
 ```sh

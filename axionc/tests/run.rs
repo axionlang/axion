@@ -625,7 +625,9 @@ fn emit_llvm_dumps_llvm_ir() {
 
 #[test]
 fn release_backend_compiles_and_runs_when_clang_present() {
-    // se houver clang (AXION_CLANG ou no PATH), o --release compila e corre.
+    // se houver clang (AXION_CLANG ou no PATH), o --release compila e corre, e
+    // o seu output coincide com o do --dev em todo o Core (registos, closures,
+    // strings/IO, case, arenas, drops).
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
     if std::process::Command::new(&clang)
         .arg("--version")
@@ -634,16 +636,29 @@ fn release_backend_compiles_and_runs_when_clang_present() {
     {
         return; // sem clang neste ambiente — o teste de IR acima já cobre
     }
-    let out = axionc()
-        .args(["--release", &fixture("native_fib.axi")])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "6765\n");
+    let cases = [
+        (fixture("native_fib.axi"), "6765\n"),
+        (fixture("native_case.axi"), "200\n"), // case + tuplos
+        (fixture("native_closure.axi"), "42\n"), // closures
+        (fixture("record_run.axi"), "99\n"),   // registos na heap
+        (fixture("linear_move.axi"), "42\n"),  // Auto-Drop + free
+        (fixture("arena_run.axi"), "100\n"),   // arenas
+        (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
+        (example("02_fib.axi"), "832040\n"),
+    ];
+    for (path, expected) in cases {
+        let out = axionc().args(["--release", &path]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{path}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            expected,
+            "--release divergiu em {path}"
+        );
+    }
 }
 
 #[test]
