@@ -16,12 +16,13 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0002` | Linearidade | *Must-use*: um `%1` **sem `Drop`** descartado sem consumo (tipos droppable ⇒ Auto-Drop, não erro) | **imposto pelo `axionc`** (Fase 1/2) |
 | `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | **imposto pelo `axionc`** (Fase 2) |
 | `AX0004` | Linearidade | Uso-após-move: ler/consumir um `%1` depois de a posse ter sido movida | **imposto pelo `axionc`** (Fase 2) |
+| `AX0005` | Regiões | Uso-após-release: valor alocado após `arena_mark` usado depois do `arena_release` | **imposto pelo `axionc`** (Fase 2) |
 | `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
 | `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0200` | Tipos | Incompatibilidade de tipos (unificação falhou) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
 
-Próximo livre por banda — linguagem: `AX0005`; front-end: `AX0102`;
+Próximo livre por banda — linguagem: `AX0006`; front-end: `AX0102`;
 tipos: `AX0202`.
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
@@ -142,6 +143,35 @@ error[AX0004]: uso de 'x' após a posse ter sido movida
 
 `x + sink x` (ler **antes** de consumir) é aceite; `sink x + x` (ler **depois**)
 é `AX0004`. Fixture: `axionc/tests/fixtures/use_after_move.axi`.
+
+---
+
+## `AX0005` — uso-após-release de marca de arena
+
+**Regra (§3, Listagem 3.6).** `mark = arena_mark arena` guarda o topo do
+bump-pointer; `arena_release mark` recua-o, recuperando **tudo o que foi alocado
+depois da marca**. Logo, um valor `allocateCell arena` alocado após a marca não
+pode ser usado **depois** do `arena_release` — a sua memória já foi reclamada.
+Reclamação intra-escopo, sem sub-arena.
+
+**`axionc` (Fase 2).** Uma análise ordenada sobre a espinha de `let`
+(`axionc/src/check.rs`) segue as marcas abertas, os valores alocados sob cada
+marca, e o `arena_release`; qualquer uso de um valor cuja marca já foi libertada
+é `AX0005`, com o span do uso, do release e da alocação.
+
+```
+error[AX0005]: 'tmp' usado após o 'arena_release' (memória já recuperada)
+  --> arena_mark_release.axi:8:3
+  |
+8 |   tmp
+  |   ^^^ 'tmp' usado aqui…
+  |
+7 |   let done = arena_release mark in
+  |              ^^^^^^^^^^^^^^^^^^ …mas o arena_release recuperou a memória aqui
+```
+
+Fixtures: `arena_mark_release.axi` (→ `AX0005`), `arena_mark_ok.axi` (uso antes
+do release → aceite).
 
 ---
 

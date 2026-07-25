@@ -244,6 +244,31 @@ fn arena_closure_capture_escape_is_rejected_ax0003() {
 }
 
 #[test]
+fn arena_use_after_release_is_rejected_ax0005() {
+    // Um valor alocado após uma marca e usado após o arena_release → AX0005.
+    let out = axionc()
+        .args(["--check", &fixture("arena_mark_release.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0005"), "esperava AX0005, saída: {text}");
+}
+
+#[test]
+fn arena_mark_used_before_release_is_accepted() {
+    let out = axionc()
+        .args(["--check", &fixture("arena_mark_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "uso antes do release devia ser aceite; saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn arena_reset_nll_point_reported() {
     // Reset NLL: o reset da sub-arena é injectado após a última menção viva
     // ('node', na promoção), não no fim léxico.

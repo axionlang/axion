@@ -48,9 +48,14 @@
     morte** da região (a última menção viva de um valor da sub-arena), não no
     fim léxico. `axionc --emit arenas` mostra-o (ex.: `arena_promote_ok` →
     reset após a última menção de `node`, na promoção).
-  - **Por crescer:** `arena_mark`/`arena_release` (reclamação intra-escopo,
-    Listagem 3.6) e o runtime de arenas (os programas de arena são `--check`-only;
-    o interpretador não os corre).
+  - **`arena_mark`/`arena_release`** (reclamação intra-escopo, Listagem 3.6):
+    `mark = arena_mark arena` guarda o topo do bump-pointer; `arena_release mark`
+    recupera tudo o que foi alocado depois. Uma análise ordenada sobre a espinha
+    de `let` rejeita usar, **após** o release, um valor alocado sob a marca
+    (`AX0005`). `arena_mark_release.axi` → `AX0005`; `arena_mark_ok.axi` (uso
+    antes do release) → aceite.
+  - **Por crescer:** o runtime de arenas (os programas de arena são
+    `--check`-only; o interpretador não corre lambdas/arenas).
 - [ ] **Permissões fracionárias** (`%0.5`): `split` / `join` (§2).
 - [ ] **Benchmark vs baseline (C/Rust)** — precisa do backend nativo
   (Cranelift/LLVM), ainda adiado; a «latência zero» tem de ser medida.

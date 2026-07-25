@@ -146,6 +146,8 @@ fn builtins() -> HashSet<String> {
         "withSubArena",
         "allocateCell",
         "promote",
+        "arena_mark",
+        "arena_release",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -203,6 +205,7 @@ fn check_func(
         // --- escape de sub-arena (§3) + reset NLL ---
         if let Body::Plain(body) = &clause.body {
             check_arena_escapes(body, &f.name, diags, &mut out.arenas);
+            check_arena_marks(body, diags);
         }
 
         // --- linearidade + Auto-Drop de valores 'let' lineares + in-place (§2) ---
@@ -1158,5 +1161,231 @@ fn captured_sub_ref(
             captured_sub_ref(body, sub_bound, shadowed)
         }
         Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => None,
+    }
+}
+
+// --- marcas de arena: reclamação intra-escopo (AX0005, Listagem 3.6, §3) ---
+//
+// `mark = arena_mark arena` guarda o topo do bump-pointer; `arena_release mark`
+// recua-o, recuperando tudo o que foi alocado depois da marca. Logo, um valor
+// alocado após a marca não pode ser usado DEPOIS do release — a sua memória já
+// foi recuperada. Análise ordenada sobre a espinha de `let`.
+
+struct Mark {
+    name: String,
+    arena: String,
+    released: Option<Span>,
+}
+
+struct BoundCell {
+    mark: String,
+    alloc: Span,
+}
+
+/// Classifica o RHS de um `let` como uma operação de marca de arena.
+enum MarkOp<'a> {
+    OpenMark { arena: &'a str }, // arena_mark arena
+    Alloc { arena: &'a str },    // allocateCell arena
+    Release { mark: &'a str },   // arena_release mark
+    Other,
+}
+
+fn classify_mark_op(e: &Expr) -> MarkOp<'_> {
+    let (head, args) = spine(e);
+    let arg0 = args.first();
+    match head {
+        Expr::Var(n, _) if n == "arena_mark" => match arg0 {
+            Some(Expr::Var(a, _)) => MarkOp::OpenMark { arena: a },
+            _ => MarkOp::Other,
+        },
+        Expr::Var(n, _) if n == "allocateCell" => match arg0 {
+            Some(Expr::Var(a, _)) => MarkOp::Alloc { arena: a },
+            _ => MarkOp::Other,
+        },
+        Expr::Var(n, _) if n == "arena_release" => match arg0 {
+            Some(Expr::Var(m, _)) => MarkOp::Release { mark: m },
+            _ => MarkOp::Other,
+        },
+        _ => MarkOp::Other,
+    }
+}
+
+/// Verifica a disciplina das marcas de arena num corpo de função.
+fn check_arena_marks(e: &Expr, diags: &mut Diagnostics) {
+    let mut marks: Vec<Mark> = Vec::new();
+    let mut bound: HashMap<String, BoundCell> = HashMap::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::Let(binds, body, _) => {
+                for b in binds {
+                    match simple_bind_rhs(b) {
+                        Some(rhs) => {
+                            check_released_uses(rhs, &bound, &marks, diags);
+                            apply_mark_op(&b.name, rhs, &mut marks, &mut bound);
+                            check_nested_marks(rhs, diags);
+                        }
+                        None => {
+                            for c in &b.clauses {
+                                if let Body::Plain(e2) = &c.body {
+                                    check_arena_marks(e2, diags);
+                                }
+                            }
+                        }
+                    }
+                }
+                cur = body;
+            }
+            other => {
+                check_released_uses(other, &bound, &marks, diags);
+                check_nested_marks(other, diags);
+                break;
+            }
+        }
+    }
+}
+
+fn apply_mark_op(
+    name: &str,
+    rhs: &Expr,
+    marks: &mut Vec<Mark>,
+    bound: &mut HashMap<String, BoundCell>,
+) {
+    match classify_mark_op(rhs) {
+        MarkOp::OpenMark { arena } => marks.push(Mark {
+            name: name.to_string(),
+            arena: arena.to_string(),
+            released: None,
+        }),
+        MarkOp::Alloc { arena } => {
+            // liga à marca aberta mais recente da mesma arena
+            if let Some(m) = marks
+                .iter()
+                .rev()
+                .find(|m| m.arena == arena && m.released.is_none())
+            {
+                bound.insert(
+                    name.to_string(),
+                    BoundCell {
+                        mark: m.name.clone(),
+                        alloc: rhs.span(),
+                    },
+                );
+            }
+        }
+        MarkOp::Release { mark } => {
+            if let Some(m) = marks.iter_mut().find(|m| m.name == mark) {
+                m.released = Some(rhs.span());
+            }
+        }
+        MarkOp::Other => {}
+    }
+}
+
+/// Reporta usos de valores cuja marca já foi libertada (AX0005).
+fn check_released_uses(
+    e: &Expr,
+    bound: &HashMap<String, BoundCell>,
+    marks: &[Mark],
+    diags: &mut Diagnostics,
+) {
+    let released_span = |mark: &str| {
+        marks
+            .iter()
+            .find(|m| m.name == mark)
+            .and_then(|m| m.released)
+    };
+    let mut check = |n: &str, sp: Span| {
+        if let Some(bc) = bound.get(n) {
+            if let Some(rel) = released_span(&bc.mark) {
+                diags.push(
+                    Diagnostic::error(
+                        "AX0005",
+                        format!("'{n}' usado após o 'arena_release' (memória já recuperada)"),
+                    )
+                    .label(sp.0, sp.1, format!("'{n}' usado aqui…"))
+                    .label(
+                        rel.0,
+                        rel.1,
+                        "…mas o arena_release recuperou a memória aqui",
+                    )
+                    .label(
+                        bc.alloc.0,
+                        bc.alloc.1,
+                        format!("'{n}' foi alocado depois da marca aqui"),
+                    )
+                    .with_help(
+                        "tudo o que é alocado depois de uma marca é recuperado no \
+                         arena_release; consuma-o antes, ou promova-o para lá da marca (§3).",
+                    ),
+                );
+            }
+        }
+    };
+    collect_var_refs(e, &mut check);
+}
+
+/// Aplica `f` a cada ocorrência de variável em `e`.
+fn collect_var_refs(e: &Expr, f: &mut dyn FnMut(&str, Span)) {
+    match e {
+        Expr::Var(n, sp) => f(n, *sp),
+        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+            collect_var_refs(a, f);
+            collect_var_refs(b, f);
+        }
+        Expr::If(c, t, el, _) => {
+            collect_var_refs(c, f);
+            collect_var_refs(t, f);
+            collect_var_refs(el, f);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|e| collect_var_refs(e, f)),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
+            assigns.iter().for_each(|(_, e)| collect_var_refs(e, f))
+        }
+        Expr::Case(s, arms, _) => {
+            collect_var_refs(s, f);
+            arms.iter().for_each(|(_, b)| collect_var_refs(b, f));
+        }
+        Expr::Let(binds, body, _) => {
+            binds.iter().flat_map(|b| &b.clauses).for_each(|c| {
+                if let Body::Plain(e2) = &c.body {
+                    collect_var_refs(e2, f);
+                }
+            });
+            collect_var_refs(body, f);
+        }
+        Expr::Lam(_, body, _) => collect_var_refs(body, f),
+    }
+}
+
+/// Recorre a sub-expressões (não a espinha atual) à procura de escopos de marca
+/// aninhados, correndo uma análise fresca em cada.
+fn check_nested_marks(e: &Expr, diags: &mut Diagnostics) {
+    match e {
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+            check_arena_marks(a, diags);
+            check_arena_marks(b, diags);
+        }
+        Expr::If(c, t, el, _) => {
+            check_arena_marks(c, diags);
+            check_arena_marks(t, diags);
+            check_arena_marks(el, diags);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|e| check_arena_marks(e, diags)),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => assigns
+            .iter()
+            .for_each(|(_, e)| check_arena_marks(e, diags)),
+        Expr::Case(s, arms, _) => {
+            check_arena_marks(s, diags);
+            arms.iter().for_each(|(_, b)| check_arena_marks(b, diags));
+        }
+        Expr::Lam(_, body, _) => check_arena_marks(body, diags),
+        // Let é a espinha, já tratada por check_arena_marks; folhas: nada
+        Expr::Let(_, _, _)
+        | Expr::Var(_, _)
+        | Expr::Int(_, _)
+        | Expr::Str(_, _)
+        | Expr::Con(_, _) => {}
     }
 }

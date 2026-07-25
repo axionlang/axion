@@ -259,6 +259,12 @@ fn explain(code: &str) -> ExitCode {
              argumento %1, campo %1, ou retorno), não se pode voltar a lê-lo nem\n\
              a consumi-lo. Ler ANTES de consumir é livre; ler DEPOIS é erro (§2)."
         }
+        "AX0005" => {
+            "AX0005 — uso-após-release de marca de arena. 'arena_release mark'\n\
+             recupera tudo o que foi alocado depois de 'arena_mark'; usar um desses\n\
+             valores após o release é erro (a memória já foi reclamada). Consuma-o\n\
+             antes do release, ou não o aloque sob a marca (§3, Listagem 3.6)."
+        }
         "AX0101" => {
             "AX0101 — nome não encontrado. O identificador não está em\n\
              âmbito (nem parâmetro, nem local, nem função de topo, nem builtin)."

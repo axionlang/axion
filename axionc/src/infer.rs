@@ -255,6 +255,19 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // marcas de arena (Listagem 3.6): reclamação intra-escopo
+        let mark = || Ty::Con("Mark".into(), vec![]);
+        let unit = || Ty::Con("()".into(), vec![]);
+        // arena_mark :: Arena -> Mark
+        env.insert(
+            "arena_mark".into(),
+            mono(Ty::Fun(Box::new(arena()), Box::new(mark()))),
+        );
+        // arena_release :: Mark -> ()
+        env.insert(
+            "arena_release".into(),
+            mono(Ty::Fun(Box::new(mark()), Box::new(unit()))),
+        );
         env
     }
 
