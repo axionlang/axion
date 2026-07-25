@@ -9,10 +9,12 @@
 //! mínimo (`putStrLn`/`show`/literais), pelo que `main :: IO ()` corre nativo.
 //! **Registos** e **tuplos** na heap (`axion_alloc`): construção, actualização,
 //! selectores (`i64` por campo). **`case`** (cadeia de `if` sobre o escrutínio;
-//! padrões Int/variável/`_`/tuplo). Closures e padrões de construtor no `case`
-//! ficam para o interpretador — o codegen recusa com um erro.
+//! padrões Int/variável/`_`/tuplo). **Closures**: as lambdas são *liftadas* para
+//! funções nativas com ABI `(env, params…)`; no local constrói-se o ambiente
+//! `{fn_ptr, capturas…}` na heap e a aplicação de um valor-função faz-se por
+//! `call_indirect`. Padrões de construtor no `case` ficam para o interpretador.
 
-use crate::ast::{self, Body, Expr, Pat, Type};
+use crate::ast::{self, Body, Expr, Pat, Span, Type};
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
 use cranelift::prelude::{
@@ -82,14 +84,175 @@ impl RecordInfo {
     }
 }
 
-/// Uma função a compilar nativamente (de topo, ou local de `where` liftado).
+/// O corpo de uma função nativa: cláusulas de topo/`where`, ou uma lambda
+/// liftada (com o ambiente de captura já calculado).
+enum Kind<'a> {
+    Clauses(&'a [ast::Clause]),
+    /// `\params -> body`, com os nomes capturados do âmbito enclosing. A ABI
+    /// recebe o ponteiro de closure como 1.º parâmetro (env), donde as capturas
+    /// são carregadas.
+    Lambda {
+        params: Vec<String>,
+        body: &'a Expr,
+        captures: Vec<String>,
+    },
+}
+
+/// Uma função a compilar nativamente (de topo, local de `where`, ou lambda).
 struct NativeFn<'a> {
-    /// nome único no módulo (mangled para locais de `where`)
+    /// nome único no módulo (mangled para locais de `where`, `lam$N` p/ lambdas)
     name: String,
+    /// número de parâmetros do utilizador (sem contar o env das closures)
     arity: usize,
-    clauses: &'a [ast::Clause],
+    kind: Kind<'a>,
     /// nome-de-chamada → nome-no-módulo (locais de `where` visíveis no corpo)
     locals: HashMap<String, String>,
+}
+
+/// Variáveis ligadas por um padrão (recursivo em `Con`/`Tuple`).
+fn pat_vars(p: &Pat, out: &mut Vec<String>) {
+    match p {
+        Pat::Var(n, _) => out.push(n.clone()),
+        Pat::Con(_, ps, _) | Pat::Tuple(ps, _) => {
+            for q in ps {
+                pat_vars(q, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Variáveis livres de `e` (nomes usados que não estão ligados em `bound`),
+/// respeitando os binders internos (lambda, `let`, `case`).
+fn free_vars(e: &Expr, bound: &HashSet<String>, out: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n, _) => {
+            if !bound.contains(n) {
+                out.insert(n.clone());
+            }
+        }
+        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::App(f, a, _) => {
+            free_vars(f, bound, out);
+            free_vars(a, bound, out);
+        }
+        Expr::BinOp(_, l, r, _) => {
+            free_vars(l, bound, out);
+            free_vars(r, bound, out);
+        }
+        Expr::If(c, t, el, _) => {
+            free_vars(c, bound, out);
+            free_vars(t, bound, out);
+            free_vars(el, bound, out);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|x| free_vars(x, bound, out)),
+        Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| free_vars(x, bound, out)),
+        Expr::RecordUpd(b, fs, _) => {
+            free_vars(b, bound, out);
+            fs.iter().for_each(|(_, x)| free_vars(x, bound, out));
+        }
+        Expr::Lam(ps, body, _) => {
+            let mut b2 = bound.clone();
+            let mut vs = Vec::new();
+            ps.iter().for_each(|p| pat_vars(p, &mut vs));
+            b2.extend(vs);
+            free_vars(body, &b2, out);
+        }
+        Expr::Case(scrut, arms, _) => {
+            free_vars(scrut, bound, out);
+            for (pat, body) in arms {
+                let mut b2 = bound.clone();
+                let mut vs = Vec::new();
+                pat_vars(pat, &mut vs);
+                b2.extend(vs);
+                free_vars(body, &b2, out);
+            }
+        }
+        Expr::Let(binds, body, _) => {
+            let mut b2 = bound.clone();
+            b2.extend(binds.iter().map(|f| f.name.clone()));
+            for f in binds {
+                for c in &f.clauses {
+                    let mut b3 = b2.clone();
+                    let mut vs = Vec::new();
+                    c.pats.iter().for_each(|p| pat_vars(p, &mut vs));
+                    b3.extend(vs);
+                    if let Body::Plain(e) = &c.body {
+                        free_vars(e, &b3, out);
+                    }
+                }
+            }
+            free_vars(body, &b2, out);
+        }
+    }
+}
+
+/// Recolhe (por referência) todos os nós lambda dentro de `e`, incl. aninhados.
+fn find_lams<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if matches!(e, Expr::Lam(_, _, _)) {
+        out.push(e);
+    }
+    match e {
+        Expr::App(f, a, _) | Expr::BinOp(_, f, a, _) => {
+            find_lams(f, out);
+            find_lams(a, out);
+        }
+        Expr::If(c, t, el, _) => {
+            find_lams(c, out);
+            find_lams(t, out);
+            find_lams(el, out);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|x| find_lams(x, out)),
+        Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| find_lams(x, out)),
+        Expr::RecordUpd(b, fs, _) => {
+            find_lams(b, out);
+            fs.iter().for_each(|(_, x)| find_lams(x, out));
+        }
+        Expr::Case(s, arms, _) => {
+            find_lams(s, out);
+            arms.iter().for_each(|(_, body)| find_lams(body, out));
+        }
+        Expr::Let(binds, body, _) => {
+            for f in binds {
+                for c in &f.clauses {
+                    if let Body::Plain(e) = &c.body {
+                        find_lams(e, out);
+                    }
+                }
+            }
+            find_lams(body, out);
+        }
+        Expr::Lam(_, body, _) => find_lams(body, out),
+        _ => {}
+    }
+}
+
+/// Nomes resolvidos como globais (não capturados): funções de topo, locais de
+/// `where`, construtores, selectores de campo e os builtins de IO.
+fn global_names(module: &ast::Module) -> HashSet<String> {
+    let mut g = HashSet::new();
+    for f in &module.funcs {
+        g.insert(f.name.clone());
+        for c in &f.clauses {
+            for w in &c.wher {
+                g.insert(w.name.clone());
+            }
+        }
+    }
+    for d in &module.datas {
+        for c in &d.cons {
+            g.insert(c.name.clone());
+            for fld in &c.fields {
+                if !fld.name.is_empty() {
+                    g.insert(fld.name.clone());
+                }
+            }
+        }
+    }
+    for b in ["putStrLn", "show", "print"] {
+        g.insert(b.to_string());
+    }
+    g
 }
 
 fn is_int(t: &Type) -> bool {
@@ -97,8 +260,12 @@ fn is_int(t: &Type) -> bool {
 }
 
 /// Tipos representados por um `i64` na ABI nativa: `Int`, `String` (ptr), `IO`
-/// (token), ou um tipo `data` do programa (ponteiro para o registo na heap).
+/// (token), um tipo `data` (ponteiro para o registo), ou uma **função**
+/// (ponteiro para uma closure `{fn_ptr, capturas…}`).
 fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
+    if matches!(t, Type::Arrow { .. }) {
+        return true; // função → ponteiro de closure
+    }
     match t.head_con() {
         Some("Int" | "String" | "IO") => true,
         Some(h) => data_types.contains(h),
@@ -132,8 +299,17 @@ fn data_type_names(module: &ast::Module) -> HashSet<String> {
     module.datas.iter().map(|d| d.name.clone()).collect()
 }
 
-fn collect_natives<'a>(module: &'a ast::Module, data_types: &HashSet<String>) -> Vec<NativeFn<'a>> {
+type LamMeta = HashMap<Span, (String, Vec<String>)>;
+
+fn collect_natives<'a>(
+    module: &'a ast::Module,
+    data_types: &HashSet<String>,
+) -> (Vec<NativeFn<'a>>, LamMeta) {
+    let globals = global_names(module);
     let mut out = Vec::new();
+    let mut lam_meta: LamMeta = HashMap::new();
+    let mut lam_ctr = 0u32;
+
     for f in &module.funcs {
         let Some(arity) = top_candidate(f, data_types) else {
             continue;
@@ -147,7 +323,7 @@ fn collect_natives<'a>(module: &'a ast::Module, data_types: &HashSet<String>) ->
         out.push(NativeFn {
             name: f.name.clone(),
             arity,
-            clauses: &f.clauses,
+            kind: Kind::Clauses(&f.clauses),
             locals: locals.clone(),
         });
         for w in &wheres {
@@ -155,12 +331,59 @@ fn collect_natives<'a>(module: &'a ast::Module, data_types: &HashSet<String>) ->
             out.push(NativeFn {
                 name: locals[&w.name].clone(),
                 arity: warity,
-                clauses: &w.clauses,
+                kind: Kind::Clauses(&w.clauses),
                 locals: locals.clone(),
             });
         }
+
+        // pré-passo: lifta as lambdas dos corpos (desta função e dos wheres)
+        let mut lam_nodes: Vec<&Expr> = Vec::new();
+        for c in &f.clauses {
+            if let Body::Plain(e) = &c.body {
+                find_lams(e, &mut lam_nodes);
+            }
+        }
+        for w in &wheres {
+            for c in &w.clauses {
+                if let Body::Plain(e) = &c.body {
+                    find_lams(e, &mut lam_nodes);
+                }
+            }
+        }
+        for lam in lam_nodes {
+            let Expr::Lam(pats, body, span) = lam else {
+                continue;
+            };
+            let params: Vec<String> = pats
+                .iter()
+                .enumerate()
+                .map(|(k, p)| match p {
+                    Pat::Var(n, _) => n.clone(),
+                    _ => format!("_w{k}"), // wild/complexo: nome fresco não usado
+                })
+                .collect();
+            // capturas = variáveis livres da lambda que não são globais
+            let mut fv = HashSet::new();
+            free_vars(lam, &HashSet::new(), &mut fv);
+            let mut captures: Vec<String> =
+                fv.into_iter().filter(|n| !globals.contains(n)).collect();
+            captures.sort(); // ordem determinística (site de construção == corpo)
+            let name = format!("lam${lam_ctr}");
+            lam_ctr += 1;
+            out.push(NativeFn {
+                name: name.clone(),
+                arity: params.len(),
+                kind: Kind::Lambda {
+                    params,
+                    body: body.as_ref(),
+                    captures: captures.clone(),
+                },
+                locals: locals.clone(),
+            });
+            lam_meta.insert(*span, (name, captures));
+        }
     }
-    out
+    (out, lam_meta)
 }
 
 /// Ambiente de compilação: JIT + os `FuncId`/aridade das funções nativas.
@@ -174,6 +397,7 @@ struct Cg {
     show_id: FuncId,
     alloc_id: FuncId,
     records: RecordInfo,
+    lam_meta: LamMeta,
 }
 
 impl Cg {
@@ -217,13 +441,16 @@ impl Cg {
             show_id,
             alloc_id,
             records,
+            lam_meta: HashMap::new(),
         })
     }
 
     fn declare_all(&mut self, natives: &[NativeFn]) -> Result<(), String> {
         for n in natives {
             let mut sig = self.module.make_signature();
-            for _ in 0..n.arity {
+            // closures recebem o ponteiro de env como 1.º parâmetro
+            let nparams = n.arity + usize::from(matches!(n.kind, Kind::Lambda { .. }));
+            for _ in 0..nparams {
                 sig.params.push(AbiParam::new(types::I64));
             }
             sig.returns.push(AbiParam::new(types::I64));
@@ -239,8 +466,10 @@ impl Cg {
     /// Constrói o corpo da função e devolve o `Context` já preenchido.
     fn build(&mut self, n: &NativeFn) -> Result<Context, String> {
         let (id, arity) = self.ids[&n.name];
+        let takes_env = matches!(n.kind, Kind::Lambda { .. });
+        let nparams = arity + usize::from(takes_env);
         let mut ctx = self.module.make_context();
-        for _ in 0..arity {
+        for _ in 0..nparams {
             ctx.func.signature.params.push(AbiParam::new(types::I64));
         }
         ctx.func.signature.returns.push(AbiParam::new(types::I64));
@@ -253,20 +482,12 @@ impl Cg {
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
             builder.seal_block(entry);
-
             let argvals: Vec<Value> = builder.block_params(entry).to_vec();
-            let mut argvars = Vec::with_capacity(arity);
-            for (i, val) in argvals.iter().enumerate() {
-                let v = Variable::new(i);
-                builder.declare_var(v, types::I64);
-                builder.def_var(v, *val);
-                argvars.push(v);
-            }
 
             let mut fx = Fx {
                 builder,
                 vars: HashMap::new(),
-                next: arity as u32,
+                next: 0,
                 ids: &self.ids,
                 module: &mut self.module,
                 locals: &n.locals,
@@ -276,8 +497,35 @@ impl Cg {
                 show_id: self.show_id,
                 alloc_id: self.alloc_id,
                 records: &self.records,
+                lam_meta: &self.lam_meta,
             };
-            let ret = fx.clauses(n.clauses, &argvars, 0)?;
+            let ret = match &n.kind {
+                Kind::Clauses(clauses) => {
+                    let argvars: Vec<Variable> = argvals.iter().map(|v| fx.fresh_var(*v)).collect();
+                    fx.clauses(clauses, &argvars, 0)?
+                }
+                Kind::Lambda {
+                    params,
+                    body,
+                    captures,
+                } => {
+                    // argvals[0] = env; carrega as capturas de env[(i+1)*8]
+                    let env = argvals[0];
+                    for (i, cap) in captures.iter().enumerate() {
+                        let v = fx.builder.ins().load(
+                            types::I64,
+                            MemFlags::new(),
+                            env,
+                            (i as i32 + 1) * 8,
+                        );
+                        fx.bind_val(cap, v);
+                    }
+                    for (j, p) in params.iter().enumerate() {
+                        fx.bind_val(p, argvals[j + 1]);
+                    }
+                    fx.expr(body)?
+                }
+            };
             fx.builder.ins().return_(&[ret]);
             fx.builder.finalize();
         }
@@ -299,6 +547,7 @@ struct Fx<'a, 'b> {
     show_id: FuncId,
     alloc_id: FuncId,
     records: &'a RecordInfo,
+    lam_meta: &'a LamMeta,
 }
 
 impl Fx<'_, '_> {
@@ -474,9 +723,14 @@ impl Fx<'_, '_> {
             }
             Expr::App(_, _, _) => {
                 let (head, args) = spine(e);
-                let name = match head {
-                    Expr::Var(n, _) => n,
-                    _ => return Err("chamada indirecta não compila nativamente".into()),
+                let Expr::Var(name, _) = head else {
+                    // cabeça é uma expressão (ex.: lambda aplicada) → closure
+                    let clos = self.expr(head)?;
+                    let mut vals = Vec::with_capacity(args.len());
+                    for a in &args {
+                        vals.push(self.expr(a)?);
+                    }
+                    return self.call_closure(clos, &vals);
                 };
                 // builtins de IO/String: putStrLn e show chamam o runtime nativo
                 if name == "putStrLn" && args.len() == 1 {
@@ -501,6 +755,16 @@ impl Fx<'_, '_> {
                     let r = self.expr(args[0])?;
                     return Ok(self.builder.ins().load(types::I64, MemFlags::new(), r, off));
                 }
+                // variável local de tipo-função → closure → chamada indirecta
+                if let Some(v) = self.vars.get(name) {
+                    let clos = self.builder.use_var(*v);
+                    let mut vals = Vec::with_capacity(args.len());
+                    for a in &args {
+                        vals.push(self.expr(a)?);
+                    }
+                    return self.call_closure(clos, &vals);
+                }
+                // função de topo / local de `where` → chamada directa
                 let target = self.locals.get(name).map(String::as_str).unwrap_or(name);
                 let (id, arity) = *self
                     .ids
@@ -516,6 +780,34 @@ impl Fx<'_, '_> {
                 let callee = self.module.declare_func_in_func(id, self.builder.func);
                 let call = self.builder.ins().call(callee, &vals);
                 Ok(self.builder.inst_results(call)[0])
+            }
+            // lambda → constrói a closure: env = {fn_ptr, capturas…} na heap
+            Expr::Lam(_, _, span) => {
+                let (name, captures) = self
+                    .lam_meta
+                    .get(span)
+                    .ok_or_else(|| "lambda não pré-processada".to_string())?
+                    .clone();
+                let (lam_id, _) = *self
+                    .ids
+                    .get(&name)
+                    .ok_or_else(|| format!("lambda '{name}' não declarada"))?;
+                let env = self.alloc(1 + captures.len());
+                let fref = self.module.declare_func_in_func(lam_id, self.builder.func);
+                let faddr = self.builder.ins().func_addr(types::I64, fref);
+                self.builder.ins().store(MemFlags::new(), faddr, env, 0);
+                for (i, cap) in captures.iter().enumerate() {
+                    let v = self
+                        .vars
+                        .get(cap)
+                        .copied()
+                        .ok_or_else(|| format!("captura '{cap}' fora de âmbito"))?;
+                    let cv = self.builder.use_var(v);
+                    self.builder
+                        .ins()
+                        .store(MemFlags::new(), cv, env, (i as i32 + 1) * 8);
+                }
+                Ok(env)
             }
             // tuplo → registo anónimo na heap (um i64 por componente)
             Expr::Tuple(es, _) => {
@@ -602,13 +894,40 @@ impl Fx<'_, '_> {
         self.builder.inst_results(call)[0]
     }
 
-    /// Liga um nome a um `Value` (cria uma Variable e define-a).
-    fn bind_val(&mut self, name: &str, val: Value) {
+    /// Cria uma `Variable` fresca já definida com `val` (sem lhe dar nome).
+    fn fresh_var(&mut self, val: Value) -> Variable {
         let v = Variable::new(self.next as usize);
         self.next += 1;
         self.builder.declare_var(v, types::I64);
         self.builder.def_var(v, val);
+        v
+    }
+
+    /// Liga um nome a um `Value`.
+    fn bind_val(&mut self, name: &str, val: Value) {
+        let v = self.fresh_var(val);
         self.vars.insert(name.to_string(), v);
+    }
+
+    /// Chamada indirecta através de uma closure: `fn_ptr = clos[0]`, depois
+    /// `fn_ptr(clos, args…)` (a closure é passada como env do 1.º parâmetro).
+    fn call_closure(&mut self, clos: Value, args: &[Value]) -> Result<Value, String> {
+        let fn_ptr = self
+            .builder
+            .ins()
+            .load(types::I64, MemFlags::new(), clos, 0);
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // env
+        for _ in args {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        let sigref = self.builder.import_signature(sig);
+        let mut call_args = Vec::with_capacity(args.len() + 1);
+        call_args.push(clos);
+        call_args.extend_from_slice(args);
+        let call = self.builder.ins().call_indirect(sigref, fn_ptr, &call_args);
+        Ok(self.builder.inst_results(call)[0])
     }
 
     /// `case sval of arms` — cadeia de `if` sobre o escrutínio. Padrões: `Int`
@@ -701,7 +1020,7 @@ fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
 /// (os efeitos — `putStrLn` — já foram executados durante a corrida).
 pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
     let data_types = data_type_names(module);
-    let natives = collect_natives(module, &data_types);
+    let (natives, lam_meta) = collect_natives(module, &data_types);
     let entry_ok = natives
         .iter()
         .find(|n| n.name == entry)
@@ -714,6 +1033,7 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
     }
 
     let mut cg = Cg::new(RecordInfo::build(module))?;
+    cg.lam_meta = lam_meta;
     cg.declare_all(&natives)?;
     for n in &natives {
         let mut ctx = cg.build(n)?;
@@ -745,11 +1065,12 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
 /// Emite o Cranelift IR (texto) das funções nativas, sem JIT (`--emit clif`).
 pub fn emit_ir(module: &ast::Module) -> Result<String, String> {
     let data_types = data_type_names(module);
-    let natives = collect_natives(module, &data_types);
+    let (natives, lam_meta) = collect_natives(module, &data_types);
     if natives.is_empty() {
         return Ok("; nenhuma função compilável nativamente (núcleo Int).\n".into());
     }
     let mut cg = Cg::new(RecordInfo::build(module))?;
+    cg.lam_meta = lam_meta;
     cg.declare_all(&natives)?;
     let mut out = String::new();
     for n in &natives {

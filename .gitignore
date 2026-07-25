@@ -7,3 +7,8 @@ result-*
 .direnv/
 .ghc.environment.*
 examples/axionc
+
+# binários compilados pelos benchmarks
+bench/axionc
+bench/fib_c
+bench/fib_rs

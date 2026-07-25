@@ -29,6 +29,14 @@ Este é o **primeiro corte** do backend `--dev`, sobre `cranelift-jit`. Baixa o
 - **`case`**: cadeia de `if` sobre o escrutínio; padrões `Int` (compara),
   variável/`_` (catch-all), e tuplo `(a, b)` (destructura por offset). Exige um
   catch-all no fim. `native_case.axi` corre nativo e igual ao interpretador.
+- **Closures** (lambdas + funções de ordem superior): cada `\p -> corpo` é
+  *liftada* para uma função nativa com ABI `(env, params…)`, que carrega as
+  variáveis capturadas de `env`. No local da lambda constrói-se o ambiente
+  `{fn_ptr, capturas…}` na heap (`axion_alloc`); tipos-função são o ponteiro para
+  esse ambiente. Aplicar um valor-função (um parâmetro `Int -> Int`, ou uma
+  lambda aplicada directamente) faz-se por `call_indirect` sobre `env[0]`, com a
+  própria closure passada como env. `native_closure.axi` corre nativo (→ 42) e
+  igual ao interpretador (incl. capturas múltiplas e aplicação aninhada).
 
 ## Como usar
 
@@ -55,7 +63,10 @@ JIT). `--emit clif` mostra o IR (blocos, `brif`, `call` recursivo).
 
 ## O que ainda NÃO compila (recai no interpretador)
 
-- lambdas/closures, `%1`/arenas em runtime, padrões de construtor no `case`.
+- `%1`/arenas em runtime, padrões de construtor no `case`.
+- **Referência nua** a uma função de topo como valor (ex.: `apply inc 5`) — falta
+  o *thunk* que a embrulha numa closure; usa-se uma lambda (`apply (\x -> inc x)`).
+  As closures em si (heap `{fn_ptr, capturas}`) são *leaked*, como os registos.
 - Funções (e `case`) **sem** catch-all no fim (falta o *trap* de exaustão).
 - Strings além de `putStrLn`/`show` (concatenação, `String` como parâmetro, …).
 - Registos: sem `free`/GC (a heap é *leaked*); o modelo de reclamação

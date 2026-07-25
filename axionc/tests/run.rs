@@ -453,6 +453,32 @@ fn cranelift_backend_compiles_case_and_tuples() {
 }
 
 #[test]
+fn cranelift_backend_compiles_closures() {
+    // closures: lambda-lifting + captura (addN) + chamada indirecta (apply).
+    // main = apply (addN 10) 32 = 42; nativo e interp concordam.
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("native_closure.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "42\n");
+
+    let interp = axionc()
+        .arg(fixture("native_closure.axi"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "nativo e interpretador divergem"
+    );
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])
