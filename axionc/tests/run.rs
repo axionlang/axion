@@ -150,6 +150,62 @@ fn autodrop_death_point_is_the_last_read() {
 }
 
 #[test]
+fn structural_drop_makes_record_must_use_ax0002() {
+    // Sess contém um campo Ep %1 → must-use por propagação estrutural → AX0002.
+    let out = axionc()
+        .args(["--check", &fixture("struct_mustuse.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0002"), "esperava AX0002, saída: {text}");
+}
+
+#[test]
+fn let_bound_droppable_is_autodropped() {
+    let out = axionc()
+        .args(["--emit", "drops", &fixture("let_drop.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("free(b2)"),
+        "esperava free(b2), saída: {text}"
+    );
+}
+
+#[test]
+fn let_bound_must_use_is_rejected_ax0002() {
+    let out = axionc()
+        .args(["--check", &fixture("let_leak.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("AX0002") && text.contains("s2"),
+        "esperava AX0002 em s2, saída: {text}"
+    );
+}
+
+#[test]
+fn inplace_update_on_linear_base_reported() {
+    // Listagem 2.1: 'p { status = ... }' é a última menção viva de 'p' (%1) →
+    // mutação in-place (Linear Elision).
+    let out = axionc()
+        .args(["--emit", "inplace", &example("04_process_inplace.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("'p' mutado in-place"),
+        "esperava in-place de p, saída: {text}"
+    );
+}
+
+#[test]
 fn use_after_move_is_rejected_ax0004() {
     // Ler um %1 depois de a posse ter sido movida (consumida) → AX0004.
     let out = axionc()

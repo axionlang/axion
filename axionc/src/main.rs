@@ -35,6 +35,7 @@ enum Emit {
     Text,
     Json,
     Drops,
+    InPlace,
 }
 
 fn main() -> ExitCode {
@@ -52,8 +53,9 @@ fn main() -> ExitCode {
                 match args.get(i).map(|s| s.as_str()) {
                     Some("json") => emit = Emit::Json,
                     Some("drops") => emit = Emit::Drops,
+                    Some("inplace") => emit = Emit::InPlace,
                     _ => {
-                        eprintln!("--emit espera 'json' ou 'drops'");
+                        eprintln!("--emit espera 'json', 'drops' ou 'inplace'");
                         return ExitCode::from(2);
                     }
                 }
@@ -96,7 +98,7 @@ fn main() -> ExitCode {
 
     let lines = LineMap::new(&src);
     let mut diags = Diagnostics::new();
-    let (module, drops) = compile_front(&src, &mut diags);
+    let (module, analysis) = compile_front(&src, &mut diags);
 
     // reporta diagnósticos
     if emit == Emit::Json {
@@ -112,7 +114,11 @@ fn main() -> ExitCode {
     }
 
     if emit == Emit::Drops {
-        print_drops(&drops, &path, &lines);
+        print_drops(&analysis.drops, &path, &lines);
+        return ExitCode::SUCCESS;
+    }
+    if emit == Emit::InPlace {
+        print_inplace(&analysis.inplace, &path, &lines);
         return ExitCode::SUCCESS;
     }
 
@@ -139,10 +145,7 @@ fn main() -> ExitCode {
 
 /// Corre o front-end (lex → layout → parse → check → infer), acumulando
 /// diagnósticos e devolvendo os `free` injectados pelo Auto-Drop.
-fn compile_front(
-    src: &str,
-    diags: &mut Diagnostics,
-) -> (Option<ast::Module>, Vec<check::DropPoint>) {
+fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, check::Analysis) {
     let tokens = match lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {
@@ -151,7 +154,7 @@ fn compile_front(
                 e.end,
                 "não faz parte de nenhum token",
             ));
-            return (None, Vec::new());
+            return (None, check::Analysis::default());
         }
     };
     let lines = LineMap::new(src);
@@ -160,12 +163,12 @@ fn compile_front(
         Ok(m) => m,
         Err(d) => {
             diags.push(d);
-            return (None, Vec::new());
+            return (None, check::Analysis::default());
         }
     };
-    let drops = check::check(&module, diags);
+    let analysis = check::check(&module, diags);
     infer::infer(&module, diags);
-    (Some(module), drops)
+    (Some(module), analysis)
 }
 
 /// Imprime o relatório de Auto-Drop (`--emit drops`).
@@ -180,6 +183,25 @@ fn print_drops(drops: &[check::DropPoint], path: &str, lines: &LineMap) {
         println!(
             "  free({}) : {} %1  @ {path}:{l}:{c}  (em '{}', {})",
             d.var, d.ty, d.func, d.reason
+        );
+    }
+}
+
+/// Imprime as actualizações de registo elegíveis a mutação in-place (`--emit inplace`).
+fn print_inplace(sites: &[check::InPlace], path: &str, lines: &LineMap) {
+    if sites.is_empty() {
+        println!("Linear Elision: nenhuma actualização in-place.");
+        return;
+    }
+    println!(
+        "Linear Elision — {} actualização(ões) in-place:",
+        sites.len()
+    );
+    for s in sites {
+        let (l, c) = lines.pos(s.span.0);
+        println!(
+            "  '{}' mutado in-place  @ {path}:{l}:{c}  (em '{}': última menção viva)",
+            s.var, s.func
         );
     }
 }
@@ -229,7 +251,8 @@ fn print_usage() {
          axionc <ficheiro.axi>          compila e corre\n  \
          axionc --check <ficheiro>      só compila (parse + typecheck + Auto-Drop)\n  \
          axionc --emit json <ficheiro>  diagnósticos em JSON\n  \
-         axionc --emit drops <ficheiro> mostra os 'free' injectados pelo Auto-Drop\n  \
+         axionc --emit drops <ficheiro> 'free' injectados pelo Auto-Drop\n  \
+         axionc --emit inplace <fich.>  actualizações in-place (Linear Elision)\n  \
          axionc --explain AX0001        explica um código de erro"
     );
 }

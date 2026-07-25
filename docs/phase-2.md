@@ -22,9 +22,18 @@
     avaliação marca quando `x` é movido; qualquer leitura/consumo posterior é
     erro. `x + sink x` (ler antes de consumir) é aceite; `sink x + x` (ler
     depois) é `AX0004`.
-  - **Por crescer:** drops de valores ligados em `let`/`where` (não só
-    parâmetros); propagação estrutural de `Drop` (registo droppable sse todos
-    os campos o forem); mutação in-place (Linear Elision).
+  - **Propagação estrutural de `Drop`** (ponto-fixo): um `data` é must-use se
+    algum campo (recursivamente) o for — um registo que contém um `Ep`/`Token`
+    não pode ser auto-dropped (`AX0002`).
+  - **Drops de valores `let`**: um `let v = <e que consome um recurso linear>`
+    torna `v` um recurso linear no seu âmbito; se `v` não for consumido,
+    Auto-Drop (droppable) ou `AX0002` (must-use) — não só parâmetros.
+  - **Mutação in-place (Linear Elision)**: uma actualização de registo cujo base
+    é um recurso linear (a sua última menção viva) é marcada como in-place;
+    `axionc --emit inplace` mostra-as (ex.: `04` → `p { status = … }`).
+  - **Por crescer:** provenance através de retornos de função arbitrários (só o
+    move directo é seguido); `where`-binds de valor; a elisão realmente aplicada
+    no backend (por agora é análise + relatório, não codegen).
 - [ ] **Arenas + reset NLL + análise de escape** (`promote`, §3) — validar que o
   escape é erro de compilação (`AX0003`, já reservado). Listagem 3.3–3.5.
 - [ ] **Permissões fracionárias** (`%0.5`): `split` / `join` (§2).
@@ -35,13 +44,13 @@
 
 ```sh
 cd axionc
-cargo test                                            # 16 testes (inclui Auto-Drop)
+cargo test                                            # 20 testes (inclui Auto-Drop)
 cargo run -- --check tests/fixtures/drop_linear.axi   # Token must-use → AX0002
-cargo run -- --check tests/fixtures/drop_ok.axi       # Buf droppable → aceite
-cargo run -- --emit drops tests/fixtures/drop_ok.axi  # free(b) : Buf %1 (à entrada)
-cargo run -- --emit drops tests/fixtures/borrow_twice_ok.axi  # free(x) após a última leitura
-cargo run -- --check tests/fixtures/use_after_consume.axi     # (x,x): 2 consumos → AX0001
-cargo run -- --check tests/fixtures/use_after_move.axi        # sink x + x → AX0004
+cargo run -- --check tests/fixtures/struct_mustuse.axi # registo com Ep → AX0002 (estrutural)
+cargo run -- --check tests/fixtures/let_leak.axi      # let must-use largado → AX0002
+cargo run -- --emit drops tests/fixtures/let_drop.axi # free(b2) — drop de valor 'let'
+cargo run -- --emit inplace ../examples/04_process_inplace.axi  # 'p' mutado in-place
+cargo run -- --check tests/fixtures/use_after_move.axi # sink x + x → AX0004
 ```
 
 Diferencial: o cenário `differential/02_consume_twice` **move** o `%1` duas

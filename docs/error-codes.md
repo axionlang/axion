@@ -73,10 +73,13 @@ handles de transação — são *must-use*: esquecê-los é erro (disto depende 
 Fidelidade de Sessão da §9). Exemplo e forma do diagnóstico na Listagem 2.4.
 
 **`axionc` (Fase 2, Auto-Drop).** A análise de linearidade (`axionc/src/check.rs`)
-classifica o tipo do parâmetro `%1`: se for **droppable** (por omissão), largá-lo
+classifica o tipo do recurso `%1`: se for **droppable** (por omissão), largá-lo
 sem consumo **não é erro** — o Auto-Drop injecta `free` no ponto de morte
-(visível em `axionc --emit drops`). Só um tipo **must-use** (cabeça em
-`MUST_USE`: `Ep`, `Token`, …) largado sem consumo emite `AX0002`.
+(visível em `axionc --emit drops`). Só um tipo **must-use** largado emite
+`AX0002`. Must-use = cabeça em `MUST_USE_PRIMS` (`Ep`, `Token`, …) **ou** um
+`data` que contenha (recursivamente) um campo must-use — `Drop` propaga
+estruturalmente (ponto-fixo). Aplica-se a **parâmetros e a valores `let`**: um
+`let v = <consome recurso linear>` de tipo must-use, largado, é `AX0002`.
 
 ```
 error[AX0002]: recurso must-use 'x' largado sem ser consumido

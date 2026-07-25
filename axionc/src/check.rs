@@ -26,9 +26,10 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
 use std::collections::{HashMap, HashSet};
 
-/// Tipos lineares **sem `Drop`** (must-use): esquecê-los é erro, não Auto-Drop.
+/// Tipos primitivos **sem `Drop`** (must-use): esquecê-los é erro, não Auto-Drop.
+/// `Drop` propaga estruturalmente: um registo é must-use se algum campo o for.
 /// Tudo o resto é droppable por omissão (§2).
-const MUST_USE: &[&str] = &["Ep", "Token", "Endpoint", "Transaction"];
+const MUST_USE_PRIMS: &[&str] = &["Ep", "Token", "Endpoint", "Transaction"];
 
 /// Um `free` injectado pelo Auto-Drop no ponto de morte de um recurso linear.
 #[derive(Debug, Clone)]
@@ -41,8 +42,24 @@ pub struct DropPoint {
     pub reason: &'static str,
 }
 
-/// Corre a verificação e devolve os `free` injectados pelo Auto-Drop.
-pub fn check(module: &Module, diags: &mut Diagnostics) -> Vec<DropPoint> {
+/// Uma actualização de registo que o compilador pode fazer **in-place** (§2):
+/// o base é um recurso linear e esta é a sua última menção viva.
+#[derive(Debug, Clone)]
+pub struct InPlace {
+    pub func: String,
+    pub var: String,
+    pub span: Span,
+}
+
+/// Resultado da análise: os `free` do Auto-Drop e as actualizações in-place.
+#[derive(Default)]
+pub struct Analysis {
+    pub drops: Vec<DropPoint>,
+    pub inplace: Vec<InPlace>,
+}
+
+/// Corre a verificação e devolve os `free` do Auto-Drop e os sítios in-place.
+pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
     let mut globals: HashSet<String> = builtins();
     for f in &module.funcs {
         globals.insert(f.name.clone());
@@ -59,16 +76,46 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Vec<DropPoint> {
         }
     }
     let ctx = build_ctx(module);
-    let mut drops = Vec::new();
+    let mut out = Analysis::default();
     for f in &module.funcs {
-        check_func(f, &globals, &ctx, diags, &mut drops);
+        check_func(f, &globals, &ctx, diags, &mut out);
     }
-    drops
+    out
 }
 
-/// Um tipo é *must-use* se o seu construtor de topo não tem `Drop`.
-fn is_must_use(ty: &Type) -> bool {
-    matches!(ty.head_con(), Some(h) if MUST_USE.contains(&h))
+/// Um tipo é *must-use* se a sua cabeça é um primitivo sem `Drop`, ou um tipo
+/// `data` cuja must-use-ness foi propagada estruturalmente (ver `build_ctx`).
+fn is_must_use(ty: &Type, must_use_types: &HashSet<String>) -> bool {
+    matches!(ty.head_con(), Some(h) if MUST_USE_PRIMS.contains(&h) || must_use_types.contains(h))
+}
+
+/// Calcula, por ponto-fixo, o conjunto de tipos `data` que são *must-use*:
+/// um `data` é must-use se algum campo de algum construtor for must-use (um
+/// primitivo sem `Drop`, ou outro `data` já marcado). `Drop` propaga assim
+/// estruturalmente (§2).
+fn build_must_use_types(module: &Module) -> HashSet<String> {
+    let mut set: HashSet<String> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for d in &module.datas {
+            if set.contains(&d.name) {
+                continue;
+            }
+            let any_mu = d.cons.iter().any(|c| {
+                c.fields.iter().any(|f| {
+                    matches!(f.ty.head_con(), Some(h) if MUST_USE_PRIMS.contains(&h) || set.contains(h))
+                })
+            });
+            if any_mu {
+                set.insert(d.name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    set
 }
 
 fn builtins() -> HashSet<String> {
@@ -78,12 +125,20 @@ fn builtins() -> HashSet<String> {
         .collect()
 }
 
+/// Estado de um recurso linear após a análise de uma cláusula/âmbito.
+struct ResUse {
+    consumes: usize,
+    borrows: usize,
+    uam: Option<(Span, Span)>, // uso-após-move (uso, move)
+    death: Option<Span>,       // última ocorrência (ponto de morte)
+}
+
 fn check_func(
     f: &Func,
     globals: &HashSet<String>,
     ctx: &Ctx,
     diags: &mut Diagnostics,
-    drops: &mut Vec<DropPoint>,
+    out: &mut Analysis,
 ) {
     let mults = f.sig.as_ref().map(|t| t.param_mults()).unwrap_or_default();
     let ptypes = f.sig.as_ref().map(|t| t.param_types()).unwrap_or_default();
@@ -99,81 +154,119 @@ fn check_func(
         resolve_clause(clause, &scope, globals, diags);
 
         // --- linearidade fina + Auto-Drop: parâmetros %1 ---
+        let mut lin: HashMap<String, Lin> = HashMap::new();
         for (i, p) in clause.pats.iter().enumerate() {
             if mults.get(i).copied() != Some(Mult::One) {
                 continue;
             }
-            if let Pat::Var(name, span) = p {
-                let (consumes, borrows) = analyze_clause(clause, name, ctx);
-                let must_use = ptypes.get(i).map(|t| is_must_use(t)).unwrap_or(false);
-                let ty_name = ptypes
-                    .get(i)
-                    .and_then(|t| t.head_con())
-                    .unwrap_or("?")
-                    .to_string();
-                if consumes > 1 {
-                    diags.push(
-                        Diagnostic::error(
-                            "AX0001",
-                            format!("recurso linear '{name}' consumido {consumes} vezes (contração proibida)"),
-                        )
-                        .label(span.0, span.1, format!("'{name}' é %1: consumível uma só vez"))
-                        .with_help(
-                            "ler (emprestar) um %1 é livre e ilimitado; mover a posse \
-                             (consumir) só pode acontecer uma vez — para o partilhar por \
-                             posse, use 'split' em duas metades %0.5 (§2).",
-                        ),
-                    );
-                } else if let Some((mv, use_sp)) = use_after_move(clause, name, ctx) {
-                    diags.push(
-                        Diagnostic::error(
-                            "AX0004",
-                            format!("uso de '{name}' após a posse ter sido movida"),
-                        )
-                        .label(use_sp.0, use_sp.1, format!("'{name}' usado aqui…"))
-                        .label(mv.0, mv.1, "…mas a posse já tinha sido movida aqui")
-                        .with_help(
-                            "depois de mover um %1 (consumir), não se pode voltar a lê-lo \
-                             nem a consumi-lo — a posse já saiu deste âmbito (§2).",
-                        ),
-                    );
-                } else if consumes == 0 && must_use {
-                    diags.push(
-                        Diagnostic::error(
-                            "AX0002",
-                            format!("recurso must-use '{name}' largado sem ser consumido"),
-                        )
-                        .label(
-                            span.0,
-                            span.1,
-                            format!("'{name}' : {ty_name} %1 (sem Drop)"),
-                        )
-                        .with_help(
-                            "endpoints, Token e handles são must-use (não têm Drop); \
-                             consuma-o ou devolva-o (§2).",
-                        ),
-                    );
-                } else if consumes == 0 {
-                    // droppable, nunca consumido: Auto-Drop injecta 'free' no ponto
-                    // de morte — a última leitura, ou a entrada se nunca lido.
-                    let (death, reason) = if borrows == 0 {
-                        (*span, "morre à entrada (nunca usado)")
-                    } else {
-                        (
-                            last_occurrence_clause(clause, name).unwrap_or(*span),
-                            "morre após a última leitura",
-                        )
-                    };
-                    drops.push(DropPoint {
-                        func: f.name.clone(),
-                        var: name.clone(),
-                        ty: ty_name,
-                        span: death,
-                        reason,
-                    });
-                }
+            if let (Pat::Var(name, span), Some(ty)) = (p, ptypes.get(i)) {
+                let class = class_of_type(ty, &ctx.must_use_types);
+                let (c, b) = analyze_clause(clause, name, ctx);
+                let use_ = ResUse {
+                    consumes: c,
+                    borrows: b,
+                    uam: use_after_move(clause, name, ctx),
+                    death: last_occurrence_clause(clause, name),
+                };
+                report_resource(name, &class, *span, &use_, &f.name, diags, out);
+                lin.insert(name.clone(), class);
             }
         }
+
+        // --- linearidade + Auto-Drop de valores 'let' lineares + in-place (§2) ---
+        if let Body::Plain(body) = &clause.body {
+            let mut lets = Vec::new();
+            scan_lets(body, &lin, ctx, &mut lets, &mut out.inplace, &f.name);
+            for (name, class, sp_scope, bind_span) in lets {
+                let (c, b) = analyze(sp_scope, &name, Mode::Consume, ctx);
+                let mut death = None;
+                collect_last(sp_scope, &name, &mut death);
+                let use_ = ResUse {
+                    consumes: c,
+                    borrows: b,
+                    uam: walk(sp_scope, &name, Mode::Consume, ctx, MoveState::default()).error,
+                    death,
+                };
+                report_resource(&name, &class, bind_span, &use_, &f.name, diags, out);
+            }
+        }
+    }
+}
+
+/// Emite o diagnóstico ou regista o drop, aplicando a regra da linearidade a um
+/// recurso linear (parâmetro ou valor `let`), dado o resultado da análise.
+fn report_resource(
+    name: &str,
+    class: &Lin,
+    label: Span,
+    u: &ResUse,
+    func: &str,
+    diags: &mut Diagnostics,
+    out: &mut Analysis,
+) {
+    if u.consumes > 1 {
+        diags.push(
+            Diagnostic::error(
+                "AX0001",
+                format!(
+                    "recurso linear '{name}' consumido {} vezes (contração proibida)",
+                    u.consumes
+                ),
+            )
+            .label(
+                label.0,
+                label.1,
+                format!("'{name}' é %1: consumível uma só vez"),
+            )
+            .with_help(
+                "ler (emprestar) um %1 é livre e ilimitado; mover a posse (consumir) \
+                 só pode acontecer uma vez — para o partilhar por posse, use 'split' \
+                 em duas metades %0.5 (§2).",
+            ),
+        );
+    } else if let Some((mv, use_sp)) = u.uam {
+        diags.push(
+            Diagnostic::error(
+                "AX0004",
+                format!("uso de '{name}' após a posse ter sido movida"),
+            )
+            .label(use_sp.0, use_sp.1, format!("'{name}' usado aqui…"))
+            .label(mv.0, mv.1, "…mas a posse já tinha sido movida aqui")
+            .with_help(
+                "depois de mover um %1 (consumir), não se pode voltar a lê-lo nem \
+                     a consumi-lo — a posse já saiu deste âmbito (§2).",
+            ),
+        );
+    } else if u.consumes == 0 && class.must_use {
+        diags.push(
+            Diagnostic::error(
+                "AX0002",
+                format!("recurso must-use '{name}' largado sem ser consumido"),
+            )
+            .label(
+                label.0,
+                label.1,
+                format!("'{name}' : {} %1 (sem Drop)", class.ty),
+            )
+            .with_help(
+                "endpoints, Token e handles são must-use (não têm Drop); consuma-o \
+                     ou devolva-o (§2).",
+            ),
+        );
+    } else if u.consumes == 0 {
+        // droppable, nunca consumido: Auto-Drop no ponto de morte (última
+        // leitura, ou a entrada se nunca lido).
+        let (death, reason) = match u.death {
+            Some(s) if u.borrows > 0 => (s, "morre após a última leitura"),
+            _ => (label, "morre à entrada (nunca usado)"),
+        };
+        out.drops.push(DropPoint {
+            func: func.to_string(),
+            var: name.to_string(),
+            ty: class.ty.clone(),
+            span: death,
+            reason,
+        });
     }
 }
 
@@ -308,12 +401,15 @@ enum Mode {
     Borrow,
 }
 
-/// Multiplicidades de parâmetros/campos (funções, construtores) + mult por campo.
+/// Multiplicidades de parâmetros/campos (funções, construtores) + mult por campo
+/// + o conjunto de tipos `data` que são must-use (propagação estrutural).
 struct Ctx {
     /// função/construtor → multiplicidades dos parâmetros/campos (por ordem)
     consumers: HashMap<String, Vec<Mult>>,
     /// nome de campo → multiplicidade declarada (para registos)
     field_mults: HashMap<String, Mult>,
+    /// tipos `data` must-use (por conterem, recursivamente, um campo sem `Drop`)
+    must_use_types: HashSet<String>,
 }
 
 fn build_ctx(module: &Module) -> Ctx {
@@ -338,6 +434,7 @@ fn build_ctx(module: &Module) -> Ctx {
     Ctx {
         consumers,
         field_mults,
+        must_use_types: build_must_use_types(module),
     }
 }
 
@@ -654,5 +751,115 @@ fn join(a: MoveState, b: MoveState) -> MoveState {
     MoveState {
         moved: a.moved.or(b.moved),
         error: a.error.or(b.error),
+    }
+}
+
+// --- valores 'let' lineares + mutação in-place (§2) ---
+
+/// A "classe" de um recurso linear: se é must-use e o nome do seu tipo.
+#[derive(Clone)]
+struct Lin {
+    must_use: bool,
+    ty: String,
+}
+
+fn class_of_type(ty: &Type, mu: &HashSet<String>) -> Lin {
+    Lin {
+        must_use: is_must_use(ty, mu),
+        ty: ty.head_con().unwrap_or("?").to_string(),
+    }
+}
+
+/// O RHS de um `let v = <e>` simples (um bind sem parâmetros nem guardas).
+fn simple_bind_rhs(f: &Func) -> Option<&Expr> {
+    match f.clauses.as_slice() {
+        [c] if c.pats.is_empty() => match &c.body {
+            Body::Plain(e) => Some(e),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Percorre o corpo recolhendo (1) os `let` que recebem posse de um recurso
+/// linear — que passam a ser recursos lineares no seu âmbito — e (2) os locais
+/// de actualização in-place (RecordUpd cujo base é um recurso linear vivo).
+fn scan_lets<'a>(
+    e: &'a Expr,
+    lin: &HashMap<String, Lin>,
+    ctx: &Ctx,
+    lets: &mut Vec<(String, Lin, &'a Expr, Span)>,
+    inplace: &mut Vec<InPlace>,
+    func: &str,
+) {
+    match e {
+        Expr::Let(binds, body, _) => {
+            let mut cur = lin.clone();
+            for b in binds {
+                if let Some(rhs) = simple_bind_rhs(b) {
+                    scan_lets(rhs, &cur, ctx, lets, inplace, func);
+                    // um bind cujo RHS consome um recurso linear herda a posse
+                    let consumed = cur
+                        .keys()
+                        .find(|w| analyze(rhs, w, Mode::Consume, ctx).0 > 0)
+                        .cloned();
+                    if let Some(w) = consumed {
+                        let class = cur[&w].clone();
+                        lets.push((b.name.clone(), class.clone(), body, b.span));
+                        cur.insert(b.name.clone(), class);
+                    }
+                } else {
+                    for c in &b.clauses {
+                        if let Body::Plain(e2) = &c.body {
+                            scan_lets(e2, &cur, ctx, lets, inplace, func);
+                        }
+                    }
+                }
+            }
+            scan_lets(body, &cur, ctx, lets, inplace, func);
+        }
+        Expr::RecordUpd(base, assigns, span) => {
+            if let Expr::Var(name, _) = base.as_ref() {
+                if lin.contains_key(name) {
+                    inplace.push(InPlace {
+                        func: func.to_string(),
+                        var: name.clone(),
+                        span: *span,
+                    });
+                }
+            }
+            scan_lets(base, lin, ctx, lets, inplace, func);
+            for (_, a) in assigns {
+                scan_lets(a, lin, ctx, lets, inplace, func);
+            }
+        }
+        Expr::App(f, a, _) => {
+            scan_lets(f, lin, ctx, lets, inplace, func);
+            scan_lets(a, lin, ctx, lets, inplace, func);
+        }
+        Expr::BinOp(_, l, r, _) => {
+            scan_lets(l, lin, ctx, lets, inplace, func);
+            scan_lets(r, lin, ctx, lets, inplace, func);
+        }
+        Expr::If(c, t, el, _) => {
+            scan_lets(c, lin, ctx, lets, inplace, func);
+            scan_lets(t, lin, ctx, lets, inplace, func);
+            scan_lets(el, lin, ctx, lets, inplace, func);
+        }
+        Expr::Case(s, arms, _) => {
+            scan_lets(s, lin, ctx, lets, inplace, func);
+            for (_, b) in arms {
+                scan_lets(b, lin, ctx, lets, inplace, func);
+            }
+        }
+        Expr::Tuple(es, _) => es
+            .iter()
+            .for_each(|e| scan_lets(e, lin, ctx, lets, inplace, func)),
+        Expr::RecordCon(_, assigns, _) => {
+            for (_, a) in assigns {
+                scan_lets(a, lin, ctx, lets, inplace, func);
+            }
+        }
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
     }
 }
