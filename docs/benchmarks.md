@@ -13,9 +13,9 @@
   - **alloc** — 40 M alocações. Na Axión via **arena** (§3, bump + reset em massa);
     em C via `malloc`/`free`, em Rust via `Box` — o idioma de cada linguagem.
   - **simd** — redução vectorizável sobre um array (200 M somas). Na Axión via a
-    primitiva `sumBuffer` sobre um `Buffer` (§4) — o *escape-hatch* vectorizável
-    (um laço no runtime que o `clang -O2` vectoriza e o `-flto` inlina); em C/Rust
-    é o laço idiomático que o `-O2` auto-vectoriza.
+    primitiva `sumBytes` sobre um `Buffer U8` linear (§4/§5) — o *escape-hatch*
+    vectorizável (um laço no runtime que o `clang -O2` vectoriza e o `-flto`
+    inlina); em C/Rust é o laço idiomático que o `-O2` auto-vectoriza.
 - Harness: [`scripts/bench.sh`](../scripts/bench.sh) — melhor de 3, `date +%s%N`,
   e verifica que, por kernel, todas as variantes dão o mesmo resultado.
 - **Escalão comparável:** o **mesmo `clang` (LLVM)** compila o C e o Axión
@@ -78,8 +78,10 @@ O `--release` (e o baseline C) precisam do `clang` — via `AXION_CLANG` ou no P
 
 ## Limitações / a fazer
 
-- O `Buffer` (§4) é por agora um 1.º corte (`iota`/`sumBuffer`/`freeBuffer`,
-  irrestrito); o `Buffer %1` linear com `imperative`/`foldBytes`/`xorInPlace`
-  (§4/§5) é o passo seguinte.
+- O `Buffer U8` é **linear** (`%1`, must-use), com in-place (`bufIota`/
+  `xorInPlace`), leitura (`sumBytes`) e `free` — imposto pelo typechecker
+  (consumir 2× → AX0001; largar → AX0002). Falta a **açúcar** de superfície
+  (`imperative $ do`, `$`, `foldBytes (+)` com secções de operador) e o
+  `withBuffer` como bracket — para correr o `examples/03`/`05` tal-e-qual.
 - Kernels sintéticos; faltam cargas mistas maiores e I/O.
 - Números variam por máquina/carga; usar como ordem de grandeza, não absolutos.

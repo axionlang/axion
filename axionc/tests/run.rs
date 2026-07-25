@@ -560,7 +560,7 @@ fn arena_runs_natively_with_bulk_reset() {
 
 #[test]
 fn buffer_sum_runs_natively() {
-    // Buffer (§4): iota/sumBuffer/freeBuffer. sum(0..99)=4950; --dev == interp.
+    // Buffer U8 (§4/§5): newBuffer/bufIota/sumBytes/free. sum(0..99)=4950.
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("buffer_sum.axi")])
         .output()
@@ -571,6 +571,33 @@ fn buffer_sum_runs_natively() {
         String::from_utf8_lossy(&native.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&native.stdout), "4950\n");
+}
+
+#[test]
+fn linear_buffer_inplace_runs_natively() {
+    // Buffer %1 + XOR in-place (§5): o fio linear corre; encrypt consome+devolve.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("buffer_linear.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "126444\n");
+}
+
+#[test]
+fn linear_buffer_consumed_twice_is_rejected_ax0001() {
+    // consumir o Buffer %1 duas vezes (xorInPlace) → contração → AX0001.
+    let out = axionc()
+        .args(["--check", &fixture("buffer_use_twice.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0001"), "esperava AX0001, saída: {text}");
 }
 
 #[test]
@@ -658,7 +685,8 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("record_run.axi"), "99\n"),   // registos na heap
         (fixture("linear_move.axi"), "42\n"),  // Auto-Drop + free
         (fixture("arena_run.axi"), "100\n"),   // arenas
-        (fixture("buffer_sum.axi"), "4950\n"), // Buffer / §4
+        (fixture("buffer_sum.axi"), "4950\n"), // Buffer U8 / §4
+        (fixture("buffer_linear.axi"), "126444\n"), // Buffer %1 in-place / §5
         (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
     ];

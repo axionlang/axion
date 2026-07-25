@@ -366,9 +366,12 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "promote",
         "arena_mark",
         "arena_release",
-        "iota",
-        "sumBuffer",
-        "freeBuffer",
+        "newBuffer",
+        "withBuffer",
+        "bufIota",
+        "xorInPlace",
+        "sumBytes",
+        "free",
     ] {
         g.insert(b.to_string());
     }
@@ -532,10 +535,27 @@ impl Lower<'_> {
             }
             ("arena_mark", 1) => return Op::ArenaMark(self.atom(args[0], buf)),
             ("arena_release", 1) => return Op::ArenaRelease(self.atom(args[0], buf)),
-            // Buffer (§4): builtins que são chamadas de runtime
-            ("iota", 1) => return self.rtcall("axion_iota", &args, true, buf),
-            ("sumBuffer", 1) => return self.rtcall("axion_sum_buffer", &args, true, buf),
-            ("freeBuffer", 1) => return self.rtcall("axion_free_buffer", &args, false, buf),
+            // Buffer U8 linear (§4/§5): builtins que são chamadas de runtime
+            ("newBuffer", 1) => return self.rtcall("axion_buf_new", &args, true, buf),
+            ("bufIota", 1) => return self.rtcall("axion_buf_iota", &args, true, buf),
+            ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
+            ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
+            ("free", 1) => return self.rtcall("axion_buf_free", &args, false, buf),
+            // withBuffer n f = f (newBuffer n): aloca e passa à closure (que consome)
+            ("withBuffer", 2) => {
+                let n = self.atom(args[0], buf);
+                let clos = self.atom(args[1], buf);
+                let b = self.fresh();
+                buf.push((
+                    b.clone(),
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_buf_new".into(),
+                        args: vec![n],
+                        returns: true,
+                    }),
+                ));
+                return Op::CallClosure(clos, vec![Atom::Var(b)]);
+            }
             _ => {}
         }
         let vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();

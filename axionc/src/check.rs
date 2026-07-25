@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 /// Tipos primitivos **sem `Drop`** (must-use): esquecê-los é erro, não Auto-Drop.
 /// `Drop` propaga estruturalmente: um registo é must-use se algum campo o for.
 /// Tudo o resto é droppable por omissão (§2).
-const MUST_USE_PRIMS: &[&str] = &["Ep", "Token", "Endpoint", "Transaction"];
+const MUST_USE_PRIMS: &[&str] = &["Ep", "Token", "Endpoint", "Transaction", "Buffer"];
 
 /// Um `free` injectado pelo Auto-Drop no ponto de morte de um recurso linear.
 #[derive(Debug, Clone)]
@@ -149,10 +149,13 @@ fn builtins() -> HashSet<String> {
         "promote",
         "arena_mark",
         "arena_release",
-        // Buffer (§4)
-        "iota",
-        "sumBuffer",
-        "freeBuffer",
+        // Buffer U8 linear (§4/§5)
+        "newBuffer",
+        "withBuffer",
+        "bufIota",
+        "xorInPlace",
+        "sumBytes",
+        "free",
         // permissões fraccionárias (§2)
         "split",
         "join",
@@ -484,6 +487,15 @@ fn build_ctx(module: &Module) -> Ctx {
     }
     // `split` consome o %1 que divide (para o repartir em duas metades %0.5).
     consumers.insert("split".to_string(), vec![Mult::One]);
+    // Buffer U8 linear (§4/§5): as ops in-place (bufIota/xorInPlace) e o `free`
+    // consomem o Buffer %1 (xorInPlace devolve um novo %1 — o fio linear);
+    // sumBytes/withBuffer só emprestam.
+    consumers.insert("bufIota".to_string(), vec![Mult::One]);
+    consumers.insert("xorInPlace".to_string(), vec![Mult::One, Mult::Many]);
+    consumers.insert("free".to_string(), vec![Mult::One]);
+    consumers.insert("sumBytes".to_string(), vec![Mult::Many]);
+    consumers.insert("newBuffer".to_string(), vec![Mult::Many]);
+    consumers.insert("withBuffer".to_string(), vec![Mult::Many, Mult::Many]);
     Ctx {
         consumers,
         field_mults,

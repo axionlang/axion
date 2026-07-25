@@ -280,25 +280,48 @@ impl<'a> Infer<'a> {
             "arena_release".into(),
             mono(Ty::Fun(Box::new(mark()), Box::new(unit()))),
         );
-        // Buffer (§4): array vectorizável. iota :: Int -> Buffer;
-        // sumBuffer :: Buffer -> Int (empresta); freeBuffer :: Buffer -> ().
+        // Buffer U8 linear (§4/§5). A linearidade (%1) é imposta pelo check.rs
+        // (mapa `consumers` + Buffer must-use); aqui são só os tipos HM.
         let buffer = || Ty::Con("Buffer".into(), vec![]);
+        let int = || Ty::Con("Int".into(), vec![]);
+        // newBuffer :: Int -> Buffer
         env.insert(
-            "iota".into(),
-            mono(Ty::Fun(
-                Box::new(Ty::Con("Int".into(), vec![])),
-                Box::new(buffer()),
-            )),
+            "newBuffer".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(buffer()))),
+        );
+        // withBuffer :: forall a. Int -> (Buffer -> a) -> a
+        env.insert(
+            "withBuffer".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Fun(Box::new(buffer()), Box::new(Ty::Var(0)))),
+                        Box::new(Ty::Var(0)),
+                    )),
+                ),
+            },
+        );
+        // bufIota :: Buffer -> Buffer (in-place); xorInPlace :: Buffer -> Int -> Buffer
+        env.insert(
+            "bufIota".into(),
+            mono(Ty::Fun(Box::new(buffer()), Box::new(buffer()))),
         );
         env.insert(
-            "sumBuffer".into(),
+            "xorInPlace".into(),
             mono(Ty::Fun(
                 Box::new(buffer()),
-                Box::new(Ty::Con("Int".into(), vec![])),
+                Box::new(Ty::Fun(Box::new(int()), Box::new(buffer()))),
             )),
         );
+        // sumBytes :: Buffer -> Int (empresta); free :: Buffer -> ()
         env.insert(
-            "freeBuffer".into(),
+            "sumBytes".into(),
+            mono(Ty::Fun(Box::new(buffer()), Box::new(int()))),
+        );
+        env.insert(
+            "free".into(),
             mono(Ty::Fun(Box::new(buffer()), Box::new(unit()))),
         );
         // permissões fraccionárias (§2). split :: forall a. a -> (a, a);

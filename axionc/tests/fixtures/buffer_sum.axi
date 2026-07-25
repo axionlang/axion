@@ -1,8 +1,10 @@
--- Buffer (§4): iota cria [0..100), sumBuffer soma (redução vectorizável no
--- --release), freeBuffer liberta. sum(0..99) = 4950.
+-- Buffer U8 linear (§4/§5): newBuffer aloca, bufIota preenche in-place
+-- (byte[i]=i&0xFF), sumBytes soma (empresta), free consome. Para 100 bytes,
+-- byte[i]=i → sum(0..99)=4950. O fio linear (%1) é único: b→b1→free.
 main :: Int
 main =
-  let buf = iota 100 in
-  let s = sumBuffer buf in
-  let done = freeBuffer buf in
+  let b = newBuffer 100 in
+  let b1 = bufIota b in
+  let s = sumBytes b1 in
+  let done = free b1 in
   s

@@ -157,41 +157,62 @@ extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> 
     dst
 }
 
-// --- Buffer (§4): array de i64 [len][data…]. As operações em massa são o
-// escape-hatch vectorizável (no --release; no --dev correm à velocidade do
-// runtime Rust do axionc). ---
+// --- Buffer U8 linear (§4/§5): [len(i64)][bytes…]. As operações em massa são o
+// escape-hatch imperativo/vectorizável (no --release; no --dev à velocidade do
+// runtime Rust do axionc). Layout de 8 (cabeçalho) + n bytes; aloca-se 8+n
+// arredondado para o alinhamento do `Layout`. ---
 
-extern "C" fn axion_iota(n: i64) -> *mut u8 {
+fn buf_layout(n: usize) -> std::alloc::Layout {
+    std::alloc::Layout::from_size_align(8 + n, 8).unwrap()
+}
+
+extern "C" fn axion_buf_new(n: i64) -> *mut u8 {
     let n = n.max(0) as usize;
-    let layout = std::alloc::Layout::from_size_align((n + 1) * 8, 8).unwrap();
     unsafe {
-        let b = std::alloc::alloc(layout) as *mut i64;
-        *b = n as i64;
-        for i in 0..n {
-            *b.add(i + 1) = i as i64;
-        }
-        b as *mut u8
+        let b = std::alloc::alloc_zeroed(buf_layout(n));
+        *(b as *mut i64) = n as i64;
+        b
     }
 }
 
-extern "C" fn axion_sum_buffer(buf: *mut u8) -> i64 {
+extern "C" fn axion_buf_iota(buf: *mut u8) -> *mut u8 {
     unsafe {
-        let b = buf as *const i64;
-        let n = *b;
+        let n = *(buf as *const i64) as usize;
+        let d = buf.add(8);
+        for i in 0..n {
+            *d.add(i) = (i & 0xFF) as u8;
+        }
+    }
+    buf
+}
+
+extern "C" fn axion_buf_xor(buf: *mut u8, key: i64) -> *mut u8 {
+    unsafe {
+        let n = *(buf as *const i64) as usize;
+        let d = buf.add(8);
+        for i in 0..n {
+            *d.add(i) ^= key as u8;
+        }
+    }
+    buf
+}
+
+extern "C" fn axion_buf_sum(buf: *mut u8) -> i64 {
+    unsafe {
+        let n = *(buf as *const i64) as usize;
+        let d = buf.add(8);
         let mut s = 0i64;
         for i in 0..n {
-            s = s.wrapping_add(*b.add(i as usize + 1));
+            s = s.wrapping_add(*d.add(i) as i64);
         }
         s
     }
 }
 
-extern "C" fn axion_free_buffer(buf: *mut u8) {
+extern "C" fn axion_buf_free(buf: *mut u8) {
     unsafe {
-        let b = buf as *mut i64;
-        let n = *b as usize;
-        let layout = std::alloc::Layout::from_size_align((n + 1) * 8, 8).unwrap();
-        std::alloc::dealloc(buf, layout);
+        let n = *(buf as *const i64) as usize;
+        std::alloc::dealloc(buf, buf_layout(n));
     }
 }
 
@@ -240,9 +261,11 @@ impl Cg {
         builder.symbol("axion_arena_mark", axion_arena_mark as *const u8);
         builder.symbol("axion_arena_release", axion_arena_release as *const u8);
         builder.symbol("axion_arena_promote", axion_arena_promote as *const u8);
-        builder.symbol("axion_iota", axion_iota as *const u8);
-        builder.symbol("axion_sum_buffer", axion_sum_buffer as *const u8);
-        builder.symbol("axion_free_buffer", axion_free_buffer as *const u8);
+        builder.symbol("axion_buf_new", axion_buf_new as *const u8);
+        builder.symbol("axion_buf_iota", axion_buf_iota as *const u8);
+        builder.symbol("axion_buf_xor", axion_buf_xor as *const u8);
+        builder.symbol("axion_buf_sum", axion_buf_sum as *const u8);
+        builder.symbol("axion_buf_free", axion_buf_free as *const u8);
         let mut module = JITModule::new(builder);
 
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
@@ -272,9 +295,11 @@ impl Cg {
         // builtins de runtime nomeados (Buffer/§4): nome → (FuncId, devolve valor)
         let mut rt_fns: HashMap<String, (FuncId, bool)> = HashMap::new();
         for (name, nparams, ret) in [
-            ("axion_iota", 1, true),
-            ("axion_sum_buffer", 1, true),
-            ("axion_free_buffer", 1, false),
+            ("axion_buf_new", 1, true),
+            ("axion_buf_iota", 1, true),
+            ("axion_buf_xor", 2, true),
+            ("axion_buf_sum", 1, true),
+            ("axion_buf_free", 1, false),
         ] {
             rt_fns.insert(name.into(), (import(&mut module, name, nparams, ret)?, ret));
         }

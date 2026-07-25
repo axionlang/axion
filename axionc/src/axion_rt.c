@@ -109,19 +109,31 @@ long axion_arena_promote(long target, long cell, long size) {
   return dst;
 }
 
-/* --- Buffer (§4): array de i64 com cabeçalho de comprimento [len][data…].
- * As operações em massa (sum) são laços que o clang -O2 auto-vectoriza; com
- * -flto inlinam no chamador. É o escape-hatch vectorizável da linguagem. */
-long axion_iota(long n) {
-  long *b = (long *)malloc((n + 1) * 8);
-  b[0] = n;
-  for (long i = 0; i < n; i++) b[i + 1] = i;
+/* --- Buffer U8 linear (§4/§5): [len(i64)][bytes…]. As operações em massa
+ * (sum) e in-place (iota/xor) são laços que o clang -O2 auto-vectoriza; com
+ * -flto inlinam no chamador. É o escape-hatch imperativo/vectorizável. */
+long axion_buf_new(long n) {
+  char *b = (char *)malloc(8 + (n < 0 ? 0 : n));
+  *(long *)b = n;
+  memset(b + 8, 0, (size_t)(n < 0 ? 0 : n));
   return (long)b;
 }
-long axion_sum_buffer(long buf) {
-  long *b = (long *)buf;
-  long n = b[0], s = 0;
-  for (long i = 0; i < n; i++) s += b[i + 1]; /* redução vectorizável */
+long axion_buf_iota(long buf) { /* in-place: data[i] = i & 0xFF */
+  long n = *(long *)buf;
+  unsigned char *d = (unsigned char *)(buf + 8);
+  for (long i = 0; i < n; i++) d[i] = (unsigned char)(i & 0xFF);
+  return buf;
+}
+long axion_buf_xor(long buf, long key) { /* in-place: data[i] ^= key */
+  long n = *(long *)buf;
+  unsigned char *d = (unsigned char *)(buf + 8);
+  for (long i = 0; i < n; i++) d[i] ^= (unsigned char)key;
+  return buf;
+}
+long axion_buf_sum(long buf) { /* redução vectorizável (empresta) */
+  long n = *(long *)buf, s = 0;
+  unsigned char *d = (unsigned char *)(buf + 8);
+  for (long i = 0; i < n; i++) s += d[i];
   return s;
 }
-void axion_free_buffer(long buf) { free((void *)buf); }
+void axion_buf_free(long buf) { free((void *)buf); }
