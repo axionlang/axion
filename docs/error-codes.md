@@ -12,7 +12,7 @@ e explicáveis por `axion --explain AXnnnn`.
 
 | Código | Categoria | Invariante violado | Estado |
 |--------|-----------|--------------------|--------|
-| `AX0001` | Linearidade | Contração: um `%1` usado **mais do que uma vez** | **imposto pelo `axionc`** (Fase 1) |
+| `AX0001` | Linearidade | Contração: um `%1` **consumido** >1 vez (ler/emprestar é livre) | **imposto pelo `axionc`** (Fase 1/2) |
 | `AX0002` | Linearidade | *Must-use*: um `%1` **sem `Drop`** descartado sem consumo (tipos droppable ⇒ Auto-Drop, não erro) | **imposto pelo `axionc`** (Fase 1/2) |
 | `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | reservado (Fase 2) |
 | `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
@@ -30,32 +30,35 @@ linguagem: `AX0004`; front-end: `AX0102`; tipos: `AX0202`.
 
 ---
 
-## `AX0001` — uso-após-consumo (contração de um recurso linear)
+## `AX0001` — contração de um recurso linear (consumido >1 vez)
 
-**Regra (§2).** Todo o valor `%1` é consumido *exactamente uma vez*. Usá-lo duas
-vezes (contração) é proibido para todo o `%1`, sempre.
+**Regra (§2), com liveness fina.** *Ler* (emprestar) um `%1` é livre e
+ilimitado — a Elisão de Empréstimos. *Consumir* (mover a posse: argumento de um
+parâmetro `%1`, campo `%1`, ou valor de retorno) só pode acontecer **uma** vez;
+duas é contração.
 
 ```axion
 process :: Buffer U8 %1 -> (Buffer U8 %1, Buffer U8 %1)
 process buf = (encrypt buf, encrypt buf)
---                    ^^^            ^^^  'buf' consumido duas vezes -> AX0001
+--                    ^^^            ^^^  'buf' CONSUMIDO duas vezes -> AX0001
+-- (mas  checksum buf + checksum buf  seria OK: são duas LEITURAS/empréstimos)
 ```
 
-**Bancada (Fase 0).** Já imposto: `prototype/test/negative/UseTwice.hs` compila
-com falha e `scripts/check-negative.sh` exige essa falha. No GHC manifesta-se
-como erro de *multiplicidade*.
+**Bancada (Fase 0).** `prototype/test/negative/UseTwice.hs` falha a compilar; o
+GHC manifesta-o como erro de *multiplicidade* (o `LinearTypes` não tem Elisão de
+Empréstimos, por isso trata toda a leitura como consumo).
 
-**`axionc` (Fase 1).** Imposto pela análise de linearidade
-(`axionc/src/check.rs`): um parâmetro cuja seta na assinatura é `%1` usado mais
-do que uma vez emite `AX0001` com o span do binder. Ramos de `if`/`case` contam
-como caminhos alternativos (o uso é o máximo entre ramos, não a soma).
+**`axionc` (Fase 1/2).** Imposto pela análise de linearidade fina
+(`axionc/src/check.rs`): classifica cada ocorrência do `%1` como empréstimo ou
+consumo pela sua posição; **consumos > 1** ⇒ `AX0001`. Ramos de `if`/`case`
+contam como caminhos alternativos (máximo, não soma).
 Fixture: `axionc/tests/fixtures/use_after_consume.axi`.
 
 ```
-error[AX0001]: recurso linear 'x' usado 2 vezes (contração proibida)
-  --> tests/fixtures/use_after_consume.axi:3:10
+error[AX0001]: recurso linear 'x' consumido 2 vezes (contração proibida)
+  --> tests/fixtures/use_after_consume.axi:5:10
   |
-3 | useTwice x = x + x
+5 | useTwice x = (x, x)
   |          ^ 'x' é %1: consumível uma só vez
 ```
 

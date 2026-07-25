@@ -122,6 +122,34 @@ fn autodrop_emits_injected_free() {
 }
 
 #[test]
+fn borrowing_a_linear_twice_is_accepted() {
+    // Ler (emprestar) um %1 duas vezes é permitido — não é contração.
+    let out = axionc()
+        .args(["--check", &fixture("borrow_twice_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "dois empréstimos deviam ser aceites; saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn autodrop_death_point_is_the_last_read() {
+    // free injectado no ponto de morte fino (após a última leitura), não à entrada.
+    let out = axionc()
+        .args(["--emit", "drops", &fixture("borrow_twice_ok.axi")])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("free(x)") && text.contains("após a última leitura"),
+        "esperava drop na última leitura, saída: {text}"
+    );
+}
+
+#[test]
 fn type_mismatch_is_rejected_ax0200() {
     let out = axionc()
         .args(["--check", &fixture("type_mismatch.axi")])

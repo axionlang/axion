@@ -178,8 +178,8 @@ fn print_drops(drops: &[check::DropPoint], path: &str, lines: &LineMap) {
     for d in drops {
         let (l, c) = lines.pos(d.span.0);
         println!(
-            "  free({}) : {} %1  @ {path}:{l}:{c}  (em '{}', morre à entrada — nunca consumido)",
-            d.var, d.ty, d.func
+            "  free({}) : {} %1  @ {path}:{l}:{c}  (em '{}', {})",
+            d.var, d.ty, d.func, d.reason
         );
     }
 }
@@ -187,10 +187,11 @@ fn print_drops(drops: &[check::DropPoint], path: &str, lines: &LineMap) {
 fn explain(code: &str) -> ExitCode {
     let text = match code.to_uppercase().as_str() {
         "AX0001" => {
-            "AX0001 — uso-após-consumo (contração de um recurso linear).\n\
-             Todo o valor %1 é consumido exactamente uma vez. Usá-lo duas vezes é\n\
-             proibido. Se precisa de o ler em dois sítios, use 'split' para obter\n\
-             duas metades %0.5 (§2)."
+            "AX0001 — contração de um recurso linear (consumido mais de uma vez).\n\
+             LER (emprestar) um %1 é livre e ilimitado — a Elisão de Empréstimos.\n\
+             CONSUMIR (mover a posse: argumento %1, campo %1, ou retorno) só pode\n\
+             acontecer uma vez. Para o partilhar por posse, use 'split' em duas\n\
+             metades %0.5 (§2)."
         }
         "AX0002" => {
             "AX0002 — recurso must-use largado sem ser consumido.\n\

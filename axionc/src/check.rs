@@ -1,20 +1,28 @@
 //! Verificação estática: resolução de nomes (AX0101) + análise de linearidade
-//! com **Auto-Drop** (§2).
+//! **fina** com **Auto-Drop** (§2).
 //!
-//! A regra da linearidade (§2), refinada pelo Auto-Drop:
-//! - um `%1` **must-use** (sem `Drop`: `Ep`, `Token`, handles) é consumido
-//!   **exactamente uma vez** — 0 usos ⇒ `AX0002`;
-//! - um `%1` **droppable** (tem `Drop`) é consumido **quando muito uma vez** —
-//!   0 usos ⇒ o compilador injecta `free` no ponto de morte (Auto-Drop), sem
-//!   erro; o ponto de drop é reportado (`--emit drops`).
-//! - a contracção (usar >1 vez) é sempre `AX0001`.
+//! Liveness fina distingue duas formas de usar um `%1`:
+//! - **empréstimo** (ler sem consumir — a Elisão de Empréstimos, §2): livre e
+//!   ilimitado;
+//! - **consumo** (a posse flui para fora: argumento de um parâmetro `%1`, campo
+//!   `%1`, ou valor de retorno): no máximo **uma** vez.
 //!
-//! Ramos alternativos (`if`, `case`) contam como caminhos: o uso é o máximo
-//! entre ramos, não a soma.
+//! A posição de cada ocorrência decide qual é. Daí a regra:
+//! - **consumos > 1** ⇒ `AX0001` (contração — mover a posse duas vezes);
+//! - **consumos == 0** e tipo **must-use** (sem `Drop`: `Ep`, `Token`, handles)
+//!   ⇒ `AX0002`;
+//! - **consumos == 0** e tipo **droppable** ⇒ Auto-Drop injecta `free` no ponto
+//!   de morte (a última leitura, ou a entrada se nunca lido); reportado por
+//!   `--emit drops`;
+//! - **consumos == 1** ⇒ posse transferida, sem drop.
+//!
+//! Ramos alternativos (`if`, `case`) contam como caminhos (máximo, não soma).
+//! Limitação assumida deste corte: a ORDEM não é verificada (um empréstimo
+//! depois do consumo — uso-após-move — ainda não é detectado).
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Tipos lineares **sem `Drop`** (must-use): esquecê-los é erro, não Auto-Drop.
 /// Tudo o resto é droppable por omissão (§2).
@@ -27,6 +35,8 @@ pub struct DropPoint {
     pub var: String,
     pub ty: String,
     pub span: Span,
+    /// Porquê morre aqui (nunca usado, ou após a última leitura).
+    pub reason: &'static str,
 }
 
 /// Corre a verificação e devolve os `free` injectados pelo Auto-Drop.
@@ -46,9 +56,10 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Vec<DropPoint> {
             }
         }
     }
+    let ctx = build_ctx(module);
     let mut drops = Vec::new();
     for f in &module.funcs {
-        check_func(f, &globals, diags, &mut drops);
+        check_func(f, &globals, &ctx, diags, &mut drops);
     }
     drops
 }
@@ -68,6 +79,7 @@ fn builtins() -> HashSet<String> {
 fn check_func(
     f: &Func,
     globals: &HashSet<String>,
+    ctx: &Ctx,
     diags: &mut Diagnostics,
     drops: &mut Vec<DropPoint>,
 ) {
@@ -84,36 +96,33 @@ fn check_func(
         }
         resolve_clause(clause, &scope, globals, diags);
 
-        // --- linearidade + Auto-Drop: parâmetros %1 ---
+        // --- linearidade fina + Auto-Drop: parâmetros %1 ---
         for (i, p) in clause.pats.iter().enumerate() {
             if mults.get(i).copied() != Some(Mult::One) {
                 continue;
             }
             if let Pat::Var(name, span) = p {
-                let n = count_clause(clause, name);
+                let (consumes, borrows) = analyze_clause(clause, name, ctx);
                 let must_use = ptypes.get(i).map(|t| is_must_use(t)).unwrap_or(false);
                 let ty_name = ptypes
                     .get(i)
                     .and_then(|t| t.head_con())
                     .unwrap_or("?")
                     .to_string();
-                if n > 1 {
+                if consumes > 1 {
                     diags.push(
                         Diagnostic::error(
                             "AX0001",
-                            format!("recurso linear '{name}' usado {n} vezes (contração proibida)"),
+                            format!("recurso linear '{name}' consumido {consumes} vezes (contração proibida)"),
                         )
-                        .label(
-                            span.0,
-                            span.1,
-                            format!("'{name}' é %1: consumível uma só vez"),
-                        )
+                        .label(span.0, span.1, format!("'{name}' é %1: consumível uma só vez"))
                         .with_help(
-                            "todo o valor %1 é consumido exactamente uma vez; \
-                             divida-o com 'split' se precisa de o ler em dois sítios (§2).",
+                            "ler (emprestar) um %1 é livre e ilimitado; mover a posse \
+                             (consumir) só pode acontecer uma vez — para o partilhar por \
+                             posse, use 'split' em duas metades %0.5 (§2).",
                         ),
                     );
-                } else if n == 0 && must_use {
+                } else if consumes == 0 && must_use {
                     diags.push(
                         Diagnostic::error(
                             "AX0002",
@@ -129,14 +138,23 @@ fn check_func(
                              consuma-o ou devolva-o (§2).",
                         ),
                     );
-                } else if n == 0 {
-                    // droppable e nunca consumido: Auto-Drop injecta 'free' no
-                    // ponto de morte (aqui, à entrada — o valor morre logo).
+                } else if consumes == 0 {
+                    // droppable, nunca consumido: Auto-Drop injecta 'free' no ponto
+                    // de morte — a última leitura, ou a entrada se nunca lido.
+                    let (death, reason) = if borrows == 0 {
+                        (*span, "morre à entrada (nunca usado)")
+                    } else {
+                        (
+                            last_occurrence_clause(clause, name).unwrap_or(*span),
+                            "morre após a última leitura",
+                        )
+                    };
                     drops.push(DropPoint {
                         func: f.name.clone(),
                         var: name.clone(),
                         ty: ty_name,
-                        span: *span,
+                        span: death,
+                        reason,
                     });
                 }
             }
@@ -259,56 +277,255 @@ fn resolve_expr(
     }
 }
 
-// --- contagem de usos (com ramos alternativos = máximo) ---
+// --- análise fina de liveness: empréstimo vs consumo (§2) ---
+//
+// Um recurso %1 pode ser LIDO (emprestado, sem consumir — a Elisão de
+// Empréstimos) muitas vezes, mas CONSUMIDO (posse a fluir para fora) no máximo
+// uma. A posição de cada ocorrência decide: argumento de um parâmetro %1,
+// campo %1, ou valor de retorno ⇒ consumo; tudo o resto ⇒ empréstimo.
+//
+// Limitação assumida deste corte: não se verifica a ORDEM (um empréstimo depois
+// de um consumo seria uso-após-move; fica para o passo seguinte).
 
-fn count_clause(clause: &Clause, var: &str) -> usize {
-    let mut n = match &clause.body {
-        Body::Plain(e) => count_expr(e, var),
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Consume,
+    Borrow,
+}
+
+/// Multiplicidades de parâmetros/campos (funções, construtores) + mult por campo.
+struct Ctx {
+    /// função/construtor → multiplicidades dos parâmetros/campos (por ordem)
+    consumers: HashMap<String, Vec<Mult>>,
+    /// nome de campo → multiplicidade declarada (para registos)
+    field_mults: HashMap<String, Mult>,
+}
+
+fn build_ctx(module: &Module) -> Ctx {
+    let mut consumers = HashMap::new();
+    let mut field_mults = HashMap::new();
+    for f in &module.funcs {
+        if let Some(sig) = &f.sig {
+            consumers.insert(f.name.clone(), sig.param_mults());
+        }
+    }
+    for d in &module.datas {
+        for c in &d.cons {
+            consumers.insert(c.name.clone(), c.fields.iter().map(|f| f.mult).collect());
+            for f in &c.fields {
+                if !f.name.is_empty() {
+                    consumers.insert(f.name.clone(), vec![Mult::Many]); // selector: empresta
+                    field_mults.insert(f.name.clone(), f.mult);
+                }
+            }
+        }
+    }
+    Ctx {
+        consumers,
+        field_mults,
+    }
+}
+
+type Uses = (usize, usize); // (consumos, empréstimos)
+
+fn add(a: Uses, b: Uses) -> Uses {
+    (a.0 + b.0, a.1 + b.1)
+}
+
+fn alt(a: Uses, b: Uses) -> Uses {
+    (a.0.max(b.0), a.1.max(b.1))
+}
+
+fn analyze_clause(clause: &Clause, x: &str, ctx: &Ctx) -> Uses {
+    // o valor da cláusula é devolvido ⇒ posição de consumo
+    let mut u = match &clause.body {
+        Body::Plain(e) => analyze(e, x, Mode::Consume, ctx),
         Body::Guarded(arms) => arms
             .iter()
-            .map(|(g, r)| count_expr(g, var) + count_expr(r, var))
-            .max()
-            .unwrap_or(0),
+            .map(|(g, r)| {
+                add(
+                    analyze(g, x, Mode::Borrow, ctx),
+                    analyze(r, x, Mode::Consume, ctx),
+                )
+            })
+            .fold((0, 0), alt),
     };
     for w in &clause.wher {
         for c in &w.clauses {
-            n += count_clause(c, var);
+            u = add(u, analyze_clause(c, x, ctx));
         }
     }
-    n
+    u
 }
 
-fn count_expr(e: &Expr, var: &str) -> usize {
+fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
     match e {
-        Expr::Var(n, _) => (n == var) as usize,
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => 0,
-        Expr::App(f, x, _) => count_expr(f, var) + count_expr(x, var),
-        Expr::BinOp(_, l, r, _) => count_expr(l, var) + count_expr(r, var),
-        Expr::Tuple(es, _) => es.iter().map(|e| count_expr(e, var)).sum(),
-        Expr::If(c, t, el, _) => count_expr(c, var) + count_expr(t, var).max(count_expr(el, var)),
-        Expr::Case(s, arms, _) => {
-            count_expr(s, var)
-                + arms
-                    .iter()
-                    .map(|(_, b)| count_expr(b, var))
-                    .max()
-                    .unwrap_or(0)
+        Expr::Var(n, _) => {
+            if n == x {
+                if mode == Mode::Consume {
+                    (1, 0)
+                } else {
+                    (0, 1)
+                }
+            } else {
+                (0, 0)
+            }
         }
+        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => (0, 0),
+        // operandos de aritmética/comparação são lidos, não consumidos
+        Expr::BinOp(_, l, r, _) => add(
+            analyze(l, x, Mode::Borrow, ctx),
+            analyze(r, x, Mode::Borrow, ctx),
+        ),
+        Expr::App(_, _, _) => {
+            let (head, args) = spine(e);
+            let mults = head_mults(head, ctx);
+            let mut u = analyze(head, x, Mode::Borrow, ctx);
+            for (i, a) in args.iter().enumerate() {
+                let m = arg_mode(mults.get(i));
+                u = add(u, analyze(a, x, m, ctx));
+            }
+            u
+        }
+        // condição lida; os ramos são caminhos alternativos, no modo do pai
+        Expr::If(c, t, el, _) => add(
+            analyze(c, x, Mode::Borrow, ctx),
+            alt(analyze(t, x, mode, ctx), analyze(el, x, mode, ctx)),
+        ),
+        Expr::Case(s, arms, _) => add(
+            analyze(s, x, Mode::Borrow, ctx),
+            arms.iter()
+                .map(|(_, b)| analyze(b, x, mode, ctx))
+                .fold((0, 0), alt),
+        ),
         Expr::Let(binds, body, _) => {
-            let in_binds: usize = binds
+            let in_binds = binds
                 .iter()
                 .flat_map(|b| &b.clauses)
-                .map(|c| count_clause(c, var))
-                .sum();
-            in_binds + count_expr(body, var)
+                .map(|c| analyze_clause(c, x, ctx))
+                .fold((0, 0), add);
+            add(in_binds, analyze(body, x, mode, ctx))
         }
-        Expr::RecordCon(_, fields, _) => fields.iter().map(|(_, e)| count_expr(e, var)).sum(),
-        Expr::RecordUpd(base, fields, _) => {
-            count_expr(base, var)
-                + fields
-                    .iter()
-                    .map(|(_, e)| count_expr(e, var))
-                    .sum::<usize>()
+        // um tuplo devolvido faz a posse dos componentes fluir para fora
+        Expr::Tuple(es, _) => es
+            .iter()
+            .map(|e| analyze(e, x, mode, ctx))
+            .fold((0, 0), add),
+        Expr::RecordCon(_, assigns, _) => analyze_assigns(assigns, x, ctx),
+        Expr::RecordUpd(base, assigns, _) => add(
+            analyze(base, x, Mode::Consume, ctx), // a actualização toma posse do base
+            analyze_assigns(assigns, x, ctx),
+        ),
+    }
+}
+
+fn analyze_assigns(assigns: &[(String, Expr)], x: &str, ctx: &Ctx) -> Uses {
+    assigns
+        .iter()
+        .map(|(fname, e)| {
+            let m = arg_mode(ctx.field_mults.get(fname));
+            analyze(e, x, m, ctx)
+        })
+        .fold((0, 0), add)
+}
+
+fn arg_mode(mult: Option<&Mult>) -> Mode {
+    if mult == Some(&Mult::One) {
+        Mode::Consume
+    } else {
+        Mode::Borrow
+    }
+}
+
+fn head_mults(head: &Expr, ctx: &Ctx) -> Vec<Mult> {
+    match head {
+        Expr::Var(n, _) | Expr::Con(n, _) => ctx.consumers.get(n).cloned().unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Achata a espinha de aplicação: `f a b c` → (`f`, [a, b, c]).
+fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
+    let mut args = Vec::new();
+    let mut cur = e;
+    while let Expr::App(f, a, _) = cur {
+        args.push(a.as_ref());
+        cur = f;
+    }
+    args.reverse();
+    (cur, args)
+}
+
+/// Span da última ocorrência (maior offset) de `x` na cláusula — o ponto de morte.
+fn last_occurrence_clause(clause: &Clause, x: &str) -> Option<Span> {
+    let mut best: Option<Span> = None;
+    match &clause.body {
+        Body::Plain(e) => collect_last(e, x, &mut best),
+        Body::Guarded(arms) => {
+            for (g, r) in arms {
+                collect_last(g, x, &mut best);
+                collect_last(r, x, &mut best);
+            }
+        }
+    }
+    for w in &clause.wher {
+        for c in &w.clauses {
+            if let Some(s) = last_occurrence_clause(c, x) {
+                if best.is_none_or(|b| s.0 > b.0) {
+                    best = Some(s);
+                }
+            }
+        }
+    }
+    best
+}
+
+fn collect_last(e: &Expr, x: &str, best: &mut Option<Span>) {
+    match e {
+        Expr::Var(n, sp) => {
+            if n == x && best.is_none_or(|b| sp.0 > b.0) {
+                *best = Some(*sp);
+            }
+        }
+        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::App(f, a, _) => {
+            collect_last(f, x, best);
+            collect_last(a, x, best);
+        }
+        Expr::BinOp(_, l, r, _) => {
+            collect_last(l, x, best);
+            collect_last(r, x, best);
+        }
+        Expr::If(c, t, el, _) => {
+            collect_last(c, x, best);
+            collect_last(t, x, best);
+            collect_last(el, x, best);
+        }
+        Expr::Case(s, arms, _) => {
+            collect_last(s, x, best);
+            for (_, b) in arms {
+                collect_last(b, x, best);
+            }
+        }
+        Expr::Let(binds, body, _) => {
+            for bnd in binds {
+                for c in &bnd.clauses {
+                    if let Some(s) = last_occurrence_clause(c, x) {
+                        if best.is_none_or(|b| s.0 > b.0) {
+                            *best = Some(s);
+                        }
+                    }
+                }
+            }
+            collect_last(body, x, best);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|e| collect_last(e, x, best)),
+        Expr::RecordCon(_, assigns, _) => {
+            assigns.iter().for_each(|(_, e)| collect_last(e, x, best))
+        }
+        Expr::RecordUpd(base, assigns, _) => {
+            collect_last(base, x, best);
+            assigns.iter().for_each(|(_, e)| collect_last(e, x, best));
         }
     }
 }
