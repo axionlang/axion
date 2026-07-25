@@ -56,11 +56,23 @@ pub struct InPlace {
     pub span: Span,
 }
 
-/// Resultado da análise: os `free` do Auto-Drop e as actualizações in-place.
+/// Um reset de sub-arena injectado no **ponto de morte** da região (reset NLL,
+/// §3): a última menção viva de um valor da sub-arena, não o fim léxico.
+#[derive(Debug, Clone)]
+pub struct ArenaReset {
+    pub func: String,
+    pub sub: String,
+    pub span: Span,
+    pub last_var: String,
+}
+
+/// Resultado da análise: `free` do Auto-Drop, actualizações in-place, e os
+/// pontos de reset NLL das sub-arenas.
 #[derive(Default)]
 pub struct Analysis {
     pub drops: Vec<DropPoint>,
     pub inplace: Vec<InPlace>,
+    pub arenas: Vec<ArenaReset>,
 }
 
 /// Corre a verificação e devolve os `free` do Auto-Drop e os sítios in-place.
@@ -188,9 +200,9 @@ fn check_func(
             }
         }
 
-        // --- escape de sub-arena (§3): valores que sobreviveriam ao reset ---
+        // --- escape de sub-arena (§3) + reset NLL ---
         if let Body::Plain(body) = &clause.body {
-            check_arena_escapes(body, diags);
+            check_arena_escapes(body, &f.name, diags, &mut out.arenas);
         }
 
         // --- linearidade + Auto-Drop de valores 'let' lineares + in-place (§2) ---
@@ -943,52 +955,67 @@ fn as_with_sub_arena(e: &Expr) -> Option<(&str, &Expr)> {
 }
 
 /// Procura recursivamente formas `withSubArena` e verifica o escape em cada uma.
-fn check_arena_escapes(e: &Expr, diags: &mut Diagnostics) {
+fn check_arena_escapes(
+    e: &Expr,
+    func: &str,
+    diags: &mut Diagnostics,
+    arenas: &mut Vec<ArenaReset>,
+) {
     if let Some((sub, body)) = as_with_sub_arena(e) {
-        check_sub_scope(body, sub, diags);
+        check_sub_scope(body, sub, func, diags, arenas);
     }
+    let mut go = |e: &Expr| check_arena_escapes(e, func, diags, arenas);
     match e {
         Expr::App(f, a, _) => {
-            check_arena_escapes(f, diags);
-            check_arena_escapes(a, diags);
+            go(f);
+            go(a);
         }
         Expr::BinOp(_, l, r, _) => {
-            check_arena_escapes(l, diags);
-            check_arena_escapes(r, diags);
+            go(l);
+            go(r);
         }
         Expr::If(c, t, el, _) => {
-            check_arena_escapes(c, diags);
-            check_arena_escapes(t, diags);
-            check_arena_escapes(el, diags);
+            go(c);
+            go(t);
+            go(el);
         }
         Expr::Let(binds, body, _) => {
             for c in binds.iter().flat_map(|b| &b.clauses) {
                 if let Body::Plain(e2) = &c.body {
-                    check_arena_escapes(e2, diags);
+                    go(e2);
                 }
             }
-            check_arena_escapes(body, diags);
+            go(body);
         }
         Expr::Case(s, arms, _) => {
-            check_arena_escapes(s, diags);
+            go(s);
             for (_, b) in arms {
-                check_arena_escapes(b, diags);
+                go(b);
             }
         }
-        Expr::Tuple(es, _) => es.iter().for_each(|e| check_arena_escapes(e, diags)),
-        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => assigns
-            .iter()
-            .for_each(|(_, e)| check_arena_escapes(e, diags)),
-        Expr::Lam(_, body, _) => check_arena_escapes(body, diags),
+        Expr::Tuple(es, _) => es.iter().for_each(&mut go),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
+            assigns.iter().for_each(|(_, e)| go(e))
+        }
+        Expr::Lam(_, body, _) => go(body),
         Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
     }
 }
 
-/// Verifica um corpo de `withSubArena`: os valores ligados à sub-arena não podem
-/// aparecer no valor de retorno.
-fn check_sub_scope(body: &Expr, sub: &str, diags: &mut Diagnostics) {
+/// Verifica um corpo de `withSubArena`: (1) nenhum valor ligado à sub-arena pode
+/// escapar (por retorno ou captura) — `AX0003`; (2) computa o reset NLL (§3): o
+/// ponto de morte da região é a última menção viva de um valor da sub-arena.
+fn check_sub_scope(
+    body: &Expr,
+    sub: &str,
+    func: &str,
+    diags: &mut Diagnostics,
+    arenas: &mut Vec<ArenaReset>,
+) {
     let mut sub_bound: HashMap<String, Span> = HashMap::new();
     let tail = peel_arena_lets(body, sub, &mut sub_bound);
+
+    // (1) escape
     if let Some(origin) = region_of(tail, sub, &sub_bound) {
         let esc = tail.span();
         diags.push(
@@ -1004,6 +1031,27 @@ fn check_sub_scope(body: &Expr, sub: &str, diags: &mut Diagnostics) {
                      arena-pai antes do reset com 'promote parent valor' (§3).",
                 ),
         );
+        return; // com escape, o reset é irrelevante
+    }
+
+    // (2) reset NLL: a última menção viva de qualquer valor da sub-arena
+    let mut reset: Option<(Span, &String)> = None;
+    for var in sub_bound.keys() {
+        let mut last = None;
+        collect_last(body, var, &mut last);
+        if let Some(sp) = last {
+            if reset.is_none_or(|(r, _)| sp.0 > r.0) {
+                reset = Some((sp, var));
+            }
+        }
+    }
+    if let Some((span, var)) = reset {
+        arenas.push(ArenaReset {
+            func: func.to_string(),
+            sub: sub.to_string(),
+            span,
+            last_var: var.clone(),
+        });
     }
 }
 
@@ -1050,6 +1098,65 @@ fn region_of(e: &Expr, sub: &str, sub_bound: &HashMap<String, Span>) -> Option<S
         Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => assigns
             .iter()
             .find_map(|(_, e)| region_of(e, sub, sub_bound)),
+        // uma closure que capture um valor da sub-arena carrega-o para fora
+        // (§3C: o escape pode ser por retorno OU por captura em closure).
+        Expr::Lam(pats, body, _) => {
+            let mut shadowed = HashSet::new();
+            for p in pats {
+                collect_pat_vars(p, &mut shadowed);
+            }
+            captured_sub_ref(body, sub_bound, &mut shadowed)
+        }
         _ => None,
+    }
+}
+
+/// Procura uma referência **livre** a um valor ligado à sub-arena dentro de `e`
+/// (usada para detectar captura em closure). Devolve o span da alocação.
+fn captured_sub_ref(
+    e: &Expr,
+    sub_bound: &HashMap<String, Span>,
+    shadowed: &mut HashSet<String>,
+) -> Option<Span> {
+    match e {
+        Expr::Var(n, _) => {
+            if shadowed.contains(n) {
+                None
+            } else {
+                sub_bound.get(n).copied()
+            }
+        }
+        Expr::App(f, a, _) => captured_sub_ref(f, sub_bound, shadowed)
+            .or_else(|| captured_sub_ref(a, sub_bound, shadowed)),
+        Expr::BinOp(_, l, r, _) => captured_sub_ref(l, sub_bound, shadowed)
+            .or_else(|| captured_sub_ref(r, sub_bound, shadowed)),
+        Expr::If(c, t, el, _) => captured_sub_ref(c, sub_bound, shadowed)
+            .or_else(|| captured_sub_ref(t, sub_bound, shadowed))
+            .or_else(|| captured_sub_ref(el, sub_bound, shadowed)),
+        Expr::Tuple(es, _) => es
+            .iter()
+            .find_map(|e| captured_sub_ref(e, sub_bound, shadowed)),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => assigns
+            .iter()
+            .find_map(|(_, e)| captured_sub_ref(e, sub_bound, shadowed)),
+        Expr::Case(s, arms, _) => captured_sub_ref(s, sub_bound, shadowed).or_else(|| {
+            arms.iter()
+                .find_map(|(_, b)| captured_sub_ref(b, sub_bound, shadowed))
+        }),
+        Expr::Let(binds, body, _) => binds
+            .iter()
+            .flat_map(|b| &b.clauses)
+            .find_map(|c| match &c.body {
+                Body::Plain(e2) => captured_sub_ref(e2, sub_bound, shadowed),
+                _ => None,
+            })
+            .or_else(|| captured_sub_ref(body, sub_bound, shadowed)),
+        Expr::Lam(pats, body, _) => {
+            for p in pats {
+                collect_pat_vars(p, shadowed);
+            }
+            captured_sub_ref(body, sub_bound, shadowed)
+        }
+        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => None,
     }
 }

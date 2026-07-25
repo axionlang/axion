@@ -44,6 +44,7 @@ cargo run -- --check <ficheiro.axi>        # só parse + typecheck + linearidade
 cargo run -- --emit json <ficheiro.axi>    # diagnósticos em JSON (§8)
 cargo run -- --emit drops <ficheiro.axi>   # 'free' injectados pelo Auto-Drop (§2)
 cargo run -- --emit inplace <ficheiro.axi> # actualizações in-place (Linear Elision, §2)
+cargo run -- --emit arenas <ficheiro.axi>  # pontos de reset NLL das sub-arenas (§3)
 cargo run -- --explain AX0001              # explica um código de erro
 cargo test                                 # testes de integração
 ```

@@ -232,6 +232,34 @@ fn arena_promote_is_accepted() {
 }
 
 #[test]
+fn arena_closure_capture_escape_is_rejected_ax0003() {
+    // Uma closure que captura um valor da sub-arena e escapa → AX0003.
+    let out = axionc()
+        .args(["--check", &fixture("arena_capture.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0003"), "esperava AX0003, saída: {text}");
+}
+
+#[test]
+fn arena_reset_nll_point_reported() {
+    // Reset NLL: o reset da sub-arena é injectado após a última menção viva
+    // ('node', na promoção), não no fim léxico.
+    let out = axionc()
+        .args(["--emit", "arenas", &fixture("arena_promote_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("reset 'sub'") && text.contains("node"),
+        "esperava reset NLL de 'sub' após 'node', saída: {text}"
+    );
+}
+
+#[test]
 fn use_after_move_is_rejected_ax0004() {
     // Ler um %1 depois de a posse ter sido movida (consumida) → AX0004.
     let out = axionc()

@@ -36,6 +36,7 @@ enum Emit {
     Json,
     Drops,
     InPlace,
+    Arenas,
 }
 
 fn main() -> ExitCode {
@@ -54,8 +55,9 @@ fn main() -> ExitCode {
                     Some("json") => emit = Emit::Json,
                     Some("drops") => emit = Emit::Drops,
                     Some("inplace") => emit = Emit::InPlace,
+                    Some("arenas") => emit = Emit::Arenas,
                     _ => {
-                        eprintln!("--emit espera 'json', 'drops' ou 'inplace'");
+                        eprintln!("--emit espera 'json', 'drops', 'inplace' ou 'arenas'");
                         return ExitCode::from(2);
                     }
                 }
@@ -119,6 +121,10 @@ fn main() -> ExitCode {
     }
     if emit == Emit::InPlace {
         print_inplace(&analysis.inplace, &path, &lines);
+        return ExitCode::SUCCESS;
+    }
+    if emit == Emit::Arenas {
+        print_arenas(&analysis.arenas, &path, &lines);
         return ExitCode::SUCCESS;
     }
 
@@ -206,6 +212,22 @@ fn print_inplace(sites: &[check::InPlace], path: &str, lines: &LineMap) {
     }
 }
 
+/// Imprime os pontos de reset NLL das sub-arenas (`--emit arenas`).
+fn print_arenas(resets: &[check::ArenaReset], path: &str, lines: &LineMap) {
+    if resets.is_empty() {
+        println!("Reset NLL: nenhuma sub-arena.");
+        return;
+    }
+    println!("Reset NLL — {} sub-arena(s):", resets.len());
+    for r in resets {
+        let (l, c) = lines.pos(r.span.0);
+        println!(
+            "  reset '{}' @ {path}:{l}:{c}  (em '{}': após a última menção de '{}')",
+            r.sub, r.func, r.last_var
+        );
+    }
+}
+
 fn explain(code: &str) -> ExitCode {
     let text = match code.to_uppercase().as_str() {
         "AX0001" => {
@@ -259,6 +281,7 @@ fn print_usage() {
          axionc --emit json <ficheiro>  diagnósticos em JSON\n  \
          axionc --emit drops <ficheiro> 'free' injectados pelo Auto-Drop\n  \
          axionc --emit inplace <fich.>  actualizações in-place (Linear Elision)\n  \
+         axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas\n  \
          axionc --explain AX0001        explica um código de erro"
     );
 }

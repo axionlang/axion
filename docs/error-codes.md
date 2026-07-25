@@ -98,9 +98,10 @@ arena-pai antes do reset). Exemplo na Listagem 3.5.
 **`axionc` (Fase 2).** Um rastreio de proveniência de região
 (`axionc/src/check.rs`) segue os valores ligados à sub-arena de um
 `withSubArena parent (\sub -> …)`: `allocateCell sub …` liga o valor à sub-arena;
-`promote parent v` re-liga-o à arena-pai (corta a proveniência). Se o valor de
-retorno ainda estiver ligado à sub-arena → `AX0003`, com o span do retorno e o
-da alocação.
+`promote parent v` re-liga-o à arena-pai (corta a proveniência). O escape é
+detectado quer **por retorno** (o valor de retorno ainda ligado à sub-arena)
+quer **por captura em closure** (uma lambda devolvida que capture um valor da
+sub-arena, §3C) → `AX0003`, com o span do escape e o da alocação.
 
 ```
 error[AX0003]: um valor escapa da sua sub-arena

@@ -34,20 +34,23 @@
   - **Por crescer:** provenance através de retornos de função arbitrários (só o
     move directo é seguido); `where`-binds de valor; a elisão realmente aplicada
     no backend (por agora é análise + relatório, não codegen).
-- [~] **Arenas + análise de escape** (`promote`, §3) — **escape feito**
-  (`AX0003`). Listagem 3.3–3.5.
+- [~] **Arenas + reset NLL + análise de escape** (`promote`, §3). Listagem 3.3–3.5.
   - **Lambdas** (`\x -> e`) adicionadas (parser, inferência, travessias do
     check); necessárias para `withSubArena parent (\sub -> …)`.
   - Builtins de arena tipados: `withSubArena :: Arena -> (Arena -> a) -> a`,
     `allocateCell :: Arena -> Cell`, `promote :: Arena -> Cell -> Cell` (o arg
     da arena é emprestado — allocateCell/promote lêem-na muitas vezes).
-  - **Escape (`AX0003`)**: rastreio de proveniência de região — `allocateCell
-    sub` liga o valor à sub-arena; `promote parent v` corta a proveniência; um
-    valor de retorno ainda ligado à sub-arena é erro. `arena_escape.axi` →
-    `AX0003`; `arena_promote_ok.axi` → aceite.
-  - **Por crescer:** reset NLL (ponto de morte da arena), `arena_mark`/
-    `arena_release`, captura em closure como escape, e o runtime de arenas (por
-    agora os programas de arena são `--check`-only; o interpretador não os corre).
+  - **Escape (`AX0003`)** — por **retorno** ou por **captura em closure** (§3C):
+    rastreio de proveniência de região; `promote parent v` corta a proveniência.
+    `arena_escape.axi` (retorno) e `arena_capture.axi` (closure) → `AX0003`;
+    `arena_promote_ok.axi` → aceite.
+  - **Reset NLL** (Fig. 3.1): o reset da sub-arena é computado no **ponto de
+    morte** da região (a última menção viva de um valor da sub-arena), não no
+    fim léxico. `axionc --emit arenas` mostra-o (ex.: `arena_promote_ok` →
+    reset após a última menção de `node`, na promoção).
+  - **Por crescer:** `arena_mark`/`arena_release` (reclamação intra-escopo,
+    Listagem 3.6) e o runtime de arenas (os programas de arena são `--check`-only;
+    o interpretador não os corre).
 - [ ] **Permissões fracionárias** (`%0.5`): `split` / `join` (§2).
 - [ ] **Benchmark vs baseline (C/Rust)** — precisa do backend nativo
   (Cranelift/LLVM), ainda adiado; a «latência zero» tem de ser medida.
