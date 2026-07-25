@@ -602,6 +602,51 @@ fn emit_core_dumps_anf_ir() {
 }
 
 #[test]
+fn emit_llvm_dumps_llvm_ir() {
+    // o backend --release (§18) baixa o MESMO Core para LLVM IR textual.
+    // Verifica-se o IR sem invocar o clang (que pode não estar no CI).
+    let out = axionc()
+        .args(["--emit", "llvm", &fixture("native_fib.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let ir = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        ir.contains("define i64 @\"ax_fib\"(i64"),
+        "sem def de fib:\n{ir}"
+    );
+    assert!(ir.contains("call i64 @\"ax_fib\""), "sem recursão:\n{ir}");
+    assert!(ir.contains("phi i64"), "sem phi do if:\n{ir}");
+    assert!(
+        ir.contains("define i32 @main()") && ir.contains("@printf"),
+        "sem driver que imprime:\n{ir}"
+    );
+}
+
+#[test]
+fn release_backend_compiles_and_runs_when_clang_present() {
+    // se houver clang (AXION_CLANG ou no PATH), o --release compila e corre.
+    let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
+    if std::process::Command::new(&clang)
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return; // sem clang neste ambiente — o teste de IR acima já cobre
+    }
+    let out = axionc()
+        .args(["--release", &fixture("native_fib.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "6765\n");
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])

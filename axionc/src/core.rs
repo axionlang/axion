@@ -165,6 +165,27 @@ pub fn is_int(t: &Type) -> bool {
     matches!(t.head_con(), Some("Int"))
 }
 
+/// Nome curto de um `Op` para mensagens de erro dos backends.
+pub fn op_kind(op: &Op) -> &'static str {
+    match op {
+        Op::Atom(_) => "átomo",
+        Op::Prim(_, _, _) => "operação",
+        Op::CallDirect(_, _) => "chamada",
+        Op::CallClosure(_, _) => "chamada indirecta",
+        Op::MakeClosure { .. } => "closure",
+        Op::MakeTuple(_) => "tuplo",
+        Op::MakeRecord { .. } | Op::UpdateRecord { .. } => "registo",
+        Op::Field { .. } => "selector",
+        Op::PutStrLn(_) | Op::ShowInt(_) => "IO",
+        Op::WithArena { .. }
+        | Op::ArenaAlloc(_)
+        | Op::Promote(_, _)
+        | Op::ArenaMark(_)
+        | Op::ArenaRelease(_) => "arena",
+        Op::Unsupported(_) => "não-suportado",
+    }
+}
+
 pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
     module.datas.iter().map(|d| d.name.clone()).collect()
 }

@@ -23,6 +23,7 @@ mod infer;
 mod interp;
 mod layout;
 mod lexer;
+mod llvm;
 mod parser;
 
 #[cfg(test)]
@@ -41,12 +42,20 @@ enum Emit {
     Arenas,
     Core,
     Clif,
+    Llvm,
+}
+
+#[derive(PartialEq)]
+enum Backend {
+    Interp,
+    Cranelift,
+    Llvm,
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut check_only = false;
-    let mut native = false;
+    let mut backend = Backend::Interp;
     let mut emit = Emit::Text;
     let mut path: Option<String> = None;
 
@@ -54,13 +63,15 @@ fn main() -> ExitCode {
     while i < args.len() {
         match args[i].as_str() {
             "--check" => check_only = true,
+            "--release" => backend = Backend::Llvm,
             "--backend" => {
                 i += 1;
                 match args.get(i).map(|s| s.as_str()) {
-                    Some("cranelift") => native = true,
-                    Some("interp") => native = false,
+                    Some("cranelift") => backend = Backend::Cranelift,
+                    Some("llvm") => backend = Backend::Llvm,
+                    Some("interp") => backend = Backend::Interp,
                     _ => {
-                        eprintln!("--backend espera 'cranelift' ou 'interp'");
+                        eprintln!("--backend espera 'cranelift', 'llvm' ou 'interp'");
                         return ExitCode::from(2);
                     }
                 }
@@ -74,9 +85,10 @@ fn main() -> ExitCode {
                     Some("arenas") => emit = Emit::Arenas,
                     Some("core") => emit = Emit::Core,
                     Some("clif") => emit = Emit::Clif,
+                    Some("llvm") => emit = Emit::Llvm,
                     _ => {
                         eprintln!(
-                            "--emit espera 'json', 'drops', 'inplace', 'arenas', 'core' ou 'clif'"
+                            "--emit espera 'json', 'drops', 'inplace', 'arenas', 'core', 'clif' ou 'llvm'"
                         );
                         return ExitCode::from(2);
                     }
@@ -172,7 +184,20 @@ fn main() -> ExitCode {
             }
         }
     }
-    if native {
+    // --- backend --release (LLVM): dump do IR ou compilar+correr ---
+    if emit == Emit::Llvm {
+        match llvm::emit_ir(&module) {
+            Ok(ir) => {
+                print!("{ir}");
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("llvm: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    if backend == Backend::Cranelift {
         return match codegen::run(&module, "main") {
             Ok(Some(n)) => {
                 println!("{n}");
@@ -181,6 +206,15 @@ fn main() -> ExitCode {
             Ok(None) => ExitCode::SUCCESS, // main :: IO () — já imprimiu
             Err(e) => {
                 eprintln!("backend cranelift: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if backend == Backend::Llvm {
+        return match llvm::build_and_run(&module, "main") {
+            Ok(()) => ExitCode::SUCCESS, // o binário já imprimiu o resultado
+            Err(e) => {
+                eprintln!("backend llvm (--release): {e}");
                 ExitCode::FAILURE
             }
         };
@@ -349,7 +383,9 @@ fn print_usage() {
          axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas (estático)\n  \
          axionc --emit core <fich.>     Axión Core IR (ANF) — a baixada partilhada\n  \
          axionc --emit clif <fich.>     Cranelift IR do núcleo Int (backend --dev)\n  \
-         axionc --backend cranelift <f> JIT-compila e corre main :: Int (nativo)\n  \
+         axionc --emit llvm <fich.>     LLVM IR do núcleo Int (backend --release)\n  \
+         axionc --backend cranelift <f> JIT-compila e corre main :: Int (--dev)\n  \
+         axionc --release <fich.>       compila com clang -O2 e corre (--release)\n  \
          axionc --explain AX0001        explica um código de erro"
     );
 }
