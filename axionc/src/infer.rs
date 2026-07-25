@@ -255,6 +255,18 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
+        // corpo e reclama tudo no fim (a entrada para correr programas de arena).
+        env.insert(
+            "withArena".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(Ty::Fun(Box::new(arena()), Box::new(Ty::Var(0)))),
+                    Box::new(Ty::Var(0)),
+                ),
+            },
+        );
         // marcas de arena (Listagem 3.6): reclamação intra-escopo
         let mark = || Ty::Con("Mark".into(), vec![]);
         let unit = || Ty::Con("()".into(), vec![]);

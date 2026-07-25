@@ -98,10 +98,29 @@ Vê-se com `--emit core` (nós `drop`) e mede-se com `AXION_HEAP_STATS=1` (impri
 - `linear_move.axi` (`make` aloca um `Box`, `take` recebe-o por `%1`) → **1==1**:
   o objecto atravessa a fronteira e é libertado uma vez.
 
+## Arenas no runtime (§3)
+
+As arenas correm agora nativamente (antes eram `--check`-only). `Arena`/`Cell`/
+`Mark` são `i64` (handles). O runtime é um **bump-allocator** por chunks fixos
+(ponteiros estáveis): `withArena (\a -> …)` cria a arena-raiz, corre o corpo e
+**reseta-a em massa** no fim (larga todos os chunks de uma vez — não há `free`
+por célula); `withSubArena` faz o mesmo para uma sub-arena; `allocateCell`
+bump-aloca; `promote` copia uma célula para a arena-pai (safa-a do reset);
+`arena_mark`/`arena_release` guardam/repõem o bump-pointer (reclamação
+intra-escopo). Vê-se com `--emit core` (`withArena`, `allocateCell`, …) e
+mede-se com `AXION_HEAP_STATS=1` (linha `arena: N news, M resets, K cells`):
+`arena_run.axi` (100 células) → **100 cells, 1 reset**.
+
+A **segurança do reset é grátis**: a análise estática de escape (`AX0003`,
+`AX0005`) já rejeita, em tempo de compilação, devolver/capturar um valor que
+viva numa arena a ser reclamada (só `promote` o safa), pelo que resetar no fim
+do escopo nunca é uso-após-reset.
+
 **Ainda por reclamar (conservador — são):** valores **irrestritos** (`Many`)
 passados entre funções — podem ser aliased, logo a posse não basta (precisam de
-disciplina linear ou RC/GC); as **closures** (podem ser chamadas); o **reset de
-arena** e os `%1`/arenas — próximos incrementos.
+disciplina linear ou RC/GC); as **closures** (podem ser chamadas). O
+interpretador continua a não correr arenas (para elas, o nativo é o único
+runner).
 
 O codegen recusa o que não cabe com um erro claro; para esses programas, usa-se
 o interpretador (`axionc programa.axi`, sem `--backend`).

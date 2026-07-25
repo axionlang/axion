@@ -536,6 +536,40 @@ fn cross_function_reclamation_frees_moved_linear_object() {
 }
 
 #[test]
+fn arena_runs_natively_with_bulk_reset() {
+    // Arena (§3): 'withArena' cria a raiz, allocN bump-aloca 100 células, e a
+    // arena é reclamada com UM só reset (não 100 frees). O interpretador não
+    // corre arenas (são --check-only), logo verifica-se só o nativo + stats.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("arena_run.axi")])
+        .env("AXION_HEAP_STATS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "100\n");
+    let stats = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stats.contains("1 news, 1 resets, 100 cells"),
+        "esperava 100 células e 1 reset em massa, stats: {stats}"
+    );
+}
+
+#[test]
+fn arena_escape_still_rejected_statically_ax0003() {
+    // a reclamação em runtime não dispensa a análise estática de escape.
+    let out = axionc()
+        .args(["--check", &fixture("arena_escape.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("AX0003"));
+}
+
+#[test]
 fn auto_drop_inserts_drop_nodes_in_core() {
     // o tuplo local do 'case' é libertado à cabeça do braço (após destructuração).
     let out = axionc()

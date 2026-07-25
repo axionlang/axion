@@ -10,11 +10,13 @@
 //! closures** (lambda → função + ambiente de captura) acontecem já nesta baixada,
 //! ficando o codegen um mero emissor Core→máquina.
 //!
-//! O **Drop estrutural** (Auto-Drop §2) já é um **nó explícito** do Core: uma
+//! O **Drop estrutural** (Auto-Drop §2) é um **nó explícito** do Core: uma
 //! análise de reclamação (`insert_drops`) insere `drop x` no ponto de morte dos
-//! objectos de heap locais que não escapam, e o runtime liberta-os de facto
-//! (`axion_free`). O reset de arena e o in-place ficam ainda implícitos (o
-//! `check.rs` calcula-os) — incrementos seguintes.
+//! objectos que a função possui (locais, resultados de chamada, params `%1`) e
+//! que não escapam; o runtime liberta-os (`axion_free`). As **arenas** (§3)
+//! também têm Ops próprios (`WithArena`/`ArenaAlloc`/`Promote`/`ArenaMark`/…) e
+//! um runtime bump com reset em massa. O in-place (Linear Elision) fica ainda
+//! implícito (o `check.rs` calcula-o) — incremento seguinte.
 
 use crate::ast::{self, Body, Expr, Pat, Span, Type};
 use std::collections::HashMap;
@@ -64,6 +66,21 @@ pub enum Op {
     PutStrLn(Atom),
     /// `show :: Int -> String` (runtime)
     ShowInt(Atom),
+    // --- arenas (§3): a `clos` recebe a arena; no fim faz-se o reset ---
+    /// `withArena`/`withSubArena`: cria a (sub-)arena, corre `clos` com ela, e
+    /// **reseta-a** no fim (reclamação em massa). `parent` só serve o `promote`.
+    WithArena {
+        parent: Option<Atom>,
+        clos: Atom,
+    },
+    /// `allocateCell arena` — bump-alloca uma célula na arena.
+    ArenaAlloc(Atom),
+    /// `promote target cell` — copia a célula para a arena `target` (safa-a do reset).
+    Promote(Atom, Atom),
+    /// `arena_mark arena` — guarda o topo do bump-pointer.
+    ArenaMark(Atom),
+    /// `arena_release mark` — repõe o bump-pointer (reclama o alocado desde a marca).
+    ArenaRelease(Atom),
     /// forma do AST fora do subconjunto nativo — o codegen recusa com este texto
     Unsupported(String),
 }
@@ -115,11 +132,12 @@ pub struct CoreFn {
 /// Tipos representados por um `i64`: `Int`, `String`, `IO`, um `data`, ou uma
 /// função (ponteiro para closure `{fn_ptr, capturas…}`).
 pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
-    if matches!(t, Type::Arrow { .. }) {
+    if matches!(t, Type::Arrow { .. } | Type::Unit) {
         return true;
     }
     match t.head_con() {
-        Some("Int" | "String" | "IO") => true,
+        // Int/String/IO; tipos de arena (i64: handle/ponteiro); unit-token
+        Some("Int" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "()") => true,
         Some(h) => data_types.contains(h),
         None => false,
     }
@@ -289,7 +307,17 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
             }
         }
     }
-    for b in ["putStrLn", "show", "print"] {
+    for b in [
+        "putStrLn",
+        "show",
+        "print",
+        "withArena",
+        "withSubArena",
+        "allocateCell",
+        "promote",
+        "arena_mark",
+        "arena_release",
+    ] {
         g.insert(b.to_string());
     }
     g
@@ -429,6 +457,30 @@ impl Lower<'_> {
                 name: name.clone(),
                 rec,
             };
+        }
+        // builtins de arena (§3)
+        match (name.as_str(), args.len()) {
+            ("withArena", 1) => {
+                let clos = self.atom(args[0], buf);
+                return Op::WithArena { parent: None, clos };
+            }
+            ("withSubArena", 2) => {
+                let parent = self.atom(args[0], buf);
+                let clos = self.atom(args[1], buf);
+                return Op::WithArena {
+                    parent: Some(parent),
+                    clos,
+                };
+            }
+            ("allocateCell", 1) => return Op::ArenaAlloc(self.atom(args[0], buf)),
+            ("promote", 2) => {
+                let target = self.atom(args[0], buf);
+                let cell = self.atom(args[1], buf);
+                return Op::Promote(target, cell);
+            }
+            ("arena_mark", 1) => return Op::ArenaMark(self.atom(args[0], buf)),
+            ("arena_release", 1) => return Op::ArenaRelease(self.atom(args[0], buf)),
+            _ => {}
         }
         let vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
         if self.globals.contains(name) {
@@ -910,6 +962,17 @@ fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
             fields.iter().for_each(|(_, a)| mark(a))
         }
         Op::MakeClosure { captures, .. } => captures.iter().for_each(&mut mark),
+        // arenas: os seus objectos (arena/célula/closure) são geridos pelo reset
+        // da arena, não pelo Auto-Drop — marcam-se como escape para o ignorar.
+        Op::WithArena { parent, clos } => {
+            parent.iter().for_each(&mut mark);
+            mark(clos);
+        }
+        Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => mark(a),
+        Op::Promote(t, c) => {
+            mark(t);
+            mark(c);
+        }
         _ => {}
     }
     // a closure receptora de uma chamada indirecta também muda de mãos
@@ -1194,6 +1257,15 @@ fn dump_op(op: &Op) -> String {
         Op::Field { name, rec } => format!("field {name} {}", atom(rec)),
         Op::PutStrLn(a) => format!("putStrLn {}", atom(a)),
         Op::ShowInt(a) => format!("show {}", atom(a)),
+        Op::WithArena { parent: None, clos } => format!("withArena {}", atom(clos)),
+        Op::WithArena {
+            parent: Some(p),
+            clos,
+        } => format!("withSubArena {} {}", atom(p), atom(clos)),
+        Op::ArenaAlloc(a) => format!("allocateCell {}", atom(a)),
+        Op::Promote(t, c) => format!("promote {} {}", atom(t), atom(c)),
+        Op::ArenaMark(a) => format!("arena_mark {}", atom(a)),
+        Op::ArenaRelease(a) => format!("arena_release {}", atom(a)),
         Op::Unsupported(m) => format!("<unsupported: {m}>"),
     }
 }

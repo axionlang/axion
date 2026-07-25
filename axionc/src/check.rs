@@ -143,6 +143,7 @@ fn builtins() -> HashSet<String> {
         "True",
         "False",
         // arenas (§3)
+        "withArena",
         "withSubArena",
         "allocateCell",
         "promote",

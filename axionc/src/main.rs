@@ -346,7 +346,7 @@ fn print_usage() {
          axionc --emit json <ficheiro>  diagnósticos em JSON\n  \
          axionc --emit drops <ficheiro> 'free' injectados pelo Auto-Drop\n  \
          axionc --emit inplace <fich.>  actualizações in-place (Linear Elision)\n  \
-         axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas\n  \
+         axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas (estático)\n  \
          axionc --emit core <fich.>     Axión Core IR (ANF) — a baixada partilhada\n  \
          axionc --emit clif <fich.>     Cranelift IR do núcleo Int (backend --dev)\n  \
          axionc --backend cranelift <f> JIT-compila e corre main :: Int (nativo)\n  \

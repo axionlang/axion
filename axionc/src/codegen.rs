@@ -67,6 +67,96 @@ extern "C" fn axion_free(ptr: *mut u8) {
     }
 }
 
+// --- runtime de arena (§3): bump-allocator com reset em massa ---
+
+static ARENA_NEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ARENA_RESETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CELL_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Tamanho fixo de uma `Cell` (§3). Opaca ao programa (`useCell` devolve 0).
+const CELL_SIZE: i64 = 16;
+
+/// Estado de uma arena: *chunks* fixos (não movem → ponteiros estáveis) com um
+/// bump-pointer. O reset larga todos os chunks de uma vez.
+struct ArenaState {
+    chunks: Vec<Box<[u8]>>,
+    chunk: usize,
+    off: usize,
+}
+const ARENA_CHUNK: usize = 64 * 1024;
+
+impl ArenaState {
+    fn new() -> Box<ArenaState> {
+        Box::new(ArenaState {
+            chunks: vec![vec![0u8; ARENA_CHUNK].into_boxed_slice()],
+            chunk: 0,
+            off: 0,
+        })
+    }
+    fn alloc(&mut self, size: usize) -> *mut u8 {
+        let size = size.max(1).next_multiple_of(8); // alinhado a 8
+        if self.off + size > self.chunks[self.chunk].len() {
+            let cap = ARENA_CHUNK.max(size);
+            self.chunks.push(vec![0u8; cap].into_boxed_slice());
+            self.chunk = self.chunks.len() - 1;
+            self.off = 0;
+        }
+        let out = unsafe { self.chunks[self.chunk].as_mut_ptr().add(self.off) };
+        self.off += size;
+        out
+    }
+}
+
+/// Uma marca: a arena e a posição do bump-pointer no momento de a criar.
+struct MarkState {
+    arena: *mut ArenaState,
+    chunk: usize,
+    off: usize,
+}
+
+extern "C" fn axion_arena_new() -> *mut u8 {
+    ARENA_NEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Box::into_raw(ArenaState::new()) as *mut u8
+}
+
+extern "C" fn axion_arena_alloc(arena: *mut u8, size: i64) -> *mut u8 {
+    CELL_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let st = unsafe { &mut *(arena as *mut ArenaState) };
+    st.alloc(size as usize)
+}
+
+/// Reset em massa: larga a arena inteira (todos os chunks de uma vez).
+extern "C" fn axion_arena_reset(arena: *mut u8) {
+    ARENA_RESETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    unsafe { drop(Box::from_raw(arena as *mut ArenaState)) };
+}
+
+extern "C" fn axion_arena_mark(arena: *mut u8) -> *mut u8 {
+    let st = unsafe { &*(arena as *mut ArenaState) };
+    Box::into_raw(Box::new(MarkState {
+        arena: arena as *mut ArenaState,
+        chunk: st.chunk,
+        off: st.off,
+    })) as *mut u8
+}
+
+/// Repõe o bump-pointer na marca (reclama o alocado desde então).
+extern "C" fn axion_arena_release(mark: *mut u8) {
+    let m = unsafe { Box::from_raw(mark as *mut MarkState) };
+    let st = unsafe { &mut *m.arena };
+    st.chunks.truncate(m.chunk + 1);
+    st.chunk = m.chunk;
+    st.off = m.off;
+}
+
+/// Copia uma célula para a arena `target` (safa-a do reset da sub-arena).
+extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> *mut u8 {
+    let st = unsafe { &mut *(target as *mut ArenaState) };
+    let dst = st.alloc(size as usize);
+    unsafe { std::ptr::copy_nonoverlapping(cell, dst, size as usize) };
+    dst
+}
+
 /// Layout dos registos: campos por construtor (na ordem declarada).
 #[derive(Default)]
 struct RecordInfo {
@@ -103,6 +193,17 @@ impl RecordInfo {
     }
 }
 
+/// Os `FuncId` do runtime de arena (§3).
+#[derive(Clone, Copy)]
+struct Arena {
+    new: FuncId,
+    alloc: FuncId,
+    reset: FuncId,
+    mark: FuncId,
+    release: FuncId,
+    promote: FuncId,
+}
+
 /// Ambiente de compilação: JIT + os `FuncId`/aridade das funções do Core.
 struct Cg {
     module: JITModule,
@@ -113,6 +214,7 @@ struct Cg {
     show_id: FuncId,
     alloc_id: FuncId,
     free_id: FuncId,
+    arena: Arena,
     records: RecordInfo,
 }
 
@@ -129,6 +231,12 @@ impl Cg {
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
         builder.symbol("axion_free", axion_free as *const u8);
+        builder.symbol("axion_arena_new", axion_arena_new as *const u8);
+        builder.symbol("axion_arena_alloc", axion_arena_alloc as *const u8);
+        builder.symbol("axion_arena_reset", axion_arena_reset as *const u8);
+        builder.symbol("axion_arena_mark", axion_arena_mark as *const u8);
+        builder.symbol("axion_arena_release", axion_arena_release as *const u8);
+        builder.symbol("axion_arena_promote", axion_arena_promote as *const u8);
         let mut module = JITModule::new(builder);
 
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
@@ -147,6 +255,14 @@ impl Cg {
         let show_id = import(&mut module, "axion_show_int", 1, true)?;
         let alloc_id = import(&mut module, "axion_alloc", 1, true)?;
         let free_id = import(&mut module, "axion_free", 1, false)?;
+        let arena = Arena {
+            new: import(&mut module, "axion_arena_new", 0, true)?,
+            alloc: import(&mut module, "axion_arena_alloc", 2, true)?,
+            reset: import(&mut module, "axion_arena_reset", 1, false)?,
+            mark: import(&mut module, "axion_arena_mark", 1, true)?,
+            release: import(&mut module, "axion_arena_release", 1, false)?,
+            promote: import(&mut module, "axion_arena_promote", 3, true)?,
+        };
 
         Ok(Cg {
             module,
@@ -157,6 +273,7 @@ impl Cg {
             show_id,
             alloc_id,
             free_id,
+            arena,
             records,
         })
     }
@@ -211,6 +328,7 @@ impl Cg {
                 show_id: self.show_id,
                 alloc_id: self.alloc_id,
                 free_id: self.free_id,
+                arena: self.arena,
                 records: &self.records,
             };
 
@@ -253,6 +371,7 @@ struct Fx<'a, 'b> {
     show_id: FuncId,
     alloc_id: FuncId,
     free_id: FuncId,
+    arena: Arena,
     records: &'a RecordInfo,
 }
 
@@ -545,8 +664,44 @@ impl Fx<'_, '_> {
                 let call = self.builder.ins().call(callee, &[v]);
                 Ok(self.builder.inst_results(call)[0])
             }
+            // --- arenas (§3) ---
+            Op::WithArena { clos, .. } => {
+                // cria a (sub-)arena, corre a closure com ela, reseta-a no fim.
+                let cv = self.atom(clos)?;
+                let arena = self.rt_call(self.arena.new, &[]).unwrap();
+                let r = self.call_closure(cv, &[arena]);
+                self.rt_call(self.arena.reset, &[arena]);
+                Ok(r)
+            }
+            Op::ArenaAlloc(a) => {
+                let av = self.atom(a)?;
+                let sz = self.builder.ins().iconst(types::I64, CELL_SIZE);
+                Ok(self.rt_call(self.arena.alloc, &[av, sz]).unwrap())
+            }
+            Op::Promote(t, c) => {
+                let tv = self.atom(t)?;
+                let cv = self.atom(c)?;
+                let sz = self.builder.ins().iconst(types::I64, CELL_SIZE);
+                Ok(self.rt_call(self.arena.promote, &[tv, cv, sz]).unwrap())
+            }
+            Op::ArenaMark(a) => {
+                let av = self.atom(a)?;
+                Ok(self.rt_call(self.arena.mark, &[av]).unwrap())
+            }
+            Op::ArenaRelease(m) => {
+                let mv = self.atom(m)?;
+                self.rt_call(self.arena.release, &[mv]);
+                Ok(self.builder.ins().iconst(types::I64, 0)) // () → token
+            }
             Op::Unsupported(m) => Err(format!("{m} não compila nativamente (ainda)")),
         }
+    }
+
+    /// Chama uma função de runtime pelo `FuncId`; devolve o resultado se houver.
+    fn rt_call(&mut self, id: FuncId, args: &[Value]) -> Option<Value> {
+        let callee = self.module.declare_func_in_func(id, self.builder.func);
+        let call = self.builder.ins().call(callee, args);
+        self.builder.inst_results(call).first().copied()
     }
 
     /// `case s of arms` — cadeia de `if` sobre o escrutínio. Padrões: `Int`
@@ -652,6 +807,14 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
             HEAP_ALLOCS.load(Relaxed),
             HEAP_FREES.load(Relaxed)
         );
+        let (news, resets, cells) = (
+            ARENA_NEWS.load(Relaxed),
+            ARENA_RESETS.load(Relaxed),
+            CELL_ALLOCS.load(Relaxed),
+        );
+        if news > 0 || cells > 0 {
+            eprintln!("arena: {news} news, {resets} resets, {cells} cells");
+        }
     }
 
     let returns_int = module
