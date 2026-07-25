@@ -148,6 +148,9 @@ fn builtins() -> HashSet<String> {
         "promote",
         "arena_mark",
         "arena_release",
+        // permissões fraccionárias (§2)
+        "split",
+        "join",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -202,10 +205,11 @@ fn check_func(
             }
         }
 
-        // --- escape de sub-arena (§3) + reset NLL ---
+        // --- escape de sub-arena (§3) + reset NLL + permissões %0.5 ---
         if let Body::Plain(body) = &clause.body {
             check_arena_escapes(body, &f.name, diags, &mut out.arenas);
             check_arena_marks(body, diags);
+            check_fractional(body, ctx, diags);
         }
 
         // --- linearidade + Auto-Drop de valores 'let' lineares + in-place (§2) ---
@@ -310,7 +314,7 @@ fn collect_pat_vars(p: &Pat, out: &mut HashSet<String>) {
         Pat::Var(n, _) => {
             out.insert(n.clone());
         }
-        Pat::Con(_, args, _) => {
+        Pat::Con(_, args, _) | Pat::Tuple(args, _) => {
             for a in args {
                 collect_pat_vars(a, out);
             }
@@ -473,6 +477,8 @@ fn build_ctx(module: &Module) -> Ctx {
             }
         }
     }
+    // `split` consome o %1 que divide (para o repartir em duas metades %0.5).
+    consumers.insert("split".to_string(), vec![Mult::One]);
     Ctx {
         consumers,
         field_mults,
@@ -1387,5 +1393,133 @@ fn check_nested_marks(e: &Expr, diags: &mut Diagnostics) {
         | Expr::Int(_, _)
         | Expr::Str(_, _)
         | Expr::Con(_, _) => {}
+    }
+}
+
+// --- permissões fraccionárias %0.5: split/join (AX0006, §2, Listagem 2.3) ---
+//
+// `split cfg` divide um %1 em duas metades %0.5 de LEITURA PARTILHADA; `join a b`
+// recombina-as em %1. Uma metade %0.5 pode ser lida (emprestada) à vontade e
+// recombinada por `join`, mas NUNCA escrita: usá-la numa posição de escrita
+// (argumento de um parâmetro %1 de uma função, ou base de uma actualização de
+// registo, ou campo %1) é AX0006.
+
+fn is_var(e: &Expr, name: &str) -> bool {
+    matches!(e, Expr::Var(n, _) if n == name)
+}
+
+/// Verdade se `e` é uma chamada a `split` (a origem das metades %0.5).
+fn is_split_call(e: &Expr) -> bool {
+    matches!(spine(e).0, Expr::Var(n, _) if n == "split")
+}
+
+/// Procura `case (split …) of (a, b) -> arm` e verifica que as metades `a`/`b`
+/// não são escritas no braço.
+fn check_fractional(e: &Expr, ctx: &Ctx, diags: &mut Diagnostics) {
+    if let Expr::Case(scrut, arms, _) = e {
+        if is_split_call(scrut) {
+            for (pat, body) in arms {
+                if let Pat::Tuple(ps, _) = pat {
+                    for p in ps {
+                        if let Pat::Var(half, _) = p {
+                            check_half_writes(body, half, ctx, diags);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // recorre a sub-expressões (casos aninhados)
+    for_each_child(e, &mut |c| check_fractional(c, ctx, diags));
+}
+
+/// Emite o AX0006 de escrita através de uma metade %0.5.
+fn push_write(diags: &mut Diagnostics, half: &str, sp: Span, what: &str) {
+    diags.push(
+        Diagnostic::error("AX0006", format!("escrita através da metade %0.5 '{half}'"))
+            .label(
+                sp.0,
+                sp.1,
+                format!("'{half}' é %0.5 (leitura partilhada): {what}"),
+            )
+            .with_help(
+                "uma metade %0.5 só concede leitura; para recuperar a escrita, \
+                 recombine as duas metades com 'join a b' (que devolve o %1) (§2).",
+            ),
+    );
+}
+
+/// Reporta escritas através da metade %0.5 `half` em `e` (AX0006).
+fn check_half_writes(e: &Expr, half: &str, ctx: &Ctx, diags: &mut Diagnostics) {
+    match e {
+        Expr::App(_, _, _) => {
+            let (head, args) = spine(e);
+            let mults = head_mults(head, ctx);
+            for (i, a) in args.iter().enumerate() {
+                if is_var(a, half) && mults.get(i) == Some(&Mult::One) {
+                    push_write(diags, half, a.span(), "passado a um parâmetro %1 (escrita)");
+                }
+                check_half_writes(a, half, ctx, diags);
+            }
+            check_half_writes(head, half, ctx, diags);
+        }
+        Expr::RecordUpd(base, assigns, _) => {
+            if is_var(base, half) {
+                push_write(
+                    diags,
+                    half,
+                    base.span(),
+                    "base de uma actualização de registo (escrita)",
+                );
+            } else {
+                check_half_writes(base, half, ctx, diags);
+            }
+            check_half_assigns(assigns, half, ctx, diags);
+        }
+        Expr::RecordCon(_, assigns, _) => check_half_assigns(assigns, half, ctx, diags),
+        _ => for_each_child(e, &mut |c| check_half_writes(c, half, ctx, diags)),
+    }
+}
+
+fn check_half_assigns(assigns: &[(String, Expr)], half: &str, ctx: &Ctx, diags: &mut Diagnostics) {
+    for (fname, val) in assigns {
+        if is_var(val, half) && ctx.field_mults.get(fname) == Some(&Mult::One) {
+            push_write(diags, half, val.span(), "posto num campo %1 (escrita)");
+        } else {
+            check_half_writes(val, half, ctx, diags);
+        }
+    }
+}
+
+/// Aplica `f` a cada sub-expressão directa de `e`.
+fn for_each_child(e: &Expr, f: &mut dyn FnMut(&Expr)) {
+    match e {
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+            f(a);
+            f(b);
+        }
+        Expr::If(c, t, el, _) => {
+            f(c);
+            f(t);
+            f(el);
+        }
+        Expr::Let(binds, body, _) => {
+            binds.iter().flat_map(|b| &b.clauses).for_each(|c| {
+                if let Body::Plain(e2) = &c.body {
+                    f(e2);
+                }
+            });
+            f(body);
+        }
+        Expr::Case(s, arms, _) => {
+            f(s);
+            arms.iter().for_each(|(_, b)| f(b));
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(&mut *f),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
+            assigns.iter().for_each(|(_, e)| f(e))
+        }
+        Expr::Lam(_, body, _) => f(body),
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
     }
 }

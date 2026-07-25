@@ -17,12 +17,13 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | **imposto pelo `axionc`** (Fase 2) |
 | `AX0004` | Linearidade | Uso-após-move: ler/consumir um `%1` depois de a posse ter sido movida | **imposto pelo `axionc`** (Fase 2) |
 | `AX0005` | Regiões | Uso-após-release: valor alocado após `arena_mark` usado depois do `arena_release` | **imposto pelo `axionc`** (Fase 2) |
+| `AX0006` | Linearidade | Escrita através de uma metade `%0.5` (leitura partilhada) | **imposto pelo `axionc`** (Fase 2) |
 | `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
 | `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0200` | Tipos | Incompatibilidade de tipos (unificação falhou) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
 
-Próximo livre por banda — linguagem: `AX0006`; front-end: `AX0102`;
+Próximo livre por banda — linguagem: `AX0007`; front-end: `AX0102`;
 tipos: `AX0202`.
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
@@ -172,6 +173,31 @@ error[AX0005]: 'tmp' usado após o 'arena_release' (memória já recuperada)
 
 Fixtures: `arena_mark_release.axi` (→ `AX0005`), `arena_mark_ok.axi` (uso antes
 do release → aceite).
+
+---
+
+## `AX0006` — escrita através de uma metade `%0.5`
+
+**Regra (§2, Listagem 2.3).** `split` divide um `%1` em duas metades `%0.5` de
+**leitura partilhada** (estilo Boyland); `join a b` recombina-as em `%1`,
+recuperando a escrita. Uma metade `%0.5` pode ser **lida** (emprestada) à
+vontade, mas **nunca escrita** — usá-la numa posição de escrita é `AX0006`.
+
+**`axionc` (Fase 2).** Ao encontrar `case (split …) of (a, b) -> braço`, a
+análise (`axionc/src/check.rs`) marca `a`/`b` como metades `%0.5` e rejeita, no
+braço, usá-las numa **posição de escrita**: argumento de um parâmetro `%1` de
+uma função, base de uma actualização de registo, ou campo `%1`.
+
+```
+error[AX0006]: escrita através da metade %0.5 'a'
+  --> frac_write.axi:10:22
+   |
+10 |   (a, b) -> writeCfg a
+   |                      ^ 'a' é %0.5 (leitura partilhada): passado a um parâmetro %1 (escrita)
+```
+
+Fixtures: `frac_write.axi` (escrita → `AX0006`), `frac_join.axi` (leituras +
+`join` → aceite, e corre).
 
 ---
 

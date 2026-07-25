@@ -42,7 +42,7 @@ guards      = { "|" expr "=" expr } [ "where" "{" { funDef } "}" ] ;
 
 pat         = varName | "_" | literal
             | conName { pat }
-            | "(" pat { "," pat } ")" ;
+            | "(" pat { "," pat } ")" ;      (* parênteses ou padrão de tuplo *)
 
 (* --- Expressões --- *)
 expr        = "let" { funDef } "in" expr

@@ -62,6 +62,7 @@ pub enum Pat {
     Var(String, Span),
     Int(i64, Span),
     Con(String, Vec<Pat>, Span),
+    Tuple(Vec<Pat>, Span),
 }
 
 #[derive(Debug, Clone)]

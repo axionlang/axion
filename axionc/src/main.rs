@@ -265,6 +265,12 @@ fn explain(code: &str) -> ExitCode {
              valores após o release é erro (a memória já foi reclamada). Consuma-o\n\
              antes do release, ou não o aloque sob a marca (§3, Listagem 3.6)."
         }
+        "AX0006" => {
+            "AX0006 — escrita através de uma metade %0.5. 'split' divide um %1 em\n\
+             duas metades %0.5 de leitura partilhada; uma metade só pode ser lida,\n\
+             nunca escrita. Para recuperar a escrita, recombine as duas metades com\n\
+             'join a b' (que devolve o %1) (§2, Listagem 2.3)."
+        }
         "AX0101" => {
             "AX0101 — nome não encontrado. O identificador não está em\n\
              âmbito (nem parâmetro, nem local, nem função de topo, nem builtin)."

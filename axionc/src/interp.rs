@@ -38,6 +38,8 @@ enum Value {
         name: &'static str,
         args: Vec<Value>,
     },
+    /// Um tuplo (ex.: o resultado de `split`).
+    Tuple(Vec<Value>),
     /// Um registo: construtor + campos (por ordem de construção).
     Record {
         con: String,
@@ -150,6 +152,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "Bool",
         Value::Unit => "()",
         Value::Io(_) => "IO",
+        Value::Tuple(_) => "tuplo",
         Value::Record { .. } => "registo",
         Value::Closure { .. }
         | Value::Builtin { .. }
@@ -160,7 +163,7 @@ fn type_name(v: &Value) -> &'static str {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "putStrLn" | "show" => 1,
+        "join" => 2,
         _ => 1,
     }
 }
@@ -198,12 +201,11 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             )),
         },
         Expr::Tuple(es, _) => {
-            // tuplos não têm representação de runtime dedicada na Fase 1;
-            // avaliam-se os componentes (efeitos) e devolve-se Unit.
+            let mut vals = Vec::with_capacity(es.len());
             for e in es {
-                eval(prog, env, e)?;
+                vals.push(eval(prog, env, e)?);
             }
-            Ok(Value::Unit)
+            Ok(Value::Tuple(vals))
         }
         Expr::Let(binds, body, _) => {
             let child = child_env(env);
@@ -293,12 +295,20 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         });
     }
     match name {
-        "putStrLn" | "show" => Ok(Value::Builtin {
-            name: if name == "putStrLn" {
-                "putStrLn"
-            } else {
-                "show"
-            },
+        "putStrLn" => Ok(Value::Builtin {
+            name: "putStrLn",
+            args: Vec::new(),
+        }),
+        "show" => Ok(Value::Builtin {
+            name: "show",
+            args: Vec::new(),
+        }),
+        "split" => Ok(Value::Builtin {
+            name: "split",
+            args: Vec::new(),
+        }),
+        "join" => Ok(Value::Builtin {
+            name: "join",
             args: Vec::new(),
         }),
         _ => Err(format!("nome não encontrado em runtime: '{name}'")),
@@ -448,6 +458,12 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
             (name.as_str(), v),
             ("True", Value::Bool(true)) | ("False", Value::Bool(false))
         ),
+        Pat::Tuple(ps, _) => match v {
+            Value::Tuple(vs) if vs.len() == ps.len() => {
+                ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, env))
+            }
+            _ => false,
+        },
     }
 }
 
@@ -477,6 +493,10 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("putStrLn", [Value::Str(s)]) => Ok(Value::Io(format!("{s}\n"))),
         ("show", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
         ("show", [Value::Bool(b)]) => Ok(Value::Str(b.to_string())),
+        // split divide num par de metades de leitura partilhada (partilham o
+        // valor); join recombina — semântica trivial no interpretador.
+        ("split", [v]) => Ok(Value::Tuple(vec![v.clone(), v.clone()])),
+        ("join", [a, _b]) => Ok(a.clone()),
         (name, _) => Err(format!("builtin '{name}' recebeu argumentos inválidos")),
     }
 }
@@ -511,7 +531,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
         Value::Str(_) => RtType::Str,
         Value::Unit => RtType::Unit,
         Value::Io(_) => RtType::Io,
-        Value::Record { .. } => RtType::Record,
+        Value::Record { .. } | Value::Tuple(_) => RtType::Record,
         Value::Closure { .. }
         | Value::Builtin { .. }
         | Value::Ctor { .. }

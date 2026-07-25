@@ -61,7 +61,17 @@
     `promote`/`arena_mark`/`arena_release` seriam no-ops num interpretador
     tree-walking — a reclamação real só é observável no backend nativo, o mesmo
     pré-requisito dos benchmarks; as arenas continuam validadas estaticamente).
-- [ ] **Permissões fracionárias** (`%0.5`): `split` / `join` (§2).
+- [x] **Permissões fracionárias** (`%0.5`): `split` / `join` (§2, Listagem 2.3).
+  - Padrões de tuplo `(a, b)` (parser/ast/infer/interp) para destructurar o par
+    do `split`; tuplos passam a ter valor de runtime.
+  - Builtins: `split :: a -> (a, a)`, `join :: a -> a -> a` (as multiplicidades
+    `%1`/`%0.5` são rastreadas à parte). `split` consome o `%1`.
+  - **Read-only (`AX0006`)**: `case (split …) of (a, b) -> braço` marca `a`/`b`
+    como metades `%0.5`; escrevê-las no braço (arg de parâmetro `%1`, base de
+    update, campo `%1`) é `AX0006`. Lê-las e recombiná-las com `join` é aceite.
+    `frac_write.axi` → `AX0006`; `frac_join.axi` → aceite **e corre** (→ 7).
+  - **Por crescer:** must-use das metades (cada metade tem de ser recombinada ou
+    largada); `%0.5` em posições para além do `case split`.
 - [ ] **Benchmark vs baseline (C/Rust)** — precisa do backend nativo
   (Cranelift/LLVM), ainda adiado; a «latência zero» tem de ser medida.
 

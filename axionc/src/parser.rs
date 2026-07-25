@@ -423,10 +423,19 @@ impl<'a> Parser<'a> {
                 Ok(Pat::Con(name, Vec::new(), (s, e)))
             }
             Some(LTok::Tok(Tok::LParen)) => {
+                let (s, _) = self.span_here();
                 self.pos += 1;
-                let p = self.parse_pat()?;
+                let mut ps = vec![self.parse_pat()?];
+                while self.eat(&Tok::Comma) {
+                    ps.push(self.parse_pat()?);
+                }
                 self.expect(&Tok::RParen, "')' no padrão")?;
-                Ok(p)
+                let end = self.span_here().0;
+                if ps.len() == 1 {
+                    Ok(ps.into_iter().next().unwrap())
+                } else {
+                    Ok(Pat::Tuple(ps, (s, end)))
+                }
             }
             _ => Err(self.syntax_err("um padrão")),
         }

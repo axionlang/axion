@@ -268,6 +268,29 @@ impl<'a> Infer<'a> {
             "arena_release".into(),
             mono(Ty::Fun(Box::new(mark()), Box::new(unit()))),
         );
+        // permissões fraccionárias (§2). split :: forall a. a -> (a, a);
+        // join :: forall a. a -> a -> a. As multiplicidades (%1/%0.5) são
+        // rastreadas à parte, pela análise em check.rs.
+        env.insert(
+            "split".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(Ty::Var(0)),
+                    Box::new(Ty::Tuple(vec![Ty::Var(0), Ty::Var(0)])),
+                ),
+            },
+        );
+        env.insert(
+            "join".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(Ty::Var(0)),
+                    Box::new(Ty::Fun(Box::new(Ty::Var(0)), Box::new(Ty::Var(0)))),
+                ),
+            },
+        );
         env
     }
 
@@ -517,6 +540,7 @@ impl<'a> Infer<'a> {
                 }
                 result
             }
+            Pat::Tuple(ps, _) => Ty::Tuple(ps.iter().map(|p| self.infer_pat(env, p)).collect()),
         }
     }
 

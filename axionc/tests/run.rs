@@ -319,6 +319,30 @@ fn inference_accepts_where_and_runs() {
 }
 
 #[test]
+fn writing_through_a_fractional_half_is_rejected_ax0006() {
+    // Escrever através de uma metade %0.5 (passá-la a um parâmetro %1) → AX0006.
+    let out = axionc()
+        .args(["--check", &fixture("frac_write.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0006"), "esperava AX0006, saída: {text}");
+}
+
+#[test]
+fn split_join_reads_and_recombines_and_runs() {
+    // split → duas metades %0.5 lidas/recombinadas por join; corre → 7.
+    let out = axionc().arg(fixture("frac_join.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n");
+}
+
+#[test]
 fn lambdas_run_higher_order_and_currying() {
     // funções de ordem superior + currying via lambdas encadeadas → 42.
     let out = axionc().arg(fixture("lambda_hof.axi")).output().unwrap();
