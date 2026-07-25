@@ -5,8 +5,10 @@
 //! variável/`_`/literal (desugaradas numa cadeia de `if`, exigindo uma cláusula
 //! catch-all no fim), **`where`** (os locais são *liftados* para funções nativas
 //! com nome mangled), `if`, aritmética (`+ - *`, `mod`), comparações (`== < >`),
-//! chamadas (incl. recursão e recursão mútua) e `let`. Strings/IO, registos,
-//! tuplos e closures ficam para o interpretador — o codegen recusa com um erro.
+//! chamadas (incl. recursão e recursão mútua) e `let`. Strings/IO via runtime
+//! mínimo (`putStrLn`/`show`/literais), pelo que `main :: IO ()` corre nativo.
+//! Registos, tuplos, `case` e closures ficam para o interpretador — o codegen
+//! recusa com um erro.
 
 use crate::ast::{self, Body, Expr, Pat, Type};
 use cranelift::codegen::ir::UserFuncName;
@@ -16,8 +18,23 @@ use cranelift::prelude::{
     IntCC, Value, Variable,
 };
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
+
+// --- runtime nativo mínimo (registado como símbolos no JIT) ---
+
+/// `putStrLn`: imprime uma C-string com nova-linha.
+extern "C" fn axion_puts(ptr: *const u8) {
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
+    println!("{}", s.to_string_lossy());
+}
+
+/// `show :: Int -> String`: formata um inteiro e devolve uma C-string (leaked;
+/// vive até ao fim do processo — aceitável para um único `run`).
+extern "C" fn axion_show_int(n: i64) -> *const u8 {
+    let s = std::ffi::CString::new(n.to_string()).unwrap();
+    s.into_raw() as *const u8
+}
 
 /// Uma função a compilar nativamente (de topo, ou local de `where` liftado).
 struct NativeFn<'a> {
@@ -33,6 +50,11 @@ fn is_int(t: &Type) -> bool {
     matches!(t.head_con(), Some("Int"))
 }
 
+/// Tipos representados por um `i64` na ABI nativa: Int, String (ptr) e IO (unit).
+fn is_native_ret(t: &Type) -> bool {
+    matches!(t.head_con(), Some("Int" | "String" | "IO"))
+}
+
 fn result_type(sig: &Type) -> &Type {
     let mut t = sig;
     while let Type::Arrow { to, .. } = t {
@@ -41,10 +63,11 @@ fn result_type(sig: &Type) -> &Type {
     t
 }
 
-/// Uma função de topo é candidata se a sua assinatura for toda `Int`.
+/// Candidata a nativa: parâmetros todos `Int`, retorno Int/String/IO (todos
+/// representados por `i64` — inteiro, ponteiro de string, ou o «token» de IO).
 fn top_candidate(f: &ast::Func) -> Option<usize> {
     let sig = f.sig.as_ref()?;
-    if sig.param_types().iter().any(|t| !is_int(t)) || !is_int(result_type(sig)) {
+    if sig.param_types().iter().any(|t| !is_int(t)) || !is_native_ret(result_type(sig)) {
         return None;
     }
     Some(f.clauses.first().map(|c| c.pats.len()).unwrap_or(0))
@@ -87,6 +110,11 @@ fn collect_natives(module: &ast::Module) -> Vec<NativeFn<'_>> {
 struct Cg {
     module: JITModule,
     ids: HashMap<String, (FuncId, usize)>,
+    /// literais de string internados → objecto de dados
+    strings: HashMap<String, DataId>,
+    str_counter: u32,
+    puts_id: FuncId,
+    show_id: FuncId,
 }
 
 impl Cg {
@@ -97,10 +125,32 @@ impl Cg {
             .map_err(|e| e.to_string())?
             .finish(cranelift::codegen::settings::Flags::new(flags))
             .map_err(|e| e.to_string())?;
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        // liga os símbolos do runtime nativo
+        builder.symbol("axion_puts", axion_puts as *const u8);
+        builder.symbol("axion_show_int", axion_show_int as *const u8);
+        let mut module = JITModule::new(builder);
+
+        // declara as funções de runtime como importadas
+        let mut ps = module.make_signature();
+        ps.params.push(AbiParam::new(types::I64));
+        let puts_id = module
+            .declare_function("axion_puts", Linkage::Import, &ps)
+            .map_err(|e| e.to_string())?;
+        let mut ss = module.make_signature();
+        ss.params.push(AbiParam::new(types::I64));
+        ss.returns.push(AbiParam::new(types::I64));
+        let show_id = module
+            .declare_function("axion_show_int", Linkage::Import, &ss)
+            .map_err(|e| e.to_string())?;
+
         Ok(Cg {
-            module: JITModule::new(builder),
+            module,
             ids: HashMap::new(),
+            strings: HashMap::new(),
+            str_counter: 0,
+            puts_id,
+            show_id,
         })
     }
 
@@ -154,6 +204,10 @@ impl Cg {
                 ids: &self.ids,
                 module: &mut self.module,
                 locals: &n.locals,
+                strings: &mut self.strings,
+                str_counter: &mut self.str_counter,
+                puts_id: self.puts_id,
+                show_id: self.show_id,
             };
             let ret = fx.clauses(n.clauses, &argvars, 0)?;
             fx.builder.ins().return_(&[ret]);
@@ -171,9 +225,36 @@ struct Fx<'a, 'b> {
     ids: &'a HashMap<String, (FuncId, usize)>,
     module: &'a mut JITModule,
     locals: &'a HashMap<String, String>,
+    strings: &'a mut HashMap<String, DataId>,
+    str_counter: &'a mut u32,
+    puts_id: FuncId,
+    show_id: FuncId,
 }
 
 impl Fx<'_, '_> {
+    /// Interna um literal de string como objecto de dados (C-string) e devolve
+    /// o seu `DataId`.
+    fn intern(&mut self, s: &str) -> Result<DataId, String> {
+        if let Some(id) = self.strings.get(s) {
+            return Ok(*id);
+        }
+        let name = format!("str{}", self.str_counter);
+        *self.str_counter += 1;
+        let id = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| e.to_string())?;
+        let mut desc = DataDescription::new();
+        let mut bytes = s.as_bytes().to_vec();
+        bytes.push(0); // terminador nulo
+        desc.define(bytes.into_boxed_slice());
+        self.module
+            .define_data(id, &desc)
+            .map_err(|e| e.to_string())?;
+        self.strings.insert(s.to_string(), id);
+        Ok(id)
+    }
+
     /// Desugar de multi-cláusula numa cadeia de `if`; exige catch-all no fim.
     fn clauses(
         &mut self,
@@ -256,6 +337,12 @@ impl Fx<'_, '_> {
     fn expr(&mut self, e: &Expr) -> Result<Value, String> {
         match e {
             Expr::Int(n, _) => Ok(self.builder.ins().iconst(types::I64, *n)),
+            // literal de string → ponteiro para o objecto de dados (C-string)
+            Expr::Str(s, _) => {
+                let data = self.intern(s)?;
+                let gv = self.module.declare_data_in_func(data, self.builder.func);
+                Ok(self.builder.ins().global_value(types::I64, gv))
+            }
             Expr::Var(name, _) => match self.vars.get(name) {
                 Some(v) => Ok(self.builder.use_var(*v)),
                 None => Err(format!("variável '{name}' não é um Int local")),
@@ -321,6 +408,23 @@ impl Fx<'_, '_> {
                     Expr::Var(n, _) => n,
                     _ => return Err("chamada indirecta não compila nativamente".into()),
                 };
+                // builtins de IO/String: putStrLn e show chamam o runtime nativo
+                if name == "putStrLn" && args.len() == 1 {
+                    let a = self.expr(args[0])?;
+                    let callee = self
+                        .module
+                        .declare_func_in_func(self.puts_id, self.builder.func);
+                    self.builder.ins().call(callee, &[a]);
+                    return Ok(self.builder.ins().iconst(types::I64, 0)); // IO () → token
+                }
+                if name == "show" && args.len() == 1 {
+                    let a = self.expr(args[0])?;
+                    let callee = self
+                        .module
+                        .declare_func_in_func(self.show_id, self.builder.func);
+                    let call = self.builder.ins().call(callee, &[a]);
+                    return Ok(self.builder.inst_results(call)[0]);
+                }
                 let target = self.locals.get(name).map(String::as_str).unwrap_or(name);
                 let (id, arity) = *self
                     .ids
@@ -368,8 +472,10 @@ fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
     (cur, args)
 }
 
-/// JIT-compila o núcleo Int e corre `entry` (função `:: Int`, sem parâmetros).
-pub fn run(module: &ast::Module, entry: &str) -> Result<i64, String> {
+/// JIT-compila o núcleo e corre `entry` (função sem parâmetros). Devolve
+/// `Some(n)` se `entry :: Int` (o chamador imprime `n`); `None` se `:: IO ()`
+/// (os efeitos — `putStrLn` — já foram executados durante a corrida).
+pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
     let natives = collect_natives(module);
     let entry_ok = natives
         .iter()
@@ -378,7 +484,7 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<i64, String> {
         .unwrap_or(false);
     if !entry_ok {
         return Err(format!(
-            "'{entry}' tem de ser uma função nativa 'Int' sem parâmetros"
+            "'{entry}' tem de ser uma função nativa (Int/IO) sem parâmetros"
         ));
     }
 
@@ -398,7 +504,17 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<i64, String> {
 
     let code = cg.module.get_finalized_function(cg.ids[entry].0);
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
-    Ok(f())
+    let val = f();
+
+    // imprime só quando o resultado é um Int; IO () já imprimiu por si.
+    let returns_int = module
+        .funcs
+        .iter()
+        .find(|f| f.name == entry)
+        .and_then(|f| f.sig.as_ref())
+        .map(|s| is_int(result_type(s)))
+        .unwrap_or(true);
+    Ok(returns_int.then_some(val))
 }
 
 /// Emite o Cranelift IR (texto) das funções nativas, sem JIT (`--emit clif`).

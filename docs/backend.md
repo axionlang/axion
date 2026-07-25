@@ -17,6 +17,11 @@ Este é o **primeiro corte** do backend `--dev`, sobre `cranelift-jit`. Baixa o
 - `if … then … else …`, aritmética (`+ - *`, `mod`), comparações (`== < >`).
 - Chamadas a outras funções nativas, **incluindo recursão**.
 - `let v = <Int> in …`.
+- **Strings / IO** (via runtime mínimo): literais de string (objectos de dados,
+  C-strings), `show :: Int -> String` (`axion_show_int`), `putStrLn :: String ->
+  IO ()` (`axion_puts`). Assim `main :: IO ()` corre nativamente — inclusive os
+  **exemplos reais** `examples/01_hello.axi` («Hello, Axión!») e
+  `examples/02_fib.axi` («832040»), com o mesmo output do interpretador.
 
 ## Como usar
 
@@ -43,9 +48,9 @@ JIT). `--emit clif` mostra o IR (blocos, `brif`, `call` recursivo).
 
 ## O que ainda NÃO compila (recai no interpretador)
 
-- `case`, lambdas/closures, `String`/IO (`putStrLn`/`show`), registos, tuplos,
-  `%1`/arenas em runtime.
+- `case`, lambdas/closures, **registos**, tuplos, `%1`/arenas em runtime.
 - Funções multi-cláusula **sem** catch-all no fim (falta o *trap* de exaustão).
+- Strings além de `putStrLn`/`show` (concatenação, `String` como parâmetro, …).
 
 O codegen recusa o que não cabe com um erro claro; para esses programas, usa-se
 o interpretador (`axionc programa.axi`, sem `--backend`).

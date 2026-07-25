@@ -385,6 +385,36 @@ fn cranelift_backend_compiles_multiclause_and_where() {
 }
 
 #[test]
+fn cranelift_backend_runs_hello_with_string_io() {
+    // 01_hello.axi nativo: literal de string + putStrLn (runtime axion_puts).
+    let out = axionc()
+        .args(["--backend", "cranelift", &example("01_hello.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, Axión!\n");
+}
+
+#[test]
+fn cranelift_backend_runs_fib_example_with_show() {
+    // 02_fib.axi nativo: putStrLn (show (fibFast 30)) → 832040, igual ao interp.
+    let out = axionc()
+        .args(["--backend", "cranelift", &example("02_fib.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "832040\n");
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])

@@ -163,10 +163,11 @@ fn main() -> ExitCode {
     }
     if native {
         return match codegen::run(&module, "main") {
-            Ok(n) => {
+            Ok(Some(n)) => {
                 println!("{n}");
                 ExitCode::SUCCESS
             }
+            Ok(None) => ExitCode::SUCCESS, // main :: IO () — já imprimiu
             Err(e) => {
                 eprintln!("backend cranelift: {e}");
                 ExitCode::FAILURE
