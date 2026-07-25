@@ -372,6 +372,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "xorInPlace",
         "sumBytes",
         "free",
+        "imperative",
     ] {
         g.insert(b.to_string());
     }
@@ -541,6 +542,8 @@ impl Lower<'_> {
             ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
             ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
             ("free", 1) => return self.rtcall("axion_buf_free", &args, false, buf),
+            // `imperative e` = e (o bloco imperativo é identidade; §5)
+            ("imperative", 1) => return self.op(args[0], buf),
             // withBuffer n f = f (newBuffer n): aloca e passa à closure (que consome)
             ("withBuffer", 2) => {
                 let n = self.atom(args[0], buf);

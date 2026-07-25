@@ -280,49 +280,74 @@ impl<'a> Infer<'a> {
             "arena_release".into(),
             mono(Ty::Fun(Box::new(mark()), Box::new(unit()))),
         );
-        // Buffer U8 linear (§4/§5). A linearidade (%1) é imposta pelo check.rs
-        // (mapa `consumers` + Buffer must-use); aqui são só os tipos HM.
-        let buffer = || Ty::Con("Buffer".into(), vec![]);
+        // Buffer polimórfico no elemento (`Buffer a`, ex.: `Buffer U8`). A
+        // linearidade (%1) é imposta pelo check.rs (mapa `consumers` + must-use);
+        // aqui são só os tipos HM. `a`=var 0, `b`=var 1 (resultado do withBuffer).
+        let bufa = || Ty::Con("Buffer".into(), vec![Ty::Var(0)]);
         let int = || Ty::Con("Int".into(), vec![]);
-        // newBuffer :: Int -> Buffer
+        let io_unit = || Ty::Con("IO".into(), vec![unit()]);
+        // newBuffer :: forall a. Int -> Buffer a
         env.insert(
             "newBuffer".into(),
-            mono(Ty::Fun(Box::new(int()), Box::new(buffer()))),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(int()), Box::new(bufa())),
+            },
         );
-        // withBuffer :: forall a. Int -> (Buffer -> a) -> a
+        // withBuffer :: forall a b. Int -> (Buffer a -> b) -> b
         env.insert(
             "withBuffer".into(),
             Scheme {
-                vars: vec![0],
+                vars: vec![0, 1],
                 ty: Ty::Fun(
                     Box::new(int()),
                     Box::new(Ty::Fun(
-                        Box::new(Ty::Fun(Box::new(buffer()), Box::new(Ty::Var(0)))),
-                        Box::new(Ty::Var(0)),
+                        Box::new(Ty::Fun(Box::new(bufa()), Box::new(Ty::Var(1)))),
+                        Box::new(Ty::Var(1)),
                     )),
                 ),
             },
         );
-        // bufIota :: Buffer -> Buffer (in-place); xorInPlace :: Buffer -> Int -> Buffer
+        // bufIota/xorInPlace :: forall a. Buffer a -> … -> Buffer a (in-place)
         env.insert(
             "bufIota".into(),
-            mono(Ty::Fun(Box::new(buffer()), Box::new(buffer()))),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(bufa()), Box::new(bufa())),
+            },
         );
         env.insert(
             "xorInPlace".into(),
-            mono(Ty::Fun(
-                Box::new(buffer()),
-                Box::new(Ty::Fun(Box::new(int()), Box::new(buffer()))),
-            )),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(bufa()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(bufa()))),
+                ),
+            },
         );
-        // sumBytes :: Buffer -> Int (empresta); free :: Buffer -> ()
+        // sumBytes :: forall a. Buffer a -> Int; free :: forall a. Buffer a -> IO ()
         env.insert(
             "sumBytes".into(),
-            mono(Ty::Fun(Box::new(buffer()), Box::new(int()))),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(bufa()), Box::new(int())),
+            },
         );
         env.insert(
             "free".into(),
-            mono(Ty::Fun(Box::new(buffer()), Box::new(unit()))),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(bufa()), Box::new(io_unit())),
+            },
+        );
+        // imperative :: forall a. a -> a — o bloco imperativo (§5) é identidade.
+        env.insert(
+            "imperative".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(Ty::Var(0)), Box::new(Ty::Var(0))),
+            },
         );
         // permissões fraccionárias (§2). split :: forall a. a -> (a, a);
         // join :: forall a. a -> a -> a. As multiplicidades (%1/%0.5) são

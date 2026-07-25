@@ -77,6 +77,12 @@ fn merge_funcs(items: Vec<TopItem>) -> Vec<Func> {
     assemble(items).0
 }
 
+/// Uma instrução de um bloco `do`.
+enum Stmt {
+    Bind(String, Expr), // `x <- e`
+    Expr(Expr),         // `e`
+}
+
 impl<'a> Parser<'a> {
     // --- primitivas ---
     fn cur(&self) -> Option<&LTok> {
@@ -471,7 +477,64 @@ impl<'a> Parser<'a> {
             Some(LTok::Tok(Tok::Let)) => self.parse_let(),
             Some(LTok::Tok(Tok::Case)) => self.parse_case(),
             Some(LTok::Tok(Tok::Backslash)) => self.parse_lam(),
-            _ => self.parse_cmp(),
+            Some(LTok::Tok(Tok::Do)) => self.parse_do(),
+            _ => self.parse_dollar(),
+        }
+    }
+
+    /// `f $ x` = `f x` — aplicação de baixa precedência, associa à direita.
+    fn parse_dollar(&mut self) -> PResult<Expr> {
+        let lhs = self.parse_cmp()?;
+        if self.at(&Tok::Dollar) {
+            self.bump();
+            let rhs = self.parse_expr()?;
+            let sp = (lhs.span().0, rhs.span().1);
+            Ok(Expr::App(Box::new(lhs), Box::new(rhs), sp))
+        } else {
+            Ok(lhs)
+        }
+    }
+
+    /// Bloco `do`: desugar sequencial (estrito) via `case` — o escrutínio do
+    /// `case` é avaliado estritamente (força o efeito), ao contrário de um `let`.
+    /// `x <- e; resto` → `case e of x -> resto`; `e; resto` → `case e of _ ->
+    /// resto`; a última instrução é o valor do bloco.
+    fn parse_do(&mut self) -> PResult<Expr> {
+        let (s, _) = self.span_here();
+        self.bump(); // do
+        let stmts = self.block(Parser::parse_stmt)?;
+        let sp = (s, self.span_here().0);
+        if stmts.is_empty() {
+            return Err(self.syntax_err("bloco do vazio"));
+        }
+        let mut iter = stmts.into_iter().rev();
+        let mut acc = match iter.next().unwrap() {
+            Stmt::Expr(e) => e,
+            Stmt::Bind(..) => return Err(self.syntax_err("bloco do a terminar em <-")),
+        };
+        for stmt in iter {
+            let (pat, e) = match stmt {
+                Stmt::Bind(n, e) => (Pat::Var(n, sp), e),
+                Stmt::Expr(e) => (Pat::Wild(sp), e),
+            };
+            acc = Expr::Case(Box::new(e), vec![(pat, acc)], sp);
+        }
+        Ok(acc)
+    }
+
+    /// Uma instrução de `do`: `pat <- expr` (ligação) ou `expr` (efeito/valor).
+    fn parse_stmt(&mut self) -> PResult<Stmt> {
+        let is_bind = matches!(self.cur(), Some(LTok::Tok(Tok::VarId(_))))
+            && matches!(
+                self.toks.get(self.pos + 1).map(|s| &s.tok),
+                Some(LTok::Tok(Tok::LArrow))
+            );
+        if is_bind {
+            let (name, _) = self.var_name("nome de ligação do 'do'")?;
+            self.expect(&Tok::LArrow, "'<-'")?;
+            Ok(Stmt::Bind(name, self.parse_expr()?))
+        } else {
+            Ok(Stmt::Expr(self.parse_expr()?))
         }
     }
 

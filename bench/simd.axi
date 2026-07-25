@@ -1,6 +1,6 @@
 -- SIMD (§4/§5): soma de um Buffer U8 (redução vectorizável) repetida K vezes.
 -- newBuffer+bufIota preenche byte[i]=i&0xFF; sumBytes é a primitiva vectorizável.
-sumK :: Int -> Buffer -> Int
+sumK :: Int -> Buffer U8 -> Int
 sumK 0 buf = 0
 sumK k buf = sumBytes buf + sumK (k - 1) buf
 

@@ -82,7 +82,7 @@ pub fn layout(tokens: &[Spanned], lines: &LineMap) -> Vec<LSpanned> {
 
         open_kind = match t.tok {
             Tok::Let => Some(true),
-            Tok::Where | Tok::Of => Some(false),
+            Tok::Where | Tok::Of | Tok::Do => Some(false),
             _ => open_kind,
         };
     }

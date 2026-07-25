@@ -30,10 +30,16 @@ pub enum Tok {
     Case,
     #[token("data")]
     Data,
+    #[token("do")]
+    Do,
 
     // --- pontuação e símbolos ---
     #[token("::")]
     ColonColon,
+    #[token("$")]
+    Dollar,
+    #[token("<-")]
+    LArrow,
     #[token("=")]
     Equals,
     #[token("->")]
@@ -77,8 +83,10 @@ pub enum Tok {
     #[token(">")]
     Gt,
 
-    // literais
+    // literais (decimal e hexadecimal `0x…`; logos escolhe a correspondência
+    // mais longa, logo `0x5A` casa o hex, não `0`)
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
+    #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(&lex.slice()[2..], 16).ok())]
     Int(i64),
     #[regex(r#""([^"\\]|\\.)*""#, |lex| unquote(lex.slice()))]
     Str(String),

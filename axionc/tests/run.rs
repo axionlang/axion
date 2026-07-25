@@ -589,6 +589,49 @@ fn linear_buffer_inplace_runs_natively() {
 }
 
 #[test]
+fn do_and_dollar_and_hex_sugar_runs() {
+    // `imperative $ do xorInPlace buf 0x5A` desugar → xorInPlace buf 90 → 126444.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("do_sugar.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "126444\n");
+}
+
+#[test]
+fn do_block_sequences_io_statements() {
+    // `do { putStrLn a; putStrLn b }` corre as duas instruções em ordem. Testa-se
+    // no backend nativo — o interpretador usa um modelo de IO de acção única
+    // (só corre a acção final de main), não sequencia (§ limitação assumida).
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("do_io.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "um\ndois\n");
+}
+
+#[test]
+fn example_03_linear_buffer_compiles_and_runs() {
+    // O programa-alvo 3 (§5) corre INTACTO: Buffer U8 %1 + imperative $ do +
+    // withBuffer + \-lambda. main :: IO () (só aloca/xor/liberta, sem output).
+    let out = axionc()
+        .args(["--backend", "cranelift", &example("03_linear_buffer.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "03 devia correr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn linear_buffer_consumed_twice_is_rejected_ax0001() {
     // consumir o Buffer %1 duas vezes (xorInPlace) → contração → AX0001.
     let out = axionc()

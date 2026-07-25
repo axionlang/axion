@@ -156,6 +156,7 @@ fn builtins() -> HashSet<String> {
         "xorInPlace",
         "sumBytes",
         "free",
+        "imperative",
         // permissões fraccionárias (§2)
         "split",
         "join",
