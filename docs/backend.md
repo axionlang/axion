@@ -1,11 +1,14 @@
 # Backend nativo — o «Fast-Path» de `--dev` (Cranelift)
 
-> §11/§18 da spec. O pipeline baixa para um IR estrito/linear (Axión Core) e
-> emite código nativo: **Cranelift em `--dev`** (compila depressa — «zero
-> otimizações em dev»), **LLVM em `--release`** (otimizado, ainda adiado).
+> §11/§18 da spec. O pipeline baixa o AST para o **Axión Core IR** (ANF,
+> estrito/linear — ver `axionc/src/core.rs`) e daí emite código nativo:
+> **Cranelift em `--dev`** (compila depressa — «zero otimizações em dev»),
+> **LLVM em `--release`** (otimizado, ainda adiado). Ambos os backends partilham
+> o mesmo Core; vê-lo com `axionc --emit core <ficheiro>`.
 
-Este é o **primeiro corte** do backend `--dev`, sobre `cranelift-jit`. Baixa o
-**núcleo Int** do AST directamente para Cranelift IR e JIT-compila.
+Este backend `--dev`, sobre `cranelift-jit`, é um **mero emissor Core→Cranelift**:
+o desugar de multi-cláusula, o *lifting* de `where` e a conversão de closures já
+aconteceram na baixada AST→Core, pelo que o codegen só percorre o ANF.
 
 ## O que compila (núcleo Int)
 
@@ -81,5 +84,11 @@ o interpretador (`axionc programa.axi`, sem `--backend`).
   Declara todas as funções nativas primeiro (para a recursão/chamadas mútuas
   resolverem), depois define os corpos; `Int` → `i64`; comparações → `icmp`;
   `if` → dois blocos + bloco de junção com parâmetro.
-- Backend `--release` (LLVM via `inkwell`) e o Axión Core IR intermédio ficam
-  para incrementos seguintes; por agora baixa-se do AST directamente.
+- A baixada AST→Core (`core.rs`) está em **ANF**: cada subexpressão composta é
+  nomeada por um `let`, argumentos são átomos, e o controlo (`if`/`case`) vive num
+  `Rhs` (um `let` pode ligar o resultado de um ramo). A reclamação (Auto-Drop /
+  reset de arena / in-place) fica **implícita** neste corte — o `check.rs` já a
+  calcula; torná-la nós explícitos do Core é o incremento seguinte, emparelhado
+  com o runtime que liberta de facto.
+- Backend `--release` (LLVM via `inkwell`) baixará do **mesmo Core**, sem duplicar
+  a baixada AST→IR — é o que fecha o gap dos benchmarks `-O2`.

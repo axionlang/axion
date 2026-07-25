@@ -479,6 +479,26 @@ fn cranelift_backend_compiles_closures() {
 }
 
 #[test]
+fn emit_core_dumps_anf_ir() {
+    // o Core IR (ANF) da closure: converte a lambda e a aplicação indirecta.
+    let out = axionc()
+        .args(["--emit", "core", &fixture("native_closure.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let ir = String::from_utf8_lossy(&out.stdout);
+    // função liftada com ambiente de captura + chamada indirecta + closure
+    assert!(ir.contains("lam$0 [env n]"), "sem lambda liftada:\n{ir}");
+    assert!(ir.contains("callclo"), "sem chamada indirecta:\n{ir}");
+    assert!(
+        ir.contains("closure lam$0"),
+        "sem construção de closure:\n{ir}"
+    );
+    // ANF: os argumentos das chamadas são átomos nomeados por `let`
+    assert!(ir.contains("let "), "não está em ANF:\n{ir}");
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])

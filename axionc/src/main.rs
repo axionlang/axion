@@ -16,6 +16,7 @@
 mod ast;
 mod check;
 mod codegen;
+mod core;
 #[allow(dead_code)]
 mod diag;
 mod infer;
@@ -38,6 +39,7 @@ enum Emit {
     Drops,
     InPlace,
     Arenas,
+    Core,
     Clif,
 }
 
@@ -70,9 +72,12 @@ fn main() -> ExitCode {
                     Some("drops") => emit = Emit::Drops,
                     Some("inplace") => emit = Emit::InPlace,
                     Some("arenas") => emit = Emit::Arenas,
+                    Some("core") => emit = Emit::Core,
                     Some("clif") => emit = Emit::Clif,
                     _ => {
-                        eprintln!("--emit espera 'json', 'drops', 'inplace', 'arenas' ou 'clif'");
+                        eprintln!(
+                            "--emit espera 'json', 'drops', 'inplace', 'arenas', 'core' ou 'clif'"
+                        );
                         return ExitCode::from(2);
                     }
                 }
@@ -147,6 +152,12 @@ fn main() -> ExitCode {
         Some(m) => m,
         None => return ExitCode::FAILURE,
     };
+
+    // --- Axión Core IR: dump da baixada ANF (partilhada pelos backends) ---
+    if emit == Emit::Core {
+        print!("{}", core::dump(&core::lower(&module)));
+        return ExitCode::SUCCESS;
+    }
 
     // --- backend nativo --dev (Cranelift): dump do IR ou JIT+correr main::Int ---
     if emit == Emit::Clif {
@@ -336,6 +347,7 @@ fn print_usage() {
          axionc --emit drops <ficheiro> 'free' injectados pelo Auto-Drop\n  \
          axionc --emit inplace <fich.>  actualizações in-place (Linear Elision)\n  \
          axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas\n  \
+         axionc --emit core <fich.>     Axión Core IR (ANF) — a baixada partilhada\n  \
          axionc --emit clif <fich.>     Cranelift IR do núcleo Int (backend --dev)\n  \
          axionc --backend cranelift <f> JIT-compila e corre main :: Int (nativo)\n  \
          axionc --explain AX0001        explica um código de erro"

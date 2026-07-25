@@ -1,20 +1,16 @@
 //! Backend nativo `--dev` (§11/§18): o «Fast-Path Backend» sobre Cranelift.
 //!
-//! Baixa o núcleo **Int** do AST para Cranelift IR e JIT-compila. Suporta
-//! funções de topo (com assinatura `Int`), **multi-cláusula** com padrões
-//! variável/`_`/literal (desugaradas numa cadeia de `if`, exigindo uma cláusula
-//! catch-all no fim), **`where`** (os locais são *liftados* para funções nativas
-//! com nome mangled), `if`, aritmética (`+ - *`, `mod`), comparações (`== < >`),
-//! chamadas (incl. recursão e recursão mútua) e `let`. Strings/IO via runtime
-//! mínimo (`putStrLn`/`show`/literais), pelo que `main :: IO ()` corre nativo.
-//! **Registos** e **tuplos** na heap (`axion_alloc`): construção, actualização,
-//! selectores (`i64` por campo). **`case`** (cadeia de `if` sobre o escrutínio;
-//! padrões Int/variável/`_`/tuplo). **Closures**: as lambdas são *liftadas* para
-//! funções nativas com ABI `(env, params…)`; no local constrói-se o ambiente
-//! `{fn_ptr, capturas…}` na heap e a aplicação de um valor-função faz-se por
-//! `call_indirect`. Padrões de construtor no `case` ficam para o interpretador.
+//! Emite código nativo a partir do **Axión Core IR** (ver `core.rs`), não do AST:
+//! o Core já está em ANF (cada subexpressão nomeada), com o desugar de
+//! multi-cláusula, o *lifting* de `where` e a conversão de closures resolvidos,
+//! pelo que este ficheiro é um mero emissor Core→Cranelift. JIT-compila via
+//! `cranelift-jit`. Todos os valores são `i64` (Int, ponteiros, tokens de IO).
+//! Strings/IO e alocação (registos, tuplos, closures) via um runtime mínimo
+//! (`axion_puts`/`axion_show_int`/`axion_alloc`). O mesmo Core servirá o backend
+//! LLVM `--release` (incremento seguinte).
 
-use crate::ast::{self, Body, Expr, Pat, Span, Type};
+use crate::ast;
+use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, Rhs, Term};
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
 use cranelift::prelude::{
@@ -24,7 +20,6 @@ use cranelift::prelude::{
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 // --- runtime nativo mínimo (registado como símbolos no JIT) ---
 
@@ -41,8 +36,8 @@ extern "C" fn axion_show_int(n: i64) -> *const u8 {
     s.into_raw() as *const u8
 }
 
-/// Aloca `size` bytes na heap para um registo (leaked — sem GC nem free no
-/// primeiro corte; o modelo de arenas/Auto-Drop é validado estaticamente).
+/// Aloca `size` bytes na heap (leaked — sem GC nem free no primeiro corte; o
+/// modelo de arenas/Auto-Drop é validado estaticamente).
 extern "C" fn axion_alloc(size: i64) -> *mut u8 {
     let layout = std::alloc::Layout::from_size_align(size.max(1) as usize, 8).unwrap();
     unsafe { std::alloc::alloc(layout) }
@@ -84,320 +79,16 @@ impl RecordInfo {
     }
 }
 
-/// O corpo de uma função nativa: cláusulas de topo/`where`, ou uma lambda
-/// liftada (com o ambiente de captura já calculado).
-enum Kind<'a> {
-    Clauses(&'a [ast::Clause]),
-    /// `\params -> body`, com os nomes capturados do âmbito enclosing. A ABI
-    /// recebe o ponteiro de closure como 1.º parâmetro (env), donde as capturas
-    /// são carregadas.
-    Lambda {
-        params: Vec<String>,
-        body: &'a Expr,
-        captures: Vec<String>,
-    },
-}
-
-/// Uma função a compilar nativamente (de topo, local de `where`, ou lambda).
-struct NativeFn<'a> {
-    /// nome único no módulo (mangled para locais de `where`, `lam$N` p/ lambdas)
-    name: String,
-    /// número de parâmetros do utilizador (sem contar o env das closures)
-    arity: usize,
-    kind: Kind<'a>,
-    /// nome-de-chamada → nome-no-módulo (locais de `where` visíveis no corpo)
-    locals: HashMap<String, String>,
-}
-
-/// Variáveis ligadas por um padrão (recursivo em `Con`/`Tuple`).
-fn pat_vars(p: &Pat, out: &mut Vec<String>) {
-    match p {
-        Pat::Var(n, _) => out.push(n.clone()),
-        Pat::Con(_, ps, _) | Pat::Tuple(ps, _) => {
-            for q in ps {
-                pat_vars(q, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Variáveis livres de `e` (nomes usados que não estão ligados em `bound`),
-/// respeitando os binders internos (lambda, `let`, `case`).
-fn free_vars(e: &Expr, bound: &HashSet<String>, out: &mut HashSet<String>) {
-    match e {
-        Expr::Var(n, _) => {
-            if !bound.contains(n) {
-                out.insert(n.clone());
-            }
-        }
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
-        Expr::App(f, a, _) => {
-            free_vars(f, bound, out);
-            free_vars(a, bound, out);
-        }
-        Expr::BinOp(_, l, r, _) => {
-            free_vars(l, bound, out);
-            free_vars(r, bound, out);
-        }
-        Expr::If(c, t, el, _) => {
-            free_vars(c, bound, out);
-            free_vars(t, bound, out);
-            free_vars(el, bound, out);
-        }
-        Expr::Tuple(es, _) => es.iter().for_each(|x| free_vars(x, bound, out)),
-        Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| free_vars(x, bound, out)),
-        Expr::RecordUpd(b, fs, _) => {
-            free_vars(b, bound, out);
-            fs.iter().for_each(|(_, x)| free_vars(x, bound, out));
-        }
-        Expr::Lam(ps, body, _) => {
-            let mut b2 = bound.clone();
-            let mut vs = Vec::new();
-            ps.iter().for_each(|p| pat_vars(p, &mut vs));
-            b2.extend(vs);
-            free_vars(body, &b2, out);
-        }
-        Expr::Case(scrut, arms, _) => {
-            free_vars(scrut, bound, out);
-            for (pat, body) in arms {
-                let mut b2 = bound.clone();
-                let mut vs = Vec::new();
-                pat_vars(pat, &mut vs);
-                b2.extend(vs);
-                free_vars(body, &b2, out);
-            }
-        }
-        Expr::Let(binds, body, _) => {
-            let mut b2 = bound.clone();
-            b2.extend(binds.iter().map(|f| f.name.clone()));
-            for f in binds {
-                for c in &f.clauses {
-                    let mut b3 = b2.clone();
-                    let mut vs = Vec::new();
-                    c.pats.iter().for_each(|p| pat_vars(p, &mut vs));
-                    b3.extend(vs);
-                    if let Body::Plain(e) = &c.body {
-                        free_vars(e, &b3, out);
-                    }
-                }
-            }
-            free_vars(body, &b2, out);
-        }
-    }
-}
-
-/// Recolhe (por referência) todos os nós lambda dentro de `e`, incl. aninhados.
-fn find_lams<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
-    if matches!(e, Expr::Lam(_, _, _)) {
-        out.push(e);
-    }
-    match e {
-        Expr::App(f, a, _) | Expr::BinOp(_, f, a, _) => {
-            find_lams(f, out);
-            find_lams(a, out);
-        }
-        Expr::If(c, t, el, _) => {
-            find_lams(c, out);
-            find_lams(t, out);
-            find_lams(el, out);
-        }
-        Expr::Tuple(es, _) => es.iter().for_each(|x| find_lams(x, out)),
-        Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| find_lams(x, out)),
-        Expr::RecordUpd(b, fs, _) => {
-            find_lams(b, out);
-            fs.iter().for_each(|(_, x)| find_lams(x, out));
-        }
-        Expr::Case(s, arms, _) => {
-            find_lams(s, out);
-            arms.iter().for_each(|(_, body)| find_lams(body, out));
-        }
-        Expr::Let(binds, body, _) => {
-            for f in binds {
-                for c in &f.clauses {
-                    if let Body::Plain(e) = &c.body {
-                        find_lams(e, out);
-                    }
-                }
-            }
-            find_lams(body, out);
-        }
-        Expr::Lam(_, body, _) => find_lams(body, out),
-        _ => {}
-    }
-}
-
-/// Nomes resolvidos como globais (não capturados): funções de topo, locais de
-/// `where`, construtores, selectores de campo e os builtins de IO.
-fn global_names(module: &ast::Module) -> HashSet<String> {
-    let mut g = HashSet::new();
-    for f in &module.funcs {
-        g.insert(f.name.clone());
-        for c in &f.clauses {
-            for w in &c.wher {
-                g.insert(w.name.clone());
-            }
-        }
-    }
-    for d in &module.datas {
-        for c in &d.cons {
-            g.insert(c.name.clone());
-            for fld in &c.fields {
-                if !fld.name.is_empty() {
-                    g.insert(fld.name.clone());
-                }
-            }
-        }
-    }
-    for b in ["putStrLn", "show", "print"] {
-        g.insert(b.to_string());
-    }
-    g
-}
-
-fn is_int(t: &Type) -> bool {
-    matches!(t.head_con(), Some("Int"))
-}
-
-/// Tipos representados por um `i64` na ABI nativa: `Int`, `String` (ptr), `IO`
-/// (token), um tipo `data` (ponteiro para o registo), ou uma **função**
-/// (ponteiro para uma closure `{fn_ptr, capturas…}`).
-fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
-    if matches!(t, Type::Arrow { .. }) {
-        return true; // função → ponteiro de closure
-    }
-    match t.head_con() {
-        Some("Int" | "String" | "IO") => true,
-        Some(h) => data_types.contains(h),
-        None => false,
-    }
-}
-
-fn result_type(sig: &Type) -> &Type {
-    let mut t = sig;
-    while let Type::Arrow { to, .. } = t {
-        t = to;
-    }
-    t
-}
-
-/// Candidata a nativa: todos os parâmetros e o retorno são representáveis por
-/// `i64` (Int, String, IO, ou um tipo `data`).
-fn top_candidate(f: &ast::Func, data_types: &HashSet<String>) -> Option<usize> {
-    let sig = f.sig.as_ref()?;
-    let ok = sig.param_types().iter().all(|t| native_ty(t, data_types))
-        && native_ty(result_type(sig), data_types);
-    if !ok {
-        return None;
-    }
-    Some(f.clauses.first().map(|c| c.pats.len()).unwrap_or(0))
-}
-
-/// Reúne as funções nativas: as de topo candidatas e, para cada uma, os locais
-/// de `where` (liftados com nome mangled, partilhando o mapa de locais).
-fn data_type_names(module: &ast::Module) -> HashSet<String> {
-    module.datas.iter().map(|d| d.name.clone()).collect()
-}
-
-type LamMeta = HashMap<Span, (String, Vec<String>)>;
-
-fn collect_natives<'a>(
-    module: &'a ast::Module,
-    data_types: &HashSet<String>,
-) -> (Vec<NativeFn<'a>>, LamMeta) {
-    let globals = global_names(module);
-    let mut out = Vec::new();
-    let mut lam_meta: LamMeta = HashMap::new();
-    let mut lam_ctr = 0u32;
-
-    for f in &module.funcs {
-        let Some(arity) = top_candidate(f, data_types) else {
-            continue;
-        };
-        // locais de where (de todas as cláusulas)
-        let wheres: Vec<&ast::Func> = f.clauses.iter().flat_map(|c| &c.wher).collect();
-        let mut locals = HashMap::new();
-        for w in &wheres {
-            locals.insert(w.name.clone(), format!("{}${}", f.name, w.name));
-        }
-        out.push(NativeFn {
-            name: f.name.clone(),
-            arity,
-            kind: Kind::Clauses(&f.clauses),
-            locals: locals.clone(),
-        });
-        for w in &wheres {
-            let warity = w.clauses.first().map(|c| c.pats.len()).unwrap_or(0);
-            out.push(NativeFn {
-                name: locals[&w.name].clone(),
-                arity: warity,
-                kind: Kind::Clauses(&w.clauses),
-                locals: locals.clone(),
-            });
-        }
-
-        // pré-passo: lifta as lambdas dos corpos (desta função e dos wheres)
-        let mut lam_nodes: Vec<&Expr> = Vec::new();
-        for c in &f.clauses {
-            if let Body::Plain(e) = &c.body {
-                find_lams(e, &mut lam_nodes);
-            }
-        }
-        for w in &wheres {
-            for c in &w.clauses {
-                if let Body::Plain(e) = &c.body {
-                    find_lams(e, &mut lam_nodes);
-                }
-            }
-        }
-        for lam in lam_nodes {
-            let Expr::Lam(pats, body, span) = lam else {
-                continue;
-            };
-            let params: Vec<String> = pats
-                .iter()
-                .enumerate()
-                .map(|(k, p)| match p {
-                    Pat::Var(n, _) => n.clone(),
-                    _ => format!("_w{k}"), // wild/complexo: nome fresco não usado
-                })
-                .collect();
-            // capturas = variáveis livres da lambda que não são globais
-            let mut fv = HashSet::new();
-            free_vars(lam, &HashSet::new(), &mut fv);
-            let mut captures: Vec<String> =
-                fv.into_iter().filter(|n| !globals.contains(n)).collect();
-            captures.sort(); // ordem determinística (site de construção == corpo)
-            let name = format!("lam${lam_ctr}");
-            lam_ctr += 1;
-            out.push(NativeFn {
-                name: name.clone(),
-                arity: params.len(),
-                kind: Kind::Lambda {
-                    params,
-                    body: body.as_ref(),
-                    captures: captures.clone(),
-                },
-                locals: locals.clone(),
-            });
-            lam_meta.insert(*span, (name, captures));
-        }
-    }
-    (out, lam_meta)
-}
-
-/// Ambiente de compilação: JIT + os `FuncId`/aridade das funções nativas.
+/// Ambiente de compilação: JIT + os `FuncId`/aridade das funções do Core.
 struct Cg {
     module: JITModule,
     ids: HashMap<String, (FuncId, usize)>,
-    /// literais de string internados → objecto de dados
     strings: HashMap<String, DataId>,
     str_counter: u32,
     puts_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
     records: RecordInfo,
-    lam_meta: LamMeta,
 }
 
 impl Cg {
@@ -409,13 +100,11 @@ impl Cg {
             .finish(cranelift::codegen::settings::Flags::new(flags))
             .map_err(|e| e.to_string())?;
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        // liga os símbolos do runtime nativo
         builder.symbol("axion_puts", axion_puts as *const u8);
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
         let mut module = JITModule::new(builder);
 
-        // declara as funções de runtime como importadas
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
             let mut sig = module.make_signature();
             for _ in 0..nparams {
@@ -441,33 +130,31 @@ impl Cg {
             show_id,
             alloc_id,
             records,
-            lam_meta: HashMap::new(),
         })
     }
 
-    fn declare_all(&mut self, natives: &[NativeFn]) -> Result<(), String> {
-        for n in natives {
+    fn declare_all(&mut self, fns: &[CoreFn]) -> Result<(), String> {
+        for f in fns {
             let mut sig = self.module.make_signature();
             // closures recebem o ponteiro de env como 1.º parâmetro
-            let nparams = n.arity + usize::from(matches!(n.kind, Kind::Lambda { .. }));
+            let nparams = f.params.len() + usize::from(f.is_closure);
             for _ in 0..nparams {
                 sig.params.push(AbiParam::new(types::I64));
             }
             sig.returns.push(AbiParam::new(types::I64));
             let id = self
                 .module
-                .declare_function(&n.name, Linkage::Export, &sig)
+                .declare_function(&f.name, Linkage::Export, &sig)
                 .map_err(|e| e.to_string())?;
-            self.ids.insert(n.name.clone(), (id, n.arity));
+            self.ids.insert(f.name.clone(), (id, f.params.len()));
         }
         Ok(())
     }
 
-    /// Constrói o corpo da função e devolve o `Context` já preenchido.
-    fn build(&mut self, n: &NativeFn) -> Result<Context, String> {
-        let (id, arity) = self.ids[&n.name];
-        let takes_env = matches!(n.kind, Kind::Lambda { .. });
-        let nparams = arity + usize::from(takes_env);
+    /// Constrói o corpo de uma função do Core e devolve o `Context` preenchido.
+    fn build(&mut self, f: &CoreFn) -> Result<Context, String> {
+        let (id, _) = self.ids[&f.name];
+        let nparams = f.params.len() + usize::from(f.is_closure);
         let mut ctx = self.module.make_context();
         for _ in 0..nparams {
             ctx.func.signature.params.push(AbiParam::new(types::I64));
@@ -490,42 +177,33 @@ impl Cg {
                 next: 0,
                 ids: &self.ids,
                 module: &mut self.module,
-                locals: &n.locals,
                 strings: &mut self.strings,
                 str_counter: &mut self.str_counter,
                 puts_id: self.puts_id,
                 show_id: self.show_id,
                 alloc_id: self.alloc_id,
                 records: &self.records,
-                lam_meta: &self.lam_meta,
             };
-            let ret = match &n.kind {
-                Kind::Clauses(clauses) => {
-                    let argvars: Vec<Variable> = argvals.iter().map(|v| fx.fresh_var(*v)).collect();
-                    fx.clauses(clauses, &argvars, 0)?
+
+            if f.is_closure {
+                let env = argvals[0];
+                for (i, cap) in f.captures.iter().enumerate() {
+                    let v =
+                        fx.builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), env, (i as i32 + 1) * 8);
+                    fx.bind_val(cap, v);
                 }
-                Kind::Lambda {
-                    params,
-                    body,
-                    captures,
-                } => {
-                    // argvals[0] = env; carrega as capturas de env[(i+1)*8]
-                    let env = argvals[0];
-                    for (i, cap) in captures.iter().enumerate() {
-                        let v = fx.builder.ins().load(
-                            types::I64,
-                            MemFlags::new(),
-                            env,
-                            (i as i32 + 1) * 8,
-                        );
-                        fx.bind_val(cap, v);
-                    }
-                    for (j, p) in params.iter().enumerate() {
-                        fx.bind_val(p, argvals[j + 1]);
-                    }
-                    fx.expr(body)?
+                for (j, p) in f.params.iter().enumerate() {
+                    fx.bind_val(p, argvals[j + 1]);
                 }
-            };
+            } else {
+                for (j, p) in f.params.iter().enumerate() {
+                    fx.bind_val(p, argvals[j]);
+                }
+            }
+
+            let ret = fx.emit_term(&f.body)?;
             fx.builder.ins().return_(&[ret]);
             fx.builder.finalize();
         }
@@ -540,19 +218,16 @@ struct Fx<'a, 'b> {
     next: u32,
     ids: &'a HashMap<String, (FuncId, usize)>,
     module: &'a mut JITModule,
-    locals: &'a HashMap<String, String>,
     strings: &'a mut HashMap<String, DataId>,
     str_counter: &'a mut u32,
     puts_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
     records: &'a RecordInfo,
-    lam_meta: &'a LamMeta,
 }
 
 impl Fx<'_, '_> {
-    /// Interna um literal de string como objecto de dados (C-string) e devolve
-    /// o seu `DataId`.
+    /// Interna um literal de string como objecto de dados (C-string).
     fn intern(&mut self, s: &str) -> Result<DataId, String> {
         if let Some(id) = self.strings.get(s) {
             return Ok(*id);
@@ -565,7 +240,7 @@ impl Fx<'_, '_> {
             .map_err(|e| e.to_string())?;
         let mut desc = DataDescription::new();
         let mut bytes = s.as_bytes().to_vec();
-        bytes.push(0); // terminador nulo
+        bytes.push(0);
         desc.define(bytes.into_boxed_slice());
         self.module
             .define_data(id, &desc)
@@ -574,327 +249,7 @@ impl Fx<'_, '_> {
         Ok(id)
     }
 
-    /// Desugar de multi-cláusula numa cadeia de `if`; exige catch-all no fim.
-    fn clauses(
-        &mut self,
-        clauses: &[ast::Clause],
-        argvars: &[Variable],
-        i: usize,
-    ) -> Result<Value, String> {
-        let clause = &clauses[i];
-        let lits: Vec<(usize, i64)> = clause
-            .pats
-            .iter()
-            .enumerate()
-            .filter_map(|(j, p)| match p {
-                Pat::Int(n, _) => Some((j, *n)),
-                _ => None,
-            })
-            .collect();
-
-        if lits.is_empty() {
-            // catch-all: liga os padrões-variável e emite o corpo
-            self.bind_clause(clause, argvars);
-            return self.body(clause);
-        }
-        if i + 1 >= clauses.len() {
-            return Err("função sem cláusula catch-all não compila nativamente (ainda)".into());
-        }
-
-        // cond = AND(argvars[j] == lit)
-        let cond = {
-            let mut acc: Option<Value> = None;
-            for (j, lit) in &lits {
-                let av = self.builder.use_var(argvars[*j]);
-                let k = self.builder.ins().iconst(types::I64, *lit);
-                let eq = self.builder.ins().icmp(IntCC::Equal, av, k);
-                acc = Some(match acc {
-                    None => eq,
-                    Some(a) => self.builder.ins().band(a, eq),
-                });
-            }
-            acc.unwrap()
-        };
-
-        let then_b = self.builder.create_block();
-        let else_b = self.builder.create_block();
-        let merge_b = self.builder.create_block();
-        self.builder.append_block_param(merge_b, types::I64);
-        self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
-
-        self.builder.switch_to_block(then_b);
-        self.builder.seal_block(then_b);
-        self.bind_clause(clause, argvars);
-        let tv = self.body(clause)?;
-        self.builder.ins().jump(merge_b, &[tv]);
-
-        self.builder.switch_to_block(else_b);
-        self.builder.seal_block(else_b);
-        let ev = self.clauses(clauses, argvars, i + 1)?;
-        self.builder.ins().jump(merge_b, &[ev]);
-
-        self.builder.switch_to_block(merge_b);
-        self.builder.seal_block(merge_b);
-        Ok(self.builder.block_params(merge_b)[0])
-    }
-
-    fn bind_clause(&mut self, clause: &ast::Clause, argvars: &[Variable]) {
-        for (j, p) in clause.pats.iter().enumerate() {
-            if let Pat::Var(name, _) = p {
-                self.vars.insert(name.clone(), argvars[j]);
-            }
-        }
-    }
-
-    fn body(&mut self, clause: &ast::Clause) -> Result<Value, String> {
-        match &clause.body {
-            Body::Plain(e) => self.expr(e),
-            Body::Guarded(_) => Err("guardas ainda não compilam nativamente".into()),
-        }
-    }
-
-    fn expr(&mut self, e: &Expr) -> Result<Value, String> {
-        match e {
-            Expr::Int(n, _) => Ok(self.builder.ins().iconst(types::I64, *n)),
-            // literal de string → ponteiro para o objecto de dados (C-string)
-            Expr::Str(s, _) => {
-                let data = self.intern(s)?;
-                let gv = self.module.declare_data_in_func(data, self.builder.func);
-                Ok(self.builder.ins().global_value(types::I64, gv))
-            }
-            Expr::Var(name, _) => match self.vars.get(name) {
-                Some(v) => Ok(self.builder.use_var(*v)),
-                None => Err(format!("variável '{name}' não é um Int local")),
-            },
-            Expr::BinOp(op, l, r, _) => {
-                let a = self.expr(l)?;
-                let b = self.expr(r)?;
-                let ins = self.builder.ins();
-                Ok(match op.as_str() {
-                    "+" => ins.iadd(a, b),
-                    "-" => ins.isub(a, b),
-                    "*" => ins.imul(a, b),
-                    "mod" => ins.srem(a, b),
-                    "==" => ins.icmp(IntCC::Equal, a, b),
-                    "<" => ins.icmp(IntCC::SignedLessThan, a, b),
-                    ">" => ins.icmp(IntCC::SignedGreaterThan, a, b),
-                    other => return Err(format!("operador '{other}' não compila nativamente")),
-                })
-            }
-            Expr::If(c, t, el, _) => {
-                let cond = self.expr(c)?;
-                let then_b = self.builder.create_block();
-                let else_b = self.builder.create_block();
-                let merge_b = self.builder.create_block();
-                self.builder.append_block_param(merge_b, types::I64);
-                self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
-
-                self.builder.switch_to_block(then_b);
-                self.builder.seal_block(then_b);
-                let tv = self.expr(t)?;
-                self.builder.ins().jump(merge_b, &[tv]);
-
-                self.builder.switch_to_block(else_b);
-                self.builder.seal_block(else_b);
-                let ev = self.expr(el)?;
-                self.builder.ins().jump(merge_b, &[ev]);
-
-                self.builder.switch_to_block(merge_b);
-                self.builder.seal_block(merge_b);
-                Ok(self.builder.block_params(merge_b)[0])
-            }
-            Expr::Let(binds, body, _) => {
-                for b in binds {
-                    let rhs = match b.clauses.as_slice() {
-                        [c] if c.pats.is_empty() => match &c.body {
-                            Body::Plain(e) => e,
-                            _ => return Err("let com guardas não compila nativamente".into()),
-                        },
-                        _ => return Err("let não trivial não compila nativamente".into()),
-                    };
-                    let val = self.expr(rhs)?;
-                    let v = Variable::new(self.next as usize);
-                    self.next += 1;
-                    self.builder.declare_var(v, types::I64);
-                    self.builder.def_var(v, val);
-                    self.vars.insert(b.name.clone(), v);
-                }
-                self.expr(body)
-            }
-            Expr::App(_, _, _) => {
-                let (head, args) = spine(e);
-                let Expr::Var(name, _) = head else {
-                    // cabeça é uma expressão (ex.: lambda aplicada) → closure
-                    let clos = self.expr(head)?;
-                    let mut vals = Vec::with_capacity(args.len());
-                    for a in &args {
-                        vals.push(self.expr(a)?);
-                    }
-                    return self.call_closure(clos, &vals);
-                };
-                // builtins de IO/String: putStrLn e show chamam o runtime nativo
-                if name == "putStrLn" && args.len() == 1 {
-                    let a = self.expr(args[0])?;
-                    let callee = self
-                        .module
-                        .declare_func_in_func(self.puts_id, self.builder.func);
-                    self.builder.ins().call(callee, &[a]);
-                    return Ok(self.builder.ins().iconst(types::I64, 0)); // IO () → token
-                }
-                if name == "show" && args.len() == 1 {
-                    let a = self.expr(args[0])?;
-                    let callee = self
-                        .module
-                        .declare_func_in_func(self.show_id, self.builder.func);
-                    let call = self.builder.ins().call(callee, &[a]);
-                    return Ok(self.builder.inst_results(call)[0]);
-                }
-                // selector de campo de registo: carrega do offset (i64)
-                let sel_off = self.records.field(name).map(|(o, _)| o);
-                if let (Some(off), 1) = (sel_off, args.len()) {
-                    let r = self.expr(args[0])?;
-                    return Ok(self.builder.ins().load(types::I64, MemFlags::new(), r, off));
-                }
-                // variável local de tipo-função → closure → chamada indirecta
-                if let Some(v) = self.vars.get(name) {
-                    let clos = self.builder.use_var(*v);
-                    let mut vals = Vec::with_capacity(args.len());
-                    for a in &args {
-                        vals.push(self.expr(a)?);
-                    }
-                    return self.call_closure(clos, &vals);
-                }
-                // função de topo / local de `where` → chamada directa
-                let target = self.locals.get(name).map(String::as_str).unwrap_or(name);
-                let (id, arity) = *self
-                    .ids
-                    .get(target)
-                    .ok_or_else(|| format!("função '{name}' não é compilável nativamente"))?;
-                if args.len() != arity {
-                    return Err(format!("'{name}' chamada com aridade errada"));
-                }
-                let mut vals = Vec::with_capacity(args.len());
-                for a in &args {
-                    vals.push(self.expr(a)?);
-                }
-                let callee = self.module.declare_func_in_func(id, self.builder.func);
-                let call = self.builder.ins().call(callee, &vals);
-                Ok(self.builder.inst_results(call)[0])
-            }
-            // lambda → constrói a closure: env = {fn_ptr, capturas…} na heap
-            Expr::Lam(_, _, span) => {
-                let (name, captures) = self
-                    .lam_meta
-                    .get(span)
-                    .ok_or_else(|| "lambda não pré-processada".to_string())?
-                    .clone();
-                let (lam_id, _) = *self
-                    .ids
-                    .get(&name)
-                    .ok_or_else(|| format!("lambda '{name}' não declarada"))?;
-                let env = self.alloc(1 + captures.len());
-                let fref = self.module.declare_func_in_func(lam_id, self.builder.func);
-                let faddr = self.builder.ins().func_addr(types::I64, fref);
-                self.builder.ins().store(MemFlags::new(), faddr, env, 0);
-                for (i, cap) in captures.iter().enumerate() {
-                    let v = self
-                        .vars
-                        .get(cap)
-                        .copied()
-                        .ok_or_else(|| format!("captura '{cap}' fora de âmbito"))?;
-                    let cv = self.builder.use_var(v);
-                    self.builder
-                        .ins()
-                        .store(MemFlags::new(), cv, env, (i as i32 + 1) * 8);
-                }
-                Ok(env)
-            }
-            // tuplo → registo anónimo na heap (um i64 por componente)
-            Expr::Tuple(es, _) => {
-                let ptr = self.alloc(es.len());
-                for (i, e) in es.iter().enumerate() {
-                    let v = self.expr(e)?;
-                    self.builder
-                        .ins()
-                        .store(MemFlags::new(), v, ptr, i as i32 * 8);
-                }
-                Ok(ptr)
-            }
-            Expr::Case(scrut, arms, _) => {
-                let sval = self.expr(scrut)?;
-                self.emit_case(sval, arms, 0)
-            }
-            Expr::RecordCon(con, assigns, _) => {
-                let nfields = self
-                    .records
-                    .con_fields
-                    .get(con)
-                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?
-                    .len();
-                let ptr = self.alloc(nfields);
-                for (fname, e) in assigns {
-                    let off = self
-                        .records
-                        .field(fname)
-                        .map(|(o, _)| o)
-                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
-                    let v = self.expr(e)?;
-                    self.builder.ins().store(MemFlags::new(), v, ptr, off);
-                }
-                Ok(ptr)
-            }
-            Expr::RecordUpd(base, assigns, _) => {
-                let base_ptr = self.expr(base)?;
-                // o tipo do registo (nº de campos) infere-se do 1.º campo actualizado
-                let first = &assigns
-                    .first()
-                    .ok_or_else(|| "actualização de registo vazia".to_string())?
-                    .0;
-                let nfields = self
-                    .records
-                    .field(first)
-                    .map(|(_, fs)| fs.len())
-                    .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
-                let newptr = self.alloc(nfields);
-                // copia todos os campos do base
-                for i in 0..nfields {
-                    let off = i as i32 * 8;
-                    let v = self
-                        .builder
-                        .ins()
-                        .load(types::I64, MemFlags::new(), base_ptr, off);
-                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
-                }
-                // sobrepõe os campos actualizados
-                for (fname, e) in assigns {
-                    let off = self
-                        .records
-                        .field(fname)
-                        .map(|(o, _)| o)
-                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
-                    let v = self.expr(e)?;
-                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
-                }
-                Ok(newptr)
-            }
-            other => Err(format!(
-                "expressão não compila nativamente ({}); usar o interpretador",
-                node_kind(other)
-            )),
-        }
-    }
-
-    /// Aloca um registo de `nfields` campos (i64 cada) e devolve o ponteiro.
-    fn alloc(&mut self, nfields: usize) -> Value {
-        let size = self.builder.ins().iconst(types::I64, nfields as i64 * 8);
-        let callee = self
-            .module
-            .declare_func_in_func(self.alloc_id, self.builder.func);
-        let call = self.builder.ins().call(callee, &[size]);
-        self.builder.inst_results(call)[0]
-    }
-
-    /// Cria uma `Variable` fresca já definida com `val` (sem lhe dar nome).
+    /// Cria uma `Variable` fresca já definida com `val`.
     fn fresh_var(&mut self, val: Value) -> Variable {
         let v = Variable::new(self.next as usize);
         self.next += 1;
@@ -903,15 +258,24 @@ impl Fx<'_, '_> {
         v
     }
 
-    /// Liga um nome a um `Value`.
     fn bind_val(&mut self, name: &str, val: Value) {
         let v = self.fresh_var(val);
         self.vars.insert(name.to_string(), v);
     }
 
+    /// Aloca um bloco de `nslots` campos (i64 cada) e devolve o ponteiro.
+    fn alloc(&mut self, nslots: usize) -> Value {
+        let size = self.builder.ins().iconst(types::I64, nslots as i64 * 8);
+        let callee = self
+            .module
+            .declare_func_in_func(self.alloc_id, self.builder.func);
+        let call = self.builder.ins().call(callee, &[size]);
+        self.builder.inst_results(call)[0]
+    }
+
     /// Chamada indirecta através de uma closure: `fn_ptr = clos[0]`, depois
-    /// `fn_ptr(clos, args…)` (a closure é passada como env do 1.º parâmetro).
-    fn call_closure(&mut self, clos: Value, args: &[Value]) -> Result<Value, String> {
+    /// `fn_ptr(clos, args…)` (a closure é passada como env).
+    fn call_closure(&mut self, clos: Value, args: &[Value]) -> Value {
         let fn_ptr = self
             .builder
             .ins()
@@ -927,25 +291,236 @@ impl Fx<'_, '_> {
         call_args.push(clos);
         call_args.extend_from_slice(args);
         let call = self.builder.ins().call_indirect(sigref, fn_ptr, &call_args);
-        Ok(self.builder.inst_results(call)[0])
+        self.builder.inst_results(call)[0]
     }
 
-    /// `case sval of arms` — cadeia de `if` sobre o escrutínio. Padrões: `Int`
+    /// Valor de um átomo (literal ou variável ligada).
+    fn atom(&mut self, a: &Atom) -> Result<Value, String> {
+        match a {
+            Atom::Int(n) => Ok(self.builder.ins().iconst(types::I64, *n)),
+            Atom::Str(s) => {
+                let data = self.intern(s)?;
+                let gv = self.module.declare_data_in_func(data, self.builder.func);
+                Ok(self.builder.ins().global_value(types::I64, gv))
+            }
+            Atom::Var(name) => match self.vars.get(name) {
+                Some(v) => Ok(self.builder.use_var(*v)),
+                None => Err(format!("variável '{name}' não ligada no Core")),
+            },
+        }
+    }
+
+    fn atoms(&mut self, xs: &[Atom]) -> Result<Vec<Value>, String> {
+        xs.iter().map(|a| self.atom(a)).collect()
+    }
+
+    fn emit_term(&mut self, t: &Term) -> Result<Value, String> {
+        match t {
+            Term::Let(name, rhs, body) => {
+                let v = self.emit_rhs(rhs)?;
+                self.bind_val(name, v);
+                self.emit_term(body)
+            }
+            Term::Ret(rhs) => self.emit_rhs(rhs),
+        }
+    }
+
+    fn emit_rhs(&mut self, rhs: &Rhs) -> Result<Value, String> {
+        match rhs {
+            Rhs::Op(op) => self.emit_op(op),
+            Rhs::If(cond, t, e) => {
+                let c = self.atom(cond)?;
+                let then_b = self.builder.create_block();
+                let else_b = self.builder.create_block();
+                let merge_b = self.builder.create_block();
+                self.builder.append_block_param(merge_b, types::I64);
+                self.builder.ins().brif(c, then_b, &[], else_b, &[]);
+
+                self.builder.switch_to_block(then_b);
+                self.builder.seal_block(then_b);
+                let tv = self.emit_term(t)?;
+                self.builder.ins().jump(merge_b, &[tv]);
+
+                self.builder.switch_to_block(else_b);
+                self.builder.seal_block(else_b);
+                let ev = self.emit_term(e)?;
+                self.builder.ins().jump(merge_b, &[ev]);
+
+                self.builder.switch_to_block(merge_b);
+                self.builder.seal_block(merge_b);
+                Ok(self.builder.block_params(merge_b)[0])
+            }
+            Rhs::Case(scrut, arms) => {
+                let s = self.atom(scrut)?;
+                self.emit_case(s, arms, 0)
+            }
+        }
+    }
+
+    fn emit_op(&mut self, op: &Op) -> Result<Value, String> {
+        match op {
+            Op::Atom(a) => self.atom(a),
+            Op::Prim(o, l, r) => {
+                let a = self.atom(l)?;
+                let b = self.atom(r)?;
+                // comparações devolvem I8; estende-se a I64 para que todo valor
+                // do Core seja uniformemente i64 (ligável a uma Variable I64).
+                let cmp = |me: &mut Self, cc| {
+                    let c = me.builder.ins().icmp(cc, a, b);
+                    me.builder.ins().uextend(types::I64, c)
+                };
+                Ok(match o.as_str() {
+                    "+" => self.builder.ins().iadd(a, b),
+                    "-" => self.builder.ins().isub(a, b),
+                    "*" => self.builder.ins().imul(a, b),
+                    "mod" => self.builder.ins().srem(a, b),
+                    "band" => self.builder.ins().band(a, b),
+                    "==" => cmp(self, IntCC::Equal),
+                    "<" => cmp(self, IntCC::SignedLessThan),
+                    ">" => cmp(self, IntCC::SignedGreaterThan),
+                    other => return Err(format!("operador '{other}' não compila nativamente")),
+                })
+            }
+            Op::CallDirect(name, args) => {
+                let (id, arity) = *self
+                    .ids
+                    .get(name)
+                    .ok_or_else(|| format!("função '{name}' não é compilável nativamente"))?;
+                if args.len() != arity {
+                    return Err(format!("'{name}' chamada com aridade errada"));
+                }
+                let vals = self.atoms(args)?;
+                let callee = self.module.declare_func_in_func(id, self.builder.func);
+                let call = self.builder.ins().call(callee, &vals);
+                Ok(self.builder.inst_results(call)[0])
+            }
+            Op::CallClosure(clos, args) => {
+                let c = self.atom(clos)?;
+                let vals = self.atoms(args)?;
+                Ok(self.call_closure(c, &vals))
+            }
+            Op::MakeClosure { func, captures } => {
+                let (lam_id, _) = *self
+                    .ids
+                    .get(func)
+                    .ok_or_else(|| format!("lambda '{func}' não declarada"))?;
+                let env = self.alloc(1 + captures.len());
+                let fref = self.module.declare_func_in_func(lam_id, self.builder.func);
+                let faddr = self.builder.ins().func_addr(types::I64, fref);
+                self.builder.ins().store(MemFlags::new(), faddr, env, 0);
+                for (i, cap) in captures.iter().enumerate() {
+                    let cv = self.atom(cap)?;
+                    self.builder
+                        .ins()
+                        .store(MemFlags::new(), cv, env, (i as i32 + 1) * 8);
+                }
+                Ok(env)
+            }
+            Op::MakeTuple(xs) => {
+                let ptr = self.alloc(xs.len());
+                for (i, a) in xs.iter().enumerate() {
+                    let v = self.atom(a)?;
+                    self.builder
+                        .ins()
+                        .store(MemFlags::new(), v, ptr, i as i32 * 8);
+                }
+                Ok(ptr)
+            }
+            Op::MakeRecord { con, fields } => {
+                let nfields = self
+                    .records
+                    .con_fields
+                    .get(con)
+                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?
+                    .len();
+                let ptr = self.alloc(nfields);
+                for (fname, a) in fields {
+                    let off = self
+                        .records
+                        .field(fname)
+                        .map(|(o, _)| o)
+                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                    let v = self.atom(a)?;
+                    self.builder.ins().store(MemFlags::new(), v, ptr, off);
+                }
+                Ok(ptr)
+            }
+            Op::UpdateRecord { base, fields } => {
+                let base_ptr = self.atom(base)?;
+                let first = &fields
+                    .first()
+                    .ok_or_else(|| "actualização de registo vazia".to_string())?
+                    .0;
+                let nfields = self
+                    .records
+                    .field(first)
+                    .map(|(_, fs)| fs.len())
+                    .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
+                let newptr = self.alloc(nfields);
+                for i in 0..nfields {
+                    let off = i as i32 * 8;
+                    let v = self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), base_ptr, off);
+                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
+                }
+                for (fname, a) in fields {
+                    let off = self
+                        .records
+                        .field(fname)
+                        .map(|(o, _)| o)
+                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                    let v = self.atom(a)?;
+                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
+                }
+                Ok(newptr)
+            }
+            Op::Field { name, rec } => {
+                let off = self
+                    .records
+                    .field(name)
+                    .map(|(o, _)| o)
+                    .ok_or_else(|| format!("campo '{name}' desconhecido"))?;
+                let r = self.atom(rec)?;
+                Ok(self.builder.ins().load(types::I64, MemFlags::new(), r, off))
+            }
+            Op::PutStrLn(a) => {
+                let v = self.atom(a)?;
+                let callee = self
+                    .module
+                    .declare_func_in_func(self.puts_id, self.builder.func);
+                self.builder.ins().call(callee, &[v]);
+                Ok(self.builder.ins().iconst(types::I64, 0)) // IO () → token
+            }
+            Op::ShowInt(a) => {
+                let v = self.atom(a)?;
+                let callee = self
+                    .module
+                    .declare_func_in_func(self.show_id, self.builder.func);
+                let call = self.builder.ins().call(callee, &[v]);
+                Ok(self.builder.inst_results(call)[0])
+            }
+            Op::Unsupported(m) => Err(format!("{m} não compila nativamente (ainda)")),
+        }
+    }
+
+    /// `case s of arms` — cadeia de `if` sobre o escrutínio. Padrões: `Int`
     /// (compara), variável/`_` (catch-all), tuplo `(a, b)` (destructura por
-    /// offset). Exige um catch-all (variável/`_`/tuplo) no fim.
-    fn emit_case(&mut self, sval: Value, arms: &[(Pat, Expr)], i: usize) -> Result<Value, String> {
+    /// offset). Exige um catch-all no fim.
+    fn emit_case(&mut self, sval: Value, arms: &[(CPat, Term)], i: usize) -> Result<Value, String> {
         let (pat, body) = &arms[i];
         match pat {
-            Pat::Wild(_) => self.expr(body),
-            Pat::Var(n, _) => {
+            CPat::Wild => self.emit_term(body),
+            CPat::Var(n) => {
                 self.bind_val(n, sval);
-                self.expr(body)
+                self.emit_term(body)
             }
-            Pat::Tuple(ps, _) => {
+            CPat::Tuple(ps) => {
                 for (j, p) in ps.iter().enumerate() {
                     match p {
-                        Pat::Wild(_) => {}
-                        Pat::Var(n, _) => {
+                        CPat::Wild => {}
+                        CPat::Var(n) => {
                             let v = self.builder.ins().load(
                                 types::I64,
                                 MemFlags::new(),
@@ -957,9 +532,9 @@ impl Fx<'_, '_> {
                         _ => return Err("padrão de tuplo aninhado não compila nativamente".into()),
                     }
                 }
-                self.expr(body)
+                self.emit_term(body)
             }
-            Pat::Int(lit, _) => {
+            CPat::Int(lit) => {
                 if i + 1 >= arms.len() {
                     return Err("case sem catch-all não compila nativamente (ainda)".into());
                 }
@@ -973,7 +548,7 @@ impl Fx<'_, '_> {
 
                 self.builder.switch_to_block(then_b);
                 self.builder.seal_block(then_b);
-                let tv = self.expr(body)?;
+                let tv = self.emit_term(body)?;
                 self.builder.ins().jump(merge_b, &[tv]);
 
                 self.builder.switch_to_block(else_b);
@@ -985,46 +560,22 @@ impl Fx<'_, '_> {
                 self.builder.seal_block(merge_b);
                 Ok(self.builder.block_params(merge_b)[0])
             }
-            Pat::Con(_, _, _) => {
+            CPat::Con(_) => {
                 Err("padrão de construtor no case não compila nativamente (ainda)".into())
             }
         }
     }
 }
 
-fn node_kind(e: &Expr) -> &'static str {
-    match e {
-        Expr::Str(_, _) => "string",
-        Expr::Con(_, _) => "construtor",
-        Expr::Case(_, _, _) => "case",
-        Expr::Tuple(_, _) => "tuplo",
-        Expr::RecordCon(_, _, _) | Expr::RecordUpd(_, _, _) => "registo",
-        Expr::Lam(_, _, _) => "lambda",
-        _ => "expressão",
-    }
-}
-
-fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
-    let mut args = Vec::new();
-    let mut cur = e;
-    while let Expr::App(f, a, _) = cur {
-        args.push(a.as_ref());
-        cur = f;
-    }
-    args.reverse();
-    (cur, args)
-}
-
-/// JIT-compila o núcleo e corre `entry` (função sem parâmetros). Devolve
-/// `Some(n)` se `entry :: Int` (o chamador imprime `n`); `None` se `:: IO ()`
-/// (os efeitos — `putStrLn` — já foram executados durante a corrida).
+/// JIT-compila o Core e corre `entry` (função sem parâmetros). Devolve `Some(n)`
+/// se `entry :: Int` (o chamador imprime `n`); `None` se `:: IO ()` (os efeitos
+/// já foram executados durante a corrida).
 pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
-    let data_types = data_type_names(module);
-    let (natives, lam_meta) = collect_natives(module, &data_types);
-    let entry_ok = natives
+    let fns = core::lower(module);
+    let entry_ok = fns
         .iter()
-        .find(|n| n.name == entry)
-        .map(|n| n.arity == 0)
+        .find(|f| f.name == entry)
+        .map(|f| f.params.is_empty())
         .unwrap_or(false);
     if !entry_ok {
         return Err(format!(
@@ -1033,11 +584,10 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
     }
 
     let mut cg = Cg::new(RecordInfo::build(module))?;
-    cg.lam_meta = lam_meta;
-    cg.declare_all(&natives)?;
-    for n in &natives {
-        let mut ctx = cg.build(n)?;
-        let id = cg.ids[&n.name].0;
+    cg.declare_all(&fns)?;
+    for f in &fns {
+        let mut ctx = cg.build(f)?;
+        let id = cg.ids[&f.name].0;
         cg.module
             .define_function(id, &mut ctx)
             .map_err(|e| e.to_string())?;
@@ -1051,7 +601,6 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
     let val = f();
 
-    // imprime só quando o resultado é um Int; IO () já imprimiu por si.
     let returns_int = module
         .funcs
         .iter()
@@ -1062,19 +611,17 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
     Ok(returns_int.then_some(val))
 }
 
-/// Emite o Cranelift IR (texto) das funções nativas, sem JIT (`--emit clif`).
+/// Emite o Cranelift IR (texto) das funções do Core, sem JIT (`--emit clif`).
 pub fn emit_ir(module: &ast::Module) -> Result<String, String> {
-    let data_types = data_type_names(module);
-    let (natives, lam_meta) = collect_natives(module, &data_types);
-    if natives.is_empty() {
+    let fns = core::lower(module);
+    if fns.is_empty() {
         return Ok("; nenhuma função compilável nativamente (núcleo Int).\n".into());
     }
     let mut cg = Cg::new(RecordInfo::build(module))?;
-    cg.lam_meta = lam_meta;
-    cg.declare_all(&natives)?;
+    cg.declare_all(&fns)?;
     let mut out = String::new();
-    for n in &natives {
-        let ctx = cg.build(n)?;
+    for f in &fns {
+        let ctx = cg.build(f)?;
         out.push_str(&format!("{}\n", ctx.func.display()));
     }
     Ok(out)
