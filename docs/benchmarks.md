@@ -17,8 +17,13 @@
 - Harness: [`scripts/bench.sh`](../scripts/bench.sh) — melhor de 3, `date +%s%N`,
   e verifica que, por kernel, todas as variantes dão o mesmo resultado.
 - **Escalão comparável:** o **mesmo `clang` (LLVM)** compila o C e o Axión
-  `--release`; o Rust é `rustc` (também LLVM). O tempo do Axión `--dev` inclui
-  parse+typecheck+JIT (~ms), negligível.
+  `--release` (ambos `-O2 -flto`); o Rust é `rustc` (também LLVM). O tempo do
+  Axión `--dev` inclui parse+typecheck+JIT (~ms), negligível.
+- **O `-flto` é justo, não um truque:** medido, o `-flto` **não altera** os tempos
+  do C em nenhum kernel (fib/loop são uma só unidade de compilação; no `alloc` o
+  `malloc`/`free` vivem na libc, fora de qualquer LTO — logo não inlinam com ou
+  sem `-flto`). A vantagem da arena é **estrutural** (bump-allocator inlinável vs
+  alocador de heap geral na libc), não um artefacto de flags.
 
 ## Resultado (uma máquina, 8 cores; indicativo, não definitivo)
 
