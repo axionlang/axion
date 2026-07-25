@@ -370,6 +370,21 @@ fn cranelift_backend_jits_and_runs_fib() {
 }
 
 #[test]
+fn cranelift_backend_compiles_multiclause_and_where() {
+    // fibFast: multi-cláusula com padrão literal + where ('go' liftado) → 832040.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("native_fibfast.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "saída: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "832040\n");
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])
