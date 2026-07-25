@@ -1,8 +1,8 @@
-//! `axionc` — esqueleto ambulante do compilador da Axión (Fase 1, §17).
+//! `axionc` — o compilador da Axión (§17–18).
 //!
 //! Pipeline: fonte `.axi` → lexer (logos) → layout → parser → verificação
-//! (nomes + linearidade) → interpretador. Diagnósticos com códigos `AXnnnn`
-//! estáveis (§8), em texto ou JSON.
+//! (nomes + linearidade + Auto-Drop) → inferência de tipos (HM) → interpretador.
+//! Diagnósticos com códigos `AXnnnn` estáveis (§8), em texto ou JSON.
 //!
 //! Uso:
 //!   axionc <ficheiro.axi>            compila e corre
@@ -30,10 +30,17 @@ use diag::{Diagnostic, Diagnostics};
 use lexer::LineMap;
 use std::process::ExitCode;
 
+#[derive(PartialEq)]
+enum Emit {
+    Text,
+    Json,
+    Drops,
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut check_only = false;
-    let mut emit_json = false;
+    let mut emit = Emit::Text;
     let mut path: Option<String> = None;
 
     let mut i = 0;
@@ -42,11 +49,13 @@ fn main() -> ExitCode {
             "--check" => check_only = true,
             "--emit" => {
                 i += 1;
-                if args.get(i).map(|s| s.as_str()) == Some("json") {
-                    emit_json = true;
-                } else {
-                    eprintln!("--emit espera 'json'");
-                    return ExitCode::from(2);
+                match args.get(i).map(|s| s.as_str()) {
+                    Some("json") => emit = Emit::Json,
+                    Some("drops") => emit = Emit::Drops,
+                    _ => {
+                        eprintln!("--emit espera 'json' ou 'drops'");
+                        return ExitCode::from(2);
+                    }
                 }
             }
             "--explain" => {
@@ -87,10 +96,10 @@ fn main() -> ExitCode {
 
     let lines = LineMap::new(&src);
     let mut diags = Diagnostics::new();
-    let module = compile_front(&src, &mut diags);
+    let (module, drops) = compile_front(&src, &mut diags);
 
     // reporta diagnósticos
-    if emit_json {
+    if emit == Emit::Json {
         println!("{}", serde_json::to_string_pretty(&diags.items).unwrap());
     } else {
         for d in &diags.items {
@@ -102,14 +111,19 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if emit == Emit::Drops {
+        print_drops(&drops, &path, &lines);
+        return ExitCode::SUCCESS;
+    }
+
     let module = match module {
         Some(m) => m,
         None => return ExitCode::FAILURE,
     };
 
     if check_only {
-        if !emit_json {
-            eprintln!("ok: {path} compila (parse + typecheck + linearidade).");
+        if emit == Emit::Text {
+            eprintln!("ok: {path} compila (parse + typecheck + linearidade + Auto-Drop).");
         }
         return ExitCode::SUCCESS;
     }
@@ -123,8 +137,12 @@ fn main() -> ExitCode {
     }
 }
 
-/// Corre o front-end (lex → layout → parse → check), acumulando diagnósticos.
-fn compile_front(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
+/// Corre o front-end (lex → layout → parse → check → infer), acumulando
+/// diagnósticos e devolvendo os `free` injectados pelo Auto-Drop.
+fn compile_front(
+    src: &str,
+    diags: &mut Diagnostics,
+) -> (Option<ast::Module>, Vec<check::DropPoint>) {
     let tokens = match lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {
@@ -133,7 +151,7 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
                 e.end,
                 "não faz parte de nenhum token",
             ));
-            return None;
+            return (None, Vec::new());
         }
     };
     let lines = LineMap::new(src);
@@ -142,12 +160,28 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
         Ok(m) => m,
         Err(d) => {
             diags.push(d);
-            return None;
+            return (None, Vec::new());
         }
     };
-    check::check(&module, diags);
+    let drops = check::check(&module, diags);
     infer::infer(&module, diags);
-    Some(module)
+    (Some(module), drops)
+}
+
+/// Imprime o relatório de Auto-Drop (`--emit drops`).
+fn print_drops(drops: &[check::DropPoint], path: &str, lines: &LineMap) {
+    if drops.is_empty() {
+        println!("Auto-Drop: nenhum 'free' injectado.");
+        return;
+    }
+    println!("Auto-Drop — {} 'free' injectado(s):", drops.len());
+    for d in drops {
+        let (l, c) = lines.pos(d.span.0);
+        println!(
+            "  free({}) : {} %1  @ {path}:{l}:{c}  (em '{}', morre à entrada — nunca consumido)",
+            d.var, d.ty, d.func
+        );
+    }
 }
 
 fn explain(code: &str) -> ExitCode {
@@ -159,9 +193,11 @@ fn explain(code: &str) -> ExitCode {
              duas metades %0.5 (§2)."
         }
         "AX0002" => {
-            "AX0002 — recurso linear largado sem ser consumido.\n\
-             Recursos %1 sem instância Drop são must-use: têm de ser consumidos ou\n\
-             devolvidos. Esquecê-los é erro, não uma fuga silenciosa (§2)."
+            "AX0002 — recurso must-use largado sem ser consumido.\n\
+             Tipos SEM Drop (Ep, Token, handles) são must-use: têm de ser\n\
+             consumidos ou devolvidos. Tipos droppable, ao contrário, são geridos\n\
+             pelo Auto-Drop (o compilador injecta 'free' no ponto de morte). Só o\n\
+             esquecimento de um must-use é erro (§2)."
         }
         "AX0100" => {
             "AX0100 — erro de sintaxe. O parser não conseguiu reconhecer\n\
@@ -182,11 +218,12 @@ fn explain(code: &str) -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "axionc — compilador da Axión (Fase 1)\n\n\
+        "axionc — compilador da Axión\n\n\
          uso:\n  \
          axionc <ficheiro.axi>          compila e corre\n  \
-         axionc --check <ficheiro>      só compila (parse + typecheck)\n  \
+         axionc --check <ficheiro>      só compila (parse + typecheck + Auto-Drop)\n  \
          axionc --emit json <ficheiro>  diagnósticos em JSON\n  \
+         axionc --emit drops <ficheiro> mostra os 'free' injectados pelo Auto-Drop\n  \
          axionc --explain AX0001        explica um código de erro"
     );
 }

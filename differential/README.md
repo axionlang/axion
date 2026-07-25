@@ -21,4 +21,10 @@ duas implementações, um só veredito.
 |---------|-------|----------|
 | `01_consume_once` | recurso `%1` consumido exactamente uma vez | `accept` |
 | `02_consume_twice` | contração: `%1` usado duas vezes (`AX0001`) | `reject` |
-| `03_drop_unused` | must-use: `%1` largado sem consumo (`AX0002`) | `reject` |
+| `03_drop_unused` | must-use (`Token`) largado sem consumo (`AX0002`) | `reject` |
+
+> **Nota (Auto-Drop, Fase 2).** O cenário `03` usa um tipo **must-use**
+> (`Token`) de propósito: um tipo *droppable* seria aceite pelo `axionc` via
+> Auto-Drop (o compilador injecta `free`), mas o GHC rejeitá-lo-ia à mesma (o
+> `LinearTypes` trata todo o linear como must-use, sem Auto-Drop). Restringir o
+> cenário a must-use mantém os dois verificadores concordantes.

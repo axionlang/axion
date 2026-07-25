@@ -1,16 +1,36 @@
 //! Verificação estática: resolução de nomes (AX0101) + análise de linearidade
-//! (AX0001 uso-após-consumo, AX0002 recurso linear largado sem consumo).
+//! com **Auto-Drop** (§2).
 //!
-//! A linearidade é o diferenciador da Axión (§2). Na Fase 1 é uma análise sobre
-//! o AST: cada parâmetro cuja seta na assinatura é `%1` tem de ser consumido
-//! **exactamente uma vez** no corpo da cláusula. Ramos alternativos (`if`,
-//! `case`) contam como caminhos: o uso é o máximo entre ramos, não a soma.
+//! A regra da linearidade (§2), refinada pelo Auto-Drop:
+//! - um `%1` **must-use** (sem `Drop`: `Ep`, `Token`, handles) é consumido
+//!   **exactamente uma vez** — 0 usos ⇒ `AX0002`;
+//! - um `%1` **droppable** (tem `Drop`) é consumido **quando muito uma vez** —
+//!   0 usos ⇒ o compilador injecta `free` no ponto de morte (Auto-Drop), sem
+//!   erro; o ponto de drop é reportado (`--emit drops`).
+//! - a contracção (usar >1 vez) é sempre `AX0001`.
+//!
+//! Ramos alternativos (`if`, `case`) contam como caminhos: o uso é o máximo
+//! entre ramos, não a soma.
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
 use std::collections::HashSet;
 
-pub fn check(module: &Module, diags: &mut Diagnostics) {
+/// Tipos lineares **sem `Drop`** (must-use): esquecê-los é erro, não Auto-Drop.
+/// Tudo o resto é droppable por omissão (§2).
+const MUST_USE: &[&str] = &["Ep", "Token", "Endpoint", "Transaction"];
+
+/// Um `free` injectado pelo Auto-Drop no ponto de morte de um recurso linear.
+#[derive(Debug, Clone)]
+pub struct DropPoint {
+    pub func: String,
+    pub var: String,
+    pub ty: String,
+    pub span: Span,
+}
+
+/// Corre a verificação e devolve os `free` injectados pelo Auto-Drop.
+pub fn check(module: &Module, diags: &mut Diagnostics) -> Vec<DropPoint> {
     let mut globals: HashSet<String> = builtins();
     for f in &module.funcs {
         globals.insert(f.name.clone());
@@ -26,9 +46,16 @@ pub fn check(module: &Module, diags: &mut Diagnostics) {
             }
         }
     }
+    let mut drops = Vec::new();
     for f in &module.funcs {
-        check_func(f, &globals, diags);
+        check_func(f, &globals, diags, &mut drops);
     }
+    drops
+}
+
+/// Um tipo é *must-use* se o seu construtor de topo não tem `Drop`.
+fn is_must_use(ty: &Type) -> bool {
+    matches!(ty.head_con(), Some(h) if MUST_USE.contains(&h))
 }
 
 fn builtins() -> HashSet<String> {
@@ -38,8 +65,14 @@ fn builtins() -> HashSet<String> {
         .collect()
 }
 
-fn check_func(f: &Func, globals: &HashSet<String>, diags: &mut Diagnostics) {
+fn check_func(
+    f: &Func,
+    globals: &HashSet<String>,
+    diags: &mut Diagnostics,
+    drops: &mut Vec<DropPoint>,
+) {
     let mults = f.sig.as_ref().map(|t| t.param_mults()).unwrap_or_default();
+    let ptypes = f.sig.as_ref().map(|t| t.param_types()).unwrap_or_default();
     for clause in &f.clauses {
         // --- resolução de nomes ---
         let mut scope: HashSet<String> = HashSet::new();
@@ -51,13 +84,19 @@ fn check_func(f: &Func, globals: &HashSet<String>, diags: &mut Diagnostics) {
         }
         resolve_clause(clause, &scope, globals, diags);
 
-        // --- linearidade: parâmetros %1 consumidos exactamente uma vez ---
+        // --- linearidade + Auto-Drop: parâmetros %1 ---
         for (i, p) in clause.pats.iter().enumerate() {
             if mults.get(i).copied() != Some(Mult::One) {
                 continue;
             }
             if let Pat::Var(name, span) = p {
                 let n = count_clause(clause, name);
+                let must_use = ptypes.get(i).map(|t| is_must_use(t)).unwrap_or(false);
+                let ty_name = ptypes
+                    .get(i)
+                    .and_then(|t| t.head_con())
+                    .unwrap_or("?")
+                    .to_string();
                 if n > 1 {
                     diags.push(
                         Diagnostic::error(
@@ -74,18 +113,31 @@ fn check_func(f: &Func, globals: &HashSet<String>, diags: &mut Diagnostics) {
                              divida-o com 'split' se precisa de o ler em dois sítios (§2).",
                         ),
                     );
-                } else if n == 0 {
+                } else if n == 0 && must_use {
                     diags.push(
                         Diagnostic::error(
                             "AX0002",
-                            format!("recurso linear '{name}' largado sem ser consumido"),
+                            format!("recurso must-use '{name}' largado sem ser consumido"),
                         )
-                        .label(span.0, span.1, format!("'{name}' é %1 e nunca é usado"))
+                        .label(
+                            span.0,
+                            span.1,
+                            format!("'{name}' : {ty_name} %1 (sem Drop)"),
+                        )
                         .with_help(
-                            "recursos %1 sem instância Drop são must-use; \
+                            "endpoints, Token e handles são must-use (não têm Drop); \
                              consuma-o ou devolva-o (§2).",
                         ),
                     );
+                } else if n == 0 {
+                    // droppable e nunca consumido: Auto-Drop injecta 'free' no
+                    // ponto de morte (aqui, à entrada — o valor morre logo).
+                    drops.push(DropPoint {
+                        func: f.name.clone(),
+                        var: name.clone(),
+                        ty: ty_name,
+                        span: *span,
+                    });
                 }
             }
         }

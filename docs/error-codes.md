@@ -13,7 +13,7 @@ e explicáveis por `axion --explain AXnnnn`.
 | Código | Categoria | Invariante violado | Estado |
 |--------|-----------|--------------------|--------|
 | `AX0001` | Linearidade | Contração: um `%1` usado **mais do que uma vez** | **imposto pelo `axionc`** (Fase 1) |
-| `AX0002` | Linearidade | *Must-use*: um recurso `%1` descartado sem ser consumido | **imposto pelo `axionc`** (Fase 1) |
+| `AX0002` | Linearidade | *Must-use*: um `%1` **sem `Drop`** descartado sem consumo (tipos droppable ⇒ Auto-Drop, não erro) | **imposto pelo `axionc`** (Fase 1/2) |
 | `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | reservado (Fase 2) |
 | `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
 | `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
@@ -68,8 +68,18 @@ instância `Drop`. Tipos sem `Drop` — endpoints de sessão (`Ep`), `Token`,
 handles de transação — são *must-use*: esquecê-los é erro (disto depende a
 Fidelidade de Sessão da §9). Exemplo e forma do diagnóstico na Listagem 2.4.
 
+**`axionc` (Fase 2, Auto-Drop).** A análise de linearidade (`axionc/src/check.rs`)
+classifica o tipo do parâmetro `%1`: se for **droppable** (por omissão), largá-lo
+sem consumo **não é erro** — o Auto-Drop injecta `free` no ponto de morte
+(visível em `axionc --emit drops`). Só um tipo **must-use** (cabeça em
+`MUST_USE`: `Ep`, `Token`, …) largado sem consumo emite `AX0002`.
+
 ```
-error[AX0002]: recurso linear sem Drop descartado sem ser consumido
+error[AX0002]: recurso must-use 'x' largado sem ser consumido
+  --> drop_linear.axi:4:8
+  |
+4 | dropIt x = 0
+  |        ^ 'x' : Token %1 (sem Drop)
 ```
 
 ## `AX0003` — escape de sub-arena

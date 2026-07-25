@@ -94,6 +94,34 @@ fn linear_record_used_twice_is_rejected_ax0001() {
 }
 
 #[test]
+fn droppable_linear_unused_is_accepted_by_autodrop() {
+    // Buf é droppable: largá-lo sem consumo é OK (Auto-Drop injecta free).
+    let out = axionc()
+        .args(["--check", &fixture("drop_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "droppable não consumido devia ser aceite; saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn autodrop_emits_injected_free() {
+    let out = axionc()
+        .args(["--emit", "drops", &fixture("drop_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("free(b)") && text.contains("Buf"),
+        "esperava um free injectado para 'b : Buf', saída: {text}"
+    );
+}
+
+#[test]
 fn type_mismatch_is_rejected_ax0200() {
     let out = axionc()
         .args(["--check", &fixture("type_mismatch.axi")])

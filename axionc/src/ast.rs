@@ -34,6 +34,26 @@ impl Type {
         }
         out
     }
+
+    /// Tipos dos parâmetros, esquerda→direita (o `from` de cada seta de topo).
+    pub fn param_types(&self) -> Vec<&Type> {
+        let mut out = Vec::new();
+        let mut t = self;
+        while let Type::Arrow { from, to, .. } = t {
+            out.push(from.as_ref());
+            t = to;
+        }
+        out
+    }
+
+    /// Nome do construtor de topo do tipo (ex.: `Buffer U8` → "Buffer").
+    pub fn head_con(&self) -> Option<&str> {
+        match self {
+            Type::Con(n) => Some(n),
+            Type::App(f, _) => f.head_con(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -24,7 +24,7 @@ Tudo o resto cresce daí.
 | `src/lexer.rs` | Tokens com `logos` + tabela de linhas para spans. |
 | `src/layout.rs` | Regra de layout (indentação → chavetas/`;` virtuais). |
 | `src/parser.rs` | Recursivo-descendente → AST (`src/ast.rs`). |
-| `src/check.rs` | Resolução de nomes (`AX0101`) + **linearidade** (`AX0001`/`AX0002`). |
+| `src/check.rs` | Resolução de nomes (`AX0101`) + **linearidade** (`AX0001`/`AX0002`) + **Auto-Drop** (§2). |
 | `src/infer.rs` | **Inferência de tipos** HM / Algoritmo W (`AX0200`/`AX0201`). |
 | `src/interp.rs` | Interpretador tree-walking. |
 | `src/props.rs` | Property tests de **preservação/progresso** (só em `cargo test`). |
@@ -42,6 +42,7 @@ cargo run -- ../examples/01_hello.axi      # imprime: Hello, Axión!
 cargo run -- ../examples/02_fib.axi        # imprime: 832040
 cargo run -- --check <ficheiro.axi>        # só parse + typecheck + linearidade
 cargo run -- --emit json <ficheiro.axi>    # diagnósticos em JSON (§8)
+cargo run -- --emit drops <ficheiro.axi>   # 'free' injectados pelo Auto-Drop (§2)
 cargo run -- --explain AX0001              # explica um código de erro
 cargo test                                 # testes de integração
 ```
