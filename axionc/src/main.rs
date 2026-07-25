@@ -204,6 +204,11 @@ fn explain(code: &str) -> ExitCode {
             "AX0100 — erro de sintaxe. O parser não conseguiu reconhecer\n\
              a construção. Verifique parênteses, '=' e indentação."
         }
+        "AX0004" => {
+            "AX0004 — uso-após-move. Depois de mover a posse de um %1 (consumir:\n\
+             argumento %1, campo %1, ou retorno), não se pode voltar a lê-lo nem\n\
+             a consumi-lo. Ler ANTES de consumir é livre; ler DEPOIS é erro (§2)."
+        }
         "AX0101" => {
             "AX0101 — nome não encontrado. O identificador não está em\n\
              âmbito (nem parâmetro, nem local, nem função de topo, nem builtin)."

@@ -17,8 +17,10 @@
 //! - **consumos == 1** ⇒ posse transferida, sem drop.
 //!
 //! Ramos alternativos (`if`, `case`) contam como caminhos (máximo, não soma).
-//! Limitação assumida deste corte: a ORDEM não é verificada (um empréstimo
-//! depois do consumo — uso-após-move — ainda não é detectado).
+//!
+//! A ORDEM também é verificada: uma travessia na ordem de avaliação detecta o
+//! uso de um `%1` **depois** de a posse ter sido movida (uso-após-move ⇒
+//! `AX0004`). `x + sink x` (ler antes de consumir) é aceite; `sink x + x` não.
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
@@ -120,6 +122,19 @@ fn check_func(
                             "ler (emprestar) um %1 é livre e ilimitado; mover a posse \
                              (consumir) só pode acontecer uma vez — para o partilhar por \
                              posse, use 'split' em duas metades %0.5 (§2).",
+                        ),
+                    );
+                } else if let Some((mv, use_sp)) = use_after_move(clause, name, ctx) {
+                    diags.push(
+                        Diagnostic::error(
+                            "AX0004",
+                            format!("uso de '{name}' após a posse ter sido movida"),
+                        )
+                        .label(use_sp.0, use_sp.1, format!("'{name}' usado aqui…"))
+                        .label(mv.0, mv.1, "…mas a posse já tinha sido movida aqui")
+                        .with_help(
+                            "depois de mover um %1 (consumir), não se pode voltar a lê-lo \
+                             nem a consumi-lo — a posse já saiu deste âmbito (§2).",
                         ),
                     );
                 } else if consumes == 0 && must_use {
@@ -527,5 +542,117 @@ fn collect_last(e: &Expr, x: &str, best: &mut Option<Span>) {
             collect_last(base, x, best);
             assigns.iter().for_each(|(_, e)| collect_last(e, x, best));
         }
+    }
+}
+
+// --- verificação de ORDEM: uso-após-move (AX0004) ---
+//
+// Percorre o corpo na ordem de avaliação (esquerda→direita) mantendo se a posse
+// de `x` já foi movida (consumida). Qualquer ocorrência de `x` depois disso — ler
+// ou consumir — é uso-após-move. Ramos (`if`/`case`) são caminhos: cada um parte
+// do mesmo estado e o resultado junta-se (movido se algum ramo mover).
+
+#[derive(Clone, Copy, Default)]
+struct MoveState {
+    moved: Option<Span>,         // onde a posse foi movida (se já foi)
+    error: Option<(Span, Span)>, // (onde moveu, onde foi usado depois) — o 1.º
+}
+
+/// Devolve `(span do move, span do uso posterior)` se houver uso-após-move.
+fn use_after_move(clause: &Clause, x: &str, ctx: &Ctx) -> Option<(Span, Span)> {
+    let st = match &clause.body {
+        Body::Plain(e) => walk(e, x, Mode::Consume, ctx, MoveState::default()),
+        // guardas são caminhos exclusivos: cada uma parte do estado inicial
+        Body::Guarded(arms) => arms
+            .iter()
+            .map(|(g, r)| {
+                let s = walk(g, x, Mode::Borrow, ctx, MoveState::default());
+                walk(r, x, Mode::Consume, ctx, s)
+            })
+            .find(|s| s.error.is_some())
+            .unwrap_or_default(),
+    };
+    st.error
+}
+
+fn walk(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, mut st: MoveState) -> MoveState {
+    match e {
+        Expr::Var(n, sp) => {
+            if n == x {
+                if let Some(mv) = st.moved {
+                    if st.error.is_none() {
+                        st.error = Some((mv, *sp)); // usado depois de movido
+                    }
+                } else if mode == Mode::Consume {
+                    st.moved = Some(*sp);
+                }
+            }
+            st
+        }
+        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => st,
+        Expr::BinOp(_, l, r, _) => {
+            st = walk(l, x, Mode::Borrow, ctx, st);
+            walk(r, x, Mode::Borrow, ctx, st)
+        }
+        Expr::App(_, _, _) => {
+            let (head, args) = spine(e);
+            let mults = head_mults(head, ctx);
+            st = walk(head, x, Mode::Borrow, ctx, st);
+            for (i, a) in args.iter().enumerate() {
+                st = walk(a, x, arg_mode(mults.get(i)), ctx, st);
+            }
+            st
+        }
+        Expr::If(c, t, el, _) => {
+            st = walk(c, x, Mode::Borrow, ctx, st);
+            join(walk(t, x, mode, ctx, st), walk(el, x, mode, ctx, st))
+        }
+        Expr::Case(s, arms, _) => {
+            st = walk(s, x, Mode::Borrow, ctx, st);
+            arms.iter()
+                .map(|(_, b)| walk(b, x, mode, ctx, st))
+                .reduce(join)
+                .unwrap_or(st)
+        }
+        Expr::Let(binds, body, _) => {
+            for c in binds.iter().flat_map(|b| &b.clauses) {
+                if let Some((mv, u)) = use_after_move(c, x, ctx) {
+                    if st.error.is_none() {
+                        st.error = Some((mv, u));
+                    }
+                }
+                // um bind que consome x deixa a posse movida no corpo
+                if analyze_clause(c, x, ctx).0 > 0 {
+                    st.moved = st.moved.or(Some(c.span));
+                }
+            }
+            walk(body, x, mode, ctx, st)
+        }
+        Expr::Tuple(es, _) => {
+            for e in es {
+                st = walk(e, x, mode, ctx, st);
+            }
+            st
+        }
+        Expr::RecordCon(_, assigns, _) => walk_assigns(assigns, x, ctx, st),
+        Expr::RecordUpd(base, assigns, _) => {
+            st = walk(base, x, Mode::Consume, ctx, st);
+            walk_assigns(assigns, x, ctx, st)
+        }
+    }
+}
+
+fn walk_assigns(assigns: &[(String, Expr)], x: &str, ctx: &Ctx, mut st: MoveState) -> MoveState {
+    for (fname, e) in assigns {
+        st = walk(e, x, arg_mode(ctx.field_mults.get(fname)), ctx, st);
+    }
+    st
+}
+
+/// Junta dois caminhos alternativos (ramos): movido se algum mover; 1.º erro.
+fn join(a: MoveState, b: MoveState) -> MoveState {
+    MoveState {
+        moved: a.moved.or(b.moved),
+        error: a.error.or(b.error),
     }
 }

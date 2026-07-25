@@ -15,13 +15,14 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0001` | Linearidade | Contração: um `%1` **consumido** >1 vez (ler/emprestar é livre) | **imposto pelo `axionc`** (Fase 1/2) |
 | `AX0002` | Linearidade | *Must-use*: um `%1` **sem `Drop`** descartado sem consumo (tipos droppable ⇒ Auto-Drop, não erro) | **imposto pelo `axionc`** (Fase 1/2) |
 | `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | reservado (Fase 2) |
+| `AX0004` | Linearidade | Uso-após-move: ler/consumir um `%1` depois de a posse ter sido movida | **imposto pelo `axionc`** (Fase 2) |
 | `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
 | `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0200` | Tipos | Incompatibilidade de tipos (unificação falhou) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
 
 Reservado mas ainda não implementado: `AX0003`. Próximo livre por banda —
-linguagem: `AX0004`; front-end: `AX0102`; tipos: `AX0202`.
+linguagem: `AX0005`; front-end: `AX0102`; tipos: `AX0202`.
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
 > linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*
@@ -90,6 +91,34 @@ error[AX0002]: recurso must-use 'x' largado sem ser consumido
 **Regra (§3).** Um valor alocado numa sub-arena não pode escapar ao seu escopo;
 o escape tem de ser erro de *compilação* (usar `promote` para o mover à
 arena-pai antes do reset). Exemplo na Listagem 3.5.
+
+---
+
+## `AX0004` — uso-após-move
+
+**Regra (§2), sensível à ordem.** Depois de a posse de um `%1` ser **movida**
+(consumida — passada a um parâmetro `%1`, colocada num campo `%1`, ou devolvida),
+não se pode voltar a lê-lo nem a consumi-lo: a posse já saiu do âmbito. Distinto
+de `AX0001` (contração = mover duas vezes) e da leitura repetida (empréstimos,
+que são livres).
+
+**`axionc` (Fase 2).** Uma travessia na ordem de avaliação (esquerda→direita,
+ramos como caminhos) marca quando `x` é movido; qualquer ocorrência posterior é
+`AX0004`, com o span do uso e o span do move.
+
+```
+error[AX0004]: uso de 'x' após a posse ter sido movida
+  --> use_after_move.axi:7:18
+  |
+7 | bad x = sink x + x
+  |                  ^ 'x' usado aqui…
+  |
+7 | bad x = sink x + x
+  |              ^ …mas a posse já tinha sido movida aqui
+```
+
+`x + sink x` (ler **antes** de consumir) é aceite; `sink x + x` (ler **depois**)
+é `AX0004`. Fixture: `axionc/tests/fixtures/use_after_move.axi`.
 
 ---
 

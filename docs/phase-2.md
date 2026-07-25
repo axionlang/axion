@@ -18,10 +18,13 @@
   - `examples/04` (Listagem 2.1): `p` é consumido (record update) ⇒ **sem** drop.
     `x + x` (duas leituras) ⇒ aceite, drop após o 2.º `x`. `(x, x)` (dois
     consumos) ⇒ `AX0001`.
-  - **Por crescer:** verificação da **ordem** (empréstimo após consumo =
-    uso-após-move, ainda não detectado); drops de valores ligados em `let`/
-    `where` (não só parâmetros); propagação estrutural de `Drop` (registo
-    droppable sse todos os campos o forem); mutação in-place (Linear Elision).
+  - **Ordem verificada** (`AX0004` uso-após-move): uma travessia na ordem de
+    avaliação marca quando `x` é movido; qualquer leitura/consumo posterior é
+    erro. `x + sink x` (ler antes de consumir) é aceite; `sink x + x` (ler
+    depois) é `AX0004`.
+  - **Por crescer:** drops de valores ligados em `let`/`where` (não só
+    parâmetros); propagação estrutural de `Drop` (registo droppable sse todos
+    os campos o forem); mutação in-place (Linear Elision).
 - [ ] **Arenas + reset NLL + análise de escape** (`promote`, §3) — validar que o
   escape é erro de compilação (`AX0003`, já reservado). Listagem 3.3–3.5.
 - [ ] **Permissões fracionárias** (`%0.5`): `split` / `join` (§2).
@@ -32,12 +35,13 @@
 
 ```sh
 cd axionc
-cargo test                                            # 15 testes (inclui Auto-Drop)
+cargo test                                            # 16 testes (inclui Auto-Drop)
 cargo run -- --check tests/fixtures/drop_linear.axi   # Token must-use → AX0002
 cargo run -- --check tests/fixtures/drop_ok.axi       # Buf droppable → aceite
 cargo run -- --emit drops tests/fixtures/drop_ok.axi  # free(b) : Buf %1 (à entrada)
 cargo run -- --emit drops tests/fixtures/borrow_twice_ok.axi  # free(x) após a última leitura
 cargo run -- --check tests/fixtures/use_after_consume.axi     # (x,x): 2 consumos → AX0001
+cargo run -- --check tests/fixtures/use_after_move.axi        # sink x + x → AX0004
 ```
 
 Diferencial: o cenário `differential/02_consume_twice` **move** o `%1` duas

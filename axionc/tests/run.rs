@@ -150,6 +150,18 @@ fn autodrop_death_point_is_the_last_read() {
 }
 
 #[test]
+fn use_after_move_is_rejected_ax0004() {
+    // Ler um %1 depois de a posse ter sido movida (consumida) → AX0004.
+    let out = axionc()
+        .args(["--check", &fixture("use_after_move.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0004"), "esperava AX0004, saída: {text}");
+}
+
+#[test]
 fn type_mismatch_is_rejected_ax0200() {
     let out = axionc()
         .args(["--check", &fixture("type_mismatch.axi")])
