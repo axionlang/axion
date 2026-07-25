@@ -1,83 +1,88 @@
 #!/usr/bin/env bash
-# Micro-benchmark (§13): fib(40) recursivo. Compara os DOIS backends da Axión —
-# --dev (Cranelift, sem otimizações; fast-path §11) e --release (LLVM -O2, §18) —
-# contra C e Rust em -O0/-O2. O --release fica a par do C -O2 (mesmo LLVM). O
-# --release precisa do clang (AXION_CLANG ou no PATH); se faltar, salta-se.
+# Suíte de micro-benchmarks (§13): compara os DOIS backends da Axión — --dev
+# (Cranelift, sem opt) e --release (LLVM -O2 -flto) — contra C e Rust em -O0/-O2.
+# Kernels: fib (recursão/ramos), loop (200M iterações aritméticas), alloc (40M
+# alocações — arena na Axión, malloc/Box em C/Rust), simd (redução vectorizável;
+# Axión N/A — §4 por construir). Usa o MESMO clang (LLVM) para o C e para o
+# Axión --release, para o escalão ser comparável. Precisa de clang (AXION_CLANG
+# ou no PATH; p.ex. `nix shell nixpkgs#llvmPackages_18.clang`).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
+CLANG="${AXION_CLANG:-clang}"
+RT="axionc/src/axion_rt.c"
 RUNS="${RUNS:-3}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "A compilar o axionc e os baselines (C/Rust)…"
+echo "A compilar o axionc…"
 (cd axionc && cargo build -q) || exit 2
-gcc -O0 -o "$tmp/c_o0" bench/fib.c || exit 2
-gcc -O2 -o "$tmp/c_o2" bench/fib.c || exit 2
-rustc -C opt-level=0 -o "$tmp/rs_o0" bench/fib.rs 2>/dev/null || exit 2
-rustc -C opt-level=2 -o "$tmp/rs_o2" bench/fib.rs 2>/dev/null || exit 2
+command -v "$CLANG" >/dev/null 2>&1 || { echo "clang não encontrado (define AXION_CLANG)"; exit 2; }
+have_rust=1; command -v rustc >/dev/null 2>&1 || have_rust=0
 
-OUT=""
-MS=""
-# corre o comando RUNS vezes; deixa o menor tempo (ms) em MS e a stdout em OUT.
-# (sem subshell, para os globais propagarem.)
+# timeit CMD…  → menor tempo (ms) em MS, stdout em OUT (melhor de RUNS).
 timeit() {
-  local best="" out="" t0 t1 ms
+  local best="" out t0 t1 ms
   for _ in $(seq "$RUNS"); do
-    t0=$(date +%s%N)
-    out=$("$@")
-    t1=$(date +%s%N)
+    t0=$(date +%s%N); out=$("$@"); t1=$(date +%s%N)
     ms=$(((t1 - t0) / 1000000))
     if [ -z "$best" ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
   done
-  MS=$best
-  OUT=$out
+  MS=$best; OUT=$out
 }
 
-declare -A T R
-bench() {
-  local key="$1"
-  shift
-  timeit "$@"
-  T[$key]=$MS
-  R[$key]=$OUT
+declare -A T R           # T[kernel:variante]=ms   R[kernel:variante]=resultado
+run() { local key="$1"; shift; if [ "$1" = "SKIP" ]; then T[$key]="-"; R[$key]=""; return; fi
+        timeit "$@"; T[$key]=$MS; R[$key]=$OUT; }
+
+bench_kernel() {
+  local k="$1"
+  # Axión --dev (JIT)
+  run "$k:dev" "$AXIONC" --backend cranelift "bench/$k.axi"
+  # Axión --release (LLVM -O2 -flto)
+  if "$AXIONC" --emit llvm "bench/$k.axi" > "$tmp/$k.ll" 2>/dev/null \
+     && "$CLANG" -O2 -flto -w "$tmp/$k.ll" "$RT" -o "$tmp/${k}_rel" 2>/dev/null; then
+    run "$k:rel" "$tmp/${k}_rel"
+  else run "$k:rel" SKIP; fi
+}
+bench_c() {
+  local k="$1"
+  "$CLANG" -O0 "bench/$k.c" -o "$tmp/${k}_c0" 2>/dev/null && run "$k:c0" "$tmp/${k}_c0" || run "$k:c0" SKIP
+  "$CLANG" -O2 "bench/$k.c" -o "$tmp/${k}_c2" 2>/dev/null && run "$k:c2" "$tmp/${k}_c2" || run "$k:c2" SKIP
+}
+bench_rust() {
+  local k="$1"; [ "$have_rust" = 1 ] || { run "$k:r0" SKIP; run "$k:r2" SKIP; return; }
+  rustc -C opt-level=0 "bench/$k.rs" -o "$tmp/${k}_r0" 2>/dev/null && run "$k:r0" "$tmp/${k}_r0" || run "$k:r0" SKIP
+  rustc -C opt-level=2 "bench/$k.rs" -o "$tmp/${k}_r2" 2>/dev/null && run "$k:r2" "$tmp/${k}_r2" || run "$k:r2" SKIP
 }
 
-bench axion "$AXIONC" --backend cranelift bench/fib.axi
-bench c0 "$tmp/c_o0"
-bench c2 "$tmp/c_o2"
-bench r0 "$tmp/rs_o0"
-bench r2 "$tmp/rs_o2"
-
-# --release (LLVM -O2): compila o .ll com clang, se disponível.
-CLANG="${AXION_CLANG:-clang}"
-have_rel=0
-if "$AXIONC" --emit llvm bench/fib.axi > "$tmp/fib.ll" 2>/dev/null \
-   && "$CLANG" -O2 -w "$tmp/fib.ll" -o "$tmp/axion_rel" 2>/dev/null; then
-  have_rel=1
-  bench rel "$tmp/axion_rel"
-fi
+KERNELS_AXION="fib loop alloc"
+KERNELS_C="fib loop alloc simd"
+for k in $KERNELS_AXION; do bench_kernel "$k"; done
+for k in $KERNELS_C; do bench_c "$k"; bench_rust "$k"; done
+# simd não tem versão Axión
+T[simd:dev]="n/a"; R[simd:dev]=""; T[simd:rel]="n/a"; R[simd:rel]=""
 
 echo
-echo "fib(40) — melhor de $RUNS execuções:"
-printf "  %-34s %8s   %s\n" "variante" "ms" "resultado"
-printf "  %-34s %8s   %s\n" "Axión --dev (Cranelift, sem opt)" "${T[axion]}" "${R[axion]}"
-[ "$have_rel" -eq 1 ] && \
-printf "  %-34s %8s   %s\n" "Axión --release (LLVM -O2)"       "${T[rel]}"   "${R[rel]}"
-printf "  %-34s %8s   %s\n" "C    -O0 (gcc)"                    "${T[c0]}"    "${R[c0]}"
-printf "  %-34s %8s   %s\n" "C    -O2 (gcc)"                    "${T[c2]}"    "${R[c2]}"
-printf "  %-34s %8s   %s\n" "Rust -O0 (rustc)"                  "${T[r0]}"    "${R[r0]}"
-printf "  %-34s %8s   %s\n" "Rust -O2 (rustc)"                  "${T[r2]}"    "${R[r2]}"
-[ "$have_rel" -eq 0 ] && echo "  (--release saltado: clang não encontrado; define AXION_CLANG)"
+echo "Tempos (ms, melhor de $RUNS) — o mesmo clang (LLVM) para C e para Axión --release:"
+printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "kernel" "Ax --dev" "Ax --rel" "C -O0" "C -O2" "Rs -O0" "Rs -O2"
+printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "------" "--------" "--------" "-----" "-----" "------" "------"
+for k in fib loop alloc simd; do
+  printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "$k" \
+    "${T[$k:dev]}" "${T[$k:rel]}" "${T[$k:c0]}" "${T[$k:c2]}" "${T[$k:r0]}" "${T[$k:r2]}"
+done
 
 echo
-same=1
-for k in c0 c2 r0 r2; do [ "${R[$k]}" = "${R[axion]}" ] || same=0; done
-[ "$have_rel" -eq 1 ] && { [ "${R[rel]}" = "${R[axion]}" ] || same=0; }
-if [ "$same" -eq 1 ]; then
-  echo "OK: todos os variantes produzem ${R[axion]} (fib 40)."
-else
-  echo "AVISO: os resultados divergem!"
-  exit 1
-fi
+# verifica correção: por kernel, todos os resultados presentes têm de coincidir.
+ok=1
+for k in fib loop alloc simd; do
+  ref=""
+  for v in dev rel c0 c2 r0 r2; do
+    r="${R[$k:$v]:-}"; [ -n "$r" ] || continue
+    if [ -z "$ref" ]; then ref="$r"; elif [ "$r" != "$ref" ]; then
+      echo "AVISO: $k/$v = '$r' ≠ '$ref'"; ok=0
+    fi
+  done
+done
+[ "$ok" = 1 ] && echo "OK: em cada kernel, todas as variantes concordam no resultado." || exit 1

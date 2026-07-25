@@ -1,87 +1,75 @@
-# Benchmarks (§13) — nativo vs C/Rust
+# Benchmarks (§13) — Axión vs C vs Rust
 
 > A spec é explícita: as garantias de performance são **desenho, não medição** —
-> ficam «sob benchmark» (§13, §0). Medem-se agora os **dois** backends: `--dev`
-> (Cranelift, fast-path §11) e `--release` (LLVM `-O2`, §18).
+> ficam «sob benchmark» (§13, §0). Medem-se os **dois** backends da Axión: `--dev`
+> (Cranelift, fast-path §11) e `--release` (LLVM `-O2 -flto`, §18).
 
 ## Metodologia
 
-- Micro-benchmark **compute-bound**: `fib(40)` recursivo naive (`bench/fib.axi`,
-  `bench/fib.c`, `bench/fib.rs`) — mesmo algoritmo em Axión, C e Rust.
-- Harness: [`scripts/bench.sh`](../scripts/bench.sh). Melhor de 3 execuções
-  (menor tempo), `date +%s%N`. Verifica que todos produzem `102334155`.
-- Baselines: `gcc` `-O0`/`-O2`, `rustc` `-C opt-level=0`/`2`.
-- **Dois backends da Axión:** `--dev` = Cranelift `opt_level=none` (compila
-  instantâneo, §11); `--release` = baixa o **mesmo Core IR** para LLVM IR textual
-  e compila com `clang -O2` (§18). Ambos JIT/nativo, código-máquina real.
-- O tempo do Axión inclui parse+typecheck+codegen (~ms), negligível face à
-  execução de `fib(40)` (centenas de ms).
+- Quatro kernels, o mesmo algoritmo em cada linguagem (`bench/<kernel>.{axi,c,rs}`):
+  - **fib** — `fib(40)` recursivo naive (compute / ramos).
+  - **loop** — 200 M iterações aritméticas com `mod` (não-fechável pelo `-O2`).
+    Na Axión é recursão (sem laços na linguagem); em C/Rust é um laço idiomático.
+  - **alloc** — 40 M alocações. Na Axión via **arena** (§3, bump + reset em massa);
+    em C via `malloc`/`free`, em Rust via `Box` — o idioma de cada linguagem.
+  - **simd** — redução vectorizável sobre um array. **Axión N/A**: precisa de
+    `Buffer`/`imperative` (§4), ainda por construir no backend.
+- Harness: [`scripts/bench.sh`](../scripts/bench.sh) — melhor de 3, `date +%s%N`,
+  e verifica que, por kernel, todas as variantes dão o mesmo resultado.
+- **Escalão comparável:** o **mesmo `clang` (LLVM)** compila o C e o Axión
+  `--release`; o Rust é `rustc` (também LLVM). O tempo do Axión `--dev` inclui
+  parse+typecheck+JIT (~ms), negligível.
 
 ## Resultado (uma máquina, 8 cores; indicativo, não definitivo)
 
 ```
-fib(40) — melhor de 5 execuções:
-  variante                                 ms   resultado
-  Axión --dev (Cranelift, sem opt)       978   102334155
-  Axión --release (LLVM -O2)             433   102334155
-  C    -O0 (gcc)                         1140   102334155
-  C    -O2 (gcc)                          319   102334155
-  Rust -O0 (rustc)                        507   102334155   (rustc -O)
-```
-
-E na comparação **mesmo compilador** (o `fib.c` compilado com o *mesmo* clang-18):
-
-```
-  Axión --release (LLVM -O2)             424
-  C (clang-18 -O2)                       422    ← paridade
+Tempos (ms, melhor de 3):
+  kernel  Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
+  ------  -------- -------- |   -----   ----- |  ------  ------
+  fib          611      270 |     625     258 |     824     304
+  loop        3151      545 |    2246     548 |    2485     545
+  alloc       1573       35 |     333     319 |    1262     564
+  simd         n/a      n/a |    3653     145 |   14782     198
 ```
 
 ## Leitura
 
-- O fast-path `--dev` (Cranelift **sem** otimizações) já bate C/Rust `-O0` — o
-  codegen base do Cranelift é sólido.
-- O **`--release` (LLVM `-O2`)** corta o tempo do `--dev` para ~metade e **entra
-  no escalão `-O2`**. Com o *mesmo* compilador (clang), fica **a par do C**
-  (424≈422 ms) — como esperado: baixa para o mesmo LLVM, com IR essencialmente
-  igual. (O `gcc -O2` gera aqui código um pouco melhor que o `clang -O2` para
-  este `fib` — daí o C -O2/gcc parecer à frente; é diferença de compilador, não
-  de linguagem.)
-- Confirma a premissa dos **dois backends** (§11/§18): Cranelift para o ciclo
-  edit-run instantâneo, LLVM para performance **competitiva com C** em release.
+- **Compute e laços — paridade com C.** No `fib` (270 ms) e no `loop` (545 ms), o
+  Axión `--release` fica **a par do C `-O2`** (258 / 548) e do Rust `-O2` (304 /
+  545). Baixa para o mesmo LLVM, com IR essencialmente igual; o `--release` faz
+  TCO da recursão do `loop` num laço real.
+- **Alocação — a arena ganha.** O modelo de arenas (§3) reclama em massa: 40 M
+  células em **35 ms**, contra `malloc`/`free` do C `-O2` (319 ms, **~9×**) e
+  `Box` do Rust `-O2` (564 ms, **~16×**). O `-flto` liga o runtime C na mesma
+  compilação e **inlina o bump-allocator** no laço quente. É exactamente o cenário
+  onde o modelo de memória da Axión deve brilhar — e onde a escolha de um runtime
+  **C com `-flto`** (em vez de um `staticlib` Rust não-inlinável) se paga.
+- **SIMD — o buraco assumido.** A redução vectorizável é onde o C/Rust `-O2`
+  auto-vectorizam (145 / 198 ms) e a Axión não compete: **não há `Buffer`/arrays
+  nem `imperative` (§4)** no backend ainda. É trabalho futuro declarado, não uma
+  limitação de desenho.
+- **`--dev` é o fast-path, não o veloz.** Sem otimizações nem TCO, paga a
+  recursão no `loop` (3151 ms) e a chamada opaca ao runtime no `alloc` (1573 ms).
+  O seu papel é compilar **instantâneo** para o ciclo edit-run; a performance vive
+  no `--release`.
 
-### Código intensivo em alocação (arenas)
-
-Aqui o `-flto` do `--release` compensa a sério: liga o runtime C na mesma
-compilação, pelo que o **bump-allocator da arena inlina** no laço quente (e o
-`-O2` otimiza a recursão). Num micro-benchmark que aloca 40 M de células em
-arenas (`loop 2000 (withArena (\a -> allocN a 20000))`):
-
-```
-  Axión --release (LLVM -O2 -flto)     31 ms
-  Axión --dev (Cranelift)            1467 ms     (~47×)
-```
-
-O `--dev` paga chamada opaca ao runtime em cada `allocateCell` e não otimiza; o
-`--release` inlina-a e fá-la desaparecer. É exactamente o cenário onde o modelo
-de arenas (§3) da Axión deve brilhar — e onde a escolha de um **runtime C com
-`-flto`** (em vez de um `staticlib` Rust não-inlinável) se paga.
+Confirma a premissa dos **dois backends** (§11/§18): Cranelift para o ciclo
+edit-run instantâneo, LLVM para performance competitiva com C em release.
 
 ## Reproduzir
 
 ```sh
-./scripts/bench.sh                       # fib(40), --dev vs C/Rust
-AXION_CLANG=/caminho/clang RUNS=5 \
-  ./scripts/bench.sh                     # inclui a linha --release (LLVM -O2)
+AXION_CLANG=/caminho/clang ./scripts/bench.sh        # tabela completa
+AXION_CLANG=$(nix eval --raw nixpkgs#llvmPackages_18.clang)/bin/clang \
+  RUNS=5 ./scripts/bench.sh
 ```
 
-O `--release` precisa do `clang` (via `AXION_CLANG` ou no PATH; p.ex. `nix shell
-nixpkgs#llvmPackages_18.clang`). Sem ele, a linha `--release` é saltada.
+O `--release` (e o baseline C) precisam do `clang` — via `AXION_CLANG` ou no PATH
+(p.ex. `nix shell nixpkgs#llvmPackages_18.clang`).
 
 ## Limitações / a fazer
 
-- Um único micro-benchmark (recursão pura). Faltam: alocação/registos/arenas,
-  laços, aritmética vectorizável (onde o `imperative`/SIMD da §4 brilharia).
-- O `--release` cobre por agora o **núcleo Int** (suficiente para o `fib`);
-  registos/closures/strings/arenas em `--release` crescem a seguir (do mesmo
-  Core, com um pequeno runtime C).
-- Números variam por máquina/carga; usar como ordem de grandeza.
+- **SIMD/vectorização (§4):** falta `Buffer`/arrays e `imperative` no backend —
+  o único kernel onde a Axión ainda não compete.
+- Kernels sintéticos; faltam cargas mistas maiores e I/O.
+- Números variam por máquina/carga; usar como ordem de grandeza, não absolutos.
