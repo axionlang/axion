@@ -69,11 +69,25 @@ JIT). `--emit clif` mostra o IR (blocos, `brif`, `call` recursivo).
 - `%1`/arenas em runtime, padrões de construtor no `case`.
 - **Referência nua** a uma função de topo como valor (ex.: `apply inc 5`) — falta
   o *thunk* que a embrulha numa closure; usa-se uma lambda (`apply (\x -> inc x)`).
-  As closures em si (heap `{fn_ptr, capturas}`) são *leaked*, como os registos.
 - Funções (e `case`) **sem** catch-all no fim (falta o *trap* de exaustão).
 - Strings além de `putStrLn`/`show` (concatenação, `String` como parâmetro, …).
-- Registos: sem `free`/GC (a heap é *leaked*); o modelo de reclamação
-  (arenas/Auto-Drop) está validado **estaticamente**, não no runtime nativo.
+
+## Auto-Drop no runtime (reclamação, §2)
+
+A heap deixou de ser toda *leaked*: `axion_alloc` prefixa cada bloco com um
+cabeçalho de tamanho e `axion_free` liberta-o. A análise de reclamação (em
+`core.rs`) insere nós `drop x` no Core que libertam os objectos de heap **locais**
+no seu ponto de morte — um objecto é *droppable* se for alocado na função
+(`MakeTuple`/`MakeRecord`/`UpdateRecord`/`MakeClosure`) e **nunca escapar**
+(devolvido, embebido, passado a uma chamada, ou aliased). A disciplina linear
+garante que libertar após a última leitura é são (sem aliasing → sem
+uso-após-free nem dupla-libertação); os `if`/`case` são equilibrados para libertar
+uma vez por caminho. Vê-se com `--emit core` (nós `drop`) e mede-se com
+`AXION_HEAP_STATS=1` (imprime `allocs`/`frees`): `heap_loop.axi` (300 chamadas que
+alocam+libertam um tuplo) dá **300 allocs == 300 frees**, memória constante, sem
+GC. **Ainda por reclamar (conservador — são):** objectos que escapam ou mudam de
+dono (reclamação **entre funções**), o **reset de arena**, e os `%1`/arenas —
+próximos incrementos.
 
 O codegen recusa o que não cabe com um erro claro; para esses programas, usa-se
 o interpretador (`axionc programa.axi`, sem `--backend`).
@@ -86,9 +100,8 @@ o interpretador (`axionc programa.axi`, sem `--backend`).
   `if` → dois blocos + bloco de junção com parâmetro.
 - A baixada AST→Core (`core.rs`) está em **ANF**: cada subexpressão composta é
   nomeada por um `let`, argumentos são átomos, e o controlo (`if`/`case`) vive num
-  `Rhs` (um `let` pode ligar o resultado de um ramo). A reclamação (Auto-Drop /
-  reset de arena / in-place) fica **implícita** neste corte — o `check.rs` já a
-  calcula; torná-la nós explícitos do Core é o incremento seguinte, emparelhado
-  com o runtime que liberta de facto.
+  `Rhs` (um `let` pode ligar o resultado de um ramo). O Drop estrutural já é um
+  **nó explícito** do Core (`drop x`); o reset de arena e o in-place ainda ficam
+  implícitos (o `check.rs` calcula-os) — próximos incrementos.
 - Backend `--release` (LLVM via `inkwell`) baixará do **mesmo Core**, sem duplicar
   a baixada AST→IR — é o que fecha o gap dos benchmarks `-O2`.

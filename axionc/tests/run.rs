@@ -479,6 +479,44 @@ fn cranelift_backend_compiles_closures() {
 }
 
 #[test]
+fn auto_drop_frees_local_heap_at_runtime() {
+    // Reclamação real (Auto-Drop §2): cada chamada de 'step' aloca um tuplo
+    // local e liberta-o → 300 allocs == 300 frees, memória constante, sem GC.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("heap_loop.axi")])
+        .env("AXION_HEAP_STATS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "90300\n");
+    let stats = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stats.contains("300 allocs, 300 frees"),
+        "esperava reclamação total, stats: {stats}"
+    );
+
+    // o mesmo resultado no interpretador (cross-check)
+    let interp = axionc().arg(fixture("heap_loop.axi")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "90300\n");
+}
+
+#[test]
+fn auto_drop_inserts_drop_nodes_in_core() {
+    // o tuplo local do 'case' é libertado à cabeça do braço (após destructuração).
+    let out = axionc()
+        .args(["--emit", "core", &fixture("native_case.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let ir = String::from_utf8_lossy(&out.stdout);
+    assert!(ir.contains("drop _t1"), "sem nó de drop no Core:\n{ir}");
+}
+
+#[test]
 fn emit_core_dumps_anf_ir() {
     // o Core IR (ANF) da closure: converte a lambda e a aplicação indirecta.
     let out = axionc()

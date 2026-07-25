@@ -10,10 +10,11 @@
 //! closures** (lambda → função + ambiente de captura) acontecem já nesta baixada,
 //! ficando o codegen um mero emissor Core→máquina.
 //!
-//! A reclamação (Auto-Drop / reset de arena / in-place) fica **implícita** neste
-//! primeiro corte — o `check.rs` já a calcula como metadados laterais; torná-la
-//! nós explícitos do Core é o incremento seguinte, emparelhado com o runtime que
-//! liberta de facto.
+//! O **Drop estrutural** (Auto-Drop §2) já é um **nó explícito** do Core: uma
+//! análise de reclamação (`insert_drops`) insere `drop x` no ponto de morte dos
+//! objectos de heap locais que não escapam, e o runtime liberta-os de facto
+//! (`axion_free`). O reset de arena e o in-place ficam ainda implícitos (o
+//! `check.rs` calcula-os) — incrementos seguintes.
 
 use crate::ast::{self, Body, Expr, Pat, Span, Type};
 use std::collections::HashMap;
@@ -79,6 +80,9 @@ pub enum Rhs {
 #[derive(Debug, Clone)]
 pub enum Term {
     Let(String, Rhs, Box<Term>),
+    /// `drop x; …` — liberta o objecto de heap `x` no seu ponto de morte
+    /// (Auto-Drop, §2; inserido pela análise de reclamação, não pela baixada).
+    Drop(String, Box<Term>),
     Ret(Rhs),
 }
 
@@ -676,7 +680,314 @@ pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
         });
     }
 
-    out
+    out.into_iter().map(insert_drops).collect()
+}
+
+// --- análise de reclamação: Drop estrutural (Auto-Drop §2) ---
+//
+// Insere nós `drop` no Core que libertam objectos de heap **locais** no seu
+// ponto de morte. Um objecto é *droppable* se for alocado na função (via
+// `Make{Tuple,Record,Closure}` ou `UpdateRecord`) e **nunca escapar**: nunca é
+// devolvido, embebido noutro objecto, passado a uma chamada, nem aliased. As
+// suas ocorrências são então todas leituras locais (`Field`, escrutínio de
+// `case`), pelo que libertá-lo após a última leitura é são (a disciplina linear
+// garante ausência de aliasing; o objecto não é alcançável por ninguém). Os
+// casos que escapam ou mudam de dono ficam por libertar (conservador — são),
+// tal como a reclamação entre funções e o reset de arena (incrementos
+// seguintes).
+
+/// Uso de um átomo, se for uma variável droppable.
+fn atom_use(a: &Atom, drp: &HashSet<String>, out: &mut HashSet<String>) {
+    if let Atom::Var(n) = a {
+        if drp.contains(n) {
+            out.insert(n.clone());
+        }
+    }
+}
+
+/// Variáveis droppable **lidas** algalgures em `t` (posições de leitura de heap:
+/// `Field.rec` e escrutínio de `case`).
+fn fv_drop(t: &Term, drp: &HashSet<String>, out: &mut HashSet<String>) {
+    match t {
+        Term::Let(_, rhs, body) => {
+            fv_rhs(rhs, drp, out);
+            fv_drop(body, drp, out);
+        }
+        Term::Drop(_, body) => fv_drop(body, drp, out),
+        Term::Ret(rhs) => fv_rhs(rhs, drp, out),
+    }
+}
+
+fn fv_rhs(rhs: &Rhs, drp: &HashSet<String>, out: &mut HashSet<String>) {
+    match rhs {
+        Rhs::Op(op) => fv_op(op, drp, out),
+        Rhs::If(c, t, e) => {
+            atom_use(c, drp, out);
+            fv_drop(t, drp, out);
+            fv_drop(e, drp, out);
+        }
+        Rhs::Case(s, arms) => {
+            atom_use(s, drp, out);
+            for (_, b) in arms {
+                fv_drop(b, drp, out);
+            }
+        }
+    }
+}
+
+fn fv_op(op: &Op, drp: &HashSet<String>, out: &mut HashSet<String>) {
+    // Só `Field` lê uma variável droppable (o registo). Make*/Call*/Ret-atom são
+    // escapes → droppable não aparece lá (foi excluída). Prim opera sobre Ints.
+    if let Op::Field { rec, .. } = op {
+        atom_use(rec, drp, out);
+    }
+}
+
+/// O conjunto droppable de uma função: alocados localmente menos os que escapam.
+fn droppable_vars(f: &CoreFn) -> HashSet<String> {
+    let mut allocated = HashSet::new();
+    let mut escaped = HashSet::new();
+    scan_body(&f.body, &mut allocated, &mut escaped);
+    allocated.difference(&escaped).cloned().collect()
+}
+
+fn scan_body(t: &Term, alloc: &mut HashSet<String>, esc: &mut HashSet<String>) {
+    match t {
+        Term::Let(x, rhs, body) => {
+            match rhs {
+                Rhs::Op(op) => {
+                    if is_heap_alloc(op) {
+                        alloc.insert(x.clone());
+                    }
+                    scan_op_escapes(op, esc);
+                }
+                Rhs::If(_, t2, e2) => {
+                    scan_body(t2, alloc, esc);
+                    scan_body(e2, alloc, esc);
+                }
+                Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| scan_body(b, alloc, esc)),
+            }
+            scan_body(body, alloc, esc);
+        }
+        Term::Drop(_, body) => scan_body(body, alloc, esc),
+        Term::Ret(rhs) => match rhs {
+            Rhs::Op(op) => scan_op_escapes_ret(op, esc),
+            Rhs::If(_, t2, e2) => {
+                scan_body(t2, alloc, esc);
+                scan_body(e2, alloc, esc);
+            }
+            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| scan_body(b, alloc, esc)),
+        },
+    }
+}
+
+fn is_heap_alloc(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::MakeTuple(_) | Op::MakeRecord { .. } | Op::UpdateRecord { .. } | Op::MakeClosure { .. }
+    )
+}
+
+/// Nomes de variáveis que escapam por aparecerem numa posição de dono
+/// (argumento de chamada, embebimento noutro objecto, alias directo).
+fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
+    let mut mark = |a: &Atom| {
+        if let Atom::Var(n) = a {
+            esc.insert(n.clone());
+        }
+    };
+    match op {
+        Op::Atom(a) => mark(a), // alias directo `let y = x`
+        Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().for_each(&mut mark),
+        Op::MakeTuple(xs) => xs.iter().for_each(&mut mark),
+        Op::MakeRecord { fields, .. } | Op::UpdateRecord { fields, .. } => {
+            fields.iter().for_each(|(_, a)| mark(a))
+        }
+        Op::MakeClosure { captures, .. } => captures.iter().for_each(&mut mark),
+        _ => {}
+    }
+    // a closure receptora de uma chamada indirecta também muda de mãos
+    if let Op::CallClosure(c, _) = op {
+        mark(c);
+    }
+}
+
+fn scan_op_escapes_ret(op: &Op, esc: &mut HashSet<String>) {
+    scan_op_escapes(op, esc);
+    // o valor devolvido escapa
+    if let Op::Atom(Atom::Var(n)) = op {
+        esc.insert(n.clone());
+    }
+}
+
+/// Insere os `drop`s numa função (Drop estrutural dos objectos locais).
+fn insert_drops(mut f: CoreFn) -> CoreFn {
+    let drp = droppable_vars(&f);
+    if drp.is_empty() {
+        return f;
+    }
+    let mut e = Elab {
+        drp,
+        tmp: 1_000_000,
+    };
+    let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
+    f.body = e.go(body, &HashSet::new());
+    f
+}
+
+struct Elab {
+    drp: HashSet<String>,
+    tmp: u32,
+}
+
+impl Elab {
+    fn fresh(&mut self) -> String {
+        let n = format!("_d{}", self.tmp);
+        self.tmp += 1;
+        n
+    }
+
+    /// Elabora `t`, libertando as variáveis droppable no seu ponto de morte.
+    /// `live_out` = droppable vivas *depois* de `t` (a libertar pelo contexto
+    /// envolvente), que `t` não deve libertar.
+    fn go(&mut self, t: Term, live_out: &HashSet<String>) -> Term {
+        match t {
+            Term::Drop(v, body) => {
+                let b = self.go(*body, live_out);
+                Term::Drop(v, Box::new(b))
+            }
+            Term::Ret(rhs) => match rhs {
+                Rhs::Op(op) => {
+                    let mut u = HashSet::new();
+                    fv_op(&op, &self.drp, &mut u);
+                    let dying: Vec<String> =
+                        u.into_iter().filter(|v| !live_out.contains(v)).collect();
+                    if dying.is_empty() {
+                        return Term::Ret(Rhs::Op(op));
+                    }
+                    // introduz um temporário, liberta os moribundos, devolve-o
+                    let tmp = self.fresh();
+                    let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))));
+                    for v in dying {
+                        inner = Term::Drop(v, Box::new(inner));
+                    }
+                    Term::Let(tmp, Rhs::Op(op), Box::new(inner))
+                }
+                Rhs::If(c, th, el) => {
+                    let (th2, el2) = self.branches2(*th, *el, live_out);
+                    Term::Ret(Rhs::If(c, Box::new(th2), Box::new(el2)))
+                }
+                Rhs::Case(s, arms) => {
+                    let arms2 = self.case_arms(&s, arms, live_out);
+                    Term::Ret(Rhs::Case(s, arms2))
+                }
+            },
+            Term::Let(x, rhs, body) => match rhs {
+                Rhs::Op(op) => {
+                    let mut fvb = HashSet::new();
+                    fv_drop(&body, &self.drp, &mut fvb);
+                    let body2 = self.go(*body, live_out);
+                    let mut u = HashSet::new();
+                    fv_op(&op, &self.drp, &mut u);
+                    let mut dying: Vec<String> = u
+                        .into_iter()
+                        .filter(|v| !fvb.contains(v) && !live_out.contains(v))
+                        .collect();
+                    // `x` recém-alocado e nunca lido → morre já
+                    if self.drp.contains(&x) && !fvb.contains(&x) && !live_out.contains(&x) {
+                        dying.push(x.clone());
+                    }
+                    let mut inner = body2;
+                    for v in dying {
+                        inner = Term::Drop(v, Box::new(inner));
+                    }
+                    Term::Let(x, Rhs::Op(op), Box::new(inner))
+                }
+                Rhs::If(c, th, el) => {
+                    let mut fvb = HashSet::new();
+                    fv_drop(&body, &self.drp, &mut fvb);
+                    let body2 = self.go(*body, live_out);
+                    let mut lo = live_out.clone();
+                    lo.extend(fvb);
+                    let (th2, el2) = self.branches2(*th, *el, &lo);
+                    Term::Let(x, Rhs::If(c, Box::new(th2), Box::new(el2)), Box::new(body2))
+                }
+                Rhs::Case(s, arms) => {
+                    let mut fvb = HashSet::new();
+                    fv_drop(&body, &self.drp, &mut fvb);
+                    let body2 = self.go(*body, live_out);
+                    let mut lo = live_out.clone();
+                    lo.extend(fvb);
+                    let arms2 = self.case_arms(&s, arms, &lo);
+                    Term::Let(x, Rhs::Case(s, arms2), Box::new(body2))
+                }
+            },
+        }
+    }
+
+    /// Elabora os dois ramos de um `if`, equilibrando: uma droppable usada só num
+    /// ramo é libertada à entrada do outro (para libertar uma vez por caminho).
+    fn branches2(&mut self, th: Term, el: Term, live_out: &HashSet<String>) -> (Term, Term) {
+        let mut fth = HashSet::new();
+        fv_drop(&th, &self.drp, &mut fth);
+        let mut fel = HashSet::new();
+        fv_drop(&el, &self.drp, &mut fel);
+        let mut th2 = self.go(th, live_out);
+        let mut el2 = self.go(el, live_out);
+        for v in fth.difference(&fel) {
+            if !live_out.contains(v) {
+                el2 = Term::Drop(v.clone(), Box::new(el2));
+            }
+        }
+        for v in fel.difference(&fth) {
+            if !live_out.contains(v) {
+                th2 = Term::Drop(v.clone(), Box::new(th2));
+            }
+        }
+        (th2, el2)
+    }
+
+    /// Elabora os braços de um `case`, equilibrando entre braços e libertando o
+    /// escrutínio (se droppable e a morrer) à cabeça de cada braço.
+    fn case_arms(
+        &mut self,
+        scrut: &Atom,
+        arms: Vec<(CPat, Term)>,
+        live_out: &HashSet<String>,
+    ) -> Vec<(CPat, Term)> {
+        // variáveis livres de cada braço
+        let fvs: Vec<HashSet<String>> = arms
+            .iter()
+            .map(|(_, b)| {
+                let mut s = HashSet::new();
+                fv_drop(b, &self.drp, &mut s);
+                s
+            })
+            .collect();
+        let union: HashSet<String> = fvs.iter().flatten().cloned().collect();
+
+        let scrut_drop = match scrut {
+            Atom::Var(n) if self.drp.contains(n) && !live_out.contains(n) => Some(n.clone()),
+            _ => None,
+        };
+
+        let mut out = Vec::with_capacity(arms.len());
+        for (i, (pat, body)) in arms.into_iter().enumerate() {
+            let mut b = self.go(body, live_out);
+            // equilíbrio entre braços: droppable usada noutro braço mas não neste
+            for v in union.difference(&fvs[i]) {
+                if !live_out.contains(v) {
+                    b = Term::Drop(v.clone(), Box::new(b));
+                }
+            }
+            // liberta o escrutínio à cabeça (após a destructuração)
+            if let Some(s) = &scrut_drop {
+                b = Term::Drop(s.clone(), Box::new(b));
+            }
+            out.push((pat, b));
+        }
+        out
+    }
 }
 
 // --- impressão do Core (`--emit core`) ---
@@ -714,6 +1025,11 @@ fn dump_term(t: &Term, n: usize, s: &mut String) {
             s.push_str(&format!("let {name} = "));
             dump_rhs(rhs, n, s);
             s.push('\n');
+            dump_term(body, n, s);
+        }
+        Term::Drop(v, body) => {
+            indent(n, s);
+            s.push_str(&format!("drop {v}\n"));
             dump_term(body, n, s);
         }
         Term::Ret(rhs) => {

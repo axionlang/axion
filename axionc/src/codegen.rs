@@ -36,11 +36,35 @@ extern "C" fn axion_show_int(n: i64) -> *const u8 {
     s.into_raw() as *const u8
 }
 
-/// Aloca `size` bytes na heap (leaked — sem GC nem free no primeiro corte; o
-/// modelo de arenas/Auto-Drop é validado estaticamente).
+// Contadores de heap (§13): quantas alocações e libertações ocorreram. Com
+// `AXION_HEAP_STATS=1` o `run` imprime-os no fim — evidência de que o Auto-Drop
+// reclama de facto (não é só análise estática).
+static HEAP_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HEAP_FREES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Aloca `size` bytes de *payload* na heap. Prefixa um cabeçalho de 8 bytes com
+/// o tamanho total, para que `axion_free` reconstrua o `Layout`; devolve o
+/// ponteiro para o payload (a seguir ao cabeçalho).
 extern "C" fn axion_alloc(size: i64) -> *mut u8 {
-    let layout = std::alloc::Layout::from_size_align(size.max(1) as usize, 8).unwrap();
-    unsafe { std::alloc::alloc(layout) }
+    let total = size.max(1) as usize + 8;
+    let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
+    unsafe {
+        let base = std::alloc::alloc(layout);
+        *(base as *mut u64) = total as u64; // cabeçalho: tamanho total
+        HEAP_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        base.add(8) // payload
+    }
+}
+
+/// Liberta um objecto alocado por `axion_alloc` (lê o tamanho do cabeçalho).
+extern "C" fn axion_free(ptr: *mut u8) {
+    unsafe {
+        let base = ptr.sub(8);
+        let total = *(base as *const u64) as usize;
+        let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
+        std::alloc::dealloc(base, layout);
+        HEAP_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Layout dos registos: campos por construtor (na ordem declarada).
@@ -88,6 +112,7 @@ struct Cg {
     puts_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
+    free_id: FuncId,
     records: RecordInfo,
 }
 
@@ -103,6 +128,7 @@ impl Cg {
         builder.symbol("axion_puts", axion_puts as *const u8);
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
+        builder.symbol("axion_free", axion_free as *const u8);
         let mut module = JITModule::new(builder);
 
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
@@ -120,6 +146,7 @@ impl Cg {
         let puts_id = import(&mut module, "axion_puts", 1, false)?;
         let show_id = import(&mut module, "axion_show_int", 1, true)?;
         let alloc_id = import(&mut module, "axion_alloc", 1, true)?;
+        let free_id = import(&mut module, "axion_free", 1, false)?;
 
         Ok(Cg {
             module,
@@ -129,6 +156,7 @@ impl Cg {
             puts_id,
             show_id,
             alloc_id,
+            free_id,
             records,
         })
     }
@@ -182,6 +210,7 @@ impl Cg {
                 puts_id: self.puts_id,
                 show_id: self.show_id,
                 alloc_id: self.alloc_id,
+                free_id: self.free_id,
                 records: &self.records,
             };
 
@@ -223,6 +252,7 @@ struct Fx<'a, 'b> {
     puts_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
+    free_id: FuncId,
     records: &'a RecordInfo,
 }
 
@@ -319,6 +349,20 @@ impl Fx<'_, '_> {
             Term::Let(name, rhs, body) => {
                 let v = self.emit_rhs(rhs)?;
                 self.bind_val(name, v);
+                self.emit_term(body)
+            }
+            Term::Drop(name, body) => {
+                // Auto-Drop: liberta o objecto de heap no seu ponto de morte.
+                let v = self
+                    .vars
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| format!("drop de variável '{name}' não ligada"))?;
+                let ptr = self.builder.use_var(v);
+                let callee = self
+                    .module
+                    .declare_func_in_func(self.free_id, self.builder.func);
+                self.builder.ins().call(callee, &[ptr]);
                 self.emit_term(body)
             }
             Term::Ret(rhs) => self.emit_rhs(rhs),
@@ -600,6 +644,15 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
     let code = cg.module.get_finalized_function(cg.ids[entry].0);
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
     let val = f();
+
+    if std::env::var("AXION_HEAP_STATS").is_ok() {
+        use std::sync::atomic::Ordering::Relaxed;
+        eprintln!(
+            "heap: {} allocs, {} frees",
+            HEAP_ALLOCS.load(Relaxed),
+            HEAP_FREES.load(Relaxed)
+        );
+    }
 
     let returns_int = module
         .funcs
