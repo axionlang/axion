@@ -22,10 +22,13 @@ Este é o **primeiro corte** do backend `--dev`, sobre `cranelift-jit`. Baixa o
   IO ()` (`axion_puts`). Assim `main :: IO ()` corre nativamente — inclusive os
   **exemplos reais** `examples/01_hello.axi` («Hello, Axión!») e
   `examples/02_fib.axi` («832040»), com o mesmo output do interpretador.
-- **Registos** na heap (`axion_alloc`): construção `Con { f = … }`, actualização
-  `r { f = … }` (aloca e copia) e selectores `f r` (load do offset); cada campo
-  é um `i64`. Funções com params/retorno de tipo `data` (ponteiro) compilam.
-  `tests/fixtures/record_run.axi` corre nativo (→ 99), igual ao interpretador.
+- **Registos** e **tuplos** na heap (`axion_alloc`): construção `Con { f = … }`
+  / `(a, b)`, actualização `r { f = … }` (aloca e copia) e selectores `f r`
+  (load do offset); cada campo/componente é um `i64`. Funções com params/retorno
+  de tipo `data` (ponteiro) compilam. `record_run.axi` corre nativo (→ 99).
+- **`case`**: cadeia de `if` sobre o escrutínio; padrões `Int` (compara),
+  variável/`_` (catch-all), e tuplo `(a, b)` (destructura por offset). Exige um
+  catch-all no fim. `native_case.axi` corre nativo e igual ao interpretador.
 
 ## Como usar
 
@@ -52,8 +55,8 @@ JIT). `--emit clif` mostra o IR (blocos, `brif`, `call` recursivo).
 
 ## O que ainda NÃO compila (recai no interpretador)
 
-- `case`, lambdas/closures, tuplos, `%1`/arenas em runtime.
-- Funções multi-cláusula **sem** catch-all no fim (falta o *trap* de exaustão).
+- lambdas/closures, `%1`/arenas em runtime, padrões de construtor no `case`.
+- Funções (e `case`) **sem** catch-all no fim (falta o *trap* de exaustão).
 - Strings além de `putStrLn`/`show` (concatenação, `String` como parâmetro, …).
 - Registos: sem `free`/GC (a heap é *leaked*); o modelo de reclamação
   (arenas/Auto-Drop) está validado **estaticamente**, não no runtime nativo.

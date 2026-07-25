@@ -430,6 +430,29 @@ fn cranelift_backend_runs_records_on_the_heap() {
 }
 
 #[test]
+fn cranelift_backend_compiles_case_and_tuples() {
+    // 'case' (cadeia de if) + tuplos na heap; nativo e interp concordam (200).
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("native_case.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "200\n");
+
+    // o mesmo programa no interpretador (main :: Int imprime o resultado)
+    let interp = axionc().arg(fixture("native_case.axi")).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "nativo e interpretador divergem"
+    );
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])

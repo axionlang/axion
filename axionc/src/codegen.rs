@@ -7,9 +7,10 @@
 //! com nome mangled), `if`, aritmética (`+ - *`, `mod`), comparações (`== < >`),
 //! chamadas (incl. recursão e recursão mútua) e `let`. Strings/IO via runtime
 //! mínimo (`putStrLn`/`show`/literais), pelo que `main :: IO ()` corre nativo.
-//! **Registos** na heap (`axion_alloc`): construção, actualização e selectores
-//! (`i64` por campo). `case`, tuplos e closures ficam para o interpretador — o
-//! codegen recusa com um erro.
+//! **Registos** e **tuplos** na heap (`axion_alloc`): construção, actualização,
+//! selectores (`i64` por campo). **`case`** (cadeia de `if` sobre o escrutínio;
+//! padrões Int/variável/`_`/tuplo). Closures e padrões de construtor no `case`
+//! ficam para o interpretador — o codegen recusa com um erro.
 
 use crate::ast::{self, Body, Expr, Pat, Type};
 use cranelift::codegen::ir::UserFuncName;
@@ -516,6 +517,21 @@ impl Fx<'_, '_> {
                 let call = self.builder.ins().call(callee, &vals);
                 Ok(self.builder.inst_results(call)[0])
             }
+            // tuplo → registo anónimo na heap (um i64 por componente)
+            Expr::Tuple(es, _) => {
+                let ptr = self.alloc(es.len());
+                for (i, e) in es.iter().enumerate() {
+                    let v = self.expr(e)?;
+                    self.builder
+                        .ins()
+                        .store(MemFlags::new(), v, ptr, i as i32 * 8);
+                }
+                Ok(ptr)
+            }
+            Expr::Case(scrut, arms, _) => {
+                let sval = self.expr(scrut)?;
+                self.emit_case(sval, arms, 0)
+            }
             Expr::RecordCon(con, assigns, _) => {
                 let nfields = self
                     .records
@@ -584,6 +600,76 @@ impl Fx<'_, '_> {
             .declare_func_in_func(self.alloc_id, self.builder.func);
         let call = self.builder.ins().call(callee, &[size]);
         self.builder.inst_results(call)[0]
+    }
+
+    /// Liga um nome a um `Value` (cria uma Variable e define-a).
+    fn bind_val(&mut self, name: &str, val: Value) {
+        let v = Variable::new(self.next as usize);
+        self.next += 1;
+        self.builder.declare_var(v, types::I64);
+        self.builder.def_var(v, val);
+        self.vars.insert(name.to_string(), v);
+    }
+
+    /// `case sval of arms` — cadeia de `if` sobre o escrutínio. Padrões: `Int`
+    /// (compara), variável/`_` (catch-all), tuplo `(a, b)` (destructura por
+    /// offset). Exige um catch-all (variável/`_`/tuplo) no fim.
+    fn emit_case(&mut self, sval: Value, arms: &[(Pat, Expr)], i: usize) -> Result<Value, String> {
+        let (pat, body) = &arms[i];
+        match pat {
+            Pat::Wild(_) => self.expr(body),
+            Pat::Var(n, _) => {
+                self.bind_val(n, sval);
+                self.expr(body)
+            }
+            Pat::Tuple(ps, _) => {
+                for (j, p) in ps.iter().enumerate() {
+                    match p {
+                        Pat::Wild(_) => {}
+                        Pat::Var(n, _) => {
+                            let v = self.builder.ins().load(
+                                types::I64,
+                                MemFlags::new(),
+                                sval,
+                                j as i32 * 8,
+                            );
+                            self.bind_val(n, v);
+                        }
+                        _ => return Err("padrão de tuplo aninhado não compila nativamente".into()),
+                    }
+                }
+                self.expr(body)
+            }
+            Pat::Int(lit, _) => {
+                if i + 1 >= arms.len() {
+                    return Err("case sem catch-all não compila nativamente (ainda)".into());
+                }
+                let k = self.builder.ins().iconst(types::I64, *lit);
+                let cond = self.builder.ins().icmp(IntCC::Equal, sval, k);
+                let then_b = self.builder.create_block();
+                let else_b = self.builder.create_block();
+                let merge_b = self.builder.create_block();
+                self.builder.append_block_param(merge_b, types::I64);
+                self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
+
+                self.builder.switch_to_block(then_b);
+                self.builder.seal_block(then_b);
+                let tv = self.expr(body)?;
+                self.builder.ins().jump(merge_b, &[tv]);
+
+                self.builder.switch_to_block(else_b);
+                self.builder.seal_block(else_b);
+                let ev = self.emit_case(sval, arms, i + 1)?;
+                self.builder.ins().jump(merge_b, &[ev]);
+
+                self.builder.switch_to_block(merge_b);
+                self.builder.seal_block(merge_b);
+                Ok(self.builder.block_params(merge_b)[0])
+            }
+            Pat::Con(_, _, _) => {
+                Err("padrão de construtor no case não compila nativamente (ainda)".into())
+            }
+        }
     }
 }
 

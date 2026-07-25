@@ -138,8 +138,18 @@ pub fn run(module: &Module) -> Result<(), RunError> {
             Ok(())
         }
         Value::Unit => Ok(()),
+        // 'main :: Int' / 'main :: Bool' — imprime o resultado, tal como o
+        // backend nativo, para os dois caminhos concordarem.
+        Value::Int(n) => {
+            println!("{n}");
+            Ok(())
+        }
+        Value::Bool(b) => {
+            println!("{b}");
+            Ok(())
+        }
         other => Err(format!(
-            "'main' devia ser uma acção IO, foi {}",
+            "'main' devia ser uma acção IO (ou Int), foi {}",
             type_name(&other)
         )),
     }
