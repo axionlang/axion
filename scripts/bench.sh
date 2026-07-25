@@ -57,12 +57,8 @@ bench_rust() {
   rustc -C opt-level=2 "bench/$k.rs" -o "$tmp/${k}_r2" 2>/dev/null && run "$k:r2" "$tmp/${k}_r2" || run "$k:r2" SKIP
 }
 
-KERNELS_AXION="fib loop alloc"
-KERNELS_C="fib loop alloc simd"
-for k in $KERNELS_AXION; do bench_kernel "$k"; done
-for k in $KERNELS_C; do bench_c "$k"; bench_rust "$k"; done
-# simd não tem versão Axión
-T[simd:dev]="n/a"; R[simd:dev]=""; T[simd:rel]="n/a"; R[simd:rel]=""
+KERNELS="fib loop alloc simd"
+for k in $KERNELS; do bench_kernel "$k"; bench_c "$k"; bench_rust "$k"; done
 
 echo
 echo "Tempos (ms, melhor de $RUNS) — o mesmo clang (LLVM) para C e para Axión --release:"

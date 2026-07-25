@@ -149,6 +149,10 @@ fn builtins() -> HashSet<String> {
         "promote",
         "arena_mark",
         "arena_release",
+        // Buffer (§4)
+        "iota",
+        "sumBuffer",
+        "freeBuffer",
         // permissões fraccionárias (§2)
         "split",
         "join",

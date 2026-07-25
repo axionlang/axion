@@ -280,6 +280,27 @@ impl<'a> Infer<'a> {
             "arena_release".into(),
             mono(Ty::Fun(Box::new(mark()), Box::new(unit()))),
         );
+        // Buffer (§4): array vectorizável. iota :: Int -> Buffer;
+        // sumBuffer :: Buffer -> Int (empresta); freeBuffer :: Buffer -> ().
+        let buffer = || Ty::Con("Buffer".into(), vec![]);
+        env.insert(
+            "iota".into(),
+            mono(Ty::Fun(
+                Box::new(Ty::Con("Int".into(), vec![])),
+                Box::new(buffer()),
+            )),
+        );
+        env.insert(
+            "sumBuffer".into(),
+            mono(Ty::Fun(
+                Box::new(buffer()),
+                Box::new(Ty::Con("Int".into(), vec![])),
+            )),
+        );
+        env.insert(
+            "freeBuffer".into(),
+            mono(Ty::Fun(Box::new(buffer()), Box::new(unit()))),
+        );
         // permissões fraccionárias (§2). split :: forall a. a -> (a, a);
         // join :: forall a. a -> a -> a. As multiplicidades (%1/%0.5) são
         // rastreadas à parte, pela análise em check.rs.

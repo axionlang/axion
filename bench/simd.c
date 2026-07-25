@@ -1,5 +1,5 @@
 #include <stdio.h>
-static long a[1024];
-int main(void){ for(int i=0;i<1024;i++) a[i]=i;
-  long s=0; for(int r=0;r<2000000;r++) for(int i=0;i<1024;i++) s+=a[i];
-  printf("%ld\n", s); return 0; }
+#include <stdlib.h>
+long sum_buf(long*b, long n){ long s=0; for(long i=0;i<n;i++) s+=b[i]; return s; }
+int main(void){ long n=40000; long*b=(long*)malloc(n*8); for(long i=0;i<n;i++) b[i]=i;
+  long s=0; for(int k=0;k<5000;k++) s+=sum_buf(b,n); printf("%ld\n", s); free(b); return 0; }

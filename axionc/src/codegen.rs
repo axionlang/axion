@@ -157,6 +157,44 @@ extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> 
     dst
 }
 
+// --- Buffer (§4): array de i64 [len][data…]. As operações em massa são o
+// escape-hatch vectorizável (no --release; no --dev correm à velocidade do
+// runtime Rust do axionc). ---
+
+extern "C" fn axion_iota(n: i64) -> *mut u8 {
+    let n = n.max(0) as usize;
+    let layout = std::alloc::Layout::from_size_align((n + 1) * 8, 8).unwrap();
+    unsafe {
+        let b = std::alloc::alloc(layout) as *mut i64;
+        *b = n as i64;
+        for i in 0..n {
+            *b.add(i + 1) = i as i64;
+        }
+        b as *mut u8
+    }
+}
+
+extern "C" fn axion_sum_buffer(buf: *mut u8) -> i64 {
+    unsafe {
+        let b = buf as *const i64;
+        let n = *b;
+        let mut s = 0i64;
+        for i in 0..n {
+            s = s.wrapping_add(*b.add(i as usize + 1));
+        }
+        s
+    }
+}
+
+extern "C" fn axion_free_buffer(buf: *mut u8) {
+    unsafe {
+        let b = buf as *mut i64;
+        let n = *b as usize;
+        let layout = std::alloc::Layout::from_size_align((n + 1) * 8, 8).unwrap();
+        std::alloc::dealloc(buf, layout);
+    }
+}
+
 /// Os `FuncId` do runtime de arena (§3).
 #[derive(Clone, Copy)]
 struct Arena {
@@ -179,6 +217,7 @@ struct Cg {
     alloc_id: FuncId,
     free_id: FuncId,
     arena: Arena,
+    rt_fns: HashMap<String, (FuncId, bool)>,
     records: RecordInfo,
 }
 
@@ -201,6 +240,9 @@ impl Cg {
         builder.symbol("axion_arena_mark", axion_arena_mark as *const u8);
         builder.symbol("axion_arena_release", axion_arena_release as *const u8);
         builder.symbol("axion_arena_promote", axion_arena_promote as *const u8);
+        builder.symbol("axion_iota", axion_iota as *const u8);
+        builder.symbol("axion_sum_buffer", axion_sum_buffer as *const u8);
+        builder.symbol("axion_free_buffer", axion_free_buffer as *const u8);
         let mut module = JITModule::new(builder);
 
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
@@ -227,6 +269,15 @@ impl Cg {
             release: import(&mut module, "axion_arena_release", 1, false)?,
             promote: import(&mut module, "axion_arena_promote", 3, true)?,
         };
+        // builtins de runtime nomeados (Buffer/§4): nome → (FuncId, devolve valor)
+        let mut rt_fns: HashMap<String, (FuncId, bool)> = HashMap::new();
+        for (name, nparams, ret) in [
+            ("axion_iota", 1, true),
+            ("axion_sum_buffer", 1, true),
+            ("axion_free_buffer", 1, false),
+        ] {
+            rt_fns.insert(name.into(), (import(&mut module, name, nparams, ret)?, ret));
+        }
 
         Ok(Cg {
             module,
@@ -238,6 +289,7 @@ impl Cg {
             alloc_id,
             free_id,
             arena,
+            rt_fns,
             records,
         })
     }
@@ -293,6 +345,7 @@ impl Cg {
                 alloc_id: self.alloc_id,
                 free_id: self.free_id,
                 arena: self.arena,
+                rt_fns: &self.rt_fns,
                 records: &self.records,
             };
 
@@ -336,6 +389,7 @@ struct Fx<'a, 'b> {
     alloc_id: FuncId,
     free_id: FuncId,
     arena: Arena,
+    rt_fns: &'a HashMap<String, (FuncId, bool)>,
     records: &'a RecordInfo,
 }
 
@@ -654,6 +708,22 @@ impl Fx<'_, '_> {
                 let mv = self.atom(m)?;
                 self.rt_call(self.arena.release, &[mv]);
                 Ok(self.builder.ins().iconst(types::I64, 0)) // () → token
+            }
+            Op::RtCall {
+                func,
+                args,
+                returns,
+            } => {
+                let (id, _) = *self
+                    .rt_fns
+                    .get(func)
+                    .ok_or_else(|| format!("builtin de runtime '{func}' desconhecido"))?;
+                let vals = self.atoms(args)?;
+                let r = self.rt_call(id, &vals);
+                Ok(r.unwrap_or_else(|| {
+                    debug_assert!(!returns);
+                    self.builder.ins().iconst(types::I64, 0)
+                }))
             }
             Op::Unsupported(m) => Err(format!("{m} não compila nativamente (ainda)")),
         }

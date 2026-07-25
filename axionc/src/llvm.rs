@@ -32,6 +32,9 @@ declare void @axion_arena_reset(i64)
 declare i64 @axion_arena_mark(i64)
 declare void @axion_arena_release(i64)
 declare i64 @axion_arena_promote(i64, i64, i64)
+declare i64 @axion_iota(i64)
+declare i64 @axion_sum_buffer(i64)
+declare void @axion_free_buffer(i64)
 declare i32 @printf(ptr, ...)
 ";
 
@@ -182,6 +185,7 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
             .collect(),
         Op::WithArena { parent, clos } => parent.iter().chain(std::iter::once(clos)).collect(),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => vec![a],
+        Op::RtCall { args, .. } => args.iter().collect(),
         Op::Unsupported(_) => vec![],
     }
 }
@@ -590,6 +594,14 @@ impl Emit<'_> {
                 let mv = self.atom(m)?;
                 self.rt("axion_arena_release", false, &[mv]);
                 Ok("0".into())
+            }
+            Op::RtCall {
+                func,
+                args,
+                returns,
+            } => {
+                let vs = self.atoms(args)?;
+                Ok(self.rt(func, *returns, &vs))
             }
             Op::Unsupported(m) => Err(format!("{m} não compila no --release")),
         }

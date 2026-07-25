@@ -108,3 +108,20 @@ long axion_arena_promote(long target, long cell, long size) {
   memcpy((void *)dst, (void *)cell, (size_t)size);
   return dst;
 }
+
+/* --- Buffer (§4): array de i64 com cabeçalho de comprimento [len][data…].
+ * As operações em massa (sum) são laços que o clang -O2 auto-vectoriza; com
+ * -flto inlinam no chamador. É o escape-hatch vectorizável da linguagem. */
+long axion_iota(long n) {
+  long *b = (long *)malloc((n + 1) * 8);
+  b[0] = n;
+  for (long i = 0; i < n; i++) b[i + 1] = i;
+  return (long)b;
+}
+long axion_sum_buffer(long buf) {
+  long *b = (long *)buf;
+  long n = b[0], s = 0;
+  for (long i = 0; i < n; i++) s += b[i + 1]; /* redução vectorizável */
+  return s;
+}
+void axion_free_buffer(long buf) { free((void *)buf); }

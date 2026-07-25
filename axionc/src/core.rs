@@ -81,6 +81,13 @@ pub enum Op {
     ArenaMark(Atom),
     /// `arena_release mark` — repõe o bump-pointer (reclama o alocado desde a marca).
     ArenaRelease(Atom),
+    /// Chamada a uma função de runtime nomeada (builtins de `Buffer`/§4 e afins):
+    /// `func(args…)`, devolvendo valor sse `returns`.
+    RtCall {
+        func: String,
+        args: Vec<Atom>,
+        returns: bool,
+    },
     /// forma do AST fora do subconjunto nativo — o codegen recusa com este texto
     Unsupported(String),
 }
@@ -136,8 +143,8 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         return true;
     }
     match t.head_con() {
-        // Int/String/IO; tipos de arena (i64: handle/ponteiro); unit-token
-        Some("Int" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "()") => true,
+        // Int/String/IO; arena (Arena/Cell/Mark); Buffer (§4); unit-token
+        Some("Int" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer" | "()") => true,
         Some(h) => data_types.contains(h),
         None => false,
     }
@@ -359,6 +366,9 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "promote",
         "arena_mark",
         "arena_release",
+        "iota",
+        "sumBuffer",
+        "freeBuffer",
     ] {
         g.insert(b.to_string());
     }
@@ -522,6 +532,10 @@ impl Lower<'_> {
             }
             ("arena_mark", 1) => return Op::ArenaMark(self.atom(args[0], buf)),
             ("arena_release", 1) => return Op::ArenaRelease(self.atom(args[0], buf)),
+            // Buffer (§4): builtins que são chamadas de runtime
+            ("iota", 1) => return self.rtcall("axion_iota", &args, true, buf),
+            ("sumBuffer", 1) => return self.rtcall("axion_sum_buffer", &args, true, buf),
+            ("freeBuffer", 1) => return self.rtcall("axion_free_buffer", &args, false, buf),
             _ => {}
         }
         let vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
@@ -536,6 +550,21 @@ impl Lower<'_> {
         } else {
             // variável local de tipo-função → chamada indirecta
             Op::CallClosure(Atom::Var(name.clone()), vals)
+        }
+    }
+
+    /// Baixa um builtin que é chamada de runtime (`Buffer`/§4).
+    fn rtcall(
+        &mut self,
+        func: &str,
+        args: &[&Expr],
+        returns: bool,
+        buf: &mut Vec<(String, Rhs)>,
+    ) -> Op {
+        Op::RtCall {
+            func: func.to_string(),
+            args: args.iter().map(|a| self.atom(a, buf)).collect(),
+            returns,
         }
     }
 
@@ -1015,6 +1044,7 @@ fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
             mark(t);
             mark(c);
         }
+        Op::RtCall { args, .. } => args.iter().for_each(&mut mark),
         _ => {}
     }
     // a closure receptora de uma chamada indirecta também muda de mãos
@@ -1308,6 +1338,7 @@ fn dump_op(op: &Op) -> String {
         Op::Promote(t, c) => format!("promote {} {}", atom(t), atom(c)),
         Op::ArenaMark(a) => format!("arena_mark {}", atom(a)),
         Op::ArenaRelease(a) => format!("arena_release {}", atom(a)),
+        Op::RtCall { func, args, .. } => format!("rtcall {func}{}", self::args(args)),
         Op::Unsupported(m) => format!("<unsupported: {m}>"),
     }
 }

@@ -559,6 +559,21 @@ fn arena_runs_natively_with_bulk_reset() {
 }
 
 #[test]
+fn buffer_sum_runs_natively() {
+    // Buffer (§4): iota/sumBuffer/freeBuffer. sum(0..99)=4950; --dev == interp.
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("buffer_sum.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "4950\n");
+}
+
+#[test]
 fn arena_escape_still_rejected_statically_ax0003() {
     // a reclamação em runtime não dispensa a análise estática de escape.
     let out = axionc()
@@ -643,6 +658,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("record_run.axi"), "99\n"),   // registos na heap
         (fixture("linear_move.axi"), "42\n"),  // Auto-Drop + free
         (fixture("arena_run.axi"), "100\n"),   // arenas
+        (fixture("buffer_sum.axi"), "4950\n"), // Buffer / §4
         (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
     ];
