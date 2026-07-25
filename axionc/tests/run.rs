@@ -319,6 +319,18 @@ fn inference_accepts_where_and_runs() {
 }
 
 #[test]
+fn lambdas_run_higher_order_and_currying() {
+    // funções de ordem superior + currying via lambdas encadeadas → 42.
+    let out = axionc().arg(fixture("lambda_hof.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "saída: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+}
+
+#[test]
 fn json_diagnostics_are_emitted() {
     let out = axionc()
         .args(["--emit", "json", &fixture("use_after_consume.axi")])

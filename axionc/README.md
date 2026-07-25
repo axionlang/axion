@@ -26,7 +26,7 @@ Tudo o resto cresce daí.
 | `src/parser.rs` | Recursivo-descendente → AST (`src/ast.rs`). |
 | `src/check.rs` | Resolução de nomes (`AX0101`) + **linearidade** (`AX0001`/`AX0002`) + **Auto-Drop** (§2). |
 | `src/infer.rs` | **Inferência de tipos** HM / Algoritmo W (`AX0200`/`AX0201`). |
-| `src/interp.rs` | Interpretador tree-walking. |
+| `src/interp.rs` | Interpretador tree-walking (inclui lambdas / ordem superior). |
 | `src/props.rs` | Property tests de **preservação/progresso** (só em `cargo test`). |
 | `src/diag.rs` | Diagnósticos `AXnnnn` estáveis: render texto (estilo rustc) e JSON. |
 

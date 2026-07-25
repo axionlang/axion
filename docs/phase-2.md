@@ -54,8 +54,13 @@
     de `let` rejeita usar, **após** o release, um valor alocado sob a marca
     (`AX0005`). `arena_mark_release.axi` → `AX0005`; `arena_mark_ok.axi` (uso
     antes do release) → aceite.
-  - **Por crescer:** o runtime de arenas (os programas de arena são
-    `--check`-only; o interpretador não corre lambdas/arenas).
+  - **Lambdas correm** no interpretador (`\x -> e` vira uma closure de uma
+    cláusula) — funções de ordem superior e currying funcionam
+    (`tests/fixtures/lambda_hof.axi`).
+  - **Por crescer:** o runtime das arenas em si (`allocateCell`/`withSubArena`/
+    `promote`/`arena_mark`/`arena_release` seriam no-ops num interpretador
+    tree-walking — a reclamação real só é observável no backend nativo, o mesmo
+    pré-requisito dos benchmarks; as arenas continuam validadas estaticamente).
 - [ ] **Permissões fracionárias** (`%0.5`): `split` / `join` (§2).
 - [ ] **Benchmark vs baseline (C/Rust)** — precisa do backend nativo
   (Cranelift/LLVM), ainda adiado; a «latência zero» tem de ser medida.
