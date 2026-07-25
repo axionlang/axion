@@ -27,6 +27,7 @@ Tudo o resto cresce daí.
 | `src/check.rs` | Resolução de nomes (`AX0101`) + **linearidade** (`AX0001`/`AX0002`) + **Auto-Drop** (§2). |
 | `src/infer.rs` | **Inferência de tipos** HM / Algoritmo W (`AX0200`/`AX0201`). |
 | `src/interp.rs` | Interpretador tree-walking (inclui lambdas / ordem superior). |
+| `src/codegen.rs` | **Backend nativo `--dev`** (Cranelift JIT) — núcleo Int (§11/§18). |
 | `src/props.rs` | Property tests de **preservação/progresso** (só em `cargo test`). |
 | `src/diag.rs` | Diagnósticos `AXnnnn` estáveis: render texto (estilo rustc) e JSON. |
 
@@ -45,6 +46,8 @@ cargo run -- --emit json <ficheiro.axi>    # diagnósticos em JSON (§8)
 cargo run -- --emit drops <ficheiro.axi>   # 'free' injectados pelo Auto-Drop (§2)
 cargo run -- --emit inplace <ficheiro.axi> # actualizações in-place (Linear Elision, §2)
 cargo run -- --emit arenas <ficheiro.axi>  # pontos de reset NLL das sub-arenas (§3)
+cargo run -- --emit clif <ficheiro.axi>    # Cranelift IR do núcleo Int (§11)
+cargo run -- --backend cranelift <fich.>   # JIT-compila e corre main :: Int (nativo, §11)
 cargo run -- --explain AX0001              # explica um código de erro
 cargo test                                 # testes de integração
 ```

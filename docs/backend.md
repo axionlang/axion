@@ -1,0 +1,58 @@
+# Backend nativo — o «Fast-Path» de `--dev` (Cranelift)
+
+> §11/§18 da spec. O pipeline baixa para um IR estrito/linear (Axión Core) e
+> emite código nativo: **Cranelift em `--dev`** (compila depressa — «zero
+> otimizações em dev»), **LLVM em `--release`** (otimizado, ainda adiado).
+
+Este é o **primeiro corte** do backend `--dev`, sobre `cranelift-jit`. Baixa o
+**núcleo Int** do AST directamente para Cranelift IR e JIT-compila.
+
+## O que compila (núcleo Int)
+
+- Funções de topo de **uma cláusula** com parâmetros e retorno `Int`, padrões só
+  variáveis/`_`.
+- `if … then … else …`, aritmética (`+ - *`, `mod`), comparações (`== < >`).
+- Chamadas a outras funções nativas, **incluindo recursão**.
+- `let v = <Int> in …`.
+
+## Como usar
+
+```sh
+# despeja o Cranelift IR das funções compiláveis
+axionc --emit clif programa.axi
+
+# JIT-compila o núcleo Int e corre 'main :: Int', imprimindo o resultado
+axionc --backend cranelift programa.axi
+```
+
+Exemplo (`axionc/tests/fixtures/native_fib.axi`):
+
+```
+fib :: Int -> Int
+fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+main :: Int
+main = fib 20
+```
+
+`axionc --backend cranelift native_fib.axi` → `6765` (código-máquina real, via
+JIT). `--emit clif` mostra o IR (blocos, `brif`, `call` recursivo).
+
+## O que ainda NÃO compila (recai no interpretador)
+
+- Multi-cláusula com padrões literais (`fib 0 = 0; …`) — falta o *desugar* em
+  cadeia de `if`.
+- `where`, `case`, lambdas/closures, `String`/IO (`putStrLn`/`show`), registos,
+  tuplos, `%1`/arenas em runtime.
+
+O codegen recusa o que não cabe com um erro claro; para esses programas, usa-se
+o interpretador (`axionc programa.axi`, sem `--backend`).
+
+## Notas de implementação
+
+- `axionc/src/codegen.rs`: `JITModule` (cranelift-jit) + `FunctionBuilder`.
+  Declara todas as funções nativas primeiro (para a recursão/chamadas mútuas
+  resolverem), depois define os corpos; `Int` → `i64`; comparações → `icmp`;
+  `if` → dois blocos + bloco de junção com parâmetro.
+- Backend `--release` (LLVM via `inkwell`) e o Axión Core IR intermédio ficam
+  para incrementos seguintes; por agora baixa-se do AST directamente.

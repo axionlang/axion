@@ -15,6 +15,7 @@
 #[allow(dead_code)]
 mod ast;
 mod check;
+mod codegen;
 #[allow(dead_code)]
 mod diag;
 mod infer;
@@ -37,11 +38,13 @@ enum Emit {
     Drops,
     InPlace,
     Arenas,
+    Clif,
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut check_only = false;
+    let mut native = false;
     let mut emit = Emit::Text;
     let mut path: Option<String> = None;
 
@@ -49,6 +52,17 @@ fn main() -> ExitCode {
     while i < args.len() {
         match args[i].as_str() {
             "--check" => check_only = true,
+            "--backend" => {
+                i += 1;
+                match args.get(i).map(|s| s.as_str()) {
+                    Some("cranelift") => native = true,
+                    Some("interp") => native = false,
+                    _ => {
+                        eprintln!("--backend espera 'cranelift' ou 'interp'");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             "--emit" => {
                 i += 1;
                 match args.get(i).map(|s| s.as_str()) {
@@ -56,8 +70,9 @@ fn main() -> ExitCode {
                     Some("drops") => emit = Emit::Drops,
                     Some("inplace") => emit = Emit::InPlace,
                     Some("arenas") => emit = Emit::Arenas,
+                    Some("clif") => emit = Emit::Clif,
                     _ => {
-                        eprintln!("--emit espera 'json', 'drops', 'inplace' ou 'arenas'");
+                        eprintln!("--emit espera 'json', 'drops', 'inplace', 'arenas' ou 'clif'");
                         return ExitCode::from(2);
                     }
                 }
@@ -132,6 +147,32 @@ fn main() -> ExitCode {
         Some(m) => m,
         None => return ExitCode::FAILURE,
     };
+
+    // --- backend nativo --dev (Cranelift): dump do IR ou JIT+correr main::Int ---
+    if emit == Emit::Clif {
+        match codegen::emit_ir(&module) {
+            Ok(ir) => {
+                print!("{ir}");
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("codegen: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    if native {
+        return match codegen::run(&module, "main") {
+            Ok(n) => {
+                println!("{n}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("backend cranelift: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     if check_only {
         if emit == Emit::Text {
@@ -294,6 +335,8 @@ fn print_usage() {
          axionc --emit drops <ficheiro> 'free' injectados pelo Auto-Drop\n  \
          axionc --emit inplace <fich.>  actualizações in-place (Linear Elision)\n  \
          axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas\n  \
+         axionc --emit clif <fich.>     Cranelift IR do núcleo Int (backend --dev)\n  \
+         axionc --backend cranelift <f> JIT-compila e corre main :: Int (nativo)\n  \
          axionc --explain AX0001        explica um código de erro"
     );
 }

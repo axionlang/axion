@@ -56,8 +56,10 @@ ficheiro como um teste que tem de passar.
   ambulante feito**: `examples/01_hello` e `02_fib` correm; uso-após-consumo é
   rejeitado com `AX0001`. A crescer: `data`/registos + Listagem 2.1 completa,
   inferência de tipos, os restantes `examples/`. Ver [`docs/phase-1.md`](docs/phase-1.md).
-- **Fase 2 — Modelo de memória** ← *começou*: **Auto-Drop** (1º corte feito —
-  droppable vs must-use, `free` injectado, `--emit drops`); a seguir arenas +
-  escape (`AX0003`) e `%0.5`. Ver [`docs/phase-2.md`](docs/phase-2.md).
+- **Fase 2 — Modelo de memória** ← *estás aqui*: **Auto-Drop** (fino, estrutural,
+  `let`, in-place, uso-após-move), **arenas** (escape `AX0003`, reset NLL, marcas
+  `AX0005`), **`%0.5`** (split/join, `AX0006`). Ver [`docs/phase-2.md`](docs/phase-2.md).
+- **Backend nativo `--dev`** (§11/§18) ← *começou*: **Cranelift JIT** do núcleo
+  Int (`--backend cranelift`, `--emit clif`). Ver [`docs/backend.md`](docs/backend.md).
 - **Fase 3 — Concorrência**: canais + session types, com trilho formal.
 - **Fase 4+ — Tooling, ternário (`TritVec`), topologia avançada.**

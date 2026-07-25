@@ -355,6 +355,35 @@ fn lambdas_run_higher_order_and_currying() {
 }
 
 #[test]
+fn cranelift_backend_jits_and_runs_fib() {
+    // Backend nativo --dev: JIT-compila o núcleo Int e corre main :: Int → 6765.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("native_fib.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "saída: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "6765\n");
+}
+
+#[test]
+fn emit_clif_dumps_cranelift_ir() {
+    let out = axionc()
+        .args(["--emit", "clif", &fixture("native_fib.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("brif") && text.contains("call") && text.contains("-> i64"),
+        "IR inesperado: {text}"
+    );
+}
+
+#[test]
 fn json_diagnostics_are_emitted() {
     let out = axionc()
         .args(["--emit", "json", &fixture("use_after_consume.axi")])
