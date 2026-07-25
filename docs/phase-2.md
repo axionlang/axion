@@ -72,8 +72,12 @@
     `frac_write.axi` → `AX0006`; `frac_join.axi` → aceite **e corre** (→ 7).
   - **Por crescer:** must-use das metades (cada metade tem de ser recombinada ou
     largada); `%0.5` em posições para além do `case split`.
-- [ ] **Benchmark vs baseline (C/Rust)** — precisa do backend nativo
-  (Cranelift/LLVM), ainda adiado; a «latência zero» tem de ser medida.
+- [~] **Benchmark vs baseline (C/Rust)** — **primeiro ponto de medição** agora
+  que o backend nativo `--dev` (Cranelift) corre. `bench/` + `scripts/bench.sh`:
+  `fib(40)` em Axión/C/Rust. Resultado: o fast-path `--dev` (sem opt) já bate
+  C/Rust `-O0` e fica a ~2–3× do `-O2` — o gap que o `--release`/LLVM fechará.
+  Ver [`benchmarks.md`](benchmarks.md). Falta o `--release` (LLVM) para a
+  comparação justa com `-O2`, e mais benchmarks (alocação, laços, SIMD).
 
 ## Verificação (Auto-Drop)
 

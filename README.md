@@ -59,7 +59,11 @@ ficheiro como um teste que tem de passar.
 - **Fase 2 — Modelo de memória** ← *estás aqui*: **Auto-Drop** (fino, estrutural,
   `let`, in-place, uso-após-move), **arenas** (escape `AX0003`, reset NLL, marcas
   `AX0005`), **`%0.5`** (split/join, `AX0006`). Ver [`docs/phase-2.md`](docs/phase-2.md).
-- **Backend nativo `--dev`** (§11/§18) ← *começou*: **Cranelift JIT** do núcleo
-  Int (`--backend cranelift`, `--emit clif`). Ver [`docs/backend.md`](docs/backend.md).
+- **Backend nativo `--dev`** (§11/§18) ← *a crescer*: **Cranelift JIT**
+  (`--backend cranelift`, `--emit clif`) — Int, multi-cláusula, `where`,
+  strings/IO, registos na heap; `examples/01/02` e `record_run` correm nativos.
+  Ver [`docs/backend.md`](docs/backend.md).
+- **Benchmarks** (§13): `fib(40)` nativo já bate C/Rust `-O0`, a ~2–3× do `-O2`.
+  Ver [`docs/benchmarks.md`](docs/benchmarks.md).
 - **Fase 3 — Concorrência**: canais + session types, com trilho formal.
 - **Fase 4+ — Tooling, ternário (`TritVec`), topologia avançada.**
