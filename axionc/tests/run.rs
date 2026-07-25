@@ -415,6 +415,21 @@ fn cranelift_backend_runs_fib_example_with_show() {
 }
 
 #[test]
+fn cranelift_backend_runs_records_on_the_heap() {
+    // record_run.axi nativo: Point{x,y} na heap (axion_alloc), update e selector.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("record_run.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "99\n");
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])

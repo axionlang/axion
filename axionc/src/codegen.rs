@@ -7,19 +7,21 @@
 //! com nome mangled), `if`, aritmética (`+ - *`, `mod`), comparações (`== < >`),
 //! chamadas (incl. recursão e recursão mútua) e `let`. Strings/IO via runtime
 //! mínimo (`putStrLn`/`show`/literais), pelo que `main :: IO ()` corre nativo.
-//! Registos, tuplos, `case` e closures ficam para o interpretador — o codegen
-//! recusa com um erro.
+//! **Registos** na heap (`axion_alloc`): construção, actualização e selectores
+//! (`i64` por campo). `case`, tuplos e closures ficam para o interpretador — o
+//! codegen recusa com um erro.
 
 use crate::ast::{self, Body, Expr, Pat, Type};
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
 use cranelift::prelude::{
     types, AbiParam, Configurable, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder,
-    IntCC, Value, Variable,
+    IntCC, MemFlags, Value, Variable,
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 // --- runtime nativo mínimo (registado como símbolos no JIT) ---
 
@@ -36,6 +38,49 @@ extern "C" fn axion_show_int(n: i64) -> *const u8 {
     s.into_raw() as *const u8
 }
 
+/// Aloca `size` bytes na heap para um registo (leaked — sem GC nem free no
+/// primeiro corte; o modelo de arenas/Auto-Drop é validado estaticamente).
+extern "C" fn axion_alloc(size: i64) -> *mut u8 {
+    let layout = std::alloc::Layout::from_size_align(size.max(1) as usize, 8).unwrap();
+    unsafe { std::alloc::alloc(layout) }
+}
+
+/// Layout dos registos: campos por construtor (na ordem declarada).
+#[derive(Default)]
+struct RecordInfo {
+    con_fields: HashMap<String, Vec<String>>, // construtor → campos (ordem)
+    field_owner: HashMap<String, String>,     // nome de campo → construtor
+}
+
+impl RecordInfo {
+    fn build(module: &ast::Module) -> RecordInfo {
+        let mut r = RecordInfo::default();
+        for d in &module.datas {
+            for c in &d.cons {
+                let fields: Vec<String> = c
+                    .fields
+                    .iter()
+                    .filter(|f| !f.name.is_empty())
+                    .map(|f| f.name.clone())
+                    .collect();
+                for f in &fields {
+                    r.field_owner.insert(f.clone(), c.name.clone());
+                }
+                r.con_fields.insert(c.name.clone(), fields);
+            }
+        }
+        r
+    }
+
+    /// Offset (em bytes) de um campo, e a lista de campos do seu registo.
+    fn field(&self, name: &str) -> Option<(i32, &[String])> {
+        let con = self.field_owner.get(name)?;
+        let fields = self.con_fields.get(con)?;
+        let idx = fields.iter().position(|f| f == name)?;
+        Some((idx as i32 * 8, fields))
+    }
+}
+
 /// Uma função a compilar nativamente (de topo, ou local de `where` liftado).
 struct NativeFn<'a> {
     /// nome único no módulo (mangled para locais de `where`)
@@ -50,9 +95,14 @@ fn is_int(t: &Type) -> bool {
     matches!(t.head_con(), Some("Int"))
 }
 
-/// Tipos representados por um `i64` na ABI nativa: Int, String (ptr) e IO (unit).
-fn is_native_ret(t: &Type) -> bool {
-    matches!(t.head_con(), Some("Int" | "String" | "IO"))
+/// Tipos representados por um `i64` na ABI nativa: `Int`, `String` (ptr), `IO`
+/// (token), ou um tipo `data` do programa (ponteiro para o registo na heap).
+fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
+    match t.head_con() {
+        Some("Int" | "String" | "IO") => true,
+        Some(h) => data_types.contains(h),
+        None => false,
+    }
 }
 
 fn result_type(sig: &Type) -> &Type {
@@ -63,11 +113,13 @@ fn result_type(sig: &Type) -> &Type {
     t
 }
 
-/// Candidata a nativa: parâmetros todos `Int`, retorno Int/String/IO (todos
-/// representados por `i64` — inteiro, ponteiro de string, ou o «token» de IO).
-fn top_candidate(f: &ast::Func) -> Option<usize> {
+/// Candidata a nativa: todos os parâmetros e o retorno são representáveis por
+/// `i64` (Int, String, IO, ou um tipo `data`).
+fn top_candidate(f: &ast::Func, data_types: &HashSet<String>) -> Option<usize> {
     let sig = f.sig.as_ref()?;
-    if sig.param_types().iter().any(|t| !is_int(t)) || !is_native_ret(result_type(sig)) {
+    let ok = sig.param_types().iter().all(|t| native_ty(t, data_types))
+        && native_ty(result_type(sig), data_types);
+    if !ok {
         return None;
     }
     Some(f.clauses.first().map(|c| c.pats.len()).unwrap_or(0))
@@ -75,10 +127,14 @@ fn top_candidate(f: &ast::Func) -> Option<usize> {
 
 /// Reúne as funções nativas: as de topo candidatas e, para cada uma, os locais
 /// de `where` (liftados com nome mangled, partilhando o mapa de locais).
-fn collect_natives(module: &ast::Module) -> Vec<NativeFn<'_>> {
+fn data_type_names(module: &ast::Module) -> HashSet<String> {
+    module.datas.iter().map(|d| d.name.clone()).collect()
+}
+
+fn collect_natives<'a>(module: &'a ast::Module, data_types: &HashSet<String>) -> Vec<NativeFn<'a>> {
     let mut out = Vec::new();
     for f in &module.funcs {
-        let Some(arity) = top_candidate(f) else {
+        let Some(arity) = top_candidate(f, data_types) else {
             continue;
         };
         // locais de where (de todas as cláusulas)
@@ -115,10 +171,12 @@ struct Cg {
     str_counter: u32,
     puts_id: FuncId,
     show_id: FuncId,
+    alloc_id: FuncId,
+    records: RecordInfo,
 }
 
 impl Cg {
-    fn new() -> Result<Cg, String> {
+    fn new(records: RecordInfo) -> Result<Cg, String> {
         let mut flags = cranelift::codegen::settings::builder();
         let _ = flags.set("opt_level", "none"); // fast-path (§11)
         let isa = cranelift_native::builder()
@@ -129,20 +187,25 @@ impl Cg {
         // liga os símbolos do runtime nativo
         builder.symbol("axion_puts", axion_puts as *const u8);
         builder.symbol("axion_show_int", axion_show_int as *const u8);
+        builder.symbol("axion_alloc", axion_alloc as *const u8);
         let mut module = JITModule::new(builder);
 
         // declara as funções de runtime como importadas
-        let mut ps = module.make_signature();
-        ps.params.push(AbiParam::new(types::I64));
-        let puts_id = module
-            .declare_function("axion_puts", Linkage::Import, &ps)
-            .map_err(|e| e.to_string())?;
-        let mut ss = module.make_signature();
-        ss.params.push(AbiParam::new(types::I64));
-        ss.returns.push(AbiParam::new(types::I64));
-        let show_id = module
-            .declare_function("axion_show_int", Linkage::Import, &ss)
-            .map_err(|e| e.to_string())?;
+        let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
+            let mut sig = module.make_signature();
+            for _ in 0..nparams {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            if ret {
+                sig.returns.push(AbiParam::new(types::I64));
+            }
+            module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| e.to_string())
+        };
+        let puts_id = import(&mut module, "axion_puts", 1, false)?;
+        let show_id = import(&mut module, "axion_show_int", 1, true)?;
+        let alloc_id = import(&mut module, "axion_alloc", 1, true)?;
 
         Ok(Cg {
             module,
@@ -151,6 +214,8 @@ impl Cg {
             str_counter: 0,
             puts_id,
             show_id,
+            alloc_id,
+            records,
         })
     }
 
@@ -208,6 +273,8 @@ impl Cg {
                 str_counter: &mut self.str_counter,
                 puts_id: self.puts_id,
                 show_id: self.show_id,
+                alloc_id: self.alloc_id,
+                records: &self.records,
             };
             let ret = fx.clauses(n.clauses, &argvars, 0)?;
             fx.builder.ins().return_(&[ret]);
@@ -229,6 +296,8 @@ struct Fx<'a, 'b> {
     str_counter: &'a mut u32,
     puts_id: FuncId,
     show_id: FuncId,
+    alloc_id: FuncId,
+    records: &'a RecordInfo,
 }
 
 impl Fx<'_, '_> {
@@ -425,6 +494,12 @@ impl Fx<'_, '_> {
                     let call = self.builder.ins().call(callee, &[a]);
                     return Ok(self.builder.inst_results(call)[0]);
                 }
+                // selector de campo de registo: carrega do offset (i64)
+                let sel_off = self.records.field(name).map(|(o, _)| o);
+                if let (Some(off), 1) = (sel_off, args.len()) {
+                    let r = self.expr(args[0])?;
+                    return Ok(self.builder.ins().load(types::I64, MemFlags::new(), r, off));
+                }
                 let target = self.locals.get(name).map(String::as_str).unwrap_or(name);
                 let (id, arity) = *self
                     .ids
@@ -441,11 +516,74 @@ impl Fx<'_, '_> {
                 let call = self.builder.ins().call(callee, &vals);
                 Ok(self.builder.inst_results(call)[0])
             }
+            Expr::RecordCon(con, assigns, _) => {
+                let nfields = self
+                    .records
+                    .con_fields
+                    .get(con)
+                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?
+                    .len();
+                let ptr = self.alloc(nfields);
+                for (fname, e) in assigns {
+                    let off = self
+                        .records
+                        .field(fname)
+                        .map(|(o, _)| o)
+                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                    let v = self.expr(e)?;
+                    self.builder.ins().store(MemFlags::new(), v, ptr, off);
+                }
+                Ok(ptr)
+            }
+            Expr::RecordUpd(base, assigns, _) => {
+                let base_ptr = self.expr(base)?;
+                // o tipo do registo (nº de campos) infere-se do 1.º campo actualizado
+                let first = &assigns
+                    .first()
+                    .ok_or_else(|| "actualização de registo vazia".to_string())?
+                    .0;
+                let nfields = self
+                    .records
+                    .field(first)
+                    .map(|(_, fs)| fs.len())
+                    .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
+                let newptr = self.alloc(nfields);
+                // copia todos os campos do base
+                for i in 0..nfields {
+                    let off = i as i32 * 8;
+                    let v = self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), base_ptr, off);
+                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
+                }
+                // sobrepõe os campos actualizados
+                for (fname, e) in assigns {
+                    let off = self
+                        .records
+                        .field(fname)
+                        .map(|(o, _)| o)
+                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                    let v = self.expr(e)?;
+                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
+                }
+                Ok(newptr)
+            }
             other => Err(format!(
                 "expressão não compila nativamente ({}); usar o interpretador",
                 node_kind(other)
             )),
         }
+    }
+
+    /// Aloca um registo de `nfields` campos (i64 cada) e devolve o ponteiro.
+    fn alloc(&mut self, nfields: usize) -> Value {
+        let size = self.builder.ins().iconst(types::I64, nfields as i64 * 8);
+        let callee = self
+            .module
+            .declare_func_in_func(self.alloc_id, self.builder.func);
+        let call = self.builder.ins().call(callee, &[size]);
+        self.builder.inst_results(call)[0]
     }
 }
 
@@ -476,7 +614,8 @@ fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
 /// `Some(n)` se `entry :: Int` (o chamador imprime `n`); `None` se `:: IO ()`
 /// (os efeitos — `putStrLn` — já foram executados durante a corrida).
 pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
-    let natives = collect_natives(module);
+    let data_types = data_type_names(module);
+    let natives = collect_natives(module, &data_types);
     let entry_ok = natives
         .iter()
         .find(|n| n.name == entry)
@@ -488,7 +627,7 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
         ));
     }
 
-    let mut cg = Cg::new()?;
+    let mut cg = Cg::new(RecordInfo::build(module))?;
     cg.declare_all(&natives)?;
     for n in &natives {
         let mut ctx = cg.build(n)?;
@@ -519,11 +658,12 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
 
 /// Emite o Cranelift IR (texto) das funções nativas, sem JIT (`--emit clif`).
 pub fn emit_ir(module: &ast::Module) -> Result<String, String> {
-    let natives = collect_natives(module);
+    let data_types = data_type_names(module);
+    let natives = collect_natives(module, &data_types);
     if natives.is_empty() {
         return Ok("; nenhuma função compilável nativamente (núcleo Int).\n".into());
     }
-    let mut cg = Cg::new()?;
+    let mut cg = Cg::new(RecordInfo::build(module))?;
     cg.declare_all(&natives)?;
     let mut out = String::new();
     for n in &natives {
