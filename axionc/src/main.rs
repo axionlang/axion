@@ -165,15 +165,20 @@ fn main() -> ExitCode {
         None => return ExitCode::FAILURE,
     };
 
+    // spans dos `RecordUpd` elegíveis a mutação in-place (Linear Elision, §2),
+    // que os backends usam para mutar o bloco em vez de alocar+copiar.
+    let inplace: std::collections::HashSet<(usize, usize)> =
+        analysis.inplace.iter().map(|ip| ip.span).collect();
+
     // --- Axión Core IR: dump da baixada ANF (partilhada pelos backends) ---
     if emit == Emit::Core {
-        print!("{}", core::dump(&core::lower(&module)));
+        print!("{}", core::dump(&core::lower(&module, &inplace)));
         return ExitCode::SUCCESS;
     }
 
     // --- backend nativo --dev (Cranelift): dump do IR ou JIT+correr main::Int ---
     if emit == Emit::Clif {
-        match codegen::emit_ir(&module) {
+        match codegen::emit_ir(&module, &inplace) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -186,7 +191,7 @@ fn main() -> ExitCode {
     }
     // --- backend --release (LLVM): dump do IR ou compilar+correr ---
     if emit == Emit::Llvm {
-        match llvm::emit_ir(&module) {
+        match llvm::emit_ir(&module, &inplace) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -198,7 +203,7 @@ fn main() -> ExitCode {
         }
     }
     if backend == Backend::Cranelift {
-        return match codegen::run(&module, "main") {
+        return match codegen::run(&module, "main", &inplace) {
             Ok(Some(n)) => {
                 println!("{n}");
                 ExitCode::SUCCESS
@@ -211,7 +216,7 @@ fn main() -> ExitCode {
         };
     }
     if backend == Backend::Llvm {
-        return match llvm::build_and_run(&module, "main") {
+        return match llvm::build_and_run(&module, "main", &inplace) {
             Ok(()) => ExitCode::SUCCESS, // o binário já imprimiu o resultado
             Err(e) => {
                 eprintln!("backend llvm (--release): {e}");

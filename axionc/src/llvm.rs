@@ -11,8 +11,10 @@
 //! Auto-Drop. Todos os valores são `i64` (Int, ponteiros, tokens).
 
 use crate::ast;
+use crate::ast::Span;
 use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term};
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Tamanho de uma `Cell` de arena (bytes), igual ao runtime.
 const CELL_SIZE: i64 = 16;
@@ -52,8 +54,8 @@ fn main_returns_int(module: &ast::Module, entry: &str) -> bool {
 }
 
 /// Emite o módulo LLVM IR (texto) a partir do Core (`--emit llvm`).
-pub fn emit_ir(module: &ast::Module) -> Result<String, String> {
-    let fns = core::lower(module);
+pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
+    let fns = core::lower(module, inplace);
     let records = RecordInfo::build(module);
     let main_int = main_returns_int(module, "main");
 
@@ -93,14 +95,18 @@ pub fn emit_ir(module: &ast::Module) -> Result<String, String> {
 }
 
 /// Compila o Core com `clang -O2 -flto` (+ runtime C) e corre o binário.
-pub fn build_and_run(module: &ast::Module, entry: &str) -> Result<(), String> {
-    let fns = core::lower(module);
+pub fn build_and_run(
+    module: &ast::Module,
+    entry: &str,
+    inplace: &HashSet<Span>,
+) -> Result<(), String> {
+    let fns = core::lower(module, inplace);
     if !fns.iter().any(|f| f.name == entry && f.params.is_empty()) {
         return Err(format!(
             "'{entry}' tem de ser uma função nativa sem parâmetros"
         ));
     }
-    let ir = emit_ir(module)?;
+    let ir = emit_ir(module, inplace)?;
 
     let dir = std::env::temp_dir();
     let pid = std::process::id();
@@ -182,7 +188,7 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
         Op::CallClosure(c, xs) => std::iter::once(c).chain(xs).collect(),
         Op::MakeClosure { captures, .. } => captures.iter().collect(),
         Op::MakeRecord { fields, .. } => fields.iter().map(|(_, a)| a).collect(),
-        Op::UpdateRecord { base, fields } => std::iter::once(base)
+        Op::UpdateRecord { base, fields, .. } => std::iter::once(base)
             .chain(fields.iter().map(|(_, a)| a))
             .collect(),
         Op::WithArena { parent, clos } => parent.iter().chain(std::iter::once(clos)).collect(),
@@ -520,20 +526,31 @@ impl Emit<'_> {
                 }
                 Ok(ptr)
             }
-            Op::UpdateRecord { base, fields } => {
+            Op::UpdateRecord {
+                base,
+                fields,
+                inplace,
+            } => {
                 let base_ptr = self.atom(base)?;
-                let first = &fields.first().ok_or("actualização vazia")?.0;
-                let nfields = self
-                    .records
-                    .field(first)
-                    .map(|(_, fs)| fs.len())
-                    .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
-                let ptr = self.alloc(nfields);
-                for i in 0..nfields {
-                    let off = i as i32 * 8;
-                    let v = self.load(&base_ptr, off);
-                    self.store(&ptr, off, &v);
-                }
+                // Linear Elision (§2): in-place muta o bloco do base; senão aloca
+                // um novo e copia.
+                let target = if *inplace {
+                    base_ptr
+                } else {
+                    let first = &fields.first().ok_or("actualização vazia")?.0;
+                    let nfields = self
+                        .records
+                        .field(first)
+                        .map(|(_, fs)| fs.len())
+                        .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
+                    let ptr = self.alloc(nfields);
+                    for i in 0..nfields {
+                        let off = i as i32 * 8;
+                        let v = self.load(&base_ptr, off);
+                        self.store(&ptr, off, &v);
+                    }
+                    ptr
+                };
                 for (fname, a) in fields {
                     let off = self
                         .records
@@ -541,9 +558,9 @@ impl Emit<'_> {
                         .map(|(o, _)| o)
                         .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
                     let v = self.atom(a)?;
-                    self.store(&ptr, off, &v);
+                    self.store(&target, off, &v);
                 }
-                Ok(ptr)
+                Ok(target)
             }
             Op::Field { name, rec } => {
                 let off = self

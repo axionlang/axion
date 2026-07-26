@@ -15,8 +15,9 @@
 //! objectos que a função possui (locais, resultados de chamada, params `%1`) e
 //! que não escapam; o runtime liberta-os (`axion_free`). As **arenas** (§3)
 //! também têm Ops próprios (`WithArena`/`ArenaAlloc`/`Promote`/`ArenaMark`/…) e
-//! um runtime bump com reset em massa. O in-place (Linear Elision) fica ainda
-//! implícito (o `check.rs` calcula-o) — incremento seguinte.
+//! um runtime bump com reset em massa. O **in-place** (Linear Elision, §2) é um
+//! flag no `Op::UpdateRecord`: se o `check.rs` provar que o base é linear e morre
+//! ali, muta-se o bloco existente em vez de alocar+copiar.
 
 use crate::ast::{self, Body, Expr, Pat, Span, Type};
 use std::collections::HashMap;
@@ -52,10 +53,13 @@ pub enum Op {
         con: String,
         fields: Vec<(String, Atom)>,
     },
-    /// actualizar registo `base { campo = átomo, … }`
+    /// actualizar registo `base { campo = átomo, … }`. `inplace` (Linear Elision,
+    /// §2): o base é linear e morre aqui → muta-se o bloco existente em vez de
+    /// alocar+copiar (o `check.rs` prova a segurança).
     UpdateRecord {
         base: Atom,
         fields: Vec<(String, Atom)>,
+        inplace: bool,
     },
     /// selector de campo `campo rec`
     Field {
@@ -393,6 +397,8 @@ struct Lower<'a> {
     globals: &'a HashSet<String>,
     fields: &'a HashSet<String>,
     lam_meta: &'a LamMeta,
+    /// spans dos `RecordUpd` elegíveis a mutação in-place (Linear Elision, §2)
+    inplace: &'a HashSet<Span>,
     locals: HashMap<String, String>,
     tmp: u32,
 }
@@ -469,7 +475,7 @@ impl Lower<'_> {
                     .map(|(f, x)| (f.clone(), self.atom(x, buf)))
                     .collect(),
             },
-            Expr::RecordUpd(base, assigns, _) => {
+            Expr::RecordUpd(base, assigns, span) => {
                 let b = self.atom(base, buf);
                 Op::UpdateRecord {
                     base: b,
@@ -477,6 +483,7 @@ impl Lower<'_> {
                         .iter()
                         .map(|(f, x)| (f.clone(), self.atom(x, buf)))
                         .collect(),
+                    inplace: self.inplace.contains(span),
                 }
             }
             Expr::Lam(_, _, span) => match self.lam_meta.get(span) {
@@ -722,12 +729,14 @@ fn lower_func(
     globals: &HashSet<String>,
     fields: &HashSet<String>,
     lam_meta: &LamMeta,
+    inplace: &HashSet<Span>,
     data_types: &HashSet<String>,
 ) -> (Vec<String>, Term, Vec<String>) {
     let mut lw = Lower {
         globals,
         fields,
         lam_meta,
+        inplace,
         locals: locals.clone(),
         tmp: 0,
     };
@@ -776,7 +785,7 @@ fn lower_func(
 
 /// Baixa o módulo para o Core: funções de topo candidatas, os seus locais de
 /// `where` (mangled) e as lambdas liftadas (com captura).
-pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
+pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     let data_types = data_type_names(module);
     let globals = global_names(module);
     let mut fields = HashSet::new();
@@ -853,8 +862,16 @@ pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
             locals.insert(w.name.clone(), format!("{}${}", f.name, w.name));
         }
 
-        let (params, body, owned) =
-            lower_func(f, arity, &locals, &globals, &fields, &lam_meta, &data_types);
+        let (params, body, owned) = lower_func(
+            f,
+            arity,
+            &locals,
+            &globals,
+            &fields,
+            &lam_meta,
+            inplace,
+            &data_types,
+        );
         out.push(CoreFn {
             name: f.name.clone(),
             params,
@@ -873,6 +890,7 @@ pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
                 &globals,
                 &fields,
                 &lam_meta,
+                inplace,
                 &data_types,
             );
             out.push(CoreFn {
@@ -904,6 +922,7 @@ pub fn lower(module: &ast::Module) -> Vec<CoreFn> {
             globals: &globals,
             fields: &fields,
             lam_meta: &lam_meta,
+            inplace,
             locals,
             tmp: 0,
         };
@@ -1345,8 +1364,13 @@ fn dump_op(op: &Op) -> String {
                 .map(|(f, a)| format!(" {f} = {}", atom(a)))
                 .collect::<String>()
         ),
-        Op::UpdateRecord { base, fields } => format!(
-            "update {} {{{}}}",
+        Op::UpdateRecord {
+            base,
+            fields,
+            inplace,
+        } => format!(
+            "{} {} {{{}}}",
+            if *inplace { "update!" } else { "update" },
             atom(base),
             fields
                 .iter()

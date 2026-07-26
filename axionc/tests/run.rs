@@ -617,6 +617,36 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn linear_elision_updates_record_in_place() {
+    // Linear Elision (§2): 'bump c = c { val = 99 }' com c :: Cell %1 muta o
+    // bloco (nó `update!` no Core) → 1 só alocação, não 2. Resultado 99.
+    let core = axionc()
+        .args(["--emit", "core", &fixture("inplace_update.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&core.stdout).contains("update!"),
+        "esperava o nó in-place `update!` no Core"
+    );
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("inplace_update.axi")])
+        .env("AXION_HEAP_STATS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "99\n");
+    let stats = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stats.contains("1 allocs"),
+        "in-place devia poupar a alocação da cópia, stats: {stats}"
+    );
+}
+
+#[test]
 fn operator_section_is_a_first_class_value() {
     // `(+)` como valor (secção) passada a uma HOF: apply2 (+) 3 4 = 7.
     let out = axionc()
@@ -761,6 +791,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("arena_run.axi"), "100\n"),   // arenas
         (fixture("buffer_sum.axi"), "4950\n"), // Buffer U8 / §4
         (fixture("buffer_linear.axi"), "126444\n"), // Buffer %1 in-place / §5
+        (fixture("inplace_update.axi"), "99\n"), // Linear Elision / §2
         (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
     ];

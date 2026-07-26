@@ -10,6 +10,7 @@
 //! LLVM `--release` (incremento seguinte).
 
 use crate::ast;
+use crate::ast::Span;
 use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term};
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
@@ -20,6 +21,7 @@ use cranelift::prelude::{
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 // --- runtime nativo mínimo (registado como símbolos no JIT) ---
 
@@ -649,26 +651,37 @@ impl Fx<'_, '_> {
                 }
                 Ok(ptr)
             }
-            Op::UpdateRecord { base, fields } => {
+            Op::UpdateRecord {
+                base,
+                fields,
+                inplace,
+            } => {
                 let base_ptr = self.atom(base)?;
-                let first = &fields
-                    .first()
-                    .ok_or_else(|| "actualização de registo vazia".to_string())?
-                    .0;
-                let nfields = self
-                    .records
-                    .field(first)
-                    .map(|(_, fs)| fs.len())
-                    .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
-                let newptr = self.alloc(nfields);
-                for i in 0..nfields {
-                    let off = i as i32 * 8;
-                    let v = self
-                        .builder
-                        .ins()
-                        .load(types::I64, MemFlags::new(), base_ptr, off);
-                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
-                }
+                // Linear Elision (§2): in-place muta o bloco do base e devolve-o;
+                // senão aloca um novo e copia os campos não-actualizados.
+                let target = if *inplace {
+                    base_ptr
+                } else {
+                    let first = &fields
+                        .first()
+                        .ok_or_else(|| "actualização de registo vazia".to_string())?
+                        .0;
+                    let nfields = self
+                        .records
+                        .field(first)
+                        .map(|(_, fs)| fs.len())
+                        .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
+                    let newptr = self.alloc(nfields);
+                    for i in 0..nfields {
+                        let off = i as i32 * 8;
+                        let v = self
+                            .builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), base_ptr, off);
+                        self.builder.ins().store(MemFlags::new(), v, newptr, off);
+                    }
+                    newptr
+                };
                 for (fname, a) in fields {
                     let off = self
                         .records
@@ -676,9 +689,9 @@ impl Fx<'_, '_> {
                         .map(|(o, _)| o)
                         .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
                     let v = self.atom(a)?;
-                    self.builder.ins().store(MemFlags::new(), v, newptr, off);
+                    self.builder.ins().store(MemFlags::new(), v, target, off);
                 }
-                Ok(newptr)
+                Ok(target)
             }
             Op::Field { name, rec } => {
                 let off = self
@@ -826,8 +839,12 @@ impl Fx<'_, '_> {
 /// JIT-compila o Core e corre `entry` (função sem parâmetros). Devolve `Some(n)`
 /// se `entry :: Int` (o chamador imprime `n`); `None` se `:: IO ()` (os efeitos
 /// já foram executados durante a corrida).
-pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
-    let fns = core::lower(module);
+pub fn run(
+    module: &ast::Module,
+    entry: &str,
+    inplace: &HashSet<Span>,
+) -> Result<Option<i64>, String> {
+    let fns = core::lower(module, inplace);
     let entry_ok = fns
         .iter()
         .find(|f| f.name == entry)
@@ -885,8 +902,8 @@ pub fn run(module: &ast::Module, entry: &str) -> Result<Option<i64>, String> {
 }
 
 /// Emite o Cranelift IR (texto) das funções do Core, sem JIT (`--emit clif`).
-pub fn emit_ir(module: &ast::Module) -> Result<String, String> {
-    let fns = core::lower(module);
+pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
+    let fns = core::lower(module, inplace);
     if fns.is_empty() {
         return Ok("; nenhuma função compilável nativamente (núcleo Int).\n".into());
     }
