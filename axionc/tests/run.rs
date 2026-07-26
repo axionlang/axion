@@ -617,6 +617,24 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn sum_type_case_matches_on_tag() {
+    // Tipo-soma (3 construtores) com tag em runtime; o case compara o tag e
+    // destructura. val(Pos 7)+val Neg+val Zero = 6. Igual nos três executores.
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("sum_type.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "6\n");
+    let interp = axionc().arg(fixture("sum_type.axi")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "6\n");
+}
+
+#[test]
 fn ffi_calls_libc_via_dlsym() {
     // FFI: `foreign labs :: Int -> Int` chama a labs() da libc (dlsym). Corre
     // nos três executores; labs(-42) = 42.

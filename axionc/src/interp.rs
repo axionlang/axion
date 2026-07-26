@@ -27,6 +27,7 @@ enum Value {
     Int(i64),
     Str(String),
     Bool(bool),
+    #[allow(dead_code)] // `()` — ainda tratado nos matches (main :: (), etc.)
     Unit,
     /// Acção de IO ainda por executar (o texto a imprimir).
     Io(String),
@@ -200,11 +201,12 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
     match e {
         Expr::Int(n, _) => Ok(Value::Int(*n)),
         Expr::Str(s, _) => Ok(Value::Str(s.clone())),
-        Expr::Con(name, _) => Ok(match name.as_str() {
-            "True" => Value::Bool(true),
-            "False" => Value::Bool(false),
-            _ => Value::Unit,
-        }),
+        Expr::Con(name, _) => match name.as_str() {
+            "True" => Ok(Value::Bool(true)),
+            "False" => Ok(Value::Bool(false)),
+            // construtor de `data` (nulário constrói já o registo; senão é um Ctor)
+            _ => resolve_var(prog, env, name),
+        },
         Expr::Var(name, _) => resolve_var(prog, env, name),
         Expr::App(f, x, _) => {
             let callee = eval(prog, env, f)?;

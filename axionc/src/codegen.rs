@@ -503,6 +503,14 @@ impl Fx<'_, '_> {
         self.builder.inst_results(call)[0]
     }
 
+    /// Escreve o tag do construtor no offset 0, se o tipo for uma soma (>1 con).
+    fn store_tag(&mut self, con: &str, ptr: Value) {
+        if let Some(tag) = self.records.tag(con) {
+            let t = self.builder.ins().iconst(types::I64, tag as i64);
+            self.builder.ins().store(MemFlags::new(), t, ptr, 0);
+        }
+    }
+
     /// Chamada indirecta através de uma closure: `fn_ptr = clos[0]`, depois
     /// `fn_ptr(clos, args…)` (a closure é passada como env).
     fn call_closure(&mut self, clos: Value, args: &[Value]) -> Value {
@@ -671,17 +679,33 @@ impl Fx<'_, '_> {
                 Ok(ptr)
             }
             Op::MakeRecord { con, fields } => {
-                let nfields = self
+                let slots = self
                     .records
-                    .con_len(con)
+                    .con_slots(con)
                     .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
-                let ptr = self.alloc(nfields);
+                let ptr = self.alloc(slots);
+                self.store_tag(con, ptr);
                 for (fname, a) in fields {
                     let off = self
                         .records
                         .field(fname)
                         .map(|(o, _)| o)
                         .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                    let v = self.atom(a)?;
+                    self.builder.ins().store(MemFlags::new(), v, ptr, off);
+                }
+                Ok(ptr)
+            }
+            Op::MakeCon { con, args } => {
+                // valor `data` posicional (com tag se for tipo-soma)
+                let slots = self
+                    .records
+                    .con_slots(con)
+                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
+                let ptr = self.alloc(slots);
+                self.store_tag(con, ptr);
+                for (i, a) in args.iter().enumerate() {
+                    let off = self.records.field_offset(con, i);
                     let v = self.atom(a)?;
                     self.builder.ins().store(MemFlags::new(), v, ptr, off);
                 }
@@ -883,35 +907,67 @@ impl Fx<'_, '_> {
                 Ok(self.builder.block_params(merge_b)[0])
             }
             CPat::Con(con, subpats) => {
-                // Só tipos de um construtor (sem tag): destructura por posição,
-                // como um tuplo. Tipos-soma (com tag) ficam por fazer.
-                if !self.records.is_single_con(con) {
-                    return Err(format!(
-                        "padrão de construtor de tipo-soma ('{con}') não compila nativamente (ainda)"
-                    ));
-                }
-                for (j, p) in subpats.iter().enumerate() {
-                    match p {
-                        CPat::Wild => {}
-                        CPat::Var(n) => {
-                            let v = self.builder.ins().load(
-                                types::I64,
-                                MemFlags::new(),
-                                sval,
-                                j as i32 * 8,
-                            );
-                            self.bind_val(n, v);
-                        }
-                        _ => {
-                            return Err(
-                                "padrão aninhado num construtor não compila nativamente".into()
-                            )
-                        }
+                // Tipo de 1 construtor (sem tag) ou último braço: destructura sem
+                // testar o tag (assume-se exaustivo). Senão, compara o tag.
+                match self.records.tag(con) {
+                    None => {
+                        self.destructure_con(con, subpats, sval)?;
+                        self.emit_term(body)
+                    }
+                    Some(_) if i + 1 >= arms.len() => {
+                        self.destructure_con(con, subpats, sval)?;
+                        self.emit_term(body)
+                    }
+                    Some(tag) => {
+                        let ktag = self
+                            .builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), sval, 0);
+                        let kt = self.builder.ins().iconst(types::I64, tag as i64);
+                        let cond = self.builder.ins().icmp(IntCC::Equal, ktag, kt);
+                        let then_b = self.builder.create_block();
+                        let else_b = self.builder.create_block();
+                        let merge_b = self.builder.create_block();
+                        self.builder.append_block_param(merge_b, types::I64);
+                        self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
+
+                        self.builder.switch_to_block(then_b);
+                        self.builder.seal_block(then_b);
+                        self.destructure_con(con, subpats, sval)?;
+                        let tv = self.emit_term(body)?;
+                        self.builder.ins().jump(merge_b, &[tv]);
+
+                        self.builder.switch_to_block(else_b);
+                        self.builder.seal_block(else_b);
+                        let ev = self.emit_case(sval, arms, i + 1)?;
+                        self.builder.ins().jump(merge_b, &[ev]);
+
+                        self.builder.switch_to_block(merge_b);
+                        self.builder.seal_block(merge_b);
+                        Ok(self.builder.block_params(merge_b)[0])
                     }
                 }
-                self.emit_term(body)
             }
         }
+    }
+
+    /// Liga os sub-padrões (variáveis) de um construtor aos seus campos.
+    fn destructure_con(&mut self, con: &str, subpats: &[CPat], sval: Value) -> Result<(), String> {
+        for (j, p) in subpats.iter().enumerate() {
+            match p {
+                CPat::Wild => {}
+                CPat::Var(n) => {
+                    let off = self.records.field_offset(con, j);
+                    let v = self
+                        .builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), sval, off);
+                    self.bind_val(n, v);
+                }
+                _ => return Err("padrão aninhado num construtor não compila nativamente".into()),
+            }
+        }
+        Ok(())
     }
 }
 

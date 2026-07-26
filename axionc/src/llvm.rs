@@ -196,7 +196,9 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
     match op {
         Op::Atom(a) | Op::Field { rec: a, .. } | Op::PutStrLn(a) | Op::ShowInt(a) => vec![a],
         Op::Prim(_, a, b) | Op::Promote(a, b) => vec![a, b],
-        Op::CallDirect(_, xs) | Op::MakeTuple(xs) => xs.iter().collect(),
+        Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
+            xs.iter().collect()
+        }
         Op::CallClosure(c, xs) => std::iter::once(c).chain(xs).collect(),
         Op::MakeClosure { captures, .. } => captures.iter().collect(),
         Op::MakeRecord { fields, .. } => fields.iter().map(|(_, a)| a).collect(),
@@ -361,6 +363,29 @@ impl Emit<'_> {
         self.rt("axion_alloc", true, &[(nslots as i64 * 8).to_string()])
     }
 
+    /// Escreve o tag do construtor no offset 0, se o tipo for uma soma (>1 con).
+    fn store_tag(&mut self, con: &str, ptr: &str) {
+        if let Some(tag) = self.records.tag(con) {
+            self.store(ptr, 0, &tag.to_string());
+        }
+    }
+
+    /// Liga os sub-padrões (variáveis) de um construtor aos seus campos.
+    fn destructure_con(&mut self, con: &str, subpats: &[CPat], sval: &str) -> Result<(), String> {
+        for (j, p) in subpats.iter().enumerate() {
+            match p {
+                CPat::Wild => {}
+                CPat::Var(n) => {
+                    let off = self.records.field_offset(con, j);
+                    let v = self.load(sval, off);
+                    self.scope.insert(n.clone(), v);
+                }
+                _ => return Err("padrão aninhado num construtor não compila no --release".into()),
+            }
+        }
+        Ok(())
+    }
+
     fn atom(&self, a: &Atom) -> Result<String, String> {
         match a {
             Atom::Int(n) => Ok(n.to_string()),
@@ -475,27 +500,43 @@ impl Emit<'_> {
                 Ok(r)
             }
             CPat::Con(con, subpats) => {
-                // Só tipos de um construtor (sem tag): destructura por posição.
-                if !self.records.is_single_con(con) {
-                    return Err(format!(
-                        "padrão de construtor de tipo-soma ('{con}') não compila no --release (ainda)"
-                    ));
-                }
-                for (j, p) in subpats.iter().enumerate() {
-                    match p {
-                        CPat::Wild => {}
-                        CPat::Var(n) => {
-                            let v = self.load(sval, j as i32 * 8);
-                            self.scope.insert(n.clone(), v);
-                        }
-                        _ => {
-                            return Err(
-                                "padrão aninhado num construtor não compila no --release".into()
-                            )
-                        }
+                // Tipo de 1 construtor (sem tag) ou último braço: destructura sem
+                // testar o tag; senão compara o tag (offset 0) com o do construtor.
+                let last = i + 1 >= arms.len();
+                match self.records.tag(con) {
+                    None => {
+                        self.destructure_con(con, subpats, sval)?;
+                        self.term(body)
+                    }
+                    Some(_) if last => {
+                        self.destructure_con(con, subpats, sval)?;
+                        self.term(body)
+                    }
+                    Some(tag) => {
+                        let ktag = self.load(sval, 0);
+                        let c1 = self.val();
+                        self.ins(&format!("{c1} = icmp eq i64 {ktag}, {tag}"));
+                        let (lt, le, lm) =
+                            (self.label("then"), self.label("else"), self.label("merge"));
+                        self.ins(&format!("br i1 {c1}, label %{lt}, label %{le}"));
+
+                        self.block(&lt);
+                        self.destructure_con(con, subpats, sval)?;
+                        let tv = self.term(body)?;
+                        let tb = self.cur_block.clone();
+                        self.ins(&format!("br label %{lm}"));
+
+                        self.block(&le);
+                        let ev = self.case(sval, arms, i + 1)?;
+                        let eb = self.cur_block.clone();
+                        self.ins(&format!("br label %{lm}"));
+
+                        self.block(&lm);
+                        let r = self.val();
+                        self.ins(&format!("{r} = phi i64 [ {tv}, %{tb} ], [ {ev}, %{eb} ]"));
+                        Ok(r)
                     }
                 }
-                self.term(body)
             }
         }
     }
@@ -569,17 +610,32 @@ impl Emit<'_> {
                 Ok(ptr)
             }
             Op::MakeRecord { con, fields } => {
-                let nfields = self
+                let slots = self
                     .records
-                    .con_len(con)
+                    .con_slots(con)
                     .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
-                let ptr = self.alloc(nfields);
+                let ptr = self.alloc(slots);
+                self.store_tag(con, &ptr);
                 for (fname, a) in fields {
                     let off = self
                         .records
                         .field(fname)
                         .map(|(o, _)| o)
                         .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                    let v = self.atom(a)?;
+                    self.store(&ptr, off, &v);
+                }
+                Ok(ptr)
+            }
+            Op::MakeCon { con, args } => {
+                let slots = self
+                    .records
+                    .con_slots(con)
+                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
+                let ptr = self.alloc(slots);
+                self.store_tag(con, &ptr);
+                for (i, a) in args.iter().enumerate() {
+                    let off = self.records.field_offset(con, i);
                     let v = self.atom(a)?;
                     self.store(&ptr, off, &v);
                 }

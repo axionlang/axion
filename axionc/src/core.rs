@@ -53,6 +53,12 @@ pub enum Op {
         con: String,
         fields: Vec<(String, Atom)>,
     },
+    /// construir um valor `data` posicional `Con a b …` (tipos-soma incluídos —
+    /// leva o tag se o tipo tiver >1 construtor).
+    MakeCon {
+        con: String,
+        args: Vec<Atom>,
+    },
     /// actualizar registo `base { campo = átomo, … }`. `inplace` (Linear Elision,
     /// §2): o base é linear e morre aqui → muta-se o bloco existente em vez de
     /// alocar+copiar (o `check.rs` prova a segurança).
@@ -127,8 +133,8 @@ pub enum CPat {
     Var(String),
     Wild,
     Tuple(Vec<CPat>),
-    /// construtor + sub-padrões. Só destructura tipos de **um** construtor (sem
-    /// tag); tipos-soma (multi-construtor) recusam no codegen (ainda).
+    /// construtor + sub-padrões. Tipos de 1 construtor destructuram sem tag;
+    /// tipos-soma comparam o tag (offset 0) do valor com o do construtor.
     Con(String, Vec<CPat>),
 }
 
@@ -192,21 +198,24 @@ pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
     module.datas.iter().map(|d| d.name.clone()).collect()
 }
 
-/// Layout dos registos: campos por construtor (ordem declarada). Partilhado
-/// pelos backends (offset = índice × 8 bytes; um `i64` por campo).
+/// Layout dos registos/valores `data`. Um tipo de **um só** construtor não tem
+/// tag: `[campo0][campo1]…` (campo i em i×8). Um tipo-**soma** (multi-construtor)
+/// leva um **tag** (o índice do construtor) no offset 0: `[tag][campo0]…` (campo
+/// i em (1+i)×8). Partilhado pelos backends; um `i64` por slot.
 #[derive(Default)]
 pub struct RecordInfo {
-    con_fields: HashMap<String, Vec<String>>,
+    con_fields: HashMap<String, Vec<String>>, // campos com nome
     field_owner: HashMap<String, String>,
-    /// construtores de um tipo com **um só** construtor (sem tag em runtime)
-    single_con: HashSet<String>,
+    single_con: HashSet<String>,   // construtores sem tag (tipo de 1 con)
+    con_tag: HashMap<String, i32>, // índice do construtor no seu tipo
+    con_arity: HashMap<String, usize>, // nº total de campos (com ou sem nome)
 }
 
 impl RecordInfo {
     pub fn build(module: &ast::Module) -> RecordInfo {
         let mut r = RecordInfo::default();
         for d in &module.datas {
-            for c in &d.cons {
+            for (idx, c) in d.cons.iter().enumerate() {
                 let fields: Vec<String> = c
                     .fields
                     .iter()
@@ -217,6 +226,8 @@ impl RecordInfo {
                     r.field_owner.insert(f.clone(), c.name.clone());
                 }
                 r.con_fields.insert(c.name.clone(), fields);
+                r.con_tag.insert(c.name.clone(), idx as i32);
+                r.con_arity.insert(c.name.clone(), c.fields.len());
                 if d.cons.len() == 1 {
                     r.single_con.insert(c.name.clone());
                 }
@@ -225,22 +236,41 @@ impl RecordInfo {
         r
     }
 
-    /// Nº de campos de um construtor.
-    pub fn con_len(&self, con: &str) -> Option<usize> {
-        self.con_fields.get(con).map(Vec::len)
-    }
-
     /// `true` se o construtor pertence a um tipo com um só construtor (sem tag).
     pub fn is_single_con(&self, con: &str) -> bool {
         self.single_con.contains(con)
     }
 
-    /// Offset (em bytes) de um campo, e a lista de campos do seu registo.
+    /// O tag (índice) de um construtor, se o seu tipo for uma soma (>1 con).
+    pub fn tag(&self, con: &str) -> Option<i32> {
+        (!self.is_single_con(con))
+            .then(|| self.con_tag.get(con).copied())
+            .flatten()
+    }
+
+    /// Aridade total (campos com ou sem nome) de um construtor.
+    pub fn con_arity(&self, con: &str) -> Option<usize> {
+        self.con_arity.get(con).copied()
+    }
+
+    /// Nº de slots a alocar para um construtor (campos + eventual tag).
+    pub fn con_slots(&self, con: &str) -> Option<usize> {
+        self.con_arity(con)
+            .map(|n| n + usize::from(self.tag(con).is_some()))
+    }
+
+    /// Offset do i-ésimo campo (posicional) de um construtor (ajustado ao tag).
+    pub fn field_offset(&self, con: &str, i: usize) -> i32 {
+        let base = usize::from(self.tag(con).is_some());
+        (base + i) as i32 * 8
+    }
+
+    /// Offset (em bytes) de um campo com nome, e a lista de campos do seu registo.
     pub fn field(&self, name: &str) -> Option<(i32, &[String])> {
         let con = self.field_owner.get(name)?;
         let fields = self.con_fields.get(con)?;
         let idx = fields.iter().position(|f| f == name)?;
-        Some((idx as i32 * 8, fields))
+        Some((self.field_offset(con, idx), fields))
     }
 }
 
@@ -514,7 +544,15 @@ impl Lower<'_> {
                 None => Op::Unsupported("lambda não pré-processada".into()),
             },
             Expr::App(_, _, _) => self.app(e, buf),
-            Expr::Con(name, _) => Op::CallDirect(name.clone(), Vec::new()),
+            Expr::Con(name, _) => match name.as_str() {
+                "True" => Op::Atom(Atom::Int(1)),
+                "False" => Op::Atom(Atom::Int(0)),
+                // construtor nulário (ex.: `Nothing`)
+                _ => Op::MakeCon {
+                    con: name.clone(),
+                    args: Vec::new(),
+                },
+            },
             Expr::If(_, _, _, _) | Expr::Case(_, _, _) | Expr::Let(_, _, _) => {
                 // controlo em posição de folha: nomeia-o via `buf`
                 Op::Atom(self.atom(e, buf))
@@ -526,6 +564,14 @@ impl Lower<'_> {
     /// directa / chamada indirecta a closure).
     fn app(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Op {
         let (head, args) = spine(e);
+        // construtor aplicado `Con a b …` → valor `data` posicional
+        if let Expr::Con(cname, _) = head {
+            let vals = args.iter().map(|a| self.atom(a, buf)).collect();
+            return Op::MakeCon {
+                con: cname.clone(),
+                args: vals,
+            };
+        }
         let Expr::Var(name, _) = head else {
             // cabeça composta (ex.: lambda aplicada) → closure
             let clos = self.atom(head, buf);
@@ -1127,7 +1173,7 @@ fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
     match op {
         Op::Atom(a) => mark(a), // alias directo `let y = x`
         Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().for_each(&mut mark),
-        Op::MakeTuple(xs) => xs.iter().for_each(&mut mark),
+        Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().for_each(&mut mark),
         Op::MakeRecord { fields, .. } | Op::UpdateRecord { fields, .. } => {
             fields.iter().for_each(|(_, a)| mark(a))
         }
@@ -1430,6 +1476,7 @@ fn dump_op(op: &Op) -> String {
                 .map(|(f, a)| format!(" {f} = {}", atom(a)))
                 .collect::<String>()
         ),
+        Op::MakeCon { con, args } => format!("con {con}{}", self::args(args)),
         Op::Field { name, rec } => format!("field {name} {}", atom(rec)),
         Op::PutStrLn(a) => format!("putStrLn {}", atom(a)),
         Op::ShowInt(a) => format!("show {}", atom(a)),
