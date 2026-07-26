@@ -143,8 +143,12 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         return true;
     }
     match t.head_con() {
-        // Int/String/IO; arena (Arena/Cell/Mark); Buffer (§4); unit-token
-        Some("Int" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer" | "()") => true,
+        // Int/String/IO; arena (Arena/Cell/Mark); Buffer (§4); unit-token;
+        // inteiros de largura fixa (§4) — i64 na ABI
+        Some(
+            "Int" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer" | "()" | "U8" | "U16"
+            | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte",
+        ) => true,
         Some(h) => data_types.contains(h),
         None => false,
     }

@@ -156,6 +156,7 @@ fn builtins() -> HashSet<String> {
         "xorInPlace",
         "sumBytes",
         "free",
+        "foldBytes",
         "imperative",
         // permissões fraccionárias (§2)
         "split",
@@ -497,6 +498,11 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("sumBytes".to_string(), vec![Mult::Many]);
     consumers.insert("newBuffer".to_string(), vec![Mult::Many]);
     consumers.insert("withBuffer".to_string(), vec![Mult::Many, Mult::Many]);
+    // foldBytes (f init buf) empresta o buffer (lê sem consumir) — Listagem 2.2.
+    consumers.insert(
+        "foldBytes".to_string(),
+        vec![Mult::Many, Mult::Many, Mult::Many],
+    );
     Ctx {
         consumers,
         field_mults,

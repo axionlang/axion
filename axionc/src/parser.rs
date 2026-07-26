@@ -706,6 +706,29 @@ impl<'a> Parser<'a> {
         Ok((name, value))
     }
 
+    /// Reconhece uma secção de operador `(op)` — se o token corrente for um
+    /// operador seguido de `)`, consome ambos e devolve o nome do operador.
+    fn op_section(&mut self) -> Option<String> {
+        let op = match self.cur() {
+            Some(LTok::Tok(Tok::Plus)) => "+",
+            Some(LTok::Tok(Tok::Minus)) => "-",
+            Some(LTok::Tok(Tok::Star)) => "*",
+            Some(LTok::Tok(Tok::EqEq)) => "==",
+            Some(LTok::Tok(Tok::Lt)) => "<",
+            Some(LTok::Tok(Tok::Gt)) => ">",
+            _ => return None,
+        };
+        if matches!(
+            self.toks.get(self.pos + 1).map(|t| &t.tok),
+            Some(LTok::Tok(Tok::RParen))
+        ) {
+            self.pos += 2; // op + ')'
+            Some(op.to_string())
+        } else {
+            None
+        }
+    }
+
     fn parse_atom_base(&mut self) -> PResult<Expr> {
         let (s, e) = self.span_here();
         match self.cur() {
@@ -731,6 +754,24 @@ impl<'a> Parser<'a> {
             }
             Some(LTok::Tok(Tok::LParen)) => {
                 self.pos += 1;
+                // secção de operador `(+)` `(-)` `(*)` `(==)` `(<)` `(>)` →
+                // `\a b -> a op b` (valor de função de primeira classe).
+                if let Some(op) = self.op_section() {
+                    let end = self.span_here().0;
+                    let sp = (s, end);
+                    let (a, b) = ("_op0".to_string(), "_op1".to_string());
+                    let body = Expr::BinOp(
+                        op,
+                        Box::new(Expr::Var(a.clone(), sp)),
+                        Box::new(Expr::Var(b.clone(), sp)),
+                        sp,
+                    );
+                    return Ok(Expr::Lam(
+                        vec![Pat::Var(a, sp), Pat::Var(b, sp)],
+                        Box::new(body),
+                        sp,
+                    ));
+                }
                 let mut es = vec![self.parse_expr()?];
                 while self.eat(&Tok::Comma) {
                     es.push(self.parse_expr()?);

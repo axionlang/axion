@@ -134,11 +134,22 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
     let _ = placeholders;
 }
 
+/// Os inteiros de largura fixa (§4) colapsam para `Int` neste sistema de tipos
+/// simplificado (a aritmética é toda `Int`); ex.: `U8`, `U32` → `Int`.
+fn normalize_num(n: &str) -> String {
+    match n {
+        "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte" => {
+            "Int".to_string()
+        }
+        _ => n.to_string(),
+    }
+}
+
 fn ty_of_ast(t: &Type) -> Ty {
     // converte um tipo da assinatura em Ty, mapeando variáveis por nome
     fn go(t: &Type, vars: &mut HashMap<String, u32>, next: &mut u32) -> Ty {
         match t {
-            Type::Con(n) => Ty::Con(n.clone(), Vec::new()),
+            Type::Con(n) => Ty::Con(normalize_num(n), Vec::new()),
             Type::Var(n) => {
                 let id = *vars.entry(n.clone()).or_insert_with(|| {
                     let v = *next;
@@ -149,7 +160,10 @@ fn ty_of_ast(t: &Type) -> Ty {
             }
             Type::App(_, _) => {
                 let (head, args) = flatten_app(t);
-                Ty::Con(head, args.iter().map(|a| go(a, vars, next)).collect())
+                Ty::Con(
+                    normalize_num(&head),
+                    args.iter().map(|a| go(a, vars, next)).collect(),
+                )
             }
             Type::Arrow { from, to, .. } => {
                 Ty::Fun(Box::new(go(from, vars, next)), Box::new(go(to, vars, next)))
@@ -339,6 +353,24 @@ impl<'a> Infer<'a> {
             Scheme {
                 vars: vec![0],
                 ty: Ty::Fun(Box::new(bufa()), Box::new(io_unit())),
+            },
+        );
+        // foldBytes :: forall a e. (a -> Int -> a) -> a -> Buffer e -> a
+        // — dobra sobre os bytes (empresta o buffer). O byte é `Int`.
+        env.insert(
+            "foldBytes".into(),
+            Scheme {
+                vars: vec![0, 1],
+                ty: Ty::Fun(
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Var(0)),
+                        Box::new(Ty::Fun(Box::new(int()), Box::new(Ty::Var(0)))),
+                    )),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Var(0)),
+                        Box::new(Ty::Fun(Box::new(bufa()), Box::new(Ty::Var(0)))),
+                    )),
+                ),
             },
         );
         // imperative :: forall a. a -> a — o bloco imperativo (§5) é identidade.

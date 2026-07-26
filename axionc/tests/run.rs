@@ -617,6 +617,37 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn operator_section_is_a_first_class_value() {
+    // `(+)` como valor (secção) passada a uma HOF: apply2 (+) 3 4 = 7.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("op_section.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n");
+}
+
+#[test]
+fn example_05_checksum_borrow_typechecks() {
+    // O programa-alvo 5 (§5, elisão de empréstimos) compila INTACTO: foldBytes
+    // com a secção `(+)`, U8/U32, e a elisão (checksum empresta, depois encrypt
+    // consome — sem AX0001). Sem main → só --check.
+    let out = axionc()
+        .args(["--check", &example("05_checksum_borrow.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "05 devia compilar: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn example_03_linear_buffer_compiles_and_runs() {
     // O programa-alvo 3 (§5) corre INTACTO: Buffer U8 %1 + imperative $ do +
     // withBuffer + \-lambda. main :: IO () (só aloca/xor/liberta, sem output).
