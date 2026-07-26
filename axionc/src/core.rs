@@ -1151,60 +1151,94 @@ fn compute_borrow_args(
     out
 }
 
-/// Uso de um átomo, se for uma variável droppable.
-fn atom_use(a: &Atom, drp: &HashSet<String>, out: &mut HashSet<String>) {
+/// Uso de um átomo, se for uma variável droppable **livre** (não ligada por um
+/// `let` dentro do termo em análise). Excluir as ligadas localmente é essencial
+/// para o equilíbrio de ramos: uma droppable ligada dentro de um ramo é local a
+/// esse ramo e não pode ser libertada no ramo irmão (onde não existe).
+fn atom_use(a: &Atom, drp: &HashSet<String>, bound: &HashSet<String>, out: &mut HashSet<String>) {
     if let Atom::Var(n) = a {
-        if drp.contains(n) {
+        if drp.contains(n) && !bound.contains(n) {
             out.insert(n.clone());
         }
     }
 }
 
-/// Variáveis droppable **lidas** algalgures em `t` (posições de leitura de heap:
-/// `Field.rec` e escrutínio de `case`).
+/// Variáveis droppable **livres** lidas em `t` (posições de leitura de heap:
+/// `Field.rec`, escrutínio de `case`, args emprestados, closure de `withArena`).
 fn fv_drop(t: &Term, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
+    fv_drop_in(t, drp, ba, &mut HashSet::new(), out);
+}
+
+fn fv_op(op: &Op, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
+    fv_op_in(op, drp, ba, &HashSet::new(), out);
+}
+
+fn fv_drop_in(
+    t: &Term,
+    drp: &HashSet<String>,
+    ba: &BorrowArgs,
+    bound: &mut HashSet<String>,
+    out: &mut HashSet<String>,
+) {
     match t {
-        Term::Let(_, rhs, body) => {
-            fv_rhs(rhs, drp, ba, out);
-            fv_drop(body, drp, ba, out);
+        Term::Let(x, rhs, body) => {
+            fv_rhs_in(rhs, drp, ba, bound, out);
+            // `x` fica ligado no corpo — as suas menções aí não são livres
+            let fresh = bound.insert(x.clone());
+            fv_drop_in(body, drp, ba, bound, out);
+            if fresh {
+                bound.remove(x);
+            }
         }
-        Term::Drop(_, body) => fv_drop(body, drp, ba, out),
-        Term::Ret(rhs) => fv_rhs(rhs, drp, ba, out),
+        Term::Drop(_, body) => fv_drop_in(body, drp, ba, bound, out),
+        Term::Ret(rhs) => fv_rhs_in(rhs, drp, ba, bound, out),
     }
 }
 
-fn fv_rhs(rhs: &Rhs, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
+fn fv_rhs_in(
+    rhs: &Rhs,
+    drp: &HashSet<String>,
+    ba: &BorrowArgs,
+    bound: &mut HashSet<String>,
+    out: &mut HashSet<String>,
+) {
     match rhs {
-        Rhs::Op(op) => fv_op(op, drp, ba, out),
+        Rhs::Op(op) => fv_op_in(op, drp, ba, bound, out),
         Rhs::If(c, t, e) => {
-            atom_use(c, drp, out);
-            fv_drop(t, drp, ba, out);
-            fv_drop(e, drp, ba, out);
+            atom_use(c, drp, bound, out);
+            fv_drop_in(t, drp, ba, bound, out);
+            fv_drop_in(e, drp, ba, bound, out);
         }
         Rhs::Case(s, arms) => {
-            atom_use(s, drp, out);
+            atom_use(s, drp, bound, out);
             for (_, b) in arms {
-                fv_drop(b, drp, ba, out);
+                fv_drop_in(b, drp, ba, bound, out);
             }
         }
     }
 }
 
-fn fv_op(op: &Op, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
+fn fv_op_in(
+    op: &Op,
+    drp: &HashSet<String>,
+    ba: &BorrowArgs,
+    bound: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
     // `Field` lê uma droppable (o registo). Uma chamada directa a uma função com
     // parâmetros de empréstimo puro **também** conta como uso do argumento (a
     // liberta-se após a chamada, não antes). Os restantes args escapam (movem-se
     // para o callee) → droppable não aparece lá. Prim opera sobre Ints.
     match op {
-        Op::Field { rec, .. } => atom_use(rec, drp, out),
+        Op::Field { rec, .. } => atom_use(rec, drp, bound, out),
         // a closure passada a `withArena` é usada durante a chamada e morre a
         // seguir → conta como uso para o drop cair DEPOIS (como um arg emprestado)
-        Op::WithArena { clos, .. } => atom_use(clos, drp, out),
+        Op::WithArena { clos, .. } => atom_use(clos, drp, bound, out),
         Op::CallDirect(g, xs) => {
             if let Some(bs) = ba.get(g) {
                 for (i, a) in xs.iter().enumerate() {
                     if bs.contains(&i) {
-                        atom_use(a, drp, out);
+                        atom_use(a, drp, bound, out);
                     }
                 }
             }
