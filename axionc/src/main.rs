@@ -19,6 +19,7 @@ mod codegen;
 mod core;
 #[allow(dead_code)]
 mod diag;
+mod ffi;
 mod infer;
 mod interp;
 mod layout;

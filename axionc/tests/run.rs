@@ -933,6 +933,74 @@ fn release_backend_compiles_and_runs_when_clang_present() {
 }
 
 #[test]
+fn ffi_calls_user_shared_library() {
+    // FFI (§18) a `dlopen`: `foreign "lib.so" nome :: …` carrega a `.so` do
+    // utilizador e chama-a nos três executores (interp, --dev, --release).
+    // Precisa de clang para compilar a `.so`.
+    let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
+    if std::process::Command::new(&clang)
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("axion-ffi-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfile = dir.join("mymath.c");
+    let sofile = dir.join("libmymath.so");
+    std::fs::write(
+        &cfile,
+        "#include <stdint.h>\n\
+         int64_t axion_triple(int64_t x) { return x * 3; }\n\
+         int64_t axion_add(int64_t a, int64_t b) { return a + b; }\n",
+    )
+    .unwrap();
+    let ok = std::process::Command::new(&clang)
+        .args(["-O2", "-shared", "-fPIC"])
+        .arg(&cfile)
+        .arg("-o")
+        .arg(&sofile)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "clang não compilou a .so de teste");
+
+    let axi = dir.join("prog.axi");
+    std::fs::write(
+        &axi,
+        format!(
+            "foreign \"{so}\" axion_triple :: Int -> Int\n\
+             foreign \"{so}\" axion_add :: Int -> Int -> Int\n\
+             main :: Int\n\
+             main = axion_add (axion_triple 4) 5\n",
+            so = sofile.display()
+        ),
+    )
+    .unwrap();
+    let path = axi.to_str().unwrap();
+
+    for args in [
+        vec![path],
+        vec!["--backend", "cranelift", path],
+        vec!["--release", path],
+    ] {
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "17\n",
+            "FFI a .so do utilizador divergiu em {args:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn emit_clif_dumps_cranelift_ir() {
     let out = axionc()
         .args(["--emit", "clif", &fixture("native_fib.axi")])

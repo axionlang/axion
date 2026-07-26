@@ -163,11 +163,29 @@ pub struct Module {
     pub foreigns: Vec<Foreign>,
 }
 
-/// Uma importação FFI: `foreign nome :: Int -> … -> Int` chama a função C `nome`
-/// (ABI de Int/i64), resolvida por `dlsym` (§18).
+impl Module {
+    /// Caminhos de bibliotecas `.so` a carregar para o FFI (§18), sem repetições
+    /// e por ordem de primeira menção.
+    pub fn foreign_libs(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for f in &self.foreigns {
+            if let Some(lib) = &f.lib {
+                if !out.contains(lib) {
+                    out.push(lib.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Uma importação FFI: `foreign ["lib.so"] nome :: Int -> … -> Int` chama a
+/// função C `nome` (ABI de Int/i64), resolvida por `dlsym` (§18). Com o caminho
+/// de biblioteca opcional, essa `.so` é carregada antes de resolver os símbolos.
 #[derive(Debug, Clone)]
 pub struct Foreign {
     pub name: String,
     pub sig: Type,
+    pub lib: Option<String>,
     pub span: Span,
 }

@@ -138,6 +138,9 @@ fn build_program(module: &Module) -> Program {
 
 /// Compila o módulo para um `Program` e corre `main`, executando o IO resultante.
 pub fn run(module: &Module) -> Result<(), RunError> {
+    // FFI (§18): carrega as bibliotecas do utilizador para o espaço global de
+    // símbolos, para o `dlsym(RTLD_DEFAULT)` de `call_foreign` as encontrar.
+    crate::ffi::load_libs(&module.foreign_libs())?;
     let prog = build_program(module);
     let main = prog
         .funcs

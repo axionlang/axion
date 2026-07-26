@@ -991,6 +991,10 @@ pub fn run(
         ));
     }
 
+    // FFI (§18): carrega as bibliotecas do utilizador (RTLD_GLOBAL) antes de o
+    // JIT resolver símbolos por `dlsym` (`symbol_lookup_fn`).
+    crate::ffi::load_libs(&module.foreign_libs())?;
+
     let mut cg = Cg::new(RecordInfo::build(module))?;
     cg.declare_all(&fns)?;
     for f in &fns {

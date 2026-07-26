@@ -200,6 +200,14 @@ impl<'a> Parser<'a> {
         if self.at(&Tok::Foreign) {
             let start = self.span_here().0;
             self.bump(); // foreign
+                         // caminho de biblioteca opcional: `foreign "libfoo.so" nome :: …`
+            let lib = if let Some(LTok::Tok(Tok::Str(v))) = self.cur() {
+                let v = v.clone();
+                self.bump();
+                Some(v)
+            } else {
+                None
+            };
             let (name, _) = self.var_name("nome da importação foreign")?;
             self.expect(&Tok::ColonColon, "'::' na importação foreign")?;
             let sig = self.parse_type()?;
@@ -207,6 +215,7 @@ impl<'a> Parser<'a> {
             return Ok(TopItem::Foreign(Foreign {
                 name,
                 sig,
+                lib,
                 span: (start, end),
             }));
         }

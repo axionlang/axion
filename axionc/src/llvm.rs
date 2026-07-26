@@ -129,16 +129,25 @@ pub fn build_and_run(
     std::fs::write(&rt, RUNTIME_C).map_err(|e| e.to_string())?;
 
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
-    let status = std::process::Command::new(&clang)
-        .args(["-O2", "-flto", "-w"])
+    let mut cmd = std::process::Command::new(&clang);
+    cmd.args(["-O2", "-flto", "-w"])
         .arg(&ll)
         .arg(&rt)
         .arg("-o")
-        .arg(&exe)
-        .status()
-        .map_err(|e| {
-            format!("não consegui invocar '{clang}' ({e}); define AXION_CLANG ou usa nix")
-        })?;
+        .arg(&exe);
+    // FFI (§18): liga as bibliotecas do utilizador (caminho directo) e grava o
+    // seu directório em rpath, para o carregador dinâmico as achar em runtime.
+    for lib in module.foreign_libs() {
+        let path = std::path::Path::new(&lib);
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+            cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+        }
+        cmd.arg(&lib);
+    }
+    let status = cmd.status().map_err(|e| {
+        format!("não consegui invocar '{clang}' ({e}); define AXION_CLANG ou usa nix")
+    })?;
     if !status.success() {
         return Err("clang falhou a compilar o LLVM IR".into());
     }
