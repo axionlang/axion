@@ -536,6 +536,40 @@ fn cross_function_reclamation_frees_moved_linear_object() {
 }
 
 #[test]
+fn borrowed_arg_reclaimed_after_call() {
+    // 'dist' só lê os campos do registo (empréstimo puro), pelo que 'main' — que
+    // o aloca — o liberta APÓS a chamada, em vez de o dar por perdido: 1==1.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("borrow_reclaim.axi")])
+        .env("AXION_HEAP_STATS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n");
+    let stats = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stats.contains("1 allocs, 1 frees"),
+        "esperava reclamação do argumento emprestado (1==1), stats: {stats}"
+    );
+    // o drop do registo tem de vir DEPOIS da chamada que o empresta
+    let core = axionc()
+        .args(["--emit", "core", &fixture("borrow_reclaim.axi")])
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    let call = core.find("call dist").expect("chamada a dist");
+    let drop = core.find("drop _t0").expect("drop do registo");
+    assert!(
+        drop > call,
+        "o drop tem de vir depois da chamada emprestada:\n{core}"
+    );
+}
+
+#[test]
 fn arena_runs_natively_with_bulk_reset() {
     // Arena (§3): 'withArena' cria a raiz, allocN bump-aloca 100 células, e a
     // arena é reclamada com UM só reset (não 100 frees). O interpretador não

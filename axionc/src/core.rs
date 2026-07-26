@@ -1035,8 +1035,17 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         });
     }
 
+    // multiplicidades dos parâmetros das funções de topo com assinatura, para a
+    // reclamação de argumentos emprestados
+    let param_mults: HashMap<String, Vec<ast::Mult>> = module
+        .funcs
+        .iter()
+        .filter_map(|f| f.sig.as_ref().map(|s| (f.name.clone(), s.param_mults())))
+        .collect();
+    let borrow_args = compute_borrow_args(&out, &param_mults);
+
     out.into_iter()
-        .map(|f| insert_drops(f, &heap_ret))
+        .map(|f| insert_drops(f, &heap_ret, &borrow_args))
         .collect()
 }
 
@@ -1053,6 +1062,87 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
 // tal como a reclamação entre funções e o reset de arena (incrementos
 // seguintes).
 
+/// Reclamação de argumentos emprestados (§2): mapa nome-de-função → índices de
+/// parâmetros que são *empréstimos puros* — parâmetros `Many` (o chamador retém
+/// a posse) que o corpo **só lê localmente** (`Field.rec`/escrutínio de `case`),
+/// nunca os devolvendo, embebendo, aliasing nem passando adiante. Como o callee
+/// não os retém, o chamador pode libertar o argumento **após** a chamada, em vez
+/// de o dar por perdido. Conservador: um parâmetro passado a *qualquer* chamada
+/// (mesmo que essa a empreste também) conta como escape (sem ponto-fixo entre
+/// funções); e só se sabe o multiplicidade de funções de topo com assinatura.
+type BorrowArgs = HashMap<String, HashSet<usize>>;
+
+fn atom_is(v: &str, a: &Atom) -> bool {
+    matches!(a, Atom::Var(n) if n == v)
+}
+
+/// `true` se `v` aparece nalguma posição que **não** seja leitura local dentro
+/// de `t` — i.e. escapa do callee (devolvido, embebido, aliased, ou passado a
+/// uma chamada). Um parâmetro `Many` para o qual isto é `false` é empréstimo puro.
+fn occurs_nonborrow(v: &str, t: &Term) -> bool {
+    match t {
+        Term::Let(_, rhs, body) => rhs_nonborrow(v, rhs) || occurs_nonborrow(v, body),
+        Term::Drop(_, body) => occurs_nonborrow(v, body),
+        Term::Ret(rhs) => rhs_nonborrow(v, rhs),
+    }
+}
+
+fn rhs_nonborrow(v: &str, rhs: &Rhs) -> bool {
+    match rhs {
+        Rhs::Op(op) => op_nonborrow(v, op),
+        // condição de `if`/escrutínio de `case` são leituras locais (empréstimo)
+        Rhs::If(_, t, e) => occurs_nonborrow(v, t) || occurs_nonborrow(v, e),
+        Rhs::Case(_, arms) => arms.iter().any(|(_, b)| occurs_nonborrow(v, b)),
+    }
+}
+
+fn op_nonborrow(v: &str, op: &Op) -> bool {
+    match op {
+        Op::Field { .. } => false,    // ler um campo é empréstimo
+        Op::Atom(a) => atom_is(v, a), // alias/retorno
+        Op::Prim(_, a, b) => atom_is(v, a) || atom_is(v, b),
+        Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
+        Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
+        Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(v, a)),
+        Op::UpdateRecord { base, fields, .. } => {
+            atom_is(v, base) || fields.iter().any(|(_, a)| atom_is(v, a))
+        }
+        Op::MakeClosure { captures, .. } => captures.iter().any(|a| atom_is(v, a)),
+        Op::WithArena { parent, clos } => parent.iter().any(|a| atom_is(v, a)) || atom_is(v, clos),
+        Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => atom_is(v, a),
+        Op::Promote(t, c) => atom_is(v, t) || atom_is(v, c),
+        Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
+        Op::PutStrLn(a) | Op::ShowInt(a) => atom_is(v, a),
+        Op::Unsupported(_) => false,
+    }
+}
+
+/// Calcula os empréstimos puros de cada função de topo (as que têm assinatura,
+/// logo multiplicidade conhecida). Ver [`BorrowArgs`].
+fn compute_borrow_args(
+    fns: &[CoreFn],
+    param_mults: &HashMap<String, Vec<ast::Mult>>,
+) -> BorrowArgs {
+    let mut out = HashMap::new();
+    for f in fns {
+        let Some(mults) = param_mults.get(&f.name) else {
+            continue;
+        };
+        let mut set = HashSet::new();
+        for (i, pname) in f.params.iter().enumerate() {
+            // emprestado (não `%1` → o chamador retém a posse) e só lido localmente
+            let borrowed = mults.get(i) != Some(&ast::Mult::One);
+            if borrowed && !occurs_nonborrow(pname, &f.body) {
+                set.insert(i);
+            }
+        }
+        if !set.is_empty() {
+            out.insert(f.name.clone(), set);
+        }
+    }
+    out
+}
+
 /// Uso de um átomo, se for uma variável droppable.
 fn atom_use(a: &Atom, drp: &HashSet<String>, out: &mut HashSet<String>) {
     if let Atom::Var(n) = a {
@@ -1064,55 +1154,68 @@ fn atom_use(a: &Atom, drp: &HashSet<String>, out: &mut HashSet<String>) {
 
 /// Variáveis droppable **lidas** algalgures em `t` (posições de leitura de heap:
 /// `Field.rec` e escrutínio de `case`).
-fn fv_drop(t: &Term, drp: &HashSet<String>, out: &mut HashSet<String>) {
+fn fv_drop(t: &Term, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
     match t {
         Term::Let(_, rhs, body) => {
-            fv_rhs(rhs, drp, out);
-            fv_drop(body, drp, out);
+            fv_rhs(rhs, drp, ba, out);
+            fv_drop(body, drp, ba, out);
         }
-        Term::Drop(_, body) => fv_drop(body, drp, out),
-        Term::Ret(rhs) => fv_rhs(rhs, drp, out),
+        Term::Drop(_, body) => fv_drop(body, drp, ba, out),
+        Term::Ret(rhs) => fv_rhs(rhs, drp, ba, out),
     }
 }
 
-fn fv_rhs(rhs: &Rhs, drp: &HashSet<String>, out: &mut HashSet<String>) {
+fn fv_rhs(rhs: &Rhs, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
     match rhs {
-        Rhs::Op(op) => fv_op(op, drp, out),
+        Rhs::Op(op) => fv_op(op, drp, ba, out),
         Rhs::If(c, t, e) => {
             atom_use(c, drp, out);
-            fv_drop(t, drp, out);
-            fv_drop(e, drp, out);
+            fv_drop(t, drp, ba, out);
+            fv_drop(e, drp, ba, out);
         }
         Rhs::Case(s, arms) => {
             atom_use(s, drp, out);
             for (_, b) in arms {
-                fv_drop(b, drp, out);
+                fv_drop(b, drp, ba, out);
             }
         }
     }
 }
 
-fn fv_op(op: &Op, drp: &HashSet<String>, out: &mut HashSet<String>) {
-    // Só `Field` lê uma variável droppable (o registo). Make*/Call*/Ret-atom são
-    // escapes → droppable não aparece lá (foi excluída). Prim opera sobre Ints.
-    if let Op::Field { rec, .. } = op {
-        atom_use(rec, drp, out);
+fn fv_op(op: &Op, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
+    // `Field` lê uma droppable (o registo). Uma chamada directa a uma função com
+    // parâmetros de empréstimo puro **também** conta como uso do argumento (a
+    // liberta-se após a chamada, não antes). Os restantes args escapam (movem-se
+    // para o callee) → droppable não aparece lá. Prim opera sobre Ints.
+    match op {
+        Op::Field { rec, .. } => atom_use(rec, drp, out),
+        Op::CallDirect(g, xs) => {
+            if let Some(bs) = ba.get(g) {
+                for (i, a) in xs.iter().enumerate() {
+                    if bs.contains(&i) {
+                        atom_use(a, drp, out);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 
 /// O conjunto droppable de uma função: objectos que ela **possui** — alocados
 /// localmente (`Make*`), resultados de chamadas que devolvem heap (`heap_ret`),
 /// e os seus parâmetros `%1` de heap — menos os que escapam.
-fn droppable_vars(f: &CoreFn, heap_ret: &HashSet<String>) -> HashSet<String> {
+fn droppable_vars(f: &CoreFn, heap_ret: &HashSet<String>, ba: &BorrowArgs) -> HashSet<String> {
     let mut allocated: HashSet<String> = f.owned_params.iter().cloned().collect();
     let mut escaped = HashSet::new();
-    scan_body(&f.body, heap_ret, &mut allocated, &mut escaped);
+    scan_body(&f.body, heap_ret, ba, &mut allocated, &mut escaped);
     allocated.difference(&escaped).cloned().collect()
 }
 
 fn scan_body(
     t: &Term,
     heap_ret: &HashSet<String>,
+    ba: &BorrowArgs,
     alloc: &mut HashSet<String>,
     esc: &mut HashSet<String>,
 ) {
@@ -1124,28 +1227,28 @@ fn scan_body(
                     if is_heap_alloc(op) || returns_owned_heap(op, heap_ret) {
                         alloc.insert(x.clone());
                     }
-                    scan_op_escapes(op, esc);
+                    scan_op_escapes(op, ba, esc);
                 }
                 Rhs::If(_, t2, e2) => {
-                    scan_body(t2, heap_ret, alloc, esc);
-                    scan_body(e2, heap_ret, alloc, esc);
+                    scan_body(t2, heap_ret, ba, alloc, esc);
+                    scan_body(e2, heap_ret, ba, alloc, esc);
                 }
                 Rhs::Case(_, arms) => arms
                     .iter()
-                    .for_each(|(_, b)| scan_body(b, heap_ret, alloc, esc)),
+                    .for_each(|(_, b)| scan_body(b, heap_ret, ba, alloc, esc)),
             }
-            scan_body(body, heap_ret, alloc, esc);
+            scan_body(body, heap_ret, ba, alloc, esc);
         }
-        Term::Drop(_, body) => scan_body(body, heap_ret, alloc, esc),
+        Term::Drop(_, body) => scan_body(body, heap_ret, ba, alloc, esc),
         Term::Ret(rhs) => match rhs {
-            Rhs::Op(op) => scan_op_escapes_ret(op, esc),
+            Rhs::Op(op) => scan_op_escapes_ret(op, ba, esc),
             Rhs::If(_, t2, e2) => {
-                scan_body(t2, heap_ret, alloc, esc);
-                scan_body(e2, heap_ret, alloc, esc);
+                scan_body(t2, heap_ret, ba, alloc, esc);
+                scan_body(e2, heap_ret, ba, alloc, esc);
             }
             Rhs::Case(_, arms) => arms
                 .iter()
-                .for_each(|(_, b)| scan_body(b, heap_ret, alloc, esc)),
+                .for_each(|(_, b)| scan_body(b, heap_ret, ba, alloc, esc)),
         },
     }
 }
@@ -1164,7 +1267,7 @@ fn is_heap_alloc(op: &Op) -> bool {
 
 /// Nomes de variáveis que escapam por aparecerem numa posição de dono
 /// (argumento de chamada, embebimento noutro objecto, alias directo).
-fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
+fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     let mut mark = |a: &Atom| {
         if let Atom::Var(n) = a {
             esc.insert(n.clone());
@@ -1172,7 +1275,17 @@ fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
     };
     match op {
         Op::Atom(a) => mark(a), // alias directo `let y = x`
-        Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().for_each(&mut mark),
+        // uma chamada directa move os argumentos para o callee — excepto os que
+        // ela apenas empresta (empréstimo puro), que o chamador retém e liberta
+        Op::CallDirect(g, xs) => {
+            let borrow = ba.get(g);
+            for (i, a) in xs.iter().enumerate() {
+                if borrow.is_none_or(|bs| !bs.contains(&i)) {
+                    mark(a);
+                }
+            }
+        }
+        Op::CallClosure(_, xs) => xs.iter().for_each(&mut mark),
         Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().for_each(&mut mark),
         Op::MakeRecord { fields, .. } | Op::UpdateRecord { fields, .. } => {
             fields.iter().for_each(|(_, a)| mark(a))
@@ -1198,8 +1311,8 @@ fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
     }
 }
 
-fn scan_op_escapes_ret(op: &Op, esc: &mut HashSet<String>) {
-    scan_op_escapes(op, esc);
+fn scan_op_escapes_ret(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
+    scan_op_escapes(op, ba, esc);
     // o valor devolvido escapa
     if let Op::Atom(Atom::Var(n)) = op {
         esc.insert(n.clone());
@@ -1207,26 +1320,28 @@ fn scan_op_escapes_ret(op: &Op, esc: &mut HashSet<String>) {
 }
 
 /// Insere os `drop`s numa função (Drop estrutural + reclamação entre funções).
-fn insert_drops(mut f: CoreFn, heap_ret: &HashSet<String>) -> CoreFn {
-    let drp = droppable_vars(&f, heap_ret);
+fn insert_drops(mut f: CoreFn, heap_ret: &HashSet<String>, ba: &BorrowArgs) -> CoreFn {
+    let drp = droppable_vars(&f, heap_ret, ba);
     if drp.is_empty() {
         return f;
     }
     let mut e = Elab {
         drp,
         tmp: 1_000_000,
+        ba,
     };
     let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
     f.body = e.go(body, &HashSet::new());
     f
 }
 
-struct Elab {
+struct Elab<'a> {
     drp: HashSet<String>,
     tmp: u32,
+    ba: &'a BorrowArgs,
 }
 
-impl Elab {
+impl Elab<'_> {
     fn fresh(&mut self) -> String {
         let n = format!("_d{}", self.tmp);
         self.tmp += 1;
@@ -1245,7 +1360,7 @@ impl Elab {
             Term::Ret(rhs) => match rhs {
                 Rhs::Op(op) => {
                     let mut u = HashSet::new();
-                    fv_op(&op, &self.drp, &mut u);
+                    fv_op(&op, &self.drp, self.ba, &mut u);
                     let dying: Vec<String> =
                         u.into_iter().filter(|v| !live_out.contains(v)).collect();
                     if dying.is_empty() {
@@ -1271,10 +1386,10 @@ impl Elab {
             Term::Let(x, rhs, body) => match rhs {
                 Rhs::Op(op) => {
                     let mut fvb = HashSet::new();
-                    fv_drop(&body, &self.drp, &mut fvb);
+                    fv_drop(&body, &self.drp, self.ba, &mut fvb);
                     let body2 = self.go(*body, live_out);
                     let mut u = HashSet::new();
-                    fv_op(&op, &self.drp, &mut u);
+                    fv_op(&op, &self.drp, self.ba, &mut u);
                     let mut dying: Vec<String> = u
                         .into_iter()
                         .filter(|v| !fvb.contains(v) && !live_out.contains(v))
@@ -1291,7 +1406,7 @@ impl Elab {
                 }
                 Rhs::If(c, th, el) => {
                     let mut fvb = HashSet::new();
-                    fv_drop(&body, &self.drp, &mut fvb);
+                    fv_drop(&body, &self.drp, self.ba, &mut fvb);
                     let body2 = self.go(*body, live_out);
                     let mut lo = live_out.clone();
                     lo.extend(fvb);
@@ -1300,7 +1415,7 @@ impl Elab {
                 }
                 Rhs::Case(s, arms) => {
                     let mut fvb = HashSet::new();
-                    fv_drop(&body, &self.drp, &mut fvb);
+                    fv_drop(&body, &self.drp, self.ba, &mut fvb);
                     let body2 = self.go(*body, live_out);
                     let mut lo = live_out.clone();
                     lo.extend(fvb);
@@ -1315,9 +1430,9 @@ impl Elab {
     /// ramo é libertada à entrada do outro (para libertar uma vez por caminho).
     fn branches2(&mut self, th: Term, el: Term, live_out: &HashSet<String>) -> (Term, Term) {
         let mut fth = HashSet::new();
-        fv_drop(&th, &self.drp, &mut fth);
+        fv_drop(&th, &self.drp, self.ba, &mut fth);
         let mut fel = HashSet::new();
-        fv_drop(&el, &self.drp, &mut fel);
+        fv_drop(&el, &self.drp, self.ba, &mut fel);
         let mut th2 = self.go(th, live_out);
         let mut el2 = self.go(el, live_out);
         for v in fth.difference(&fel) {
@@ -1346,7 +1461,7 @@ impl Elab {
             .iter()
             .map(|(_, b)| {
                 let mut s = HashSet::new();
-                fv_drop(b, &self.drp, &mut s);
+                fv_drop(b, &self.drp, self.ba, &mut s);
                 s
             })
             .collect();
