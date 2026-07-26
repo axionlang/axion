@@ -617,6 +617,22 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn fold_bytes_runs_with_operator_section() {
+    // foldBytes (+) 0 buf: dobra a closure sobre os bytes (chamada indirecta por
+    // byte no runtime). soma dos bytes 0..99 = 4950.
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("fold_bytes.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "4950\n");
+}
+
+#[test]
 fn guards_compile_and_run() {
     // guardas → cadeia de if; interp e nativo concordam (0).
     let native = axionc()

@@ -218,6 +218,22 @@ extern "C" fn axion_buf_free(buf: *mut u8) {
     }
 }
 
+/// `foldBytes f init buf`: dobra a closure `f` sobre os bytes. Lê o `fn_ptr` de
+/// `f[0]` e chama `fn_ptr(f, acc, byte)` por byte (a closure é o env).
+extern "C" fn axion_fold_bytes(f: *mut u8, init: i64, buf: *mut u8) -> i64 {
+    unsafe {
+        let fn_ptr = *(f as *const i64);
+        let func: extern "C" fn(*mut u8, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
+        let n = *(buf as *const i64) as usize;
+        let d = buf.add(8);
+        let mut acc = init;
+        for i in 0..n {
+            acc = func(f, acc, *d.add(i) as i64);
+        }
+        acc
+    }
+}
+
 /// Os `FuncId` do runtime de arena (§3).
 #[derive(Clone, Copy)]
 struct Arena {
@@ -268,6 +284,7 @@ impl Cg {
         builder.symbol("axion_buf_xor", axion_buf_xor as *const u8);
         builder.symbol("axion_buf_sum", axion_buf_sum as *const u8);
         builder.symbol("axion_buf_free", axion_buf_free as *const u8);
+        builder.symbol("axion_fold_bytes", axion_fold_bytes as *const u8);
         let mut module = JITModule::new(builder);
 
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
@@ -302,6 +319,7 @@ impl Cg {
             ("axion_buf_xor", 2, true),
             ("axion_buf_sum", 1, true),
             ("axion_buf_free", 1, false),
+            ("axion_fold_bytes", 3, true),
         ] {
             rt_fns.insert(name.into(), (import(&mut module, name, nparams, ret)?, ret));
         }

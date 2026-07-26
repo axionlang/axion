@@ -553,6 +553,7 @@ impl Lower<'_> {
             ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
             ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
             ("free", 1) => return self.rtcall("axion_buf_free", &args, false, buf),
+            ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
             // `imperative e` = e (o bloco imperativo é identidade; §5)
             ("imperative", 1) => return self.op(args[0], buf),
             // withBuffer n f = f (newBuffer n): aloca e passa à closure (que consome)

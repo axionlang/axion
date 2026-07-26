@@ -39,6 +39,7 @@ declare i64 @axion_buf_iota(i64)
 declare i64 @axion_buf_xor(i64, i64)
 declare i64 @axion_buf_sum(i64)
 declare void @axion_buf_free(i64)
+declare i64 @axion_fold_bytes(i64, i64, i64)
 declare i32 @printf(ptr, ...)
 ";
 

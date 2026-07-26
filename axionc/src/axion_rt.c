@@ -137,3 +137,16 @@ long axion_buf_sum(long buf) { /* redução vectorizável (empresta) */
   return s;
 }
 void axion_buf_free(long buf) { free((void *)buf); }
+
+/* foldBytes f init buf: dobra `f` sobre os bytes. `f` é uma closure Axión
+ * {fn_ptr, capturas…}; chama-se `fn_ptr(f, acc, byte)` (a closure é o env do
+ * 1.º parâmetro). Chamada indirecta por byte (não vectoriza — usar sumBytes
+ * para somas). */
+long axion_fold_bytes(long f, long init, long buf) {
+  long (*fn)(long, long, long) = *(long (**)(long, long, long))f;
+  long n = *(long *)buf;
+  unsigned char *d = (unsigned char *)(buf + 8);
+  long acc = init;
+  for (long i = 0; i < n; i++) acc = fn(f, acc, (long)d[i]);
+  return acc;
+}
