@@ -617,6 +617,24 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn constructor_pattern_in_case_destructures() {
+    // `case p of Point a b -> a + b` (tipo de um só construtor). interp e nativo
+    // concordam (7).
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("con_pattern.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "7\n");
+    let interp = axionc().arg(fixture("con_pattern.axi")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "7\n");
+}
+
+#[test]
 fn fold_bytes_runs_with_operator_section() {
     // foldBytes (+) 0 buf: dobra a closure sobre os bytes (chamada indirecta por
     // byte no runtime). soma dos bytes 0..99 = 4950.

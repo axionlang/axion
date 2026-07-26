@@ -121,7 +121,9 @@ pub enum CPat {
     Var(String),
     Wild,
     Tuple(Vec<CPat>),
-    Con(String), // construtor — o codegen recusa (ainda)
+    /// construtor + sub-padrões. Só destructura tipos de **um** construtor (sem
+    /// tag); tipos-soma (multi-construtor) recusam no codegen (ainda).
+    Con(String, Vec<CPat>),
 }
 
 /// Uma função no Core: de topo, local de `where`, ou lambda liftada.
@@ -190,6 +192,8 @@ pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
 pub struct RecordInfo {
     con_fields: HashMap<String, Vec<String>>,
     field_owner: HashMap<String, String>,
+    /// construtores de um tipo com **um só** construtor (sem tag em runtime)
+    single_con: HashSet<String>,
 }
 
 impl RecordInfo {
@@ -207,6 +211,9 @@ impl RecordInfo {
                     r.field_owner.insert(f.clone(), c.name.clone());
                 }
                 r.con_fields.insert(c.name.clone(), fields);
+                if d.cons.len() == 1 {
+                    r.single_con.insert(c.name.clone());
+                }
             }
         }
         r
@@ -215,6 +222,11 @@ impl RecordInfo {
     /// Nº de campos de um construtor.
     pub fn con_len(&self, con: &str) -> Option<usize> {
         self.con_fields.get(con).map(Vec::len)
+    }
+
+    /// `true` se o construtor pertence a um tipo com um só construtor (sem tag).
+    pub fn is_single_con(&self, con: &str) -> bool {
+        self.single_con.contains(con)
     }
 
     /// Offset (em bytes) de um campo, e a lista de campos do seu registo.
@@ -714,7 +726,7 @@ fn lower_pat(p: &Pat) -> CPat {
         Pat::Var(n, _) => CPat::Var(n.clone()),
         Pat::Int(n, _) => CPat::Int(*n),
         Pat::Tuple(ps, _) => CPat::Tuple(ps.iter().map(lower_pat).collect()),
-        Pat::Con(n, _, _) => CPat::Con(n.clone()),
+        Pat::Con(n, ps, _) => CPat::Con(n.clone(), ps.iter().map(lower_pat).collect()),
     }
 }
 
@@ -1433,6 +1445,12 @@ fn cpat(p: &CPat) -> String {
         CPat::Var(n) => n.clone(),
         CPat::Wild => "_".into(),
         CPat::Tuple(ps) => format!("({})", ps.iter().map(cpat).collect::<Vec<_>>().join(", ")),
-        CPat::Con(n) => n.clone(),
+        CPat::Con(n, ps) => {
+            if ps.is_empty() {
+                n.clone()
+            } else {
+                format!("{n} {}", ps.iter().map(cpat).collect::<Vec<_>>().join(" "))
+            }
+        }
     }
 }

@@ -465,10 +465,19 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
             true
         }
         Pat::Int(n, _) => matches!(v, Value::Int(m) if m == n),
-        Pat::Con(name, _, _) => matches!(
-            (name.as_str(), v),
-            ("True", Value::Bool(true)) | ("False", Value::Bool(false))
-        ),
+        Pat::Con(name, subpats, _) => match v {
+            Value::Bool(b) => (name == "True" && *b) || (name == "False" && !*b),
+            // construtor: casa se o nome bate e liga os sub-padrões aos campos
+            Value::Record { con, fields } => {
+                con == name
+                    && subpats.len() <= fields.len()
+                    && subpats
+                        .iter()
+                        .zip(fields)
+                        .all(|(p, (_, fv))| match_pat(p, fv, env))
+            }
+            _ => false,
+        },
         Pat::Tuple(ps, _) => match v {
             Value::Tuple(vs) if vs.len() == ps.len() => {
                 ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, env))

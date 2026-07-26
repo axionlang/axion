@@ -847,8 +847,34 @@ impl Fx<'_, '_> {
                 self.builder.seal_block(merge_b);
                 Ok(self.builder.block_params(merge_b)[0])
             }
-            CPat::Con(_) => {
-                Err("padrão de construtor no case não compila nativamente (ainda)".into())
+            CPat::Con(con, subpats) => {
+                // Só tipos de um construtor (sem tag): destructura por posição,
+                // como um tuplo. Tipos-soma (com tag) ficam por fazer.
+                if !self.records.is_single_con(con) {
+                    return Err(format!(
+                        "padrão de construtor de tipo-soma ('{con}') não compila nativamente (ainda)"
+                    ));
+                }
+                for (j, p) in subpats.iter().enumerate() {
+                    match p {
+                        CPat::Wild => {}
+                        CPat::Var(n) => {
+                            let v = self.builder.ins().load(
+                                types::I64,
+                                MemFlags::new(),
+                                sval,
+                                j as i32 * 8,
+                            );
+                            self.bind_val(n, v);
+                        }
+                        _ => {
+                            return Err(
+                                "padrão aninhado num construtor não compila nativamente".into()
+                            )
+                        }
+                    }
+                }
+                self.emit_term(body)
             }
         }
     }

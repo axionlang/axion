@@ -438,7 +438,29 @@ impl Emit<'_> {
                 self.ins(&format!("{r} = phi i64 [ {tv}, %{tb} ], [ {ev}, %{eb} ]"));
                 Ok(r)
             }
-            CPat::Con(_) => Err("padrão de construtor no case não compila no --release".into()),
+            CPat::Con(con, subpats) => {
+                // Só tipos de um construtor (sem tag): destructura por posição.
+                if !self.records.is_single_con(con) {
+                    return Err(format!(
+                        "padrão de construtor de tipo-soma ('{con}') não compila no --release (ainda)"
+                    ));
+                }
+                for (j, p) in subpats.iter().enumerate() {
+                    match p {
+                        CPat::Wild => {}
+                        CPat::Var(n) => {
+                            let v = self.load(sval, j as i32 * 8);
+                            self.scope.insert(n.clone(), v);
+                        }
+                        _ => {
+                            return Err(
+                                "padrão aninhado num construtor não compila no --release".into()
+                            )
+                        }
+                    }
+                }
+                self.term(body)
+            }
         }
     }
 
