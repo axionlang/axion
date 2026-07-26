@@ -305,6 +305,7 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         });
     }
     match name {
+        "otherwise" => Ok(Value::Bool(true)),
         "putStrLn" => Ok(Value::Builtin {
             name: "putStrLn",
             args: Vec::new(),

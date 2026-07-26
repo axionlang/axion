@@ -617,6 +617,23 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn guards_compile_and_run() {
+    // guardas → cadeia de if; interp e nativo concordam (0).
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("guards.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "0\n");
+    let interp = axionc().arg(fixture("guards.axi")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "0\n");
+}
+
+#[test]
 fn linear_elision_updates_record_in_place() {
     // Linear Elision (§2): 'bump c = c { val = 99 }' com c :: Cell %1 muta o
     // bloco (nó `update!` no Core) → 1 só alocação, não 2. Resultado 99.

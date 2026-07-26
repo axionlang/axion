@@ -682,8 +682,28 @@ impl Lower<'_> {
     fn clause_body(&mut self, clause: &ast::Clause) -> Term {
         match &clause.body {
             Body::Plain(e) => self.term(e),
-            Body::Guarded(_) => Term::Ret(Rhs::Op(Op::Unsupported("guardas".into()))),
+            Body::Guarded(arms) => self.guarded(arms),
         }
+    }
+
+    /// Guardas → cadeia de `if`: `| g0 = r0 | g1 = r1 | otherwise = rn` vira
+    /// `if g0 then r0 else if g1 then r1 else rn`. `otherwise`/`True` são
+    /// incondicionais; se nenhuma guarda cobrir, é exaustão (não-suportado).
+    fn guarded(&mut self, arms: &[(Expr, Expr)]) -> Term {
+        let mut acc = Term::Ret(Rhs::Op(Op::Unsupported("guardas não exaustivas".into())));
+        for (g, r) in arms.iter().rev() {
+            let uncond = matches!(g, Expr::Var(n, _) if n == "otherwise")
+                || matches!(g, Expr::Con(n, _) if n == "True");
+            let rterm = self.term(r);
+            if uncond {
+                acc = rterm;
+            } else {
+                let mut buf = Vec::new();
+                let ga = self.atom(g, &mut buf);
+                acc = wrap(buf, Term::Ret(Rhs::If(ga, Box::new(rterm), Box::new(acc))));
+            }
+        }
+        acc
     }
 }
 
@@ -757,7 +777,7 @@ fn lower_func(
             .collect();
         let body = match &f.clauses[0].body {
             Body::Plain(e) => lw.term(e),
-            Body::Guarded(_) => Term::Ret(Rhs::Op(Op::Unsupported("guardas".into()))),
+            Body::Guarded(arms) => lw.guarded(arms),
         };
         (params, body)
     } else {
