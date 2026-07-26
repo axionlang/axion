@@ -70,3 +70,17 @@ jobs:
 
       - name: axionc vs oráculo GHC
         run: ./scripts/differential.sh
+
+  # Sanitizers (§2/§11): a memória segura sem GC tem de o ser de facto. O runtime
+  # nativo (LLVM IR do --release + runtime C) corre sob AddressSanitizer (zero
+  # uso-após-livre/dupla-free em todas as fixtures) e LeakSanitizer (allocs==frees
+  # no subconjunto provado sem fugas). Precisa de Rust (axionc) e clang.
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Instalar clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Runtime nativo sob ASan + LSan
+        run: AXION_CLANG=clang ./scripts/sanitize.sh

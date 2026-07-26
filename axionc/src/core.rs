@@ -1104,8 +1104,16 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(v, a)),
-        Op::UpdateRecord { base, fields, .. } => {
-            atom_is(v, base) || fields.iter().any(|(_, a)| atom_is(v, a))
+        Op::UpdateRecord {
+            base,
+            fields,
+            inplace,
+        } => {
+            // update por cópia lê a base (empréstimo) e aloca um registo novo com
+            // cópias dos campos; in-place muta a base e devolve-a (escape). Copiar
+            // um campo linear seria rejeitado pela linearidade, logo os campos
+            // copiados são não-lineares (aliasing seguro, sem dupla-free).
+            (*inplace && atom_is(v, base)) || fields.iter().any(|(_, a)| atom_is(v, a))
         }
         Op::MakeClosure { captures, .. } => captures.iter().any(|a| atom_is(v, a)),
         Op::WithArena { parent, clos } => parent.iter().any(|a| atom_is(v, a)) || atom_is(v, clos),
@@ -1189,6 +1197,9 @@ fn fv_op(op: &Op, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<Stri
     // para o callee) → droppable não aparece lá. Prim opera sobre Ints.
     match op {
         Op::Field { rec, .. } => atom_use(rec, drp, out),
+        // a closure passada a `withArena` é usada durante a chamada e morre a
+        // seguir → conta como uso para o drop cair DEPOIS (como um arg emprestado)
+        Op::WithArena { clos, .. } => atom_use(clos, drp, out),
         Op::CallDirect(g, xs) => {
             if let Some(bs) = ba.get(g) {
                 for (i, a) in xs.iter().enumerate() {
@@ -1293,10 +1304,10 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
         Op::MakeClosure { captures, .. } => captures.iter().for_each(&mut mark),
         // arenas: os seus objectos (arena/célula/closure) são geridos pelo reset
         // da arena, não pelo Auto-Drop — marcam-se como escape para o ignorar.
-        Op::WithArena { parent, clos } => {
-            parent.iter().for_each(&mut mark);
-            mark(clos);
-        }
+        // a arena/pai são geridos pelo reset; a closure, porém, é um objecto de
+        // heap normal que o `withArena` apenas *empresta* (chama-a e retorna) —
+        // não escapa, é reclamável após a chamada (ver `fv_op`).
+        Op::WithArena { parent, .. } => parent.iter().for_each(&mut mark),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => mark(a),
         Op::Promote(t, c) => {
             mark(t);

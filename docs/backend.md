@@ -142,3 +142,35 @@ o interpretador (`axionc programa.axi`, sem `--backend`).
   implícitos (o `check.rs` calcula-os) — próximos incrementos.
 - Backend `--release` (LLVM via `inkwell`) baixará do **mesmo Core**, sem duplicar
   a baixada AST→IR — é o que fecha o gap dos benchmarks `-O2`.
+
+## Verificação de memória (sanitizers)
+
+A proposta de valor da Axión é memória segura **sem GC**, por isso o runtime
+nativo corre sob os sanitizers do LLVM em CI (`scripts/sanitize.sh`, job
+`sanitize`), sobre o LLVM IR do `--release` + o runtime C:
+
+- **Corrupção (AddressSanitizer, todas as fixtures nativas):** zero
+  uso-após-livre e zero dupla-free — a garantia dura. Também há um teste `cargo`
+  (`native_runtime_is_leak_free_under_lsan`) que corre um subconjunto sob
+  ASan+LSan.
+- **Fugas (LeakSanitizer, subconjunto provado):** `allocs == frees` na memória de
+  heap/arena/empréstimo (sem IO).
+
+### Fugas conservadoras conhecidas (seguras, fora do portão de fugas)
+
+Duas categorias vazam **por opção conservadora** — não são corrupção (o ASan
+passa), e reclamá-las seria inseguro ou exigiria uma decisão de design:
+
+1. **C-strings do runtime** (`show`, `putStrLn`): o resultado de `show` é uma
+   string alocada no runtime, mas os literais de string são estáticos. No ponto
+   de drop não se distingue uma da outra, logo libertar uniformemente rebentaria
+   nos literais. Reclamar exige um `String` que marque heap vs. estática.
+2. **Closures devolvidas por uma função:** o retorno pode ser uma closure fresca
+   (`\k -> …`) **ou** um parâmetro-closure emprestado (`pick b f g = if b then f
+   else g`). Tratar o resultado como propriedade do chamador causaria dupla-free
+   no segundo caso. Reclamar exige uma análise de escape sobre a closure (como a
+   dos argumentos emprestados, `BorrowArgs`).
+
+Já **reclamadas** (eram fugas, agora fechadas): a closure passada a `withArena`
+(é emprestada, não um objecto de arena) e a base de um `update` por cópia
+(lê-se para alocar a cópia, não se retém → empréstimo).

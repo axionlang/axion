@@ -933,6 +933,66 @@ fn release_backend_compiles_and_runs_when_clang_present() {
 }
 
 #[test]
+fn native_runtime_is_leak_free_under_lsan() {
+    // A proposta de valor da Axión é memória segura sem GC. Compila fixtures de
+    // heap/arena/empréstimo com o LLVM IR do --release + AddressSanitizer +
+    // LeakSanitizer e exige execução limpa (0 corrupção, 0 fugas). Cobre em
+    // particular as duas fugas fechadas: a closure do `withArena` (arena_run) e
+    // a base de um update por cópia (update_borrow). Precisa de clang.
+    let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
+    if std::process::Command::new(&clang)
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let rt = format!("{}/src/axion_rt.c", env!("CARGO_MANIFEST_DIR"));
+    let dir = std::env::temp_dir().join(format!("axion-lsan-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    for name in [
+        "borrow_reclaim",
+        "update_borrow",
+        "arena_run",
+        "heap_loop",
+        "linear_move",
+        "inplace_update",
+    ] {
+        // baixa para LLVM IR
+        let ll = dir.join(format!("{name}.ll"));
+        let ir = axionc()
+            .args(["--emit", "llvm", &fixture(&format!("{name}.axi"))])
+            .output()
+            .unwrap();
+        assert!(ir.status.success(), "{name}: --emit llvm falhou");
+        std::fs::write(&ll, &ir.stdout).unwrap();
+        // compila com ASan + LSan
+        let exe = dir.join(format!("{name}.san"));
+        let cc = std::process::Command::new(&clang)
+            .args(["-fsanitize=address,leak", "-O1", "-w"])
+            .arg(&ll)
+            .arg(&rt)
+            .arg("-o")
+            .arg(&exe)
+            .status()
+            .unwrap();
+        assert!(cc.success(), "{name}: clang+sanitizer falhou");
+        // corre com deteção de fugas ligada — tem de sair limpo
+        let run = std::process::Command::new(&exe)
+            .env("ASAN_OPTIONS", "detect_leaks=1")
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{name}: ASan/LSan reportou erro:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ffi_calls_user_shared_library() {
     // FFI (§18) a `dlopen`: `foreign "lib.so" nome :: …` carrega a `.so` do
     // utilizador e chama-a nos três executores (interp, --dev, --release).
