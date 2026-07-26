@@ -170,6 +170,7 @@ fn wrap(ty: GTy, e: Expr) -> Module {
             span: SP,
         }],
         datas: vec![],
+        foreigns: vec![],
     }
 }
 

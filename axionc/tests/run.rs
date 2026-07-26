@@ -617,6 +617,24 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn ffi_calls_libc_via_dlsym() {
+    // FFI: `foreign labs :: Int -> Int` chama a labs() da libc (dlsym). Corre
+    // nos três executores; labs(-42) = 42.
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("ffi_labs.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "42\n");
+    let interp = axionc().arg(fixture("ffi_labs.axi")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "42\n");
+}
+
+#[test]
 fn constructor_pattern_in_case_destructures() {
     // `case p of Point a b -> a + b` (tipo de um só construtor). interp e nativo
     // concordam (7).
@@ -843,6 +861,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("buffer_sum.axi"), "4950\n"), // Buffer U8 / §4
         (fixture("buffer_linear.axi"), "126444\n"), // Buffer %1 in-place / §5
         (fixture("inplace_update.axi"), "99\n"), // Linear Elision / §2
+        (fixture("ffi_labs.axi"), "42\n"),     // FFI via dlsym / §18
         (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
     ];

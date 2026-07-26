@@ -92,6 +92,12 @@ pub enum Op {
         args: Vec<Atom>,
         returns: bool,
     },
+    /// Chamada FFI (§18): a função C `name` com ABI de Int (i64), resolvida por
+    /// `dlsym`. Devolve i64.
+    Ffi {
+        name: String,
+        args: Vec<Atom>,
+    },
     /// forma do AST fora do subconjunto nativo — o codegen recusa com este texto
     Unsupported(String),
 }
@@ -411,6 +417,8 @@ struct Lower<'a> {
     lam_meta: &'a LamMeta,
     /// spans dos `RecordUpd` elegíveis a mutação in-place (Linear Elision, §2)
     inplace: &'a HashSet<Span>,
+    /// nomes das importações FFI (§18) — chamadas via `Op::Ffi`
+    foreigns: &'a HashSet<String>,
     locals: HashMap<String, String>,
     tmp: u32,
 }
@@ -586,7 +594,13 @@ impl Lower<'_> {
             _ => {}
         }
         let vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
-        if self.globals.contains(name) {
+        if self.foreigns.contains(name) {
+            // importação FFI (§18): chamada C com ABI de Int
+            Op::Ffi {
+                name: name.clone(),
+                args: vals,
+            }
+        } else if self.globals.contains(name) {
             // função de topo / local de `where` (resolve o mangling)
             let target = self
                 .locals
@@ -763,6 +777,7 @@ fn lower_func(
     fields: &HashSet<String>,
     lam_meta: &LamMeta,
     inplace: &HashSet<Span>,
+    foreigns: &HashSet<String>,
     data_types: &HashSet<String>,
 ) -> (Vec<String>, Term, Vec<String>) {
     let mut lw = Lower {
@@ -770,6 +785,7 @@ fn lower_func(
         fields,
         lam_meta,
         inplace,
+        foreigns,
         locals: locals.clone(),
         tmp: 0,
     };
@@ -843,6 +859,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         })
         .map(|f| f.name.clone())
         .collect();
+    let foreigns: HashSet<String> = module.foreigns.iter().map(|f| f.name.clone()).collect();
 
     // pré-passo: nomeia + calcula capturas de todas as lambdas (por span)
     let mut lam_meta: LamMeta = HashMap::new();
@@ -903,6 +920,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             &fields,
             &lam_meta,
             inplace,
+            &foreigns,
             &data_types,
         );
         out.push(CoreFn {
@@ -924,6 +942,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
                 &fields,
                 &lam_meta,
                 inplace,
+                &foreigns,
                 &data_types,
             );
             out.push(CoreFn {
@@ -956,6 +975,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             fields: &fields,
             lam_meta: &lam_meta,
             inplace,
+            foreigns: &foreigns,
             locals,
             tmp: 0,
         };
@@ -1123,7 +1143,7 @@ fn scan_op_escapes(op: &Op, esc: &mut HashSet<String>) {
             mark(t);
             mark(c);
         }
-        Op::RtCall { args, .. } => args.iter().for_each(&mut mark),
+        Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().for_each(&mut mark),
         _ => {}
     }
     // a closure receptora de uma chamada indirecta também muda de mãos
@@ -1423,6 +1443,7 @@ fn dump_op(op: &Op) -> String {
         Op::ArenaMark(a) => format!("arena_mark {}", atom(a)),
         Op::ArenaRelease(a) => format!("arena_release {}", atom(a)),
         Op::RtCall { func, args, .. } => format!("rtcall {func}{}", self::args(args)),
+        Op::Ffi { name, args } => format!("ffi {name}{}", self::args(args)),
         Op::Unsupported(m) => format!("<unsupported: {m}>"),
     }
 }

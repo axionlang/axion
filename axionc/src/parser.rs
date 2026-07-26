@@ -20,23 +20,30 @@ type PResult<T> = Result<T, Diagnostic>;
 pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
     let mut p = Parser { toks, pos: 0 };
     let items = p.block(Parser::top_item)?;
-    let (funcs, datas) = assemble(items);
-    Ok(Module { funcs, datas })
+    let (funcs, datas, foreigns) = assemble(items);
+    Ok(Module {
+        funcs,
+        datas,
+        foreigns,
+    })
 }
 
 enum TopItem {
     Sig(String, Type),
     Clause(String, Clause),
     Data(DataDecl),
+    Foreign(Foreign),
 }
 
-/// Junta assinaturas e cláusulas por nome (funções) e separa as `data`.
-fn assemble(items: Vec<TopItem>) -> (Vec<Func>, Vec<DataDecl>) {
+/// Junta assinaturas e cláusulas por nome (funções) e separa as `data`/`foreign`.
+fn assemble(items: Vec<TopItem>) -> (Vec<Func>, Vec<DataDecl>, Vec<Foreign>) {
     let mut funcs: Vec<Func> = Vec::new();
     let mut datas: Vec<DataDecl> = Vec::new();
+    let mut foreigns: Vec<Foreign> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for it in items {
         match it {
+            TopItem::Foreign(f) => foreigns.push(f),
             TopItem::Data(d) => datas.push(d),
             TopItem::Sig(name, ty) => {
                 let sp = (0, 0);
@@ -69,7 +76,7 @@ fn assemble(items: Vec<TopItem>) -> (Vec<Func>, Vec<DataDecl>) {
             }
         }
     }
-    (funcs, datas)
+    (funcs, datas, foreigns)
 }
 
 /// Como `assemble`, mas para blocos `where`/`let` (só funções).
@@ -189,6 +196,19 @@ impl<'a> Parser<'a> {
     fn top_item(&mut self) -> PResult<TopItem> {
         if self.at(&Tok::Data) {
             return Ok(TopItem::Data(self.parse_data()?));
+        }
+        if self.at(&Tok::Foreign) {
+            let start = self.span_here().0;
+            self.bump(); // foreign
+            let (name, _) = self.var_name("nome da importação foreign")?;
+            self.expect(&Tok::ColonColon, "'::' na importação foreign")?;
+            let sig = self.parse_type()?;
+            let end = self.span_here().0;
+            return Ok(TopItem::Foreign(Foreign {
+                name,
+                sig,
+                span: (start, end),
+            }));
         }
         let (name, start) = self.var_name("nome de função")?;
         if self.eat(&Tok::ColonColon) {

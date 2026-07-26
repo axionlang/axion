@@ -160,4 +160,14 @@ pub struct DataDecl {
 pub struct Module {
     pub funcs: Vec<Func>,
     pub datas: Vec<DataDecl>,
+    pub foreigns: Vec<Foreign>,
+}
+
+/// Uma importação FFI: `foreign nome :: Int -> … -> Int` chama a função C `nome`
+/// (ABI de Int/i64), resolvida por `dlsym` (§18).
+#[derive(Debug, Clone)]
+pub struct Foreign {
+    pub name: String,
+    pub sig: Type,
+    pub span: Span,
 }

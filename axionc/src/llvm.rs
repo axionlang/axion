@@ -68,6 +68,17 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
 
     let mut out = String::from("; Axión --release (LLVM IR)\n");
     out.push_str(RT_DECLS);
+    // declarações das importações FFI (§18): `declare i64 @name(i64, …)`
+    let mut ffi: HashMap<String, usize> = HashMap::new();
+    for f in &fns {
+        collect_ffi(&f.body, &mut ffi);
+    }
+    let mut ffi_sorted: Vec<(&String, &usize)> = ffi.iter().collect();
+    ffi_sorted.sort();
+    for (name, arity) in ffi_sorted {
+        let params = vec!["i64"; *arity].join(", ");
+        out.push_str(&format!("declare i64 @{name}({params})\n"));
+    }
     out.push_str("@.fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\"\n");
     // globais das strings
     let mut sorted: Vec<(&String, &usize)> = strings.iter().collect();
@@ -194,8 +205,33 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
             .collect(),
         Op::WithArena { parent, clos } => parent.iter().chain(std::iter::once(clos)).collect(),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => vec![a],
-        Op::RtCall { args, .. } => args.iter().collect(),
+        Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().collect(),
         Op::Unsupported(_) => vec![],
+    }
+}
+
+/// Recolhe as importações FFI usadas (nome → aridade), para as declarar no IR.
+fn collect_ffi(t: &Term, out: &mut HashMap<String, usize>) {
+    fn rhs(r: &Rhs, out: &mut HashMap<String, usize>) {
+        match r {
+            Rhs::Op(Op::Ffi { name, args }) => {
+                out.insert(name.clone(), args.len());
+            }
+            Rhs::Op(_) => {}
+            Rhs::If(_, t, e) => {
+                collect_ffi(t, out);
+                collect_ffi(e, out);
+            }
+            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| collect_ffi(b, out)),
+        }
+    }
+    match t {
+        Term::Let(_, r, b) => {
+            rhs(r, out);
+            collect_ffi(b, out);
+        }
+        Term::Drop(_, b) => collect_ffi(b, out),
+        Term::Ret(r) => rhs(r, out),
     }
 }
 
@@ -644,6 +680,17 @@ impl Emit<'_> {
             } => {
                 let vs = self.atoms(args)?;
                 Ok(self.rt(func, *returns, &vs))
+            }
+            Op::Ffi { name, args } => {
+                let a = self
+                    .atoms(args)?
+                    .iter()
+                    .map(|v| format!("i64 {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let r = self.val();
+                self.ins(&format!("{r} = call i64 @{name}({a})"));
+                Ok(r)
             }
             Op::Unsupported(m) => Err(format!("{m} não compila no --release")),
         }

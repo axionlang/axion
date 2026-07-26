@@ -102,6 +102,11 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
 
     // esquemas das funções de topo: a partir da assinatura, ou monótipo fresco
     let mut placeholders: HashMap<String, Ty> = HashMap::new();
+    // importações FFI (§18): tipadas pela sua assinatura declarada
+    for fo in &module.foreigns {
+        let scheme = inf.scheme_of_sig(&fo.sig);
+        env.insert(fo.name.clone(), scheme);
+    }
     for f in &module.funcs {
         match &f.sig {
             Some(sig) => {

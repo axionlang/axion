@@ -19,6 +19,7 @@ pub struct Program {
     funcs: HashMap<String, Rc<Func>>,
     cons: HashMap<String, Vec<String>>, // construtor → nomes dos campos (por ordem)
     selectors: HashSet<String>,         // nomes de campo usáveis como selectores
+    foreigns: HashMap<String, usize>,   // importações FFI: nome C → aridade
 }
 
 #[derive(Clone)]
@@ -54,6 +55,12 @@ enum Value {
     /// Um selector de campo (`pid`, `status`, …), aridade 1.
     Selector {
         field: String,
+    },
+    /// Uma importação FFI (§18) por aplicar (ABI de Int; resolvida por dlsym).
+    Foreign {
+        name: String,
+        arity: usize,
+        args: Vec<Value>,
     },
 }
 
@@ -115,10 +122,16 @@ fn build_program(module: &Module) -> Program {
             cons.insert(c.name.clone(), names);
         }
     }
+    let foreigns = module
+        .foreigns
+        .iter()
+        .map(|f| (f.name.clone(), f.sig.param_mults().len()))
+        .collect();
     Program {
         funcs,
         cons,
         selectors,
+        foreigns,
     }
 }
 
@@ -167,7 +180,8 @@ fn type_name(v: &Value) -> &'static str {
         Value::Closure { .. }
         | Value::Builtin { .. }
         | Value::Ctor { .. }
-        | Value::Selector { .. } => "função",
+        | Value::Selector { .. }
+        | Value::Foreign { .. } => "função",
     }
 }
 
@@ -304,6 +318,13 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             field: name.to_string(),
         });
     }
+    if let Some(&arity) = prog.foreigns.get(name) {
+        return Ok(Value::Foreign {
+            name: name.to_string(),
+            arity,
+            args: Vec::new(),
+        });
+    }
     match name {
         "otherwise" => Ok(Value::Bool(true)),
         "putStrLn" => Ok(Value::Builtin {
@@ -394,11 +415,66 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
                 type_name(&other)
             )),
         },
+        Value::Foreign {
+            name,
+            arity,
+            mut args,
+        } => {
+            args.push(arg);
+            if args.len() >= arity {
+                call_foreign(&name, &args)
+            } else {
+                Ok(Value::Foreign { name, arity, args })
+            }
+        }
         other => Err(format!(
             "tentou aplicar algo que não é função: {}",
             type_name(&other)
         )),
     }
+}
+
+// FFI (§18): resolve o símbolo C por dlsym e chama-o com a ABI de Int (i64).
+extern "C" {
+    fn dlsym(
+        handle: *mut std::ffi::c_void,
+        symbol: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
+}
+
+fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
+    let cname = std::ffi::CString::new(name).map_err(|_| "nome FFI inválido".to_string())?;
+    let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
+    if p.is_null() {
+        return Err(format!("símbolo FFI não encontrado: '{name}'"));
+    }
+    let mut a = [0i64; 3];
+    for (i, v) in args.iter().enumerate() {
+        a[i] = match v {
+            Value::Int(n) => *n,
+            other => {
+                return Err(format!(
+                    "FFI '{name}': argumento não-Int ({})",
+                    type_name(other)
+                ))
+            }
+        };
+    }
+    type P = *mut std::ffi::c_void;
+    let r = unsafe {
+        match args.len() {
+            0 => std::mem::transmute::<P, extern "C" fn() -> i64>(p)(),
+            1 => std::mem::transmute::<P, extern "C" fn(i64) -> i64>(p)(a[0]),
+            2 => std::mem::transmute::<P, extern "C" fn(i64, i64) -> i64>(p)(a[0], a[1]),
+            3 => std::mem::transmute::<P, extern "C" fn(i64, i64, i64) -> i64>(p)(a[0], a[1], a[2]),
+            n => {
+                return Err(format!(
+                    "FFI '{name}': aridade {n} não suportada no interp (até 3)"
+                ))
+            }
+        }
+    };
+    Ok(Value::Int(r))
 }
 
 fn run_func(
@@ -555,6 +631,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
         Value::Closure { .. }
         | Value::Builtin { .. }
         | Value::Ctor { .. }
-        | Value::Selector { .. } => RtType::Fun,
+        | Value::Selector { .. }
+        | Value::Foreign { .. } => RtType::Fun,
     })
 }

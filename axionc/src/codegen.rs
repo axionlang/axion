@@ -23,6 +23,22 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+// FFI (§18): resolve um símbolo já carregado no processo (libc + o runtime do
+// axionc) por `dlsym(RTLD_DEFAULT, …)`. Serve o `symbol_lookup_fn` do JIT.
+extern "C" {
+    fn dlsym(
+        handle: *mut std::ffi::c_void,
+        symbol: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
+}
+
+fn resolve_symbol(name: &str) -> Option<*const u8> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    // RTLD_DEFAULT = ponteiro nulo (glibc): procura na ordem normal de resolução.
+    let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
+    (!p.is_null()).then_some(p as *const u8)
+}
+
 // --- runtime nativo mínimo (registado como símbolos no JIT) ---
 
 /// `putStrLn`: imprime uma C-string com nova-linha.
@@ -269,6 +285,8 @@ impl Cg {
             .finish(cranelift::codegen::settings::Flags::new(flags))
             .map_err(|e| e.to_string())?;
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        // FFI (§18): símbolos não registados resolvem-se por dlsym (libc, …).
+        builder.symbol_lookup_fn(Box::new(resolve_symbol));
         builder.symbol("axion_puts", axion_puts as *const u8);
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
@@ -780,6 +798,23 @@ impl Fx<'_, '_> {
                     debug_assert!(!returns);
                     self.builder.ins().iconst(types::I64, 0)
                 }))
+            }
+            Op::Ffi { name, args } => {
+                // FFI (§18): declara a função C (ABI de Int) e chama-a; o símbolo
+                // resolve-se por dlsym (symbol_lookup_fn).
+                let mut sig = self.module.make_signature();
+                for _ in args {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+                let id = self
+                    .module
+                    .declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| e.to_string())?;
+                let vals = self.atoms(args)?;
+                let callee = self.module.declare_func_in_func(id, self.builder.func);
+                let call = self.builder.ins().call(callee, &vals);
+                Ok(self.builder.inst_results(call)[0])
             }
             Op::Unsupported(m) => Err(format!("{m} não compila nativamente (ainda)")),
         }

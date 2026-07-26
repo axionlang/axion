@@ -32,6 +32,8 @@ pub enum Tok {
     Data,
     #[token("do")]
     Do,
+    #[token("foreign")]
+    Foreign,
 
     // --- pontuação e símbolos ---
     #[token("::")]

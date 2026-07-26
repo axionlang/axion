@@ -81,6 +81,9 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
     for f in &module.funcs {
         globals.insert(f.name.clone());
     }
+    for fo in &module.foreigns {
+        globals.insert(fo.name.clone());
+    }
     // construtores e selectores de campo tornam-se nomes globais chamáveis
     for d in &module.datas {
         for c in &d.cons {
@@ -503,6 +506,11 @@ fn build_ctx(module: &Module) -> Ctx {
         "foldBytes".to_string(),
         vec![Mult::Many, Mult::Many, Mult::Many],
     );
+    // importações FFI: os argumentos (Int) são emprestados.
+    for fo in &module.foreigns {
+        let arity = fo.sig.param_mults().len();
+        consumers.insert(fo.name.clone(), vec![Mult::Many; arity]);
+    }
     Ctx {
         consumers,
         field_mults,
