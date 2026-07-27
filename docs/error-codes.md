@@ -24,7 +24,17 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
 
 Próximo livre por banda — linguagem: `AX0007`; front-end: `AX0102`;
-tipos: `AX0202`.
+tipos: `AX0202`; canais/sessões (Fase 3): `AX0300` (reservada).
+
+**Reservado — `AX03xx` canais e session types (Fase 3).** A §17 aloca esta banda
+para os erros de concorrência do cálculo de sessões (ver
+[`docs/phase-3-calculus.md`](phase-3-calculus.md)); serão populados ao implementar
+o typechecker de sessões. Candidatos já identificados pelo cálculo: uso de
+endpoint após `send` (viola a posse linear, A1), ramo `Closed` não tratado num
+`offer`/`Maybe~` (T5), e escape de um endpoint/recurso do nursery `bound`
+(confinamento por região `s`, A2). *(Os códigos de linearidade `AX00xx` continuam
+a cobrir a posse `%1` subjacente; a banda `AX03xx` é para os invariantes próprios
+de sessão.)*
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
 > linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*
