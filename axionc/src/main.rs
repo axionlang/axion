@@ -29,6 +29,8 @@ mod parser;
 
 #[cfg(test)]
 mod props;
+#[cfg(test)]
+mod session;
 
 use diag::{Diagnostic, Diagnostics};
 use lexer::LineMap;
