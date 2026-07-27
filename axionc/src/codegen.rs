@@ -338,6 +338,8 @@ impl Cg {
             ("axion_buf_sum", 1, true),
             ("axion_buf_free", 1, false),
             ("axion_fold_bytes", 3, true),
+            // usado pelos destrutores gerados (deep-drop) via RtCall
+            ("axion_free", 1, false),
         ] {
             rt_fns.insert(name.into(), (import(&mut module, name, nparams, ret)?, ret));
         }
@@ -559,18 +561,32 @@ impl Fx<'_, '_> {
                 self.bind_val(name, v);
                 self.emit_term(body)
             }
-            Term::Drop(name, body) => {
-                // Auto-Drop: liberta o objecto de heap no seu ponto de morte.
+            Term::Drop(name, ty, body) => {
+                // Auto-Drop: liberta o objecto de heap no seu ponto de morte. Se o
+                // tipo possui campos de heap, chama o destrutor recursivo gerado
+                // (deep-drop); senão, um `free` plano.
                 let v = self
                     .vars
                     .get(name)
                     .copied()
                     .ok_or_else(|| format!("drop de variável '{name}' não ligada"))?;
                 let ptr = self.builder.use_var(v);
-                let callee = self
-                    .module
-                    .declare_func_in_func(self.free_id, self.builder.func);
-                self.builder.ins().call(callee, &[ptr]);
+                let deep = ty
+                    .as_deref()
+                    .filter(|t| self.records.needs_deep_drop(t))
+                    .map(|t| format!("axion_drop_{t}"));
+                match deep.and_then(|n| self.ids.get(&n).copied()) {
+                    Some((id, _)) => {
+                        let callee = self.module.declare_func_in_func(id, self.builder.func);
+                        self.builder.ins().call(callee, &[ptr]);
+                    }
+                    None => {
+                        let callee = self
+                            .module
+                            .declare_func_in_func(self.free_id, self.builder.func);
+                        self.builder.ins().call(callee, &[ptr]);
+                    }
+                }
                 self.emit_term(body)
             }
             Term::Ret(rhs) => self.emit_rhs(rhs),
@@ -761,6 +777,13 @@ impl Fx<'_, '_> {
                     .ok_or_else(|| format!("campo '{name}' desconhecido"))?;
                 let r = self.atom(rec)?;
                 Ok(self.builder.ins().load(types::I64, MemFlags::new(), r, off))
+            }
+            Op::LoadRaw(a, off) => {
+                let r = self.atom(a)?;
+                Ok(self
+                    .builder
+                    .ins()
+                    .load(types::I64, MemFlags::new(), r, *off))
             }
             Op::PutStrLn(a) => {
                 let v = self.atom(a)?;

@@ -570,6 +570,43 @@ fn borrowed_arg_reclaimed_after_call() {
 }
 
 #[test]
+fn deep_drop_reclaims_nested_objects() {
+    // Deep-drop (§2): objectos aninhados (registo-em-registo e payload de
+    // tipo-soma) são reclamados por destrutores gerados — allocs == frees, em vez
+    // de perder o objecto interno (free plano).
+    for (fx, expected, allocs) in [
+        ("nested_drop.axi", "12\n", "2 allocs, 2 frees"),
+        ("sum_payload.axi", "15\n", "3 allocs, 3 frees"),
+    ] {
+        let out = axionc()
+            .args(["--backend", "cranelift", &fixture(fx)])
+            .env("AXION_HEAP_STATS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{fx}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{fx}");
+        let stats = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stats.contains(allocs),
+            "{fx}: esperava '{allocs}' (deep-drop reclama o aninhado), stats: {stats}"
+        );
+    }
+    // o destrutor recursivo aparece no Core para o tipo aninhado
+    let core = axionc()
+        .args(["--emit", "core", &fixture("nested_drop.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&core.stdout).contains("axion_drop_Box"),
+        "esperava o destrutor gerado 'axion_drop_Box' no Core"
+    );
+}
+
+#[test]
 fn arena_runs_natively_with_bulk_reset() {
     // Arena (§3): 'withArena' cria a raiz, allocN bump-aloca 100 células, e a
     // arena é reclamada com UM só reset (não 100 frees). O interpretador não

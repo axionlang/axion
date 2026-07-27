@@ -156,6 +156,21 @@ nativo corre sob os sanitizers do LLVM em CI (`scripts/sanitize.sh`, job
 - **Fugas (LeakSanitizer, subconjunto provado):** `allocs == frees` na memória de
   heap/arena/empréstimo (sem IO).
 
+### Deep-drop de objectos aninhados
+
+Um `drop` plano só liberta um bloco; um objecto que **possui** outro (registo
+dentro de registo, ou payload de tipo-soma) perderia o interno. O deep-drop
+gera um **destrutor recursivo** `axion_drop_<T>` por tipo com campos de heap
+(estilo Perceus): liberta os campos de tipo-`data` possuídos (via o destrutor
+deles, ou `free` se forem folhas) e depois o próprio bloco; tipos-soma
+despacham pelo tag. Funciona para tipos **recursivos** (listas/árvores) — o
+destrutor recursa em runtime. É baixado como funções Core normais (uma só op
+nova, `LoadRaw`), pelo que os dois backends o obtêm quase de graça. A soundness
+assenta na linearidade: um campo embebido é **movido** (possuído) → libertado
+uma vez pelo pai, e a análise de escape já o exclui do drop local. `Term::Drop`
+leva o nome do tipo; o backend escolhe destrutor vs. `free` plano por
+`needs_deep_drop`.
+
 ### Fugas conservadoras conhecidas (seguras, fora do portão de fugas)
 
 Duas categorias vazam **por opção conservadora** — não são corrupção (o ASan
@@ -171,6 +186,11 @@ passa), e reclamá-las seria inseguro ou exigiria uma decisão de design:
    no segundo caso. Reclamar exige uma análise de escape sobre a closure (como a
    dos argumentos emprestados, `BorrowArgs`).
 
-Já **reclamadas** (eram fugas, agora fechadas): a closure passada a `withArena`
-(é emprestada, não um objecto de arena) e a base de um `update` por cópia
-(lê-se para alocar a cópia, não se retém → empréstimo).
+Menores (raras): um objecto de heap ligado ao resultado de um `if`/`case` (em
+vez de um `Make*`/chamada directos) fica com `free` plano — se for aninhado,
+perde o interno; e **tuplos** que possuam heap ainda não têm destrutor (o
+deep-drop cobre tipos-`data`).
+
+Já **reclamadas** (eram fugas, agora fechadas): objectos aninhados (deep-drop);
+construções posicionais de tipo-soma (`is_heap_alloc` passou a incluir
+`MakeCon`); a closure passada a `withArena`; e a base de um `update` por cópia.

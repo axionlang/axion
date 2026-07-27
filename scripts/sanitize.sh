@@ -43,6 +43,8 @@ NATIVE=(
   axionc/tests/fixtures/native_closure.axi
   axionc/tests/fixtures/native_fib.axi
   axionc/tests/fixtures/lambda_hof.axi
+  axionc/tests/fixtures/nested_drop.axi
+  axionc/tests/fixtures/sum_payload.axi
   examples/01_hello.axi
   examples/02_fib.axi
 )
@@ -56,6 +58,7 @@ NATIVE=(
 LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
+  nested_drop sum_payload
 )
 is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 

@@ -176,7 +176,7 @@ fn collect_strings(t: &Term, out: &mut HashMap<String, usize>) {
             collect_rhs(rhs, out, &mut atom);
             collect_strings(body, out);
         }
-        Term::Drop(_, body) => collect_strings(body, out),
+        Term::Drop(_, _, body) => collect_strings(body, out),
         Term::Ret(rhs) => collect_rhs(rhs, out, &mut atom),
     }
 }
@@ -204,6 +204,7 @@ fn collect_rhs(
 fn op_atoms(op: &Op) -> Vec<&Atom> {
     match op {
         Op::Atom(a) | Op::Field { rec: a, .. } | Op::PutStrLn(a) | Op::ShowInt(a) => vec![a],
+        Op::LoadRaw(a, _) => vec![a],
         Op::Prim(_, a, b) | Op::Promote(a, b) => vec![a, b],
         Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
             xs.iter().collect()
@@ -241,7 +242,7 @@ fn collect_ffi(t: &Term, out: &mut HashMap<String, usize>) {
             rhs(r, out);
             collect_ffi(b, out);
         }
-        Term::Drop(_, b) => collect_ffi(b, out),
+        Term::Drop(_, _, b) => collect_ffi(b, out),
         Term::Ret(r) => rhs(r, out),
     }
 }
@@ -421,9 +422,19 @@ impl Emit<'_> {
                 self.scope.insert(x.clone(), v);
                 self.term(body)
             }
-            Term::Drop(x, body) => {
+            Term::Drop(x, ty, body) => {
+                // deep-drop: destrutor recursivo se o tipo tem campos de heap;
+                // senão, `free` plano.
                 let v = self.atom(&Atom::Var(x.clone()))?;
-                self.rt("axion_free", false, &[v]);
+                match ty.as_deref().filter(|t| self.records.needs_deep_drop(t)) {
+                    Some(t) => {
+                        let r = self.val();
+                        self.ins(&format!("{r} = call i64 @\"ax_axion_drop_{t}\"(i64 {v})"));
+                    }
+                    None => {
+                        self.rt("axion_free", false, &[v]);
+                    }
+                }
                 self.term(body)
             }
             Term::Ret(rhs) => self.rhs(rhs),
@@ -694,6 +705,10 @@ impl Emit<'_> {
                     .ok_or_else(|| format!("campo '{name}' desconhecido"))?;
                 let r = self.atom(rec)?;
                 Ok(self.load(&r, off))
+            }
+            Op::LoadRaw(a, off) => {
+                let r = self.atom(a)?;
+                Ok(self.load(&r, *off))
             }
             Op::PutStrLn(a) => {
                 let v = self.atom(a)?;

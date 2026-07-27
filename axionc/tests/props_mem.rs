@@ -54,7 +54,7 @@ impl Gen {
         if depth == 0 || self.below(100) < 35 {
             return self.leaf(ints, ps);
         }
-        match self.below(6) {
+        match self.below(7) {
             0 => {
                 let op = ["+", "-", "*"][self.below(3) as usize];
                 let l = self.int_expr(depth - 1, ints, ps);
@@ -95,11 +95,19 @@ impl Gen {
                 let p = &ps[self.below(ps.len() as u32) as usize];
                 format!("({f} {p})")
             }
-            _ => {
+            5 => {
                 // move: constrói um registo fresco e consome-o (%1 → o callee liberta)
                 let ea = self.int_expr(depth - 1, ints, ps);
                 let eb = self.int_expr(depth - 1, ints, ps);
                 format!("(useP (P {{ a = {ea}, b = {eb} }}))")
+            }
+            _ => {
+                // aninhamento: um `Box` que possui um `P` → exercita o deep-drop
+                // (o destrutor liberta o `P` interno e depois o `Box`).
+                let ea = self.int_expr(depth - 1, ints, ps);
+                let eb = self.int_expr(depth - 1, ints, ps);
+                let et = self.int_expr(depth - 1, ints, ps);
+                format!("(boxSum (Box {{ inner = P {{ a = {ea}, b = {eb} }}, tag = {et} }}))")
             }
         }
     }
@@ -127,12 +135,15 @@ impl Gen {
 /// Prelúdio fixo: um registo plano + leitores que o emprestam + um consumidor `%1`.
 const PRELUDE: &str = "\
 data P = P { a :: Int, b :: Int }
+data Box = Box { inner :: P, tag :: Int }
 sumP :: P -> Int
 sumP p = a p + b p
 fstP :: P -> Int
 fstP p = a p
 useP :: P %1 -> Int
 useP p = a p + b p
+boxSum :: Box -> Int
+boxSum x = a (inner x) + b (inner x) + tag x
 main :: Int
 main = ";
 

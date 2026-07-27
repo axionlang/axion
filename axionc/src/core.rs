@@ -72,6 +72,9 @@ pub enum Op {
         name: String,
         rec: Atom,
     },
+    /// carga i64 crua em `ptr + offset` (bytes). Só a geração de destrutores
+    /// (deep-drop, §2) a usa — acede a campos por offset, incluindo o tag.
+    LoadRaw(Atom, i32),
     /// `putStrLn :: String -> IO ()` (runtime)
     PutStrLn(Atom),
     /// `show :: Int -> String` (runtime)
@@ -122,7 +125,10 @@ pub enum Term {
     Let(String, Rhs, Box<Term>),
     /// `drop x; …` — liberta o objecto de heap `x` no seu ponto de morte
     /// (Auto-Drop, §2; inserido pela análise de reclamação, não pela baixada).
-    Drop(String, Box<Term>),
+    /// O `Option<String>` é o nome do tipo-`data` de `x` (quando conhecido): se o
+    /// tipo possuir campos de heap, o backend chama o destrutor recursivo
+    /// `axion_drop_<T>` (deep-drop); senão, um `free` plano.
+    Drop(String, Option<String>, Box<Term>),
     Ret(Rhs),
 }
 
@@ -209,11 +215,20 @@ pub struct RecordInfo {
     single_con: HashSet<String>,   // construtores sem tag (tipo de 1 con)
     con_tag: HashMap<String, i32>, // índice do construtor no seu tipo
     con_arity: HashMap<String, usize>, // nº total de campos (com ou sem nome)
+    // --- deep-drop (§2): reclamação estrutural de campos aninhados ---
+    con_type: HashMap<String, String>, // construtor → nome do seu tipo
+    type_cons: HashMap<String, Vec<String>>, // tipo → construtores (por ordem de tag)
+    /// construtor → campos de tipo-`data` que ele **possui**: (offset, nome do tipo).
+    /// São alocações separadas que um `free` plano não reclama → deep-drop.
+    con_drop_slots: HashMap<String, Vec<(i32, String)>>,
+    /// tipos que possuem (algures) um campo de tipo-`data` → precisam de destrutor.
+    needs_deep: HashSet<String>,
 }
 
 impl RecordInfo {
     pub fn build(module: &ast::Module) -> RecordInfo {
         let mut r = RecordInfo::default();
+        let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
         for d in &module.datas {
             for (idx, c) in d.cons.iter().enumerate() {
                 let fields: Vec<String> = c
@@ -228,12 +243,65 @@ impl RecordInfo {
                 r.con_fields.insert(c.name.clone(), fields);
                 r.con_tag.insert(c.name.clone(), idx as i32);
                 r.con_arity.insert(c.name.clone(), c.fields.len());
+                r.con_type.insert(c.name.clone(), d.name.clone());
+                r.type_cons
+                    .entry(d.name.clone())
+                    .or_default()
+                    .push(c.name.clone());
                 if d.cons.len() == 1 {
                     r.single_con.insert(c.name.clone());
                 }
             }
         }
+        // segundo passo: offsets já calculáveis (tag/aridade prontos) → drop slots.
+        for d in &module.datas {
+            for c in &d.cons {
+                let mut slots = Vec::new();
+                for (i, f) in c.fields.iter().enumerate() {
+                    // um campo de tipo-`data` é uma alocação de heap possuída pelo
+                    // registo → tem de ser reclamada quando o pai morre. Tuplos e
+                    // não-heap (Int/String/Buffer/função) ficam de fora (ver docs).
+                    if let Some(h) = f.ty.head_con() {
+                        if data_names.contains(h) {
+                            slots.push((r.field_offset(&c.name, i), h.to_string()));
+                        }
+                    }
+                }
+                if !slots.is_empty() {
+                    r.needs_deep.insert(d.name.clone());
+                }
+                r.con_drop_slots.insert(c.name.clone(), slots);
+            }
+        }
         r
+    }
+
+    /// `true` se o tipo (nome) possui campos de heap → precisa de destrutor
+    /// recursivo em vez de um `free` plano.
+    pub fn needs_deep_drop(&self, ty: &str) -> bool {
+        self.needs_deep.contains(ty)
+    }
+
+    /// Nome do tipo de um construtor.
+    pub fn con_type(&self, con: &str) -> Option<&str> {
+        self.con_type.get(con).map(String::as_str)
+    }
+
+    /// Construtores de um tipo, por ordem de tag.
+    pub fn type_cons(&self, ty: &str) -> Option<&[String]> {
+        self.type_cons.get(ty).map(Vec::as_slice)
+    }
+
+    /// Campos de tipo-`data` que um construtor possui: (offset, nome do tipo).
+    pub fn drop_slots(&self, con: &str) -> &[(i32, String)] {
+        self.con_drop_slots.get(con).map_or(&[], Vec::as_slice)
+    }
+
+    /// Tipos que precisam de destrutor gerado, por ordem determinística.
+    pub fn deep_drop_types(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.needs_deep.iter().cloned().collect();
+        v.sort();
+        v
     }
 
     /// `true` se o construtor pertence a um tipo com um só construtor (sem tag).
@@ -1044,9 +1112,223 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .collect();
     let borrow_args = compute_borrow_args(&out, &param_mults);
 
-    out.into_iter()
-        .map(|f| insert_drops(f, &heap_ret, &borrow_args))
-        .collect()
+    // deep-drop (§2): tipo-`data` de cada droppable, para o backend reclamar
+    // campos aninhados via destrutor recursivo em vez de um `free` plano.
+    let recinfo = RecordInfo::build(module);
+    let fn_ret_ty: HashMap<String, String> = module
+        .funcs
+        .iter()
+        .filter_map(|f| {
+            let rt = result_type(f.sig.as_ref()?);
+            rt.head_con()
+                .filter(|h| data_types.contains(*h))
+                .map(|h| (f.name.clone(), h.to_string()))
+        })
+        .collect();
+    let all_dty = build_all_drop_ty(&out, module, &recinfo, &fn_ret_ty);
+    let empty = HashMap::new();
+
+    let mut result: Vec<CoreFn> = out
+        .into_iter()
+        .map(|f| {
+            let dty = all_dty.get(&f.name).unwrap_or(&empty);
+            insert_drops(f, &heap_ret, &borrow_args, dty)
+        })
+        .collect();
+    // destrutores gerados: acrescentados APÓS a inserção de drops (gerem a
+    // memória à mão, não passam pela análise de reclamação)
+    result.extend(gen_destructors(&recinfo));
+    result
+}
+
+/// Gera os destrutores recursivos `axion_drop_<T>` para cada tipo com campos de
+/// heap (deep-drop, §2): liberta os campos de tipo-`data` possuídos (via o
+/// destrutor deles, ou `free` se forem folhas) e depois o próprio bloco;
+/// tipos-soma despacham pelo tag.
+fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
+    let mut out = Vec::new();
+    for ty in recinfo.deep_drop_types() {
+        let p = "_p".to_string();
+        let mut ctr = 0u32;
+        let free_ret = free_then_ret(&p);
+        let cons: Vec<String> = recinfo.type_cons(&ty).unwrap_or(&[]).to_vec();
+        let body = if cons.len() <= 1 {
+            match cons.first() {
+                Some(con) => drop_con_fields(recinfo, con, &p, &mut ctr, free_ret),
+                None => free_ret,
+            }
+        } else {
+            // multi-con: carrega o tag e um `if` independente por construtor com
+            // campos; só o tag correspondente dispara em runtime.
+            let mut chain = free_ret;
+            for con in cons.iter().rev() {
+                if recinfo.drop_slots(con).is_empty() {
+                    continue;
+                }
+                let tag = recinfo.tag(con).unwrap_or(0) as i64;
+                let branch = drop_con_fields(recinfo, con, &p, &mut ctr, unit0());
+                let cmp = fresh_dd(&mut ctr);
+                let ifstep = Term::Let(
+                    fresh_dd(&mut ctr),
+                    Rhs::If(Atom::Var(cmp.clone()), Box::new(branch), Box::new(unit0())),
+                    Box::new(chain),
+                );
+                chain = Term::Let(
+                    cmp,
+                    Rhs::Op(Op::Prim(
+                        "==".into(),
+                        Atom::Var("_tag".into()),
+                        Atom::Int(tag),
+                    )),
+                    Box::new(ifstep),
+                );
+            }
+            Term::Let(
+                "_tag".into(),
+                Rhs::Op(Op::LoadRaw(Atom::Var(p.clone()), 0)),
+                Box::new(chain),
+            )
+        };
+        out.push(CoreFn {
+            name: format!("axion_drop_{ty}"),
+            params: vec![p],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            body,
+        });
+    }
+    out
+}
+
+fn fresh_dd(ctr: &mut u32) -> String {
+    let n = format!("_dd{ctr}");
+    *ctr += 1;
+    n
+}
+
+fn unit0() -> Term {
+    Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))))
+}
+
+fn free_then_ret(p: &str) -> Term {
+    Term::Let(
+        "_dfree".into(),
+        Rhs::Op(Op::RtCall {
+            func: "axion_free".into(),
+            args: vec![Atom::Var(p.to_string())],
+            returns: false,
+        }),
+        Box::new(unit0()),
+    )
+}
+
+/// Liberta os campos de tipo-`data` possuídos por `con` (carregados por offset a
+/// partir de `p`), antes de `cont`.
+fn drop_con_fields(recinfo: &RecordInfo, con: &str, p: &str, ctr: &mut u32, cont: Term) -> Term {
+    let mut term = cont;
+    for (off, f) in recinfo.drop_slots(con).iter().rev() {
+        let fp = fresh_dd(ctr);
+        let dropcall = if recinfo.needs_deep_drop(f) {
+            Op::CallDirect(format!("axion_drop_{f}"), vec![Atom::Var(fp.clone())])
+        } else {
+            Op::RtCall {
+                func: "axion_free".into(),
+                args: vec![Atom::Var(fp.clone())],
+                returns: false,
+            }
+        };
+        term = Term::Let(
+            fp.clone(),
+            Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), *off)),
+            Box::new(Term::Let(fresh_dd(ctr), Rhs::Op(dropcall), Box::new(term))),
+        );
+    }
+    term
+}
+
+/// Para cada função, o tipo-`data` de cada droppable (parâmetros `%1` possuídos +
+/// resultados de `Make*`/chamadas que devolvem heap). Alimenta o deep-drop.
+fn build_all_drop_ty(
+    fns: &[CoreFn],
+    module: &ast::Module,
+    recinfo: &RecordInfo,
+    fn_ret_ty: &HashMap<String, String>,
+) -> HashMap<String, HashMap<String, Option<String>>> {
+    let mut out = HashMap::new();
+    for f in fns {
+        let mut dty: HashMap<String, Option<String>> = HashMap::new();
+        // parâmetros `%1` possuídos → tipo da assinatura da função de topo
+        if let Some(mf) = module.funcs.iter().find(|m| m.name == f.name) {
+            if let Some(sig) = &mf.sig {
+                let ptys = sig.param_types();
+                for owned in &f.owned_params {
+                    let idx = f.params.iter().position(|p| p == owned);
+                    let ty = idx
+                        .and_then(|i| ptys.get(i))
+                        .and_then(|t| t.head_con())
+                        .filter(|h| recinfo.type_cons(h).is_some());
+                    if let Some(h) = ty {
+                        dty.insert(owned.clone(), Some(h.to_string()));
+                    }
+                }
+            }
+        }
+        collect_drop_types(&f.body, recinfo, fn_ret_ty, &mut dty);
+        out.insert(f.name.clone(), dty);
+    }
+    out
+}
+
+/// Regista o tipo-`data` das variáveis ligadas a `Make*`/chamadas-heap em `t`.
+/// (Resultados de `if`/`case` ligados a `let` não são tipados — ficam com `free`
+/// plano; conservador, são — ver docs/backend.md.)
+fn collect_drop_types(
+    t: &Term,
+    recinfo: &RecordInfo,
+    fn_ret_ty: &HashMap<String, String>,
+    out: &mut HashMap<String, Option<String>>,
+) {
+    match t {
+        Term::Let(x, rhs, body) => {
+            if let Rhs::Op(op) = rhs {
+                let ty = match op {
+                    Op::MakeRecord { con, .. } | Op::MakeCon { con, .. } => {
+                        recinfo.con_type(con).map(str::to_string)
+                    }
+                    Op::CallDirect(g, _) => fn_ret_ty.get(g).cloned(),
+                    _ => None,
+                };
+                if ty.is_some() {
+                    out.insert(x.clone(), ty);
+                }
+            }
+            collect_rhs_drop_types(rhs, recinfo, fn_ret_ty, out);
+            collect_drop_types(body, recinfo, fn_ret_ty, out);
+        }
+        Term::Drop(_, _, body) => collect_drop_types(body, recinfo, fn_ret_ty, out),
+        Term::Ret(rhs) => collect_rhs_drop_types(rhs, recinfo, fn_ret_ty, out),
+    }
+}
+
+fn collect_rhs_drop_types(
+    rhs: &Rhs,
+    recinfo: &RecordInfo,
+    fn_ret_ty: &HashMap<String, String>,
+    out: &mut HashMap<String, Option<String>>,
+) {
+    match rhs {
+        Rhs::Op(_) => {}
+        Rhs::If(_, th, el) => {
+            collect_drop_types(th, recinfo, fn_ret_ty, out);
+            collect_drop_types(el, recinfo, fn_ret_ty, out);
+        }
+        Rhs::Case(_, arms) => {
+            for (_, b) in arms {
+                collect_drop_types(b, recinfo, fn_ret_ty, out);
+            }
+        }
+    }
 }
 
 // --- análise de reclamação: Drop estrutural (Auto-Drop §2) ---
@@ -1082,7 +1364,7 @@ fn atom_is(v: &str, a: &Atom) -> bool {
 fn occurs_nonborrow(v: &str, t: &Term) -> bool {
     match t {
         Term::Let(_, rhs, body) => rhs_nonborrow(v, rhs) || occurs_nonborrow(v, body),
-        Term::Drop(_, body) => occurs_nonborrow(v, body),
+        Term::Drop(_, _, body) => occurs_nonborrow(v, body),
         Term::Ret(rhs) => rhs_nonborrow(v, rhs),
     }
 }
@@ -1121,6 +1403,8 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::Promote(t, c) => atom_is(v, t) || atom_is(v, c),
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
         Op::PutStrLn(a) | Op::ShowInt(a) => atom_is(v, a),
+        // só em destrutores gerados (não analisados) — leitura, como `Field`
+        Op::LoadRaw(..) => false,
         Op::Unsupported(_) => false,
     }
 }
@@ -1190,7 +1474,7 @@ fn fv_drop_in(
                 bound.remove(x);
             }
         }
-        Term::Drop(_, body) => fv_drop_in(body, drp, ba, bound, out),
+        Term::Drop(_, _, body) => fv_drop_in(body, drp, ba, bound, out),
         Term::Ret(rhs) => fv_rhs_in(rhs, drp, ba, bound, out),
     }
 }
@@ -1284,7 +1568,7 @@ fn scan_body(
             }
             scan_body(body, heap_ret, ba, alloc, esc);
         }
-        Term::Drop(_, body) => scan_body(body, heap_ret, ba, alloc, esc),
+        Term::Drop(_, _, body) => scan_body(body, heap_ret, ba, alloc, esc),
         Term::Ret(rhs) => match rhs {
             Rhs::Op(op) => scan_op_escapes_ret(op, ba, esc),
             Rhs::If(_, t2, e2) => {
@@ -1306,7 +1590,11 @@ fn returns_owned_heap(op: &Op, heap_ret: &HashSet<String>) -> bool {
 fn is_heap_alloc(op: &Op) -> bool {
     matches!(
         op,
-        Op::MakeTuple(_) | Op::MakeRecord { .. } | Op::UpdateRecord { .. } | Op::MakeClosure { .. }
+        Op::MakeTuple(_)
+            | Op::MakeRecord { .. }
+            | Op::MakeCon { .. }
+            | Op::UpdateRecord { .. }
+            | Op::MakeClosure { .. }
     )
 }
 
@@ -1365,7 +1653,13 @@ fn scan_op_escapes_ret(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
 }
 
 /// Insere os `drop`s numa função (Drop estrutural + reclamação entre funções).
-fn insert_drops(mut f: CoreFn, heap_ret: &HashSet<String>, ba: &BorrowArgs) -> CoreFn {
+/// `drop_ty` mapeia cada droppable ao nome do seu tipo-`data` (para o deep-drop).
+fn insert_drops(
+    mut f: CoreFn,
+    heap_ret: &HashSet<String>,
+    ba: &BorrowArgs,
+    drop_ty: &HashMap<String, Option<String>>,
+) -> CoreFn {
     let drp = droppable_vars(&f, heap_ret, ba);
     if drp.is_empty() {
         return f;
@@ -1374,6 +1668,7 @@ fn insert_drops(mut f: CoreFn, heap_ret: &HashSet<String>, ba: &BorrowArgs) -> C
         drp,
         tmp: 1_000_000,
         ba,
+        drop_ty,
     };
     let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
     f.body = e.go(body, &HashSet::new());
@@ -1384,6 +1679,7 @@ struct Elab<'a> {
     drp: HashSet<String>,
     tmp: u32,
     ba: &'a BorrowArgs,
+    drop_ty: &'a HashMap<String, Option<String>>,
 }
 
 impl Elab<'_> {
@@ -1393,14 +1689,20 @@ impl Elab<'_> {
         n
     }
 
+    /// O nome do tipo-`data` de uma droppable (para o backend escolher deep-drop
+    /// vs. `free` plano), se conhecido.
+    fn dty(&self, v: &str) -> Option<String> {
+        self.drop_ty.get(v).cloned().flatten()
+    }
+
     /// Elabora `t`, libertando as variáveis droppable no seu ponto de morte.
     /// `live_out` = droppable vivas *depois* de `t` (a libertar pelo contexto
     /// envolvente), que `t` não deve libertar.
     fn go(&mut self, t: Term, live_out: &HashSet<String>) -> Term {
         match t {
-            Term::Drop(v, body) => {
+            Term::Drop(v, ty, body) => {
                 let b = self.go(*body, live_out);
-                Term::Drop(v, Box::new(b))
+                Term::Drop(v, ty, Box::new(b))
             }
             Term::Ret(rhs) => match rhs {
                 Rhs::Op(op) => {
@@ -1415,7 +1717,8 @@ impl Elab<'_> {
                     let tmp = self.fresh();
                     let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))));
                     for v in dying {
-                        inner = Term::Drop(v, Box::new(inner));
+                        let ty = self.dty(&v);
+                        inner = Term::Drop(v, ty, Box::new(inner));
                     }
                     Term::Let(tmp, Rhs::Op(op), Box::new(inner))
                 }
@@ -1445,7 +1748,8 @@ impl Elab<'_> {
                     }
                     let mut inner = body2;
                     for v in dying {
-                        inner = Term::Drop(v, Box::new(inner));
+                        let ty = self.dty(&v);
+                        inner = Term::Drop(v, ty, Box::new(inner));
                     }
                     Term::Let(x, Rhs::Op(op), Box::new(inner))
                 }
@@ -1482,12 +1786,12 @@ impl Elab<'_> {
         let mut el2 = self.go(el, live_out);
         for v in fth.difference(&fel) {
             if !live_out.contains(v) {
-                el2 = Term::Drop(v.clone(), Box::new(el2));
+                el2 = Term::Drop(v.clone(), self.dty(v), Box::new(el2));
             }
         }
         for v in fel.difference(&fth) {
             if !live_out.contains(v) {
-                th2 = Term::Drop(v.clone(), Box::new(th2));
+                th2 = Term::Drop(v.clone(), self.dty(v), Box::new(th2));
             }
         }
         (th2, el2)
@@ -1523,12 +1827,12 @@ impl Elab<'_> {
             // equilíbrio entre braços: droppable usada noutro braço mas não neste
             for v in union.difference(&fvs[i]) {
                 if !live_out.contains(v) {
-                    b = Term::Drop(v.clone(), Box::new(b));
+                    b = Term::Drop(v.clone(), self.dty(v), Box::new(b));
                 }
             }
             // liberta o escrutínio à cabeça (após a destructuração)
             if let Some(s) = &scrut_drop {
-                b = Term::Drop(s.clone(), Box::new(b));
+                b = Term::Drop(s.clone(), self.dty(s), Box::new(b));
             }
             out.push((pat, b));
         }
@@ -1573,9 +1877,12 @@ fn dump_term(t: &Term, n: usize, s: &mut String) {
             s.push('\n');
             dump_term(body, n, s);
         }
-        Term::Drop(v, body) => {
+        Term::Drop(v, ty, body) => {
             indent(n, s);
-            s.push_str(&format!("drop {v}\n"));
+            match ty {
+                Some(t) => s.push_str(&format!("drop {v} : {t}\n")),
+                None => s.push_str(&format!("drop {v}\n")),
+            }
             dump_term(body, n, s);
         }
         Term::Ret(rhs) => {
@@ -1638,6 +1945,7 @@ fn dump_op(op: &Op) -> String {
         ),
         Op::MakeCon { con, args } => format!("con {con}{}", self::args(args)),
         Op::Field { name, rec } => format!("field {name} {}", atom(rec)),
+        Op::LoadRaw(a, off) => format!("loadraw {}+{off}", atom(a)),
         Op::PutStrLn(a) => format!("putStrLn {}", atom(a)),
         Op::ShowInt(a) => format!("show {}", atom(a)),
         Op::WithArena { parent: None, clos } => format!("withArena {}", atom(clos)),
