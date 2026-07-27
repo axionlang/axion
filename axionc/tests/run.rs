@@ -79,6 +79,33 @@ fn session_incomplete_protocol_is_rejected_ax0301() {
 }
 
 #[test]
+fn bound_confined_nursery_is_accepted() {
+    // §9: um `bound` que cria endpoints e os consome lá dentro (nada escapa) é
+    // aceite — topologia em árvore, deadlock-free por construção.
+    let out = axionc()
+        .args(["--check", &fixture("bound_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "nursery confinado devia passar: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn bound_endpoint_escape_is_rejected_ax0302() {
+    // devolver um endpoint do `bound` quebraria a topologia acíclica → AX0302.
+    let out = axionc()
+        .args(["--check", &fixture("bound_escape.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "escape de endpoint devia falhar");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0302"), "esperava AX0302, saída: {text}");
+}
+
+#[test]
 fn linear_use_once_is_accepted() {
     let out = axionc()
         .args(["--check", &fixture("use_once_ok.axi")])

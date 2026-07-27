@@ -39,9 +39,14 @@
   segue o tipo de sessão do endpoint, **AX0300**) e a **completude** (o endpoint
   chega a `close`, **AX0301**), sobre a espinha linear de `do`/`let`. `do`-binds
   com padrão de tuplo (`(x, c) <- recv c`) no parser. Fixtures accept + AX0300 +
-  AX0301. **Falta:** escolha (`select`/`offer`, ramo `Closed`), `bound`/`spawn`
-  com confinamento por região `s`, e o diferencial automático superfície→ASC
-  contra o interpretador de referência.
+  AX0301. **Confinamento do nursery feito** (`check_bound_escapes`): um endpoint
+  criado num `bound` (por `newChannel`/`spawn`/`send`/`recv`) não pode ser
+  devolvido do bloco — **AX0302**, o análogo do escape de sub-arena (AX0003) mas
+  sem escotilha `promote`. É a **deadlock-freedom estrutural** da §9 (o grafo de
+  comunicação fica uma árvore) imposta no compilador. Fixtures `bound_ok`
+  (aceite) + `bound_escape` (AX0302). **Falta:** escolha (`select`/`offer`, ramo
+  `Closed`); `spawn` a garantir topologia estritamente em árvore; e o diferencial
+  automático superfície→ASC contra o interpretador de referência.
 - [ ] **Runtime do scheduler (§11)** — M:N com work-stealing; tarefas =
   continuações defuncionalizadas na arena da nursery; pontos de suspensão =
   operações de canal; `io_uring`/`epoll` na fronteira de IO.

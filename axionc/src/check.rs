@@ -101,7 +101,179 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
         check_func(f, &globals, &ctx, diags, &mut out);
     }
     check_sessions(module, diags);
+    check_bound_escapes(module, diags);
     out
+}
+
+// --- confinamento do nursery `bound` (§9): deadlock-freedom estrutural ---
+//
+// A deadlock-freedom «por construção» vem de o grafo de comunicação ser uma
+// árvore: os endpoints nascem confinados ao `bound` e não podem escapar (senão
+// poderiam ligar nurseries em ciclo). Este passe impõe o confinamento — um
+// endpoint criado dentro de um `bound` (por `newChannel`/`spawn`, ou avançado por
+// `send`/`recv`) não pode ser o valor de retorno do bloco. **AX0302**. É o análogo
+// do escape de sub-arena (AX0003), mas SEM escotilha (não há `promote` de
+// endpoints — é esse o ponto). A região é o próprio corpo do `bound`.
+
+/// O que uma expressão produz, em termos de endpoints (para propagar a posse).
+enum Prod {
+    Both, // `newChannel` → par (Ep, Ep): ambos são endpoints
+    Snd,  // `recv` → (valor, Ep): só o 2.º é endpoint
+    One,  // `send`/`spawn`/var-endpoint → um endpoint
+    No,
+}
+
+/// Reconhece `bound <corpo>` (ou `bound arena <corpo>`) e devolve o corpo.
+fn as_bound(e: &Expr) -> Option<&Expr> {
+    let (head, args) = app_spine(e);
+    match head {
+        Some("bound") if !args.is_empty() => Some(*args.last().unwrap()),
+        _ => None,
+    }
+}
+
+fn check_bound_escapes(module: &Module, diags: &mut Diagnostics) {
+    for f in &module.funcs {
+        for c in &f.clauses {
+            if let Body::Plain(e) = &c.body {
+                find_bounds(e, diags);
+            }
+        }
+    }
+}
+
+fn find_bounds(e: &Expr, diags: &mut Diagnostics) {
+    if let Some(body) = as_bound(e) {
+        check_bound(body, diags);
+    }
+    let mut go = |e: &Expr| find_bounds(e, diags);
+    match e {
+        Expr::App(f, a, _) => {
+            go(f);
+            go(a);
+        }
+        Expr::BinOp(_, l, r, _) => {
+            go(l);
+            go(r);
+        }
+        Expr::If(c, t, el, _) => {
+            go(c);
+            go(t);
+            go(el);
+        }
+        Expr::Let(binds, body, _) => {
+            for cl in binds.iter().flat_map(|b| &b.clauses) {
+                if let Body::Plain(e2) = &cl.body {
+                    go(e2);
+                }
+            }
+            go(body);
+        }
+        Expr::Case(s, arms, _) => {
+            go(s);
+            for (_, b) in arms {
+                go(b);
+            }
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(&mut go),
+        Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
+            assigns.iter().for_each(|(_, e)| go(e))
+        }
+        Expr::Lam(_, body, _) => go(body),
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+    }
+}
+
+/// Verifica que o corpo de um `bound` não devolve um endpoint criado lá dentro.
+fn check_bound(body: &Expr, diags: &mut Diagnostics) {
+    let mut eps: HashSet<String> = HashSet::new();
+    let tail = peel_bound_spine(body, &mut eps);
+    if let Some(sp) = tail_endpoint(tail, &eps) {
+        diags.push(
+            Diagnostic::error("AX0302", "um endpoint escapa do nursery `bound`")
+                .label(
+                    sp.0,
+                    sp.1,
+                    "devolvido daqui — o endpoint sobreviveria ao nursery",
+                )
+                .with_help(
+                    "os endpoints nascem confinados ao `bound` para o grafo de \
+                 comunicação ser uma árvore (deadlock-freedom, §9); consome-os \
+                 dentro do bloco (`close`/`send`/`recv`), não os devolvas.",
+                ),
+        );
+    }
+}
+
+/// Percorre a espinha de `do`/`let`, registando as variáveis ligadas a endpoints
+/// criados no nursery; devolve a expressão-cauda (o valor de retorno).
+fn peel_bound_spine<'a>(e: &'a Expr, eps: &mut HashSet<String>) -> &'a Expr {
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::Let(binds, body, _) => {
+                for b in binds {
+                    if let Some(rhs) = simple_bind_rhs(b) {
+                        if let Prod::One | Prod::Both | Prod::Snd = producer(rhs, eps) {
+                            eps.insert(b.name.clone());
+                        }
+                    }
+                }
+                cur = body;
+            }
+            Expr::Case(scrut, arms, _) if arms.len() == 1 => {
+                bind_prod(&arms[0].0, producer(scrut, eps), eps);
+                cur = &arms[0].1;
+            }
+            _ => return cur,
+        }
+    }
+}
+
+fn producer(e: &Expr, eps: &HashSet<String>) -> Prod {
+    // o nome-builtin primeiro (`newChannel` é um `Var` de 0 args), depois a
+    // variável-endpoint já registada.
+    match app_spine(e).0 {
+        Some("newChannel") => Prod::Both,
+        Some("recv") => Prod::Snd,
+        Some("send") | Some("spawn") => Prod::One,
+        Some(n) if eps.contains(n) => Prod::One,
+        _ => Prod::No,
+    }
+}
+
+fn bind_prod(pat: &Pat, prod: Prod, eps: &mut HashSet<String>) {
+    match (prod, pat) {
+        (Prod::One, Pat::Var(n, _)) => {
+            eps.insert(n.clone());
+        }
+        (Prod::Both, Pat::Tuple(ps, _)) => {
+            for p in ps {
+                if let Pat::Var(n, _) = p {
+                    eps.insert(n.clone());
+                }
+            }
+        }
+        (Prod::Snd, Pat::Tuple(ps, _)) => {
+            if let Some(Pat::Var(n, _)) = ps.last() {
+                eps.insert(n.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Se a cauda devolve um endpoint (var registada, ou uma operação que produz um
+/// endpoint), devolve o span do escape.
+fn tail_endpoint(e: &Expr, eps: &HashSet<String>) -> Option<Span> {
+    match e {
+        Expr::Var(n, _) if eps.contains(n) => Some(e.span()),
+        Expr::Tuple(es, _) => es.iter().find_map(|x| tail_endpoint(x, eps)),
+        _ => match app_spine(e).0 {
+            Some("newChannel") | Some("spawn") | Some("send") | Some("recv") => Some(e.span()),
+            _ => None,
+        },
+    }
 }
 
 // --- fidelidade de protocolo de sessão (§6, cálculo ASC) ---
@@ -429,6 +601,9 @@ fn builtins() -> HashSet<String> {
         "recv",
         "close",
         "newChannel",
+        // nursery de concorrência estruturada (§9)
+        "bound",
+        "spawn",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -778,6 +953,9 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("send".to_string(), vec![Mult::One, Mult::Many]);
     consumers.insert("recv".to_string(), vec![Mult::One]);
     consumers.insert("close".to_string(), vec![Mult::One]);
+    // nursery (§9): o corpo do `bound` é emprestado; `spawn` recebe a closure-filho.
+    consumers.insert("bound".to_string(), vec![Mult::Many]);
+    consumers.insert("spawn".to_string(), vec![Mult::Many]);
     // importações FFI: os argumentos (Int) são emprestados.
     for fo in &module.foreigns {
         let arity = fo.sig.param_mults().len();

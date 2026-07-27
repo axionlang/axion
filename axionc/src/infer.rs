@@ -311,6 +311,38 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // nursery de concorrência estruturada (§9). `bound` abre um nursery cujo
+        // corpo é confinado (os endpoints não escapam — `check_bound_escapes`);
+        // `newChannel` cria um par de endpoints duais; `spawn` lança um filho que
+        // consome um endpoint e devolve ao pai o dual. Tipos permissivos (o HM não
+        // exprime a dualidade nem o confinamento).
+        // bound :: forall a. a -> a
+        env.insert(
+            "bound".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(Ty::Var(0)), Box::new(Ty::Var(0))),
+            },
+        );
+        // newChannel :: forall a b. (Ep a, Ep b)
+        env.insert(
+            "newChannel".into(),
+            Scheme {
+                vars: vec![0, 1],
+                ty: Ty::Tuple(vec![ep(0), ep(1)]),
+            },
+        );
+        // spawn :: forall a b c. (Ep a -> b) -> Ep c
+        env.insert(
+            "spawn".into(),
+            Scheme {
+                vars: vec![0, 1, 2],
+                ty: Ty::Fun(
+                    Box::new(Ty::Fun(Box::new(ep(0)), Box::new(Ty::Var(1)))),
+                    Box::new(ep(2)),
+                ),
+            },
+        );
         // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
         // corpo e reclama tudo no fim (a entrada para correr programas de arena).
         env.insert(
