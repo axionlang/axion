@@ -100,7 +100,267 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
     for f in &module.funcs {
         check_func(f, &globals, &ctx, diags, &mut out);
     }
+    check_sessions(module, diags);
     out
+}
+
+// --- fidelidade de protocolo de sessão (§6, cálculo ASC) ---
+//
+// A linearidade dos endpoints (`Ep` é must-use %1) já é garantida pelo passe de
+// linearidade. Este passe verifica o que o HM não exprime: que cada operação de
+// canal segue o tipo de sessão do endpoint (send num `Send`, recv num `Recv`,
+// close num `End`) e que o protocolo é levado até ao fim. Banda AX03xx.
+// v1: fragmento send/recv/close sobre a espinha linear de `do`/`let`; escolha
+// (⊕/&), `bound`/`spawn` e ramos (`if`/`case` multi-braço) ficam para incrementos
+// seguintes (aí o tracking pára, conservador, sem falsos positivos).
+
+#[derive(Clone, Debug, PartialEq)]
+enum SessTy {
+    End,
+    Send(Box<SessTy>),
+    Recv(Box<SessTy>),
+}
+
+/// Decompõe um tipo na sua cabeça e argumentos (a espinha de `App`).
+fn ty_spine(t: &Type) -> (Option<&str>, Vec<&Type>) {
+    let mut args = Vec::new();
+    let mut cur = t;
+    loop {
+        match cur {
+            Type::App(f, a) => {
+                args.push(a.as_ref());
+                cur = f;
+            }
+            Type::Con(n) => {
+                args.reverse();
+                return (Some(n.as_str()), args);
+            }
+            _ => return (None, vec![]),
+        }
+    }
+}
+
+/// Lê um tipo de sessão a partir de um `Type` (payload ignorado no v1).
+fn parse_sess(t: &Type) -> Option<SessTy> {
+    let (h, args) = ty_spine(t);
+    match (h?, args.len()) {
+        ("End", 0) => Some(SessTy::End),
+        ("Send", 2) => Some(SessTy::Send(Box::new(parse_sess(args[1])?))),
+        ("Recv", 2) => Some(SessTy::Recv(Box::new(parse_sess(args[1])?))),
+        _ => None,
+    }
+}
+
+/// Se `t` é um endpoint `Ep S` (ou `Channel`/`Chan`/`Endpoint`), devolve a sessão.
+fn endpoint_session(t: &Type) -> Option<SessTy> {
+    let (h, args) = ty_spine(t);
+    match h? {
+        "Ep" | "Channel" | "Chan" | "Endpoint" if args.len() == 1 => parse_sess(args[0]),
+        _ => None,
+    }
+}
+
+/// A cabeça-nome e os argumentos de uma aplicação `f a b …`.
+fn app_spine(e: &Expr) -> (Option<&str>, Vec<&Expr>) {
+    let mut args = Vec::new();
+    let mut cur = e;
+    while let Expr::App(f, a, _) = cur {
+        args.push(a.as_ref());
+        cur = f;
+    }
+    args.reverse();
+    match cur {
+        Expr::Var(n, _) | Expr::Con(n, _) => (Some(n.as_str()), args),
+        _ => (None, args),
+    }
+}
+
+/// Resultado de uma operação de canal reconhecida.
+enum OpResult {
+    Advance(SessTy), // `send` → o endpoint avançado
+    Recv(SessTy),    // `recv` → (valor, endpoint avançado)
+    Closed,          // `close` → consumido
+}
+
+fn check_sessions(module: &Module, diags: &mut Diagnostics) {
+    for f in &module.funcs {
+        let Some(sig) = &f.sig else { continue };
+        let ptys = sig.param_types();
+        for c in &f.clauses {
+            // ambiente inicial: parâmetros que são endpoints
+            let mut env: HashMap<String, SessTy> = HashMap::new();
+            for (i, p) in c.pats.iter().enumerate() {
+                if let (Pat::Var(n, _), Some(t)) = (p, ptys.get(i)) {
+                    if let Some(s) = endpoint_session(t) {
+                        env.insert(n.clone(), s);
+                    }
+                }
+            }
+            if env.is_empty() {
+                continue; // não há canais → nada a verificar
+            }
+            if let Body::Plain(e) = &c.body {
+                let mut tracked = true;
+                walk_sess(e, &mut env, &mut tracked, diags);
+                // completude (T-progresso): se seguimos toda a espinha, nenhum
+                // endpoint pode ficar por levar até `close`.
+                if tracked {
+                    // um endpoint fechado foi removido do env; o que sobra não foi
+                    // levado até `close` → protocolo incompleto.
+                    for n in env.keys() {
+                        diags.push(
+                            Diagnostic::error(
+                                "AX0301",
+                                format!(
+                                    "o endpoint '{n}' não completou o seu protocolo de sessão \
+                                     (falta consumi-lo até `close`)"
+                                ),
+                            )
+                            .label(
+                                f.span.0,
+                                f.span.1,
+                                "protocolo incompleto aqui",
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Percorre a espinha linear (`do` desugarado = `case` de 1 braço, e `let`),
+/// avançando o estado de sessão de cada endpoint. `tracked` fica `false` se
+/// encontrar ramificação (não rastreável no v1) — aí não se reporta incompletude.
+fn walk_sess(
+    e: &Expr,
+    env: &mut HashMap<String, SessTy>,
+    tracked: &mut bool,
+    diags: &mut Diagnostics,
+) {
+    match e {
+        Expr::Case(scrut, arms, _) if arms.len() == 1 => {
+            if let Some(r) = classify_op(scrut, env, diags) {
+                bind_result(&arms[0].0, r, env);
+            }
+            walk_sess(&arms[0].1, env, tracked, diags);
+        }
+        Expr::Let(funcs, body, _) => {
+            for g in funcs {
+                if let Some(cl) = g.clauses.first() {
+                    if cl.pats.is_empty() {
+                        if let Body::Plain(rhs) = &cl.body {
+                            if let Some(r) = classify_op(rhs, env, diags) {
+                                bind_named(&g.name, r, env);
+                            }
+                        }
+                    }
+                }
+            }
+            walk_sess(body, env, tracked, diags);
+        }
+        // ramificação real: não rastreável no v1 → pára (conservador, sem falsos+)
+        Expr::If(..) | Expr::Case(..) => *tracked = false,
+        // folha: pode ser a última operação (`close c`)
+        other => {
+            classify_op(other, env, diags);
+        }
+    }
+}
+
+/// Reconhece e valida uma operação de canal; avança/consome o endpoint no `env`.
+/// Emite AX0300 se a operação não seguir o tipo de sessão.
+fn classify_op(
+    e: &Expr,
+    env: &mut HashMap<String, SessTy>,
+    diags: &mut Diagnostics,
+) -> Option<OpResult> {
+    let (head, args) = app_spine(e);
+    let head = head?;
+    let chan = match args.first() {
+        Some(Expr::Var(n, _)) => n.clone(),
+        _ => return None,
+    };
+    let sp = e.span();
+    match head {
+        "send" if args.len() >= 2 => match env.remove(&chan) {
+            Some(SessTy::Send(s)) => Some(OpResult::Advance(*s)),
+            Some(other) => {
+                session_mismatch(diags, sp, &chan, "send", &other);
+                None
+            }
+            None => None,
+        },
+        "recv" => match env.remove(&chan) {
+            Some(SessTy::Recv(s)) => Some(OpResult::Recv(*s)),
+            Some(other) => {
+                session_mismatch(diags, sp, &chan, "recv", &other);
+                None
+            }
+            None => None,
+        },
+        "close" => match env.remove(&chan) {
+            Some(SessTy::End) => Some(OpResult::Closed),
+            Some(other) => {
+                session_mismatch(diags, sp, &chan, "close", &other);
+                None
+            }
+            None => None,
+        },
+        _ => None,
+    }
+}
+
+fn session_mismatch(diags: &mut Diagnostics, sp: Span, chan: &str, op: &str, got: &SessTy) {
+    let expect = match op {
+        "send" => "um `Send`",
+        "recv" => "um `Recv`",
+        _ => "um `End`",
+    };
+    let got = match got {
+        SessTy::End => "está em `End`",
+        SessTy::Send(_) => "está em `Send`",
+        SessTy::Recv(_) => "está em `Recv`",
+    };
+    diags.push(
+        Diagnostic::error(
+            "AX0300",
+            format!(
+                "`{op}` no endpoint '{chan}' não segue o protocolo: esperava {expect}, mas {got}"
+            ),
+        )
+        .label(sp.0, sp.1, "operação de sessão inválida"),
+    );
+}
+
+fn bind_result(pat: &Pat, r: OpResult, env: &mut HashMap<String, SessTy>) {
+    match r {
+        OpResult::Advance(s) => {
+            if let Pat::Var(n, _) = pat {
+                env.insert(n.clone(), s);
+            }
+        }
+        OpResult::Recv(s) => {
+            // `(_valor, endpoint) <- recv c` — a última var do tuplo é o endpoint
+            if let Pat::Tuple(ps, _) = pat {
+                if let Some(Pat::Var(n, _)) = ps.last() {
+                    env.insert(n.clone(), s);
+                }
+            } else if let Pat::Var(n, _) = pat {
+                env.insert(n.clone(), s);
+            }
+        }
+        OpResult::Closed => {}
+    }
+}
+
+fn bind_named(name: &str, r: OpResult, env: &mut HashMap<String, SessTy>) {
+    match r {
+        OpResult::Advance(s) | OpResult::Recv(s) => {
+            env.insert(name.to_string(), s);
+        }
+        OpResult::Closed => {}
+    }
 }
 
 /// Um tipo é *must-use* se a sua cabeça é um primitivo sem `Drop`, ou um tipo
@@ -164,6 +424,11 @@ fn builtins() -> HashSet<String> {
         // permissões fraccionárias (§2)
         "split",
         "join",
+        // canais / session types (§6)
+        "send",
+        "recv",
+        "close",
+        "newChannel",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -506,6 +771,13 @@ fn build_ctx(module: &Module) -> Ctx {
         "foldBytes".to_string(),
         vec![Mult::Many, Mult::Many, Mult::Many],
     );
+    // canais / session types (§6): send/recv/close CONSOMEM o endpoint %1 (a posse
+    // move-se; o resultado é o endpoint avançado — o fio linear da sessão). O
+    // payload de `send` é emprestado. A fidelidade do protocolo é verificada à
+    // parte (`check_sessions`).
+    consumers.insert("send".to_string(), vec![Mult::One, Mult::Many]);
+    consumers.insert("recv".to_string(), vec![Mult::One]);
+    consumers.insert("close".to_string(), vec![Mult::One]);
     // importações FFI: os argumentos (Int) são emprestados.
     for fo in &module.foreigns {
         let arity = fo.sig.param_mults().len();

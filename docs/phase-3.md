@@ -33,10 +33,15 @@
 
 ## Implementação (depois do trilho)
 
-- [ ] **Frontend/typechecker de sessões** — `bound`/`spawn`/`newChan`/`send`/
-  `recv`/`close`/`select`/`offer` no parser+Core; regra `(Bound)` com confinamento
-  por região fantasma `s`; banda de erros **AX03xx**. Validado por diferencial
-  contra o interpretador de configurações.
+- [~] **Frontend/typechecker de sessões** — v1 feito: `send`/`recv`/`close`
+  tipados no `infer.rs` (permissivos) + consumidos na linearidade; o passe
+  `check_sessions` (`check.rs`) verifica a **fidelidade de protocolo** (a operação
+  segue o tipo de sessão do endpoint, **AX0300**) e a **completude** (o endpoint
+  chega a `close`, **AX0301**), sobre a espinha linear de `do`/`let`. `do`-binds
+  com padrão de tuplo (`(x, c) <- recv c`) no parser. Fixtures accept + AX0300 +
+  AX0301. **Falta:** escolha (`select`/`offer`, ramo `Closed`), `bound`/`spawn`
+  com confinamento por região `s`, e o diferencial automático superfície→ASC
+  contra o interpretador de referência.
 - [ ] **Runtime do scheduler (§11)** — M:N com work-stealing; tarefas =
   continuações defuncionalizadas na arena da nursery; pontos de suspensão =
   operações de canal; `io_uring`/`epoll` na fronteira de IO.

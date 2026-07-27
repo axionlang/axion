@@ -274,6 +274,43 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // canais / session types (§6). O HM não exprime o avanço de sessão — a
+        // fidelidade de protocolo é verificada no passe `check_sessions`; aqui os
+        // tipos são permissivos (o endpoint é `Ep S`, a sessão avança de `a`→`c`).
+        let ep = |v: u32| Ty::Con("Ep".into(), vec![Ty::Var(v)]);
+        // send :: forall a b c. Ep a -> b -> Ep c
+        env.insert(
+            "send".into(),
+            Scheme {
+                vars: vec![0, 1, 2],
+                ty: Ty::Fun(
+                    Box::new(ep(0)),
+                    Box::new(Ty::Fun(Box::new(Ty::Var(1)), Box::new(ep(2)))),
+                ),
+            },
+        );
+        // recv :: forall a b c. Ep a -> (b, Ep c)
+        env.insert(
+            "recv".into(),
+            Scheme {
+                vars: vec![0, 1, 2],
+                ty: Ty::Fun(
+                    Box::new(ep(0)),
+                    Box::new(Ty::Tuple(vec![Ty::Var(1), ep(2)])),
+                ),
+            },
+        );
+        // close :: forall a. Ep a -> IO ()  (o fecho é um efeito → casa com `do`)
+        env.insert(
+            "close".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(ep(0)),
+                    Box::new(Ty::Con("IO".into(), vec![Ty::Con("()".into(), vec![])])),
+                ),
+            },
+        );
         // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
         // corpo e reclama tudo no fim (a entrada para correr programas de arena).
         env.insert(

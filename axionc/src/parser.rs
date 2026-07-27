@@ -86,8 +86,8 @@ fn merge_funcs(items: Vec<TopItem>) -> Vec<Func> {
 
 /// Uma instrução de um bloco `do`.
 enum Stmt {
-    Bind(String, Expr), // `x <- e`
-    Expr(Expr),         // `e`
+    Bind(Pat, Expr), // `pat <- e`  (var ou tuplo, p.ex. `(x, c) <- recv c`)
+    Expr(Expr),      // `e`
 }
 
 impl<'a> Parser<'a> {
@@ -543,7 +543,7 @@ impl<'a> Parser<'a> {
         };
         for stmt in iter {
             let (pat, e) = match stmt {
-                Stmt::Bind(n, e) => (Pat::Var(n, sp), e),
+                Stmt::Bind(pat, e) => (pat, e),
                 Stmt::Expr(e) => (Pat::Wild(sp), e),
             };
             acc = Expr::Case(Box::new(e), vec![(pat, acc)], sp);
@@ -551,20 +551,18 @@ impl<'a> Parser<'a> {
         Ok(acc)
     }
 
-    /// Uma instrução de `do`: `pat <- expr` (ligação) ou `expr` (efeito/valor).
+    /// Uma instrução de `do`: `pat <- expr` (ligação; `pat` é var ou tuplo) ou
+    /// `expr` (efeito/valor). Tenta o padrão especulativamente e recua se não
+    /// houver `<-`.
     fn parse_stmt(&mut self) -> PResult<Stmt> {
-        let is_bind = matches!(self.cur(), Some(LTok::Tok(Tok::VarId(_))))
-            && matches!(
-                self.toks.get(self.pos + 1).map(|s| &s.tok),
-                Some(LTok::Tok(Tok::LArrow))
-            );
-        if is_bind {
-            let (name, _) = self.var_name("nome de ligação do 'do'")?;
-            self.expect(&Tok::LArrow, "'<-'")?;
-            Ok(Stmt::Bind(name, self.parse_expr()?))
-        } else {
-            Ok(Stmt::Expr(self.parse_expr()?))
+        let save = self.pos;
+        if let Ok(pat) = self.parse_apat() {
+            if self.eat(&Tok::LArrow) {
+                return Ok(Stmt::Bind(pat, self.parse_expr()?));
+            }
         }
+        self.pos = save; // recua: era uma expressão, não uma ligação
+        Ok(Stmt::Expr(self.parse_expr()?))
     }
 
     fn parse_lam(&mut self) -> PResult<Expr> {

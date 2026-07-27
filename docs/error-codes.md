@@ -22,19 +22,19 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0200` | Tipos | Incompatibilidade de tipos (unificação falhou) | **imposto pelo `axionc`** (Fase 1) |
 | `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
+| `AX0300` | Sessões | Operação de canal não segue o tipo de sessão do endpoint (`send`/`recv`/`close` no estado errado) | **imposto pelo `axionc`** (Fase 3) |
+| `AX0301` | Sessões | Protocolo de sessão incompleto: um endpoint não é levado até `close` | **imposto pelo `axionc`** (Fase 3) |
 
 Próximo livre por banda — linguagem: `AX0007`; front-end: `AX0102`;
-tipos: `AX0202`; canais/sessões (Fase 3): `AX0300` (reservada).
+tipos: `AX0202`; canais/sessões: `AX0302`.
 
-**Reservado — `AX03xx` canais e session types (Fase 3).** A §17 aloca esta banda
-para os erros de concorrência do cálculo de sessões (ver
-[`docs/phase-3-calculus.md`](phase-3-calculus.md)); serão populados ao implementar
-o typechecker de sessões. Candidatos já identificados pelo cálculo: uso de
-endpoint após `send` (viola a posse linear, A1), ramo `Closed` não tratado num
-`offer`/`Maybe~` (T5), e escape de um endpoint/recurso do nursery `bound`
-(confinamento por região `s`, A2). *(Os códigos de linearidade `AX00xx` continuam
-a cobrir a posse `%1` subjacente; a banda `AX03xx` é para os invariantes próprios
-de sessão.)*
+**`AX03xx` canais e session types (Fase 3).** Banda da §17 para o cálculo de
+sessões (ver [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Impostos:
+`AX0300` (fidelidade de protocolo — a operação segue o tipo de sessão) e `AX0301`
+(completude — o protocolo chega a `close`). A posse linear `%1` do endpoint é
+coberta por `AX00xx` (must-use/uso-após-move). Ainda por implementar nesta banda
+(incrementos seguintes): ramo `Closed` não tratado num `offer`/`Maybe~` (T5), e
+escape de um endpoint/recurso do nursery `bound` (confinamento por região `s`, A2).
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
 > linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*

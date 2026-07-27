@@ -41,6 +41,44 @@ fn use_after_consume_is_rejected_ax0001() {
 }
 
 #[test]
+fn session_well_typed_protocols_are_accepted() {
+    // §6: um protocolo `Send Int End` (envia+fecha) e um `Recv Int End`
+    // (recebe+fecha) seguem o tipo de sessão → aceites por `check_sessions`.
+    for fx in ["session_ok.axi", "session_recv_ok.axi"] {
+        let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{fx} devia passar: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn session_wrong_operation_is_rejected_ax0300() {
+    // faz `recv` num endpoint cujo protocolo é `Send …` → viola a fidelidade.
+    let out = axionc()
+        .args(["--check", &fixture("session_bad_op.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "op de sessão errada devia falhar");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0300"), "esperava AX0300, saída: {text}");
+}
+
+#[test]
+fn session_incomplete_protocol_is_rejected_ax0301() {
+    // envia mas nunca `close` → o endpoint não completa o protocolo.
+    let out = axionc()
+        .args(["--check", &fixture("session_incomplete.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "protocolo incompleto devia falhar");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0301"), "esperava AX0301, saída: {text}");
+}
+
+#[test]
 fn linear_use_once_is_accepted() {
     let out = axionc()
         .args(["--check", &fixture("use_once_ok.axi")])
