@@ -291,6 +291,8 @@ enum SessTy {
     End,
     Send(Box<SessTy>),
     Recv(Box<SessTy>),
+    Select(Vec<(String, SessTy)>), // ⊕ — escolhe um rótulo (lado interno)
+    Offer(Vec<(String, SessTy)>),  // & — oferece todos os rótulos (lado externo)
 }
 
 /// Decompõe um tipo na sua cabeça e argumentos (a espinha de `App`).
@@ -319,8 +321,28 @@ fn parse_sess(t: &Type) -> Option<SessTy> {
         ("End", 0) => Some(SessTy::End),
         ("Send", 2) => Some(SessTy::Send(Box::new(parse_sess(args[1])?))),
         ("Recv", 2) => Some(SessTy::Recv(Box::new(parse_sess(args[1])?))),
+        // `Select (L1 S1) (L2 S2) …` / `Offer …` — cada ramo é `Rótulo Cont`
+        // (rótulo = ConId; um ramo sem continuação = `End`).
+        ("Select", n) if n >= 1 => Some(SessTy::Select(parse_branches(&args)?)),
+        ("Offer", n) if n >= 1 => Some(SessTy::Offer(parse_branches(&args)?)),
         _ => None,
     }
+}
+
+/// Lê os ramos de um `Select`/`Offer`: cada arg é `Label Cont` (ou só `Label`).
+fn parse_branches(args: &[&Type]) -> Option<Vec<(String, SessTy)>> {
+    let mut out = Vec::new();
+    for a in args {
+        let (h, bargs) = ty_spine(a);
+        let label = h?.to_string();
+        let cont = if bargs.is_empty() {
+            SessTy::End
+        } else {
+            parse_sess(bargs[0])?
+        };
+        out.push((label, cont));
+    }
+    Some(out)
 }
 
 /// Se `t` é um endpoint `Ep S` (ou `Channel`/`Chan`/`Endpoint`), devolve a sessão.
@@ -364,6 +386,9 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
             for (i, p) in c.pats.iter().enumerate() {
                 if let (Pat::Var(n, _), Some(t)) = (p, ptys.get(i)) {
                     if let Some(s) = endpoint_session(t) {
+                        // T5: toda a escolha externa (`Offer`/`&`) tem de incluir o
+                        // ramo `Closed` — para o cancelamento ser sempre tratável.
+                        check_closed_branches(&s, n, f.span, diags);
                         env.insert(n.clone(), s);
                     }
                 }
@@ -449,11 +474,51 @@ fn classify_op(
 ) -> Option<OpResult> {
     let (head, args) = app_spine(e);
     let head = head?;
+    let sp = e.span();
+    // `select L c` (⊕): escolhe o rótulo L; o canal é o 2.º argumento.
+    if head == "select" && args.len() >= 2 {
+        let label = match args[0] {
+            Expr::Con(l, _) | Expr::Var(l, _) => l.clone(),
+            _ => return None,
+        };
+        let chan = match args[1] {
+            Expr::Var(n, _) => n.clone(),
+            _ => return None,
+        };
+        return match env.remove(&chan) {
+            Some(SessTy::Select(branches)) => {
+                match branches.into_iter().find(|(bl, _)| *bl == label) {
+                    Some((_, cont)) => Some(OpResult::Advance(cont)),
+                    None => {
+                        diags.push(
+                            Diagnostic::error(
+                                "AX0300",
+                                format!(
+                                    "`select {label}` no endpoint '{chan}': o protocolo \
+                                     `Select` não oferece o rótulo '{label}'"
+                                ),
+                            )
+                            .label(
+                                sp.0,
+                                sp.1,
+                                "rótulo de escolha inválido",
+                            ),
+                        );
+                        None
+                    }
+                }
+            }
+            Some(other) => {
+                session_mismatch(diags, sp, &chan, "select", &other);
+                None
+            }
+            None => None,
+        };
+    }
     let chan = match args.first() {
         Some(Expr::Var(n, _)) => n.clone(),
         _ => return None,
     };
-    let sp = e.span();
     match head {
         "send" if args.len() >= 2 => match env.remove(&chan) {
             Some(SessTy::Send(s)) => Some(OpResult::Advance(*s)),
@@ -479,7 +544,53 @@ fn classify_op(
             }
             None => None,
         },
+        // `offer c` (&): recebe a escolha e consome o endpoint. A exaustividade dos
+        // ramos (incl. `Closed`) é verificada no tipo (`check_closed_branches`).
+        "offer" => match env.remove(&chan) {
+            Some(SessTy::Offer(_)) => Some(OpResult::Closed),
+            Some(other) => {
+                session_mismatch(diags, sp, &chan, "offer", &other);
+                None
+            }
+            None => None,
+        },
         _ => None,
+    }
+}
+
+/// T5 (§7): verifica recursivamente que toda a escolha externa (`Offer`/`&`) na
+/// sessão inclui o ramo `Closed` — assim o cancelamento (o par em pânico envia
+/// `Closed`) é sempre um ramo tratável do protocolo, nunca ignorado em silêncio.
+fn check_closed_branches(s: &SessTy, chan: &str, sp: Span, diags: &mut Diagnostics) {
+    match s {
+        SessTy::End => {}
+        SessTy::Send(k) | SessTy::Recv(k) => check_closed_branches(k, chan, sp, diags),
+        SessTy::Select(bs) => {
+            for (_, k) in bs {
+                check_closed_branches(k, chan, sp, diags);
+            }
+        }
+        SessTy::Offer(bs) => {
+            if !bs.iter().any(|(l, _)| l == "Closed") {
+                diags.push(
+                    Diagnostic::error(
+                        "AX0303",
+                        format!(
+                            "a escolha externa (`Offer`) do endpoint '{chan}' não tem o ramo \
+                             `Closed` — o cancelamento de um par em pânico ficaria por tratar (§7)"
+                        ),
+                    )
+                    .label(sp.0, sp.1, "falta o ramo `Closed`")
+                    .with_help(
+                        "acrescenta um ramo `Closed` ao `Offer` (é o rótulo que o \
+                         Linear Unwinding envia ao cancelar — T5).",
+                    ),
+                );
+            }
+            for (_, k) in bs {
+                check_closed_branches(k, chan, sp, diags);
+            }
+        }
     }
 }
 
@@ -487,12 +598,16 @@ fn session_mismatch(diags: &mut Diagnostics, sp: Span, chan: &str, op: &str, got
     let expect = match op {
         "send" => "um `Send`",
         "recv" => "um `Recv`",
+        "select" => "um `Select`",
+        "offer" => "um `Offer`",
         _ => "um `End`",
     };
     let got = match got {
         SessTy::End => "está em `End`",
         SessTy::Send(_) => "está em `Send`",
         SessTy::Recv(_) => "está em `Recv`",
+        SessTy::Select(_) => "está em `Select`",
+        SessTy::Offer(_) => "está em `Offer`",
     };
     diags.push(
         Diagnostic::error(
@@ -601,6 +716,8 @@ fn builtins() -> HashSet<String> {
         "recv",
         "close",
         "newChannel",
+        "select",
+        "offer",
         // nursery de concorrência estruturada (§9)
         "bound",
         "spawn",
@@ -953,6 +1070,9 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("send".to_string(), vec![Mult::One, Mult::Many]);
     consumers.insert("recv".to_string(), vec![Mult::One]);
     consumers.insert("close".to_string(), vec![Mult::One]);
+    // escolha: `select L c` consome o endpoint (arg 1); `offer c` consome-o.
+    consumers.insert("select".to_string(), vec![Mult::Many, Mult::One]);
+    consumers.insert("offer".to_string(), vec![Mult::One]);
     // nursery (§9): o corpo do `bound` é emprestado; `spawn` recebe a closure-filho.
     consumers.insert("bound".to_string(), vec![Mult::Many]);
     consumers.insert("spawn".to_string(), vec![Mult::Many]);

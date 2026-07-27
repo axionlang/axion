@@ -44,9 +44,14 @@
   devolvido do bloco — **AX0302**, o análogo do escape de sub-arena (AX0003) mas
   sem escotilha `promote`. É a **deadlock-freedom estrutural** da §9 (o grafo de
   comunicação fica uma árvore) imposta no compilador. Fixtures `bound_ok`
-  (aceite) + `bound_escape` (AX0302). **Falta:** escolha (`select`/`offer`, ramo
-  `Closed`); `spawn` a garantir topologia estritamente em árvore; e o diferencial
-  automático superfície→ASC contra o interpretador de referência.
+  (aceite) + `bound_escape` (AX0302). **Escolha feita** (`⊕`/`&`): `select L c`
+  avança pelo rótulo escolhido de um `Select` (AX0300 se o rótulo não existir);
+  `offer c` consome uma escolha externa; e **AX0303** exige que todo o `Offer`
+  inclua o ramo `Closed` — a exaustividade do cancelamento (T5/§7). Tipos de
+  sessão com ramos rotulados via `Select (L1 S1) (L2 S2) …`. Fixtures
+  select_ok/bad + offer_ok/no_closed. **Falta:** exaustividade dos ramos de
+  `offer` ao nível do termo (hoje ao nível do tipo); `spawn` a garantir árvore
+  estrita; diferencial automático superfície→ASC.
 - [ ] **Runtime do scheduler (§11)** — M:N com work-stealing; tarefas =
   continuações defuncionalizadas na arena da nursery; pontos de suspensão =
   operações de canal; `io_uring`/`epoll` na fronteira de IO.

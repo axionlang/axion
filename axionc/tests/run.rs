@@ -79,6 +79,29 @@ fn session_incomplete_protocol_is_rejected_ax0301() {
 }
 
 #[test]
+fn session_choice_and_closed_exhaustiveness() {
+    // §6/§9: escolha interna (⊕) e a exaustividade do ramo `Closed` (T5).
+    let ok = |fx: &str| {
+        let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{fx} devia passar: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    };
+    let reject = |fx: &str, code: &str| {
+        let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
+        assert!(!out.status.success(), "{fx} devia falhar");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(code), "{fx}: esperava {code}, saída: {text}");
+    };
+    ok("session_select_ok.axi"); // select de um rótulo válido (⊕)
+    ok("session_offer_ok.axi"); // Offer com ramo Closed (T5)
+    reject("session_select_bad.axi", "AX0300"); // rótulo inexistente
+    reject("session_offer_no_closed.axi", "AX0303"); // Offer sem Closed (T5)
+}
+
+#[test]
 fn bound_confined_nursery_is_accepted() {
     // §9: um `bound` que cria endpoints e os consome lá dentro (nada escapa) é
     // aceite — topologia em árvore, deadlock-free por construção.

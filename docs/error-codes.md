@@ -25,19 +25,22 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0300` | Sessões | Operação de canal não segue o tipo de sessão do endpoint (`send`/`recv`/`close` no estado errado) | **imposto pelo `axionc`** (Fase 3) |
 | `AX0301` | Sessões | Protocolo de sessão incompleto: um endpoint não é levado até `close` | **imposto pelo `axionc`** (Fase 3) |
 | `AX0302` | Sessões | Escape de endpoint: um endpoint criado num `bound` é devolvido do nursery (quebra a topologia acíclica → risco de deadlock) | **imposto pelo `axionc`** (Fase 3) |
+| `AX0303` | Sessões | Escolha externa (`Offer`/`&`) sem o ramo `Closed`: o cancelamento de um par em pânico ficaria por tratar (T5, §7) | **imposto pelo `axionc`** (Fase 3) |
 
 Próximo livre por banda — linguagem: `AX0007`; front-end: `AX0102`;
-tipos: `AX0202`; canais/sessões: `AX0303`.
+tipos: `AX0202`; canais/sessões: `AX0304`.
 
 **`AX03xx` canais e session types (Fase 3).** Banda da §17 para o cálculo de
 sessões (ver [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Impostos:
-`AX0300` (fidelidade de protocolo — a operação segue o tipo de sessão), `AX0301`
-(completude — o protocolo chega a `close`), `AX0302` (confinamento do nursery —
-os endpoints não escapam do `bound`, dando a deadlock-freedom estrutural da §9; o
-análogo do escape de sub-arena `AX0003`, mas sem escotilha `promote`). A posse
-linear `%1` do endpoint é coberta por `AX00xx` (must-use/uso-após-move). Ainda por
-implementar (incrementos seguintes): ramo `Closed` não tratado num `offer`/`Maybe~`
-(T5), e o `spawn` a exigir topologia estritamente em árvore entre irmãos.
+`AX0300` (fidelidade — `send`/`recv`/`close`/`select` seguem o tipo de sessão,
+incl. o rótulo escolhido pertencer ao `Select`), `AX0301` (completude — o
+protocolo chega a `close`), `AX0302` (confinamento do nursery — os endpoints não
+escapam do `bound`; deadlock-freedom estrutural, §9, análogo ao escape de arena
+`AX0003` mas sem `promote`), `AX0303` (exaustividade do cancelamento — toda a
+escolha externa `Offer`/`&` inclui o ramo `Closed`, T5/§7). A posse linear `%1` do
+endpoint é coberta por `AX00xx` (must-use/uso-após-move). Ainda por implementar:
+exaustividade dos ramos de `offer` ao nível do termo (hoje só ao nível do tipo), e
+o `spawn` a exigir topologia estritamente em árvore entre irmãos.
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
 > linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*

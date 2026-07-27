@@ -343,6 +343,31 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // escolha de sessão (§6/§9): `select L c` escolhe o rótulo `L` (⊕) e
+        // avança; `offer c` recebe a escolha (&) e consome o endpoint. Tipos
+        // permissivos — a fidelidade/exaustividade é do `check_sessions`.
+        // select :: forall a b c. b -> Ep a -> Ep c
+        env.insert(
+            "select".into(),
+            Scheme {
+                vars: vec![0, 1, 2],
+                ty: Ty::Fun(
+                    Box::new(Ty::Var(1)),
+                    Box::new(Ty::Fun(Box::new(ep(0)), Box::new(ep(2)))),
+                ),
+            },
+        );
+        // offer :: forall a. Ep a -> IO ()  (consome o endpoint da escolha externa)
+        env.insert(
+            "offer".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(ep(0)),
+                    Box::new(Ty::Con("IO".into(), vec![Ty::Con("()".into(), vec![])])),
+                ),
+            },
+        );
         // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
         // corpo e reclama tudo no fim (a entrada para correr programas de arena).
         env.insert(
