@@ -16,7 +16,7 @@ use std::collections::{HashMap, VecDeque};
 
 // --- tipos de sessão + dualidade (§2) ---
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Session {
     End,
     Send(Box<Session>),   // !T.S  (payload abstraído: um valor)
@@ -482,5 +482,211 @@ fn generated_programs_are_nontrivial() {
     assert!(
         max_threads >= 3,
         "gerador trivial: só {max_threads} threads no máximo"
+    );
+}
+
+// --- model-checking de CFSMs (Deniélou & Yoshida, ESOP 2012) ---
+//
+// Projeta cada sessão numa máquina de estados comunicante: o ESTADO é a sessão
+// restante; as transições são `!` (enviar valor/rótulo) e `?` (receber). Duas
+// máquinas duais comunicam por dois canais FIFO assíncronos (um por sentido).
+// Explora-se EXAUSTIVAMENTE o espaço de estados global alcançável — cobertura
+// que o teste aleatório (interpretador) não dá — e verifica-se:
+//   · deadlock-freedom: nenhum estado alcançável fica preso (sem transições e
+//     não-terminal);
+//   · compatibilidade (sem receção não-especificada): a cabeça da fila casa
+//     sempre com o que o recetor espera;
+//   · sem órfãos: no estado terminal, as filas estão vazias.
+// Para um par dual, a teoria garante tudo isto; aqui prova-se por enumeração.
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Move {
+    Val,
+    Lab(usize),
+}
+
+// Estado global: (sessão restante de M, de N, fila M→N, fila N→M).
+type Gs = (Session, Session, Vec<Move>, Vec<Move>);
+// Transição de um lado: (sessão-seguinte, fila de saída, fila de entrada).
+type SideMove = (Session, Vec<Move>, Vec<Move>);
+
+#[derive(Debug, PartialEq)]
+enum Check {
+    Ok,
+    Deadlock,
+    Unspecified, // receção não-especificada (viola compatibilidade/fidelidade)
+    Orphan,      // terminou com mensagens por consumir
+    TooBig,      // espaço de estados excedeu o limite (indício de não-terminação)
+}
+
+/// Transições de um lado com sessão `s`: envia para `out`, recebe de `inp`.
+/// Devolve os pares (sessão-seguinte, out', inp') e se houve receção
+/// não-especificada (cabeça da fila incompatível com o esperado).
+fn side_moves(s: &Session, out: &[Move], inp: &[Move]) -> (Vec<SideMove>, bool) {
+    let push = |q: &[Move], m: Move| {
+        let mut v = q.to_vec();
+        v.push(m);
+        v
+    };
+    let pop = |q: &[Move]| q[1..].to_vec();
+    match s {
+        Session::End => (vec![], false),
+        Session::Send(k) => (
+            vec![((**k).clone(), push(out, Move::Val), inp.to_vec())],
+            false,
+        ),
+        Session::Select(bs) => (
+            bs.iter()
+                .enumerate()
+                .map(|(j, b)| (b.clone(), push(out, Move::Lab(j)), inp.to_vec()))
+                .collect(),
+            false,
+        ),
+        Session::Recv(k) => match inp.first() {
+            None => (vec![], false), // bloqueado (fila vazia)
+            Some(Move::Val) => (vec![((**k).clone(), out.to_vec(), pop(inp))], false),
+            Some(Move::Lab(_)) => (vec![], true), // esperava valor, veio rótulo
+        },
+        Session::Offer(bs) => match inp.first() {
+            None => (vec![], false),
+            Some(Move::Lab(j)) if *j < bs.len() => {
+                (vec![(bs[*j].clone(), out.to_vec(), pop(inp))], false)
+            }
+            Some(_) => (vec![], true), // rótulo fora do intervalo, ou veio valor
+        },
+    }
+}
+
+fn successors(gs: &Gs) -> (Vec<Gs>, bool) {
+    let (m, n, qmn, qnm) = gs;
+    let mut out = Vec::new();
+    // M: envia para qmn, recebe de qnm
+    let (mm, mu) = side_moves(m, qmn, qnm);
+    for (m2, qmn2, qnm2) in mm {
+        out.push((m2, n.clone(), qmn2, qnm2));
+    }
+    // N: envia para qnm, recebe de qmn
+    let (nm, nu) = side_moves(n, qnm, qmn);
+    for (n2, qnm2, qmn2) in nm {
+        out.push((m.clone(), n2, qmn2, qnm2));
+    }
+    (out, mu || nu)
+}
+
+fn is_terminal(gs: &Gs) -> bool {
+    gs.0 == Session::End && gs.1 == Session::End && gs.2.is_empty() && gs.3.is_empty()
+}
+
+/// Explora exaustivamente o produto das duas CFSMs a partir do estado inicial.
+fn model_check(m0: &Session, n0: &Session) -> Check {
+    use std::collections::HashSet;
+    let mut seen: HashSet<Gs> = HashSet::new();
+    let mut stack: Vec<Gs> = vec![(m0.clone(), n0.clone(), vec![], vec![])];
+    while let Some(gs) = stack.pop() {
+        if !seen.insert(gs.clone()) {
+            continue;
+        }
+        if seen.len() > 500_000 {
+            return Check::TooBig;
+        }
+        let (succs, unspecified) = successors(&gs);
+        if unspecified {
+            return Check::Unspecified;
+        }
+        if succs.is_empty() && !is_terminal(&gs) {
+            // preso: ambos terminados com filas por consumir = órfão; senão deadlock
+            return if gs.0 == Session::End && gs.1 == Session::End {
+                Check::Orphan
+            } else {
+                Check::Deadlock
+            };
+        }
+        for s in succs {
+            if !seen.contains(&s) {
+                stack.push(s);
+            }
+        }
+    }
+    Check::Ok
+}
+
+/// Enumera EXAUSTIVAMENTE todas as sessões até `depth` (conjunto finito).
+fn enum_sessions(depth: u32) -> Vec<Session> {
+    if depth == 0 {
+        return vec![Session::End];
+    }
+    let subs = enum_sessions(depth - 1);
+    let mut out = vec![Session::End];
+    for s in &subs {
+        out.push(Session::Send(Box::new(s.clone())));
+        out.push(Session::Recv(Box::new(s.clone())));
+    }
+    // ramos: 1 ou 2 (o suficiente para exercitar ⊕/& sem explosão)
+    for a in &subs {
+        out.push(Session::Select(vec![a.clone()]));
+        out.push(Session::Offer(vec![a.clone()]));
+        for b in &subs {
+            out.push(Session::Select(vec![a.clone(), b.clone()]));
+            out.push(Session::Offer(vec![a.clone(), b.clone()]));
+        }
+    }
+    out
+}
+
+#[test]
+fn cfsm_exhaustive_dual_pairs_are_deadlock_free() {
+    // TODA a sessão até profundidade 3, projetada com a sua dual, dá um sistema de
+    // CFSMs sem deadlock, compatível e sem órfãos — verificado por exploração
+    // EXAUSTIVA do espaço de estados (não amostragem).
+    let sessions = enum_sessions(3);
+    assert!(sessions.len() > 1000, "cobertura fraca: {}", sessions.len());
+    for s in &sessions {
+        let d = dual(s);
+        assert_eq!(
+            model_check(s, &d),
+            Check::Ok,
+            "par dual não-limpo para {s:?}"
+        );
+    }
+}
+
+#[test]
+fn cfsm_random_large_dual_pairs_ok() {
+    // complemento em PROFUNDIDADE: protocolos grandes (depth 6) aleatórios, cada
+    // um exaustivamente explorado.
+    for seed in 1..=2000u64 {
+        let s = gen_session(&mut Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1), 6);
+        let d = dual(&s);
+        assert_eq!(model_check(&s, &d), Check::Ok, "seed {seed}: {s:?}");
+    }
+}
+
+#[test]
+fn cfsm_detectors_are_nonvacuous() {
+    // O model-checker TEM de apanhar violações reais em pares NÃO-duais.
+    let end = || Session::End;
+    // ambos recebem primeiro, filas vazias → espera cíclica → deadlock
+    assert_eq!(
+        model_check(
+            &Session::Recv(Box::new(end())),
+            &Session::Recv(Box::new(end()))
+        ),
+        Check::Deadlock
+    );
+    // ambos enviam e terminam → chegam a End com filas por consumir → órfão
+    assert_eq!(
+        model_check(
+            &Session::Send(Box::new(end())),
+            &Session::Send(Box::new(end()))
+        ),
+        Check::Orphan
+    );
+    // M envia um VALOR, N faz `offer` (espera um RÓTULO) → receção não-especificada
+    assert_eq!(
+        model_check(
+            &Session::Send(Box::new(end())),
+            &Session::Offer(vec![end()])
+        ),
+        Check::Unspecified
     );
 }

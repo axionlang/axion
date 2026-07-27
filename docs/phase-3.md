@@ -21,8 +21,15 @@
   T5 (pânico injectado drena via `Closed`, sem órfãos). **Não-vacuidade provada**:
   dois testes-detetor confirmam que o interpretador apanha um deadlock cíclico
   real e uma violação de fidelidade. É o oráculo para o typechecker de produção.
-- [ ] **Model-checking de CFSMs** — projeção de cada sessão numa máquina
-  comunicante; compatibilidade + ausência de deadlock por exploração de estados.
+- [x] **Model-checking de CFSMs** — projeção de cada sessão numa máquina
+  comunicante (o estado é a sessão restante; transições `!`/`?`); a dual forma o
+  sistema com dois canais FIFO. Exploração **exaustiva** do espaço de estados
+  global (`axionc/src/session.rs`): verifica deadlock-freedom, compatibilidade
+  (sem receção não-especificada) e ausência de órfãos. Cobertura: **todas** as
+  sessões até profundidade 3 (>1000 protocolos) + amostra aleatória de depth 6.
+  Não-vacuidade: detetores confirmam que apanha deadlock cíclico, órfão e receção
+  não-especificada em pares não-duais. Complementa o teste aleatório com cobertura
+  de estados.
 
 ## Implementação (depois do trilho)
 
