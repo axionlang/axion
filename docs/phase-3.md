@@ -30,6 +30,13 @@
   Não-vacuidade: detetores confirmam que apanha deadlock cíclico, órfão e receção
   não-especificada em pares não-duais. Complementa o teste aleatório com cobertura
   de estados.
+- [x] **Diferencial superfície→ASC** — `session.rs::from_surface_type` traduz o
+  tipo de sessão de superfície (extraído de cada fixture pelo pipeline real
+  lex→layout→parse) para o `Session` do ASC; `surface_sessions_agree_with_asc_cfsm_oracle`
+  corre o model-checker CFSM (exaustivo) sobre cada uma, exigindo `Ok`. Ancora o
+  typechecker de sessões (AX0300–AX0305) à referência provada, como o GHC ancora
+  a linearidade. **Falta:** o nível do programa (esqueleto do `bound`/`spawn` →
+  Config → interpretador de referência).
 
 ## Implementação (depois do trilho)
 
@@ -55,7 +62,8 @@
   closure de `spawn` não pode capturar endpoints do exterior (só o seu
   parâmetro), garantindo que cada spawn cria uma aresta pai↔filho (árvore →
   deadlock-free, §9). **Falta:** delegação (endpoints por canais entre irmãos,
-  pipelines acíclicos); diferencial automático superfície→ASC.
+  pipelines acíclicos). *(Diferencial superfície→ASC ao nível do tipo: feito, ver
+  acima.)*
 - [~] **Runtime do scheduler (§11)** — 1º corte no interpretador (o fast-path de
   `--dev`): um **scheduler cooperativo single-thread** em `interp.rs` corre
   programas `bound`/`spawn`/canais. As tarefas são «continuações

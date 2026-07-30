@@ -690,3 +690,116 @@ fn cfsm_detectors_are_nonvacuous() {
         Check::Unspecified
     );
 }
+
+// --- diferencial superfície→ASC (valida o typechecker contra o oráculo) ---
+//
+// O typechecker de sessões (`check.rs`, AX0300–AX0305) foi construído por
+// raciocínio + fixtures. Este diferencial ancora-o à referência: extrai a sessão
+// de cada fixture ACEITE (pelo mesmo pipeline lex→layout→parse que o compilador
+// usa), traduz para o `Session` do ASC, e cruza-a com o oráculo CFSM (exploração
+// exaustiva de estados) — como o GHC é o oráculo da linearidade. As sessões que
+// o compilador aceita têm de ser deadlock-free/compatíveis segundo a referência.
+
+/// Cabeça e argumentos de um `ast::Type` (espinha de `App`).
+fn ast_ty_spine(t: &crate::ast::Type) -> (Option<&str>, Vec<&crate::ast::Type>) {
+    use crate::ast::Type;
+    let mut args = Vec::new();
+    let mut cur = t;
+    loop {
+        match cur {
+            Type::App(f, a) => {
+                args.push(a.as_ref());
+                cur = f;
+            }
+            Type::Con(n) => {
+                args.reverse();
+                return (Some(n.as_str()), args);
+            }
+            _ => return (None, vec![]),
+        }
+    }
+}
+
+/// Traduz um tipo de sessão de superfície (`Send`/`Recv`/`End`/`Select`/`Offer`
+/// com ramos `Label Cont`) para o `Session` do ASC. Espelha `check::parse_sess`.
+fn from_surface_type(t: &crate::ast::Type) -> Option<Session> {
+    let (h, args) = ast_ty_spine(t);
+    match (h?, args.len()) {
+        ("End", 0) => Some(Session::End),
+        ("Send", 2) => Some(Session::Send(Box::new(from_surface_type(args[1])?))),
+        ("Recv", 2) => Some(Session::Recv(Box::new(from_surface_type(args[1])?))),
+        ("Select", n) if n >= 1 => Some(Session::Select(from_surface_branches(&args)?)),
+        ("Offer", n) if n >= 1 => Some(Session::Offer(from_surface_branches(&args)?)),
+        _ => None,
+    }
+}
+
+fn from_surface_branches(args: &[&crate::ast::Type]) -> Option<Vec<Session>> {
+    // o ASC abstrai os rótulos (posicional); só a continuação de cada ramo importa
+    // para a compatibilidade/deadlock — o `Closed`-como-rótulo é regra do check.rs.
+    args.iter()
+        .map(|a| {
+            let (_, bargs) = ast_ty_spine(a);
+            if bargs.is_empty() {
+                Some(Session::End)
+            } else {
+                from_surface_type(bargs[0])
+            }
+        })
+        .collect()
+}
+
+/// Se `t` é um endpoint `Ep S` (ou `Channel`/`Chan`/`Endpoint`), devolve a sessão S.
+fn endpoint_of(t: &crate::ast::Type) -> Option<&crate::ast::Type> {
+    let (h, args) = ast_ty_spine(t);
+    match h? {
+        "Ep" | "Channel" | "Chan" | "Endpoint" if args.len() == 1 => Some(args[0]),
+        _ => None,
+    }
+}
+
+/// Parseia uma fixture pelo pipeline real do compilador → `Module`.
+fn parse_fixture(name: &str) -> crate::ast::Module {
+    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path).expect("ler fixture");
+    let tokens = crate::lexer::lex(&src).expect("lex");
+    let lines = crate::lexer::LineMap::new(&src);
+    let lt = crate::layout::layout(&tokens, &lines);
+    crate::parser::parse_module(&lt).expect("parse")
+}
+
+#[test]
+fn surface_sessions_agree_with_asc_cfsm_oracle() {
+    // Para cada fixture de sessão ACEITE, toda a sessão que aparece numa
+    // assinatura (extraída pelo pipeline real) é deadlock-free/compatível segundo
+    // o oráculo CFSM da referência — o cruzamento superfície→ASC.
+    let accepted = [
+        "session_ok.axi",
+        "session_recv_ok.axi",
+        "session_offer_ok.axi",
+        "session_select_ok.axi",
+        "session_run_pingpong.axi",
+        "session_run_offer.axi",
+        "session_run_cancel.axi",
+    ];
+    let mut checked = 0;
+    for fx in accepted {
+        let module = parse_fixture(fx);
+        for f in &module.funcs {
+            let Some(sig) = &f.sig else { continue };
+            for pty in sig.param_types() {
+                if let Some(sess_ty) = endpoint_of(pty) {
+                    let asc = from_surface_type(sess_ty)
+                        .unwrap_or_else(|| panic!("{fx}: sessão não traduzível: {sess_ty:?}"));
+                    assert_eq!(
+                        model_check(&asc, &dual(&asc)),
+                        Check::Ok,
+                        "{fx}: a sessão {asc:?} que o compilador aceita NÃO é limpa no oráculo CFSM"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked >= 4, "cobertura fraca do diferencial: só {checked} sessões");
+}
