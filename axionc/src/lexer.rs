@@ -46,6 +46,12 @@ pub enum Tok {
     Equals,
     #[token("->")]
     Arrow,
+    #[token("..")]
+    DotDot,
+    #[token(":")]
+    Colon,
+    #[token(".")]
+    Dot,
     #[token("(")]
     LParen,
     #[token(")")]

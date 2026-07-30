@@ -814,6 +814,36 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn fizzbuzz_runs_l0() {
+    // Listagem 1.3 da spec (L0): FizzBuzz com ranges `[1..15]`, composição `.`,
+    // `mapM_`, guardas e `mod`. Um exemplo "dia 1" da spec, a correr.
+    let out = axionc().arg(example("03b_fizzbuzz.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "FizzBuzz devia correr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.starts_with("1\n2\nFizz\n4\nBuzz\nFizz\n") && text.contains("FizzBuzz"),
+        "saída inesperada:\n{text}"
+    );
+}
+
+#[test]
+fn list_syntax_and_ops_l0() {
+    // §1 (L0): literais `[..]`, cons `:`, `map`, `range` — o tipo `List` vem do
+    // prelúdio embutido (sem `data` do utilizador). Resultado 26.
+    let out = axionc().arg(fixture("list_ops.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "listas deviam correr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "26\n");
+}
+
+#[test]
 fn parametric_data_types_work() {
     // §1 (L0): tipos-soma paramétricos (`Maybe a`, `Either a b`) — os construtores
     // generalizam sobre os parâmetros de tipo. Corre nos três executores.

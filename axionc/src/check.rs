@@ -926,6 +926,8 @@ fn builtins() -> HashSet<String> {
         // permissões fraccionárias (§2)
         "split",
         "join",
+        // listas L0 (§1): `mapM_` é builtin; `range`/`map`/`compose` vêm no prelúdio
+        "mapM_",
         // canais / session types (§6)
         "send",
         "recv",
@@ -1293,6 +1295,8 @@ fn build_ctx(module: &Module) -> Ctx {
     // nursery (§9): o corpo do `bound` é emprestado; `spawn` recebe a closure-filho.
     consumers.insert("bound".to_string(), vec![Mult::Many]);
     consumers.insert("spawn".to_string(), vec![Mult::Many]);
+    // listas L0: mapM_ empresta a função e a lista.
+    consumers.insert("mapM_".to_string(), vec![Mult::Many, Mult::Many]);
     // importações FFI: os argumentos (Int) são emprestados.
     for fo in &module.foreigns {
         let arity = fo.sig.param_mults().len();

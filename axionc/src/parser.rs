@@ -619,13 +619,26 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_cmp(&mut self) -> PResult<Expr> {
-        let mut lhs = self.parse_add()?;
+        let mut lhs = self.parse_cons()?;
         while let Some(op) = self.cmp_op() {
-            let rhs = self.parse_add()?;
+            let rhs = self.parse_cons()?;
             let sp = (lhs.span().0, rhs.span().1);
             lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
         }
         Ok(lhs)
+    }
+
+    /// Cons de lista `x : xs` (infixr, entre `==` e `+`) → `Cons x xs`.
+    fn parse_cons(&mut self) -> PResult<Expr> {
+        let lhs = self.parse_add()?;
+        if self.at(&Tok::Colon) {
+            self.pos += 1;
+            let rhs = self.parse_cons()?; // associativo à direita
+            let sp = (lhs.span().0, rhs.span().1);
+            Ok(cons_expr(lhs, rhs, sp))
+        } else {
+            Ok(lhs)
+        }
     }
 
     fn cmp_op(&mut self) -> Option<String> {
@@ -658,18 +671,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_mul(&mut self) -> PResult<Expr> {
-        let mut lhs = self.parse_app()?;
+        let mut lhs = self.parse_compose()?;
         loop {
             if self.at(&Tok::Star) {
                 self.pos += 1;
-                let rhs = self.parse_app()?;
+                let rhs = self.parse_compose()?;
                 let sp = (lhs.span().0, rhs.span().1);
                 lhs = Expr::BinOp("*".to_string(), Box::new(lhs), Box::new(rhs), sp);
             } else if self.at_v(&LTok::Tok(Tok::Backtick)) {
                 self.pos += 1;
                 let (op, _) = self.var_name("operador infixo")?;
                 self.expect(&Tok::Backtick, "'`' de fecho")?;
-                let rhs = self.parse_app()?;
+                let rhs = self.parse_compose()?;
                 let sp = (lhs.span().0, rhs.span().1);
                 lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
             } else {
@@ -677,6 +690,20 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(lhs)
+    }
+
+    /// Composição de funções `f . g` (infixr, quase tão forte como a aplicação)
+    /// → `compose f g`.
+    fn parse_compose(&mut self) -> PResult<Expr> {
+        let lhs = self.parse_app()?;
+        if self.at(&Tok::Dot) {
+            self.pos += 1;
+            let rhs = self.parse_compose()?; // associativo à direita
+            let sp = (lhs.span().0, rhs.span().1);
+            Ok(app2(Expr::Var("compose".to_string(), sp), lhs, rhs, sp))
+        } else {
+            Ok(lhs)
+        }
     }
 
     fn parse_app(&mut self) -> PResult<Expr> {
@@ -697,6 +724,7 @@ impl<'a> Parser<'a> {
                 | Some(LTok::Tok(Tok::VarId(_)))
                 | Some(LTok::Tok(Tok::ConId(_)))
                 | Some(LTok::Tok(Tok::LParen))
+                | Some(LTok::Tok(Tok::LBracket))
         )
     }
 
@@ -814,9 +842,50 @@ impl<'a> Parser<'a> {
                     Ok(Expr::Tuple(es, (s, end)))
                 }
             }
+            Some(LTok::Tok(Tok::LBracket)) => {
+                self.pos += 1;
+                // `[]` → Nil
+                if self.eat(&Tok::RBracket) {
+                    return Ok(Expr::Con("Nil".to_string(), (s, self.span_here().0)));
+                }
+                let first = self.parse_expr()?;
+                // intervalo `[a..b]` → `range a b`
+                if self.eat(&Tok::DotDot) {
+                    let hi = self.parse_expr()?;
+                    self.expect(&Tok::RBracket, "']' no intervalo")?;
+                    let sp = (s, self.span_here().0);
+                    return Ok(app2(Expr::Var("range".to_string(), sp), first, hi, sp));
+                }
+                // literal `[e1, e2, …]` → `Cons e1 (Cons e2 … Nil)`
+                let mut elems = vec![first];
+                while self.eat(&Tok::Comma) {
+                    elems.push(self.parse_expr()?);
+                }
+                self.expect(&Tok::RBracket, "']' na lista")?;
+                let sp = (s, self.span_here().0);
+                let mut list = Expr::Con("Nil".to_string(), sp);
+                for e in elems.into_iter().rev() {
+                    list = cons_expr(e, list, sp);
+                }
+                Ok(list)
+            }
             _ => Err(self.syntax_err("uma expressão")),
         }
     }
+}
+
+/// `App(App(head, a), b)` — aplicação binária.
+fn app2(head: Expr, a: Expr, b: Expr, sp: Span) -> Expr {
+    Expr::App(
+        Box::new(Expr::App(Box::new(head), Box::new(a), sp)),
+        Box::new(b),
+        sp,
+    )
+}
+
+/// `x : xs` → `Cons x xs`.
+fn cons_expr(x: Expr, xs: Expr, sp: Span) -> Expr {
+    app2(Expr::Con("Cons".to_string(), sp), x, xs, sp)
 }
 
 fn parse_mult(s: &str) -> Mult {

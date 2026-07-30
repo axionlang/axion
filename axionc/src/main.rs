@@ -260,16 +260,55 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, ch
     };
     let lines = LineMap::new(src);
     let ltokens = layout::layout(&tokens, &lines);
-    let module = match parser::parse_module(&ltokens) {
+    let mut module = match parser::parse_module(&ltokens) {
         Ok(m) => m,
         Err(d) => {
             diags.push(d);
             return (None, check::Analysis::default());
         }
     };
+    inject_prelude(&mut module);
     let analysis = check::check(&module, diags);
     infer::infer(&module, diags);
     (Some(module), analysis)
+}
+
+/// Prelúdio L0 embutido: o tipo `List` e as funções de lista básicas. É
+/// prepended a cada módulo (só os nomes que o utilizador não redefine), para que
+/// `[1..100]`/`:`/`.` (que desugaram para `range`/`Cons`/`compose`) e `map`
+/// funcionem sem import. `mapM_` é um builtin (precisa do modelo de IO).
+const PRELUDE: &str = "\
+data List a = Nil | Cons a (List a)
+compose :: (b -> c) -> (a -> b) -> a -> c
+compose f g x = f (g x)
+range :: Int -> Int -> List Int
+range lo hi = if lo > hi then Nil else Cons lo (range (lo + 1) hi)
+map :: (a -> b) -> List a -> List b
+map f xs = case xs of
+  Nil -> Nil
+  Cons y ys -> Cons (f y) (map f ys)
+";
+
+fn inject_prelude(module: &mut ast::Module) {
+    let lines = LineMap::new(PRELUDE);
+    let tokens = lexer::lex(PRELUDE).expect("prelúdio: lex");
+    let lt = layout::layout(&tokens, &lines);
+    let prelude = parser::parse_module(&lt).expect("prelúdio: parse");
+    let has_data: std::collections::HashSet<String> =
+        module.datas.iter().map(|d| d.name.clone()).collect();
+    let has_func: std::collections::HashSet<String> =
+        module.funcs.iter().map(|f| f.name.clone()).collect();
+    // prepend só o que o utilizador não redefine (sem clashes)
+    for d in prelude.datas.into_iter().rev() {
+        if !has_data.contains(&d.name) {
+            module.datas.insert(0, d);
+        }
+    }
+    for f in prelude.funcs.into_iter().rev() {
+        if !has_func.contains(&f.name) {
+            module.funcs.insert(0, f);
+        }
+    }
 }
 
 /// Imprime o relatório de Auto-Drop (`--emit drops`).

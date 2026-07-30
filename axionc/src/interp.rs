@@ -194,7 +194,7 @@ fn type_name(v: &Value) -> &'static str {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "join" => 2,
+        "join" | "mapM_" => 2,
         _ => 1,
     }
 }
@@ -358,6 +358,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "join",
             args: Vec::new(),
         }),
+        "mapM_" => Ok(Value::Builtin {
+            name: "mapM_",
+            args: Vec::new(),
+        }),
         _ => Err(format!("nome não encontrado em runtime: '{name}'")),
     }
 }
@@ -398,7 +402,12 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         Value::Builtin { name, mut args } => {
             args.push(arg);
             if args.len() >= builtin_arity(name) {
-                run_builtin(name, args)
+                // `mapM_` precisa do `prog` para aplicar `f` a cada elemento
+                if name == "mapM_" {
+                    run_mapm(prog, &args[0], &args[1])
+                } else {
+                    run_builtin(name, args)
+                }
             } else {
                 Ok(Value::Builtin { name, args })
             }
@@ -597,6 +606,43 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
             type_name(&y)
         )),
     }
+}
+
+/// `mapM_ f xs`: aplica a acção IO `f` a cada elemento da lista (Nil/Cons),
+/// concatenando os efeitos (o modelo de IO do interp é `Io(String)`).
+fn run_mapm(prog: &Program, f: &Value, list: &Value) -> Result<Value, RunError> {
+    let mut out = String::new();
+    let mut cur = list.clone();
+    loop {
+        match cur {
+            Value::Record { con, fields } if con == "Nil" => {
+                let _ = fields;
+                break;
+            }
+            Value::Record { con, fields } if con == "Cons" => {
+                let head = fields[0].1.clone();
+                let tail = fields[1].1.clone();
+                match apply(prog, f.clone(), head)? {
+                    Value::Io(s) => out.push_str(&s),
+                    Value::Unit => {}
+                    other => {
+                        return Err(format!(
+                            "mapM_: a função devia dar uma acção IO, deu {}",
+                            type_name(&other)
+                        ))
+                    }
+                }
+                cur = tail;
+            }
+            other => {
+                return Err(format!(
+                    "mapM_: esperava uma lista, obteve {}",
+                    type_name(&other)
+                ))
+            }
+        }
+    }
+    Ok(Value::Io(out))
 }
 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
