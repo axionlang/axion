@@ -127,6 +127,7 @@ fn gen_let(rng: &mut Rng, result_ty: GTy, depth: u32, vars: &[(String, GTy)]) ->
     let bind = Func {
         name: name.clone(),
         sig: None,
+        constraints: vec![],
         clauses: vec![Clause {
             pats: vec![],
             body: Body::Plain(bind_expr),
@@ -161,6 +162,7 @@ fn wrap(ty: GTy, e: Expr) -> Module {
         funcs: vec![Func {
             name: "test".to_string(),
             sig: Some(ty_to_ast(ty)),
+            constraints: vec![],
             clauses: vec![Clause {
                 pats: vec![],
                 body: Body::Plain(e),

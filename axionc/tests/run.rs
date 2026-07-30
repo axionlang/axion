@@ -1439,3 +1439,28 @@ fn typeclass_coherence_is_checked_statically() {
     reject("tc_extra_method.axi", "AX0402"); // método fora da classe
     reject("tc_dup_instance.axi", "AX0403"); // instância duplicada (incoerência)
 }
+
+#[test]
+fn typeclass_constraints_are_checked_at_use_site() {
+    // Fatia 2b-i: verificação estática de constraints no ponto de uso.
+    let reject = |fx: &str, code: &str| {
+        let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
+        assert!(!out.status.success(), "{fx} devia falhar");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(code), "{fx}: esperava {code}, saída: {text}");
+    };
+    reject("tc_no_instance.axi", "AX0404"); // método sobre tipo concreto sem instância
+    reject("tc_unconstrained_method.axi", "AX0405"); // uso polimórfico sem constraint
+
+    // Positivo: com `Eq a =>` declarado, compila e resolve à instância (→ True).
+    let out = axionc()
+        .arg(fixture("tc_constraint_ok.axi"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tc_constraint_ok: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "true\n");
+}

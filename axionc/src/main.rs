@@ -384,11 +384,67 @@ nub xs = case xs of
 /// `ClassDecl` ficam no módulo (dão os nomes de método sobrecarregados ao check,
 /// infer e interp).
 fn lower_classes(module: &mut ast::Module) {
+    // (classe, método) → assinatura-molde (var da classe marcada) p/ especializar
+    let mut sigs: std::collections::HashMap<(String, String), ast::Type> =
+        std::collections::HashMap::new();
+    for c in &module.classes {
+        for (m, ty) in &c.methods {
+            sigs.insert((c.name.clone(), m.clone()), subst_head(ty, &c.tyvar));
+        }
+    }
+    let mut impls = Vec::new();
     for inst in &module.instances {
         for m in &inst.methods {
             let mut impl_fn = m.clone();
             impl_fn.name = ast::method_impl_name(&m.name, &inst.ty_head);
-            module.funcs.push(impl_fn);
+            // assinatura especializada: a da classe com a var substituída pelo
+            // tipo da instância (`eq :: a->a->Bool` @ Shape → `Shape->Shape->Bool`).
+            // Sem isto, o corpo da instância (sem assinatura) pareceria polimórfico
+            // e os seus usos de método disparariam falsos "sem constraint".
+            if let Some(tmpl) = sigs.get(&(inst.class_name.clone(), m.name.clone())) {
+                impl_fn.sig = Some(specialize(tmpl, &inst.ty_head));
+            }
+            impls.push(impl_fn);
+        }
+    }
+    module.funcs.extend(impls);
+}
+
+/// Marca a variável da classe num tipo, substituindo-a por um sentinela único
+/// (`$cls`) para depois a `specialize` a trocar pelo tipo concreto da instância.
+fn subst_head(ty: &ast::Type, tyvar: &str) -> ast::Type {
+    match ty {
+        ast::Type::Var(v) if v == tyvar => ast::Type::Var("$cls".to_string()),
+        ast::Type::Var(_) | ast::Type::Con(_) | ast::Type::Unit => ty.clone(),
+        ast::Type::App(f, a) => ast::Type::App(
+            Box::new(subst_head(f, tyvar)),
+            Box::new(subst_head(a, tyvar)),
+        ),
+        ast::Type::Arrow { mult, from, to } => ast::Type::Arrow {
+            mult: *mult,
+            from: Box::new(subst_head(from, tyvar)),
+            to: Box::new(subst_head(to, tyvar)),
+        },
+        ast::Type::Tuple(ts) => ast::Type::Tuple(ts.iter().map(|t| subst_head(t, tyvar)).collect()),
+    }
+}
+
+/// Troca o sentinela `$cls` pela cabeça-de-tipo concreta da instância.
+fn specialize(ty: &ast::Type, ty_head: &str) -> ast::Type {
+    match ty {
+        ast::Type::Var(v) if v == "$cls" => ast::Type::Con(ty_head.to_string()),
+        ast::Type::Var(_) | ast::Type::Con(_) | ast::Type::Unit => ty.clone(),
+        ast::Type::App(f, a) => ast::Type::App(
+            Box::new(specialize(f, ty_head)),
+            Box::new(specialize(a, ty_head)),
+        ),
+        ast::Type::Arrow { mult, from, to } => ast::Type::Arrow {
+            mult: *mult,
+            from: Box::new(specialize(from, ty_head)),
+            to: Box::new(specialize(to, ty_head)),
+        },
+        ast::Type::Tuple(ts) => {
+            ast::Type::Tuple(ts.iter().map(|t| specialize(t, ty_head)).collect())
         }
     }
 }
@@ -596,6 +652,18 @@ fn explain(code: &str) -> ExitCode {
             "AX0403 — instância duplicada (incoerência). Só pode haver UMA 'instance\n\
              C T' para cada par (classe, tipo), senão a resolução de método seria\n\
              ambígua. Remova a instância repetida."
+        }
+        "AX0404" => {
+            "AX0404 — método sobre um tipo concreto sem instância. Um método de\n\
+             classe usado sobre um tipo T exige 'instance C T'. Declare a instância\n\
+             em falta, ou use um tipo que já a tenha (fatia 2b: verificação de\n\
+             constraints no ponto de uso)."
+        }
+        "AX0405" => {
+            "AX0405 — método usado sobre um tipo polimórfico sem constraint. Se uma\n\
+             função aplica um método de classe C a um valor de tipo genérico 'a', a\n\
+             sua assinatura tem de declarar 'C a =>' (senão não há garantia de que\n\
+             exista instância no ponto de chamada)."
         }
         other => {
             eprintln!("código desconhecido: {other}");

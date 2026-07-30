@@ -31,7 +31,7 @@ pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
 }
 
 enum TopItem {
-    Sig(String, Type),
+    Sig(String, Vec<(String, String)>, Type),
     Clause(String, Clause),
     Data(DataDecl),
     Foreign(Foreign),
@@ -59,18 +59,20 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
             TopItem::Data(d) => asm.datas.push(d),
             TopItem::Class(c) => asm.classes.push(c),
             TopItem::Instance(i) => asm.instances.push(i),
-            TopItem::Sig(name, ty) => {
+            TopItem::Sig(name, constraints, ty) => {
                 let sp = (0, 0);
                 let i = *index.entry(name.clone()).or_insert_with(|| {
                     asm.funcs.push(Func {
                         name: name.clone(),
                         sig: None,
+                        constraints: Vec::new(),
                         clauses: Vec::new(),
                         span: sp,
                     });
                     asm.funcs.len() - 1
                 });
                 asm.funcs[i].sig = Some(ty);
+                asm.funcs[i].constraints = constraints;
             }
             TopItem::Clause(name, clause) => {
                 let sp = clause.span;
@@ -78,6 +80,7 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
                     asm.funcs.push(Func {
                         name: name.clone(),
                         sig: None,
+                        constraints: Vec::new(),
                         clauses: Vec::new(),
                         span: sp,
                     });
@@ -96,6 +99,26 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
 /// Como `assemble`, mas para blocos `where`/`let` (só funções).
 fn merge_funcs(items: Vec<TopItem>) -> Vec<Func> {
     assemble(items).funcs
+}
+
+/// Extrai os constraints `(classe, var)` de um contexto de classe: `Eq a` →
+/// `[(Eq, a)]`; `(Eq a, Ord b)` → `[(Eq, a), (Ord, b)]`. Formas inesperadas são
+/// ignoradas (o contexto é conselho para o descarregamento, não crítico).
+fn context_constraints(t: &Type) -> Vec<(String, String)> {
+    fn one(t: &Type, out: &mut Vec<(String, String)>) {
+        match t {
+            Type::App(f, a) => {
+                if let (Some(c), Type::Var(v)) = (f.head_con(), a.as_ref()) {
+                    out.push((c.to_string(), v.clone()));
+                }
+            }
+            Type::Tuple(ts) => ts.iter().for_each(|x| one(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    one(t, &mut out);
+    out
 }
 
 /// Uma instrução de um bloco `do`.
@@ -241,8 +264,8 @@ impl<'a> Parser<'a> {
         }
         let (name, start) = self.var_name("nome de função")?;
         if self.eat(&Tok::ColonColon) {
-            let ty = self.parse_type()?;
-            Ok(TopItem::Sig(name, ty))
+            let (constraints, ty) = self.parse_qualified_type()?;
+            Ok(TopItem::Sig(name, constraints, ty))
         } else {
             // cláusula: padrões até '=' ou '|'
             let mut pats = Vec::new();
@@ -421,15 +444,24 @@ impl<'a> Parser<'a> {
     }
 
     // --- tipos ---
+    /// Assinatura possivelmente qualificada: `[Contexto =>] Tipo`. O contexto
+    /// (`C a` ou `(C a, D b)`) é RETIDO como lista de constraints (fatia 2b), para
+    /// descarregar as obrigações de método. Backtrack se não houver `=>`.
+    fn parse_qualified_type(&mut self) -> PResult<(Vec<(String, String)>, Type)> {
+        let save = self.pos;
+        let ctx = self.parse_btype()?;
+        if self.eat(&Tok::FatArrow) {
+            let cs = context_constraints(&ctx);
+            let ty = self.parse_type()?;
+            Ok((cs, ty))
+        } else {
+            self.pos = save;
+            Ok((Vec::new(), self.parse_type()?))
+        }
+    }
+
     fn parse_type(&mut self) -> PResult<Type> {
         let from = self.parse_btype()?;
-        // contexto de classe `C a => T` (ou `(C a, D b) => T`): parseado e
-        // DESCARTADO. A fatia 1 das typeclasses não verifica os constraints — o
-        // despacho de métodos é dinâmico no interpretador (pela cabeça-de-tipo do
-        // 1º argumento). A elaboração estática de dicionários fica p/ a fatia 2.
-        if self.eat(&Tok::FatArrow) {
-            return self.parse_type();
-        }
         // multiplicidade: numa seta (`A %1 -> B`) marca o parâmetro; num tipo
         // terminal (`... -> Process %1`) marca o resultado linear.
         if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {

@@ -340,6 +340,7 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             def: Rc::new(Func {
                 name: "<lambda>".to_string(),
                 sig: None,
+                constraints: Vec::new(),
                 clauses: vec![Clause {
                     pats: pats.clone(),
                     body: Body::Plain((**body).clone()),

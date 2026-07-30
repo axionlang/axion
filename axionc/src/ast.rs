@@ -125,6 +125,11 @@ pub struct Func {
     pub sig: Option<Type>,
     pub clauses: Vec<Clause>,
     pub span: Span,
+    /// Contexto de classe da assinatura: `(classe, var)` de cada `C a =>`
+    /// (fatia 2b). Vazio quando não há constraints. Usado para descarregar as
+    /// obrigações de método (um uso polimórfico de método tem de ser coberto por
+    /// um constraint declarado).
+    pub constraints: Vec<(String, String)>,
 }
 
 /// Um campo de registo: nome, tipo e multiplicidade (`%1` marca campo linear).

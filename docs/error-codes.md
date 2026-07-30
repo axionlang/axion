@@ -260,8 +260,14 @@ por `check_instances` em `axionc/src/check.rs`:
 - **`AX0402`** — a instância implementa um método que a classe não declara.
 - **`AX0403`** — instância duplicada: dois `instance C T` para o mesmo par
   (classe, tipo), o que tornaria a resolução de método ambígua.
+- **`AX0404`** — método sobre um tipo concreto sem instância (fatia 2b): `eq`
+  sobre `String` sem `instance Eq String`. Verificado no ponto de uso, com a
+  informação de tipo da inferência.
+- **`AX0405`** — método sobre um tipo polimórfico sem constraint declarado
+  (fatia 2b): uma função que aplica um método a um `a` genérico tem de declarar
+  `C a =>` na assinatura.
 
-O despacho de métodos em si é dinâmico (fatia 1, no interpretador); a verificação
-de que um método tem instância para um tipo concreto no ponto de uso, e a
-elaboração estática de dicionários / monomorfização (codegen nativo), são a
-fatia 2b.
+O despacho de métodos em si é dinâmico (fatia 1, no interpretador). A verificação
+de constraints (AX0404/AX0405, fatia 2b-i) recolhe uma obrigação em cada uso de
+método e descarrega-a com a substituição da inferência já resolvida. Falta a
+fatia 2b-ii: monomorfização (codegen nativo dos métodos, estilo Rust — zero-cost).

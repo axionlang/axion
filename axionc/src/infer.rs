@@ -38,6 +38,23 @@ struct Infer<'a> {
     cons: HashMap<String, (String, Vec<(String, Ty)>)>,
     /// tipo do registo → campos com tipo (para actualização)
     records: HashMap<String, Vec<(String, Ty)>>,
+    /// método de typeclasse → (classe, índice do parâmetro de despacho). O índice
+    /// é a posição do 1º parâmetro cujo tipo é a variável da classe (fatia 2b).
+    method_meta: HashMap<String, (String, Option<usize>)>,
+    /// obrigações de instância recolhidas nos usos de método, descarregadas no fim.
+    obligations: Vec<Obl>,
+    /// classes com constraint declarado no âmbito da função a ser inferida.
+    cur_constraints: Vec<String>,
+}
+
+/// Uma obrigação `classe C sobre o tipo T`, recolhida num uso de método e
+/// descarregada no fim (com a substituição resolvida): T concreto → tem de haver
+/// instância; T variável → tem de estar coberto por um constraint no âmbito.
+struct Obl {
+    class: String,
+    ty: Ty,
+    span: Span,
+    scope: Vec<String>,
 }
 
 /// Ponto de entrada: infere e verifica os tipos do módulo.
@@ -48,6 +65,9 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
         diags,
         cons: HashMap::new(),
         records: HashMap::new(),
+        method_meta: HashMap::new(),
+        obligations: Vec::new(),
+        cur_constraints: Vec::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -124,6 +144,12 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
         for (m, ty) in &class.methods {
             let scheme = inf.scheme_of_sig(ty);
             env.insert(m.clone(), scheme);
+            // índice do parâmetro de despacho = 1º cujo tipo é a var da classe
+            let idx = ty
+                .param_types()
+                .iter()
+                .position(|p| matches!(p, Type::Var(v) if *v == class.tyvar));
+            inf.method_meta.insert(m.clone(), (class.name.clone(), idx));
         }
     }
 
@@ -168,12 +194,30 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
         } else {
             None
         };
+        // constraints no âmbito desta função (para descarregar usos polimórficos)
+        inf.cur_constraints = f.constraints.iter().map(|(c, _)| c.clone()).collect();
         let inferred = inf.infer_func(&env, f, expected);
         if let Some(d) = &declared {
             inf.unify(&inferred, d, f.span);
         }
     }
+    inf.discharge_obligations(module);
     let _ = placeholders;
+}
+
+/// O `idx`-ésimo tipo de parâmetro de uma cadeia de setas (`a -> b -> c` @ 1 → b).
+fn nth_param(ty: &Ty, idx: usize) -> Option<Ty> {
+    let mut cur = ty;
+    for _ in 0..idx {
+        match cur {
+            Ty::Fun(_, b) => cur = b,
+            _ => return None,
+        }
+    }
+    match cur {
+        Ty::Fun(a, _) => Some((**a).clone()),
+        _ => None,
+    }
 }
 
 /// Os inteiros de largura fixa (§4) colapsam para `Int` neste sistema de tipos
@@ -633,6 +677,57 @@ impl<'a> Infer<'a> {
         }
     }
 
+    /// Descarrega as obrigações de instância recolhidas (fatia 2b). Para cada uso
+    /// de método: se o tipo de despacho resolveu para um tipo CONCRETO sem
+    /// instância → **AX0404**; se ficou POLIMÓRFICO e a classe não está coberta
+    /// por um constraint no âmbito da função → **AX0405**. (Fun/Tuple: conservador,
+    /// não reporta.)
+    fn discharge_obligations(&mut self, module: &Module) {
+        let instances: std::collections::HashSet<(String, String)> = module
+            .instances
+            .iter()
+            .map(|i| (i.class_name.clone(), i.ty_head.clone()))
+            .collect();
+        let obls = std::mem::take(&mut self.obligations);
+        for o in obls {
+            match self.resolve(&o.ty) {
+                Ty::Con(name, _) if !instances.contains(&(o.class.clone(), name.clone())) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "AX0404",
+                            format!("sem instância de `{}` para `{name}`", o.class),
+                        )
+                        .label(o.span.0, o.span.1, "método usado aqui, sobre este tipo")
+                        .with_help(format!(
+                            "declare `instance {} {name} where …`, ou use um tipo \
+                             que tenha instância desta classe.",
+                            o.class
+                        )),
+                    );
+                }
+                Ty::Var(_) if !o.scope.contains(&o.class) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "AX0405",
+                            format!(
+                                "método da classe `{}` usado sobre um tipo polimórfico \
+                                 sem constraint",
+                                o.class
+                            ),
+                        )
+                        .label(o.span.0, o.span.1, "tipo genérico aqui")
+                        .with_help(format!(
+                            "acrescente `{} a =>` à assinatura da função para permitir \
+                             o método sobre um tipo genérico.",
+                            o.class
+                        )),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn apply(&self, t: &Ty) -> Ty {
         match self.resolve(t) {
             Ty::Con(n, args) => Ty::Con(n, args.iter().map(|a| self.apply(a)).collect()),
@@ -890,10 +985,25 @@ impl<'a> Infer<'a> {
         match e {
             Expr::Int(_, _) => Ty::Con("Int".into(), vec![]),
             Expr::Str(_, _) => Ty::Con("String".into(), vec![]),
-            Expr::Var(n, _) => match env.get(n) {
-                Some(s) => self.instantiate(s),
-                None => self.fresh(), // nome não encontrado: reportado pelo check.rs
-            },
+            Expr::Var(n, span) => {
+                let ty = match env.get(n) {
+                    Some(s) => self.instantiate(s),
+                    None => self.fresh(), // nome não encontrado: reportado pelo check.rs
+                };
+                // uso de método: recolhe a obrigação de instância sobre o tipo do
+                // parâmetro de despacho (resolvido no fim).
+                if let Some((class, Some(idx))) = self.method_meta.get(n).cloned() {
+                    if let Some(dispatch) = nth_param(&ty, idx) {
+                        self.obligations.push(Obl {
+                            class,
+                            ty: dispatch,
+                            span: *span,
+                            scope: self.cur_constraints.clone(),
+                        });
+                    }
+                }
+                ty
+            }
             Expr::Con(n, _) => match env.get(n) {
                 Some(s) => self.instantiate(s),
                 None => self.fresh(),
