@@ -79,6 +79,23 @@ fn session_incomplete_protocol_is_rejected_ax0301() {
 }
 
 #[test]
+fn session_program_runs_concurrently() {
+    // §11: um programa de sessão CORRE de facto — o `bound` abre o nursery, o
+    // scheduler cooperativo forka o worker e faz o ping-pong (21 → 42) sem
+    // deadlock, devolvendo 42.
+    let out = axionc()
+        .arg(fixture("session_run_pingpong.axi"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "devia correr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+}
+
+#[test]
 fn session_choice_and_closed_exhaustiveness() {
     // §6/§9: escolha interna (⊕) e a exaustividade do ramo `Closed` (T5).
     let ok = |fx: &str| {

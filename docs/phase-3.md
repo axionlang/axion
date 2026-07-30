@@ -52,9 +52,16 @@
   select_ok/bad + offer_ok/no_closed. **Falta:** exaustividade dos ramos de
   `offer` ao nível do termo (hoje ao nível do tipo); `spawn` a garantir árvore
   estrita; diferencial automático superfície→ASC.
-- [ ] **Runtime do scheduler (§11)** — M:N com work-stealing; tarefas =
-  continuações defuncionalizadas na arena da nursery; pontos de suspensão =
-  operações de canal; `io_uring`/`epoll` na fronteira de IO.
+- [~] **Runtime do scheduler (§11)** — 1º corte no interpretador (o fast-path de
+  `--dev`): um **scheduler cooperativo single-thread** em `interp.rs` corre
+  programas `bound`/`spawn`/canais. As tarefas são «continuações
+  defuncionalizadas» — literalmente o `Expr` restante do `do` (a cadeia de
+  `case`); o único ponto de suspensão é o `recv` de buffer vazio (troca de
+  tarefa); os `Value` (Rc) ficam numa só thread (sem `Send`). `Value::Endpoint`,
+  `newChannel`/`spawn`/`send`/`recv`/`select`/`close` executáveis. `session_run_pingpong.axi`
+  corre um ping-pong concorrente (21→42). **Falta:** M:N real com work-stealing +
+  `io_uring`/`epoll` (a arena da nursery, o §11 completo) no backend nativo;
+  `offer`/cancelamento em runtime.
 - [ ] **Cancelamento em pânico (§7)** — Linear Unwinding: `reset` da sub-arena em
   O(1), `Closed` ao par em O(filhos), `@cleanup` uma vez (T5).
 - [ ] **Açúcar de superfície (§9)** — `A ~ B`, `A Maybe~ B`, `observe`,

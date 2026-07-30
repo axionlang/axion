@@ -63,6 +63,8 @@ enum Value {
         arity: usize,
         args: Vec<Value>,
     },
+    /// Um endpoint de sessão (§6): o id do seu buffer no scheduler (§11).
+    Endpoint(usize),
 }
 
 pub type RunError = String;
@@ -181,6 +183,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Io(_) => "IO",
         Value::Tuple(_) => "tuplo",
         Value::Record { .. } => "registo",
+        Value::Endpoint(_) => "endpoint",
         Value::Closure { .. }
         | Value::Builtin { .. }
         | Value::Ctor { .. }
@@ -212,6 +215,13 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         },
         Expr::Var(name, _) => resolve_var(prog, env, name),
         Expr::App(f, x, _) => {
+            // `bound <corpo>` (§9/§11): abre o nursery e corre o scheduler
+            // cooperativo de sessões em vez da avaliação normal.
+            if let (Some("bound"), args) = app_head(e) {
+                if let Some(body) = args.last() {
+                    return run_session(prog, body, env);
+                }
+            }
             let callee = eval(prog, env, f)?;
             let arg = eval(prog, env, x)?;
             apply(prog, callee, arg)
@@ -637,6 +647,261 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
         | Value::Builtin { .. }
         | Value::Ctor { .. }
         | Value::Selector { .. }
-        | Value::Foreign { .. } => RtType::Fun,
+        | Value::Foreign { .. }
+        | Value::Endpoint(_) => RtType::Fun,
     })
+}
+
+// --- runtime de sessões: scheduler cooperativo (§11) ---
+//
+// Dá EXECUÇÃO aos programas de `bound`/`spawn`/canais. Segue a §11: as tarefas
+// são «continuações defuncionalizadas» — e a continuação de um `do` é, muito
+// literalmente, o `Expr` restante (a cadeia de `case` que o desugar produz).
+// Um scheduler cooperativo single-thread corre cada tarefa até ela bloquear num
+// `recv` de canal vazio (o único ponto de suspensão, §11), e então troca. Sem
+// threads nem `Send` — os `Value` (Rc) ficam sempre numa só thread. A ausência
+// de deadlock é garantida pelos tipos (AX0302); o scheduler só executa.
+
+/// Cabeça-nome e argumentos de uma aplicação `f a b …` (para reconhecer os ops).
+fn app_head(e: &Expr) -> (Option<&str>, Vec<&Expr>) {
+    let mut args = Vec::new();
+    let mut cur = e;
+    while let Expr::App(f, a, _) = cur {
+        args.push(a.as_ref());
+        cur = f;
+    }
+    args.reverse();
+    match cur {
+        Expr::Var(n, _) | Expr::Con(n, _) => (Some(n.as_str()), args),
+        _ => (None, args),
+    }
+}
+
+fn is_session_op(name: &str) -> bool {
+    matches!(
+        name,
+        "newChannel" | "spawn" | "send" | "recv" | "close" | "select"
+    )
+}
+
+struct Sched {
+    /// buffer de entrada de cada endpoint (mensagens à espera de serem recebidas
+    /// pelo dono deste endpoint); enviar em `e` empurra para o buffer do par.
+    bufs: Vec<std::collections::VecDeque<Value>>,
+    peer: Vec<usize>,
+}
+
+impl Sched {
+    fn new_channel(&mut self) -> (usize, usize) {
+        let a = self.bufs.len();
+        self.bufs.push(std::collections::VecDeque::new());
+        let b = self.bufs.len();
+        self.bufs.push(std::collections::VecDeque::new());
+        self.peer.push(b);
+        self.peer.push(a);
+        (a, b)
+    }
+    fn send(&mut self, ep: usize, v: Value) {
+        let p = self.peer[ep];
+        self.bufs[p].push_back(v);
+    }
+    fn recv(&mut self, ep: usize) -> Option<Value> {
+        self.bufs[ep].pop_front()
+    }
+}
+
+struct Task {
+    cont: Expr, // o `do`-corpo restante (cadeia de `case`)
+    env: Env,
+}
+
+enum StepOut {
+    Went(Task),    // avançou (uma operação não-bloqueante); continuar a correr
+    Blocked(Task), // recv de buffer vazio → suspender e trocar de tarefa
+    Done(Value),   // a tarefa terminou com este valor
+}
+
+fn ep_id(v: &Value) -> Result<usize, RunError> {
+    match v {
+        Value::Endpoint(id) => Ok(*id),
+        other => Err(format!("esperava um endpoint, obtive {}", type_name(other))),
+    }
+}
+
+/// Executa uma operação de canal reconhecida (`head args`) no env dado. Devolve
+/// `Some(valor)` (o resultado da operação) ou `None` se bloqueia (recv de buffer
+/// vazio). Os `spawn` acrescentam tarefas-filho a `spawned`.
+fn perform_op(
+    prog: &Program,
+    sched: &mut Sched,
+    spawned: &mut Vec<Task>,
+    env: &Env,
+    head: &str,
+    args: &[&Expr],
+) -> Result<Option<Value>, RunError> {
+    Ok(match head {
+        "newChannel" => {
+            let (a, b) = sched.new_channel();
+            Some(Value::Tuple(vec![Value::Endpoint(a), Value::Endpoint(b)]))
+        }
+        "spawn" => {
+            let f = eval(prog, env, args[0])?;
+            let (c, d) = sched.new_channel();
+            spawned.push(fork_child(f, Value::Endpoint(d))?);
+            Some(Value::Endpoint(c))
+        }
+        "send" => {
+            let ep = ep_id(&eval(prog, env, args[0])?)?;
+            let v = eval(prog, env, args[1])?;
+            sched.send(ep, v);
+            Some(Value::Endpoint(ep))
+        }
+        "select" => {
+            let label = match args[0] {
+                Expr::Con(l, _) | Expr::Var(l, _) => l.clone(),
+                _ => return Err("select: rótulo inválido".into()),
+            };
+            let ep = ep_id(&eval(prog, env, args[1])?)?;
+            sched.send(ep, Value::Str(label));
+            Some(Value::Endpoint(ep))
+        }
+        "close" => {
+            eval(prog, env, args[0])?; // consome o endpoint
+            Some(Value::Unit)
+        }
+        "recv" => {
+            let ep = ep_id(&eval(prog, env, args[0])?)?;
+            // buffer vazio → `None` (bloqueia); senão o par (valor, endpoint)
+            sched
+                .recv(ep)
+                .map(|v| Value::Tuple(vec![v, Value::Endpoint(ep)]))
+        }
+        _ => unreachable!("op de sessão desconhecido: {head}"),
+    })
+}
+
+/// Se `e` é uma operação de sessão aplicada, devolve `(head, args)`.
+fn as_session_op(e: &Expr) -> Option<(&str, Vec<&Expr>)> {
+    let (head, args) = app_head(e);
+    head.filter(|h| is_session_op(h)).map(|h| (h, args))
+}
+
+/// Um passo do scheduler sobre uma tarefa: trata um op de sessão à cabeça (seja
+/// escrutínio de `case`, seja a cauda do `do`), ou avalia normalmente.
+fn step(
+    prog: &Program,
+    sched: &mut Sched,
+    task: Task,
+    spawned: &mut Vec<Task>,
+) -> Result<StepOut, RunError> {
+    // `case <op> of pat -> resto` → executa, liga `pat`, continua com `resto`.
+    if let Expr::Case(scrut, arms, _) = &task.cont {
+        if arms.len() == 1 {
+            if let Some((head, args)) = as_session_op(scrut) {
+                let (pat, rest) = &arms[0];
+                return Ok(
+                    match perform_op(prog, sched, spawned, &task.env, head, &args)? {
+                        Some(val) => {
+                            let child = child_env(&task.env);
+                            match_pat(pat, &val, &child);
+                            StepOut::Went(Task {
+                                cont: rest.clone(),
+                                env: child,
+                            })
+                        }
+                        None => StepOut::Blocked(task),
+                    },
+                );
+            }
+        }
+    }
+    // op de sessão como cauda do `do` (ex.: `close c` final) → é o valor do bloco.
+    if let Some((head, args)) = as_session_op(&task.cont) {
+        return Ok(
+            match perform_op(prog, sched, spawned, &task.env, head, &args)? {
+                Some(val) => StepOut::Done(val),
+                None => StepOut::Blocked(task),
+            },
+        );
+    }
+    // folha sem op de sessão → avalia normalmente
+    Ok(StepOut::Done(eval(prog, &task.env, &task.cont)?))
+}
+
+/// Constrói a tarefa-filho para `spawn f`: aplica a closure `f` ao endpoint,
+/// mas em vez de a correr até ao fim, devolve o seu corpo como continuação.
+fn fork_child(f: Value, arg: Value) -> Result<Task, RunError> {
+    match f {
+        Value::Closure { def, env, args } if args.is_empty() => {
+            let clause = def.clauses.first().ok_or("spawn: closure sem cláusula")?;
+            let child = child_env(&env);
+            if let Some(p) = clause.pats.first() {
+                match_pat(p, &arg, &child);
+            }
+            match &clause.body {
+                Body::Plain(b) => Ok(Task {
+                    cont: b.clone(),
+                    env: child,
+                }),
+                _ => Err("spawn: corpo com guardas não suportado".into()),
+            }
+        }
+        other => Err(format!(
+            "spawn espera uma função, obteve {}",
+            type_name(&other)
+        )),
+    }
+}
+
+/// O scheduler cooperativo: corre a tarefa raiz (do `bound`) e os seus filhos até
+/// a raiz terminar. Round-robin; uma varredura sem progresso com tarefas vivas é
+/// deadlock (não deve acontecer — os tipos garantem, AX0302).
+fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError> {
+    let mut sched = Sched {
+        bufs: Vec::new(),
+        peer: Vec::new(),
+    };
+    let mut tasks: Vec<Option<Task>> = vec![Some(Task {
+        cont: body.clone(),
+        env: child_env(env),
+    })];
+    let mut budget: u64 = 5_000_000;
+    loop {
+        let mut progressed = false;
+        let n = tasks.len();
+        for i in 0..n {
+            loop {
+                budget -= 1;
+                if budget == 0 {
+                    return Err("scheduler de sessões: sem progresso (limite)".into());
+                }
+                let Some(task) = tasks[i].take() else { break };
+                let mut spawned = Vec::new();
+                let out = step(prog, &mut sched, task, &mut spawned);
+                for t in spawned {
+                    tasks.push(Some(t));
+                }
+                match out? {
+                    StepOut::Went(t) => {
+                        tasks[i] = Some(t);
+                        progressed = true;
+                    }
+                    StepOut::Blocked(t) => {
+                        tasks[i] = Some(t);
+                        break;
+                    }
+                    StepOut::Done(v) => {
+                        progressed = true;
+                        if i == 0 {
+                            return Ok(v); // a raiz terminou → o valor do `bound`
+                        }
+                        break; // um filho terminou → descarta
+                    }
+                }
+            }
+        }
+        if !progressed {
+            return Err("deadlock no scheduler (não devia ocorrer — tipos garantem)".into());
+        }
+    }
 }
