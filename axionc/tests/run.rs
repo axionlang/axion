@@ -687,11 +687,14 @@ fn borrowed_arg_reclaimed_after_call() {
         .output()
         .unwrap();
     let core = String::from_utf8_lossy(&core.stdout);
-    let call = core.find("call dist").expect("chamada a dist");
-    let drop = core.find("drop _t0").expect("drop do registo");
+    // procura só dentro do corpo de `main` (o prelúdio injectado traz outras
+    // funções com temporários `_tN` à frente no dump).
+    let main = &core[core.find("main  =").expect("função main no Core")..];
+    let call = main.find("call dist").expect("chamada a dist");
+    let drop = main.find("drop _t0").expect("drop do registo");
     assert!(
         drop > call,
-        "o drop tem de vir depois da chamada emprestada:\n{core}"
+        "o drop tem de vir depois da chamada emprestada:\n{main}"
     );
 }
 
@@ -1297,4 +1300,17 @@ fn json_diagnostics_are_emitted() {
         text.contains("\"code\": \"AX0001\""),
         "JSON inesperado: {text}"
     );
+}
+
+#[test]
+fn list_stdlib_functions() {
+    // Biblioteca de listas do prelúdio (degrau 1 → propósito geral): length,
+    // append, reverse, foldr, foldl, take, drop, filter, null, elem, sum.
+    let out = axionc().arg(fixture("list_stdlib.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stdlib devia correr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "414\n");
 }

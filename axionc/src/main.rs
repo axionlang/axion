@@ -287,6 +287,50 @@ map :: (a -> b) -> List a -> List b
 map f xs = case xs of
   Nil -> Nil
   Cons y ys -> Cons (f y) (map f ys)
+length :: List a -> Int
+length xs = case xs of
+  Nil -> 0
+  Cons y ys -> 1 + length ys
+append :: List a -> List a -> List a
+append xs ys = case xs of
+  Nil -> ys
+  Cons z zs -> Cons z (append zs ys)
+reverse :: List a -> List a
+reverse xs = case xs of
+  Nil -> Nil
+  Cons y ys -> append (reverse ys) (Cons y Nil)
+filter :: (a -> Bool) -> List a -> List a
+filter p xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if p y then Cons y (filter p ys) else filter p ys
+foldr :: (a -> b -> b) -> b -> List a -> b
+foldr f z xs = case xs of
+  Nil -> z
+  Cons y ys -> f y (foldr f z ys)
+foldl :: (b -> a -> b) -> b -> List a -> b
+foldl f z xs = case xs of
+  Nil -> z
+  Cons y ys -> foldl f (f z y) ys
+take :: Int -> List a -> List a
+take n xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if n < 1 then Nil else Cons y (take (n - 1) ys)
+drop :: Int -> List a -> List a
+drop n xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if n < 1 then Cons y ys else drop (n - 1) ys
+null :: List a -> Bool
+null xs = case xs of
+  Nil -> True
+  Cons y ys -> False
+sum :: List Int -> Int
+sum xs = case xs of
+  Nil -> 0
+  Cons y ys -> y + sum ys
+elem :: Int -> List Int -> Bool
+elem x xs = case xs of
+  Nil -> False
+  Cons y ys -> if x == y then True else elem x ys
 ";
 
 fn inject_prelude(module: &mut ast::Module) {
