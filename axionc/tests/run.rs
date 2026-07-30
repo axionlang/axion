@@ -1141,6 +1141,11 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("mono_transitive.axi"), "2\n"), // especialização transitiva (β-2)
         (fixture("typeclasses.axi"), "125\n"),   // exemplo completo (count + eq Shape)
         (fixture("native_io.axi"), "sum=6\n2\n4\n6\n"), // IO nativo: do + mapM_ + putStr
+        (fixture("native_hof.axi"), "56\n"),     // first-class fns: filter/map/foldr + nomeadas
+        (
+            example("03b_fizzbuzz.axi"),
+            "1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n",
+        ), // compose parcial + putStrLn como valor → nativo
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1443,6 +1448,29 @@ fn typeclass_coherence_is_checked_statically() {
     reject("tc_missing_method.axi", "AX0401"); // método da classe em falta
     reject("tc_extra_method.axi", "AX0402"); // método fora da classe
     reject("tc_dup_instance.axi", "AX0403"); // instância duplicada (incoerência)
+}
+
+#[test]
+fn first_class_functions_run_natively() {
+    // Fecho da camada 1: funções de ordem superior (filter/map/foldr) com
+    // lambdas E funções nomeadas como valor, via eta-expansão. Interp e --dev
+    // concordam em 56 (o --release está na lista release_backend_*).
+    for args in [
+        vec![fixture("native_hof.axi")],
+        vec![
+            "--backend".into(),
+            "cranelift".into(),
+            fixture("native_hof.axi"),
+        ],
+    ] {
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "56\n", "{args:?}");
+    }
 }
 
 #[test]

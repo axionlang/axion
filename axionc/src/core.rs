@@ -165,7 +165,12 @@ pub struct CoreFn {
 /// Tipos representados por um `i64`: `Int`, `String`, `IO`, um `data`, ou uma
 /// função (ponteiro para closure `{fn_ptr, capturas…}`).
 pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
-    if matches!(t, Type::Arrow { .. } | Type::Unit) {
+    // Arrow/Unit/variável de tipo → i64. O ABI nativo é uniformemente i64
+    // (Int/Bool/ponteiros/closures), por isso uma posição polimórfica é sempre
+    // i64-representável — o que deixa funções paramétricas/de ordem superior
+    // (compose, foldr, …) compilarem, agora que a eta-expansão garante que são
+    // aplicadas à aridade completa (sem o erro de aplicação parcial de antes).
+    if matches!(t, Type::Arrow { .. } | Type::Unit | Type::Var(_)) {
         return true;
     }
     match t.head_con() {
@@ -1033,7 +1038,168 @@ fn lower_func(
 
 /// Baixa o módulo para o Core: funções de topo candidatas, os seus locais de
 /// `where` (mangled) e as lambdas liftadas (com captura).
+/// Eta-expande as funções/construtores usados como valor ou aplicados
+/// parcialmente, para o backend nativo (first-class functions via closures).
+fn eta_expand(module: &ast::Module) -> ast::Module {
+    // aridade de cada nome chamável: funções de topo (nº de padrões), construtores
+    // (nº de campos), e os builtins de IO que baixam a um `Op`.
+    let mut arity: HashMap<String, usize> = HashMap::new();
+    for f in &module.funcs {
+        arity.insert(
+            f.name.clone(),
+            f.clauses.first().map(|c| c.pats.len()).unwrap_or(0),
+        );
+    }
+    for d in &module.datas {
+        for c in &d.cons {
+            arity.insert(c.name.clone(), c.fields.len());
+        }
+    }
+    for b in ["putStrLn", "putStr", "show"] {
+        arity.entry(b.into()).or_insert(1);
+    }
+    let mut e = Eta { arity, counter: 0 };
+    let funcs = module.funcs.iter().map(|f| e.func(f)).collect();
+    ast::Module {
+        funcs,
+        datas: module.datas.clone(),
+        foreigns: module.foreigns.clone(),
+        classes: module.classes.clone(),
+        instances: module.instances.clone(),
+    }
+}
+
+struct Eta {
+    arity: HashMap<String, usize>,
+    counter: usize,
+}
+
+impl Eta {
+    /// Nome + span sintético únicos (fora da gama dos offsets de byte reais).
+    fn fresh(&mut self) -> (String, Span) {
+        let n = self.counter;
+        self.counter += 1;
+        (format!("eta${n}"), (1_000_000_000 + n, 1_000_000_000 + n))
+    }
+
+    fn func(&mut self, f: &ast::Func) -> ast::Func {
+        let clauses = f
+            .clauses
+            .iter()
+            .map(|c| ast::Clause {
+                pats: c.pats.clone(),
+                body: match &c.body {
+                    ast::Body::Plain(e) => ast::Body::Plain(self.expr(e)),
+                    ast::Body::Guarded(arms) => ast::Body::Guarded(
+                        arms.iter()
+                            .map(|(g, r)| (self.expr(g), self.expr(r)))
+                            .collect(),
+                    ),
+                },
+                wher: c.wher.iter().map(|w| self.func(w)).collect(),
+                span: c.span,
+            })
+            .collect();
+        ast::Func {
+            clauses,
+            ..f.clone()
+        }
+    }
+
+    /// Envolve `base` (chamável, com `gap` argumentos em falta) numa lambda que
+    /// recebe os que faltam: `base` → `\v0 … v_{gap-1} -> base v0 … v_{gap-1}`.
+    fn wrap(&mut self, base: Expr, gap: usize) -> Expr {
+        let (_, lam_sp) = self.fresh();
+        let mut pats = Vec::new();
+        let mut body = base;
+        for _ in 0..gap {
+            let (name, vsp) = self.fresh();
+            pats.push(Pat::Var(name.clone(), vsp));
+            body = Expr::App(Box::new(body), Box::new(Expr::Var(name, vsp)), lam_sp);
+        }
+        Expr::Lam(pats, Box::new(body), lam_sp)
+    }
+
+    fn name_arity(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::Var(n, _) | Expr::Con(n, _) => self.arity.get(n).copied(),
+            _ => None,
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) -> Expr {
+        match e {
+            Expr::Int(_, _) | Expr::Str(_, _) => e.clone(),
+            // nome chamável usado como VALOR → eta-expande.
+            Expr::Var(_, _) | Expr::Con(_, _) => match self.name_arity(e) {
+                Some(k) if k > 0 => self.wrap(e.clone(), k),
+                _ => e.clone(),
+            },
+            Expr::App(_, _, _) => {
+                let (head, args) = spine(e);
+                let targs: Vec<Expr> = args.iter().map(|a| self.expr(a)).collect();
+                let n = targs.len();
+                // a cabeça: se é nome/construtor mantém-se; senão recorre.
+                let head_e = match head {
+                    Expr::Var(_, _) | Expr::Con(_, _) => head.clone(),
+                    _ => self.expr(head),
+                };
+                let sp = head.span();
+                let applied = targs
+                    .into_iter()
+                    .fold(head_e, |acc, a| Expr::App(Box::new(acc), Box::new(a), sp));
+                match self.name_arity(head) {
+                    // aplicação PARCIAL → completa-se com uma lambda.
+                    Some(k) if n < k => self.wrap(applied, k - n),
+                    _ => applied,
+                }
+            }
+            Expr::BinOp(op, l, r, sp) => Expr::BinOp(
+                op.clone(),
+                Box::new(self.expr(l)),
+                Box::new(self.expr(r)),
+                *sp,
+            ),
+            Expr::If(c, t, el, sp) => Expr::If(
+                Box::new(self.expr(c)),
+                Box::new(self.expr(t)),
+                Box::new(self.expr(el)),
+                *sp,
+            ),
+            Expr::Let(binds, body, sp) => Expr::Let(
+                binds.iter().map(|f| self.func(f)).collect(),
+                Box::new(self.expr(body)),
+                *sp,
+            ),
+            Expr::Case(s, arms, sp) => Expr::Case(
+                Box::new(self.expr(s)),
+                arms.iter()
+                    .map(|(p, b)| (p.clone(), self.expr(b)))
+                    .collect(),
+                *sp,
+            ),
+            Expr::Tuple(es, sp) => Expr::Tuple(es.iter().map(|x| self.expr(x)).collect(), *sp),
+            Expr::RecordCon(c, fs, sp) => Expr::RecordCon(
+                c.clone(),
+                fs.iter().map(|(n, x)| (n.clone(), self.expr(x))).collect(),
+                *sp,
+            ),
+            Expr::RecordUpd(b, fs, sp) => Expr::RecordUpd(
+                Box::new(self.expr(b)),
+                fs.iter().map(|(n, x)| (n.clone(), self.expr(x))).collect(),
+                *sp,
+            ),
+            Expr::Lam(ps, body, sp) => Expr::Lam(ps.clone(), Box::new(self.expr(body)), *sp),
+        }
+    }
+}
+
 pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
+    // Eta-expansão (só no caminho nativo): reescreve funções/construtores usados
+    // como VALOR ou aplicados PARCIALMENTE (`f`, `compose g h`) em lambdas
+    // (`\v -> f v`), que a maquinaria de closures já compila. É identidade
+    // semântica — o interp já trata aplicação parcial, por isso fica cá.
+    let module = &eta_expand(module);
     let data_types = data_type_names(module);
     let globals = global_names(module);
     let mut fields = HashSet::new();
