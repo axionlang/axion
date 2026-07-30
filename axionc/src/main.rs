@@ -409,6 +409,49 @@ fn explain(code: &str) -> ExitCode {
             "AX0101 — nome não encontrado. O identificador não está em\n\
              âmbito (nem parâmetro, nem local, nem função de topo, nem builtin)."
         }
+        "AX0200" => {
+            "AX0200 — incompatibilidade de tipos. A unificação (inferência HM,\n\
+             Algoritmo W) falhou: dois tipos que teriam de ser iguais não o são.\n\
+             Verifique as assinaturas e os argumentos das aplicações (§16)."
+        }
+        "AX0201" => {
+            "AX0201 — tipo infinito (occurs-check). A unificação exigiria um tipo\n\
+             recursivo (uma variável que ocorre dentro do tipo a que seria ligada),\n\
+             o que a inferência HM rejeita."
+        }
+        "AX0300" => {
+            "AX0300 — operação de canal não segue o tipo de sessão. 'send' exige\n\
+             um endpoint em 'Send', 'recv' em 'Recv', 'close' em 'End', e o rótulo\n\
+             de 'select' tem de pertencer ao 'Select'. A fidelidade de protocolo é\n\
+             verificada estaticamente (§6)."
+        }
+        "AX0301" => {
+            "AX0301 — protocolo de sessão incompleto. Um endpoint tem de ser levado\n\
+             até 'close' (ou consumido por 'offer'/'cancel'); largá-lo a meio deixa\n\
+             o protocolo por terminar (§6)."
+        }
+        "AX0302" => {
+            "AX0302 — escape de endpoint do nursery 'bound'. Os endpoints nascem\n\
+             confinados ao 'bound' para o grafo de comunicação ser uma árvore\n\
+             (deadlock-freedom, §9); não podem ser devolvidos do bloco. Consuma-os\n\
+             dentro (close/send/recv). É o análogo do escape de arena (AX0003)."
+        }
+        "AX0303" => {
+            "AX0303 — escolha externa ('Offer') sem o ramo 'Closed'. Todo o '&' tem\n\
+             de oferecer 'Closed' — o rótulo que o Linear Unwinding envia ao cancelar\n\
+             (§7); sem ele, o cancelamento de um par em pânico ficaria por tratar."
+        }
+        "AX0304" => {
+            "AX0304 — 'case offer c' não exaustivo. O 'case' sobre uma escolha externa\n\
+             tem de tratar TODOS os ramos que o 'Offer' oferece (incluindo 'Closed').\n\
+             Acrescente um braço para cada rótulo (§6/§7)."
+        }
+        "AX0305" => {
+            "AX0305 — a closure de 'spawn' captura um endpoint do exterior. Um filho\n\
+             spawnado só comunica com o pai pelo seu endpoint-parâmetro (aresta\n\
+             pai↔filho); capturar canais do exterior podia formar um ciclo → deadlock.\n\
+             A topologia tem de ser uma árvore (§9)."
+        }
         other => {
             eprintln!("código desconhecido: {other}");
             return ExitCode::from(2);
