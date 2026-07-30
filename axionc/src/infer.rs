@@ -676,7 +676,11 @@ impl<'a> Infer<'a> {
                 "AX0200",
                 format!("incompatibilidade de tipos: {sa} vs {sb}"),
             )
-            .label(span.0, span.1, format!("esperava {sa}, encontrei {sb}")),
+            .label(span.0, span.1, format!("esperava {sa}, encontrei {sb}"))
+            .with_help(
+                "a inferência exigia estes dois tipos iguais; verifique a assinatura e os \
+                 argumentos da aplicação.",
+            ),
         );
     }
 

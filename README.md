@@ -37,8 +37,11 @@ Três executores para o mesmo programa, todos concordantes:
 | `axionc --backend cranelift prog.axi` | **`--dev`**: JIT Cranelift (código-máquina, sem opt) |
 | `axionc --release prog.axi` | **`--release`**: LLVM `-O2 -flto` + runtime C (competitivo com o C) |
 
-Diagnósticos estilo `rustc` (span + label + JSON), com códigos estáveis:
-`axionc --explain AX0001`.
+Diagnósticos estilo `rustc` (span + label + sugestão de fix + JSON), com códigos
+estáveis: `axionc --explain AX0001`.
+
+**Novo aqui?** Segue o percurso guiado [**Axión by Example**](docs/by-example.md)
+— L0→L3, um conceito de cada vez, cada passo a correr.
 
 ## Garantias, com evidência
 
@@ -93,6 +96,7 @@ Mais detalhe em [`docs/backend.md`](docs/backend.md) e nos docs de fase.
 | [`axionc/`](axionc/) | **O compilador**, de raiz em Rust. |
 | [`spec/`](spec/) | A especificação mestra, versionada ao lado do código. |
 | [`examples/`](examples/) | Programas `.axi` (Hello, fib, FizzBuzz, buffer linear, Listagem 2.1, empréstimos). |
+| [`docs/by-example.md`](docs/by-example.md) | **Percurso guiado L0→L3** — a melhor porta de entrada para aprender. |
 | [`docs/`](docs/) | Gramática, [códigos de erro](docs/error-codes.md), [backend](docs/backend.md), [benchmarks](docs/benchmarks.md), [cálculo de sessões](docs/phase-3-calculus.md), checklists de fase. |
 | [`scripts/`](scripts/) | `sanitize.sh` (ASan/LSan), `differential.sh` (oráculo GHC), `bench.sh`. |
 | [`prototype/`](prototype/) | Bancada EDSL descartável da Fase 0 (validou a linearidade em Linear Haskell). |

@@ -507,10 +507,9 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
                                      (falta consumi-lo até `close`)"
                                 ),
                             )
-                            .label(
-                                f.span.0,
-                                f.span.1,
-                                "protocolo incompleto aqui",
+                            .label(f.span.0, f.span.1, "protocolo incompleto aqui")
+                            .with_help(
+                                "leve o endpoint até `close`, ou consuma-o com `offer`/`cancel`.",
                             ),
                         );
                     }
@@ -831,7 +830,12 @@ fn session_mismatch(diags: &mut Diagnostics, sp: Span, chan: &str, op: &str, got
                 "`{op}` no endpoint '{chan}' não segue o protocolo: esperava {expect}, mas {got}"
             ),
         )
-        .label(sp.0, sp.1, "operação de sessão inválida"),
+        .label(sp.0, sp.1, "operação de sessão inválida")
+        .with_help(
+            "a operação tem de seguir o tipo de sessão do endpoint: `send` num `Send`, \
+             `recv` num `Recv`, `close` num `End`, e o rótulo de `select` tem de pertencer \
+             ao `Select`.",
+        ),
     );
 }
 
@@ -1147,11 +1151,12 @@ fn resolve_expr(
         Expr::Var(n, sp) => {
             if !scope.contains(n) && !globals.contains(n) {
                 diags.push(
-                    Diagnostic::error("AX0101", format!("nome não encontrado: '{n}'")).label(
-                        sp.0,
-                        sp.1,
-                        "não está em âmbito",
-                    ),
+                    Diagnostic::error("AX0101", format!("nome não encontrado: '{n}'"))
+                        .label(sp.0, sp.1, "não está em âmbito")
+                        .with_help(
+                            "verifique a ortografia, ou se é um parâmetro/local em âmbito, \
+                             ou uma função de topo/import em falta.",
+                        ),
                 );
             }
         }
