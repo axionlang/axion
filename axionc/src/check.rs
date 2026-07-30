@@ -108,7 +108,101 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
     }
     check_sessions(module, diags);
     check_bound_escapes(module, diags);
+    check_instances(module, diags);
     out
+}
+
+/// Coerência estática de typeclasses (fatia 2a). Cada `instance`:
+/// - refere uma classe declarada (**AX0400**);
+/// - implementa TODOS os métodos dessa classe (**AX0401** por método em falta);
+/// - não implementa métodos que a classe não declara (**AX0402**);
+/// - é única para o seu par (classe, tipo) — sem sobreposição (**AX0403**).
+///
+/// É a metade estática da fatia 2: apanha em compile-time o que antes só rebentava
+/// no despacho em runtime (método em falta, typo no nome, instância a mais).
+fn check_instances(module: &Module, diags: &mut Diagnostics) {
+    use std::collections::HashMap;
+    let class_methods: HashMap<&str, HashSet<&str>> = module
+        .classes
+        .iter()
+        .map(|c| {
+            (
+                c.name.as_str(),
+                c.methods.iter().map(|(m, _)| m.as_str()).collect(),
+            )
+        })
+        .collect();
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for inst in &module.instances {
+        if !seen.insert((inst.class_name.clone(), inst.ty_head.clone())) {
+            diags.push(
+                Diagnostic::error(
+                    "AX0403",
+                    format!(
+                        "instância duplicada de `{}` para `{}`",
+                        inst.class_name, inst.ty_head
+                    ),
+                )
+                .label(
+                    inst.span.0,
+                    inst.span.1,
+                    "já existe uma instância para este tipo",
+                )
+                .with_help(
+                    "cada par (classe, tipo) só pode ter UMA instância — a \
+                     resolução de método tem de ser inequívoca (coerência).",
+                ),
+            );
+            continue;
+        }
+        let Some(methods) = class_methods.get(inst.class_name.as_str()) else {
+            diags.push(
+                Diagnostic::error(
+                    "AX0400",
+                    format!("instância de classe desconhecida `{}`", inst.class_name),
+                )
+                .label(inst.span.0, inst.span.1, "esta classe não foi declarada")
+                .with_help("declare `class C a where …` antes de a instanciar."),
+            );
+            continue;
+        };
+        let impl_names: HashSet<&str> = inst.methods.iter().map(|f| f.name.as_str()).collect();
+        for m in methods {
+            if !impl_names.contains(m) {
+                diags.push(
+                    Diagnostic::error(
+                        "AX0401",
+                        format!(
+                            "a instância `{} {}` não implementa o método `{m}`",
+                            inst.class_name, inst.ty_head
+                        ),
+                    )
+                    .label(
+                        inst.span.0,
+                        inst.span.1,
+                        "método da classe em falta nesta instância",
+                    )
+                    .with_help("uma instância tem de implementar todos os métodos da classe."),
+                );
+            }
+        }
+        for f in &inst.methods {
+            if !methods.contains(f.name.as_str()) {
+                diags.push(
+                    Diagnostic::error(
+                        "AX0402",
+                        format!(
+                            "`{}` não é um método da classe `{}`",
+                            f.name, inst.class_name
+                        ),
+                    )
+                    .label(f.span.0, f.span.1, "método desconhecido nesta classe")
+                    .with_help("verifique o nome do método, ou declare-o na `class`."),
+                );
+            }
+        }
+    }
 }
 
 // --- confinamento do nursery `bound` (§9): deadlock-freedom estrutural ---

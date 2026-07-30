@@ -1424,3 +1424,18 @@ fn generic_prelude_over_typeclasses() {
     // → são interp-only e o filtro nativo exclui-as. A prova de que o nativo
     // continua a compilar está no teste release_backend_compiles_and_runs_*.
 }
+
+#[test]
+fn typeclass_coherence_is_checked_statically() {
+    // Fatia 2a: coerência/completude de classes e instâncias em compile-time.
+    let reject = |fx: &str, code: &str| {
+        let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
+        assert!(!out.status.success(), "{fx} devia falhar");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(code), "{fx}: esperava {code}, saída: {text}");
+    };
+    reject("tc_unknown_class.axi", "AX0400"); // instância de classe não declarada
+    reject("tc_missing_method.axi", "AX0401"); // método da classe em falta
+    reject("tc_extra_method.axi", "AX0402"); // método fora da classe
+    reject("tc_dup_instance.axi", "AX0403"); // instância duplicada (incoerência)
+}

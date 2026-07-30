@@ -577,6 +577,26 @@ fn explain(code: &str) -> ExitCode {
              pai↔filho); capturar canais do exterior podia formar um ciclo → deadlock.\n\
              A topologia tem de ser uma árvore (§9)."
         }
+        "AX0400" => {
+            "AX0400 — instância de uma classe desconhecida. 'instance C T' exige que\n\
+             a classe 'C' tenha sido declarada com 'class C a where …'. Verifique a\n\
+             ortografia do nome da classe."
+        }
+        "AX0401" => {
+            "AX0401 — instância incompleta: falta implementar um método da classe.\n\
+             Uma 'instance C T' tem de implementar TODOS os métodos declarados em\n\
+             'class C' (na fatia 1 ainda não há métodos por omissão)."
+        }
+        "AX0402" => {
+            "AX0402 — a instância implementa um método que a classe não declara.\n\
+             Só os métodos de 'class C' podem aparecer numa 'instance C T'. Verifique\n\
+             o nome, ou acrescente a assinatura do método à classe."
+        }
+        "AX0403" => {
+            "AX0403 — instância duplicada (incoerência). Só pode haver UMA 'instance\n\
+             C T' para cada par (classe, tipo), senão a resolução de método seria\n\
+             ambígua. Remova a instância repetida."
+        }
         other => {
             eprintln!("código desconhecido: {other}");
             return ExitCode::from(2);

@@ -247,3 +247,21 @@ error[AX0200]: incompatibilidade de tipos: IO () vs Int
 
 A unificação exigiria um tipo recursivo (uma variável que ocorre dentro do tipo
 a que seria ligada), o que a inferência HM rejeita. Emitido por `infer.rs`.
+
+---
+
+## `AX04xx` — typeclasses (coerência de classes e instâncias)
+
+A banda `AX04xx` cobre a coerência estática das typeclasses (fatia 2a), emitida
+por `check_instances` em `axionc/src/check.rs`:
+
+- **`AX0400`** — `instance C T` de uma classe `C` que não foi declarada.
+- **`AX0401`** — instância incompleta: falta implementar um método da classe.
+- **`AX0402`** — a instância implementa um método que a classe não declara.
+- **`AX0403`** — instância duplicada: dois `instance C T` para o mesmo par
+  (classe, tipo), o que tornaria a resolução de método ambígua.
+
+O despacho de métodos em si é dinâmico (fatia 1, no interpretador); a verificação
+de que um método tem instância para um tipo concreto no ponto de uso, e a
+elaboração estática de dicionários / monomorfização (codegen nativo), são a
+fatia 2b.
