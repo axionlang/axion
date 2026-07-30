@@ -134,7 +134,9 @@ fn session_choice_and_closed_exhaustiveness() {
     ok("session_select_ok.axi"); // select de um rótulo válido (⊕)
     ok("session_offer_ok.axi"); // Offer com ramo Closed (T5)
     reject("session_select_bad.axi", "AX0300"); // rótulo inexistente
-    reject("session_offer_no_closed.axi", "AX0303"); // Offer sem Closed (T5)
+    reject("session_offer_no_closed.axi", "AX0303"); // Offer sem Closed no tipo (T5)
+    reject("session_offer_incomplete.axi", "AX0304"); // case omite um ramo do Offer
+    reject("session_spawn_capture.axi", "AX0305"); // spawn captura endpoint (árvore)
 }
 
 #[test]

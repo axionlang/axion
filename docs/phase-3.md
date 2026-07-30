@@ -49,9 +49,13 @@
   `offer c` consome uma escolha externa; e **AX0303** exige que todo o `Offer`
   inclua o ramo `Closed` — a exaustividade do cancelamento (T5/§7). Tipos de
   sessão com ramos rotulados via `Select (L1 S1) (L2 S2) …`. Fixtures
-  select_ok/bad + offer_ok/no_closed. **Falta:** exaustividade dos ramos de
-  `offer` ao nível do termo (hoje ao nível do tipo); `spawn` a garantir árvore
-  estrita; diferencial automático superfície→ASC.
+  select_ok/bad + offer_ok/no_closed. **Exaustividade + árvore fechadas:**
+  **AX0304** — o `case offer c of {…}` tem de tratar todos os ramos do `Offer`
+  (incl. `Closed`), seguindo cada braço com a sua continuação; **AX0305** — a
+  closure de `spawn` não pode capturar endpoints do exterior (só o seu
+  parâmetro), garantindo que cada spawn cria uma aresta pai↔filho (árvore →
+  deadlock-free, §9). **Falta:** delegação (endpoints por canais entre irmãos,
+  pipelines acíclicos); diferencial automático superfície→ASC.
 - [~] **Runtime do scheduler (§11)** — 1º corte no interpretador (o fast-path de
   `--dev`): um **scheduler cooperativo single-thread** em `interp.rs` corre
   programas `bound`/`spawn`/canais. As tarefas são «continuações

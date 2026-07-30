@@ -187,7 +187,7 @@ fn find_bounds(e: &Expr, diags: &mut Diagnostics) {
 /// Verifica que o corpo de um `bound` não devolve um endpoint criado lá dentro.
 fn check_bound(body: &Expr, diags: &mut Diagnostics) {
     let mut eps: HashSet<String> = HashSet::new();
-    let tail = peel_bound_spine(body, &mut eps);
+    let tail = peel_bound_spine(body, &mut eps, diags);
     if let Some(sp) = tail_endpoint(tail, &eps) {
         diags.push(
             Diagnostic::error("AX0302", "um endpoint escapa do nursery `bound`")
@@ -207,13 +207,18 @@ fn check_bound(body: &Expr, diags: &mut Diagnostics) {
 
 /// Percorre a espinha de `do`/`let`, registando as variáveis ligadas a endpoints
 /// criados no nursery; devolve a expressão-cauda (o valor de retorno).
-fn peel_bound_spine<'a>(e: &'a Expr, eps: &mut HashSet<String>) -> &'a Expr {
+fn peel_bound_spine<'a>(
+    e: &'a Expr,
+    eps: &mut HashSet<String>,
+    diags: &mut Diagnostics,
+) -> &'a Expr {
     let mut cur = e;
     loop {
         match cur {
             Expr::Let(binds, body, _) => {
                 for b in binds {
                     if let Some(rhs) = simple_bind_rhs(b) {
+                        check_spawn_capture(rhs, eps, diags);
                         if let Prod::One | Prod::Both | Prod::Snd = producer(rhs, eps) {
                             eps.insert(b.name.clone());
                         }
@@ -222,11 +227,100 @@ fn peel_bound_spine<'a>(e: &'a Expr, eps: &mut HashSet<String>) -> &'a Expr {
                 cur = body;
             }
             Expr::Case(scrut, arms, _) if arms.len() == 1 => {
+                check_spawn_capture(scrut, eps, diags);
                 bind_prod(&arms[0].0, producer(scrut, eps), eps);
                 cur = &arms[0].1;
             }
             _ => return cur,
         }
+    }
+}
+
+/// §9: a closure passada a `spawn` não pode CAPTURAR um endpoint do exterior — só
+/// pode usar o seu parâmetro (a ponta do canal do spawn). Se capturasse, dois
+/// filhos podiam partilhar canais e formar um ciclo na topologia → deadlock.
+/// Garante que cada `spawn` só cria uma aresta pai↔filho (árvore). **AX0305**.
+fn check_spawn_capture(e: &Expr, eps: &HashSet<String>, diags: &mut Diagnostics) {
+    let (head, args) = app_spine(e);
+    if head != Some("spawn") {
+        return;
+    }
+    if let Some(Expr::Lam(pats, body, sp)) = args.first() {
+        let mut bound = HashSet::new();
+        for p in pats {
+            pat_names(p, &mut bound);
+        }
+        if let Some(ep) = captured_endpoint(body, &bound, eps) {
+            diags.push(
+                Diagnostic::error(
+                    "AX0305",
+                    format!(
+                        "a closure de `spawn` captura o endpoint '{ep}' do exterior — \
+                         quebraria a topologia em árvore do nursery"
+                    ),
+                )
+                .label(sp.0, sp.1, "captura de endpoint proibida")
+                .with_help(
+                    "um filho spawnado só comunica com o pai pelo seu endpoint-parâmetro \
+                     (aresta pai↔filho); não capture canais do exterior (§9, deadlock-freedom).",
+                ),
+            );
+        }
+    }
+}
+
+/// Nomes ligados por um padrão (var, construtor, tuplo).
+fn pat_names(p: &Pat, out: &mut HashSet<String>) {
+    match p {
+        Pat::Var(n, _) => {
+            out.insert(n.clone());
+        }
+        Pat::Con(_, subs, _) | Pat::Tuple(subs, _) => subs.iter().for_each(|s| pat_names(s, out)),
+        _ => {}
+    }
+}
+
+/// O primeiro endpoint (de `eps`) usado livre em `e` (não ligado localmente).
+fn captured_endpoint(e: &Expr, bound: &HashSet<String>, eps: &HashSet<String>) -> Option<String> {
+    match e {
+        Expr::Var(n, _) => (eps.contains(n) && !bound.contains(n)).then(|| n.clone()),
+        Expr::App(f, x, _) | Expr::BinOp(_, f, x, _) => {
+            captured_endpoint(f, bound, eps).or_else(|| captured_endpoint(x, bound, eps))
+        }
+        Expr::If(c, t, el, _) => captured_endpoint(c, bound, eps)
+            .or_else(|| captured_endpoint(t, bound, eps))
+            .or_else(|| captured_endpoint(el, bound, eps)),
+        Expr::Lam(pats, body, _) => {
+            let mut b = bound.clone();
+            pats.iter().for_each(|p| pat_names(p, &mut b));
+            captured_endpoint(body, &b, eps)
+        }
+        Expr::Let(binds, body, _) => {
+            let mut b = bound.clone();
+            for g in binds {
+                b.insert(g.name.clone());
+            }
+            binds
+                .iter()
+                .flat_map(|g| &g.clauses)
+                .find_map(|c| match &c.body {
+                    Body::Plain(rhs) => captured_endpoint(rhs, &b, eps),
+                    _ => None,
+                })
+                .or_else(|| captured_endpoint(body, &b, eps))
+        }
+        Expr::Case(s, arms, _) => captured_endpoint(s, bound, eps).or_else(|| {
+            arms.iter().find_map(|(pat, body)| {
+                let mut b = bound.clone();
+                pat_names(pat, &mut b);
+                captured_endpoint(body, &b, eps)
+            })
+        }),
+        Expr::Tuple(es, _) => es.iter().find_map(|x| captured_endpoint(x, bound, eps)),
+        Expr::RecordCon(_, fs, _) | Expr::RecordUpd(_, fs, _) => fs
+            .iter()
+            .find_map(|(_, x)| captured_endpoint(x, bound, eps)),
+        _ => None,
     }
 }
 
@@ -398,7 +492,7 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
             }
             if let Body::Plain(e) = &c.body {
                 let mut tracked = true;
-                walk_sess(e, &mut env, &mut tracked, diags);
+                walk_sess(e, &mut env, &mut tracked, f.span, diags);
                 // completude (T-progresso): se seguimos toda a espinha, nenhum
                 // endpoint pode ficar por levar até `close`.
                 if tracked {
@@ -428,19 +522,30 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
 
 /// Percorre a espinha linear (`do` desugarado = `case` de 1 braço, e `let`),
 /// avançando o estado de sessão de cada endpoint. `tracked` fica `false` se
-/// encontrar ramificação (não rastreável no v1) — aí não se reporta incompletude.
+/// encontrar ramificação não-sessão (não rastreável no v1) — aí não se reporta
+/// incompletude. `span` = o local a apontar nas incompletudes por-ramo.
 fn walk_sess(
     e: &Expr,
     env: &mut HashMap<String, SessTy>,
     tracked: &mut bool,
+    span: Span,
     diags: &mut Diagnostics,
 ) {
+    // `case offer c of { L1 p1 -> N1 ; … }` (&): a escolha externa. Verifica a
+    // exaustividade (todos os ramos do `Offer` tratados) e segue cada ramo com a
+    // sua continuação. É o único `case` multi-braço que se rastreia.
+    if let Expr::Case(scrut, arms, _) = e {
+        if let Some(chan) = offer_chan(scrut) {
+            check_offer_case(&chan, arms, env, span, diags);
+            return;
+        }
+    }
     match e {
         Expr::Case(scrut, arms, _) if arms.len() == 1 => {
             if let Some(r) = classify_op(scrut, env, diags) {
                 bind_result(&arms[0].0, r, env);
             }
-            walk_sess(&arms[0].1, env, tracked, diags);
+            walk_sess(&arms[0].1, env, tracked, span, diags);
         }
         Expr::Let(funcs, body, _) => {
             for g in funcs {
@@ -454,7 +559,7 @@ fn walk_sess(
                     }
                 }
             }
-            walk_sess(body, env, tracked, diags);
+            walk_sess(body, env, tracked, span, diags);
         }
         // ramificação real: não rastreável no v1 → pára (conservador, sem falsos+)
         Expr::If(..) | Expr::Case(..) => *tracked = false,
@@ -462,6 +567,110 @@ fn walk_sess(
         other => {
             classify_op(other, env, diags);
         }
+    }
+}
+
+/// Se `scrut` é `offer c`, devolve o nome do endpoint `c`.
+fn offer_chan(scrut: &Expr) -> Option<String> {
+    let (head, args) = app_spine(scrut);
+    if head == Some("offer") {
+        if let Some(Expr::Var(n, _)) = args.first() {
+            return Some(n.clone());
+        }
+    }
+    None
+}
+
+/// Verifica a escolha externa `case offer c of {ramos}`: exaustividade dos ramos
+/// do `Offer` (AX0304) + fidelidade/completude de cada ramo (com a continuação
+/// desse rótulo ligada ao endpoint).
+fn check_offer_case(
+    chan: &str,
+    arms: &[(Pat, Expr)],
+    env: &mut HashMap<String, SessTy>,
+    span: Span,
+    diags: &mut Diagnostics,
+) {
+    let branches = match env.remove(chan) {
+        Some(SessTy::Offer(bs)) => bs,
+        Some(other) => {
+            session_mismatch(diags, span, chan, "offer", &other);
+            return;
+        }
+        None => return,
+    };
+    // rótulos tratados pelos ramos (e se há um catch-all `_`/var)
+    let mut has_catchall = false;
+    for (pat, _) in arms {
+        if arm_label(pat).is_none() {
+            has_catchall = true;
+        }
+    }
+    // exaustividade: todo o ramo do `Offer` tem de ter um braço (ou um catch-all)
+    if !has_catchall {
+        let handled: HashSet<&str> = arms.iter().filter_map(|(p, _)| arm_label(p)).collect();
+        for (label, _) in &branches {
+            if !handled.contains(label.as_str()) {
+                diags.push(
+                    Diagnostic::error(
+                        "AX0304",
+                        format!(
+                            "o `case offer {chan}` não trata o ramo '{label}' da escolha \
+                             externa (a sessão oferece-o)"
+                        ),
+                    )
+                    .label(span.0, span.1, "ramo de sessão não tratado")
+                    .with_help(
+                        "acrescenta um braço para cada rótulo do `Offer` (incl. `Closed`, \
+                         o cancelamento — §7/T5).",
+                    ),
+                );
+            }
+        }
+    }
+    // segue cada braço com o endpoint na continuação do seu rótulo
+    for (pat, body) in arms {
+        let mut arm_env = env.clone();
+        if let (Some(label), Some(binder)) = (arm_label(pat), arm_binder(pat)) {
+            if let Some((_, cont)) = branches.iter().find(|(l, _)| l == label) {
+                arm_env.insert(binder.to_string(), cont.clone());
+            }
+        }
+        let mut t = true;
+        walk_sess(body, &mut arm_env, &mut t, span, diags);
+        if t {
+            for n in arm_env.keys() {
+                diags.push(
+                    Diagnostic::error(
+                        "AX0301",
+                        format!(
+                            "o endpoint '{n}' não completou o seu protocolo de sessão \
+                             (falta consumi-lo até `close`)"
+                        ),
+                    )
+                    .label(span.0, span.1, "protocolo incompleto neste braço"),
+                );
+            }
+        }
+    }
+}
+
+/// O rótulo (construtor) tratado por um braço, ou `None` se for catch-all (`_`/var).
+fn arm_label(pat: &Pat) -> Option<&str> {
+    match pat {
+        Pat::Con(name, _, _) => Some(name),
+        _ => None,
+    }
+}
+
+/// O endpoint ligado por um braço `L c2` (a variável do sub-padrão).
+fn arm_binder(pat: &Pat) -> Option<&str> {
+    match pat {
+        Pat::Con(_, subs, _) => match subs.first() {
+            Some(Pat::Var(n, _)) => Some(n),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

@@ -26,9 +26,11 @@ e explicáveis por `axion --explain AXnnnn`.
 | `AX0301` | Sessões | Protocolo de sessão incompleto: um endpoint não é levado até `close` | **imposto pelo `axionc`** (Fase 3) |
 | `AX0302` | Sessões | Escape de endpoint: um endpoint criado num `bound` é devolvido do nursery (quebra a topologia acíclica → risco de deadlock) | **imposto pelo `axionc`** (Fase 3) |
 | `AX0303` | Sessões | Escolha externa (`Offer`/`&`) sem o ramo `Closed`: o cancelamento de um par em pânico ficaria por tratar (T5, §7) | **imposto pelo `axionc`** (Fase 3) |
+| `AX0304` | Sessões | `case offer c` não exaustivo: um ramo que a escolha externa oferece fica sem braço | **imposto pelo `axionc`** (Fase 3) |
+| `AX0305` | Sessões | Closure de `spawn` captura um endpoint do exterior: quebraria a topologia em árvore do nursery (§9) | **imposto pelo `axionc`** (Fase 3) |
 
 Próximo livre por banda — linguagem: `AX0007`; front-end: `AX0102`;
-tipos: `AX0202`; canais/sessões: `AX0304`.
+tipos: `AX0202`; canais/sessões: `AX0306`.
 
 **`AX03xx` canais e session types (Fase 3).** Banda da §17 para o cálculo de
 sessões (ver [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Impostos:
@@ -38,9 +40,11 @@ protocolo chega a `close`), `AX0302` (confinamento do nursery — os endpoints n
 escapam do `bound`; deadlock-freedom estrutural, §9, análogo ao escape de arena
 `AX0003` mas sem `promote`), `AX0303` (exaustividade do cancelamento — toda a
 escolha externa `Offer`/`&` inclui o ramo `Closed`, T5/§7). A posse linear `%1` do
-endpoint é coberta por `AX00xx` (must-use/uso-após-move). Ainda por implementar:
-exaustividade dos ramos de `offer` ao nível do termo (hoje só ao nível do tipo), e
-o `spawn` a exigir topologia estritamente em árvore entre irmãos.
+endpoint é coberta por `AX00xx` (must-use/uso-após-move), `AX0304` (o `case offer`
+trata todos os ramos, incl. `Closed`) e `AX0305` (o `spawn` só cria arestas
+pai↔filho — a closure não captura endpoints → topologia em árvore). Por
+implementar: delegação (passar endpoints por canais entre irmãos, com pipelines
+acíclicos) e o diferencial superfície→ASC.
 
 > **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
 > linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*
