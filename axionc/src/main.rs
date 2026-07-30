@@ -274,9 +274,48 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, ch
     // implementação concreta da instância). Reescrevemo-las como chamadas
     // directas (`eq 3 3` → `eq$Int 3 3`): monomorfização (fatia 2b-ii) — o uso
     // deixa de ser um método (despacho dinâmico) e passa a compilar nativamente.
-    let resolutions = infer::infer(&module, diags);
-    resolve_methods(&mut module, &resolutions);
+    let mono = infer::infer(&module, diags);
+    resolve_methods(&mut module, &mono.resolutions);
+    materialize_specs(&mut module, &mono.specs);
     (Some(module), analysis)
+}
+
+/// Materializa as funções constrangidas especializadas (fatia 2b-β): clona cada
+/// `src` (já reescrita pelas resoluções α), especializa a assinatura (var de
+/// constraint → tipo concreto), reescreve os usos internos (métodos→`m$T`,
+/// auto-recursão→`f$T`), e junta ao módulo. Assim o polimorfismo restrito
+/// compila nativamente (monomorfização estilo Rust).
+fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
+    if specs.is_empty() {
+        return;
+    }
+    let by_name: std::collections::HashMap<&str, ast::Func> = module
+        .funcs
+        .iter()
+        .map(|f| (f.name.as_str(), f.clone()))
+        .collect();
+    let mut new_funcs = Vec::new();
+    for plan in specs {
+        let Some(src) = by_name.get(plan.src.as_str()) else {
+            continue;
+        };
+        let mut clone = src.clone();
+        clone.name = plan.name.clone();
+        clone.constraints = Vec::new();
+        // assinatura especializada: var de constraint → tipo concreto
+        if let Some(sig) = &clone.sig {
+            let templ = subst_head(sig, &plan.tyvar);
+            clone.sig = Some(specialize(&templ, &plan.ty_head));
+        }
+        // reescreve os usos internos (span → nome directo) no corpo do clone
+        let mut res: Resolutions = std::collections::HashMap::new();
+        for (span, name) in &plan.rewrites {
+            res.insert((plan.name.clone(), *span), name.clone());
+        }
+        rewrite_func(&mut clone, &plan.name.clone(), &res);
+        new_funcs.push(clone);
+    }
+    module.funcs.extend(new_funcs);
 }
 
 /// Reescreve os usos de método monomórficos para chamadas directas à impl da

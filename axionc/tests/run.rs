@@ -1137,6 +1137,8 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
         (fixture("mono_typeclass.axi"), "20\n"), // typeclasses monomorfizadas → nativo
+        (fixture("mono_constrained.axi"), "3\n"), // `Eq a =>` especializada → nativo
+        (fixture("typeclasses.axi"), "125\n"),   // exemplo completo (count + eq Shape)
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1467,6 +1469,29 @@ fn monomorphized_typeclass_runs_on_all_backends() {
         String::from_utf8_lossy(&dev.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&dev.stdout), "20\n");
+}
+
+#[test]
+fn monomorphized_constrained_function_runs_on_all_backends() {
+    // Fatia 2b-β: `count :: Eq a =>` especializada por tipo no call-site
+    // (`count 2 [..]` → `count$Int`, `eq → eq$Int`, recursão → `count$Int`).
+    // Interp e --dev concordam em 3 (o --release está na lista release_backend_*).
+    for args in [
+        vec![fixture("mono_constrained.axi")],
+        vec![
+            "--backend".into(),
+            "cranelift".into(),
+            fixture("mono_constrained.axi"),
+        ],
+    ] {
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n", "{args:?}");
+    }
 }
 
 #[test]

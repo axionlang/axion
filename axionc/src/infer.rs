@@ -43,6 +43,10 @@ struct Infer<'a> {
     method_meta: HashMap<String, (String, Option<usize>)>,
     /// obrigações de instância recolhidas nos usos de método, descarregadas no fim.
     obligations: Vec<Obl>,
+    /// usos de funções constrangidas, para a monomorfização (fatia 2b-β).
+    spec_obligations: Vec<SpecObl>,
+    /// função constrangida → (var de constraint, índice do param de despacho).
+    constrained_meta: HashMap<String, (String, Option<usize>)>,
     /// classes com constraint declarado no âmbito da função a ser inferida.
     cur_constraints: Vec<String>,
     /// nome da função a ser inferida (chave das resoluções, com o span).
@@ -63,11 +67,39 @@ struct Obl {
     func: String,
 }
 
+/// Um uso de uma FUNÇÃO CONSTRANGIDA (`f :: C a => …`) — recolhido para a
+/// monomorfização (fatia 2b-β): se a var de constraint resolve para um tipo
+/// concreto no call-site, especializa-se `f` a esse tipo.
+struct SpecObl {
+    target: String, // a função constrangida chamada
+    ty: Ty,         // o tipo da var de constraint neste uso
+    span: Span,
+    func: String, // função onde o uso ocorre (chamador)
+}
+
+/// O resultado da inferência para a monomorfização: as reescritas directas
+/// (`(função, span) → nome`) e o plano de funções especializadas a materializar.
+pub struct Mono {
+    pub resolutions: HashMap<(String, Span), String>,
+    pub specs: Vec<SpecPlan>,
+}
+
+/// Instrução para clonar `src` numa função monomórfica `name`, substituindo a var
+/// de constraint `tyvar` pelo tipo `ty_head` na assinatura, e reescrevendo os usos
+/// internos (span → nome directo: métodos→`m$T`, auto-recursão→`name`).
+pub struct SpecPlan {
+    pub src: String,
+    pub name: String,
+    pub tyvar: String,
+    pub ty_head: String,
+    pub rewrites: HashMap<Span, String>,
+}
+
 /// Ponto de entrada: infere e verifica os tipos do módulo. Devolve as resoluções
 /// de método monomórficas (`(função, span do uso) → nome da impl`), para a
 /// monomorfização reescrever os usos como chamadas directas (fatia 2b-ii). A
 /// chave inclui a função porque os spans do prelúdio e do utilizador colidem.
-pub fn infer(module: &Module, diags: &mut Diagnostics) -> HashMap<(String, Span), String> {
+pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     let mut inf = Infer {
         subst: HashMap::new(),
         counter: 0,
@@ -76,6 +108,8 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> HashMap<(String, Span)
         records: HashMap::new(),
         method_meta: HashMap::new(),
         obligations: Vec::new(),
+        spec_obligations: Vec::new(),
+        constrained_meta: HashMap::new(),
         cur_constraints: Vec::new(),
         cur_fn: String::new(),
     };
@@ -190,6 +224,20 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> HashMap<(String, Span)
         }
     }
 
+    // metadados das funções constrangidas (fatia 2b-β): var de constraint e
+    // índice do 1º parâmetro cujo tipo é essa var (o «despacho» da especialização).
+    for f in &module.funcs {
+        if let Some((_, cvar)) = f.constraints.first() {
+            let idx = f.sig.as_ref().and_then(|s| {
+                s.param_types()
+                    .iter()
+                    .position(|p| matches!(p, Type::Var(v) if v == cvar))
+            });
+            inf.constrained_meta
+                .insert(f.name.clone(), (cvar.clone(), idx));
+        }
+    }
+
     // verifica cada função contra o seu tipo (em modo de checking quando há
     // assinatura: os parâmetros herdam os tipos declarados antes do corpo)
     for f in &module.funcs {
@@ -212,9 +260,9 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> HashMap<(String, Span)
             inf.unify(&inferred, d, f.span);
         }
     }
-    let resolutions = inf.discharge_obligations(module);
+    let mono = inf.discharge_obligations(module);
     let _ = placeholders;
-    resolutions
+    mono
 }
 
 /// O `idx`-ésimo tipo de parâmetro de uma cadeia de setas (`a -> b -> c` @ 1 → b).
@@ -694,25 +742,34 @@ impl<'a> Infer<'a> {
     /// instância → **AX0404**; se ficou POLIMÓRFICO e a classe não está coberta
     /// por um constraint no âmbito da função → **AX0405**. (Fun/Tuple: conservador,
     /// não reporta.)
-    fn discharge_obligations(&mut self, module: &Module) -> HashMap<(String, Span), String> {
-        let instances: std::collections::HashSet<(String, String)> = module
+    fn discharge_obligations(&mut self, module: &Module) -> Mono {
+        use std::collections::{HashMap as Map, HashSet as Set};
+        let instances: Set<(String, String)> = module
             .instances
             .iter()
             .map(|i| (i.class_name.clone(), i.ty_head.clone()))
             .collect();
-        let mut resolutions: HashMap<(String, Span), String> = HashMap::new();
+        let func_names: Set<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
+
+        let mut resolutions: Map<(String, Span), String> = Map::new();
+        // por função constrangida: usos polimórficos de método (span → método),
+        // auto-recursões (spans), e se é impossível especializar (chama outra
+        // função constrangida — fica p/ a fatia 2b-β-2).
+        let mut poly_methods: Map<String, Vec<(Span, String)>> = Map::new();
+        let mut poly_self: Map<String, Vec<Span>> = Map::new();
+        let mut unspecializable: Set<String> = Set::new();
+
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
             match self.resolve(&o.ty) {
-                // tipo concreto COM instância → resolve para a impl directa
-                // (monomorfização): grava (função, span) → `metodo$Tipo`.
+                // tipo concreto COM instância → resolve para a impl directa.
                 Ty::Con(name, _) if instances.contains(&(o.class.clone(), name.clone())) => {
                     resolutions.insert(
                         (o.func.clone(), o.span),
                         crate::ast::method_impl_name(&o.method, &name),
                     );
                 }
-                Ty::Con(name, _) if !instances.contains(&(o.class.clone(), name.clone())) => {
+                Ty::Con(name, _) => {
                     self.diags.push(
                         Diagnostic::error(
                             "AX0404",
@@ -726,7 +783,14 @@ impl<'a> Infer<'a> {
                         )),
                     );
                 }
-                Ty::Var(_) if !o.scope.contains(&o.class) => {
+                // polimórfico coberto por constraint → uso especializável (2b-β).
+                Ty::Var(_) if o.scope.contains(&o.class) => {
+                    poly_methods
+                        .entry(o.func.clone())
+                        .or_default()
+                        .push((o.span, o.method.clone()));
+                }
+                Ty::Var(_) => {
                     self.diags.push(
                         Diagnostic::error(
                             "AX0405",
@@ -747,7 +811,74 @@ impl<'a> Infer<'a> {
                 _ => {}
             }
         }
-        resolutions
+
+        // usos de funções constrangidas → especializações a materializar.
+        let mut want: Set<(String, String)> = Set::new(); // (função, tipo)
+        let mut callsites: Vec<(String, Span, String, String)> = Vec::new(); // caller,span,fn,T
+        let specs_obls = std::mem::take(&mut self.spec_obligations);
+        for s in specs_obls {
+            match self.resolve(&s.ty) {
+                Ty::Con(t, _) => {
+                    want.insert((s.target.clone(), t.clone()));
+                    callsites.push((s.func.clone(), s.span, s.target.clone(), t));
+                }
+                Ty::Var(_) if s.target == s.func => {
+                    poly_self.entry(s.func.clone()).or_default().push(s.span);
+                }
+                Ty::Var(_) => {
+                    // chama OUTRA função constrangida sobre a var genérica: fica
+                    // para a fatia 2b-β-2 (especialização transitiva).
+                    unspecializable.insert(s.func.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // valida e materializa: um `f$T` só é gerado se `f` não é
+        // inespecializável e todas as suas impls de método existem para `T`.
+        let mut specs: Vec<SpecPlan> = Vec::new();
+        let mut done: Set<(String, String)> = Set::new();
+        for (f, t) in &want {
+            let valid =
+                !unspecializable.contains(f)
+                    && poly_methods.get(f).into_iter().flatten().all(|(_, m)| {
+                        func_names.contains(crate::ast::method_impl_name(m, t).as_str())
+                    });
+            if !valid {
+                continue;
+            }
+            if done.insert((f.clone(), t.clone())) {
+                let name = crate::ast::method_impl_name(f, t);
+                let mut rewrites: HashMap<Span, String> = HashMap::new();
+                for (sp, m) in poly_methods.get(f).into_iter().flatten() {
+                    rewrites.insert(*sp, crate::ast::method_impl_name(m, t));
+                }
+                for sp in poly_self.get(f).into_iter().flatten() {
+                    rewrites.insert(*sp, name.clone());
+                }
+                let tyvar = self
+                    .constrained_meta
+                    .get(f)
+                    .map(|(v, _)| v.clone())
+                    .unwrap_or_default();
+                specs.push(SpecPlan {
+                    src: f.clone(),
+                    name,
+                    tyvar,
+                    ty_head: t.clone(),
+                    rewrites,
+                });
+            }
+        }
+        // reescreve os call-sites cujas especializações são válidas.
+        let valid: Set<(String, String)> = done;
+        for (caller, span, f, t) in callsites {
+            if valid.contains(&(f.clone(), t.clone())) {
+                resolutions.insert((caller, span), crate::ast::method_impl_name(&f, &t));
+            }
+        }
+
+        Mono { resolutions, specs }
     }
 
     fn apply(&self, t: &Ty) -> Ty {
@@ -1022,6 +1153,18 @@ impl<'a> Infer<'a> {
                             ty: dispatch,
                             span: *span,
                             scope: self.cur_constraints.clone(),
+                            func: self.cur_fn.clone(),
+                        });
+                    }
+                }
+                // uso de uma função constrangida: recolhe a obrigação de
+                // especialização sobre o tipo da var de constraint (fatia 2b-β).
+                if let Some((_, Some(idx))) = self.constrained_meta.get(n).cloned() {
+                    if let Some(dispatch) = nth_param(&ty, idx) {
+                        self.spec_obligations.push(SpecObl {
+                            target: n.clone(),
+                            ty: dispatch,
+                            span: *span,
                             func: self.cur_fn.clone(),
                         });
                     }
