@@ -349,12 +349,47 @@ impl RecordInfo {
     }
 }
 
-/// Candidata a nativa: todos os parâmetros e o retorno são `i64`-representáveis.
-fn top_candidate(f: &ast::Func, data_types: &HashSet<String>) -> Option<usize> {
+/// Candidata a nativa: todos os parâmetros e o retorno são `i64`-representáveis,
+/// e o corpo não chama nenhum método de typeclasse (que é interp-only na fatia 1
+/// — o despacho é dinâmico, sem símbolo nativo). Sem isto, funções genéricas do
+/// prelúdio como `maxOr`/`nub` (assinatura i64-ok, mas que chamam `le`/`eq`)
+/// passariam o filtro e rebentariam no codegen com um símbolo por ligar.
+fn top_candidate(
+    f: &ast::Func,
+    data_types: &HashSet<String>,
+    methods: &HashSet<String>,
+) -> Option<usize> {
     let sig = f.sig.as_ref()?;
     let ok = sig.param_types().iter().all(|t| native_ty(t, data_types))
-        && native_ty(result_type(sig), data_types);
+        && native_ty(result_type(sig), data_types)
+        && !calls_method(f, methods);
     ok.then(|| f.clauses.first().map(|c| c.pats.len()).unwrap_or(0))
+}
+
+/// Verdadeiro se algum corpo (cláusula, guarda ou `where`) referencia um nome de
+/// método de typeclasse — nesse caso a função não é compilável nativamente.
+fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
+    if methods.is_empty() {
+        return false;
+    }
+    let mut fv = HashSet::new();
+    for c in &f.clauses {
+        match &c.body {
+            Body::Plain(e) => free_vars(e, &HashSet::new(), &mut fv),
+            Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    free_vars(g, &HashSet::new(), &mut fv);
+                    free_vars(r, &HashSet::new(), &mut fv);
+                }
+            }
+        }
+        for w in &c.wher {
+            if calls_method(w, methods) {
+                return true;
+            }
+        }
+    }
+    fv.iter().any(|n| methods.contains(n))
 }
 
 // --- utilitários de âmbito (variáveis livres, para a captura de closures) ---
@@ -999,13 +1034,19 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .map(|f| f.name.clone())
         .collect();
     let foreigns: HashSet<String> = module.foreigns.iter().map(|f| f.name.clone()).collect();
+    // nomes de método de typeclasse (interp-only): excluem a função do nativo
+    let methods: HashSet<String> = module
+        .classes
+        .iter()
+        .flat_map(|c| c.methods.iter().map(|(m, _)| m.clone()))
+        .collect();
 
     // pré-passo: nomeia + calcula capturas de todas as lambdas (por span)
     let mut lam_meta: LamMeta = HashMap::new();
     let mut lam_ctr = 0u32;
     let mut lam_sites: Vec<(&Expr, HashMap<String, String>)> = Vec::new();
     for f in &module.funcs {
-        if top_candidate(f, &data_types).is_none() {
+        if top_candidate(f, &data_types, &methods).is_none() {
             continue;
         }
         let wheres: Vec<&ast::Func> = f.clauses.iter().flat_map(|c| &c.wher).collect();
@@ -1042,7 +1083,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
 
     let mut out = Vec::new();
     for f in &module.funcs {
-        let Some(arity) = top_candidate(f, &data_types) else {
+        let Some(arity) = top_candidate(f, &data_types, &methods) else {
             continue;
         };
         let wheres: Vec<&ast::Func> = f.clauses.iter().flat_map(|c| &c.wher).collect();

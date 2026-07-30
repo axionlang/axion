@@ -354,6 +354,28 @@ unwords xs = case xs of
   Cons s ss -> case ss of
     Nil -> s
     Cons t ts -> s ++ \" \" ++ unwords ss
+class Eq a where
+  eq :: a -> a -> Bool
+class Ord a where
+  le :: a -> a -> Bool
+instance Eq Int where
+  eq x y = x == y
+instance Ord Int where
+  le x y = if x < y then True else x == y
+instance Eq Bool where
+  eq x y = if x then y else if y then False else True
+maxOr :: Ord a => a -> List a -> a
+maxOr d xs = case xs of
+  Nil -> d
+  Cons y ys -> if le d y then maxOr y ys else maxOr d ys
+minOr :: Ord a => a -> List a -> a
+minOr d xs = case xs of
+  Nil -> d
+  Cons y ys -> if le y d then minOr y ys else minOr d ys
+nub :: Eq a => List a -> List a
+nub xs = case xs of
+  Nil -> Nil
+  Cons y ys -> Cons y (nub (filter (\\z -> if eq y z then False else True) ys))
 ";
 
 /// Baixa as instâncias de typeclasse (fatia 1): cada método de cada `instance`
@@ -389,6 +411,27 @@ fn inject_prelude(module: &mut ast::Module) {
     for f in prelude.funcs.into_iter().rev() {
         if !has_func.contains(&f.name) {
             module.funcs.insert(0, f);
+        }
+    }
+    // classes e instâncias do prelúdio: injecta só as que o utilizador não
+    // redefine — uma classe pelo nome, uma instância pelo par (classe, tipo) —
+    // para que redeclarar `class Eq` ou `instance Eq Int` substitua a do prelúdio
+    // sem colidir (nomes de método/impl duplicados).
+    let has_class: std::collections::HashSet<String> =
+        module.classes.iter().map(|c| c.name.clone()).collect();
+    let has_inst: std::collections::HashSet<(String, String)> = module
+        .instances
+        .iter()
+        .map(|i| (i.class_name.clone(), i.ty_head.clone()))
+        .collect();
+    for c in prelude.classes.into_iter().rev() {
+        if !has_class.contains(&c.name) {
+            module.classes.insert(0, c);
+        }
+    }
+    for i in prelude.instances.into_iter().rev() {
+        if !has_inst.contains(&(i.class_name.clone(), i.ty_head.clone())) {
+            module.instances.insert(0, i);
         }
     }
 }

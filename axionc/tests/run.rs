@@ -1405,3 +1405,22 @@ fn typeclasses_dispatch_and_constraints() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "125\n");
 }
+
+#[test]
+fn generic_prelude_over_typeclasses() {
+    // Solidificação da fatia 1: maxOr/minOr (Ord a =>) e nub (Eq a =>) no
+    // prelúdio, a despachar para as instâncias Eq Int / Ord Int. 9 + 1 + 4 = 14.
+    let out = axionc()
+        .arg(fixture("generic_stdlib.axi"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "generic_stdlib: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "14\n");
+    // Não-regressão nativa: as novas funções genéricas (maxOr/nub) chamam métodos
+    // → são interp-only e o filtro nativo exclui-as. A prova de que o nativo
+    // continua a compilar está no teste release_backend_compiles_and_runs_*.
+}
