@@ -157,11 +157,40 @@ pub struct DataDecl {
     pub span: Span,
 }
 
+/// `class C a where <assinaturas de método>` (§ typeclasses). Uma classe declara
+/// nomes de método sobrecarregados; cada `instance` fornece as implementações.
+#[derive(Debug, Clone)]
+pub struct ClassDecl {
+    pub name: String,                 // ex.: "Eq"
+    pub tyvar: String,                // a variável de tipo da classe (ex.: "a")
+    pub methods: Vec<(String, Type)>, // assinatura de cada método
+    pub span: Span,
+}
+
+/// `instance C T where <cláusulas>` — as implementações dos métodos da classe `C`
+/// para o tipo cuja cabeça é `ty_head` (ex.: "Int", "Maybe").
+#[derive(Debug, Clone)]
+pub struct InstanceDecl {
+    pub class_name: String,
+    pub ty_head: String,
+    pub methods: Vec<Func>,
+    pub span: Span,
+}
+
+/// Nome mangled da implementação de um método para um tipo concreto: `eq$Int`.
+/// Fonte única de verdade — usada tanto na baixada (`lower_classes`) como no
+/// despacho dinâmico do interpretador.
+pub fn method_impl_name(method: &str, ty_head: &str) -> String {
+    format!("{method}${ty_head}")
+}
+
 #[derive(Debug, Clone)]
 pub struct Module {
     pub funcs: Vec<Func>,
     pub datas: Vec<DataDecl>,
     pub foreigns: Vec<Foreign>,
+    pub classes: Vec<ClassDecl>,
+    pub instances: Vec<InstanceDecl>,
 }
 
 impl Module {

@@ -20,11 +20,13 @@ type PResult<T> = Result<T, Diagnostic>;
 pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
     let mut p = Parser { toks, pos: 0 };
     let items = p.block(Parser::top_item)?;
-    let (funcs, datas, foreigns) = assemble(items);
+    let asm = assemble(items);
     Ok(Module {
-        funcs,
-        datas,
-        foreigns,
+        funcs: asm.funcs,
+        datas: asm.datas,
+        foreigns: asm.foreigns,
+        classes: asm.classes,
+        instances: asm.instances,
     })
 }
 
@@ -33,55 +35,67 @@ enum TopItem {
     Clause(String, Clause),
     Data(DataDecl),
     Foreign(Foreign),
+    Class(ClassDecl),
+    Instance(InstanceDecl),
 }
 
-/// Junta assinaturas e cláusulas por nome (funções) e separa as `data`/`foreign`.
-fn assemble(items: Vec<TopItem>) -> (Vec<Func>, Vec<DataDecl>, Vec<Foreign>) {
-    let mut funcs: Vec<Func> = Vec::new();
-    let mut datas: Vec<DataDecl> = Vec::new();
-    let mut foreigns: Vec<Foreign> = Vec::new();
+#[derive(Default)]
+struct Assembled {
+    funcs: Vec<Func>,
+    datas: Vec<DataDecl>,
+    foreigns: Vec<Foreign>,
+    classes: Vec<ClassDecl>,
+    instances: Vec<InstanceDecl>,
+}
+
+/// Junta assinaturas e cláusulas por nome (funções) e separa as
+/// `data`/`foreign`/`class`/`instance`.
+fn assemble(items: Vec<TopItem>) -> Assembled {
+    let mut asm = Assembled::default();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for it in items {
         match it {
-            TopItem::Foreign(f) => foreigns.push(f),
-            TopItem::Data(d) => datas.push(d),
+            TopItem::Foreign(f) => asm.foreigns.push(f),
+            TopItem::Data(d) => asm.datas.push(d),
+            TopItem::Class(c) => asm.classes.push(c),
+            TopItem::Instance(i) => asm.instances.push(i),
             TopItem::Sig(name, ty) => {
                 let sp = (0, 0);
                 let i = *index.entry(name.clone()).or_insert_with(|| {
-                    funcs.push(Func {
+                    asm.funcs.push(Func {
                         name: name.clone(),
                         sig: None,
                         clauses: Vec::new(),
                         span: sp,
                     });
-                    funcs.len() - 1
+                    asm.funcs.len() - 1
                 });
-                funcs[i].sig = Some(ty);
+                asm.funcs[i].sig = Some(ty);
             }
             TopItem::Clause(name, clause) => {
                 let sp = clause.span;
                 let i = *index.entry(name.clone()).or_insert_with(|| {
-                    funcs.push(Func {
+                    asm.funcs.push(Func {
                         name: name.clone(),
                         sig: None,
                         clauses: Vec::new(),
                         span: sp,
                     });
-                    funcs.len() - 1
+                    asm.funcs.len() - 1
                 });
-                if funcs[i].span == (0, 0) {
-                    funcs[i].span = sp;
+                if asm.funcs[i].span == (0, 0) {
+                    asm.funcs[i].span = sp;
                 }
-                funcs[i].clauses.push(clause);
+                asm.funcs[i].clauses.push(clause);
             }
         }
     }
-    (funcs, datas, foreigns)
+    asm
 }
 
 /// Como `assemble`, mas para blocos `where`/`let` (só funções).
 fn merge_funcs(items: Vec<TopItem>) -> Vec<Func> {
-    assemble(items).0
+    assemble(items).funcs
 }
 
 /// Uma instrução de um bloco `do`.
@@ -196,6 +210,12 @@ impl<'a> Parser<'a> {
     fn top_item(&mut self) -> PResult<TopItem> {
         if self.at(&Tok::Data) {
             return Ok(TopItem::Data(self.parse_data()?));
+        }
+        if self.at(&Tok::Class) {
+            return Ok(TopItem::Class(self.parse_class()?));
+        }
+        if self.at(&Tok::Instance) {
+            return Ok(TopItem::Instance(self.parse_instance()?));
         }
         if self.at(&Tok::Foreign) {
             let start = self.span_here().0;
@@ -313,6 +333,50 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `class C a where { m :: T ; … }` — só assinaturas de método no corpo.
+    fn parse_class(&mut self) -> PResult<ClassDecl> {
+        let (s, _) = self.span_here();
+        self.bump(); // 'class'
+        let name = self.con_name("nome da classe")?;
+        let (tyvar, _) = self.var_name("variável de tipo da classe")?;
+        self.expect(&Tok::Where, "'where' na classe")?;
+        let methods = self.block(|p| {
+            let (m, _) = p.var_name("nome de método")?;
+            p.expect(&Tok::ColonColon, "'::' na assinatura do método")?;
+            let ty = p.parse_type()?;
+            Ok((m, ty))
+        })?;
+        let end = self.span_here().0;
+        Ok(ClassDecl {
+            name,
+            tyvar,
+            methods,
+            span: (s, end),
+        })
+    }
+
+    /// `instance C T where { cláusulas }` — `T` é a cabeça do tipo (ConId, ou um
+    /// tipo aplicado/parentizado de que se extrai a cabeça: `Maybe`, `List`, …).
+    fn parse_instance(&mut self) -> PResult<InstanceDecl> {
+        let (s, _) = self.span_here();
+        self.bump(); // 'instance'
+        let class_name = self.con_name("nome da classe na instância")?;
+        let head_ty = self.parse_atype()?;
+        let ty_head = head_ty
+            .head_con()
+            .ok_or_else(|| self.syntax_err("cabeça de tipo na instância"))?
+            .to_string();
+        self.expect(&Tok::Where, "'where' na instância")?;
+        let methods = self.block(Parser::top_item).map(merge_funcs)?;
+        let end = self.span_here().0;
+        Ok(InstanceDecl {
+            class_name,
+            ty_head,
+            methods,
+            span: (s, end),
+        })
+    }
+
     fn parse_con(&mut self) -> PResult<ConDecl> {
         let name = self.con_name("nome do construtor")?;
         if self.eat(&Tok::LBrace) {
@@ -359,6 +423,13 @@ impl<'a> Parser<'a> {
     // --- tipos ---
     fn parse_type(&mut self) -> PResult<Type> {
         let from = self.parse_btype()?;
+        // contexto de classe `C a => T` (ou `(C a, D b) => T`): parseado e
+        // DESCARTADO. A fatia 1 das typeclasses não verifica os constraints — o
+        // despacho de métodos é dinâmico no interpretador (pela cabeça-de-tipo do
+        // 1º argumento). A elaboração estática de dicionários fica p/ a fatia 2.
+        if self.eat(&Tok::FatArrow) {
+            return self.parse_type();
+        }
         // multiplicidade: numa seta (`A %1 -> B`) marca o parâmetro; num tipo
         // terminal (`... -> Process %1`) marca o resultado linear.
         if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {

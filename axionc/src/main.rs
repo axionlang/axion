@@ -268,6 +268,7 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, ch
         }
     };
     inject_prelude(&mut module);
+    lower_classes(&mut module);
     let analysis = check::check(&module, diags);
     infer::infer(&module, diags);
     (Some(module), analysis)
@@ -354,6 +355,21 @@ unwords xs = case xs of
     Nil -> s
     Cons t ts -> s ++ \" \" ++ unwords ss
 ";
+
+/// Baixa as instâncias de typeclasse (fatia 1): cada método de cada `instance`
+/// torna-se uma função de topo com nome mangled (`eq$Int`), a que o despacho
+/// dinâmico do interpretador chama pela cabeça-de-tipo do 1º argumento. As
+/// `ClassDecl` ficam no módulo (dão os nomes de método sobrecarregados ao check,
+/// infer e interp).
+fn lower_classes(module: &mut ast::Module) {
+    for inst in &module.instances {
+        for m in &inst.methods {
+            let mut impl_fn = m.clone();
+            impl_fn.name = ast::method_impl_name(&m.name, &inst.ty_head);
+            module.funcs.push(impl_fn);
+        }
+    }
+}
 
 fn inject_prelude(module: &mut ast::Module) {
     let lines = LineMap::new(PRELUDE);

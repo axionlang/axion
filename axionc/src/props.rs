@@ -171,6 +171,8 @@ fn wrap(ty: GTy, e: Expr) -> Module {
         }],
         datas: vec![],
         foreigns: vec![],
+        classes: vec![],
+        instances: vec![],
     }
 }
 

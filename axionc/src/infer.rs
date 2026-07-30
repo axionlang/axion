@@ -115,6 +115,18 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
         }
     }
 
+    // métodos de typeclasse: cada método é uma função polimórfica cujo esquema é
+    // a sua assinatura generalizada sobre a variável da classe (`eq :: forall a.
+    // a -> a -> Bool`). O despacho para a instância concreta é dinâmico (interp);
+    // aqui o método tipa-se como qualquer função polimórfica (fatia 1: os
+    // constraints `Eq a =>` são parseados e ignorados).
+    for class in &module.classes {
+        for (m, ty) in &class.methods {
+            let scheme = inf.scheme_of_sig(ty);
+            env.insert(m.clone(), scheme);
+        }
+    }
+
     // esquemas das funções de topo: a partir da assinatura, ou monótipo fresco
     let mut placeholders: HashMap<String, Ty> = HashMap::new();
     // importações FFI (§18): tipadas pela sua assinatura declarada
@@ -146,7 +158,17 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
     // assinatura: os parâmetros herdam os tipos declarados antes do corpo)
     for f in &module.funcs {
         let declared = env.get(&f.name).cloned().map(|s| inf.instantiate(&s));
-        let inferred = inf.infer_func(&env, f, declared.as_ref());
+        // Modo de checking (parâmetros herdam os tipos declarados) SÓ quando há
+        // assinatura. Sem assinatura, o `declared` é um placeholder `Var` que o
+        // `peel_fun` não sabe partir em setas — inferir livremente e unificar o
+        // resultado com o placeholder (isto liga a recursão monomórfica e é o que
+        // os métodos de instância, sem assinatura, precisam).
+        let expected = if f.sig.is_some() {
+            declared.as_ref()
+        } else {
+            None
+        };
+        let inferred = inf.infer_func(&env, f, expected);
         if let Some(d) = &declared {
             inf.unify(&inferred, d, f.span);
         }

@@ -34,10 +34,16 @@ pub enum Tok {
     Do,
     #[token("foreign")]
     Foreign,
+    #[token("class")]
+    Class,
+    #[token("instance")]
+    Instance,
 
     // --- pontuação e símbolos ---
     #[token("::")]
     ColonColon,
+    #[token("=>")]
+    FatArrow,
     #[token("$")]
     Dollar,
     #[token("<-")]

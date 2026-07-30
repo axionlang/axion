@@ -95,6 +95,12 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
             }
         }
     }
+    // nomes de método de typeclasse são chamáveis (o despacho é dinâmico)
+    for class in &module.classes {
+        for (m, _) in &class.methods {
+            globals.insert(m.clone());
+        }
+    }
     let ctx = build_ctx(module);
     let mut out = Analysis::default();
     for f in &module.funcs {

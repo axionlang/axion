@@ -1075,9 +1075,15 @@ fn emit_core_dumps_anf_ir() {
     // função liftada com ambiente de captura + chamada indirecta + closure. O
     // índice da lambda (`lam$N`) não é fixado — o prelúdio também traz lambdas
     // ao dump; a captura de `n` é que identifica esta.
-    assert!(ir.contains("[env n]"), "sem lambda liftada com captura:\n{ir}");
+    assert!(
+        ir.contains("[env n]"),
+        "sem lambda liftada com captura:\n{ir}"
+    );
     assert!(ir.contains("callclo"), "sem chamada indirecta:\n{ir}");
-    assert!(ir.contains("closure lam$"), "sem construção de closure:\n{ir}");
+    assert!(
+        ir.contains("closure lam$"),
+        "sem construção de closure:\n{ir}"
+    );
     // ANF: os argumentos das chamadas são átomos nomeados por `let`
     assert!(ir.contains("let "), "não está em ANF:\n{ir}");
 }
@@ -1383,4 +1389,19 @@ fn rich_strings_concat_unwords_unlines() {
         String::from_utf8_lossy(&out.stdout),
         "Olá Axión!\nlinha 1\nlinha 2\n"
     );
+}
+
+#[test]
+fn typeclasses_dispatch_and_constraints() {
+    // Fatia 1 das typeclasses: class/instance + despacho dinâmico pela cabeça-de-
+    // tipo do 1º argumento, e polimorfismo restrito `Eq a =>`. Duas classes,
+    // instância que reutiliza métodos de outra, função genérica `count`.
+    // 3 (count) + 10 + 12 (size) + 100 (eq via size) = 125.
+    let out = axionc().arg(fixture("typeclasses.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "typeclasses: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "125\n");
 }

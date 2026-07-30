@@ -20,6 +20,8 @@ pub struct Program {
     cons: HashMap<String, Vec<String>>, // construtor → nomes dos campos (por ordem)
     selectors: HashSet<String>,         // nomes de campo usáveis como selectores
     foreigns: HashMap<String, usize>,   // importações FFI: nome C → aridade
+    methods: HashSet<String>,           // nomes de método de typeclasse (despacho dinâmico)
+    con_type: HashMap<String, String>,  // construtor → nome do tipo de dados (p/ despacho)
 }
 
 #[derive(Clone)]
@@ -65,6 +67,11 @@ enum Value {
     },
     /// Um endpoint de sessão (§6): o id do seu buffer no scheduler (§11).
     Endpoint(usize),
+    /// Um método de typeclasse por resolver: ao receber o 1º argumento, despacha
+    /// pela cabeça-de-tipo desse argumento para a implementação da instância.
+    Method {
+        name: String,
+    },
 }
 
 pub type RunError = String;
@@ -102,8 +109,10 @@ fn build_program(module: &Module) -> Program {
     }
     let mut cons = HashMap::new();
     let mut selectors = HashSet::new();
+    let mut con_type = HashMap::new();
     for d in &module.datas {
         for c in &d.cons {
+            con_type.insert(c.name.clone(), d.name.clone());
             // campos posicionais recebem nomes sintéticos "_0", "_1", …
             let names: Vec<String> = c
                 .fields
@@ -130,10 +139,18 @@ fn build_program(module: &Module) -> Program {
         .iter()
         .map(|f| (f.name.clone(), f.sig.param_mults().len()))
         .collect();
+    // nomes de método de todas as classes (o que dispara o despacho dinâmico)
+    let methods = module
+        .classes
+        .iter()
+        .flat_map(|c| c.methods.iter().map(|(m, _)| m.clone()))
+        .collect();
     Program {
         funcs,
         cons,
         selectors,
+        methods,
+        con_type,
         foreigns,
     }
 }
@@ -188,7 +205,20 @@ fn type_name(v: &Value) -> &'static str {
         | Value::Builtin { .. }
         | Value::Ctor { .. }
         | Value::Selector { .. }
+        | Value::Method { .. }
         | Value::Foreign { .. } => "função",
+    }
+}
+
+/// Cabeça-de-tipo de um valor, para despachar um método de typeclasse. Os
+/// registos mapeiam-se ao nome do seu tipo de dados (`Some 42` → "Maybe").
+fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
+    match v {
+        Value::Int(_) => Some("Int".into()),
+        Value::Bool(_) => Some("Bool".into()),
+        Value::Str(_) => Some("String".into()),
+        Value::Record { con, .. } => prog.con_type.get(con).cloned(),
+        _ => None,
     }
 }
 
@@ -349,6 +379,11 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             field: name.to_string(),
         });
     }
+    if prog.methods.contains(name) {
+        return Ok(Value::Method {
+            name: name.to_string(),
+        });
+    }
     if let Some(&arity) = prog.foreigns.get(name) {
         return Ok(Value::Foreign {
             name: name.to_string(),
@@ -470,6 +505,30 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
             } else {
                 Ok(Value::Foreign { name, arity, args })
             }
+        }
+        // Método de typeclasse: despacha pela cabeça-de-tipo do 1º argumento para
+        // a implementação da instância (`eq` sobre um Int → `eq$Int`), e aplica.
+        Value::Method { name } => {
+            let head = value_type_head(prog, &arg).ok_or_else(|| {
+                format!(
+                    "não há instância para o método '{name}' sobre um {}",
+                    type_name(&arg)
+                )
+            })?;
+            let impl_fn = crate::ast::method_impl_name(&name, &head);
+            let def = prog
+                .funcs
+                .get(&impl_fn)
+                .ok_or_else(|| format!("sem instância do método '{name}' para o tipo {head}"))?;
+            let callee = force(
+                prog,
+                Value::Closure {
+                    def: def.clone(),
+                    env: empty_env(),
+                    args: Vec::new(),
+                },
+            )?;
+            apply(prog, callee, arg)
         }
         other => Err(format!(
             "tentou aplicar algo que não é função: {}",
@@ -722,6 +781,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
         | Value::Builtin { .. }
         | Value::Ctor { .. }
         | Value::Selector { .. }
+        | Value::Method { .. }
         | Value::Foreign { .. }
         | Value::Endpoint(_) => RtType::Fun,
     })
