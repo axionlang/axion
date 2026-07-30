@@ -229,7 +229,13 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         Expr::BinOp(op, l, r, _) => {
             let a = eval(prog, env, l)?;
             let b = eval(prog, env, r)?;
-            eval_binop(op, a, b)
+            if is_builtin_op(op) {
+                eval_binop(op, a, b)
+            } else {
+                // operador infixo de utilizador (§8): `x `f` y` ≡ `f x y`.
+                let f = resolve_var(prog, env, op)?;
+                apply(prog, apply(prog, f, a)?, b)
+            }
         }
         Expr::If(c, t, el, _) => match eval(prog, env, c)? {
             Value::Bool(true) => eval(prog, env, t),
@@ -585,6 +591,14 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
             _ => false,
         },
     }
+}
+
+/// Os operadores infixos EMBUTIDOS (aritmética/comparação de `Int`). Tudo o que
+/// não estiver aqui é um operador infixo de utilizador — uma função nomeada
+/// aplicada a dois argumentos (`x `f` y` ≡ `f x y`). O conjunto tem de coincidir
+/// com o dos backends nativos (`core::is_builtin_op`) para os três concordarem.
+fn is_builtin_op(op: &str) -> bool {
+    matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
 }
 
 fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {

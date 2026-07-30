@@ -200,6 +200,13 @@ pub fn is_int(t: &Type) -> bool {
     matches!(t.head_con(), Some("Int"))
 }
 
+/// Operadores infixos EMBUTIDOS (aritmética/comparação de `Int`), que baixam a
+/// `Op::Prim`. O resto é um operador infixo de utilizador — uma função nomeada
+/// aplicada a dois argumentos. Coincide com `interp::is_builtin_op`.
+pub fn is_builtin_op(op: &str) -> bool {
+    matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
+}
+
 pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
     module.datas.iter().map(|d| d.name.clone()).collect()
 }
@@ -583,7 +590,13 @@ impl Lower<'_> {
             Expr::BinOp(op, l, r, _) => {
                 let a = self.atom(l, buf);
                 let b = self.atom(r, buf);
-                Op::Prim(op.clone(), a, b)
+                if is_builtin_op(op) {
+                    Op::Prim(op.clone(), a, b)
+                } else {
+                    // operador infixo de utilizador: `x `f` y` ≡ `f x y`. Baixa a
+                    // uma chamada — logo funciona também no nativo (1ª ordem).
+                    self.call_named(op, vec![a, b])
+                }
             }
             Expr::Tuple(es, _) => Op::MakeTuple(es.iter().map(|x| self.atom(x, buf)).collect()),
             Expr::RecordCon(con, assigns, _) => Op::MakeRecord {
@@ -708,10 +721,18 @@ impl Lower<'_> {
             _ => {}
         }
         let vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
+        self.call_named(name, vals)
+    }
+
+    /// Baixa uma chamada por nome (`name` aplicado a `vals`), resolvendo se é
+    /// FFI, função de topo (chamada directa, com mangling), ou variável local de
+    /// tipo-função (chamada indirecta). Partilhado entre a aplicação normal e os
+    /// operadores infixos de utilizador.
+    fn call_named(&self, name: &str, vals: Vec<Atom>) -> Op {
         if self.foreigns.contains(name) {
             // importação FFI (§18): chamada C com ABI de Int
             Op::Ffi {
-                name: name.clone(),
+                name: name.to_string(),
                 args: vals,
             }
         } else if self.globals.contains(name) {
@@ -720,11 +741,11 @@ impl Lower<'_> {
                 .locals
                 .get(name)
                 .cloned()
-                .unwrap_or_else(|| name.clone());
+                .unwrap_or_else(|| name.to_string());
             Op::CallDirect(target, vals)
         } else {
             // variável local de tipo-função → chamada indirecta
-            Op::CallClosure(Atom::Var(name.clone()), vals)
+            Op::CallClosure(Atom::Var(name.to_string()), vals)
         }
     }
 

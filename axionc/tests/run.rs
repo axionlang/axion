@@ -1314,3 +1314,27 @@ fn list_stdlib_functions() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "414\n");
 }
+
+#[test]
+fn user_defined_infix_operators() {
+    // Degrau 2: `x `f` y` ≡ `f x y` para uma função nomeada. Corre nos três
+    // executores (1ª ordem → também nativo): 100 `min` (7 `plus` 5) = 12.
+    let interp = axionc().arg(fixture("user_infix.axi")).output().unwrap();
+    assert!(
+        interp.status.success(),
+        "interp: {}",
+        String::from_utf8_lossy(&interp.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "12\n");
+
+    let dev = axionc()
+        .args(["--backend", "cranelift", &fixture("user_infix.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        dev.status.success(),
+        "cranelift: {}",
+        String::from_utf8_lossy(&dev.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&dev.stdout), "12\n");
+}
