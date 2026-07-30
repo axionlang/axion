@@ -1072,13 +1072,12 @@ fn emit_core_dumps_anf_ir() {
         .unwrap();
     assert!(out.status.success());
     let ir = String::from_utf8_lossy(&out.stdout);
-    // função liftada com ambiente de captura + chamada indirecta + closure
-    assert!(ir.contains("lam$0 [env n]"), "sem lambda liftada:\n{ir}");
+    // função liftada com ambiente de captura + chamada indirecta + closure. O
+    // índice da lambda (`lam$N`) não é fixado — o prelúdio também traz lambdas
+    // ao dump; a captura de `n` é que identifica esta.
+    assert!(ir.contains("[env n]"), "sem lambda liftada com captura:\n{ir}");
     assert!(ir.contains("callclo"), "sem chamada indirecta:\n{ir}");
-    assert!(
-        ir.contains("closure lam$0"),
-        "sem construção de closure:\n{ir}"
-    );
+    assert!(ir.contains("closure lam$"), "sem construção de closure:\n{ir}");
     // ANF: os argumentos das chamadas são átomos nomeados por `let`
     assert!(ir.contains("let "), "não está em ANF:\n{ir}");
 }
@@ -1337,4 +1336,51 @@ fn user_defined_infix_operators() {
         String::from_utf8_lossy(&dev.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&dev.stdout), "12\n");
+}
+
+#[test]
+fn list_extra_concat_zip() {
+    // Degrau 3 da stdlib: ++ (concatenação), concat, zipWith, zip. Puro Axión
+    // sobre List. 20 + 6 + 140 + 11 = 177.
+    let out = axionc().arg(fixture("list_extra.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "list_extra: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "177\n");
+}
+
+#[test]
+fn concat_operator_agrees_natively() {
+    // `++` sobre listas baixa a `append` (1ª ordem) → corre nos três executores.
+    // sum ([1,2] ++ [3,4] ++ [10]) = 20 em interp e Cranelift.
+    let interp = axionc().arg(fixture("plus_plus.axi")).output().unwrap();
+    assert!(interp.status.success());
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "20\n");
+    let dev = axionc()
+        .args(["--backend", "cranelift", &fixture("plus_plus.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        dev.status.success(),
+        "cranelift: {}",
+        String::from_utf8_lossy(&dev.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&dev.stdout), "20\n");
+}
+
+#[test]
+fn rich_strings_concat_unwords_unlines() {
+    // Strings mais ricas: ++, unwords, unlines, putStr (nível-interp, como IO).
+    let out = axionc().arg(fixture("rich_strings.axi")).output().unwrap();
+    assert!(
+        out.status.success(),
+        "rich_strings: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Olá Axión!\nlinha 1\nlinha 2\n"
+    );
 }

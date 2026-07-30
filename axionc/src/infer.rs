@@ -250,9 +250,13 @@ impl<'a> Infer<'a> {
             )
         };
         let mut env = Env::new();
-        // putStrLn :: String -> IO ()
+        // putStrLn / putStr :: String -> IO ()
         env.insert(
             "putStrLn".into(),
+            mono(Ty::Fun(Box::new(string()), Box::new(io_unit.clone()))),
+        );
+        env.insert(
+            "putStr".into(),
             mono(Ty::Fun(Box::new(string()), Box::new(io_unit))),
         );
         // show :: forall a. a -> String
@@ -270,6 +274,16 @@ impl<'a> Infer<'a> {
         for op in ["+", "-", "*", "mod"] {
             env.insert(op.into(), mono(bin(int())));
         }
+        // ++ :: forall a. a -> a -> a  (concatenação polimórfica; sem typeclasses
+        // ainda, o tipo Semigroup-óide só impõe que os dois lados coincidam —
+        // listas e strings ambos passam, `"x" ++ [1]` não).
+        env.insert(
+            "++".into(),
+            Scheme {
+                vars: vec![0],
+                ty: bin(Ty::Var(0)),
+            },
+        );
         for op in ["==", "<", ">"] {
             env.insert(
                 op.into(),

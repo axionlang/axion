@@ -331,6 +331,28 @@ elem :: Int -> List Int -> Bool
 elem x xs = case xs of
   Nil -> False
   Cons y ys -> if x == y then True else elem x ys
+concat :: List (List a) -> List a
+concat xs = case xs of
+  Nil -> Nil
+  Cons y ys -> append y (concat ys)
+zipWith :: (a -> b -> c) -> List a -> List b -> List c
+zipWith f xs ys = case xs of
+  Nil -> Nil
+  Cons a as -> case ys of
+    Nil -> Nil
+    Cons b bs -> Cons (f a b) (zipWith f as bs)
+zip :: List a -> List b -> List (a, b)
+zip xs ys = zipWith (\\a b -> (a, b)) xs ys
+unlines :: List String -> String
+unlines xs = case xs of
+  Nil -> \"\"
+  Cons s ss -> s ++ \"\\n\" ++ unlines ss
+unwords :: List String -> String
+unwords xs = case xs of
+  Nil -> \"\"
+  Cons s ss -> case ss of
+    Nil -> s
+    Cons t ts -> s ++ \" \" ++ unwords ss
 ";
 
 fn inject_prelude(module: &mut ast::Module) {

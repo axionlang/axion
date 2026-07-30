@@ -592,6 +592,10 @@ impl Lower<'_> {
                 let b = self.atom(r, buf);
                 if is_builtin_op(op) {
                     Op::Prim(op.clone(), a, b)
+                } else if op == "++" {
+                    // concatenação: baixa ao `append` do prelúdio (listas). As
+                    // strings são um efeito de nível-interp (como show/IO).
+                    self.call_named("append", vec![a, b])
                 } else {
                     // operador infixo de utilizador: `x `f` y` ≡ `f x y`. Baixa a
                     // uma chamada — logo funciona também no nativo (1ª ordem).

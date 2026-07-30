@@ -229,12 +229,22 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         Expr::BinOp(op, l, r, _) => {
             let a = eval(prog, env, l)?;
             let b = eval(prog, env, r)?;
-            if is_builtin_op(op) {
-                eval_binop(op, a, b)
-            } else {
+            match op.as_str() {
+                // `++` polimórfico: strings concatenam; listas (ou qualquer outra
+                // coisa) delegam no `append` do prelúdio — uma só definição.
+                "++" => match (a, b) {
+                    (Value::Str(x), Value::Str(y)) => Ok(Value::Str(x + &y)),
+                    (a, b) => {
+                        let f = resolve_var(prog, env, "append")?;
+                        apply(prog, apply(prog, f, a)?, b)
+                    }
+                },
+                o if is_builtin_op(o) => eval_binop(o, a, b),
                 // operador infixo de utilizador (§8): `x `f` y` ≡ `f x y`.
-                let f = resolve_var(prog, env, op)?;
-                apply(prog, apply(prog, f, a)?, b)
+                _ => {
+                    let f = resolve_var(prog, env, op)?;
+                    apply(prog, apply(prog, f, a)?, b)
+                }
             }
         }
         Expr::If(c, t, el, _) => match eval(prog, env, c)? {
@@ -350,6 +360,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         "otherwise" => Ok(Value::Bool(true)),
         "putStrLn" => Ok(Value::Builtin {
             name: "putStrLn",
+            args: Vec::new(),
+        }),
+        "putStr" => Ok(Value::Builtin {
+            name: "putStr",
             args: Vec::new(),
         }),
         "show" => Ok(Value::Builtin {
@@ -662,6 +676,7 @@ fn run_mapm(prog: &Program, f: &Value, list: &Value) -> Result<Value, RunError> 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
     match (name, args.as_slice()) {
         ("putStrLn", [Value::Str(s)]) => Ok(Value::Io(format!("{s}\n"))),
+        ("putStr", [Value::Str(s)]) => Ok(Value::Io(s.clone())),
         ("show", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
         ("show", [Value::Bool(b)]) => Ok(Value::Str(b.to_string())),
         // split divide num par de metades de leitura partilhada (partilham o

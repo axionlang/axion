@@ -78,6 +78,8 @@ pub enum Tok {
     Mult(String),
 
     // operadores
+    #[token("++")]
+    PlusPlus,
     #[token("+")]
     Plus,
     #[token("-")]

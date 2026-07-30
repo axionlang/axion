@@ -628,7 +628,9 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// Cons de lista `x : xs` (infixr, entre `==` e `+`) → `Cons x xs`.
+    /// Cons `x : xs` e concatenação `xs ++ ys` (ambos infixr 5, entre `==` e
+    /// `+`) → `Cons x xs` / `BinOp "++"`. O `++` é polimórfico: listas (append) e
+    /// strings (concat) — ver `interp`/`core`.
     fn parse_cons(&mut self) -> PResult<Expr> {
         let lhs = self.parse_add()?;
         if self.at(&Tok::Colon) {
@@ -636,6 +638,16 @@ impl<'a> Parser<'a> {
             let rhs = self.parse_cons()?; // associativo à direita
             let sp = (lhs.span().0, rhs.span().1);
             Ok(cons_expr(lhs, rhs, sp))
+        } else if self.at(&Tok::PlusPlus) {
+            self.pos += 1;
+            let rhs = self.parse_cons()?; // associativo à direita
+            let sp = (lhs.span().0, rhs.span().1);
+            Ok(Expr::BinOp(
+                "++".to_string(),
+                Box::new(lhs),
+                Box::new(rhs),
+                sp,
+            ))
         } else {
             Ok(lhs)
         }

@@ -907,6 +907,7 @@ fn build_must_use_types(module: &Module) -> HashSet<String> {
 fn builtins() -> HashSet<String> {
     [
         "putStrLn",
+        "putStr",
         "show",
         "otherwise",
         "True",
