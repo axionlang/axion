@@ -1,25 +1,26 @@
 # Axion by Example
 
-Um percurso guiado pela Axion, com **divulgação progressiva** (§8): cada passo
-introduz *um* conceito novo, com código que corre. Segue por ordem — nunca se vê
-`bound`/sessões antes de dominar o núcleo linear.
+A guided tour of Axion, with **progressive disclosure** (§8): each step
+introduces *one* new concept, with code that runs. Follow in order — you never
+see `bound`/sessions before mastering the linear core.
 
-Assume o compilador construído (`cd axionc && cargo build`). Usa-se o atalho:
+Assumes the compiler is built (`cd axionc && cargo build`). We use the shortcut:
 
 ```sh
-AX=axionc/target/debug/axionc          # a partir da raiz do repo
+AX=axionc/target/debug/axionc          # from the repo root
 ```
 
-`$AX prog.axi` corre no interpretador; `$AX --check prog.axi` só verifica;
-`$AX --explain AXnnnn` explica um código de erro.
+`$AX prog.axi` runs in the interpreter; `$AX --check prog.axi` only checks;
+`$AX --explain AXnnnn` explains an error code.
 
 ---
 
-## L0 — o núcleo familiar (Haskell estrito)
+## L0 — the familiar core (strict Haskell)
 
-Quem sabe programação funcional lê isto no dia 1. Sem uma anotação de linearidade.
+Anyone who knows functional programming reads this on day 1. Not a single
+linearity annotation.
 
-### 1. Olá Mundo — `putStrLn`, IO
+### 1. Hello World — `putStrLn`, IO
 
 ```haskell
 main :: IO ()
@@ -29,21 +30,21 @@ main = putStrLn "Hello, Axion!"
 $AX examples/01_hello.axi          # → Hello, Axion!
 ```
 
-### 2. Fibonacci — recursão, pattern matching, `where`
+### 2. Fibonacci — recursion, pattern matching, `where`
 
 ```haskell
 fib :: Int -> Int
 fib 0 = 0
 fib 1 = 1
-fib n = fib (n - 1) + fib (n - 2)          -- multi-cláusula
+fib n = fib (n - 1) + fib (n - 2)          -- multi-clause
 ```
 ```sh
 $AX examples/02_fib.axi            # → 832040   (fib 30)
 ```
-`examples/02_fib.axi` mostra também `fibFast` com um acumulador em `where` (o
-«loop» funcional, O(n)).
+`examples/02_fib.axi` also shows `fibFast` with an accumulator in `where` (the
+functional "loop", O(n)).
 
-### 3. FizzBuzz — guardas, `mod`, ranges, composição, `mapM_`
+### 3. FizzBuzz — guards, `mod`, ranges, composition, `mapM_`
 
 ```haskell
 fizzbuzz :: Int -> String
@@ -59,10 +60,10 @@ main = mapM_ (putStrLn . fizzbuzz) [1 .. 15]     -- range, compose (.), mapM_
 ```sh
 $AX examples/03b_fizzbuzz.axi      # → 1  2  Fizz  4  Buzz  Fizz … FizzBuzz
 ```
-As listas (`[1..15]`, `:`, `[a,b,c]`) e o `List a` vêm de um prelúdio embutido —
-não é preciso declarar nada.
+Lists (`[1..15]`, `:`, `[a,b,c]`) and `List a` come from a built-in prelude — no
+need to declare anything.
 
-### 4. Tipos-soma paramétricos — `Maybe`, `Either`, `case`
+### 4. Parametric sum types — `Maybe`, `Either`, `case`
 
 ```haskell
 data Maybe a = None | Some a
@@ -78,144 +79,146 @@ main = fromMaybe 0 (Some 42) + fromMaybe 7 None       -- → 49
 ```sh
 $AX axionc/tests/fixtures/parametric_data.axi        # → 49
 ```
-Os construtores generalizam (`Some :: forall a. a -> Maybe a`). Corre nos três
-executores: `$AX --backend cranelift …` (Cranelift), `$AX --release …` (LLVM).
+Constructors generalize (`Some :: forall a. a -> Maybe a`). Runs on all three
+executors: `$AX --backend cranelift …` (Cranelift), `$AX --release …` (LLVM).
 
 ---
 
-## L1 — linearidade e memória sem GC (o diferenciador)
+## L1 — linearity and GC-free memory (the differentiator)
 
-O núcleo da Axion: cada dado tem um dono, e o compilador liberta-o em pontos
-estáticos exatos. Sem GC, sem `free` manual.
+Axion's core: every datum has an owner, and the compiler frees it at exact static
+points. No GC, no manual `free`.
 
-### 5. `%1`: consumir uma vez — `AX0001`
+### 5. `%1`: consume once — `AX0001`
 
-Um recurso linear `%1` pode ser **lido** (emprestado) à vontade, mas **consumido**
-(mover a posse) uma só vez. Consumir duas vezes é erro:
+A linear resource `%1` can be **read** (borrowed) freely, but **consumed** (moving
+ownership) only once. Consuming twice is an error:
 
 ```sh
 $AX --check axionc/tests/fixtures/use_after_consume.axi   # → error[AX0001]
-$AX --explain AX0001                                       # a regra e o fix
+$AX --explain AX0001                                       # the rule and the fix
 ```
-Ler antes de consumir é livre; **usar depois de mover** é `AX0004`.
+Reading before consuming is free; **using after moving** is `AX0004`.
 
 ### 6. *Must-use* vs Auto-Drop — `AX0002`
 
-Tipos sem `Drop` (`Ep`, `Token`, handles) são *must-use*: largá-los é `AX0002`.
-Os tipos *droppable* são geridos pelo **Auto-Drop** — o compilador injecta o
-`free` no ponto de morte. Vê onde:
+Types without `Drop` (`Ep`, `Token`, handles) are *must-use*: dropping them is
+`AX0002`. *Droppable* types are managed by **Auto-Drop** — the compiler inserts
+the `free` at the death point. See where:
 
 ```sh
-$AX --emit drops axionc/tests/fixtures/heap_loop.axi   # os `free` e as razões
+$AX --emit drops axionc/tests/fixtures/heap_loop.axi   # the `free`s and their reasons
 ```
 
-### 7. Buffer linear — `%1` em ação (§4/§5)
+### 7. Linear buffer — `%1` in action (§4/§5)
 
-O `Buffer` é o array de bytes **linear**: aloca-se, opera-se in-place e liberta-se
-sem fuga. É runtime **nativo** (as operações em massa vivem no runtime C/Rust,
-vectorizáveis), por isso corre com `--backend cranelift` ou `--release`:
+`Buffer` is the **linear** byte array: allocate, operate in-place, and free
+without leaks. It is **native** runtime (bulk operations live in the C/Rust
+runtime, vectorizable), so it runs with `--backend cranelift` or `--release`:
 
 ```sh
-$AX --backend cranelift axionc/tests/fixtures/buffer_sum.axi   # → 4950   (soma de bytes)
-$AX --check examples/03_linear_buffer.axi                       # o alvo da §5 (aloca+opera+free)
+$AX --backend cranelift axionc/tests/fixtures/buffer_sum.axi   # → 4950   (sum of bytes)
+$AX --check examples/03_linear_buffer.axi                       # the §5 target (alloc+op+free)
 ```
-Com `AXION_HEAP_STATS=1 $AX --backend cranelift …` vês `allocs == frees`.
+With `AXION_HEAP_STATS=1 $AX --backend cranelift …` you see `allocs == frees`.
 
-### 8. Actualização in-place — Linear Elision (Listagem 2.1)
+### 8. In-place update — Linear Elision (Listing 2.1)
 
-Quando o base de uma actualização de registo é linear e morre ali, o compilador
-**muta o bloco** em vez de alocar+copiar:
+When the base of a record update is linear and dies there, the compiler
+**mutates the block** instead of allocating+copying:
 
 ```sh
 $AX --check examples/04_process_inplace.axi     # typecheck
-$AX --emit inplace examples/04_process_inplace.axi   # os updates in-place
+$AX --emit inplace examples/04_process_inplace.axi   # the in-place updates
 ```
 
 ---
 
-## L2 — regiões e arenas (§3)
+## L2 — regions and arenas (§3)
 
-Para dados cuja vida cabe num escopo, uma **arena** reclama tudo num só reset.
+For data whose lifetime fits in a scope, an **arena** reclaims everything in a
+single reset.
 
-### 9. Escape de arena — `AX0003`
+### 9. Arena escape — `AX0003`
 
-Um valor alocado numa sub-arena não pode escapar ao seu escopo (senão sobrevivia
-ao reset). O compilador rejeita-o e diz como corrigir (`promote`):
+A value allocated in a sub-arena cannot escape its scope (otherwise it would
+outlive the reset). The compiler rejects it and says how to fix (`promote`):
 
 ```sh
-$AX --check axionc/tests/fixtures/arena_escape.axi   # → error[AX0003] + ajuda
+$AX --check axionc/tests/fixtures/arena_escape.axi   # → error[AX0003] + help
 $AX --explain AX0003
 ```
-`arena_promote_ok.axi` mostra a versão correta (com `promote parent v`).
+`arena_promote_ok.axi` shows the correct version (with `promote parent v`).
 
 ---
 
-## L3 — concorrência: canais e session types (§6/§9)
+## L3 — concurrency: channels and session types (§6/§9)
 
-Aqui a Axion distingue-se: comunicação **sem data races nem deadlocks, provada
-por tipos**. Um canal move a posse; o `bound` confina os endpoints a uma árvore.
+Here Axion sets itself apart: communication **free of data races and deadlocks,
+proven by types**. A channel moves ownership; `bound` confines endpoints to a tree.
 
-### 10. Um protocolo tipado — session types (§6)
+### 10. A typed protocol — session types (§6)
 
 ```haskell
-worker :: Ep (Send Int End) %1 -> IO ()      -- envia UM Int e termina
+worker :: Ep (Send Int End) %1 -> IO ()      -- sends ONE Int and finishes
 worker chan = do
   c2 <- send chan 42
   close c2
 ```
 ```sh
-$AX --check axionc/tests/fixtures/session_ok.axi     # segue o protocolo → aceite
+$AX --check axionc/tests/fixtures/session_ok.axi     # follows the protocol → accepted
 ```
-Fazer `recv` onde o tipo diz `Send` é `AX0300`; largar sem `close` é `AX0301`.
+Doing `recv` where the type says `Send` is `AX0300`; dropping without `close` is
+`AX0301`.
 
-### 11. Concorrência a CORRER — `bound` + `spawn` (§9/§11)
+### 11. Concurrency ACTUALLY RUNNING — `bound` + `spawn` (§9/§11)
 
-O `bound` abre um nursery; `spawn` forka um filho ligado por um canal. Um
-ping-pong concorrente que computa de facto:
+`bound` opens a nursery; `spawn` forks a child linked by a channel. A concurrent
+ping-pong that actually computes:
 
 ```sh
-$AX axionc/tests/fixtures/session_run_pingpong.axi   # → 42   (pai envia 21, worker dobra)
+$AX axionc/tests/fixtures/session_run_pingpong.axi   # → 42   (parent sends 21, worker doubles)
 ```
 
-### 12. Escolha e cancelamento — `select`/`offer`/`Closed` (§7)
+### 12. Choice and cancellation — `select`/`offer`/`Closed` (§7)
 
 ```sh
-$AX axionc/tests/fixtures/session_run_offer.axi      # → 7   (select Live → ramo Live)
-$AX axionc/tests/fixtures/session_run_cancel.axi     # → 5   (cancel → o par recebe Closed)
+$AX axionc/tests/fixtures/session_run_offer.axi      # → 7   (select Live → Live branch)
+$AX axionc/tests/fixtures/session_run_cancel.axi     # → 5   (cancel → the peer receives Closed)
 ```
-O `Closed` é um ramo normal do protocolo — o cancelamento de um par em pânico é
-sempre tratável (T5, §7).
+`Closed` is a normal branch of the protocol — cancellation of a panicking peer is
+always handleable (T5, §7).
 
-### 13. As garantias, impostas
+### 13. The guarantees, enforced
 
-O compilador rejeita as topologias perigosas *antes* de correr:
+The compiler rejects dangerous topologies *before* running:
 
 ```sh
-$AX --check axionc/tests/fixtures/bound_escape.axi     # AX0302: endpoint escapa do nursery
-$AX --check axionc/tests/fixtures/session_spawn_capture.axi  # AX0305: spawn capturaria um ciclo
-$AX --explain AX0302     # porquê: a topologia tem de ser uma árvore
+$AX --check axionc/tests/fixtures/bound_escape.axi     # AX0302: endpoint escapes the nursery
+$AX --check axionc/tests/fixtures/session_spawn_capture.axi  # AX0305: spawn would capture a cycle
+$AX --explain AX0302     # why: the topology must be a tree
 ```
 
 ---
 
-## L4 — propósito geral: typeclasses, HOF, IO (tudo nativo)
+## L4 — general-purpose: typeclasses, HOF, IO (all native)
 
-A Axion cresce para um Rust/Haskell. Estas peças compilam **até ao nativo**
-(`--release`), não só no interpretador.
+Axion grows toward a Rust/Haskell. These pieces compile **all the way to native**
+(`--release`), not just in the interpreter.
 
-### 14. Ordem superior + IO — `map`/`filter`/`foldr`, `mapM_`, `compose`
+### 14. Higher-order + IO — `map`/`filter`/`foldr`, `mapM_`, `compose`
 
 ```haskell
 main :: IO ()
-main = mapM_ (putStrLn . fizzbuzz) [1 .. 15]     -- compose parcial, putStrLn como valor
+main = mapM_ (putStrLn . fizzbuzz) [1 .. 15]     -- partial compose, putStrLn as a value
 ```
 ```sh
-$AX --release examples/03b_fizzbuzz.axi     # o FizzBuzz completo, em código-máquina
+$AX --release examples/03b_fizzbuzz.axi     # the full FizzBuzz, in machine code
 ```
-Funções de topo como valor (`mapM_ greet xs`), aplicação parcial (`compose f g`) e
-as HOF do prelúdio compilam via **eta-expansão + closures**.
+Top-level functions as values (`mapM_ greet xs`), partial application
+(`compose f g`) and the prelude HOFs compile via **eta-expansion + closures**.
 
-### 15. Typeclasses — `class`/`instance`, `Eq a =>`, custo-zero
+### 15. Typeclasses — `class`/`instance`, `Eq a =>`, zero-cost
 
 ```haskell
 class Eq a where
@@ -224,7 +227,7 @@ class Eq a where
 instance Eq Int where
   eq x y = x == y
 
-count :: Eq a => a -> List a -> Int              -- polimorfismo restrito
+count :: Eq a => a -> List a -> Int              -- constrained polymorphism
 count x xs = case xs of
   Nil       -> 0
   Cons y ys -> if eq x y then 1 + count x ys else count x ys
@@ -235,17 +238,17 @@ main = count 7 [7, 1, 7, 7]                       -- → 3
 ```sh
 $AX --release examples/06_typeclasses.axi         # → 6
 ```
-A **monomorfização** especializa `count` por tipo (`count$Int`) e resolve `eq`
-para a instância (`eq$Int`), que o LLVM inlina — **abstração de custo-zero, à
-Rust** (medido: benchmark `dispatch` ≈ C/Rust, [`docs/benchmarks.md`](benchmarks.md)).
-A coerência é verificada estaticamente: instância em falta, método a mais, uso
-sem instância → `AX0400`–`AX0405`.
+**Monomorphization** specializes `count` per type (`count$Int`) and resolves `eq`
+to the instance (`eq$Int`), which LLVM inlines — **zero-cost abstraction, à la
+Rust** (measured: the `dispatch` benchmark ≈ C/Rust, [`docs/benchmarks.md`](benchmarks.md)).
+Coherence is checked statically: missing instance, extra method, use without an
+instance → `AX0400`–`AX0405`.
 
 ---
 
-## Onde ir a seguir
+## Where to go next
 
-- A especificação completa: [`spec/Axion-V0.2.pdf`](../spec/Axion-V0.2.pdf).
-- Como o compilador funciona: [`docs/backend.md`](backend.md).
-- O cálculo de sessões formalizado: [`docs/phase-3-calculus.md`](phase-3-calculus.md).
-- Todos os códigos de erro: [`docs/error-codes.md`](error-codes.md) (ou `$AX --explain AXnnnn`).
+- The full specification: [`spec/Axion-V0.2.pdf`](../spec/Axion-V0.2.pdf).
+- How the compiler works: [`docs/backend.md`](backend.md).
+- The session calculus formalized: [`docs/phase-3-calculus.md`](phase-3-calculus.md).
+- All error codes: [`docs/error-codes.md`](error-codes.md) (or `$AX --explain AXnnnn`).
