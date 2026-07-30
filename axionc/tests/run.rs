@@ -1138,6 +1138,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (example("02_fib.axi"), "832040\n"),
         (fixture("mono_typeclass.axi"), "20\n"), // typeclasses monomorfizadas → nativo
         (fixture("mono_constrained.axi"), "3\n"), // `Eq a =>` especializada → nativo
+        (fixture("mono_transitive.axi"), "2\n"), // especialização transitiva (β-2)
         (fixture("typeclasses.axi"), "125\n"),   // exemplo completo (count + eq Shape)
     ];
     for (path, expected) in cases {
@@ -1491,6 +1492,29 @@ fn monomorphized_constrained_function_runs_on_all_backends() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n", "{args:?}");
+    }
+}
+
+#[test]
+fn transitively_monomorphized_constraints_run_on_all_backends() {
+    // Fatia 2b-β-2: `countNeq :: Eq a =>` chama `neq :: Eq a =>` (constrangida) —
+    // a especialização propaga-se transitivamente (countNeq$Int → neq$Int →
+    // eq$Int). Interp e --dev concordam em 2 (--release na lista release_backend_*).
+    for args in [
+        vec![fixture("mono_transitive.axi")],
+        vec![
+            "--backend".into(),
+            "cranelift".into(),
+            fixture("mono_transitive.axi"),
+        ],
+    ] {
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n", "{args:?}");
     }
 }
 

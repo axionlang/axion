@@ -47,6 +47,9 @@ struct Infer<'a> {
     spec_obligations: Vec<SpecObl>,
     /// função constrangida → (var de constraint, índice do param de despacho).
     constrained_meta: HashMap<String, (String, Option<usize>)>,
+    /// funções que referenciam uma função constrangida não-especializável (var de
+    /// constraint sem parâmetro directo) — não podem ser especializadas (β-2).
+    refs_unspec: HashSet<String>,
     /// classes com constraint declarado no âmbito da função a ser inferida.
     cur_constraints: Vec<String>,
     /// nome da função a ser inferida (chave das resoluções, com o span).
@@ -110,6 +113,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         obligations: Vec::new(),
         spec_obligations: Vec::new(),
         constrained_meta: HashMap::new(),
+        refs_unspec: HashSet::new(),
         cur_constraints: Vec::new(),
         cur_fn: String::new(),
     };
@@ -752,12 +756,11 @@ impl<'a> Infer<'a> {
         let func_names: Set<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
 
         let mut resolutions: Map<(String, Span), String> = Map::new();
-        // por função constrangida: usos polimórficos de método (span → método),
-        // auto-recursões (spans), e se é impossível especializar (chama outra
-        // função constrangida — fica p/ a fatia 2b-β-2).
+        // por função constrangida: usos polimórficos de método (span → método) e
+        // chamadas polimórficas a funções constrangidas (span → função, incluindo
+        // a auto-recursão) — os pontos que a especialização reescreve para `$T`.
         let mut poly_methods: Map<String, Vec<(Span, String)>> = Map::new();
-        let mut poly_self: Map<String, Vec<Span>> = Map::new();
-        let mut unspecializable: Set<String> = Set::new();
+        let mut poly_calls: Map<String, Vec<(Span, String)>> = Map::new();
 
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
@@ -812,68 +815,109 @@ impl<'a> Infer<'a> {
             }
         }
 
-        // usos de funções constrangidas → especializações a materializar.
-        let mut want: Set<(String, String)> = Set::new(); // (função, tipo)
-        let mut callsites: Vec<(String, Span, String, String)> = Vec::new(); // caller,span,fn,T
+        // usos de funções constrangidas → sementes de especialização (concretas)
+        // e chamadas polimórficas (transitivas, para a var de constraint).
+        let mut seeds: Vec<(String, Span, String, String)> = Vec::new(); // caller,span,fn,T
         let specs_obls = std::mem::take(&mut self.spec_obligations);
         for s in specs_obls {
             match self.resolve(&s.ty) {
-                Ty::Con(t, _) => {
-                    want.insert((s.target.clone(), t.clone()));
-                    callsites.push((s.func.clone(), s.span, s.target.clone(), t));
-                }
-                Ty::Var(_) if s.target == s.func => {
-                    poly_self.entry(s.func.clone()).or_default().push(s.span);
-                }
-                Ty::Var(_) => {
-                    // chama OUTRA função constrangida sobre a var genérica: fica
-                    // para a fatia 2b-β-2 (especialização transitiva).
-                    unspecializable.insert(s.func.clone());
-                }
+                // chamada num tipo concreto → semente `(fn, T)` + call-site.
+                Ty::Con(t, _) => seeds.push((s.func.clone(), s.span, s.target.clone(), t)),
+                // chamada sobre a var genérica → reescreve-se para `$T` quando o
+                // chamador for especializado (a auto-recursão é o caso `g == f`).
+                Ty::Var(_) => poly_calls
+                    .entry(s.func.clone())
+                    .or_default()
+                    .push((s.span, s.target.clone())),
                 _ => {}
             }
         }
 
-        // valida e materializa: um `f$T` só é gerado se `f` não é
-        // inespecializável e todas as suas impls de método existem para `T`.
-        let mut specs: Vec<SpecPlan> = Vec::new();
-        let mut done: Set<(String, String)> = Set::new();
-        for (f, t) in &want {
-            let valid =
-                !unspecializable.contains(f)
-                    && poly_methods.get(f).into_iter().flatten().all(|(_, m)| {
-                        func_names.contains(crate::ast::method_impl_name(m, t).as_str())
-                    });
-            if !valid {
-                continue;
-            }
-            if done.insert((f.clone(), t.clone())) {
-                let name = crate::ast::method_impl_name(f, t);
-                let mut rewrites: HashMap<Span, String> = HashMap::new();
-                for (sp, m) in poly_methods.get(f).into_iter().flatten() {
-                    rewrites.insert(*sp, crate::ast::method_impl_name(m, t));
-                }
-                for sp in poly_self.get(f).into_iter().flatten() {
-                    rewrites.insert(*sp, name.clone());
-                }
-                let tyvar = self
-                    .constrained_meta
-                    .get(f)
-                    .map(|(v, _)| v.clone())
-                    .unwrap_or_default();
-                specs.push(SpecPlan {
-                    src: f.clone(),
-                    name,
-                    tyvar,
-                    ty_head: t.clone(),
-                    rewrites,
-                });
+        // expande o conjunto de especializações necessárias por worklist: uma
+        // `(f, T)` puxa `(g, T)` por cada chamada constrangida polimórfica em `f`
+        // (a var de constraint de `g` é a mesma de `f`, logo o mesmo `T`). Fecha a
+        // especialização TRANSITIVA (fatia 2b-β-2).
+        let mut cands: Set<(String, String)> = Set::new();
+        let mut queue: Vec<(String, String)> = Vec::new();
+        for (_, _, f, t) in &seeds {
+            if cands.insert((f.clone(), t.clone())) {
+                queue.push((f.clone(), t.clone()));
             }
         }
-        // reescreve os call-sites cujas especializações são válidas.
-        let valid: Set<(String, String)> = done;
-        for (caller, span, f, t) in callsites {
-            if valid.contains(&(f.clone(), t.clone())) {
+        while let Some((f, t)) = queue.pop() {
+            for (_, g) in poly_calls.get(&f).into_iter().flatten() {
+                let node = (g.clone(), t.clone());
+                if cands.insert(node.clone()) {
+                    queue.push(node);
+                }
+            }
+        }
+
+        // validade por ponto-fixo: `(f, T)` é válida a menos que `f` seja
+        // inespecializável, falte a var de despacho, falte alguma impl de método
+        // `m$T`, ou alguma dependência `(g, T)` seja inválida.
+        let mut invalid: Set<(String, String)> = Set::new();
+        loop {
+            let mut changed = false;
+            for (f, t) in &cands {
+                if invalid.contains(&(f.clone(), t.clone())) {
+                    continue;
+                }
+                let no_spec_var = self
+                    .constrained_meta
+                    .get(f)
+                    .is_none_or(|(_, idx)| idx.is_none());
+                let bad = self.refs_unspec.contains(f)
+                    || no_spec_var
+                    || poly_methods.get(f).into_iter().flatten().any(|(_, m)| {
+                        !func_names.contains(crate::ast::method_impl_name(m, t).as_str())
+                    })
+                    || poly_calls
+                        .get(f)
+                        .into_iter()
+                        .flatten()
+                        .any(|(_, g)| invalid.contains(&(g.clone(), t.clone())));
+                if bad {
+                    invalid.insert((f.clone(), t.clone()));
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // materializa cada especialização válida.
+        let mut specs: Vec<SpecPlan> = Vec::new();
+        for (f, t) in &cands {
+            if invalid.contains(&(f.clone(), t.clone())) {
+                continue;
+            }
+            let name = crate::ast::method_impl_name(f, t);
+            let mut rewrites: HashMap<Span, String> = HashMap::new();
+            for (sp, m) in poly_methods.get(f).into_iter().flatten() {
+                rewrites.insert(*sp, crate::ast::method_impl_name(m, t));
+            }
+            for (sp, g) in poly_calls.get(f).into_iter().flatten() {
+                rewrites.insert(*sp, crate::ast::method_impl_name(g, t));
+            }
+            let tyvar = self
+                .constrained_meta
+                .get(f)
+                .map(|(v, _)| v.clone())
+                .unwrap_or_default();
+            specs.push(SpecPlan {
+                src: f.clone(),
+                name,
+                tyvar,
+                ty_head: t.clone(),
+                rewrites,
+            });
+        }
+        // reescreve os call-sites-semente cujas especializações são válidas.
+        for (caller, span, f, t) in seeds {
+            if cands.contains(&(f.clone(), t.clone())) && !invalid.contains(&(f.clone(), t.clone()))
+            {
                 resolutions.insert((caller, span), crate::ast::method_impl_name(&f, &t));
             }
         }
@@ -1159,14 +1203,23 @@ impl<'a> Infer<'a> {
                 }
                 // uso de uma função constrangida: recolhe a obrigação de
                 // especialização sobre o tipo da var de constraint (fatia 2b-β).
-                if let Some((_, Some(idx))) = self.constrained_meta.get(n).cloned() {
-                    if let Some(dispatch) = nth_param(&ty, idx) {
-                        self.spec_obligations.push(SpecObl {
-                            target: n.clone(),
-                            ty: dispatch,
-                            span: *span,
-                            func: self.cur_fn.clone(),
-                        });
+                if let Some((_, idx)) = self.constrained_meta.get(n).cloned() {
+                    match idx {
+                        Some(i) => {
+                            if let Some(dispatch) = nth_param(&ty, i) {
+                                self.spec_obligations.push(SpecObl {
+                                    target: n.clone(),
+                                    ty: dispatch,
+                                    span: *span,
+                                    func: self.cur_fn.clone(),
+                                });
+                            }
+                        }
+                        // constrangida sem parâmetro de despacho → não capturável:
+                        // a função que a usa não pode ser especializada.
+                        None => {
+                            self.refs_unspec.insert(self.cur_fn.clone());
+                        }
                     }
                 }
                 ty

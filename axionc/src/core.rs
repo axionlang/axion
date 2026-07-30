@@ -392,6 +392,26 @@ fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
     fv.iter().any(|n| methods.contains(n))
 }
 
+/// Todos os nomes referenciados nos corpos de `f` (cláusulas, guardas, `where`),
+/// para a candidatura nativa transitiva — os que forem funções de topo têm de ser
+/// eles próprios compiláveis.
+fn body_refs(f: &ast::Func, out: &mut HashSet<String>) {
+    for c in &f.clauses {
+        match &c.body {
+            Body::Plain(e) => free_vars(e, &HashSet::new(), out),
+            Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    free_vars(g, &HashSet::new(), out);
+                    free_vars(r, &HashSet::new(), out);
+                }
+            }
+        }
+        for w in &c.wher {
+            body_refs(w, out);
+        }
+    }
+}
+
 // --- utilitários de âmbito (variáveis livres, para a captura de closures) ---
 
 fn pat_vars(p: &Pat, out: &mut Vec<String>) {
@@ -1041,12 +1061,48 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .flat_map(|c| c.methods.iter().map(|(m, _)| m.clone()))
         .collect();
 
+    // candidatura nativa TRANSITIVA: uma função só é compilável se, além de passar
+    // `top_candidate`, todas as funções de topo que chama também o forem. Ponto-
+    // fixo. Fecha o buraco de um candidato chamar uma NÃO-candidata (ex.: uma spec
+    // monomorfizada que chame `foldr`, cujo resultado é uma var de tipo pura) —
+    // que de outro modo partiria o codegen com um símbolo por ligar. Exclui-a
+    // graciosamente (recai no interp) em vez de abortar.
+    let func_set: HashSet<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
+    let mut native_ok: HashMap<String, usize> = module
+        .funcs
+        .iter()
+        .filter_map(|f| top_candidate(f, &data_types, &methods).map(|a| (f.name.clone(), a)))
+        .collect();
+    loop {
+        let mut remove = None;
+        for f in &module.funcs {
+            if !native_ok.contains_key(&f.name) {
+                continue;
+            }
+            let mut refs = HashSet::new();
+            body_refs(f, &mut refs);
+            if refs
+                .iter()
+                .any(|g| func_set.contains(g.as_str()) && !native_ok.contains_key(g))
+            {
+                remove = Some(f.name.clone());
+                break;
+            }
+        }
+        match remove {
+            Some(n) => {
+                native_ok.remove(&n);
+            }
+            None => break,
+        }
+    }
+
     // pré-passo: nomeia + calcula capturas de todas as lambdas (por span)
     let mut lam_meta: LamMeta = HashMap::new();
     let mut lam_ctr = 0u32;
     let mut lam_sites: Vec<(&Expr, HashMap<String, String>)> = Vec::new();
     for f in &module.funcs {
-        if top_candidate(f, &data_types, &methods).is_none() {
+        if !native_ok.contains_key(&f.name) {
             continue;
         }
         let wheres: Vec<&ast::Func> = f.clauses.iter().flat_map(|c| &c.wher).collect();
@@ -1083,7 +1139,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
 
     let mut out = Vec::new();
     for f in &module.funcs {
-        let Some(arity) = top_candidate(f, &data_types, &methods) else {
+        let Some(&arity) = native_ok.get(&f.name) else {
             continue;
         };
         let wheres: Vec<&ast::Func> = f.clauses.iter().flat_map(|c| &c.wher).collect();
