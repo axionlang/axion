@@ -152,6 +152,7 @@ impl ConDecl {
 #[derive(Debug, Clone)]
 pub struct DataDecl {
     pub name: String,
+    pub params: Vec<String>, // parâmetros de tipo (ex.: `a` em `data List a`)
     pub cons: Vec<ConDecl>,
     pub span: Span,
 }

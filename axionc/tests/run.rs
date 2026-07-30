@@ -814,6 +814,25 @@ fn do_block_sequences_io_statements() {
 }
 
 #[test]
+fn parametric_data_types_work() {
+    // §1 (L0): tipos-soma paramétricos (`Maybe a`, `Either a b`) — os construtores
+    // generalizam sobre os parâmetros de tipo. Corre nos três executores.
+    let fx = fixture("parametric_data.axi");
+    for args in [
+        vec![fx.as_str()],
+        vec!["--backend", "cranelift", fx.as_str()],
+    ] {
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "49\n", "{args:?}");
+    }
+}
+
+#[test]
 fn sum_type_case_matches_on_tag() {
     // Tipo-soma (3 construtores) com tag em runtime; o case compara o tag e
     // destructura. val(Pos 7)+val Neg+val Zero = 6. Igual nos três executores.

@@ -51,9 +51,19 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
     };
     let mut env: Env = inf.base_env();
 
-    // tipos dos construtores e selectores a partir das declarações `data`
+    // tipos dos construtores e selectores a partir das declarações `data`. Um
+    // mapa de vars PARTILHADO por decl liga os parâmetros de tipo (`a` em
+    // `data List a`) ao mesmo `Ty::Var` no resultado (`List a`) e nos campos,
+    // e o esquema generaliza-os (`Cons :: forall a. a -> List a -> List a`).
     for d in &module.datas {
-        let result = Ty::Con(d.name.clone(), Vec::new());
+        let mut vars: HashMap<String, u32> = HashMap::new();
+        let mut next = 2_000_000u32; // banda dos parâmetros de tipo
+        let param_args: Vec<Ty> = d
+            .params
+            .iter()
+            .map(|p| ast_ty(&Type::Var(p.clone()), &mut vars, &mut next))
+            .collect();
+        let result = Ty::Con(d.name.clone(), param_args);
         for c in &d.cons {
             let fields: Vec<(String, Ty)> = c
                 .fields
@@ -65,31 +75,36 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
                     } else {
                         f.name.clone()
                     };
-                    (name, ty_of_ast(&f.ty))
+                    (name, ast_ty(&f.ty, &mut vars, &mut next))
                 })
                 .collect();
 
-            // construtor: campo1 -> ... -> T
+            // construtor: campo1 -> ... -> T params, quantificado sobre as vars
             let mut cty = result.clone();
             for (_, ft) in fields.iter().rev() {
                 cty = Ty::Fun(Box::new(ft.clone()), Box::new(cty));
             }
+            let mut gvars = Vec::new();
+            free_ty_vars(&cty, &mut gvars);
             env.insert(
                 c.name.clone(),
                 Scheme {
-                    vars: vec![],
+                    vars: gvars,
                     ty: cty,
                 },
             );
 
-            // selectores: T -> tipoDoCampo
+            // selectores: T params -> tipoDoCampo (quantificado)
             for (fname, ft) in &fields {
                 if !fname.starts_with('_') {
+                    let sty = Ty::Fun(Box::new(result.clone()), Box::new(ft.clone()));
+                    let mut svars = Vec::new();
+                    free_ty_vars(&sty, &mut svars);
                     env.insert(
                         fname.clone(),
                         Scheme {
-                            vars: vec![],
-                            ty: Ty::Fun(Box::new(result.clone()), Box::new(ft.clone())),
+                            vars: svars,
+                            ty: sty,
                         },
                     );
                 }
@@ -150,37 +165,58 @@ fn normalize_num(n: &str) -> String {
     }
 }
 
-fn ty_of_ast(t: &Type) -> Ty {
-    // converte um tipo da assinatura em Ty, mapeando variáveis por nome
-    fn go(t: &Type, vars: &mut HashMap<String, u32>, next: &mut u32) -> Ty {
-        match t {
-            Type::Con(n) => Ty::Con(normalize_num(n), Vec::new()),
-            Type::Var(n) => {
-                let id = *vars.entry(n.clone()).or_insert_with(|| {
-                    let v = *next;
-                    *next += 1;
-                    v
-                });
-                Ty::Var(id)
-            }
-            Type::App(_, _) => {
-                let (head, args) = flatten_app(t);
-                Ty::Con(
-                    normalize_num(&head),
-                    args.iter().map(|a| go(a, vars, next)).collect(),
-                )
-            }
-            Type::Arrow { from, to, .. } => {
-                Ty::Fun(Box::new(go(from, vars, next)), Box::new(go(to, vars, next)))
-            }
-            Type::Tuple(ts) => Ty::Tuple(ts.iter().map(|a| go(a, vars, next)).collect()),
-            Type::Unit => Ty::Con("()".to_string(), Vec::new()),
+/// Converte um `Type` do AST em `Ty`, mapeando variáveis por nome via `vars`
+/// (partilhado, para que o mesmo nome — p.ex. o `a` de `data List a` — dê o mesmo
+/// `Ty::Var` no resultado e nos campos). Vars novas apanham ids a partir de `next`.
+fn ast_ty(t: &Type, vars: &mut HashMap<String, u32>, next: &mut u32) -> Ty {
+    match t {
+        Type::Con(n) => Ty::Con(normalize_num(n), Vec::new()),
+        Type::Var(n) => {
+            let id = *vars.entry(n.clone()).or_insert_with(|| {
+                let v = *next;
+                *next += 1;
+                v
+            });
+            Ty::Var(id)
         }
+        Type::App(_, _) => {
+            let (head, args) = flatten_app(t);
+            Ty::Con(
+                normalize_num(&head),
+                args.iter().map(|a| ast_ty(a, vars, next)).collect(),
+            )
+        }
+        Type::Arrow { from, to, .. } => Ty::Fun(
+            Box::new(ast_ty(from, vars, next)),
+            Box::new(ast_ty(to, vars, next)),
+        ),
+        Type::Tuple(ts) => Ty::Tuple(ts.iter().map(|a| ast_ty(a, vars, next)).collect()),
+        Type::Unit => Ty::Con("()".to_string(), Vec::new()),
     }
-    // usa um espaço de nomes local; as variáveis são renumeradas ao instanciar
+}
+
+fn ty_of_ast(t: &Type) -> Ty {
+    // espaço de nomes local; as variáveis são quantificadas por `scheme_of_sig`
     let mut vars = HashMap::new();
-    let mut next = 1_000_000; // banda separada; scheme_of_sig quantifica-as
-    go(t, &mut vars, &mut next)
+    let mut next = 1_000_000; // banda separada
+    ast_ty(t, &mut vars, &mut next)
+}
+
+/// Recolhe os ids das variáveis de tipo que ocorrem em `ty` (para generalizar).
+fn free_ty_vars(ty: &Ty, out: &mut Vec<u32>) {
+    match ty {
+        Ty::Var(v) => {
+            if !out.contains(v) {
+                out.push(*v);
+            }
+        }
+        Ty::Con(_, args) => args.iter().for_each(|a| free_ty_vars(a, out)),
+        Ty::Fun(a, b) => {
+            free_ty_vars(a, out);
+            free_ty_vars(b, out);
+        }
+        Ty::Tuple(ts) => ts.iter().for_each(|t| free_ty_vars(t, out)),
+    }
 }
 
 fn flatten_app(t: &Type) -> (String, Vec<Type>) {

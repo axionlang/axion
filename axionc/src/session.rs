@@ -801,5 +801,8 @@ fn surface_sessions_agree_with_asc_cfsm_oracle() {
             }
         }
     }
-    assert!(checked >= 4, "cobertura fraca do diferencial: só {checked} sessões");
+    assert!(
+        checked >= 4,
+        "cobertura fraca do diferencial: só {checked} sessões"
+    );
 }

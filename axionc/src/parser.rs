@@ -293,8 +293,10 @@ impl<'a> Parser<'a> {
         let (s, _) = self.span_here();
         self.bump(); // 'data'
         let name = self.con_name("nome do tipo")?;
-        // parâmetros de tipo (ex.: `data Maybe a`) — ignorados na Fase 1
-        while matches!(self.cur(), Some(LTok::Tok(Tok::VarId(_)))) {
+        // parâmetros de tipo (ex.: `a` em `data List a`)
+        let mut params = Vec::new();
+        while let Some(LTok::Tok(Tok::VarId(p))) = self.cur() {
+            params.push(p.clone());
             self.pos += 1;
         }
         self.expect(&Tok::Equals, "'=' na declaração 'data'")?;
@@ -305,6 +307,7 @@ impl<'a> Parser<'a> {
         let end = self.span_here().0;
         Ok(DataDecl {
             name,
+            params,
             cons,
             span: (s, end),
         })
