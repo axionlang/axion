@@ -198,6 +198,51 @@ $AX --explain AX0302     # porquê: a topologia tem de ser uma árvore
 
 ---
 
+## L4 — propósito geral: typeclasses, HOF, IO (tudo nativo)
+
+A Axión cresce para um Rust/Haskell. Estas peças compilam **até ao nativo**
+(`--release`), não só no interpretador.
+
+### 14. Ordem superior + IO — `map`/`filter`/`foldr`, `mapM_`, `compose`
+
+```haskell
+main :: IO ()
+main = mapM_ (putStrLn . fizzbuzz) [1 .. 15]     -- compose parcial, putStrLn como valor
+```
+```sh
+$AX --release examples/03b_fizzbuzz.axi     # o FizzBuzz completo, em código-máquina
+```
+Funções de topo como valor (`mapM_ greet xs`), aplicação parcial (`compose f g`) e
+as HOF do prelúdio compilam via **eta-expansão + closures**.
+
+### 15. Typeclasses — `class`/`instance`, `Eq a =>`, custo-zero
+
+```haskell
+class Eq a where
+  eq :: a -> a -> Bool
+
+instance Eq Int where
+  eq x y = x == y
+
+count :: Eq a => a -> List a -> Int              -- polimorfismo restrito
+count x xs = case xs of
+  Nil       -> 0
+  Cons y ys -> if eq x y then 1 + count x ys else count x ys
+
+main :: Int
+main = count 7 [7, 1, 7, 7]                       -- → 3
+```
+```sh
+$AX --release examples/06_typeclasses.axi         # → 6
+```
+A **monomorfização** especializa `count` por tipo (`count$Int`) e resolve `eq`
+para a instância (`eq$Int`), que o LLVM inlina — **abstração de custo-zero, à
+Rust** (medido: benchmark `dispatch` ≈ C/Rust, [`docs/benchmarks.md`](benchmarks.md)).
+A coerência é verificada estaticamente: instância em falta, método a mais, uso
+sem instância → `AX0400`–`AX0405`.
+
+---
+
 ## Onde ir a seguir
 
 - A especificação completa: [`spec/Axion-V0.2.pdf`](../spec/Axion-V0.2.pdf).

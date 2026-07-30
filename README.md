@@ -22,7 +22,8 @@ AX=axionc/target/debug/axionc
 
 $AX examples/01_hello.axi           # Hello, Axión!
 $AX examples/02_fib.axi             # 832040
-$AX examples/03b_fizzbuzz.axi       # 1  2  Fizz  4  Buzz  Fizz … FizzBuzz   (Listagem 1.3 da spec)
+$AX examples/03b_fizzbuzz.axi       # 1  2  Fizz  4  Buzz … FizzBuzz   (mapM_ + compose, NATIVO)
+$AX examples/06_typeclasses.axi     # 6   (Eq a =>, monomorfizada → custo-zero)
 $AX --check examples/05_checksum_borrow.axi   # typecheck: linearidade + Auto-Drop
 
 # concorrência a CORRER (sessão + spawn + canais, sem deadlock):
@@ -36,6 +37,11 @@ Três executores para o mesmo programa, todos concordantes:
 | `axionc prog.axi` | **interpretador** (tree-walking) — o *fast-path* de `--dev` |
 | `axionc --backend cranelift prog.axi` | **`--dev`**: JIT Cranelift (código-máquina, sem opt) |
 | `axionc --release prog.axi` | **`--release`**: LLVM `-O2 -flto` + runtime C (competitivo com o C) |
+
+O núcleo de propósito geral compila **a nativo**: funções de ordem superior
+(`map`/`filter`/`foldr`), **typeclasses** (com monomorfização de custo-zero),
+`compose`/aplicação parcial, e IO em laço (`mapM_`, do-blocks). As sessões
+(concorrência) ainda correm só no interpretador — ver o roteiro.
 
 Diagnósticos estilo `rustc` (span + label + sugestão de fix + JSON), com códigos
 estáveis: `axionc --explain AX0001`.
@@ -97,7 +103,7 @@ Mais detalhe em [`docs/backend.md`](docs/backend.md) e nos docs de fase.
 |---------|-------|
 | [`axionc/`](axionc/) | **O compilador**, de raiz em Rust. |
 | [`spec/`](spec/) | A especificação mestra, versionada ao lado do código. |
-| [`examples/`](examples/) | Programas `.axi` (Hello, fib, FizzBuzz, buffer linear, Listagem 2.1, empréstimos). |
+| [`examples/`](examples/) | Programas `.axi` (Hello, fib, FizzBuzz, typeclasses, buffer linear, Listagem 2.1, empréstimos). |
 | [`docs/by-example.md`](docs/by-example.md) | **Percurso guiado L0→L3** — a melhor porta de entrada para aprender. |
 | [`docs/`](docs/) | Gramática, [códigos de erro](docs/error-codes.md), [backend](docs/backend.md), [benchmarks](docs/benchmarks.md), [cálculo de sessões](docs/phase-3-calculus.md), checklists de fase. |
 | [`scripts/`](scripts/) | `sanitize.sh` (ASan/LSan), `differential.sh` (oráculo GHC), `bench.sh`. |
@@ -107,7 +113,7 @@ Mais detalhe em [`docs/backend.md`](docs/backend.md) e nos docs de fase.
 ## Testar
 
 ```sh
-cd axionc && cargo test         # ~89 testes (integração + propriedade + sessões)
+cd axionc && cargo test         # ~103 testes (integração + propriedade + sessões)
 cargo clippy --all-targets      # limpo (-D warnings no CI)
 
 # gates que precisam de clang (AXION_CLANG, ou clang no PATH):
@@ -128,12 +134,25 @@ AXION_CLANG=clang ../scripts/sanitize.sh      # ASan/LSan sobre o runtime nativo
 - **Fase 4 — Ergonomia (LSP, erros que ensinam)** e **Fase 5 — ternário/topologia
   avançada** — futuro.
 
-**Honestidade sobre o estado.** O núcleo entrega o que promete, mas há dívida
-conhecida e documentada: `Integer`/bignum em falta (`factorial 20` corre, `50`
-não); as features avançadas (sessões, arenas, listas com IO) correm no
-interpretador, não no backend nativo; o scheduler é cooperativo, não M:N; a
-metateoria ainda não está mecanizada (Iris/Actris). Nenhum destes é um buraco de
-correção — são crescimento.
+**Propósito geral (pós-Fase 3, em curso).** A crescer para um Rust/Haskell, calmo
+e testado, sem partir a filosofia:
+- **Biblioteca padrão** — listas (`map`/`filter`/`foldr`/`zipWith`/…), `++`,
+  strings (`unlines`/`unwords`), operadores infixos de utilizador.
+- **Typeclasses** ✅ — `class`/`instance`, despacho, coerência estática
+  (`AX0400`–`AX0405`), e **codegen nativo por monomorfização** (mono +
+  constrangido + transitivo) — **custo-zero, medido** (ver benchmark `dispatch`).
+- **IO/efeitos nativos + first-class functions** ✅ — do-blocks, `mapM_`,
+  `compose`/aplicação parcial, funções como valor — tudo compila a nativo (o
+  FizzBuzz corre em `--release`). É a **1ª camada da estrada para concorrência
+  M:N nativa**.
+
+**Honestidade sobre o estado.** Dívida conhecida e documentada: `Integer`/bignum
+em falta (`factorial 20` corre, `50` não); **as sessões (concorrência) e as arenas
+correm no interpretador**, não no nativo — o scheduler é cooperativo, não M:N (a
+estrada nativa está começada pela base: IO/efeitos + first-class functions já
+nativos); sem `Float` ainda; sobre-aplicação (funções que devolvem funções e são
+re-aplicadas) e a metateoria mecanizada (Iris/Actris) por fazer. Nenhum é um
+buraco de correção — são crescimento.
 
 ## Requisitos
 

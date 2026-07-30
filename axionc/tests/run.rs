@@ -1146,6 +1146,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
             example("03b_fizzbuzz.axi"),
             "1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n",
         ), // compose parcial + putStrLn como valor → nativo
+        (example("06_typeclasses.axi"), "6\n"),  // typeclasses monomorfizadas (exemplo do README)
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
