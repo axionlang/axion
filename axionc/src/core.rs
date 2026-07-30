@@ -1,4 +1,4 @@
-//! Axión Core IR (§11): a representação intermédia **estrita/linear** de onde os
+//! Axion Core IR (§11): a representação intermédia **estrita/linear** de onde os
 //! backends nativos baixam (hoje o Cranelift `--dev`; amanhã o LLVM `--release`),
 //! em vez de baixar do AST directamente.
 //!

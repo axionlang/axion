@@ -5,7 +5,7 @@ Module      : Axion.Prototype.Buffer
 
 Fase 0 — bancada de validação semântica (§17 da spec). NÃO é o compilador.
 
-Modela o recurso central da Axión, o @Buffer U8 %1@ (Listagens 2.1–2.2), como
+Modela o recurso central da Axion, o @Buffer U8 %1@ (Listagens 2.1–2.2), como
 um EDSL sobre a extensão @LinearTypes@ do GHC. O objectivo único é validar,
 em semanas e antes de escrever uma linha de compilador, a /regra da
 linearidade/: todo o valor @%1@ é consumido __exactamente uma vez__. A

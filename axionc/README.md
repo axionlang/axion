@@ -1,6 +1,6 @@
-# `axionc` — o compilador da Axión (Fase 1)
+# `axionc` — o compilador da Axion (Fase 1)
 
-O compilador **próprio** da Axión, escrito **de raiz em Rust** (§18). Ao
+O compilador **próprio** da Axion, escrito **de raiz em Rust** (§18). Ao
 contrário da bancada EDSL descartável da Fase 0 (`../prototype`, em Haskell),
 isto é o produto: cresce daqui até à auto-hospedagem.
 
@@ -39,7 +39,7 @@ valerem o custo (Fase 4/8); os backends nativos `cranelift`/LLVM vêm depois.
 
 ```sh
 cargo build
-cargo run -- ../examples/01_hello.axi      # imprime: Hello, Axión!
+cargo run -- ../examples/01_hello.axi      # imprime: Hello, Axion!
 cargo run -- ../examples/02_fib.axi        # imprime: 832040
 cargo run -- --check <ficheiro.axi>        # só parse + typecheck + linearidade
 cargo run -- --emit json <ficheiro.axi>    # diagnósticos em JSON (§8)

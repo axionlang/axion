@@ -29,7 +29,7 @@
 ## As primeiras 2 semanas (§17) — estado
 
 - [x] `git init` + projeto Cabal do protótipo EDSL com `LinearTypes` ligado.
-- [x] Escrever os 5 programas-alvo Axión que definem «sucesso da Fase 1»
+- [x] Escrever os 5 programas-alvo Axion que definem «sucesso da Fase 1»
   ([`../examples`](../examples)).
 - [x] Protótipo EDSL: um `Buffer %1` que o typechecker recusa usar duas vezes.
   - Positivo: [`../prototype/src/Axion/Prototype/Buffer.hs`](../prototype/src/Axion/Prototype/Buffer.hs)

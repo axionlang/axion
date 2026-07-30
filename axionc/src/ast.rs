@@ -1,4 +1,4 @@
-//! AST do subconjunto L0/L1 da Axión (ver `docs/grammar.md`).
+//! AST do subconjunto L0/L1 da Axion (ver `docs/grammar.md`).
 
 pub type Span = (usize, usize); // (start, end) em offsets de bytes
 

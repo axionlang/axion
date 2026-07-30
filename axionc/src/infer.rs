@@ -558,7 +558,7 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // `mapM_` deixou de ser builtin — é uma função do prelúdio (Axión puro
+        // `mapM_` deixou de ser builtin — é uma função do prelúdio (Axion puro
         // sobre `case`), para compilar nativamente como qualquer HOF (IO nativo).
         // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
         // corpo e reclama tudo no fim (a entrada para correr programas de arena).

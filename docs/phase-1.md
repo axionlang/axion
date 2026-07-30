@@ -52,7 +52,7 @@
 ```sh
 cd axionc
 cargo test                                  # 6 testes de integração
-cargo run -- ../examples/01_hello.axi        # Hello, Axión!
+cargo run -- ../examples/01_hello.axi        # Hello, Axion!
 cargo run -- ../examples/02_fib.axi          # 832040
 cargo run -- --check tests/fixtures/use_after_consume.axi   # AX0001, exit 1
 cargo run -- --check tests/fixtures/use_once_ok.axi         # OK, exit 0

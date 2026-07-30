@@ -1,4 +1,4 @@
-//! Interpretador de referência do **Axión Session Core (ASC)** — a semântica
+//! Interpretador de referência do **Axion Session Core (ASC)** — a semântica
 //! executável do cálculo de sessões (ver `docs/phase-3-calculus.md`), para
 //! validar os teoremas T1–T5 por execução ANTES de o compilador de produção
 //! ganhar canais. Não é o backend: é o oráculo contra o qual o typechecker de

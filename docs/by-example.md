@@ -1,6 +1,6 @@
-# Axión by Example
+# Axion by Example
 
-Um percurso guiado pela Axión, com **divulgação progressiva** (§8): cada passo
+Um percurso guiado pela Axion, com **divulgação progressiva** (§8): cada passo
 introduz *um* conceito novo, com código que corre. Segue por ordem — nunca se vê
 `bound`/sessões antes de dominar o núcleo linear.
 
@@ -23,10 +23,10 @@ Quem sabe programação funcional lê isto no dia 1. Sem uma anotação de linea
 
 ```haskell
 main :: IO ()
-main = putStrLn "Hello, Axión!"
+main = putStrLn "Hello, Axion!"
 ```
 ```sh
-$AX examples/01_hello.axi          # → Hello, Axión!
+$AX examples/01_hello.axi          # → Hello, Axion!
 ```
 
 ### 2. Fibonacci — recursão, pattern matching, `where`
@@ -85,7 +85,7 @@ executores: `$AX --backend cranelift …` (Cranelift), `$AX --release …` (LLVM
 
 ## L1 — linearidade e memória sem GC (o diferenciador)
 
-O núcleo da Axión: cada dado tem um dono, e o compilador liberta-o em pontos
+O núcleo da Axion: cada dado tem um dono, e o compilador liberta-o em pontos
 estáticos exatos. Sem GC, sem `free` manual.
 
 ### 5. `%1`: consumir uma vez — `AX0001`
@@ -152,7 +152,7 @@ $AX --explain AX0003
 
 ## L3 — concorrência: canais e session types (§6/§9)
 
-Aqui a Axión distingue-se: comunicação **sem data races nem deadlocks, provada
+Aqui a Axion distingue-se: comunicação **sem data races nem deadlocks, provada
 por tipos**. Um canal move a posse; o `bound` confina os endpoints a uma árvore.
 
 ### 10. Um protocolo tipado — session types (§6)
@@ -200,7 +200,7 @@ $AX --explain AX0302     # porquê: a topologia tem de ser uma árvore
 
 ## L4 — propósito geral: typeclasses, HOF, IO (tudo nativo)
 
-A Axión cresce para um Rust/Haskell. Estas peças compilam **até ao nativo**
+A Axion cresce para um Rust/Haskell. Estas peças compilam **até ao nativo**
 (`--release`), não só no interpretador.
 
 ### 14. Ordem superior + IO — `map`/`filter`/`foldr`, `mapM_`, `compose`

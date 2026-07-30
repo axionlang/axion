@@ -15,7 +15,7 @@ main = defaultMain tests
 tests :: TestTree
 tests =
   testGroup
-    "Axión · Fase 0 — bancada de validação semântica"
+    "Axion · Fase 0 — bancada de validação semântica"
     [ testGroup
         "Unidade (fios lineares bem-tipados)"
         [ testCase "checksum após set 42 @0 == 42" $

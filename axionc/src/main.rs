@@ -1,4 +1,4 @@
-//! `axionc` — o compilador da Axión (§17–18).
+//! `axionc` — o compilador da Axion (§17–18).
 //!
 //! Pipeline: fonte `.axi` → lexer (logos) → layout → parser → verificação
 //! (nomes + linearidade + Auto-Drop) → inferência de tipos (HM) → interpretador.
@@ -173,7 +173,7 @@ fn main() -> ExitCode {
     let inplace: std::collections::HashSet<(usize, usize)> =
         analysis.inplace.iter().map(|ip| ip.span).collect();
 
-    // --- Axión Core IR: dump da baixada ANF (partilhada pelos backends) ---
+    // --- Axion Core IR: dump da baixada ANF (partilhada pelos backends) ---
     if emit == Emit::Core {
         print!("{}", core::dump(&core::lower(&module, &inplace)));
         return ExitCode::SUCCESS;
@@ -826,7 +826,7 @@ fn explain(code: &str) -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "axionc — compilador da Axión\n\n\
+        "axionc — compilador da Axion\n\n\
          uso:\n  \
          axionc <ficheiro.axi>          compila e corre\n  \
          axionc --check <ficheiro>      só compila (parse + typecheck + Auto-Drop)\n  \
@@ -834,7 +834,7 @@ fn print_usage() {
          axionc --emit drops <ficheiro> 'free' injectados pelo Auto-Drop\n  \
          axionc --emit inplace <fich.>  actualizações in-place (Linear Elision)\n  \
          axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas (estático)\n  \
-         axionc --emit core <fich.>     Axión Core IR (ANF) — a baixada partilhada\n  \
+         axionc --emit core <fich.>     Axion Core IR (ANF) — a baixada partilhada\n  \
          axionc --emit clif <fich.>     Cranelift IR do núcleo Int (backend --dev)\n  \
          axionc --emit llvm <fich.>     LLVM IR do núcleo Int (backend --release)\n  \
          axionc --backend cranelift <f> JIT-compila e corre main :: Int (--dev)\n  \

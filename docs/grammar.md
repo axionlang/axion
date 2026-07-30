@@ -1,4 +1,4 @@
-# Gramática mínima da Axión — subconjunto L0/L1 (alvo da Fase 1)
+# Gramática mínima da Axion — subconjunto L0/L1 (alvo da Fase 1)
 
 Este é o subconjunto que o **esqueleto ambulante** da Fase 1 tem de fazer
 `parse → typecheck → correr` (§17). Não cobre a linguagem toda: fixa o mínimo

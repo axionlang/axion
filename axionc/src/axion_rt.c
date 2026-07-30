@@ -1,4 +1,4 @@
-/* Runtime C do backend --release da Axión (§18). É compilado JUNTO com o LLVM
+/* Runtime C do backend --release da Axion (§18). É compilado JUNTO com o LLVM
  * IR do programa (clang -O2 -flto), pelo que as operações quentes (bump-alloc,
  * alloc) podem inlinar no chamador. Espelha o runtime Rust do --dev
  * (codegen.rs). Todos os ponteiros atravessam a fronteira como `long` (i64),
@@ -139,7 +139,7 @@ long axion_buf_sum(long buf) { /* redução vectorizável (empresta) */
 }
 void axion_buf_free(long buf) { free((void *)buf); }
 
-/* foldBytes f init buf: dobra `f` sobre os bytes. `f` é uma closure Axión
+/* foldBytes f init buf: dobra `f` sobre os bytes. `f` é uma closure Axion
  * {fn_ptr, capturas…}; chama-se `fn_ptr(f, acc, byte)` (a closure é o env do
  * 1.º parâmetro). Chamada indirecta por byte (não vectoriza — usar sumBytes
  * para somas). */

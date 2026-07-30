@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sanitizers no runtime nativo (§2/§11): a proposta de valor da Axión é memória
+# Sanitizers no runtime nativo (§2/§11): a proposta de valor da Axion é memória
 # segura sem GC, por isso o runtime tem de correr limpo sob os sanitizers do
 # LLVM. Dois portões, sobre o LLVM IR que o backend --release emite + o runtime C:
 #

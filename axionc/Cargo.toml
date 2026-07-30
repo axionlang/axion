@@ -2,7 +2,7 @@
 name = "axionc"
 version = "0.0.0"
 edition = "2021"
-description = "Fase 1 — esqueleto ambulante do compilador da Axión (parse → typecheck → correr), de raiz em Rust"
+description = "Fase 1 — esqueleto ambulante do compilador da Axion (parse → typecheck → correr), de raiz em Rust"
 publish = false
 
 [[bin]]

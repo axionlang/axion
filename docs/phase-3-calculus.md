@@ -1,4 +1,4 @@
-# Fase 3 — Trilho Formal: o Cálculo de Sessões da Axión (ASC)
+# Fase 3 — Trilho Formal: o Cálculo de Sessões da Axion (ASC)
 
 > **Estatuto.** Este documento é o *trilho formal* que a §17 da spec exige **antes**
 > de qualquer código de concorrência: *«provar antes de construir; para a
@@ -38,11 +38,11 @@ depois de haver runtime:
 
 Base teórica adotada: **GV** (linear λ-calculus com sessões; Gay & Vasconcelos) na
 variante **EGV** (com exceções/cancelamento). Escolhe-se GV, e não CP puro (cálculo
-de processos), porque a Axión é *funcional* — a concorrência vive em termos, não
+de processos), porque a Axion é *funcional* — a concorrência vive em termos, não
 num π-calculus à superfície. GV corresponde a CP (logo herda a deadlock-freedom),
 e EGV é a extensão exata que a §7 cita.
 
-Chamamos ao núcleo **ASC — Axión Session Core**. É um fragmento do Axión Core
+Chamamos ao núcleo **ASC — Axion Session Core**. É um fragmento do Axion Core
 (`core.rs`, IR estrito e linear em ANF) enriquecido com canais.
 
 ---
@@ -121,7 +121,7 @@ Um par acoplado `A ~ B` (§9.D) é exatamente `(Ep %1 S) ⊗ (Ep %1 dual(S))`.
 
 ### 2.3 Termos
 
-Núcleo funcional (já no Axión Core) + primitivas de sessão. As primitivas são
+Núcleo funcional (já no Axion Core) + primitivas de sessão. As primitivas são
 **pontos de suspensão** (A4) — o scheduler só troca de tarefa aqui.
 
 ```
@@ -186,7 +186,7 @@ x:T ⊢ x:T            ─────────────────      
 ```
 
 `!ₘ T` (Many) admite contração e enfraquecimento (uso 0..n) — é a modalidade que já
-existe na Axión para valores não-lineares; endpoints **nunca** são `!ₘ`.
+existe na Axion para valores não-lineares; endpoints **nunca** são `!ₘ`.
 
 ### 3.2 Sessões
 
@@ -286,7 +286,7 @@ enfileira e continua; `recv/offer` consome da fila (ou suspende se vazia).
 (ν c c')( ⟨E[offer c'{lᵢ↦Nᵢ}]⟩_u ∥ c'↦lⱼ·q ) ⟶ (ν c c')( ⟨E[Nⱼ[c'/x]]⟩_u ∥ c'↦q ) [OFF]
 ```
 
-`E[·]` é um contexto de avaliação (estrita, ANF — casa com o Axión Core). Uma
+`E[·]` é um contexto de avaliação (estrita, ANF — casa com o Axion Core). Uma
 thread bloqueada num `recv/offer` de fila vazia é **suspensa** pelo scheduler
 (§11) — não há espera ativa.
 
@@ -301,7 +301,7 @@ thread bloqueada num `recv/offer` de fila vazia é **suspensa** pelo scheduler
 
 ### 5.3 Núcleo funcional
 
-Redução-β padrão, estrita, sobre `E[·]` — herdada do Axión Core (`interp`/backends
+Redução-β padrão, estrita, sobre `E[·]` — herdada do Axion Core (`interp`/backends
 já a implementam).
 
 ### 5.4 Pânico → Linear Unwinding + cancelamento (A3)
@@ -384,7 +384,7 @@ Não é código; é o contrato que a Fase 3 vai materializar, derivado das regra
   regra (Bound) com a premissa de confinamento `s ∉ ftv(T)`. Novos códigos: banda
   **AX03xx** (canais e session types) — p.ex. uso de endpoint após `send`
   (violação de A1), ramo `Closed` não tratado, escape de endpoint do nursery.
-- **Core IR.** ASC é o Axión Core + os nós `bound/spawn/newChan/send/recv/close/
+- **Core IR.** ASC é o Axion Core + os nós `bound/spawn/newChan/send/recv/close/
   select/offer/raise/cancel`. Os backends (Cranelift/LLVM) baixam os nós de sessão
   para chamadas ao runtime do scheduler — tal como hoje baixam `withArena` para o
   runtime de arena.

@@ -1,4 +1,4 @@
-//! Backend `--release` (§18): baixa o **mesmo Axión Core IR** (ver `core.rs`)
+//! Backend `--release` (§18): baixa o **mesmo Axion Core IR** (ver `core.rs`)
 //! para **LLVM IR textual** e compila com `clang -O2 -flto`, ligando um pequeno
 //! **runtime C** (`axion_rt.c`) — o `-flto` deixa o LLVM inlinar as operações
 //! quentes (bump-alloc, alloc) no chamador. Ao contrário do `inkwell`/`llvm-sys`,
@@ -67,7 +67,7 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
         collect_strings(&f.body, &mut strings);
     }
 
-    let mut out = String::from("; Axión --release (LLVM IR)\n");
+    let mut out = String::from("; Axion --release (LLVM IR)\n");
     out.push_str(RT_DECLS);
     // declarações das importações FFI (§18): `declare i64 @name(i64, …)`
     let mut ffi: HashMap<String, usize> = HashMap::new();

@@ -19,7 +19,7 @@ fn fixture(name: &str) -> String {
 fn hello_compiles_and_runs() {
     let out = axionc().arg(example("01_hello.axi")).output().unwrap();
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, Axión!\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, Axion!\n");
 }
 
 #[test]
@@ -522,7 +522,7 @@ fn cranelift_backend_runs_hello_with_string_io() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, Axión!\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Hello, Axion!\n");
 }
 
 #[test]
@@ -1134,7 +1134,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("buffer_linear.axi"), "126444\n"), // Buffer %1 in-place / §5
         (fixture("inplace_update.axi"), "99\n"), // Linear Elision / §2
         (fixture("ffi_labs.axi"), "42\n"),     // FFI via dlsym / §18
-        (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
+        (example("01_hello.axi"), "Hello, Axion!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
         (fixture("mono_typeclass.axi"), "20\n"), // typeclasses monomorfizadas → nativo
         (fixture("mono_constrained.axi"), "3\n"), // `Eq a =>` especializada → nativo
@@ -1165,7 +1165,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
 
 #[test]
 fn native_runtime_is_leak_free_under_lsan() {
-    // A proposta de valor da Axión é memória segura sem GC. Compila fixtures de
+    // A proposta de valor da Axion é memória segura sem GC. Compila fixtures de
     // heap/arena/empréstimo com o LLVM IR do --release + AddressSanitizer +
     // LeakSanitizer e exige execução limpa (0 corrupção, 0 fugas). Cobre em
     // particular as duas fugas fechadas: a closure do `withArena` (arena_run) e
@@ -1357,7 +1357,7 @@ fn user_defined_infix_operators() {
 
 #[test]
 fn list_extra_concat_zip() {
-    // Degrau 3 da stdlib: ++ (concatenação), concat, zipWith, zip. Puro Axión
+    // Degrau 3 da stdlib: ++ (concatenação), concat, zipWith, zip. Puro Axion
     // sobre List. 20 + 6 + 140 + 11 = 177.
     let out = axionc().arg(fixture("list_extra.axi")).output().unwrap();
     assert!(
@@ -1398,7 +1398,7 @@ fn rich_strings_concat_unwords_unlines() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "Olá Axión!\nlinha 1\nlinha 2\n"
+        "Olá Axion!\nlinha 1\nlinha 2\n"
     );
 }
 

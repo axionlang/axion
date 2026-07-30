@@ -1,6 +1,6 @@
 # Backend nativo — o «Fast-Path» de `--dev` (Cranelift)
 
-> §11/§18 da spec. O pipeline baixa o AST para o **Axión Core IR** (ANF,
+> §11/§18 da spec. O pipeline baixa o AST para o **Axion Core IR** (ANF,
 > estrito/linear — ver `axionc/src/core.rs`) e daí emite código nativo:
 > **Cranelift em `--dev`** (compila depressa — «zero otimizações em dev») e
 > **LLVM em `--release`** (`axionc --release`; baixa o mesmo Core para LLVM IR
@@ -27,7 +27,7 @@ aconteceram na baixada AST→Core, pelo que o codegen só percorre o ANF.
 - **Strings / IO** (via runtime mínimo): literais de string (objectos de dados,
   C-strings), `show :: Int -> String` (`axion_show_int`), `putStrLn :: String ->
   IO ()` (`axion_puts`). Assim `main :: IO ()` corre nativamente — inclusive os
-  **exemplos reais** `examples/01_hello.axi` («Hello, Axión!») e
+  **exemplos reais** `examples/01_hello.axi` («Hello, Axion!») e
   `examples/02_fib.axi` («832040»), com o mesmo output do interpretador.
 - **Registos** e **tuplos** na heap (`axion_alloc`): construção `Con { f = … }`
   / `(a, b)`, actualização `r { f = … }` (aloca e copia) e selectores `f r`
@@ -145,7 +145,7 @@ o interpretador (`axionc programa.axi`, sem `--backend`).
 
 ## Verificação de memória (sanitizers)
 
-A proposta de valor da Axión é memória segura **sem GC**, por isso o runtime
+A proposta de valor da Axion é memória segura **sem GC**, por isso o runtime
 nativo corre sob os sanitizers do LLVM em CI (`scripts/sanitize.sh`, job
 `sanitize`), sobre o LLVM IR do `--release` + o runtime C:
 

@@ -1,6 +1,6 @@
 //! Backend nativo `--dev` (§11/§18): o «Fast-Path Backend» sobre Cranelift.
 //!
-//! Emite código nativo a partir do **Axión Core IR** (ver `core.rs`), não do AST:
+//! Emite código nativo a partir do **Axion Core IR** (ver `core.rs`), não do AST:
 //! o Core já está em ANF (cada subexpressão nomeada), com o desugar de
 //! multi-cláusula, o *lifting* de `where` e a conversão de closures resolvidos,
 //! pelo que este ficheiro é um mero emissor Core→Cranelift. JIT-compila via

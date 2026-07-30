@@ -3,4 +3,4 @@
 -- linearidade. Quem sabe FP lê isto no dia 1.
 
 main :: IO ()
-main = putStrLn "Hello, Axión!"
+main = putStrLn "Hello, Axion!"

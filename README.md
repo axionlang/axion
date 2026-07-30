@@ -1,6 +1,6 @@
-# Axión
+# Axion
 
-**Axión** é uma linguagem funcional de sistemas — **estrita, linear, sem GC** —
+**Axion** é uma linguagem funcional de sistemas — **estrita, linear, sem GC** —
 com sintaxe de Haskell, o determinismo de memória do Rust/C, e concorrência
 **sem data races nem deadlocks provada por tipos**. A premissa: unir a elegância
 do Haskell ao controlo do C, sem a rede do garbage collector nem os *lifetimes*
@@ -20,7 +20,7 @@ está em [`spec/Axion-V0.2.pdf`](spec/Axion-V0.2.pdf) (legível:
 cd axionc && cargo build            # compilador puro em cargo (sem deps de LLVM p/ build)
 AX=axionc/target/debug/axionc
 
-$AX examples/01_hello.axi           # Hello, Axión!
+$AX examples/01_hello.axi           # Hello, Axion!
 $AX examples/02_fib.axi             # 832040
 $AX examples/03b_fizzbuzz.axi       # 1  2  Fizz  4  Buzz … FizzBuzz   (mapM_ + compose, NATIVO)
 $AX examples/06_typeclasses.axi     # 6   (Eq a =>, monomorfizada → custo-zero)
@@ -46,7 +46,7 @@ O núcleo de propósito geral compila **a nativo**: funções de ordem superior
 Diagnósticos estilo `rustc` (span + label + sugestão de fix + JSON), com códigos
 estáveis: `axionc --explain AX0001`.
 
-**Novo aqui?** Segue o percurso guiado [**Axión by Example**](docs/by-example.md)
+**Novo aqui?** Segue o percurso guiado [**Axion by Example**](docs/by-example.md)
 — L0→L3, um conceito de cada vez, cada passo a correr.
 
 ## Garantias, com evidência
@@ -63,7 +63,7 @@ Não afirmações — **medições**, sob CI:
 | *Zero data races / deadlocks — por tipos* | linearidade (race-freedom) + topologia em árvore do `bound` (deadlock-freedom); ancorado a um **cálculo formal + model-checking de CFSMs** |
 | *Linearidade fiel* | **diferencial contra o GHC** (Linear Haskell) — mesmo veredito em todos os cenários |
 
-Benchmarks (ms, melhor de 3; mesmo `clang` para C e Axión `--release` —
+Benchmarks (ms, melhor de 3; mesmo `clang` para C e Axion `--release` —
 [`docs/benchmarks.md`](docs/benchmarks.md)):
 
 ```
@@ -83,7 +83,7 @@ Pipeline próprio, de raiz (nenhum estágio reutiliza o GHC):
 fonte → lexer(logos) → layout → parser → AST
       → check.rs   (linearidade %1, Auto-Drop, arenas, sessões — os invariantes vivem aqui)
       → infer.rs   (HM, Algoritmo W)
-      → core.rs    (Axión Core: IR estrito e linear em ANF; injeta o Auto-Drop)
+      → core.rs    (Axion Core: IR estrito e linear em ANF; injeta o Auto-Drop)
       → interp.rs (--dev fast-path)  |  codegen.rs (Cranelift)  |  llvm.rs (LLVM --release)
 ```
 

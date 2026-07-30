@@ -1,6 +1,6 @@
 # Fase 2 — Modelo de memória (o diferenciador) (checklist)
 
-> §17 da spec. «O que torna a Axión ≠ só mais um Haskell»: segurança de memória
+> §17 da spec. «O que torna a Axion ≠ só mais um Haskell»: segurança de memória
 > **sem GC**. Construída por incrementos, cada um testado e commitado.
 
 ## Pilares (§17)
@@ -74,7 +74,7 @@
     largada); `%0.5` em posições para além do `case split`.
 - [~] **Benchmark vs baseline (C/Rust)** — **primeiro ponto de medição** agora
   que o backend nativo `--dev` (Cranelift) corre. `bench/` + `scripts/bench.sh`:
-  `fib(40)` em Axión/C/Rust. Resultado: o fast-path `--dev` (sem opt) já bate
+  `fib(40)` em Axion/C/Rust. Resultado: o fast-path `--dev` (sem opt) já bate
   C/Rust `-O0` e fica a ~2–3× do `-O2` — o gap que o `--release`/LLVM fechará.
   Ver [`benchmarks.md`](benchmarks.md). Falta o `--release` (LLVM) para a
   comparação justa com `-O2`, e mais benchmarks (alocação, laços, SIMD).

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Suíte de micro-benchmarks (§13): compara os DOIS backends da Axión — --dev
+# Suíte de micro-benchmarks (§13): compara os DOIS backends da Axion — --dev
 # (Cranelift, sem opt) e --release (LLVM -O2 -flto) — contra C e Rust em -O0/-O2.
 # Kernels: fib (recursão/ramos), loop (200M iterações aritméticas), alloc (40M
-# alocações — arena na Axión, malloc/Box em C/Rust), simd (redução vectorizável;
-# Axión N/A — §4 por construir). Usa o MESMO clang (LLVM) para o C e para o
-# Axión --release, para o escalão ser comparável. Precisa de clang (AXION_CLANG
+# alocações — arena na Axion, malloc/Box em C/Rust), simd (redução vectorizável;
+# Axion N/A — §4 por construir). Usa o MESMO clang (LLVM) para o C e para o
+# Axion --release, para o escalão ser comparável. Precisa de clang (AXION_CLANG
 # ou no PATH; p.ex. `nix shell nixpkgs#llvmPackages_18.clang`).
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -38,9 +38,9 @@ run() { local key="$1"; shift; if [ "$1" = "SKIP" ]; then T[$key]="-"; R[$key]="
 
 bench_kernel() {
   local k="$1"
-  # Axión --dev (JIT)
+  # Axion --dev (JIT)
   run "$k:dev" "$AXIONC" --backend cranelift "bench/$k.axi"
-  # Axión --release (LLVM -O2 -flto)
+  # Axion --release (LLVM -O2 -flto)
   if "$AXIONC" --emit llvm "bench/$k.axi" > "$tmp/$k.ll" 2>/dev/null \
      && "$CLANG" -O2 -flto -w "$tmp/$k.ll" "$RT" -o "$tmp/${k}_rel" 2>/dev/null; then
     run "$k:rel" "$tmp/${k}_rel"
@@ -61,7 +61,7 @@ KERNELS="fib loop alloc simd dispatch"
 for k in $KERNELS; do bench_kernel "$k"; bench_c "$k"; bench_rust "$k"; done
 
 echo
-echo "Tempos (ms, melhor de $RUNS) — o mesmo clang (LLVM) para C e para Axión --release:"
+echo "Tempos (ms, melhor de $RUNS) — o mesmo clang (LLVM) para C e para Axion --release:"
 printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "kernel" "Ax --dev" "Ax --rel" "C -O0" "C -O2" "Rs -O0" "Rs -O2"
 printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "------" "--------" "--------" "-----" "-----" "------" "------"
 for k in fib loop alloc simd dispatch; do
