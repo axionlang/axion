@@ -270,8 +270,114 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, ch
     inject_prelude(&mut module);
     lower_classes(&mut module);
     let analysis = check::check(&module, diags);
-    infer::infer(&module, diags);
+    // A inferência devolve as resoluções de método monomórficas (span do uso →
+    // implementação concreta da instância). Reescrevemo-las como chamadas
+    // directas (`eq 3 3` → `eq$Int 3 3`): monomorfização (fatia 2b-ii) — o uso
+    // deixa de ser um método (despacho dinâmico) e passa a compilar nativamente.
+    let resolutions = infer::infer(&module, diags);
+    resolve_methods(&mut module, &resolutions);
     (Some(module), analysis)
+}
+
+/// Reescreve os usos de método monomórficos para chamadas directas à impl da
+/// instância, segundo o mapa `span → nome-da-impl` da inferência. Percorre todos
+/// os corpos (funções de topo, `where`, lambdas, ramos de `case`, `let`).
+type Resolutions = std::collections::HashMap<(String, ast::Span), String>;
+
+fn resolve_methods(module: &mut ast::Module, res: &Resolutions) {
+    if res.is_empty() {
+        return;
+    }
+    for f in &mut module.funcs {
+        let fname = f.name.clone();
+        rewrite_func(f, &fname, res);
+    }
+}
+
+fn rewrite_func(f: &mut ast::Func, fname: &str, res: &Resolutions) {
+    for c in &mut f.clauses {
+        match &mut c.body {
+            ast::Body::Plain(e) => rewrite_expr(e, fname, res),
+            ast::Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    rewrite_expr(g, fname, res);
+                    rewrite_expr(r, fname, res);
+                }
+            }
+        }
+        // as funções de `where` são inferidas com o nome do PAI como `cur_fn`
+        // (fazem parte do corpo dele), por isso reescrevem-se com `fname`.
+        for w in &mut c.wher {
+            rewrite_func_body(w, fname, res);
+        }
+    }
+}
+
+/// Como `rewrite_func`, mas mantém o nome de chave (`fname`) — para `where`, cujo
+/// `cur_fn` na inferência é o da função-pai.
+fn rewrite_func_body(f: &mut ast::Func, fname: &str, res: &Resolutions) {
+    for c in &mut f.clauses {
+        match &mut c.body {
+            ast::Body::Plain(e) => rewrite_expr(e, fname, res),
+            ast::Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    rewrite_expr(g, fname, res);
+                    rewrite_expr(r, fname, res);
+                }
+            }
+        }
+        for w in &mut c.wher {
+            rewrite_func_body(w, fname, res);
+        }
+    }
+}
+
+fn rewrite_expr(e: &mut ast::Expr, fname: &str, res: &Resolutions) {
+    use ast::Expr::*;
+    if let Var(name, span) = e {
+        if let Some(impl_name) = res.get(&(fname.to_string(), *span)) {
+            *name = impl_name.clone();
+        }
+        return;
+    }
+    match e {
+        Int(_, _) | Str(_, _) | Con(_, _) => {}
+        App(a, b, _) | BinOp(_, a, b, _) => {
+            rewrite_expr(a, fname, res);
+            rewrite_expr(b, fname, res);
+        }
+        If(c, t, el, _) => {
+            rewrite_expr(c, fname, res);
+            rewrite_expr(t, fname, res);
+            rewrite_expr(el, fname, res);
+        }
+        Let(binds, body, _) => {
+            for b in binds {
+                rewrite_func_body(b, fname, res);
+            }
+            rewrite_expr(body, fname, res);
+        }
+        Case(scrut, arms, _) => {
+            rewrite_expr(scrut, fname, res);
+            for (_, body) in arms {
+                rewrite_expr(body, fname, res);
+            }
+        }
+        Tuple(es, _) => es.iter_mut().for_each(|x| rewrite_expr(x, fname, res)),
+        RecordCon(_, fs, _) => {
+            for (_, x) in fs {
+                rewrite_expr(x, fname, res);
+            }
+        }
+        RecordUpd(base, fs, _) => {
+            rewrite_expr(base, fname, res);
+            for (_, x) in fs {
+                rewrite_expr(x, fname, res);
+            }
+        }
+        Lam(_, body, _) => rewrite_expr(body, fname, res),
+        Var(_, _) => unreachable!(),
+    }
 }
 
 /// Prelúdio L0 embutido: o tipo `List` e as funções de lista básicas. É

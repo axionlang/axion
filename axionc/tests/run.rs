@@ -1136,6 +1136,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("ffi_labs.axi"), "42\n"),     // FFI via dlsym / §18
         (example("01_hello.axi"), "Hello, Axión!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
+        (fixture("mono_typeclass.axi"), "20\n"), // typeclasses monomorfizadas → nativo
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1438,6 +1439,34 @@ fn typeclass_coherence_is_checked_statically() {
     reject("tc_missing_method.axi", "AX0401"); // método da classe em falta
     reject("tc_extra_method.axi", "AX0402"); // método fora da classe
     reject("tc_dup_instance.axi", "AX0403"); // instância duplicada (incoerência)
+}
+
+#[test]
+fn monomorphized_typeclass_runs_on_all_backends() {
+    // Fatia 2b-ii: um uso de método sobre um tipo concreto é reescrito para uma
+    // chamada directa à impl → compila nativamente. Interp e --dev concordam em
+    // 20 (o --release está coberto por release_backend_compiles_and_runs_*).
+    let interp = axionc()
+        .arg(fixture("mono_typeclass.axi"))
+        .output()
+        .unwrap();
+    assert!(
+        interp.status.success(),
+        "interp: {}",
+        String::from_utf8_lossy(&interp.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "20\n");
+
+    let dev = axionc()
+        .args(["--backend", "cranelift", &fixture("mono_typeclass.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        dev.status.success(),
+        "cranelift: {}",
+        String::from_utf8_lossy(&dev.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&dev.stdout), "20\n");
 }
 
 #[test]

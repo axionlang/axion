@@ -45,6 +45,8 @@ struct Infer<'a> {
     obligations: Vec<Obl>,
     /// classes com constraint declarado no âmbito da função a ser inferida.
     cur_constraints: Vec<String>,
+    /// nome da função a ser inferida (chave das resoluções, com o span).
+    cur_fn: String,
 }
 
 /// Uma obrigação `classe C sobre o tipo T`, recolhida num uso de método e
@@ -52,13 +54,20 @@ struct Infer<'a> {
 /// instância; T variável → tem de estar coberto por um constraint no âmbito.
 struct Obl {
     class: String,
+    method: String,
     ty: Ty,
     span: Span,
     scope: Vec<String>,
+    /// função onde o uso ocorre — parte da chave da resolução, porque os spans
+    /// (offsets de byte) do prelúdio e do ficheiro do utilizador colidem.
+    func: String,
 }
 
-/// Ponto de entrada: infere e verifica os tipos do módulo.
-pub fn infer(module: &Module, diags: &mut Diagnostics) {
+/// Ponto de entrada: infere e verifica os tipos do módulo. Devolve as resoluções
+/// de método monomórficas (`(função, span do uso) → nome da impl`), para a
+/// monomorfização reescrever os usos como chamadas directas (fatia 2b-ii). A
+/// chave inclui a função porque os spans do prelúdio e do utilizador colidem.
+pub fn infer(module: &Module, diags: &mut Diagnostics) -> HashMap<(String, Span), String> {
     let mut inf = Infer {
         subst: HashMap::new(),
         counter: 0,
@@ -68,6 +77,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
         method_meta: HashMap::new(),
         obligations: Vec::new(),
         cur_constraints: Vec::new(),
+        cur_fn: String::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -196,13 +206,15 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) {
         };
         // constraints no âmbito desta função (para descarregar usos polimórficos)
         inf.cur_constraints = f.constraints.iter().map(|(c, _)| c.clone()).collect();
+        inf.cur_fn = f.name.clone();
         let inferred = inf.infer_func(&env, f, expected);
         if let Some(d) = &declared {
             inf.unify(&inferred, d, f.span);
         }
     }
-    inf.discharge_obligations(module);
+    let resolutions = inf.discharge_obligations(module);
     let _ = placeholders;
+    resolutions
 }
 
 /// O `idx`-ésimo tipo de parâmetro de uma cadeia de setas (`a -> b -> c` @ 1 → b).
@@ -682,15 +694,24 @@ impl<'a> Infer<'a> {
     /// instância → **AX0404**; se ficou POLIMÓRFICO e a classe não está coberta
     /// por um constraint no âmbito da função → **AX0405**. (Fun/Tuple: conservador,
     /// não reporta.)
-    fn discharge_obligations(&mut self, module: &Module) {
+    fn discharge_obligations(&mut self, module: &Module) -> HashMap<(String, Span), String> {
         let instances: std::collections::HashSet<(String, String)> = module
             .instances
             .iter()
             .map(|i| (i.class_name.clone(), i.ty_head.clone()))
             .collect();
+        let mut resolutions: HashMap<(String, Span), String> = HashMap::new();
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
             match self.resolve(&o.ty) {
+                // tipo concreto COM instância → resolve para a impl directa
+                // (monomorfização): grava (função, span) → `metodo$Tipo`.
+                Ty::Con(name, _) if instances.contains(&(o.class.clone(), name.clone())) => {
+                    resolutions.insert(
+                        (o.func.clone(), o.span),
+                        crate::ast::method_impl_name(&o.method, &name),
+                    );
+                }
                 Ty::Con(name, _) if !instances.contains(&(o.class.clone(), name.clone())) => {
                     self.diags.push(
                         Diagnostic::error(
@@ -726,6 +747,7 @@ impl<'a> Infer<'a> {
                 _ => {}
             }
         }
+        resolutions
     }
 
     fn apply(&self, t: &Ty) -> Ty {
@@ -996,9 +1018,11 @@ impl<'a> Infer<'a> {
                     if let Some(dispatch) = nth_param(&ty, idx) {
                         self.obligations.push(Obl {
                             class,
+                            method: n.clone(),
                             ty: dispatch,
                             span: *span,
                             scope: self.cur_constraints.clone(),
+                            func: self.cur_fn.clone(),
                         });
                     }
                 }
