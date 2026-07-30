@@ -52,19 +52,21 @@ Não afirmações — **medições**, sob CI:
 | *Sem uso-após-livre, sem dupla-free* | **AddressSanitizer** limpo em todas as fixtures nativas (`scripts/sanitize.sh`) |
 | *Sem fugas de memória* | **LeakSanitizer**: `allocs == frees` no subconjunto provado |
 | *Latência zero, controlo de C* | benchmarks: **`--release` ≈ C `-O2`** em fib/loop/simd |
+| *Abstração de custo-zero (genéricos)* | **typeclasses monomorfizadas** = C à mão: dispatch **563 ≈ 564 (C) ≈ 561 (Rust trait)** ms |
 | *Sem GC — libertação em pontos estáticos* | a **arena esmaga o `malloc`** (~10×) e o `Box` do Rust (~16×) no kernel de alocação |
 | *Zero data races / deadlocks — por tipos* | linearidade (race-freedom) + topologia em árvore do `bound` (deadlock-freedom); ancorado a um **cálculo formal + model-checking de CFSMs** |
 | *Linearidade fiel* | **diferencial contra o GHC** (Linear Haskell) — mesmo veredito em todos os cenários |
 
-Benchmarks (ms, melhor de 5; mesmo `clang` para C e Axión `--release` —
+Benchmarks (ms, melhor de 3; mesmo `clang` para C e Axión `--release` —
 [`docs/benchmarks.md`](docs/benchmarks.md)):
 
 ```
-kernel  Ax --rel |  C -O2  Rs -O2
-fib          250 |    251     298      (paridade / ganha)
-loop         538 |    539     539      (paridade)
-alloc         31 |    307     494      (arena: ~10× > malloc, ~16× > Box)
-simd          33 |     32      31      (paridade)
+kernel    Ax --rel |  C -O2  Rs -O2
+fib            252 |    252     323      (paridade)
+loop           542 |    550     545      (paridade)
+alloc           32 |    316     495      (arena: ~10× > malloc, ~15× > Box)
+simd            33 |     32      31      (paridade)
+dispatch       563 |    564     561      (typeclass monomorfizada = custo-zero)
 ```
 
 ## Como funciona (arquitetura)

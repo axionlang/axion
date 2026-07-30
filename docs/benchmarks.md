@@ -6,7 +6,7 @@
 
 ## Metodologia
 
-- Quatro kernels, o mesmo algoritmo em cada linguagem (`bench/<kernel>.{axi,c,rs}`):
+- Cinco kernels, o mesmo algoritmo em cada linguagem (`bench/<kernel>.{axi,c,rs}`):
   - **fib** — `fib(40)` recursivo naive (compute / ramos).
   - **loop** — 200 M iterações aritméticas com `mod` (não-fechável pelo `-O2`).
     Na Axión é recursão (sem laços na linguagem); em C/Rust é um laço idiomático.
@@ -16,6 +16,12 @@
     primitiva `sumBytes` sobre um `Buffer U8` linear (§4/§5) — o *escape-hatch*
     vectorizável (um laço no runtime que o `clang -O2` vectoriza e o `-flto`
     inlina); em C/Rust é o laço idiomático que o `-O2` auto-vectoriza.
+  - **dispatch** — 200 M passos em que a operação quente é um **método de
+    typeclasse**. Na Axión, `inner :: Stepper a =>` é genérica e a
+    **monomorfização** (fatia 2b) especializa-a a `inner$Int` com `step → step$Int`,
+    que o LLVM inlina; em **Rust** é genérica via *trait* (o Rust monomorfiza pelo
+    mesmo mecanismo); em C é a chamada directa à mão. Mede a **abstração de
+    custo-zero** — o genérico paga o mesmo que o escrito à mão?
 - Harness: [`scripts/bench.sh`](../scripts/bench.sh) — melhor de 3, `date +%s%N`,
   e verifica que, por kernel, todas as variantes dão o mesmo resultado.
 - **Escalão comparável:** o **mesmo `clang` (LLVM)** compila o C e o Axión
@@ -30,13 +36,14 @@
 ## Resultado (uma máquina, 8 cores; indicativo, não definitivo)
 
 ```
-Tempos (ms, melhor de 2):
-  kernel  Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
-  ------  -------- -------- |   -----   ----- |  ------  ------
-  fib          582      255 |     597     250 |     816     304
-  loop        3096      538 |    2222     543 |    2424     548
-  alloc       1544       33 |     328     314 |    1131     502
-  simd        2117       34 |     340      33 |     718      35
+Tempos (ms, melhor de 3):
+  kernel    Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
+  --------  -------- -------- |   -----   ----- |  ------  ------
+  fib            666      252 |     590     252 |     840     323
+  loop          3159      542 |    2243     550 |    2440     545
+  alloc         1493       32 |     330     316 |    1085     495
+  simd          1914       33 |     338      32 |     710      31
+  dispatch      3488      563 |    2433     564 |    2485     561
 ```
 
 ## Leitura
@@ -56,6 +63,13 @@ Tempos (ms, melhor de 2):
   **inlina** no chamador: **34 ms**, a par do C `-O2` (33) e do Rust (35). É assim
   que uma linguagem funcional expõe SIMD — via primitivas vectorizáveis de dados
   em massa (o «escape-hatch imperativo» da §4), não via laços do utilizador.
+- **Typeclasses — abstração de custo-zero, à Rust.** No `dispatch`, o método de
+  classe no laço quente, monomorfizado (fatia 2b) e inlinado pelo LLVM, custa
+  **563 ms** — a par do C `-O2` que chama a função à mão (**564 ms**) e do Rust
+  `-O2` genérico via *trait* (**561 ms**), a **3 ms** uns dos outros. O genérico
+  **não paga nada** por ser genérico: é exactamente a promessa «elegância do
+  Haskell, controlo do Rust». A especialização é o mesmo mecanismo do Rust
+  (monomorfização), não passagem de dicionários com indirecção.
 - **`--dev` é o fast-path, não o veloz.** Sem otimizações nem TCO, paga a
   recursão no `loop` (3096 ms), a chamada opaca ao runtime no `alloc` (1544 ms) e
   o `sumBuffer` **não-vectorizado** do runtime Rust do axionc em debug no `simd`
