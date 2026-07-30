@@ -357,9 +357,19 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // offer :: forall a. Ep a -> IO ()  (consome o endpoint da escolha externa)
+        // offer :: forall a b. Ep a -> b  (recebe a escolha externa; o resultado é
+        // um valor-soma etiquetado — `L (Ep Cont)` — sobre o qual se faz `case`;
+        // retorno genérico porque os rótulos/continuações são do programa)
         env.insert(
             "offer".into(),
+            Scheme {
+                vars: vec![0, 1],
+                ty: Ty::Fun(Box::new(ep(0)), Box::new(Ty::Var(1))),
+            },
+        );
+        // cancel :: forall a. Ep a -> IO ()  (§7: descarta o endpoint, avisa o par)
+        env.insert(
+            "cancel".into(),
             Scheme {
                 vars: vec![0],
                 ty: Ty::Fun(

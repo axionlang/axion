@@ -554,6 +554,12 @@ fn classify_op(
             }
             None => None,
         },
+        // `cancel c` (§7): descarta o endpoint em QUALQUER estado (pode-se sempre
+        // cancelar) — consome-o.
+        "cancel" => {
+            env.remove(&chan);
+            Some(OpResult::Closed)
+        }
         _ => None,
     }
 }
@@ -718,6 +724,7 @@ fn builtins() -> HashSet<String> {
         "newChannel",
         "select",
         "offer",
+        "cancel",
         // nursery de concorrência estruturada (§9)
         "bound",
         "spawn",
@@ -1073,6 +1080,7 @@ fn build_ctx(module: &Module) -> Ctx {
     // escolha: `select L c` consome o endpoint (arg 1); `offer c` consome-o.
     consumers.insert("select".to_string(), vec![Mult::Many, Mult::One]);
     consumers.insert("offer".to_string(), vec![Mult::One]);
+    consumers.insert("cancel".to_string(), vec![Mult::One]);
     // nursery (§9): o corpo do `bound` é emprestado; `spawn` recebe a closure-filho.
     consumers.insert("bound".to_string(), vec![Mult::Many]);
     consumers.insert("spawn".to_string(), vec![Mult::Many]);

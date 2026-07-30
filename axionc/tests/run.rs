@@ -96,6 +96,25 @@ fn session_program_runs_concurrently() {
 }
 
 #[test]
+fn session_offer_and_cancel_run() {
+    // §6/§7: a escolha externa (`offer`) e o cancelamento (`cancel` → `Closed`)
+    // executam. Um: `select Live` → o worker despacha para o ramo Live (→7).
+    // Outro: `cancel` → o worker recebe `Closed` e toma o ramo de cancelamento (→5).
+    for (fx, expected) in [
+        ("session_run_offer.axi", "7\n"),
+        ("session_run_cancel.axi", "5\n"),
+    ] {
+        let out = axionc().arg(fixture(fx)).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{fx} devia correr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{fx}");
+    }
+}
+
+#[test]
 fn session_choice_and_closed_exhaustiveness() {
     // §6/§9: escolha interna (⊕) e a exaustividade do ramo `Closed` (T5).
     let ok = |fx: &str| {

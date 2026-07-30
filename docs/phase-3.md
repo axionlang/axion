@@ -59,9 +59,13 @@
   `case`); o único ponto de suspensão é o `recv` de buffer vazio (troca de
   tarefa); os `Value` (Rc) ficam numa só thread (sem `Send`). `Value::Endpoint`,
   `newChannel`/`spawn`/`send`/`recv`/`select`/`close` executáveis. `session_run_pingpong.axi`
-  corre um ping-pong concorrente (21→42). **Falta:** M:N real com work-stealing +
-  `io_uring`/`epoll` (a arena da nursery, o §11 completo) no backend nativo;
-  `offer`/cancelamento em runtime.
+  corre um ping-pong concorrente (21→42). **Escolha e cancelamento a correr:**
+  `select L c` envia o rótulo; `case offer c of { L d -> … }` recebe-o e despacha
+  (um valor-soma etiquetado `L (Ep …)` transporta o endpoint avançado); `cancel c`
+  envia `Closed` ao par, que o `offer` recebe como o ramo de cancelamento (T5/§7
+  a executar). `session_run_offer.axi` (→7), `session_run_cancel.axi` (→5).
+  **Falta:** M:N real com work-stealing + `io_uring`/`epoll` (arena de nursery, o
+  §11 completo) no backend nativo.
 - [ ] **Cancelamento em pânico (§7)** — Linear Unwinding: `reset` da sub-arena em
   O(1), `Closed` ao par em O(filhos), `@cleanup` uma vez (T5).
 - [ ] **Açúcar de superfície (§9)** — `A ~ B`, `A Maybe~ B`, `observe`,

@@ -680,7 +680,7 @@ fn app_head(e: &Expr) -> (Option<&str>, Vec<&Expr>) {
 fn is_session_op(name: &str) -> bool {
     matches!(
         name,
-        "newChannel" | "spawn" | "send" | "recv" | "close" | "select"
+        "newChannel" | "spawn" | "send" | "recv" | "close" | "select" | "offer" | "cancel"
     )
 }
 
@@ -769,6 +769,14 @@ fn perform_op(
             eval(prog, env, args[0])?; // consome o endpoint
             Some(Value::Unit)
         }
+        "cancel" => {
+            // §7: descarta o endpoint e avisa o par com `Closed` (o rótulo que o
+            // `offer` do par recebe como o ramo de cancelamento — T5).
+            let ep = ep_id(&eval(prog, env, args[0])?)?;
+            sched.send(ep, Value::Str("Closed".to_string()));
+            Some(Value::Unit)
+        }
+        "offer" => return Err("`offer` tem de ser o escrutínio de um `case`".into()),
         "recv" => {
             let ep = ep_id(&eval(prog, env, args[0])?)?;
             // buffer vazio → `None` (bloqueia); senão o par (valor, endpoint)
@@ -794,6 +802,38 @@ fn step(
     task: Task,
     spawned: &mut Vec<Task>,
 ) -> Result<StepOut, RunError> {
+    // `case offer c of { L1 e1 -> N1 ; … }` (&): recebe o rótulo e despacha para
+    // o ramo correspondente. `offer` é o único op com escrutínio multi-braço.
+    if let Expr::Case(scrut, arms, _) = &task.cont {
+        if let (Some("offer"), oargs) = app_head(scrut) {
+            let ep = ep_id(&eval(prog, &task.env, oargs[0])?)?;
+            let label = match sched.recv(ep) {
+                None => return Ok(StepOut::Blocked(task)), // rótulo ainda não chegou
+                Some(Value::Str(l)) => l,
+                Some(other) => {
+                    return Err(format!(
+                        "offer: esperava um rótulo, veio {}",
+                        type_name(&other)
+                    ))
+                }
+            };
+            // valor etiquetado que carrega o endpoint avançado: `L (Endpoint c)`.
+            let tagged = Value::Record {
+                con: label.clone(),
+                fields: vec![("_0".to_string(), Value::Endpoint(ep))],
+            };
+            for (pat, body) in arms {
+                let child = child_env(&task.env);
+                if match_pat(pat, &tagged, &child) {
+                    return Ok(StepOut::Went(Task {
+                        cont: body.clone(),
+                        env: child,
+                    }));
+                }
+            }
+            return Err(format!("offer: nenhum ramo trata o rótulo '{label}'"));
+        }
+    }
     // `case <op> of pat -> resto` → executa, liga `pat`, continua com `resto`.
     if let Expr::Case(scrut, arms, _) = &task.cont {
         if arms.len() == 1 {
