@@ -77,6 +77,8 @@ pub enum Op {
     LoadRaw(Atom, i32),
     /// `putStrLn :: String -> IO ()` (runtime)
     PutStrLn(Atom),
+    /// `putStr :: String -> IO ()` (runtime, sem nova-linha)
+    PutStr(Atom),
     /// `show :: Int -> String` (runtime)
     ShowInt(Atom),
     // --- arenas (§3): a `clos` recebe a arena; no fim faz-se o reset ---
@@ -720,6 +722,9 @@ impl Lower<'_> {
         };
         if name == "putStrLn" && args.len() == 1 {
             return Op::PutStrLn(self.atom(args[0], buf));
+        }
+        if name == "putStr" && args.len() == 1 {
+            return Op::PutStr(self.atom(args[0], buf));
         }
         if name == "show" && args.len() == 1 {
             return Op::ShowInt(self.atom(args[0], buf));
@@ -1524,7 +1529,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => atom_is(v, a),
         Op::Promote(t, c) => atom_is(v, t) || atom_is(v, c),
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
-        Op::PutStrLn(a) | Op::ShowInt(a) => atom_is(v, a),
+        Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => atom_is(v, a),
         // só em destrutores gerados (não analisados) — leitura, como `Field`
         Op::LoadRaw(..) => false,
         Op::Unsupported(_) => false,
@@ -2069,6 +2074,7 @@ fn dump_op(op: &Op) -> String {
         Op::Field { name, rec } => format!("field {name} {}", atom(rec)),
         Op::LoadRaw(a, off) => format!("loadraw {}+{off}", atom(a)),
         Op::PutStrLn(a) => format!("putStrLn {}", atom(a)),
+        Op::PutStr(a) => format!("putStr {}", atom(a)),
         Op::ShowInt(a) => format!("show {}", atom(a)),
         Op::WithArena { parent: None, clos } => format!("withArena {}", atom(clos)),
         Op::WithArena {

@@ -1140,6 +1140,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("mono_constrained.axi"), "3\n"), // `Eq a =>` especializada → nativo
         (fixture("mono_transitive.axi"), "2\n"), // especialização transitiva (β-2)
         (fixture("typeclasses.axi"), "125\n"),   // exemplo completo (count + eq Shape)
+        (fixture("native_io.axi"), "sum=6\n2\n4\n6\n"), // IO nativo: do + mapM_ + putStr
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1442,6 +1443,33 @@ fn typeclass_coherence_is_checked_statically() {
     reject("tc_missing_method.axi", "AX0401"); // método da classe em falta
     reject("tc_extra_method.axi", "AX0402"); // método fora da classe
     reject("tc_dup_instance.axi", "AX0403"); // instância duplicada (incoerência)
+}
+
+#[test]
+fn native_io_effects_run_on_interp_and_dev() {
+    // 1ª fatia da estrada M:N: IO/efeitos nativos. do-blocks sequenciam (o output
+    // de cada acção precede o da próxima), `mapM_` é função de prelúdio, `putStr`
+    // é runtime. Interp e --dev concordam (--release na lista release_backend_*).
+    for args in [
+        vec![fixture("native_io.axi")],
+        vec![
+            "--backend".into(),
+            "cranelift".into(),
+            fixture("native_io.axi"),
+        ],
+    ] {
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "sum=6\n2\n4\n6\n",
+            "{args:?}"
+        );
+    }
 }
 
 #[test]

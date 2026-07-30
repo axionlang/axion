@@ -47,6 +47,14 @@ extern "C" fn axion_puts(ptr: *const u8) {
     println!("{}", s.to_string_lossy());
 }
 
+/// `putStr`: imprime uma C-string SEM nova-linha.
+extern "C" fn axion_put(ptr: *const u8) {
+    use std::io::Write;
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
+    print!("{}", s.to_string_lossy());
+    let _ = std::io::stdout().flush();
+}
+
 /// `show :: Int -> String`: formata um inteiro e devolve uma C-string (leaked;
 /// vive até ao fim do processo — aceitável para um único `run`).
 extern "C" fn axion_show_int(n: i64) -> *const u8 {
@@ -268,6 +276,7 @@ struct Cg {
     strings: HashMap<String, DataId>,
     str_counter: u32,
     puts_id: FuncId,
+    put_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
     free_id: FuncId,
@@ -288,6 +297,7 @@ impl Cg {
         // FFI (§18): símbolos não registados resolvem-se por dlsym (libc, …).
         builder.symbol_lookup_fn(Box::new(resolve_symbol));
         builder.symbol("axion_puts", axion_puts as *const u8);
+        builder.symbol("axion_put", axion_put as *const u8);
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
         builder.symbol("axion_free", axion_free as *const u8);
@@ -318,6 +328,7 @@ impl Cg {
                 .map_err(|e| e.to_string())
         };
         let puts_id = import(&mut module, "axion_puts", 1, false)?;
+        let put_id = import(&mut module, "axion_put", 1, false)?;
         let show_id = import(&mut module, "axion_show_int", 1, true)?;
         let alloc_id = import(&mut module, "axion_alloc", 1, true)?;
         let free_id = import(&mut module, "axion_free", 1, false)?;
@@ -350,6 +361,7 @@ impl Cg {
             strings: HashMap::new(),
             str_counter: 0,
             puts_id,
+            put_id,
             show_id,
             alloc_id,
             free_id,
@@ -406,6 +418,7 @@ impl Cg {
                 strings: &mut self.strings,
                 str_counter: &mut self.str_counter,
                 puts_id: self.puts_id,
+                put_id: self.put_id,
                 show_id: self.show_id,
                 alloc_id: self.alloc_id,
                 free_id: self.free_id,
@@ -450,6 +463,7 @@ struct Fx<'a, 'b> {
     strings: &'a mut HashMap<String, DataId>,
     str_counter: &'a mut u32,
     puts_id: FuncId,
+    put_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
     free_id: FuncId,
@@ -790,6 +804,14 @@ impl Fx<'_, '_> {
                 let callee = self
                     .module
                     .declare_func_in_func(self.puts_id, self.builder.func);
+                self.builder.ins().call(callee, &[v]);
+                Ok(self.builder.ins().iconst(types::I64, 0)) // IO () → token
+            }
+            Op::PutStr(a) => {
+                let v = self.atom(a)?;
+                let callee = self
+                    .module
+                    .declare_func_in_func(self.put_id, self.builder.func);
                 self.builder.ins().call(callee, &[v]);
                 Ok(self.builder.ins().iconst(types::I64, 0)) // IO () → token
             }

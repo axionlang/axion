@@ -18,6 +18,7 @@ void axion_free(long ptr) { free((char *)ptr - 8); }
 
 /* --- strings / IO --- */
 void axion_puts(long s) { puts((const char *)s); }
+void axion_put(long s) { fputs((const char *)s, stdout); }
 long axion_show_int(long n) {
   char *buf = (char *)malloc(24);
   snprintf(buf, 24, "%ld", n);

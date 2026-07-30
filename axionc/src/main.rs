@@ -521,6 +521,11 @@ nub :: Eq a => List a -> List a
 nub xs = case xs of
   Nil -> Nil
   Cons y ys -> Cons y (nub (filter (\\z -> if eq y z then False else True) ys))
+mapM_ :: (a -> IO ()) -> List a -> IO ()
+mapM_ f xs = case xs of
+  Nil -> putStr \"\"
+  Cons y ys -> case f y of
+    _ -> mapM_ f ys
 ";
 
 /// Baixa as instâncias de typeclasse (fatia 1): cada método de cada `instance`

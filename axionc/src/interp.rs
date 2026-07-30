@@ -224,7 +224,7 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "join" | "mapM_" => 2,
+        "join" => 2,
         _ => 1,
     }
 }
@@ -299,10 +299,23 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         }
         Expr::Case(scrut, arms, _) => {
             let v = eval(prog, env, scrut)?;
+            // Sequenciamento de IO: um `do` desugara para `case acção of _ -> resto`.
+            // Se o escrutínio é uma acção de IO, o seu output PRECEDE o do resto
+            // (senão perder-se-ia — o valor do `case` é só o do ramo). O modelo de
+            // IO do interp é `Io(String)` acumulado; o nativo imprime na hora.
+            let io_prefix = match &v {
+                Value::Io(s) => Some(s.clone()),
+                _ => None,
+            };
             for (pat, body) in arms {
                 let child = child_env(env);
                 if match_pat(pat, &v, &child) {
-                    return eval(prog, &child, body);
+                    let r = eval(prog, &child, body)?;
+                    return Ok(match (io_prefix, r) {
+                        (Some(pre), Value::Io(rest)) => Value::Io(pre + &rest),
+                        (Some(pre), Value::Unit) => Value::Io(pre),
+                        (_, r) => r,
+                    });
                 }
             }
             Err("nenhum ramo do 'case' encaixou".to_string())
@@ -414,10 +427,6 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "join",
             args: Vec::new(),
         }),
-        "mapM_" => Ok(Value::Builtin {
-            name: "mapM_",
-            args: Vec::new(),
-        }),
         _ => Err(format!("nome não encontrado em runtime: '{name}'")),
     }
 }
@@ -458,12 +467,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         Value::Builtin { name, mut args } => {
             args.push(arg);
             if args.len() >= builtin_arity(name) {
-                // `mapM_` precisa do `prog` para aplicar `f` a cada elemento
-                if name == "mapM_" {
-                    run_mapm(prog, &args[0], &args[1])
-                } else {
-                    run_builtin(name, args)
-                }
+                run_builtin(name, args)
             } else {
                 Ok(Value::Builtin { name, args })
             }
@@ -694,43 +698,6 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
             type_name(&y)
         )),
     }
-}
-
-/// `mapM_ f xs`: aplica a acção IO `f` a cada elemento da lista (Nil/Cons),
-/// concatenando os efeitos (o modelo de IO do interp é `Io(String)`).
-fn run_mapm(prog: &Program, f: &Value, list: &Value) -> Result<Value, RunError> {
-    let mut out = String::new();
-    let mut cur = list.clone();
-    loop {
-        match cur {
-            Value::Record { con, fields } if con == "Nil" => {
-                let _ = fields;
-                break;
-            }
-            Value::Record { con, fields } if con == "Cons" => {
-                let head = fields[0].1.clone();
-                let tail = fields[1].1.clone();
-                match apply(prog, f.clone(), head)? {
-                    Value::Io(s) => out.push_str(&s),
-                    Value::Unit => {}
-                    other => {
-                        return Err(format!(
-                            "mapM_: a função devia dar uma acção IO, deu {}",
-                            type_name(&other)
-                        ))
-                    }
-                }
-                cur = tail;
-            }
-            other => {
-                return Err(format!(
-                    "mapM_: esperava uma lista, obteve {}",
-                    type_name(&other)
-                ))
-            }
-        }
-    }
-    Ok(Value::Io(out))
 }
 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {

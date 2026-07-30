@@ -25,6 +25,7 @@ const RUNTIME_C: &str = include_str!("axion_rt.c");
 /// Declarações do runtime (as funções C, com ABI i64 uniforme).
 const RT_DECLS: &str = "\
 declare void @axion_puts(i64)
+declare void @axion_put(i64)
 declare i64 @axion_show_int(i64)
 declare i64 @axion_alloc(i64)
 declare void @axion_free(i64)
@@ -203,7 +204,13 @@ fn collect_rhs(
 /// Os átomos que aparecem num `Op` (para o interning de strings).
 fn op_atoms(op: &Op) -> Vec<&Atom> {
     match op {
-        Op::Atom(a) | Op::Field { rec: a, .. } | Op::PutStrLn(a) | Op::ShowInt(a) => vec![a],
+        Op::Atom(a)
+        | Op::Field { rec: a, .. }
+        | Op::PutStrLn(a)
+        | Op::PutStr(a)
+        | Op::ShowInt(a) => {
+            vec![a]
+        }
         Op::LoadRaw(a, _) => vec![a],
         Op::Prim(_, a, b) | Op::Promote(a, b) => vec![a, b],
         Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
@@ -713,6 +720,11 @@ impl Emit<'_> {
             Op::PutStrLn(a) => {
                 let v = self.atom(a)?;
                 self.rt("axion_puts", false, &[v]);
+                Ok("0".into()) // IO () → token
+            }
+            Op::PutStr(a) => {
+                let v = self.atom(a)?;
+                self.rt("axion_put", false, &[v]);
                 Ok("0".into()) // IO () → token
             }
             Op::ShowInt(a) => {

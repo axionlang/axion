@@ -558,21 +558,8 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // mapM_ :: forall a. (a -> IO ()) -> List a -> IO ()  (L0; builtin no interp)
-        let io_unit = || Ty::Con("IO".into(), vec![Ty::Con("()".into(), vec![])]);
-        env.insert(
-            "mapM_".into(),
-            Scheme {
-                vars: vec![0],
-                ty: Ty::Fun(
-                    Box::new(Ty::Fun(Box::new(Ty::Var(0)), Box::new(io_unit()))),
-                    Box::new(Ty::Fun(
-                        Box::new(Ty::Con("List".into(), vec![Ty::Var(0)])),
-                        Box::new(io_unit()),
-                    )),
-                ),
-            },
-        );
+        // `mapM_` deixou de ser builtin — é uma função do prelúdio (Axión puro
+        // sobre `case`), para compilar nativamente como qualquer HOF (IO nativo).
         // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
         // corpo e reclama tudo no fim (a entrada para correr programas de arena).
         env.insert(
