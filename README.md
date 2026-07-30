@@ -1,162 +1,162 @@
 # Axion
 
-**Axion** é uma linguagem funcional de sistemas — **estrita, linear, sem GC** —
-com sintaxe de Haskell, o determinismo de memória do Rust/C, e concorrência
-**sem data races nem deadlocks provada por tipos**. A premissa: unir a elegância
-do Haskell ao controlo do C, sem a rede do garbage collector nem os *lifetimes*
-manuais.
+**Axion** is a systems functional language — **strict, linear, GC-free** — with
+Haskell syntax, the memory determinism of Rust/C, and concurrency **free of data
+races and deadlocks, proven by types**. The premise: unite the elegance of
+Haskell with the control of C, without the garbage collector's safety net nor
+manual *lifetimes*.
 
-O compilador (`axionc`) é escrito **de raiz em Rust**. A especificação mestra
-está em [`spec/Axion-V0.2.pdf`](spec/Axion-V0.2.pdf) (legível:
+The compiler (`axionc`) is written **from scratch in Rust**. The master
+specification lives in [`spec/Axion-V0.2.pdf`](spec/Axion-V0.2.pdf) (readable:
 [`.html`](spec/Axion-V0.2.html)).
 
-> **Estado: marco publicável — Fases 0–3 do roteiro (§17) concluídas e
-> _validadas_.** Memória segura sem GC e concorrência segura por tipos, ambas
-> medidas, não afirmadas. Ver [Garantias, com evidência](#garantias-com-evidência).
+> **Status: publishable milestone — roadmap phases 0–3 (§17) complete and
+> _validated_.** GC-free memory safety and type-safe concurrency, both measured,
+> not merely claimed. See [Guarantees, with evidence](#guarantees-with-evidence).
 
-## O que corre hoje
+## What runs today
 
 ```sh
-cd axionc && cargo build            # compilador puro em cargo (sem deps de LLVM p/ build)
+cd axionc && cargo build            # pure cargo compiler (no LLVM build deps)
 AX=axionc/target/debug/axionc
 
 $AX examples/01_hello.axi           # Hello, Axion!
 $AX examples/02_fib.axi             # 832040
-$AX examples/03b_fizzbuzz.axi       # 1  2  Fizz  4  Buzz … FizzBuzz   (mapM_ + compose, NATIVO)
-$AX examples/06_typeclasses.axi     # 6   (Eq a =>, monomorfizada → custo-zero)
-$AX --check examples/05_checksum_borrow.axi   # typecheck: linearidade + Auto-Drop
+$AX examples/03b_fizzbuzz.axi       # 1  2  Fizz  4  Buzz … FizzBuzz   (mapM_ + compose, NATIVE)
+$AX examples/06_typeclasses.axi     # 6   (Eq a =>, monomorphized → zero-cost)
+$AX --check examples/05_checksum_borrow.axi   # typecheck: linearity + Auto-Drop
 
-# concorrência a CORRER (sessão + spawn + canais, sem deadlock):
-$AX axionc/tests/fixtures/session_run_pingpong.axi   # 42  (ping-pong concorrente 21→42)
+# concurrency ACTUALLY RUNNING (session + spawn + channels, deadlock-free):
+$AX axionc/tests/fixtures/session_run_pingpong.axi   # 42  (concurrent ping-pong 21→42)
 ```
 
-Três executores para o mesmo programa, todos concordantes:
+Three executors for the same program, all in agreement:
 
-| Modo | O quê |
-|------|-------|
-| `axionc prog.axi` | **interpretador** (tree-walking) — o *fast-path* de `--dev` |
-| `axionc --backend cranelift prog.axi` | **`--dev`**: JIT Cranelift (código-máquina, sem opt) |
-| `axionc --release prog.axi` | **`--release`**: LLVM `-O2 -flto` + runtime C (competitivo com o C) |
+| Mode | What |
+|------|------|
+| `axionc prog.axi` | **interpreter** (tree-walking) — the `--dev` *fast-path* |
+| `axionc --backend cranelift prog.axi` | **`--dev`**: Cranelift JIT (machine code, no opt) |
+| `axionc --release prog.axi` | **`--release`**: LLVM `-O2 -flto` + C runtime (competitive with C) |
 
-O núcleo de propósito geral compila **a nativo**: funções de ordem superior
-(`map`/`filter`/`foldr`), **typeclasses** (com monomorfização de custo-zero),
-`compose`/aplicação parcial, e IO em laço (`mapM_`, do-blocks). As sessões
-(concorrência) ainda correm só no interpretador — ver o roteiro.
+The general-purpose core compiles **to native**: higher-order functions
+(`map`/`filter`/`foldr`), **typeclasses** (with zero-cost monomorphization),
+`compose`/partial application, and looping IO (`mapM_`, do-blocks). Sessions
+(concurrency) still run only in the interpreter — see the roadmap.
 
-Diagnósticos estilo `rustc` (span + label + sugestão de fix + JSON), com códigos
-estáveis: `axionc --explain AX0001`.
+`rustc`-style diagnostics (span + label + fix suggestion + JSON), with stable
+codes: `axionc --explain AX0001`.
 
-**Novo aqui?** Segue o percurso guiado [**Axion by Example**](docs/by-example.md)
-— L0→L3, um conceito de cada vez, cada passo a correr.
+**New here?** Follow the guided tour [**Axion by Example**](docs/by-example.md)
+— L0→L4, one concept at a time, every step runnable.
 
-## Garantias, com evidência
+## Guarantees, with evidence
 
-Não afirmações — **medições**, sob CI:
+Not claims — **measurements**, under CI:
 
-| Promessa (spec §0) | Verificado por |
+| Promise (spec §0) | Verified by |
 |---|---|
-| *Sem uso-após-livre, sem dupla-free* | **AddressSanitizer** limpo em todas as fixtures nativas (`scripts/sanitize.sh`) |
-| *Sem fugas de memória* | **LeakSanitizer**: `allocs == frees` no subconjunto provado |
-| *Latência zero, controlo de C* | benchmarks: **`--release` ≈ C `-O2`** em fib/loop/simd |
-| *Abstração de custo-zero (genéricos)* | **typeclasses monomorfizadas** = C à mão: dispatch **563 ≈ 564 (C) ≈ 561 (Rust trait)** ms |
-| *Sem GC — libertação em pontos estáticos* | a **arena esmaga o `malloc`** (~10×) e o `Box` do Rust (~16×) no kernel de alocação |
-| *Zero data races / deadlocks — por tipos* | linearidade (race-freedom) + topologia em árvore do `bound` (deadlock-freedom); ancorado a um **cálculo formal + model-checking de CFSMs** |
-| *Linearidade fiel* | **diferencial contra o GHC** (Linear Haskell) — mesmo veredito em todos os cenários |
+| *No use-after-free, no double-free* | **AddressSanitizer** clean on all native fixtures (`scripts/sanitize.sh`) |
+| *No memory leaks* | **LeakSanitizer**: `allocs == frees` on the proven subset |
+| *Zero latency, C-level control* | benchmarks: **`--release` ≈ C `-O2`** on fib/loop/simd |
+| *Zero-cost abstraction (generics)* | **monomorphized typeclasses** = hand-written C: dispatch **563 ≈ 564 (C) ≈ 561 (Rust trait)** ms |
+| *No GC — release at static points* | the **arena crushes `malloc`** (~10×) and Rust's `Box` (~16×) in the allocation kernel |
+| *Zero data races / deadlocks — by types* | linearity (race-freedom) + tree topology of `bound` (deadlock-freedom); anchored to a **formal calculus + CFSM model-checking** |
+| *Faithful linearity* | **differential against GHC** (Linear Haskell) — same verdict in every scenario |
 
-Benchmarks (ms, melhor de 3; mesmo `clang` para C e Axion `--release` —
+Benchmarks (ms, best of 3; same `clang` for C and Axion `--release` —
 [`docs/benchmarks.md`](docs/benchmarks.md)):
 
 ```
 kernel    Ax --rel |  C -O2  Rs -O2
-fib            252 |    252     323      (paridade)
-loop           542 |    550     545      (paridade)
+fib            252 |    252     323      (parity)
+loop           542 |    550     545      (parity)
 alloc           32 |    316     495      (arena: ~10× > malloc, ~15× > Box)
-simd            33 |     32      31      (paridade)
-dispatch       563 |    564     561      (typeclass monomorfizada = custo-zero)
+simd            33 |     32      31      (parity)
+dispatch       563 |    564     561      (monomorphized typeclass = zero-cost)
 ```
 
-## Como funciona (arquitetura)
+## How it works (architecture)
 
-Pipeline próprio, de raiz (nenhum estágio reutiliza o GHC):
+Its own pipeline, from scratch (no stage reuses GHC):
 
 ```
-fonte → lexer(logos) → layout → parser → AST
-      → check.rs   (linearidade %1, Auto-Drop, arenas, sessões — os invariantes vivem aqui)
-      → infer.rs   (HM, Algoritmo W)
-      → core.rs    (Axion Core: IR estrito e linear em ANF; injeta o Auto-Drop)
-      → interp.rs (--dev fast-path)  |  codegen.rs (Cranelift)  |  llvm.rs (LLVM --release)
+source → lexer(logos) → layout → parser → AST
+       → check.rs   (linearity %1, Auto-Drop, arenas, sessions — the invariants live here)
+       → infer.rs   (HM, Algorithm W)
+       → core.rs    (Axion Core: strict, linear ANF IR; injects Auto-Drop)
+       → interp.rs (--dev fast-path)  |  codegen.rs (Cranelift)  |  llvm.rs (LLVM --release)
 ```
 
-- **Memória sem GC (§2/§3):** *Auto-Drop* insere `free` em pontos de morte estáticos
-  (local, entre funções, empréstimos reclamados, in-place, e **deep-drop** recursivo
-  de estruturas aninhadas); *arenas* com reset em massa e análise de escape.
-- **Concorrência (§6/§9):** canais lineares + *session types*; o `bound` é um nursery
-  cuja topologia acíclica dá deadlock-freedom por construção. O cálculo está
-  formalizado em [`docs/phase-3-calculus.md`](docs/phase-3-calculus.md) **antes** do
-  código, com um interpretador de referência e model-checking de CFSMs a validá-lo.
+- **GC-free memory (§2/§3):** *Auto-Drop* inserts `free` at static death points
+  (local, cross-function, reclaimed borrows, in-place, and recursive **deep-drop**
+  of nested structures); *arenas* with bulk reset and escape analysis.
+- **Concurrency (§6/§9):** linear channels + *session types*; `bound` is a nursery
+  whose acyclic topology gives deadlock-freedom by construction. The calculus is
+  formalized in [`docs/phase-3-calculus.md`](docs/phase-3-calculus.md) **before**
+  the code, with a reference interpreter and CFSM model-checking validating it.
 
-Mais detalhe em [`docs/backend.md`](docs/backend.md) e nos docs de fase.
+More detail in [`docs/backend.md`](docs/backend.md) and the phase docs.
 
-## Estrutura
+## Structure
 
-| Caminho | Papel |
+| Path | Role |
 |---------|-------|
-| [`axionc/`](axionc/) | **O compilador**, de raiz em Rust. |
-| [`spec/`](spec/) | A especificação mestra, versionada ao lado do código. |
-| [`examples/`](examples/) | Programas `.axi` (Hello, fib, FizzBuzz, typeclasses, buffer linear, Listagem 2.1, empréstimos). |
-| [`docs/by-example.md`](docs/by-example.md) | **Percurso guiado L0→L3** — a melhor porta de entrada para aprender. |
-| [`docs/`](docs/) | Gramática, [códigos de erro](docs/error-codes.md), [backend](docs/backend.md), [benchmarks](docs/benchmarks.md), [cálculo de sessões](docs/phase-3-calculus.md), checklists de fase. |
-| [`scripts/`](scripts/) | `sanitize.sh` (ASan/LSan), `differential.sh` (oráculo GHC), `bench.sh`. |
-| [`prototype/`](prototype/) | Bancada EDSL descartável da Fase 0 (validou a linearidade em Linear Haskell). |
-| [`bench/`](bench/), [`differential/`](differential/) | Kernels de benchmark; cenários do diferencial. |
+| [`axionc/`](axionc/) | **The compiler**, from scratch in Rust. |
+| [`spec/`](spec/) | The master specification, versioned alongside the code. |
+| [`examples/`](examples/) | `.axi` programs (Hello, fib, FizzBuzz, typeclasses, linear buffer, Listing 2.1, borrows). |
+| [`docs/by-example.md`](docs/by-example.md) | **Guided tour L0→L4** — the best entry point to learn. |
+| [`docs/`](docs/) | Grammar, [error codes](docs/error-codes.md), [backend](docs/backend.md), [benchmarks](docs/benchmarks.md), [session calculus](docs/phase-3-calculus.md), phase checklists. |
+| [`scripts/`](scripts/) | `sanitize.sh` (ASan/LSan), `differential.sh` (GHC oracle), `bench.sh`. |
+| [`prototype/`](prototype/) | Throwaway EDSL bench from Phase 0 (validated linearity in Linear Haskell). |
+| [`bench/`](bench/), [`differential/`](differential/) | Benchmark kernels; differential scenarios. |
 
-## Testar
+## Testing
 
 ```sh
-cd axionc && cargo test         # ~103 testes (integração + propriedade + sessões)
-cargo clippy --all-targets      # limpo (-D warnings no CI)
+cd axionc && cargo test         # ~103 tests (integration + property + sessions)
+cargo clippy --all-targets      # clean (-D warnings in CI)
 
-# gates que precisam de clang (AXION_CLANG, ou clang no PATH):
-AXION_CLANG=clang ../scripts/sanitize.sh      # ASan/LSan sobre o runtime nativo
-../scripts/differential.sh                    # axionc vs oráculo GHC (precisa de Nix)
+# gates that need clang (AXION_CLANG, or clang on PATH):
+AXION_CLANG=clang ../scripts/sanitize.sh      # ASan/LSan over the native runtime
+../scripts/differential.sh                    # axionc vs GHC oracle (needs Nix)
 ```
 
-## Roteiro (§17)
+## Roadmap (§17)
 
-- **Fase 0 — Fundações** ✅ — estratégia, repo, subconjunto mínimo, bancada EDSL.
-- **Fase 1 — Esqueleto ambulante (L0/L1)** ✅ — `parse → typecheck → correr`; três
-  executores; registos, tipos-soma (paramétricos), closures, FFI, listas/L0.
-- **Fase 2 — Modelo de memória (o diferenciador)** ✅ *e provado* — Auto-Drop,
-  arenas, `%0.5`, deep-drop; sanitizers em CI.
-- **Fase 3 — Concorrência** ✅ *provada, ancorada e a correr* — cálculo formal →
-  interpretador de referência + model-checking → typechecker (`AX0300`–`AX0305`) →
-  runtime cooperativo (`bound`/`spawn`/canais/escolha/cancelamento).
-- **Fase 4 — Ergonomia (LSP, erros que ensinam)** e **Fase 5 — ternário/topologia
-  avançada** — futuro.
+- **Phase 0 — Foundations** ✅ — strategy, repo, minimal subset, EDSL bench.
+- **Phase 1 — Walking skeleton (L0/L1)** ✅ — `parse → typecheck → run`; three
+  executors; records, sum types (parametric), closures, FFI, lists/L0.
+- **Phase 2 — Memory model (the differentiator)** ✅ *and proven* — Auto-Drop,
+  arenas, `%0.5`, deep-drop; sanitizers in CI.
+- **Phase 3 — Concurrency** ✅ *proven, anchored, and running* — formal calculus →
+  reference interpreter + model-checking → typechecker (`AX0300`–`AX0305`) →
+  cooperative runtime (`bound`/`spawn`/channels/choice/cancellation).
+- **Phase 4 — Ergonomics (LSP, teaching errors)** and **Phase 5 — ternary/advanced
+  topology** — future.
 
-**Propósito geral (pós-Fase 3, em curso).** A crescer para um Rust/Haskell, calmo
-e testado, sem partir a filosofia:
-- **Biblioteca padrão** — listas (`map`/`filter`/`foldr`/`zipWith`/…), `++`,
-  strings (`unlines`/`unwords`), operadores infixos de utilizador.
-- **Typeclasses** ✅ — `class`/`instance`, despacho, coerência estática
-  (`AX0400`–`AX0405`), e **codegen nativo por monomorfização** (mono +
-  constrangido + transitivo) — **custo-zero, medido** (ver benchmark `dispatch`).
-- **IO/efeitos nativos + first-class functions** ✅ — do-blocks, `mapM_`,
-  `compose`/aplicação parcial, funções como valor — tudo compila a nativo (o
-  FizzBuzz corre em `--release`). É a **1ª camada da estrada para concorrência
-  M:N nativa**.
+**General-purpose (post-Phase 3, in progress).** Growing toward a Rust/Haskell,
+calmly and tested, without breaking the philosophy:
+- **Standard library** — lists (`map`/`filter`/`foldr`/`zipWith`/…), `++`, strings
+  (`unlines`/`unwords`), user-defined infix operators.
+- **Typeclasses** ✅ — `class`/`instance`, dispatch, static coherence
+  (`AX0400`–`AX0405`), and **native codegen by monomorphization** (mono +
+  constrained + transitive) — **zero-cost, measured** (see the `dispatch` benchmark).
+- **Native IO/effects + first-class functions** ✅ — do-blocks, `mapM_`,
+  `compose`/partial application, functions as values — all compile to native
+  (FizzBuzz runs under `--release`). This is the **1st layer of the road to native
+  M:N concurrency**.
 
-**Honestidade sobre o estado.** Dívida conhecida e documentada: `Integer`/bignum
-em falta (`factorial 20` corre, `50` não); **as sessões (concorrência) e as arenas
-correm no interpretador**, não no nativo — o scheduler é cooperativo, não M:N (a
-estrada nativa está começada pela base: IO/efeitos + first-class functions já
-nativos); sem `Float` ainda; sobre-aplicação (funções que devolvem funções e são
-re-aplicadas) e a metateoria mecanizada (Iris/Actris) por fazer. Nenhum é um
-buraco de correção — são crescimento.
+**Honesty about the state.** Known and documented debt: `Integer`/bignum missing
+(`factorial 20` runs, `50` doesn't); **sessions (concurrency) and arenas run in
+the interpreter**, not native — the scheduler is cooperative, not M:N (the native
+road is started from the bottom: IO/effects + first-class functions already
+native); no `Float` yet; over-application (functions that return functions and are
+re-applied) and mechanized metatheory (Iris/Actris) still to do. None is a
+correctness hole — they are growth.
 
-## Requisitos
+## Requirements
 
-- **Rust** (rustc estável) para o `axionc` — compila com `cargo` puro.
-- **clang/LLVM** só em *runtime*, para o `--release` e os sanitizers (`AXION_CLANG`
-  ou no PATH; p.ex. `nix shell nixpkgs#llvmPackages_18.clang`).
-- **Nix** (opcional) para o diferencial GHC e o dev shell reprodutível ([`flake.nix`](flake.nix)).
+- **Rust** (stable rustc) for `axionc` — builds with pure `cargo`.
+- **clang/LLVM** only at *runtime*, for `--release` and the sanitizers (`AXION_CLANG`
+  or on PATH; e.g. `nix shell nixpkgs#llvmPackages_18.clang`).
+- **Nix** (optional) for the GHC differential and the reproducible dev shell ([`flake.nix`](flake.nix)).

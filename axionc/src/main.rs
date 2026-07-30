@@ -74,7 +74,7 @@ fn main() -> ExitCode {
                     Some("llvm") => backend = Backend::Llvm,
                     Some("interp") => backend = Backend::Interp,
                     _ => {
-                        eprintln!("--backend espera 'cranelift', 'llvm' ou 'interp'");
+                        eprintln!("--backend expects 'cranelift', 'llvm' or 'interp'");
                         return ExitCode::from(2);
                     }
                 }
@@ -91,7 +91,7 @@ fn main() -> ExitCode {
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
                         eprintln!(
-                            "--emit espera 'json', 'drops', 'inplace', 'arenas', 'core', 'clif' ou 'llvm'"
+                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'clif' or 'llvm'"
                         );
                         return ExitCode::from(2);
                     }
@@ -108,7 +108,7 @@ fn main() -> ExitCode {
             }
             other => {
                 if other.starts_with('-') {
-                    eprintln!("opção desconhecida: {other}");
+                    eprintln!("unknown option: {other}");
                     return ExitCode::from(2);
                 }
                 path = Some(other.to_string());
@@ -128,7 +128,7 @@ fn main() -> ExitCode {
     let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("não consegui ler {path}: {e}");
+            eprintln!("could not read {path}: {e}");
             return ExitCode::from(2);
         }
     };
@@ -213,7 +213,7 @@ fn main() -> ExitCode {
             }
             Ok(None) => ExitCode::SUCCESS, // main :: IO () — já imprimiu
             Err(e) => {
-                eprintln!("backend cranelift: {e}");
+                eprintln!("cranelift backend: {e}");
                 ExitCode::FAILURE
             }
         };
@@ -222,7 +222,7 @@ fn main() -> ExitCode {
         return match llvm::build_and_run(&module, "main", &inplace) {
             Ok(()) => ExitCode::SUCCESS, // o binário já imprimiu o resultado
             Err(e) => {
-                eprintln!("backend llvm (--release): {e}");
+                eprintln!("llvm backend (--release): {e}");
                 ExitCode::FAILURE
             }
         };
@@ -230,7 +230,7 @@ fn main() -> ExitCode {
 
     if check_only {
         if emit == Emit::Text {
-            eprintln!("ok: {path} compila (parse + typecheck + linearidade + Auto-Drop).");
+            eprintln!("ok: {path} compiles (parse + typecheck + linearity + Auto-Drop).");
         }
         return ExitCode::SUCCESS;
     }
@@ -238,7 +238,7 @@ fn main() -> ExitCode {
     match interp::run(&module) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("erro em runtime: {e}");
+            eprintln!("runtime error: {e}");
             ExitCode::FAILURE
         }
     }
@@ -250,10 +250,10 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, ch
     let tokens = match lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {
-            diags.push(Diagnostic::error("AX0100", "caractere inesperado").label(
+            diags.push(Diagnostic::error("AX0100", "unexpected character").label(
                 e.start,
                 e.end,
-                "não faz parte de nenhum token",
+                "not part of any token",
             ));
             return (None, check::Analysis::default());
         }
@@ -601,9 +601,9 @@ fn specialize(ty: &ast::Type, ty_head: &str) -> ast::Type {
 
 fn inject_prelude(module: &mut ast::Module) {
     let lines = LineMap::new(PRELUDE);
-    let tokens = lexer::lex(PRELUDE).expect("prelúdio: lex");
+    let tokens = lexer::lex(PRELUDE).expect("prelude: lex");
     let lt = layout::layout(&tokens, &lines);
-    let prelude = parser::parse_module(&lt).expect("prelúdio: parse");
+    let prelude = parser::parse_module(&lt).expect("prelude: parse");
     let has_data: std::collections::HashSet<String> =
         module.datas.iter().map(|d| d.name.clone()).collect();
     let has_func: std::collections::HashSet<String> =
@@ -642,52 +642,49 @@ fn inject_prelude(module: &mut ast::Module) {
     }
 }
 
-/// Imprime o relatório de Auto-Drop (`--emit drops`).
+/// Prints the Auto-Drop report (`--emit drops`).
 fn print_drops(drops: &[check::DropPoint], path: &str, lines: &LineMap) {
     if drops.is_empty() {
-        println!("Auto-Drop: nenhum 'free' injectado.");
+        println!("Auto-Drop: no 'free' inserted.");
         return;
     }
-    println!("Auto-Drop — {} 'free' injectado(s):", drops.len());
+    println!("Auto-Drop — {} 'free'(s) inserted:", drops.len());
     for d in drops {
         let (l, c) = lines.pos(d.span.0);
         println!(
-            "  free({}) : {} %1  @ {path}:{l}:{c}  (em '{}', {})",
+            "  free({}) : {} %1  @ {path}:{l}:{c}  (in '{}', {})",
             d.var, d.ty, d.func, d.reason
         );
     }
 }
 
-/// Imprime as actualizações de registo elegíveis a mutação in-place (`--emit inplace`).
+/// Prints the record updates eligible for in-place mutation (`--emit inplace`).
 fn print_inplace(sites: &[check::InPlace], path: &str, lines: &LineMap) {
     if sites.is_empty() {
-        println!("Linear Elision: nenhuma actualização in-place.");
+        println!("Linear Elision: no in-place update.");
         return;
     }
-    println!(
-        "Linear Elision — {} actualização(ões) in-place:",
-        sites.len()
-    );
+    println!("Linear Elision — {} in-place update(s):", sites.len());
     for s in sites {
         let (l, c) = lines.pos(s.span.0);
         println!(
-            "  '{}' mutado in-place  @ {path}:{l}:{c}  (em '{}': última menção viva)",
+            "  '{}' mutated in-place  @ {path}:{l}:{c}  (in '{}': last live mention)",
             s.var, s.func
         );
     }
 }
 
-/// Imprime os pontos de reset NLL das sub-arenas (`--emit arenas`).
+/// Prints the NLL reset points of sub-arenas (`--emit arenas`).
 fn print_arenas(resets: &[check::ArenaReset], path: &str, lines: &LineMap) {
     if resets.is_empty() {
-        println!("Reset NLL: nenhuma sub-arena.");
+        println!("NLL reset: no sub-arena.");
         return;
     }
-    println!("Reset NLL — {} sub-arena(s):", resets.len());
+    println!("NLL reset — {} sub-arena(s):", resets.len());
     for r in resets {
         let (l, c) = lines.pos(r.span.0);
         println!(
-            "  reset '{}' @ {path}:{l}:{c}  (em '{}': após a última menção de '{}')",
+            "  reset '{}' @ {path}:{l}:{c}  (in '{}': after the last mention of '{}')",
             r.sub, r.func, r.last_var
         );
     }
@@ -696,127 +693,129 @@ fn print_arenas(resets: &[check::ArenaReset], path: &str, lines: &LineMap) {
 fn explain(code: &str) -> ExitCode {
     let text = match code.to_uppercase().as_str() {
         "AX0001" => {
-            "AX0001 — contração de um recurso linear (consumido mais de uma vez).\n\
-             LER (emprestar) um %1 é livre e ilimitado — a Elisão de Empréstimos.\n\
-             CONSUMIR (mover a posse: argumento %1, campo %1, ou retorno) só pode\n\
-             acontecer uma vez. Para o partilhar por posse, use 'split' em duas\n\
-             metades %0.5 (§2)."
+            "AX0001 — contraction of a linear resource (consumed more than once).\n\
+             READING (borrowing) a %1 is free and unlimited — Borrow Elision.\n\
+             CONSUMING (moving ownership: a %1 argument, %1 field, or return) may\n\
+             only happen once. To share it by ownership, use 'split' into two\n\
+             %0.5 halves (§2)."
         }
         "AX0002" => {
-            "AX0002 — recurso must-use largado sem ser consumido.\n\
-             Tipos SEM Drop (Ep, Token, handles) são must-use: têm de ser\n\
-             consumidos ou devolvidos. Tipos droppable, ao contrário, são geridos\n\
-             pelo Auto-Drop (o compilador injecta 'free' no ponto de morte). Só o\n\
-             esquecimento de um must-use é erro (§2)."
+            "AX0002 — must-use resource dropped without being consumed.\n\
+             Types WITHOUT Drop (Ep, Token, handles) are must-use: they must be\n\
+             consumed or returned. Droppable types, by contrast, are managed by\n\
+             Auto-Drop (the compiler inserts 'free' at the death point). Only\n\
+             forgetting a must-use is an error (§2)."
         }
         "AX0100" => {
-            "AX0100 — erro de sintaxe. O parser não conseguiu reconhecer\n\
-             a construção. Verifique parênteses, '=' e indentação."
+            "AX0100 — syntax error. The parser could not recognize the\n\
+             construct. Check parentheses, '=' and indentation."
         }
         "AX0003" => {
-            "AX0003 — escape de sub-arena. Um valor alocado numa sub-arena\n\
-             (allocateCell sub) não pode ser devolvido do withSubArena — no reset\n\
-             a RAM da sub-arena é recuperada e o valor ficaria pendurado. Mova-o\n\
-             para a arena-pai antes do reset com 'promote parent valor' (§3)."
+            "AX0003 — sub-arena escape. A value allocated in a sub-arena\n\
+             (allocateCell sub) cannot be returned from withSubArena — on reset\n\
+             the sub-arena's RAM is reclaimed and the value would dangle. Move it\n\
+             to the parent arena before the reset with 'promote parent value' (§3)."
         }
         "AX0004" => {
-            "AX0004 — uso-após-move. Depois de mover a posse de um %1 (consumir:\n\
-             argumento %1, campo %1, ou retorno), não se pode voltar a lê-lo nem\n\
-             a consumi-lo. Ler ANTES de consumir é livre; ler DEPOIS é erro (§2)."
+            "AX0004 — use-after-move. Once you move ownership of a %1 (consume:\n\
+             a %1 argument, %1 field, or return), you cannot read or consume it\n\
+             again. Reading BEFORE consuming is free; reading AFTER is an error (§2)."
         }
         "AX0005" => {
-            "AX0005 — uso-após-release de marca de arena. 'arena_release mark'\n\
-             recupera tudo o que foi alocado depois de 'arena_mark'; usar um desses\n\
-             valores após o release é erro (a memória já foi reclamada). Consuma-o\n\
-             antes do release, ou não o aloque sob a marca (§3, Listagem 3.6)."
+            "AX0005 — use-after-release of an arena mark. 'arena_release mark'\n\
+             reclaims everything allocated after 'arena_mark'; using one of those\n\
+             values after the release is an error (the memory is already reclaimed).\n\
+             Consume it before the release, or don't allocate it under the mark\n\
+             (§3, Listing 3.6)."
         }
         "AX0006" => {
-            "AX0006 — escrita através de uma metade %0.5. 'split' divide um %1 em\n\
-             duas metades %0.5 de leitura partilhada; uma metade só pode ser lida,\n\
-             nunca escrita. Para recuperar a escrita, recombine as duas metades com\n\
-             'join a b' (que devolve o %1) (§2, Listagem 2.3)."
+            "AX0006 — write through a %0.5 half. 'split' divides a %1 into two\n\
+             shared-read %0.5 halves; a half can only be read, never written. To\n\
+             recover write access, recombine the two halves with 'join a b' (which\n\
+             returns the %1) (§2, Listing 2.3)."
         }
         "AX0101" => {
-            "AX0101 — nome não encontrado. O identificador não está em\n\
-             âmbito (nem parâmetro, nem local, nem função de topo, nem builtin)."
+            "AX0101 — name not found. The identifier is not in scope\n\
+             (not a parameter, local, top-level function, nor a builtin)."
         }
         "AX0200" => {
-            "AX0200 — incompatibilidade de tipos. A unificação (inferência HM,\n\
-             Algoritmo W) falhou: dois tipos que teriam de ser iguais não o são.\n\
-             Verifique as assinaturas e os argumentos das aplicações (§16)."
+            "AX0200 — type mismatch. Unification (HM inference, Algorithm W)\n\
+             failed: two types that would have to be equal are not. Check the\n\
+             signatures and the arguments of applications (§16)."
         }
         "AX0201" => {
-            "AX0201 — tipo infinito (occurs-check). A unificação exigiria um tipo\n\
-             recursivo (uma variável que ocorre dentro do tipo a que seria ligada),\n\
-             o que a inferência HM rejeita."
+            "AX0201 — infinite type (occurs-check). Unification would require a\n\
+             recursive type (a variable occurring inside the type it would be bound\n\
+             to), which HM inference rejects."
         }
         "AX0300" => {
-            "AX0300 — operação de canal não segue o tipo de sessão. 'send' exige\n\
-             um endpoint em 'Send', 'recv' em 'Recv', 'close' em 'End', e o rótulo\n\
-             de 'select' tem de pertencer ao 'Select'. A fidelidade de protocolo é\n\
-             verificada estaticamente (§6)."
+            "AX0300 — channel operation does not follow the session type. 'send'\n\
+             requires an endpoint at 'Send', 'recv' at 'Recv', 'close' at 'End', and\n\
+             the label of 'select' must belong to the 'Select'. Protocol fidelity is\n\
+             checked statically (§6)."
         }
         "AX0301" => {
-            "AX0301 — protocolo de sessão incompleto. Um endpoint tem de ser levado\n\
-             até 'close' (ou consumido por 'offer'/'cancel'); largá-lo a meio deixa\n\
-             o protocolo por terminar (§6)."
+            "AX0301 — incomplete session protocol. An endpoint must be carried all\n\
+             the way to 'close' (or consumed by 'offer'/'cancel'); dropping it\n\
+             midway leaves the protocol unfinished (§6)."
         }
         "AX0302" => {
-            "AX0302 — escape de endpoint do nursery 'bound'. Os endpoints nascem\n\
-             confinados ao 'bound' para o grafo de comunicação ser uma árvore\n\
-             (deadlock-freedom, §9); não podem ser devolvidos do bloco. Consuma-os\n\
-             dentro (close/send/recv). É o análogo do escape de arena (AX0003)."
+            "AX0302 — endpoint escape from the 'bound' nursery. Endpoints are born\n\
+             confined to the 'bound' so the communication graph is a tree\n\
+             (deadlock-freedom, §9); they cannot be returned from the block. Consume\n\
+             them inside (close/send/recv). It is the analog of arena escape (AX0003)."
         }
         "AX0303" => {
-            "AX0303 — escolha externa ('Offer') sem o ramo 'Closed'. Todo o '&' tem\n\
-             de oferecer 'Closed' — o rótulo que o Linear Unwinding envia ao cancelar\n\
-             (§7); sem ele, o cancelamento de um par em pânico ficaria por tratar."
+            "AX0303 — external choice ('Offer') without the 'Closed' branch. Every\n\
+             '&' must offer 'Closed' — the label that Linear Unwinding sends when\n\
+             cancelling (§7); without it, cancellation of a panicking peer would go\n\
+             unhandled."
         }
         "AX0304" => {
-            "AX0304 — 'case offer c' não exaustivo. O 'case' sobre uma escolha externa\n\
-             tem de tratar TODOS os ramos que o 'Offer' oferece (incluindo 'Closed').\n\
-             Acrescente um braço para cada rótulo (§6/§7)."
+            "AX0304 — non-exhaustive 'case offer c'. A 'case' over an external choice\n\
+             must handle ALL branches the 'Offer' provides (including 'Closed').\n\
+             Add an arm for each label (§6/§7)."
         }
         "AX0305" => {
-            "AX0305 — a closure de 'spawn' captura um endpoint do exterior. Um filho\n\
-             spawnado só comunica com o pai pelo seu endpoint-parâmetro (aresta\n\
-             pai↔filho); capturar canais do exterior podia formar um ciclo → deadlock.\n\
-             A topologia tem de ser uma árvore (§9)."
+            "AX0305 — the 'spawn' closure captures an endpoint from outside. A\n\
+             spawned child communicates with the parent only through its endpoint\n\
+             parameter (parent↔child edge); capturing outside channels could form a\n\
+             cycle → deadlock. The topology must be a tree (§9)."
         }
         "AX0400" => {
-            "AX0400 — instância de uma classe desconhecida. 'instance C T' exige que\n\
-             a classe 'C' tenha sido declarada com 'class C a where …'. Verifique a\n\
-             ortografia do nome da classe."
+            "AX0400 — instance of an unknown class. 'instance C T' requires class\n\
+             'C' to have been declared with 'class C a where …'. Check the spelling\n\
+             of the class name."
         }
         "AX0401" => {
-            "AX0401 — instância incompleta: falta implementar um método da classe.\n\
-             Uma 'instance C T' tem de implementar TODOS os métodos declarados em\n\
-             'class C' (na fatia 1 ainda não há métodos por omissão)."
+            "AX0401 — incomplete instance: a class method is not implemented.\n\
+             An 'instance C T' must implement ALL methods declared in 'class C'\n\
+             (there are no default methods yet)."
         }
         "AX0402" => {
-            "AX0402 — a instância implementa um método que a classe não declara.\n\
-             Só os métodos de 'class C' podem aparecer numa 'instance C T'. Verifique\n\
-             o nome, ou acrescente a assinatura do método à classe."
+            "AX0402 — the instance implements a method the class does not declare.\n\
+             Only the methods of 'class C' may appear in an 'instance C T'. Check\n\
+             the name, or add the method signature to the class."
         }
         "AX0403" => {
-            "AX0403 — instância duplicada (incoerência). Só pode haver UMA 'instance\n\
-             C T' para cada par (classe, tipo), senão a resolução de método seria\n\
-             ambígua. Remova a instância repetida."
+            "AX0403 — duplicate instance (incoherence). There can be only ONE\n\
+             'instance C T' for each (class, type) pair, otherwise method resolution\n\
+             would be ambiguous. Remove the repeated instance."
         }
         "AX0404" => {
-            "AX0404 — método sobre um tipo concreto sem instância. Um método de\n\
-             classe usado sobre um tipo T exige 'instance C T'. Declare a instância\n\
-             em falta, ou use um tipo que já a tenha (fatia 2b: verificação de\n\
-             constraints no ponto de uso)."
+            "AX0404 — method over a concrete type without an instance. A class\n\
+             method used over a type T requires 'instance C T'. Declare the missing\n\
+             instance, or use a type that already has one (use-site constraint\n\
+             checking)."
         }
         "AX0405" => {
-            "AX0405 — método usado sobre um tipo polimórfico sem constraint. Se uma\n\
-             função aplica um método de classe C a um valor de tipo genérico 'a', a\n\
-             sua assinatura tem de declarar 'C a =>' (senão não há garantia de que\n\
-             exista instância no ponto de chamada)."
+            "AX0405 — method used over a polymorphic type without a constraint. If a\n\
+             function applies a class-C method to a value of generic type 'a', its\n\
+             signature must declare 'C a =>' (otherwise there is no guarantee an\n\
+             instance exists at the call site)."
         }
         other => {
-            eprintln!("código desconhecido: {other}");
+            eprintln!("unknown code: {other}");
             return ExitCode::from(2);
         }
     };
@@ -826,19 +825,19 @@ fn explain(code: &str) -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "axionc — compilador da Axion\n\n\
-         uso:\n  \
-         axionc <ficheiro.axi>          compila e corre\n  \
-         axionc --check <ficheiro>      só compila (parse + typecheck + Auto-Drop)\n  \
-         axionc --emit json <ficheiro>  diagnósticos em JSON\n  \
-         axionc --emit drops <ficheiro> 'free' injectados pelo Auto-Drop\n  \
-         axionc --emit inplace <fich.>  actualizações in-place (Linear Elision)\n  \
-         axionc --emit arenas <fich.>   pontos de reset NLL das sub-arenas (estático)\n  \
-         axionc --emit core <fich.>     Axion Core IR (ANF) — a baixada partilhada\n  \
-         axionc --emit clif <fich.>     Cranelift IR do núcleo Int (backend --dev)\n  \
-         axionc --emit llvm <fich.>     LLVM IR do núcleo Int (backend --release)\n  \
-         axionc --backend cranelift <f> JIT-compila e corre main :: Int (--dev)\n  \
-         axionc --release <fich.>       compila com clang -O2 e corre (--release)\n  \
-         axionc --explain AX0001        explica um código de erro"
+        "axionc — the Axion compiler\n\n\
+         usage:\n  \
+         axionc <file.axi>              compile and run\n  \
+         axionc --check <file>          compile only (parse + typecheck + Auto-Drop)\n  \
+         axionc --emit json <file>      diagnostics as JSON\n  \
+         axionc --emit drops <file>     'free's inserted by Auto-Drop\n  \
+         axionc --emit inplace <file>   in-place updates (Linear Elision)\n  \
+         axionc --emit arenas <file>    NLL reset points of sub-arenas (static)\n  \
+         axionc --emit core <file>      Axion Core IR (ANF) — the shared lowering\n  \
+         axionc --emit clif <file>      Cranelift IR of the Int core (--dev backend)\n  \
+         axionc --emit llvm <file>      LLVM IR of the Int core (--release backend)\n  \
+         axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \
+         axionc --release <file>        compile with clang -O2 and run (--release)\n  \
+         axionc --explain AX0001        explain an error code"
     );
 }

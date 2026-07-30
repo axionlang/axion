@@ -326,8 +326,8 @@ fn inplace_update_on_linear_base_reported() {
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("'p' mutado in-place"),
-        "esperava in-place de p, saída: {text}"
+        text.contains("'p' mutated in-place"),
+        "expected in-place update of p, output: {text}"
     );
 }
 
