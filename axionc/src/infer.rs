@@ -200,6 +200,11 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
             inf.method_meta.insert(m.clone(), (class.name.clone(), idx));
         }
     }
+    // built-in `Num` class: `+ - *` dispatch on the first operand (idx 0).
+    for op in ["+", "-", "*"] {
+        inf.method_meta
+            .insert(op.to_string(), ("Num".to_string(), Some(0)));
+    }
 
     // schemes of the top-level functions: from the signature, or a fresh monotype
     let mut placeholders: HashMap<String, Ty> = HashMap::new();
@@ -267,6 +272,26 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     let mono = inf.discharge_obligations(module);
     let _ = placeholders;
     mono
+}
+
+/// Built-in `Num` operators — arithmetic overloaded over `Int` and `Float`.
+/// Typed `Num a => a -> a -> a`; at each use inference resolves `a`, and the
+/// AST rewrite (`main::resolve_methods`) leaves the `Int` operator as-is and
+/// rewrites the `Float` one to its dotted form (`+` → `+.`), which the backends
+/// already lower. (`mod` and `/` stay monomorphic: `Int` has no `/`.)
+pub fn is_num_op(op: &str) -> bool {
+    matches!(op, "+" | "-" | "*")
+}
+
+/// The dotted (`Float`) form of a `Num` operator — the rewrite target when a use
+/// resolves to `Float`.
+pub fn num_op_float(op: &str) -> &'static str {
+    match op {
+        "+" => "+.",
+        "-" => "-.",
+        "*" => "*.",
+        _ => unreachable!("not a Num operator: {op}"),
+    }
 }
 
 /// The `idx`-th parameter type of an arrow chain (`a -> b -> c` @ 1 → b).
@@ -400,9 +425,17 @@ impl<'a> Infer<'a> {
         env.insert("True".into(), mono(bool()));
         env.insert("False".into(), mono(bool()));
         env.insert("otherwise".into(), mono(bool()));
-        // arithmetic and comparisons (monomorphic in Int in the subset)
-        for op in ["+", "-", "*", "mod"] {
-            env.insert(op.into(), mono(bin(int())));
+        // `mod` stays monomorphic in Int; `+ - *` are `Num a => a -> a -> a`
+        // (built-in Num, resolved per use — see `discharge_obligations`).
+        env.insert("mod".into(), mono(bin(int())));
+        for op in ["+", "-", "*"] {
+            env.insert(
+                op.into(),
+                Scheme {
+                    vars: vec![0],
+                    ty: bin(Ty::Var(0)),
+                },
+            );
         }
         // float arithmetic (§4): `+. -. *. /.` :: Float -> Float -> Float
         let float = || Ty::Con("Float".into(), vec![]);
@@ -759,11 +792,14 @@ impl<'a> Infer<'a> {
     /// does not report.)
     fn discharge_obligations(&mut self, module: &Module) -> Mono {
         use std::collections::{HashMap as Map, HashSet as Set};
-        let instances: Set<(String, String)> = module
+        let mut instances: Set<(String, String)> = module
             .instances
             .iter()
             .map(|i| (i.class_name.clone(), i.ty_head.clone()))
             .collect();
+        // built-in `Num` instances (Int and Float) — the arithmetic operators.
+        instances.insert(("Num".into(), "Int".into()));
+        instances.insert(("Num".into(), "Float".into()));
         let func_names: Set<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
 
         let mut resolutions: Map<(String, Span), String> = Map::new();
@@ -778,10 +814,19 @@ impl<'a> Infer<'a> {
             match self.resolve(&o.ty) {
                 // concrete type WITH instance → resolves to the direct impl.
                 Ty::Con(name, _) if instances.contains(&(o.class.clone(), name.clone())) => {
-                    resolutions.insert(
-                        (o.func.clone(), o.span),
-                        crate::ast::method_impl_name(&o.method, &name),
-                    );
+                    if is_num_op(&o.method) {
+                        // built-in Num: Int keeps the operator (no rewrite); Float
+                        // rewrites to the dotted operator the backends already lower.
+                        if name == "Float" {
+                            resolutions
+                                .insert((o.func.clone(), o.span), num_op_float(&o.method).into());
+                        }
+                    } else {
+                        resolutions.insert(
+                            (o.func.clone(), o.span),
+                            crate::ast::method_impl_name(&o.method, &name),
+                        );
+                    }
                 }
                 Ty::Con(name, _) => {
                     self.diags.push(
@@ -803,6 +848,14 @@ impl<'a> Infer<'a> {
                         .entry(o.func.clone())
                         .or_default()
                         .push((o.span, o.method.clone()));
+                }
+                // built-in Num over an unconstrained (monomorphic) type variable:
+                // default to Int (à la Haskell), so `g x = x + x` is `Int -> Int`.
+                // The var is monomorphic (unsignatured function), so binding it is
+                // safe — nothing has been generalized over it. No rewrite needed:
+                // the operator keeps its Int form.
+                Ty::Var(v) if is_num_op(&o.method) => {
+                    self.unify(&Ty::Var(v), &Ty::Con("Int".into(), vec![]), o.span);
                 }
                 Ty::Var(_) => {
                     self.diags.push(
@@ -881,7 +934,9 @@ impl<'a> Infer<'a> {
                 let bad = self.refs_unspec.contains(f)
                     || no_spec_var
                     || poly_methods.get(f).into_iter().flatten().any(|(_, m)| {
-                        !func_names.contains(crate::ast::method_impl_name(m, t).as_str())
+                        // built-in Num operators are always available (Int/Float).
+                        !is_num_op(m)
+                            && !func_names.contains(crate::ast::method_impl_name(m, t).as_str())
                     })
                     || poly_calls
                         .get(f)
@@ -907,7 +962,15 @@ impl<'a> Infer<'a> {
             let name = crate::ast::method_impl_name(f, t);
             let mut rewrites: HashMap<Span, String> = HashMap::new();
             for (sp, m) in poly_methods.get(f).into_iter().flatten() {
-                rewrites.insert(*sp, crate::ast::method_impl_name(m, t));
+                if is_num_op(m) {
+                    // built-in Num: only Float needs a rewrite (`+` → `+.`); the
+                    // Int specialization keeps the operator the source already has.
+                    if t == "Float" {
+                        rewrites.insert(*sp, num_op_float(m).into());
+                    }
+                } else {
+                    rewrites.insert(*sp, crate::ast::method_impl_name(m, t));
+                }
             }
             for (sp, g) in poly_calls.get(f).into_iter().flatten() {
                 rewrites.insert(*sp, crate::ast::method_impl_name(g, t));
@@ -1249,6 +1312,21 @@ impl<'a> Infer<'a> {
                     Some(s) => self.instantiate(s),
                     None => self.fresh(),
                 };
+                // method use (built-in `Num` operator, or a user infix method):
+                // collect the instance obligation over the dispatch operand type,
+                // resolved at the end (`discharge_obligations`).
+                if let Some((class, Some(idx))) = self.method_meta.get(op).cloned() {
+                    if let Some(dispatch) = nth_param(&top, idx) {
+                        self.obligations.push(Obl {
+                            class,
+                            method: op.clone(),
+                            ty: dispatch,
+                            span: *span,
+                            scope: self.cur_constraints.clone(),
+                            func: self.cur_fn.clone(),
+                        });
+                    }
+                }
                 let tl = self.infer_expr(env, l);
                 let tr = self.infer_expr(env, r);
                 let res = self.fresh();

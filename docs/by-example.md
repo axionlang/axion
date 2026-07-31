@@ -84,29 +84,41 @@ executors: `$AX --backend cranelift …` (Cranelift), `$AX --release …` (LLVM)
 
 ---
 
-### 4b. Floating point — `Float`, `+. -. *. /.`
+### 4b. Floating point — `Float` and the `Num` class
 
 ```haskell
 main :: Float
-main = 3.0 *. 2.0 +. 1.5                              -- → 7.5
+main = 3.0 * 2.0 + 1.5                                -- → 7.5
 ```
 ```sh
-$AX axionc/tests/fixtures/float_arith.axi             # → 7.5
+$AX axionc/tests/fixtures/num_float_plain.axi         # → 7.5
 ```
-`Float` is `f64`. Arithmetic uses **distinct operators** — `+.` `-.` `*.` `/.`
-(OCaml-style) — so the backends need no type-directed dispatch: `Int +. Int` is a
-type error (`Float` and `Int` are distinct types). Comparisons follow suit —
-`<.` `>.` `==.` (`:: Float -> Float -> Bool`) — and conversions bridge the two
-worlds: `toFloat :: Int -> Float`, `truncate :: Float -> Int`.
+`Float` is `f64`. The arithmetic operators `+ - *` are overloaded by a built-in
+**`Num`** class over `Int` and `Float` — inference resolves each use by the
+operand type, and a use over `Float` is rewritten to a dotted internal operator
+(`+` → `+.`) that the backends lower directly (so there is still no type-directed
+codegen). A `Num a =>` function specializes per type, Rust-style:
+
+```haskell
+sq :: Num a => a -> a
+sq x = x * x
+main :: Float
+main = sq 3.0 + sq 2.0                                -- → 13  (sq$Int / sq$Float)
+```
+
+`Num` does **not** coerce: `3 + 2.0` is a type error. Conversions bridge the two
+worlds explicitly — `toFloat :: Int -> Float`, `truncate :: Float -> Int`:
 
 ```haskell
 main :: Int
 main = truncate (toFloat 7 /. 2.0)                    -- → 3  (3.5 truncated)
 ```
 
-Under the uniform i64 native ABI the `f64` travels as its bit-pattern; the
-operators bitcast `i64 ↔ f64` (`toFloat`/`truncate` are `sitofp`/`fptosi`). All
-three executors agree bit-for-bit.
+Comparisons still use the distinct forms `<.` `>.` `==.` (`:: Float -> Float ->
+Bool`), and division `/.` is Float-only (`Int` has no `/`). Under the uniform i64
+native ABI the `f64` travels as its bit-pattern; the operators bitcast `i64 ↔ f64`
+(`toFloat`/`truncate` are `sitofp`/`fptosi`). All three executors agree
+bit-for-bit.
 
 ---
 

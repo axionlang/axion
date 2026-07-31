@@ -848,6 +848,7 @@ impl<'a> Parser<'a> {
         matches!(
             self.cur(),
             Some(LTok::Tok(Tok::Int(_)))
+                | Some(LTok::Tok(Tok::Float(_)))
                 | Some(LTok::Tok(Tok::Str(_)))
                 | Some(LTok::Tok(Tok::VarId(_)))
                 | Some(LTok::Tok(Tok::ConId(_)))

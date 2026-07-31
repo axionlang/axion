@@ -1861,3 +1861,58 @@ fn float_operators_do_not_apply_to_int() {
         "expected a Float/Int mismatch, output: {text}"
     );
 }
+
+/// Runs `fx` on all three executors (interp, --backend cranelift, --release)
+/// and asserts they all print `expected`.
+fn agree_across_backends(fx: &str, expected: &str) {
+    let interp = axionc().arg(fixture(fx)).output().unwrap();
+    assert!(
+        interp.status.success(),
+        "{fx} interp: {}",
+        String::from_utf8_lossy(&interp.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), expected, "{fx} interp");
+    let cl = axionc()
+        .args(["--backend", "cranelift", &fixture(fx)])
+        .output()
+        .unwrap();
+    assert!(
+        cl.status.success(),
+        "{fx} cranelift: {}",
+        String::from_utf8_lossy(&cl.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&cl.stdout), expected, "{fx} cranelift");
+    let llvm = axionc().args(["--release", &fixture(fx)]).output().unwrap();
+    assert!(
+        llvm.status.success(),
+        "{fx} llvm: {}",
+        String::from_utf8_lossy(&llvm.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&llvm.stdout), expected, "{fx} llvm");
+}
+
+#[test]
+fn num_class_unifies_arithmetic_over_int_and_float() {
+    // built-in `Num`: the plain operators `+ - *` work on Float (no `+.`),
+    // resolved by inference and rewritten to the dotted form for the backends.
+    agree_across_backends("num_float_plain.axi", "7.5\n");
+    // a `Num a =>` function specializes to both Int (`sq$Int`) and Float
+    // (`sq$Float`, with `*` → `*.`): sq 3.0 + sq 2.0 = 13.
+    agree_across_backends("num_poly.axi", "13\n");
+}
+
+#[test]
+fn num_arithmetic_does_not_mix_int_and_float() {
+    // `Num` does not coerce: `Int + Float` stays a type error (no implicit
+    // conversion — use `toFloat`/`truncate`).
+    let out = axionc()
+        .args(["--check", &fixture("num_mixed_mismatch.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "expected a type error");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Int") && text.contains("Float"),
+        "expected an Int/Float mismatch, output: {text}"
+    );
+}

@@ -23,14 +23,17 @@ happened in the AST→Core lowering, so codegen only walks the ANF.
 - **`where`**: locals (e.g. `go`) are *lifted* to native functions with a mangled
   name (`fibFast$go`) and compiled, with recursion and mutual recursion.
 - `if … then … else …`, arithmetic (`+ - *`, `mod`), comparisons (`== < >`).
-- **`Float`** (`f64`): the distinct operators `+. -. *. /.` and comparisons
-  `<. >. ==.` lower to `Op::PrimF`. Under the uniform i64 ABI the `f64` travels as
-  its bit-pattern; each operator bitcasts `i64 → f64`, does the FP op, and either
-  bitcasts the result back (arithmetic) or zero-extends the `fcmp`/`fcmp o*` bit
+- **`Float`** (`f64`): arithmetic `+ - *` is overloaded by a built-in **`Num`**
+  class over `Int`/`Float`; inference resolves each use and the AST rewrite
+  (`main::resolve_methods`) leaves `Int` as-is and rewrites `Float` uses to the
+  dotted operators (`+` → `+.`). Those, plus Float-only `/.` and comparisons
+  `<. >. ==.`, lower to `Op::PrimF`. Under the uniform i64 ABI the `f64` travels
+  as its bit-pattern; each operator bitcasts `i64 → f64`, does the FP op, and
+  either bitcasts the result back (arithmetic) or zero-extends the `fcmp o*` bit
   (comparison → Bool) — in both Cranelift and LLVM. `main :: Float` is printed by
   reinterpreting the returned i64 as a double (`%g`). Conversions `toFloat`
   (`Op::IntToFloat`, `sitofp`) and `truncate` (`Op::FloatToInt`, `fptosi`) bridge
-  `Int` and `Float`.
+  `Int` and `Float`. An unconstrained `Num` use defaults to `Int` (à la Haskell).
 - Calls to other native functions, **including recursion**.
 - `let v = <Int> in …`.
 - **Strings / IO** (via a minimal runtime): string literals (data objects,

@@ -379,6 +379,13 @@ fn rewrite_expr(e: &mut ast::Expr, fname: &str, res: &Resolutions) {
         }
         return;
     }
+    // built-in `Num` operator resolved to `Float` → rewrite `+` to `+.` (etc.),
+    // which the backends already lower. Int uses have no resolution (stay `+`).
+    if let BinOp(op, _, _, span) = e {
+        if let Some(name) = res.get(&(fname.to_string(), *span)) {
+            *op = name.clone();
+        }
+    }
     match e {
         Int(_, _) | Float(_, _) | Str(_, _) | Con(_, _) => {}
         App(a, b, _) | BinOp(_, a, b, _) => {
