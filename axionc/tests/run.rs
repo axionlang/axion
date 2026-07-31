@@ -1210,6 +1210,9 @@ fn release_backend_compiles_and_runs_when_clang_present() {
             "1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n",
         ), // partial compose + putStrLn as a value → native
         (example("06_typeclasses.axi"), "6\n"),  // monomorphized typeclasses (README example)
+        (fixture("session_run_pingpong.axi"), "42\n"), // native sessions (§11): ping-pong
+        (fixture("session_run_offer.axi"), "7\n"), // native choice (select/offer)
+        (fixture("session_run_cancel.axi"), "5\n"), // native cancellation (cancel/T5)
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1252,6 +1255,11 @@ fn native_runtime_is_leak_free_under_lsan() {
         "heap_loop",
         "linear_move",
         "inplace_update",
+        // native sessions (§11): the scheduler's nursery arena reclaims every
+        // task state at `axion_sess_run` exit — no leaks, no use-after-free.
+        "session_run_pingpong",
+        "session_run_offer",
+        "session_run_cancel",
     ] {
         // lower to LLVM IR
         let ll = dir.join(format!("{name}.ll"));

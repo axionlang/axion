@@ -41,6 +41,14 @@ declare i64 @axion_buf_xor(i64, i64)
 declare i64 @axion_buf_sum(i64)
 declare void @axion_buf_free(i64)
 declare i64 @axion_fold_bytes(i64, i64, i64)
+declare i64 @axion_sess_new()
+declare i64 @axion_sess_channel(i64)
+declare void @axion_sess_send(i64, i64, i64)
+declare i64 @axion_sess_pending(i64, i64)
+declare i64 @axion_sess_recv(i64, i64)
+declare i64 @axion_sess_alloc(i64, i64)
+declare void @axion_sess_spawn(i64, i64, i64)
+declare i64 @axion_sess_run(i64, i64, i64)
 declare i32 @printf(ptr, ...)
 ";
 
@@ -737,10 +745,11 @@ impl Emit<'_> {
                 self.store(&p, *off, &v);
                 Ok(v)
             }
-            Op::FuncAddr(_) => Err(
-                "native sessions are not yet supported under --release (use --backend cranelift)"
-                    .into(),
-            ),
+            Op::FuncAddr(name) => {
+                let r = self.val();
+                self.ins(&format!("{r} = ptrtoint ptr @\"ax_{name}\" to i64"));
+                Ok(r)
+            }
             Op::PutStrLn(a) => {
                 let v = self.atom(a)?;
                 self.rt("axion_puts", false, &[v]);
