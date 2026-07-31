@@ -1,61 +1,72 @@
-# Backend nativo — o «Fast-Path» de `--dev` (Cranelift)
+# Native backend — the `--dev` "Fast-Path" (Cranelift)
 
-> §11/§18 da spec. O pipeline baixa o AST para o **Axion Core IR** (ANF,
-> estrito/linear — ver `axionc/src/core.rs`) e daí emite código nativo:
-> **Cranelift em `--dev`** (compila depressa — «zero otimizações em dev») e
-> **LLVM em `--release`** (`axionc --release`; baixa o mesmo Core para LLVM IR
-> textual e compila com `clang -O2 -flto` + um pequeno runtime C — a par do C, ver
-> [benchmarks](benchmarks.md)). Ambos partilham o mesmo Core e cobrem o **mesmo
-> subconjunto** (Int, registos/tuplos, strings/IO, `case`, closures, arenas,
-> Auto-Drop). Vê-se o Core com `axionc --emit core` e o LLVM IR com
+> §11/§18 of the spec. The pipeline lowers the AST to the **Axion Core IR** (ANF,
+> strict/linear — see `axionc/src/core.rs`) and from there emits native code:
+> **Cranelift in `--dev`** (compiles fast — "zero optimizations in dev") and
+> **LLVM in `--release`** (`axionc --release`; lowers the same Core to textual LLVM
+> IR and compiles with `clang -O2 -flto` + a small C runtime — on par with C, see
+> [benchmarks](benchmarks.md)). Both share the same Core and cover the **same
+> subset** (Int, records/tuples, strings/IO, `case`, closures, arenas, Auto-Drop,
+> typeclasses via monomorphization, higher-order + partial application via
+> eta-expansion). See the Core with `axionc --emit core` and the LLVM IR with
 > `axionc --emit llvm`.
 
-Este backend `--dev`, sobre `cranelift-jit`, é um **mero emissor Core→Cranelift**:
-o desugar de multi-cláusula, o *lifting* de `where` e a conversão de closures já
-aconteceram na baixada AST→Core, pelo que o codegen só percorre o ANF.
+This `--dev` backend, over `cranelift-jit`, is a **plain Core→Cranelift emitter**:
+multi-clause desugaring, `where` *lifting* and closure conversion have already
+happened in the AST→Core lowering, so codegen only walks the ANF.
 
-## O que compila (núcleo Int)
+## What compiles (Int core)
 
-- Funções de topo com assinatura `Int` (params + retorno), **multi-cláusula**
-  com padrões variável/`_`/**literal** — desugaradas numa cadeia de `if` (exige
-  uma cláusula catch-all no fim). Ex.: `fib 0 = 0; fib 1 = 1; fib n = …`.
-- **`where`**: os locais (ex.: `go`) são *liftados* para funções nativas com
-  nome mangled (`fibFast$go`) e compilados, com recursão e recursão mútua.
-- `if … then … else …`, aritmética (`+ - *`, `mod`), comparações (`== < >`).
-- Chamadas a outras funções nativas, **incluindo recursão**.
+- Top-level functions with an `Int` signature (params + return), **multi-clause**
+  with variable/`_`/**literal** patterns — desugared into an `if` chain (requires a
+  catch-all clause at the end). E.g. `fib 0 = 0; fib 1 = 1; fib n = …`.
+- **`where`**: locals (e.g. `go`) are *lifted* to native functions with a mangled
+  name (`fibFast$go`) and compiled, with recursion and mutual recursion.
+- `if … then … else …`, arithmetic (`+ - *`, `mod`), comparisons (`== < >`).
+- Calls to other native functions, **including recursion**.
 - `let v = <Int> in …`.
-- **Strings / IO** (via runtime mínimo): literais de string (objectos de dados,
-  C-strings), `show :: Int -> String` (`axion_show_int`), `putStrLn :: String ->
-  IO ()` (`axion_puts`). Assim `main :: IO ()` corre nativamente — inclusive os
-  **exemplos reais** `examples/01_hello.axi` («Hello, Axion!») e
-  `examples/02_fib.axi` («832040»), com o mesmo output do interpretador.
-- **Registos** e **tuplos** na heap (`axion_alloc`): construção `Con { f = … }`
-  / `(a, b)`, actualização `r { f = … }` (aloca e copia) e selectores `f r`
-  (load do offset); cada campo/componente é um `i64`. Funções com params/retorno
-  de tipo `data` (ponteiro) compilam. `record_run.axi` corre nativo (→ 99).
-- **`case`**: cadeia de `if` sobre o escrutínio; padrões `Int` (compara),
-  variável/`_` (catch-all), e tuplo `(a, b)` (destructura por offset). Exige um
-  catch-all no fim. `native_case.axi` corre nativo e igual ao interpretador.
-- **Closures** (lambdas + funções de ordem superior): cada `\p -> corpo` é
-  *liftada* para uma função nativa com ABI `(env, params…)`, que carrega as
-  variáveis capturadas de `env`. No local da lambda constrói-se o ambiente
-  `{fn_ptr, capturas…}` na heap (`axion_alloc`); tipos-função são o ponteiro para
-  esse ambiente. Aplicar um valor-função (um parâmetro `Int -> Int`, ou uma
-  lambda aplicada directamente) faz-se por `call_indirect` sobre `env[0]`, com a
-  própria closure passada como env. `native_closure.axi` corre nativo (→ 42) e
-  igual ao interpretador (incl. capturas múltiplas e aplicação aninhada).
+- **Strings / IO** (via a minimal runtime): string literals (data objects,
+  C-strings), `show :: Int -> String` (`axion_show_int`), `putStrLn`/`putStr :: String
+  -> IO ()` (`axion_puts`/`axion_put`), and do-block sequencing + `mapM_`. So
+  `main :: IO ()` runs natively — including the **real examples**
+  `examples/01_hello.axi` ("Hello, Axion!"), `examples/02_fib.axi` ("832040"), and
+  `examples/03b_fizzbuzz.axi` (via `mapM_ (putStrLn . fizzbuzz)`), with the same
+  output as the interpreter.
+- **Records** and **tuples** on the heap (`axion_alloc`): construction
+  `Con { f = … }` / `(a, b)`, update `r { f = … }` (allocates and copies) and
+  selectors `f r` (offset load); each field/component is an `i64`. Functions with
+  `data`-typed params/return (pointer) compile. `record_run.axi` runs native (→ 99).
+- **`case`**: an `if` chain over the scrutinee; `Int` patterns (compare),
+  variable/`_` (catch-all), and tuple `(a, b)` (destructure by offset). Requires a
+  catch-all at the end. `native_case.axi` runs native and equal to the interpreter.
+- **Closures** (lambdas + higher-order functions): each `\p -> body` is *lifted* to
+  a native function with ABI `(env, params…)`, which loads the captured variables
+  from `env`. At the lambda site the environment `{fn_ptr, captures…}` is built on
+  the heap (`axion_alloc`); function types are the pointer to that environment.
+  Applying a function value (an `Int -> Int` parameter, or a lambda applied
+  directly) is done via `call_indirect` over `env[0]`, with the closure itself
+  passed as env. `native_closure.axi` runs native (→ 42) and equal to the
+  interpreter (incl. multiple captures and nested application).
+- **First-class functions** (higher-order + partial application): a top-level
+  function/builtin used as a value, or partially applied (`compose g h`), is
+  **eta-expanded** into a lambda (`\v -> f v`) — reusing the closure machinery.
+  So `map succ xs`, `mapM_ greet xs` and `compose`/sections compile natively.
+- **Typeclasses**: method calls over statically-concrete types are resolved to the
+  instance impl, and constrained functions (`C a =>`) are **monomorphized** per
+  type (`count$Int`, `eq$Int`) — zero-cost, à la Rust. See
+  [benchmarks](benchmarks.md).
 
-## Como usar
+## How to use
 
 ```sh
-# despeja o Cranelift IR das funções compiláveis
-axionc --emit clif programa.axi
+# dumps the Cranelift IR of the compilable functions
+axionc --emit clif program.axi
 
-# JIT-compila o núcleo Int e corre 'main :: Int', imprimindo o resultado
-axionc --backend cranelift programa.axi
+# JIT-compiles the Int core and runs 'main :: Int', printing the result
+axionc --backend cranelift program.axi
 ```
 
-Exemplo (`axionc/tests/fixtures/native_fib.axi`):
+Example (`axionc/tests/fixtures/native_fib.axi`):
 
 ```
 fib :: Int -> Int
@@ -65,132 +76,139 @@ main :: Int
 main = fib 20
 ```
 
-`axionc --backend cranelift native_fib.axi` → `6765` (código-máquina real, via
-JIT). `--emit clif` mostra o IR (blocos, `brif`, `call` recursivo).
+`axionc --backend cranelift native_fib.axi` → `6765` (real machine code, via JIT).
+`--emit clif` shows the IR (blocks, `brif`, recursive `call`).
 
-## O que ainda NÃO compila (recai no interpretador)
+## What still does NOT compile (falls back to the interpreter)
 
-- `%1`/arenas em runtime, padrões de construtor no `case`.
-- **Referência nua** a uma função de topo como valor (ex.: `apply inc 5`) — falta
-  o *thunk* que a embrulha numa closure; usa-se uma lambda (`apply (\x -> inc x)`).
-- Funções (e `case`) **sem** catch-all no fim (falta o *trap* de exaustão).
-- Strings além de `putStrLn`/`show` (concatenação, `String` como parâmetro, …).
+- Sessions/concurrency (`spawn`/`send`/`recv`/`close`) and arenas' interpreter
+  fallbacks: sessions are interpreter-only (the native concurrency road is future
+  work).
+- Constructor patterns in multi-clause function heads (`eq Red Red = …`) — write
+  the instance with `case` for native.
+- Functions (and `case`) **without** a catch-all at the end (the exhaustion *trap*
+  is missing).
+- Over-application (functions that return functions and are re-applied).
+- Strings beyond `putStrLn`/`putStr`/`show` (concatenation, `String` as a
+  parameter, …).
 
-## Auto-Drop no runtime (reclamação, §2)
+The transitive native-candidacy analysis excludes gracefully whatever doesn't
+compile; for those programs, use the interpreter (`axionc program.axi`, no
+`--backend`).
 
-A heap deixou de ser toda *leaked*: `axion_alloc` prefixa cada bloco com um
-cabeçalho de tamanho e `axion_free` liberta-o. A análise de reclamação (em
-`core.rs`) insere nós `drop x` no Core que libertam os objectos que a função
-**possui** no seu ponto de morte. Um objecto é *droppable* se for **possuído** —
-alocado localmente (`MakeTuple`/`MakeRecord`/`UpdateRecord`/`MakeClosure`), o
-resultado de uma chamada que devolve heap (`data`/tuplo), ou um parâmetro `%1` de
-tipo-heap — e **nunca escapar** (devolvido, embebido, passado a uma chamada, ou
-aliased). Os `if`/`case` são equilibrados para libertar uma vez por caminho, e o
-escrutínio de um `case` é libertado à cabeça de cada braço.
+## Auto-Drop at runtime (reclamation, §2)
 
-Isto dá **reclamação entre funções** para valores lineares: quem devolve heap
-transfere a posse ao chamador (que o liberta), e um parâmetro `%1` é possuído e
-libertado pelo callee. A soberania é a chave da soundness — a disciplina linear
-garante ausência de aliasing (`%1` não pode ser duplicado), pelo que libertar
-após a última leitura nunca é uso-após-free nem dupla-libertação.
+The heap is no longer all *leaked*: `axion_alloc` prefixes each block with a size
+header and `axion_free` releases it. The reclamation analysis (in `core.rs`)
+inserts `drop x` nodes into the Core that free the objects the function **owns** at
+their death point. An object is *droppable* if it is **owned** — allocated locally
+(`MakeTuple`/`MakeRecord`/`UpdateRecord`/`MakeClosure`), the result of a call that
+returns heap (`data`/tuple), or a `%1` heap-typed parameter — and it **never
+escapes** (returned, embedded, passed to a call, or aliased). `if`/`case` are
+balanced to free once per path, and the scrutinee of a `case` is freed at the head
+of each arm.
 
-Vê-se com `--emit core` (nós `drop`) e mede-se com `AXION_HEAP_STATS=1` (imprime
-`allocs`/`frees`):
+This gives **cross-function reclamation** for linear values: whoever returns heap
+transfers ownership to the caller (who frees it), and a `%1` parameter is owned and
+freed by the callee. Ownership sovereignty is the key to soundness — the linear
+discipline guarantees no aliasing (`%1` cannot be duplicated), so freeing after the
+last read is never use-after-free nor double-free.
 
-- `heap_loop.axi` (300 chamadas que alocam+libertam um tuplo) → **300==300**,
-  memória constante, sem GC.
-- `linear_move.axi` (`make` aloca um `Box`, `take` recebe-o por `%1`) → **1==1**:
-  o objecto atravessa a fronteira e é libertado uma vez.
+See it with `--emit core` (`drop` nodes) and measure with `AXION_HEAP_STATS=1`
+(prints `allocs`/`frees`):
 
-## Arenas no runtime (§3)
+- `heap_loop.axi` (300 calls allocating+freeing a tuple) → **300==300**, constant
+  memory, no GC.
+- `linear_move.axi` (`make` allocates a `Box`, `take` receives it by `%1`) →
+  **1==1**: the object crosses the boundary and is freed once.
 
-As arenas correm agora nativamente (antes eram `--check`-only). `Arena`/`Cell`/
-`Mark` são `i64` (handles). O runtime é um **bump-allocator** por chunks fixos
-(ponteiros estáveis): `withArena (\a -> …)` cria a arena-raiz, corre o corpo e
-**reseta-a em massa** no fim (larga todos os chunks de uma vez — não há `free`
-por célula); `withSubArena` faz o mesmo para uma sub-arena; `allocateCell`
-bump-aloca; `promote` copia uma célula para a arena-pai (safa-a do reset);
-`arena_mark`/`arena_release` guardam/repõem o bump-pointer (reclamação
-intra-escopo). Vê-se com `--emit core` (`withArena`, `allocateCell`, …) e
-mede-se com `AXION_HEAP_STATS=1` (linha `arena: N news, M resets, K cells`):
-`arena_run.axi` (100 células) → **100 cells, 1 reset**.
+## Arenas at runtime (§3)
 
-A **segurança do reset é grátis**: a análise estática de escape (`AX0003`,
-`AX0005`) já rejeita, em tempo de compilação, devolver/capturar um valor que
-viva numa arena a ser reclamada (só `promote` o safa), pelo que resetar no fim
-do escopo nunca é uso-após-reset.
+Arenas now run natively (they used to be `--check`-only). `Arena`/`Cell`/`Mark`
+are `i64` (handles). The runtime is a **bump-allocator** by fixed chunks (stable
+pointers): `withArena (\a -> …)` creates the root arena, runs the body and
+**resets it in bulk** at the end (drops all chunks at once — no per-cell `free`);
+`withSubArena` does the same for a sub-arena; `allocateCell` bump-allocates;
+`promote` copies a cell to the parent arena (saves it from the reset);
+`arena_mark`/`arena_release` save/restore the bump-pointer (intra-scope
+reclamation). See it with `--emit core` (`withArena`, `allocateCell`, …) and
+measure with `AXION_HEAP_STATS=1` (line `arena: N news, M resets, K cells`):
+`arena_run.axi` (100 cells) → **100 cells, 1 reset**.
 
-**Ainda por reclamar (conservador — são):** valores **irrestritos** (`Many`)
-passados entre funções — podem ser aliased, logo a posse não basta (precisam de
-disciplina linear ou RC/GC); as **closures** (podem ser chamadas). O
-interpretador continua a não correr arenas (para elas, o nativo é o único
-runner).
+**Reset safety is free**: the static escape analysis (`AX0003`, `AX0005`) already
+rejects, at compile time, returning/capturing a value that lives in an arena about
+to be reclaimed (only `promote` saves it), so resetting at the end of the scope is
+never use-after-reset.
 
-O codegen recusa o que não cabe com um erro claro; para esses programas, usa-se
-o interpretador (`axionc programa.axi`, sem `--backend`).
+**Still not reclaimed (conservative — safe):** **unrestricted** (`Many`) values
+passed between functions — they can be aliased, so ownership isn't enough (they
+need linear discipline or RC/GC); **closures** (they can be called). The
+interpreter still doesn't run arenas (for them, native is the only runner).
 
-## Notas de implementação
+Codegen refuses what doesn't fit with a clear error; for those programs, use the
+interpreter (`axionc program.axi`, no `--backend`).
+
+## Implementation notes
 
 - `axionc/src/codegen.rs`: `JITModule` (cranelift-jit) + `FunctionBuilder`.
-  Declara todas as funções nativas primeiro (para a recursão/chamadas mútuas
-  resolverem), depois define os corpos; `Int` → `i64`; comparações → `icmp`;
-  `if` → dois blocos + bloco de junção com parâmetro.
-- A baixada AST→Core (`core.rs`) está em **ANF**: cada subexpressão composta é
-  nomeada por um `let`, argumentos são átomos, e o controlo (`if`/`case`) vive num
-  `Rhs` (um `let` pode ligar o resultado de um ramo). O Drop estrutural já é um
-  **nó explícito** do Core (`drop x`); o reset de arena e o in-place ainda ficam
-  implícitos (o `check.rs` calcula-os) — próximos incrementos.
-- Backend `--release` (LLVM via `inkwell`) baixará do **mesmo Core**, sem duplicar
-  a baixada AST→IR — é o que fecha o gap dos benchmarks `-O2`.
+  Declares all native functions first (so recursion/mutual calls resolve), then
+  defines the bodies; `Int` → `i64`; comparisons → `icmp`; `if` → two blocks + a
+  join block with a parameter.
+- The AST→Core lowering (`core.rs`) is in **ANF**: each compound subexpression is
+  named by a `let`, arguments are atoms, and control (`if`/`case`) lives in an
+  `Rhs` (a `let` can bind the result of a branch). Structural Drop is already an
+  **explicit node** in the Core (`drop x`); arena reset and in-place remain implicit
+  (computed by `check.rs`).
+- The `--release` backend (LLVM, `axionc/src/llvm.rs`) lowers from the **same
+  Core**, without duplicating the AST→IR lowering — it is what closes the `-O2`
+  benchmark gap.
 
-## Verificação de memória (sanitizers)
+## Memory verification (sanitizers)
 
-A proposta de valor da Axion é memória segura **sem GC**, por isso o runtime
-nativo corre sob os sanitizers do LLVM em CI (`scripts/sanitize.sh`, job
-`sanitize`), sobre o LLVM IR do `--release` + o runtime C:
+Axion's value proposition is memory-safe **without GC**, so the native runtime
+runs under the LLVM sanitizers in CI (`scripts/sanitize.sh`, `sanitize` job), over
+the `--release` LLVM IR + the C runtime:
 
-- **Corrupção (AddressSanitizer, todas as fixtures nativas):** zero
-  uso-após-livre e zero dupla-free — a garantia dura. Também há um teste `cargo`
-  (`native_runtime_is_leak_free_under_lsan`) que corre um subconjunto sob
-  ASan+LSan.
-- **Fugas (LeakSanitizer, subconjunto provado):** `allocs == frees` na memória de
-  heap/arena/empréstimo (sem IO).
+- **Corruption (AddressSanitizer, all native fixtures):** zero use-after-free and
+  zero double-free — the hard guarantee. There is also a `cargo` test
+  (`native_runtime_is_leak_free_under_lsan`) that runs a subset under ASan+LSan.
+- **Leaks (LeakSanitizer, proven subset):** `allocs == frees` on heap/arena/borrow
+  memory (no IO).
 
-### Deep-drop de objectos aninhados
+### Deep-drop of nested objects
 
-Um `drop` plano só liberta um bloco; um objecto que **possui** outro (registo
-dentro de registo, ou payload de tipo-soma) perderia o interno. O deep-drop
-gera um **destrutor recursivo** `axion_drop_<T>` por tipo com campos de heap
-(estilo Perceus): liberta os campos de tipo-`data` possuídos (via o destrutor
-deles, ou `free` se forem folhas) e depois o próprio bloco; tipos-soma
-despacham pelo tag. Funciona para tipos **recursivos** (listas/árvores) — o
-destrutor recursa em runtime. É baixado como funções Core normais (uma só op
-nova, `LoadRaw`), pelo que os dois backends o obtêm quase de graça. A soundness
-assenta na linearidade: um campo embebido é **movido** (possuído) → libertado
-uma vez pelo pai, e a análise de escape já o exclui do drop local. `Term::Drop`
-leva o nome do tipo; o backend escolhe destrutor vs. `free` plano por
-`needs_deep_drop`.
+A flat `drop` only frees one block; an object that **owns** another (record inside
+record, or sum-type payload) would leak the inner one. Deep-drop generates a
+**recursive destructor** `axion_drop_<T>` per type with heap fields (Perceus
+style): it frees the owned `data`-typed fields (via their destructor, or `free` if
+they are leaves) and then the block itself; sum types dispatch by tag. It works for
+**recursive** types (lists/trees) — the destructor recurses at runtime. It is
+lowered as normal Core functions (a single new op, `LoadRaw`), so both backends get
+it almost for free. Soundness rests on linearity: an embedded field is **moved**
+(owned) → freed once by the parent, and the escape analysis already excludes it
+from the local drop. `Term::Drop` carries the type name; the backend chooses
+destructor vs. flat `free` via `needs_deep_drop`.
 
-### Fugas conservadoras conhecidas (seguras, fora do portão de fugas)
+### Known conservative leaks (safe, outside the leak gate)
 
-Duas categorias vazam **por opção conservadora** — não são corrupção (o ASan
-passa), e reclamá-las seria inseguro ou exigiria uma decisão de design:
+Two categories leak **by conservative choice** — they are not corruption (ASan
+passes), and reclaiming them would be unsafe or would require a design decision:
 
-1. **C-strings do runtime** (`show`, `putStrLn`): o resultado de `show` é uma
-   string alocada no runtime, mas os literais de string são estáticos. No ponto
-   de drop não se distingue uma da outra, logo libertar uniformemente rebentaria
-   nos literais. Reclamar exige um `String` que marque heap vs. estática.
-2. **Closures devolvidas por uma função:** o retorno pode ser uma closure fresca
-   (`\k -> …`) **ou** um parâmetro-closure emprestado (`pick b f g = if b then f
-   else g`). Tratar o resultado como propriedade do chamador causaria dupla-free
-   no segundo caso. Reclamar exige uma análise de escape sobre a closure (como a
-   dos argumentos emprestados, `BorrowArgs`).
+1. **Runtime C-strings** (`show`, `putStrLn`): the result of `show` is a
+   runtime-allocated string, but string literals are static. At the drop point
+   there is no way to tell them apart, so freeing uniformly would blow up on
+   literals. Reclaiming requires a `String` that marks heap vs. static.
+2. **Closures returned by a function:** the return may be a fresh closure
+   (`\k -> …`) **or** a borrowed closure parameter (`pick b f g = if b then f else
+   g`). Treating the result as owned by the caller would double-free in the second
+   case. Reclaiming requires an escape analysis over the closure (like the borrowed
+   arguments one, `BorrowArgs`).
 
-Menores (raras): um objecto de heap ligado ao resultado de um `if`/`case` (em
-vez de um `Make*`/chamada directos) fica com `free` plano — se for aninhado,
-perde o interno; e **tuplos** que possuam heap ainda não têm destrutor (o
-deep-drop cobre tipos-`data`).
+Minor (rare): a heap object bound to the result of an `if`/`case` (rather than a
+direct `Make*`/call) gets a flat `free` — if nested, it leaks the inner one; and
+**tuples** that own heap don't have a destructor yet (deep-drop covers `data`
+types).
 
-Já **reclamadas** (eram fugas, agora fechadas): objectos aninhados (deep-drop);
-construções posicionais de tipo-soma (`is_heap_alloc` passou a incluir
-`MakeCon`); a closure passada a `withArena`; e a base de um `update` por cópia.
+Already **reclaimed** (they were leaks, now closed): nested objects (deep-drop);
+positional sum-type constructions (`is_heap_alloc` now includes `MakeCon`); the
+closure passed to `withArena`; and the base of a by-copy `update`.

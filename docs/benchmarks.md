@@ -1,42 +1,42 @@
 # Benchmarks (§13) — Axion vs C vs Rust
 
-> A spec é explícita: as garantias de performance são **desenho, não medição** —
-> ficam «sob benchmark» (§13, §0). Medem-se os **dois** backends da Axion: `--dev`
-> (Cranelift, fast-path §11) e `--release` (LLVM `-O2 -flto`, §18).
+> The spec is explicit: the performance guarantees are **design, not measurement**
+> — they stay "under benchmark" (§13, §0). We measure **both** Axion backends:
+> `--dev` (Cranelift, fast-path §11) and `--release` (LLVM `-O2 -flto`, §18).
 
-## Metodologia
+## Methodology
 
-- Cinco kernels, o mesmo algoritmo em cada linguagem (`bench/<kernel>.{axi,c,rs}`):
-  - **fib** — `fib(40)` recursivo naive (compute / ramos).
-  - **loop** — 200 M iterações aritméticas com `mod` (não-fechável pelo `-O2`).
-    Na Axion é recursão (sem laços na linguagem); em C/Rust é um laço idiomático.
-  - **alloc** — 40 M alocações. Na Axion via **arena** (§3, bump + reset em massa);
-    em C via `malloc`/`free`, em Rust via `Box` — o idioma de cada linguagem.
-  - **simd** — redução vectorizável sobre um array (200 M somas). Na Axion via a
-    primitiva `sumBytes` sobre um `Buffer U8` linear (§4/§5) — o *escape-hatch*
-    vectorizável (um laço no runtime que o `clang -O2` vectoriza e o `-flto`
-    inlina); em C/Rust é o laço idiomático que o `-O2` auto-vectoriza.
-  - **dispatch** — 200 M passos em que a operação quente é um **método de
-    typeclasse**. Na Axion, `inner :: Stepper a =>` é genérica e a
-    **monomorfização** (fatia 2b) especializa-a a `inner$Int` com `step → step$Int`,
-    que o LLVM inlina; em **Rust** é genérica via *trait* (o Rust monomorfiza pelo
-    mesmo mecanismo); em C é a chamada directa à mão. Mede a **abstração de
-    custo-zero** — o genérico paga o mesmo que o escrito à mão?
-- Harness: [`scripts/bench.sh`](../scripts/bench.sh) — melhor de 3, `date +%s%N`,
-  e verifica que, por kernel, todas as variantes dão o mesmo resultado.
-- **Escalão comparável:** o **mesmo `clang` (LLVM)** compila o C e o Axion
-  `--release` (ambos `-O2 -flto`); o Rust é `rustc` (também LLVM). O tempo do
-  Axion `--dev` inclui parse+typecheck+JIT (~ms), negligível.
-- **O `-flto` é justo, não um truque:** medido, o `-flto` **não altera** os tempos
-  do C em nenhum kernel (fib/loop são uma só unidade de compilação; no `alloc` o
-  `malloc`/`free` vivem na libc, fora de qualquer LTO — logo não inlinam com ou
-  sem `-flto`). A vantagem da arena é **estrutural** (bump-allocator inlinável vs
-  alocador de heap geral na libc), não um artefacto de flags.
+- Five kernels, the same algorithm in each language (`bench/<kernel>.{axi,c,rs}`):
+  - **fib** — naive recursive `fib(40)` (compute / branches).
+  - **loop** — 200 M arithmetic iterations with `mod` (not closable by `-O2`). In
+    Axion it is recursion (no loops in the language); in C/Rust it is an idiomatic loop.
+  - **alloc** — 40 M allocations. In Axion via an **arena** (§3, bump + bulk reset);
+    in C via `malloc`/`free`, in Rust via `Box` — each language's idiom.
+  - **simd** — vectorizable reduction over an array (200 M adds). In Axion via the
+    `sumBytes` primitive over a linear `Buffer U8` (§4/§5) — the vectorizable
+    *escape-hatch* (a runtime loop that `clang -O2` vectorizes and `-flto` inlines);
+    in C/Rust it is the idiomatic loop that `-O2` auto-vectorizes.
+  - **dispatch** — 200 M steps where the hot operation is a **typeclass method**.
+    In Axion, `inner :: Stepper a =>` is generic and **monomorphization** specializes
+    it to `inner$Int` with `step → step$Int`, which LLVM inlines; in **Rust** it is
+    generic via a *trait* (Rust monomorphizes by the same mechanism); in C it is the
+    direct hand-written call. It measures **zero-cost abstraction** — does the
+    generic pay the same as the hand-written one?
+- Harness: [`scripts/bench.sh`](../scripts/bench.sh) — best of 3, `date +%s%N`, and
+  it checks that, per kernel, every variant produces the same result.
+- **Comparable tier:** the **same `clang` (LLVM)** compiles the C and the Axion
+  `--release` (both `-O2 -flto`); Rust is `rustc` (also LLVM). The Axion `--dev`
+  time includes parse+typecheck+JIT (~ms), negligible.
+- **`-flto` is fair, not a trick:** measured, `-flto` **does not change** the C
+  times on any kernel (fib/loop are a single compilation unit; in `alloc`,
+  `malloc`/`free` live in libc, outside any LTO — so they don't inline with or
+  without `-flto`). The arena's advantage is **structural** (inlinable
+  bump-allocator vs a general heap allocator in libc), not a flags artifact.
 
-## Resultado (uma máquina, 8 cores; indicativo, não definitivo)
+## Result (one machine, 8 cores; indicative, not definitive)
 
 ```
-Tempos (ms, melhor de 3):
+Times (ms, best of 3):
   kernel    Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
   --------  -------- -------- |   -----   ----- |  ------  ------
   fib            666      252 |     590     252 |     840     323
@@ -46,56 +46,56 @@ Tempos (ms, melhor de 3):
   dispatch      3488      563 |    2433     564 |    2485     561
 ```
 
-## Leitura
+## Reading
 
-- **Compute e laços — paridade com C.** No `fib` (255 ms) e no `loop` (538 ms), o
-  Axion `--release` fica **a par do C `-O2`** (250 / 543) e do Rust `-O2` (304 /
-  548). Baixa para o mesmo LLVM, com IR essencialmente igual; o `--release` faz
-  TCO da recursão do `loop` num laço real.
-- **Alocação — a arena ganha.** O modelo de arenas (§3) reclama em massa: 40 M
-  células em **33 ms**, contra `malloc`/`free` do C `-O2` (314 ms, **~9×**) e
-  `Box` do Rust `-O2` (502 ms, **~15×**). O `-flto` liga o runtime C na mesma
-  compilação e **inlina o bump-allocator** no laço quente. É exactamente o cenário
-  onde o modelo de memória da Axion deve brilhar — e onde a escolha de um runtime
-  **C com `-flto`** (em vez de um `staticlib` Rust não-inlinável) se paga.
-- **SIMD — paridade (buraco fechado).** A primitiva `sumBuffer` sobre um `Buffer`
-  (§4) é um laço no runtime que o `clang -O2` **auto-vectoriza** e o `-flto`
-  **inlina** no chamador: **34 ms**, a par do C `-O2` (33) e do Rust (35). É assim
-  que uma linguagem funcional expõe SIMD — via primitivas vectorizáveis de dados
-  em massa (o «escape-hatch imperativo» da §4), não via laços do utilizador.
-- **Typeclasses — abstração de custo-zero, à Rust.** No `dispatch`, o método de
-  classe no laço quente, monomorfizado (fatia 2b) e inlinado pelo LLVM, custa
-  **563 ms** — a par do C `-O2` que chama a função à mão (**564 ms**) e do Rust
-  `-O2` genérico via *trait* (**561 ms**), a **3 ms** uns dos outros. O genérico
-  **não paga nada** por ser genérico: é exactamente a promessa «elegância do
-  Haskell, controlo do Rust». A especialização é o mesmo mecanismo do Rust
-  (monomorfização), não passagem de dicionários com indirecção.
-- **`--dev` é o fast-path, não o veloz.** Sem otimizações nem TCO, paga a
-  recursão no `loop` (3096 ms), a chamada opaca ao runtime no `alloc` (1544 ms) e
-  o `sumBuffer` **não-vectorizado** do runtime Rust do axionc em debug no `simd`
-  (2117 ms). O seu papel é compilar **instantâneo** para o ciclo edit-run; a
-  performance vive no `--release`.
+- **Compute and loops — parity with C.** On `fib` (252 ms) and `loop` (542 ms),
+  Axion `--release` is **on par with C `-O2`** (252 / 550) and Rust `-O2` (323 /
+  545). It lowers to the same LLVM, with essentially identical IR; `--release` does
+  TCO of the `loop` recursion into a real loop.
+- **Allocation — the arena wins.** The arena model (§3) reclaims in bulk: 40 M
+  cells in **32 ms**, versus C `-O2`'s `malloc`/`free` (316 ms, **~10×**) and Rust
+  `-O2`'s `Box` (495 ms, **~15×**). `-flto` links the C runtime in the same
+  compilation and **inlines the bump-allocator** into the hot loop. It is exactly
+  the scenario where Axion's memory model should shine — and where choosing a **C
+  runtime with `-flto`** (rather than a non-inlinable Rust `staticlib`) pays off.
+- **SIMD — parity (gap closed).** The `sumBuffer` primitive over a `Buffer` (§4) is
+  a runtime loop that `clang -O2` **auto-vectorizes** and `-flto` **inlines** into
+  the caller: **33 ms**, on par with C `-O2` (32) and Rust (31). This is how a
+  functional language exposes SIMD — via vectorizable bulk-data primitives (the
+  "imperative escape-hatch" of §4), not via user loops.
+- **Typeclasses — zero-cost abstraction, à la Rust.** On `dispatch`, the class
+  method in the hot loop, monomorphized and inlined by LLVM, costs **563 ms** — on
+  par with C `-O2` calling the function by hand (**564 ms**) and with Rust `-O2`
+  generic via *trait* (**561 ms**), within **3 ms** of each other. The generic
+  **pays nothing** for being generic: it is exactly the promise "elegance of
+  Haskell, control of Rust". The specialization is the same mechanism as Rust
+  (monomorphization), not dictionary passing with indirection.
+- **`--dev` is the fast-path, not the fast one.** Without optimizations or TCO, it
+  pays for the recursion in `loop` (3159 ms), the opaque runtime call in `alloc`
+  (1493 ms), and the **non-vectorized** `sumBuffer` of axionc's debug Rust runtime
+  in `simd` (1914 ms). Its role is to compile **instantly** for the edit-run cycle;
+  performance lives in `--release`.
 
-Confirma a premissa dos **dois backends** (§11/§18): Cranelift para o ciclo
-edit-run instantâneo, LLVM para performance competitiva com C em release.
+This confirms the premise of the **two backends** (§11/§18): Cranelift for the
+instant edit-run cycle, LLVM for performance competitive with C in release.
 
-## Reproduzir
+## Reproduce
 
 ```sh
-AXION_CLANG=/caminho/clang ./scripts/bench.sh        # tabela completa
+AXION_CLANG=/path/to/clang ./scripts/bench.sh        # full table
 AXION_CLANG=$(nix eval --raw nixpkgs#llvmPackages_18.clang)/bin/clang \
   RUNS=5 ./scripts/bench.sh
 ```
 
-O `--release` (e o baseline C) precisam do `clang` — via `AXION_CLANG` ou no PATH
-(p.ex. `nix shell nixpkgs#llvmPackages_18.clang`).
+`--release` (and the C baseline) need `clang` — via `AXION_CLANG` or on PATH
+(e.g. `nix shell nixpkgs#llvmPackages_18.clang`).
 
-## Limitações / a fazer
+## Limitations / to do
 
-- O `Buffer U8` é **linear** (`%1`, must-use), com in-place (`bufIota`/
-  `xorInPlace`), leitura (`sumBytes`) e `free` — imposto pelo typechecker
-  (consumir 2× → AX0001; largar → AX0002). Falta a **açúcar** de superfície
-  (`imperative $ do`, `$`, `foldBytes (+)` com secções de operador) e o
-  `withBuffer` como bracket — para correr o `examples/03`/`05` tal-e-qual.
-- Kernels sintéticos; faltam cargas mistas maiores e I/O.
-- Números variam por máquina/carga; usar como ordem de grandeza, não absolutos.
+- `Buffer U8` is **linear** (`%1`, must-use), with in-place (`bufIota`/
+  `xorInPlace`), reading (`sumBytes`) and `free` — enforced by the typechecker
+  (consume 2× → AX0001; drop → AX0002). Missing is the surface **sugar**
+  (`imperative $ do`, `$`, `foldBytes (+)` with operator sections) and `withBuffer`
+  as a bracket — to run `examples/03`/`05` verbatim.
+- Synthetic kernels; larger mixed workloads and I/O are missing.
+- Numbers vary by machine/load; use as order of magnitude, not absolutes.
