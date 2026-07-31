@@ -270,8 +270,8 @@ fn autodrop_death_point_is_the_last_read() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("free(x)") && text.contains("após a última leitura"),
-        "esperava drop na última leitura, saída: {text}"
+        text.contains("free(x)") && text.contains("dies after the last read"),
+        "expected drop at the last read, output: {text}"
     );
 }
 

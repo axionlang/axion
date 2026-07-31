@@ -22,7 +22,7 @@ extern "C" {
 pub fn load_libs(libs: &[String]) -> Result<(), String> {
     for lib in libs {
         let c = CString::new(lib.as_str())
-            .map_err(|_| format!("caminho de biblioteca FFI inválido: '{lib}'"))?;
+            .map_err(|_| format!("invalid FFI library path: '{lib}'"))?;
         let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
         if h.is_null() {
             let err = unsafe {
@@ -34,7 +34,7 @@ pub fn load_libs(libs: &[String]) -> Result<(), String> {
                 }
             };
             return Err(format!(
-                "não consegui carregar a biblioteca FFI '{lib}': {err}"
+                "could not load FFI library '{lib}': {err}"
             ));
         }
     }

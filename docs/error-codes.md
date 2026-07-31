@@ -1,273 +1,273 @@
-# Registo de códigos de erro `AXnnnn`
+# `AXnnnn` error-code registry
 
-> **Porque já, na Fase 0.** A §8/§17 é explícita: registar **códigos de erro
-> estáveis desde o primeiro erro emitido** — «retrofitar um registo depois de
-> existirem centenas de erros é doloroso». Este ficheiro é a semente desse
-> registo. Cada código é estável e para sempre; nunca se reutiliza um número.
+> **Why now, in Phase 0.** §8/§17 is explicit: register **stable error codes from
+> the very first error emitted** — "retrofitting a registry after hundreds of
+> errors exist is painful". This file is the seed of that registry. Each code is
+> stable and forever; a number is never reused.
 
-Formato: `AXnnnn`, quatro dígitos, alocados sequencialmente. Cada entrada tem:
-o invariante que protege, um exemplo mínimo, e (quando aplicável) o *fix
-machine-applicable* que o LSP oferece (§8). Diagnósticos emitidos também em JSON
-e explicáveis por `axion --explain AXnnnn`.
+Format: `AXnnnn`, four digits, allocated sequentially. Each entry has: the
+invariant it protects, a minimal example, and (where applicable) the
+*machine-applicable fix* the LSP offers (§8). Diagnostics are also emitted as JSON
+and are explainable via `axion --explain AXnnnn`.
 
-| Código | Categoria | Invariante violado | Estado |
+| Code | Category | Invariant violated | Status |
 |--------|-----------|--------------------|--------|
-| `AX0001` | Linearidade | Contração: um `%1` **consumido** >1 vez (ler/emprestar é livre) | **imposto pelo `axionc`** (Fase 1/2) |
-| `AX0002` | Linearidade | *Must-use*: um `%1` **sem `Drop`** descartado sem consumo (tipos droppable ⇒ Auto-Drop, não erro) | **imposto pelo `axionc`** (Fase 1/2) |
-| `AX0003` | Regiões | Escape: um valor de sub-arena escapa ao seu escopo (falta `promote`) | **imposto pelo `axionc`** (Fase 2) |
-| `AX0004` | Linearidade | Uso-após-move: ler/consumir um `%1` depois de a posse ter sido movida | **imposto pelo `axionc`** (Fase 2) |
-| `AX0005` | Regiões | Uso-após-release: valor alocado após `arena_mark` usado depois do `arena_release` | **imposto pelo `axionc`** (Fase 2) |
-| `AX0006` | Linearidade | Escrita através de uma metade `%0.5` (leitura partilhada) | **imposto pelo `axionc`** (Fase 2) |
-| `AX0100` | Sintaxe | Erro de sintaxe / caractere inesperado | **imposto pelo `axionc`** (Fase 1) |
-| `AX0101` | Nomes | Nome não encontrado (fora de âmbito) | **imposto pelo `axionc`** (Fase 1) |
-| `AX0200` | Tipos | Incompatibilidade de tipos (unificação falhou) | **imposto pelo `axionc`** (Fase 1) |
-| `AX0201` | Tipos | Tipo infinito (occurs-check falhou) | **imposto pelo `axionc`** (Fase 1) |
-| `AX0300` | Sessões | Operação de canal não segue o tipo de sessão do endpoint (`send`/`recv`/`close` no estado errado) | **imposto pelo `axionc`** (Fase 3) |
-| `AX0301` | Sessões | Protocolo de sessão incompleto: um endpoint não é levado até `close` | **imposto pelo `axionc`** (Fase 3) |
-| `AX0302` | Sessões | Escape de endpoint: um endpoint criado num `bound` é devolvido do nursery (quebra a topologia acíclica → risco de deadlock) | **imposto pelo `axionc`** (Fase 3) |
-| `AX0303` | Sessões | Escolha externa (`Offer`/`&`) sem o ramo `Closed`: o cancelamento de um par em pânico ficaria por tratar (T5, §7) | **imposto pelo `axionc`** (Fase 3) |
-| `AX0304` | Sessões | `case offer c` não exaustivo: um ramo que a escolha externa oferece fica sem braço | **imposto pelo `axionc`** (Fase 3) |
-| `AX0305` | Sessões | Closure de `spawn` captura um endpoint do exterior: quebraria a topologia em árvore do nursery (§9) | **imposto pelo `axionc`** (Fase 3) |
+| `AX0001` | Linearity | Contraction: a `%1` **consumed** >1 time (reading/borrowing is free) | **enforced by `axionc`** (Phase 1/2) |
+| `AX0002` | Linearity | *Must-use*: a `%1` **without `Drop`** dropped without consumption (droppable types ⇒ Auto-Drop, not an error) | **enforced by `axionc`** (Phase 1/2) |
+| `AX0003` | Regions | Escape: a sub-arena value escapes its scope (missing `promote`) | **enforced by `axionc`** (Phase 2) |
+| `AX0004` | Linearity | Use-after-move: reading/consuming a `%1` after ownership was moved | **enforced by `axionc`** (Phase 2) |
+| `AX0005` | Regions | Use-after-release: value allocated after `arena_mark` used after `arena_release` | **enforced by `axionc`** (Phase 2) |
+| `AX0006` | Linearity | Write through a `%0.5` half (shared read) | **enforced by `axionc`** (Phase 2) |
+| `AX0100` | Syntax | Syntax error / unexpected character | **enforced by `axionc`** (Phase 1) |
+| `AX0101` | Names | Name not found (out of scope) | **enforced by `axionc`** (Phase 1) |
+| `AX0200` | Types | Type mismatch (unification failed) | **enforced by `axionc`** (Phase 1) |
+| `AX0201` | Types | Infinite type (occurs-check failed) | **enforced by `axionc`** (Phase 1) |
+| `AX0300` | Sessions | Channel operation does not follow the endpoint's session type (`send`/`recv`/`close` in the wrong state) | **enforced by `axionc`** (Phase 3) |
+| `AX0301` | Sessions | Incomplete session protocol: an endpoint is not carried to `close` | **enforced by `axionc`** (Phase 3) |
+| `AX0302` | Sessions | Endpoint escape: an endpoint created in a `bound` is returned from the nursery (breaks the acyclic topology → deadlock risk) | **enforced by `axionc`** (Phase 3) |
+| `AX0303` | Sessions | External choice (`Offer`/`&`) without the `Closed` branch: cancellation of a panicking peer would go unhandled (T5, §7) | **enforced by `axionc`** (Phase 3) |
+| `AX0304` | Sessions | Non-exhaustive `case offer c`: a branch the external choice offers has no arm | **enforced by `axionc`** (Phase 3) |
+| `AX0305` | Sessions | `spawn` closure captures an endpoint from outside: would break the nursery's tree topology (§9) | **enforced by `axionc`** (Phase 3) |
+| `AX0400`–`AX0405` | Typeclasses | Class/instance coherence and use-site constraints (see the `AX04xx` band below) | **enforced by `axionc`** |
 
-Próximo livre por banda — linguagem: `AX0007`; front-end: `AX0102`;
-tipos: `AX0202`; canais/sessões: `AX0306`.
+Next free per band — language: `AX0007`; front-end: `AX0102`; types: `AX0202`;
+channels/sessions: `AX0306`; typeclasses: `AX0406`.
 
-**`AX03xx` canais e session types (Fase 3).** Banda da §17 para o cálculo de
-sessões (ver [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Impostos:
-`AX0300` (fidelidade — `send`/`recv`/`close`/`select` seguem o tipo de sessão,
-incl. o rótulo escolhido pertencer ao `Select`), `AX0301` (completude — o
-protocolo chega a `close`), `AX0302` (confinamento do nursery — os endpoints não
-escapam do `bound`; deadlock-freedom estrutural, §9, análogo ao escape de arena
-`AX0003` mas sem `promote`), `AX0303` (exaustividade do cancelamento — toda a
-escolha externa `Offer`/`&` inclui o ramo `Closed`, T5/§7). A posse linear `%1` do
-endpoint é coberta por `AX00xx` (must-use/uso-após-move), `AX0304` (o `case offer`
-trata todos os ramos, incl. `Closed`) e `AX0305` (o `spawn` só cria arestas
-pai↔filho — a closure não captura endpoints → topologia em árvore). Por
-implementar: delegação (passar endpoints por canais entre irmãos, com pipelines
-acíclicos) e o diferencial superfície→ASC.
+**`AX03xx` channels and session types (Phase 3).** The §17 band for the session
+calculus (see [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Enforced:
+`AX0300` (fidelity — `send`/`recv`/`close`/`select` follow the session type,
+including the chosen label belonging to the `Select`), `AX0301` (completeness — the
+protocol reaches `close`), `AX0302` (nursery confinement — endpoints don't escape
+the `bound`; structural deadlock-freedom, §9, analogous to arena escape `AX0003`
+but without `promote`), `AX0303` (cancellation exhaustiveness — every external
+choice `Offer`/`&` includes the `Closed` branch, T5/§7). The endpoint's linear
+`%1` ownership is covered by `AX00xx` (must-use/use-after-move), `AX0304` (the
+`case offer` handles all branches, incl. `Closed`) and `AX0305` (`spawn` only
+creates parent↔child edges — the closure captures no endpoints → tree topology).
+To implement: delegation (passing endpoints over channels between siblings, with
+acyclic pipelines) and the surface→ASC differential.
 
-> **Nota de bandas.** `AX0001`–`AX0099` para invariantes de *semântica da
-> linguagem* (linearidade, regiões, sessões); `AX0100`–`AX0199` para *front-end*
-> (sintaxe, resolução de nomes); `AX0200`+ para *tipos* (inferência HM). Os
-> códigos são estáveis: um número nunca muda de significado nem é reutilizado.
+> **Band note.** `AX0001`–`AX0099` for *language semantics* invariants (linearity,
+> regions, sessions); `AX0100`–`AX0199` for *front-end* (syntax, name resolution);
+> `AX0200`+ for *types* (HM inference); `AX0400`+ for *typeclasses*. Codes are
+> stable: a number never changes meaning nor is reused.
 
 ---
 
-## `AX0001` — contração de um recurso linear (consumido >1 vez)
+## `AX0001` — contraction of a linear resource (consumed >1 time)
 
-**Regra (§2), com liveness fina.** *Ler* (emprestar) um `%1` é livre e
-ilimitado — a Elisão de Empréstimos. *Consumir* (mover a posse: argumento de um
-parâmetro `%1`, campo `%1`, ou valor de retorno) só pode acontecer **uma** vez;
-duas é contração.
+**Rule (§2), with fine liveness.** *Reading* (borrowing) a `%1` is free and
+unlimited — Borrow Elision. *Consuming* (moving ownership: argument of a `%1`
+parameter, `%1` field, or return value) may happen only **once**; twice is
+contraction.
 
 ```axion
 process :: Buffer U8 %1 -> (Buffer U8 %1, Buffer U8 %1)
 process buf = (encrypt buf, encrypt buf)
---                    ^^^            ^^^  'buf' CONSUMIDO duas vezes -> AX0001
--- (mas  checksum buf + checksum buf  seria OK: são duas LEITURAS/empréstimos)
+--                    ^^^            ^^^  'buf' CONSUMED twice -> AX0001
+-- (but  checksum buf + checksum buf  would be OK: two READS/borrows)
 ```
 
-**Bancada (Fase 0).** `prototype/test/negative/UseTwice.hs` falha a compilar; o
-GHC manifesta-o como erro de *multiplicidade* (o `LinearTypes` não tem Elisão de
-Empréstimos, por isso trata toda a leitura como consumo).
+**Bench (Phase 0).** `prototype/test/negative/UseTwice.hs` fails to compile; GHC
+manifests it as a *multiplicity* error (`LinearTypes` has no Borrow Elision, so it
+treats every read as a consumption).
 
-**`axionc` (Fase 1/2).** Imposto pela análise de linearidade fina
-(`axionc/src/check.rs`): classifica cada ocorrência do `%1` como empréstimo ou
-consumo pela sua posição; **consumos > 1** ⇒ `AX0001`. Ramos de `if`/`case`
-contam como caminhos alternativos (máximo, não soma).
+**`axionc` (Phase 1/2).** Enforced by the fine linearity analysis
+(`axionc/src/check.rs`): it classifies each occurrence of the `%1` as a borrow or
+a consumption by its position; **consumptions > 1** ⇒ `AX0001`. `if`/`case`
+branches count as alternative paths (maximum, not sum).
 Fixture: `axionc/tests/fixtures/use_after_consume.axi`.
 
 ```
-error[AX0001]: recurso linear 'x' consumido 2 vezes (contração proibida)
+error[AX0001]: linear resource 'x' consumed 2 times (contraction forbidden)
   --> tests/fixtures/use_after_consume.axi:5:10
   |
 5 | useTwice x = (x, x)
-  |          ^ 'x' é %1: consumível uma só vez
+  |          ^ 'x' is %1: consumable only once
 ```
 
 ---
 
-## `AX0002` — recurso *must-use* descartado sem consumo
+## `AX0002` — must-use resource dropped without consumption
 
-**Regra (§2).** O enfraquecimento (descartar) só é permitido para tipos com
-instância `Drop`. Tipos sem `Drop` — endpoints de sessão (`Ep`), `Token`,
-handles de transação — são *must-use*: esquecê-los é erro (disto depende a
-Fidelidade de Sessão da §9). Exemplo e forma do diagnóstico na Listagem 2.4.
+**Rule (§2).** Weakening (dropping) is allowed only for types with a `Drop`
+instance. Types without `Drop` — session endpoints (`Ep`), `Token`, transaction
+handles — are *must-use*: forgetting them is an error (Session Fidelity in §9
+depends on this). Example and diagnostic shape in Listing 2.4.
 
-**`axionc` (Fase 2, Auto-Drop).** A análise de linearidade (`axionc/src/check.rs`)
-classifica o tipo do recurso `%1`: se for **droppable** (por omissão), largá-lo
-sem consumo **não é erro** — o Auto-Drop injecta `free` no ponto de morte
-(visível em `axionc --emit drops`). Só um tipo **must-use** largado emite
-`AX0002`. Must-use = cabeça em `MUST_USE_PRIMS` (`Ep`, `Token`, …) **ou** um
-`data` que contenha (recursivamente) um campo must-use — `Drop` propaga
-estruturalmente (ponto-fixo). Aplica-se a **parâmetros e a valores `let`**: um
-`let v = <consome recurso linear>` de tipo must-use, largado, é `AX0002`.
+**`axionc` (Phase 2, Auto-Drop).** The linearity analysis (`axionc/src/check.rs`)
+classifies the type of the `%1` resource: if it is **droppable** (the default),
+dropping it without consumption is **not an error** — Auto-Drop inserts `free` at
+the death point (visible in `axionc --emit drops`). Only a **must-use** type
+dropped emits `AX0002`. Must-use = head in `MUST_USE_PRIMS` (`Ep`, `Token`, …)
+**or** a `data` that (recursively) contains a must-use field — `Drop` propagates
+structurally (fixpoint). It applies to **parameters and `let` values**: a
+`let v = <consumes a linear resource>` of must-use type, dropped, is `AX0002`.
 
 ```
-error[AX0002]: recurso must-use 'x' largado sem ser consumido
+error[AX0002]: must-use resource 'x' dropped without being consumed
   --> drop_linear.axi:4:8
   |
 4 | dropIt x = 0
-  |        ^ 'x' : Token %1 (sem Drop)
+  |        ^ 'x' : Token %1 (no Drop)
 ```
 
-## `AX0003` — escape de sub-arena
+## `AX0003` — sub-arena escape
 
-**Regra (§3).** Um valor alocado numa sub-arena não pode escapar ao seu escopo;
-o escape tem de ser erro de *compilação* (usar `promote` para o mover à
-arena-pai antes do reset). Exemplo na Listagem 3.5.
+**Rule (§3).** A value allocated in a sub-arena cannot escape its scope; the
+escape must be a *compile* error (use `promote` to move it to the parent arena
+before the reset). Example in Listing 3.5.
 
-**`axionc` (Fase 2).** Um rastreio de proveniência de região
-(`axionc/src/check.rs`) segue os valores ligados à sub-arena de um
-`withSubArena parent (\sub -> …)`: `allocateCell sub …` liga o valor à sub-arena;
-`promote parent v` re-liga-o à arena-pai (corta a proveniência). O escape é
-detectado quer **por retorno** (o valor de retorno ainda ligado à sub-arena)
-quer **por captura em closure** (uma lambda devolvida que capture um valor da
-sub-arena, §3C) → `AX0003`, com o span do escape e o da alocação.
+**`axionc` (Phase 2).** A region provenance trace (`axionc/src/check.rs`) follows
+the values bound to the sub-arena of a `withSubArena parent (\sub -> …)`:
+`allocateCell sub …` binds the value to the sub-arena; `promote parent v` rebinds
+it to the parent arena (cuts the provenance). The escape is detected either **by
+return** (the return value still bound to the sub-arena) or **by closure capture**
+(a returned lambda capturing a sub-arena value, §3C) → `AX0003`, with the escape
+span and the allocation span.
 
 ```
-error[AX0003]: um valor escapa da sua sub-arena
+error[AX0003]: a value escapes its sub-arena
   --> arena_escape.axi:4:78
   |
 4 | escapes parent = withSubArena parent (\sub -> let node = allocateCell sub in node)
-  |                                                          ^^^^^^^^^^^^^^^^ vive na sub-arena 'sub'
-  |                                        (…)                                     ^^^^ devolvido daqui
+  |                                                          ^^^^^^^^^^^^^^^^ lives in sub-arena 'sub'
+  |                                        (…)                                     ^^^^ returned from here
 ```
 
-Fixtures: `arena_escape.axi` (escapa → `AX0003`), `arena_promote_ok.axi`
-(`promote` → aceite).
+Fixtures: `arena_escape.axi` (escapes → `AX0003`), `arena_promote_ok.axi`
+(`promote` → accepted).
 
 ---
 
-## `AX0004` — uso-após-move
+## `AX0004` — use-after-move
 
-**Regra (§2), sensível à ordem.** Depois de a posse de um `%1` ser **movida**
-(consumida — passada a um parâmetro `%1`, colocada num campo `%1`, ou devolvida),
-não se pode voltar a lê-lo nem a consumi-lo: a posse já saiu do âmbito. Distinto
-de `AX0001` (contração = mover duas vezes) e da leitura repetida (empréstimos,
-que são livres).
+**Rule (§2), order-sensitive.** Once ownership of a `%1` is **moved** (consumed —
+passed to a `%1` parameter, placed in a `%1` field, or returned), it cannot be
+read or consumed again: ownership has left the scope. Distinct from `AX0001`
+(contraction = move twice) and from repeated reading (borrows, which are free).
 
-**`axionc` (Fase 2).** Uma travessia na ordem de avaliação (esquerda→direita,
-ramos como caminhos) marca quando `x` é movido; qualquer ocorrência posterior é
-`AX0004`, com o span do uso e o span do move.
+**`axionc` (Phase 2).** A traversal in evaluation order (left→right, branches as
+paths) marks when `x` is moved; any later occurrence is `AX0004`, with the use
+span and the move span.
 
 ```
-error[AX0004]: uso de 'x' após a posse ter sido movida
+error[AX0004]: use of 'x' after ownership was moved
   --> use_after_move.axi:7:18
   |
 7 | bad x = sink x + x
-  |                  ^ 'x' usado aqui…
+  |                  ^ 'x' used here…
   |
 7 | bad x = sink x + x
-  |              ^ …mas a posse já tinha sido movida aqui
+  |              ^ …but ownership had already been moved here
 ```
 
-`x + sink x` (ler **antes** de consumir) é aceite; `sink x + x` (ler **depois**)
-é `AX0004`. Fixture: `axionc/tests/fixtures/use_after_move.axi`.
+`x + sink x` (reading **before** consuming) is accepted; `sink x + x` (reading
+**after**) is `AX0004`. Fixture: `axionc/tests/fixtures/use_after_move.axi`.
 
 ---
 
-## `AX0005` — uso-após-release de marca de arena
+## `AX0005` — use-after-release of an arena mark
 
-**Regra (§3, Listagem 3.6).** `mark = arena_mark arena` guarda o topo do
-bump-pointer; `arena_release mark` recua-o, recuperando **tudo o que foi alocado
-depois da marca**. Logo, um valor `allocateCell arena` alocado após a marca não
-pode ser usado **depois** do `arena_release` — a sua memória já foi reclamada.
-Reclamação intra-escopo, sem sub-arena.
+**Rule (§3, Listing 3.6).** `mark = arena_mark arena` saves the top of the
+bump-pointer; `arena_release mark` rewinds it, reclaiming **everything allocated
+after the mark**. Hence a value `allocateCell arena` allocated after the mark
+cannot be used **after** the `arena_release` — its memory is already reclaimed.
+Intra-scope reclamation, without a sub-arena.
 
-**`axionc` (Fase 2).** Uma análise ordenada sobre a espinha de `let`
-(`axionc/src/check.rs`) segue as marcas abertas, os valores alocados sob cada
-marca, e o `arena_release`; qualquer uso de um valor cuja marca já foi libertada
-é `AX0005`, com o span do uso, do release e da alocação.
+**`axionc` (Phase 2).** An ordered analysis over the `let` spine
+(`axionc/src/check.rs`) follows the open marks, the values allocated under each
+mark, and the `arena_release`; any use of a value whose mark has already been
+released is `AX0005`, with the spans of the use, the release, and the allocation.
 
 ```
-error[AX0005]: 'tmp' usado após o 'arena_release' (memória já recuperada)
+error[AX0005]: 'tmp' used after 'arena_release' (memory already reclaimed)
   --> arena_mark_release.axi:8:3
   |
 8 |   tmp
-  |   ^^^ 'tmp' usado aqui…
+  |   ^^^ 'tmp' used here…
   |
 7 |   let done = arena_release mark in
-  |              ^^^^^^^^^^^^^^^^^^ …mas o arena_release recuperou a memória aqui
+  |              ^^^^^^^^^^^^^^^^^^ …but arena_release reclaimed the memory here
 ```
 
-Fixtures: `arena_mark_release.axi` (→ `AX0005`), `arena_mark_ok.axi` (uso antes
-do release → aceite).
+Fixtures: `arena_mark_release.axi` (→ `AX0005`), `arena_mark_ok.axi` (use before
+the release → accepted).
 
 ---
 
-## `AX0006` — escrita através de uma metade `%0.5`
+## `AX0006` — write through a `%0.5` half
 
-**Regra (§2, Listagem 2.3).** `split` divide um `%1` em duas metades `%0.5` de
-**leitura partilhada** (estilo Boyland); `join a b` recombina-as em `%1`,
-recuperando a escrita. Uma metade `%0.5` pode ser **lida** (emprestada) à
-vontade, mas **nunca escrita** — usá-la numa posição de escrita é `AX0006`.
+**Rule (§2, Listing 2.3).** `split` divides a `%1` into two **shared-read** `%0.5`
+halves (Boyland style); `join a b` recombines them into `%1`, recovering write
+access. A `%0.5` half can be **read** (borrowed) freely, but **never written** —
+using it in a write position is `AX0006`.
 
-**`axionc` (Fase 2).** Ao encontrar `case (split …) of (a, b) -> braço`, a
-análise (`axionc/src/check.rs`) marca `a`/`b` como metades `%0.5` e rejeita, no
-braço, usá-las numa **posição de escrita**: argumento de um parâmetro `%1` de
-uma função, base de uma actualização de registo, ou campo `%1`.
+**`axionc` (Phase 2).** On encountering `case (split …) of (a, b) -> arm`, the
+analysis (`axionc/src/check.rs`) marks `a`/`b` as `%0.5` halves and rejects, in
+the arm, using them in a **write position**: argument of a function's `%1`
+parameter, base of a record update, or `%1` field.
 
 ```
-error[AX0006]: escrita através da metade %0.5 'a'
+error[AX0006]: write through the %0.5 half 'a'
   --> frac_write.axi:10:22
    |
 10 |   (a, b) -> writeCfg a
-   |                      ^ 'a' é %0.5 (leitura partilhada): passado a um parâmetro %1 (escrita)
+   |                      ^ 'a' is %0.5 (shared read): passed to a %1 parameter (write)
 ```
 
-Fixtures: `frac_write.axi` (escrita → `AX0006`), `frac_join.axi` (leituras +
-`join` → aceite, e corre).
+Fixtures: `frac_write.axi` (write → `AX0006`), `frac_join.axi` (reads + `join` →
+accepted, and runs).
 
 ---
 
-## `AX0100` — erro de sintaxe
+## `AX0100` — syntax error
 
-Emitido pelo lexer (caractere inesperado) ou pelo parser (construção não
-reconhecida) do `axionc`. Sem recuperação na Fase 1: o primeiro erro pára a
-análise. `axionc --explain AX0100`.
+Emitted by the lexer (unexpected character) or the parser (unrecognized
+construct) of `axionc`. No recovery in Phase 1: the first error stops the
+analysis. `axionc --explain AX0100`.
 
-## `AX0101` — nome não encontrado
+## `AX0101` — name not found
 
-Um identificador que não é parâmetro, local (`where`/`let`), função de topo nem
-builtin. Emitido pela resolução de nomes em `axionc/src/check.rs`.
-
----
-
-## `AX0200` — incompatibilidade de tipos
-
-A inferência Hindley-Milner (`axionc/src/infer.rs`) não conseguiu unificar dois
-tipos. Exemplo: `bad :: Int` com corpo `putStrLn "olá"` (que é `IO ()`).
-
-```
-error[AX0200]: incompatibilidade de tipos: IO () vs Int
-```
-
-## `AX0201` — tipo infinito (occurs-check)
-
-A unificação exigiria um tipo recursivo (uma variável que ocorre dentro do tipo
-a que seria ligada), o que a inferência HM rejeita. Emitido por `infer.rs`.
+An identifier that is not a parameter, a local (`where`/`let`), a top-level
+function, nor a builtin. Emitted by name resolution in `axionc/src/check.rs`.
 
 ---
 
-## `AX04xx` — typeclasses (coerência de classes e instâncias)
+## `AX0200` — type mismatch
 
-A banda `AX04xx` cobre a coerência estática das typeclasses (fatia 2a), emitida
-por `check_instances` em `axionc/src/check.rs`:
+Hindley-Milner inference (`axionc/src/infer.rs`) could not unify two types.
+Example: `bad :: Int` with body `putStrLn "hi"` (which is `IO ()`).
 
-- **`AX0400`** — `instance C T` de uma classe `C` que não foi declarada.
-- **`AX0401`** — instância incompleta: falta implementar um método da classe.
-- **`AX0402`** — a instância implementa um método que a classe não declara.
-- **`AX0403`** — instância duplicada: dois `instance C T` para o mesmo par
-  (classe, tipo), o que tornaria a resolução de método ambígua.
-- **`AX0404`** — método sobre um tipo concreto sem instância (fatia 2b): `eq`
-  sobre `String` sem `instance Eq String`. Verificado no ponto de uso, com a
-  informação de tipo da inferência.
-- **`AX0405`** — método sobre um tipo polimórfico sem constraint declarado
-  (fatia 2b): uma função que aplica um método a um `a` genérico tem de declarar
-  `C a =>` na assinatura.
+```
+error[AX0200]: type mismatch: IO () vs Int
+```
 
-O despacho de métodos em si é dinâmico (fatia 1, no interpretador). A verificação
-de constraints (AX0404/AX0405, fatia 2b-i) recolhe uma obrigação em cada uso de
-método e descarrega-a com a substituição da inferência já resolvida. Falta a
-fatia 2b-ii: monomorfização (codegen nativo dos métodos, estilo Rust — zero-cost).
+## `AX0201` — infinite type (occurs-check)
+
+Unification would require a recursive type (a variable occurring inside the type
+it would be bound to), which HM inference rejects. Emitted by `infer.rs`.
+
+---
+
+## `AX04xx` — typeclasses (class and instance coherence)
+
+The `AX04xx` band covers the static coherence of typeclasses, emitted by
+`check_instances` in `axionc/src/check.rs`:
+
+- **`AX0400`** — `instance C T` of a class `C` that was not declared.
+- **`AX0401`** — incomplete instance: a class method is not implemented.
+- **`AX0402`** — the instance implements a method the class does not declare.
+- **`AX0403`** — duplicate instance: two `instance C T` for the same (class, type)
+  pair, which would make method resolution ambiguous.
+- **`AX0404`** — method over a concrete type without an instance: `eq` over
+  `String` without `instance Eq String`. Checked at the use site, with type
+  information from inference.
+- **`AX0405`** — method over a polymorphic type without a declared constraint: a
+  function applying a method to a generic `a` must declare `C a =>` in its
+  signature.
+
+Method dispatch itself is dynamic in the interpreter; on the native path,
+monomorphization specializes constrained functions per type and resolves methods
+to the concrete instance impls — zero-cost, à la Rust (measured; see the
+`dispatch` benchmark).

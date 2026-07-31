@@ -635,7 +635,7 @@ impl Lower<'_> {
                             Body::Plain(e) => self.rhs(e, buf),
                             _ => Rhs::Op(Op::Unsupported("let com guardas".into())),
                         },
-                        _ => Rhs::Op(Op::Unsupported("let não trivial".into())),
+                        _ => Rhs::Op(Op::Unsupported("non-trivial let".into())),
                     };
                     buf.push((f.name.clone(), rhs));
                 }
@@ -688,7 +688,7 @@ impl Lower<'_> {
                     func: name.clone(),
                     captures: caps.iter().map(|c| Atom::Var(c.clone())).collect(),
                 },
-                None => Op::Unsupported("lambda não pré-processada".into()),
+                None => Op::Unsupported("lambda not pre-processed".into()),
             },
             Expr::App(_, _, _) => self.app(e, buf),
             Expr::Con(name, _) => match name.as_str() {
@@ -873,7 +873,7 @@ impl Lower<'_> {
         }
         if i + 1 >= clauses.len() {
             return Term::Ret(Rhs::Op(Op::Unsupported(
-                "função sem cláusula catch-all".into(),
+                "function without a catch-all clause".into(),
             )));
         }
 
@@ -921,7 +921,7 @@ impl Lower<'_> {
     /// `if g0 then r0 else if g1 then r1 else rn`. `otherwise`/`True` são
     /// incondicionais; se nenhuma guarda cobrir, é exaustão (não-suportado).
     fn guarded(&mut self, arms: &[(Expr, Expr)]) -> Term {
-        let mut acc = Term::Ret(Rhs::Op(Op::Unsupported("guardas não exaustivas".into())));
+        let mut acc = Term::Ret(Rhs::Op(Op::Unsupported("non-exhaustive guards".into())));
         for (g, r) in arms.iter().rev() {
             let uncond = matches!(g, Expr::Var(n, _) if n == "otherwise")
                 || matches!(g, Expr::Con(n, _) if n == "True");

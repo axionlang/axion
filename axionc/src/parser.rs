@@ -177,21 +177,21 @@ impl<'a> Parser<'a> {
         let (s, e) = self.span_here();
         let got = match self.cur() {
             Some(LTok::Tok(t)) => format!("{t:?}"),
-            Some(LTok::VLBrace) => "início de bloco".into(),
-            Some(LTok::VSemi) => "fim de declaração".into(),
-            Some(LTok::VRBrace) => "fim de bloco".into(),
-            None => "fim do ficheiro".into(),
+            Some(LTok::VLBrace) => "start of block".into(),
+            Some(LTok::VSemi) => "end of declaration".into(),
+            Some(LTok::VRBrace) => "end of block".into(),
+            None => "end of file".into(),
         };
         Diagnostic::error(
             "AX0100",
-            format!("erro de sintaxe: esperava {what}, encontrei {got}"),
+            format!("syntax error: expected {what}, found {got}"),
         )
-        .label(s, e, "inesperado aqui")
+        .label(s, e, "unexpected here")
     }
 
     // --- blocos com chavetas virtuais ---
     fn block<T>(&mut self, mut item: impl FnMut(&mut Self) -> PResult<T>) -> PResult<Vec<T>> {
-        self.expect_v(&LTok::VLBrace, "início de bloco")?;
+        self.expect_v(&LTok::VLBrace, "start of block")?;
         let mut items = Vec::new();
         loop {
             while self.at_v(&LTok::VSemi) {
@@ -251,8 +251,8 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            let (name, _) = self.var_name("nome da importação foreign")?;
-            self.expect(&Tok::ColonColon, "'::' na importação foreign")?;
+            let (name, _) = self.var_name("name of the foreign import")?;
+            self.expect(&Tok::ColonColon, "'::' in the foreign import")?;
             let sig = self.parse_type()?;
             let end = self.span_here().0;
             return Ok(TopItem::Foreign(Foreign {
@@ -262,7 +262,7 @@ impl<'a> Parser<'a> {
                 span: (start, end),
             }));
         }
-        let (name, start) = self.var_name("nome de função")?;
+        let (name, start) = self.var_name("function name")?;
         if self.eat(&Tok::ColonColon) {
             let (constraints, ty) = self.parse_qualified_type()?;
             Ok(TopItem::Sig(name, constraints, ty))
@@ -297,13 +297,13 @@ impl<'a> Parser<'a> {
             let mut arms = Vec::new();
             while self.eat(&Tok::Bar) {
                 let guard = self.parse_expr()?;
-                self.expect(&Tok::Equals, "'=' após a guarda")?;
+                self.expect(&Tok::Equals, "'=' after the guard")?;
                 let res = self.parse_expr()?;
                 arms.push((guard, res));
             }
             Ok(Body::Guarded(arms))
         } else {
-            self.expect(&Tok::Equals, "'=' na definição")?;
+            self.expect(&Tok::Equals, "'=' in the definition")?;
             Ok(Body::Plain(self.parse_expr()?))
         }
     }
@@ -335,14 +335,14 @@ impl<'a> Parser<'a> {
     fn parse_data(&mut self) -> PResult<DataDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'data'
-        let name = self.con_name("nome do tipo")?;
+        let name = self.con_name("type name")?;
         // parâmetros de tipo (ex.: `a` em `data List a`)
         let mut params = Vec::new();
         while let Some(LTok::Tok(Tok::VarId(p))) = self.cur() {
             params.push(p.clone());
             self.pos += 1;
         }
-        self.expect(&Tok::Equals, "'=' na declaração 'data'")?;
+        self.expect(&Tok::Equals, "'=' in the 'data' declaration")?;
         let mut cons = vec![self.parse_con()?];
         while self.eat(&Tok::Bar) {
             cons.push(self.parse_con()?);
@@ -360,12 +360,12 @@ impl<'a> Parser<'a> {
     fn parse_class(&mut self) -> PResult<ClassDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'class'
-        let name = self.con_name("nome da classe")?;
-        let (tyvar, _) = self.var_name("variável de tipo da classe")?;
-        self.expect(&Tok::Where, "'where' na classe")?;
+        let name = self.con_name("class name")?;
+        let (tyvar, _) = self.var_name("class type variable")?;
+        self.expect(&Tok::Where, "'where' in the class")?;
         let methods = self.block(|p| {
-            let (m, _) = p.var_name("nome de método")?;
-            p.expect(&Tok::ColonColon, "'::' na assinatura do método")?;
+            let (m, _) = p.var_name("method name")?;
+            p.expect(&Tok::ColonColon, "'::' in the method signature")?;
             let ty = p.parse_type()?;
             Ok((m, ty))
         })?;
@@ -383,13 +383,13 @@ impl<'a> Parser<'a> {
     fn parse_instance(&mut self) -> PResult<InstanceDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'instance'
-        let class_name = self.con_name("nome da classe na instância")?;
+        let class_name = self.con_name("class name in the instance")?;
         let head_ty = self.parse_atype()?;
         let ty_head = head_ty
             .head_con()
-            .ok_or_else(|| self.syntax_err("cabeça de tipo na instância"))?
+            .ok_or_else(|| self.syntax_err("type head in the instance"))?
             .to_string();
-        self.expect(&Tok::Where, "'where' na instância")?;
+        self.expect(&Tok::Where, "'where' in the instance")?;
         let methods = self.block(Parser::top_item).map(merge_funcs)?;
         let end = self.span_here().0;
         Ok(InstanceDecl {
@@ -401,7 +401,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_con(&mut self) -> PResult<ConDecl> {
-        let name = self.con_name("nome do construtor")?;
+        let name = self.con_name("constructor name")?;
         if self.eat(&Tok::LBrace) {
             // construtor com campos nomeados (registo)
             let mut fields = Vec::new();
@@ -411,7 +411,7 @@ impl<'a> Parser<'a> {
                     fields.push(self.parse_field()?);
                 }
             }
-            self.expect(&Tok::RBrace, "'}' no registo")?;
+            self.expect(&Tok::RBrace, "'}' in the record")?;
             Ok(ConDecl { name, fields })
         } else {
             // construtor posicional: Con atype*
@@ -429,8 +429,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_field(&mut self) -> PResult<Field> {
-        let (name, _) = self.var_name("nome do campo")?;
-        self.expect(&Tok::ColonColon, "'::' no campo")?;
+        let (name, _) = self.var_name("field name")?;
+        self.expect(&Tok::ColonColon, "'::' in the field")?;
         let ty = self.parse_btype()?;
         // multiplicidade do campo: `campo :: Buffer U8 %1` marca campo linear
         let mult = if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
@@ -529,14 +529,14 @@ impl<'a> Parser<'a> {
                 while self.eat(&Tok::Comma) {
                     ts.push(self.parse_type()?);
                 }
-                self.expect(&Tok::RParen, "')' no tipo")?;
+                self.expect(&Tok::RParen, "')' in the type")?;
                 if ts.len() == 1 {
                     Ok(ts.into_iter().next().unwrap())
                 } else {
                     Ok(Type::Tuple(ts))
                 }
             }
-            _ => Err(self.syntax_err("um tipo")),
+            _ => Err(self.syntax_err("a type")),
         }
     }
 
@@ -570,7 +570,7 @@ impl<'a> Parser<'a> {
                 while self.eat(&Tok::Comma) {
                     ps.push(self.parse_pat()?);
                 }
-                self.expect(&Tok::RParen, "')' no padrão")?;
+                self.expect(&Tok::RParen, "')' in the pattern")?;
                 let end = self.span_here().0;
                 if ps.len() == 1 {
                     Ok(ps.into_iter().next().unwrap())
@@ -578,7 +578,7 @@ impl<'a> Parser<'a> {
                     Ok(Pat::Tuple(ps, (s, end)))
                 }
             }
-            _ => Err(self.syntax_err("um padrão")),
+            _ => Err(self.syntax_err("a pattern")),
         }
     }
 
@@ -640,12 +640,12 @@ impl<'a> Parser<'a> {
         let stmts = self.block(Parser::parse_stmt)?;
         let sp = (s, self.span_here().0);
         if stmts.is_empty() {
-            return Err(self.syntax_err("bloco do vazio"));
+            return Err(self.syntax_err("empty do block"));
         }
         let mut iter = stmts.into_iter().rev();
         let mut acc = match iter.next().unwrap() {
             Stmt::Expr(e) => e,
-            Stmt::Bind(..) => return Err(self.syntax_err("bloco do a terminar em <-")),
+            Stmt::Bind(..) => return Err(self.syntax_err("do block ending in <-")),
         };
         for stmt in iter {
             let (pat, e) = match stmt {
@@ -678,7 +678,7 @@ impl<'a> Parser<'a> {
         while !self.at(&Tok::Arrow) {
             pats.push(self.parse_apat()?);
         }
-        self.expect(&Tok::Arrow, "'->' na lambda")?;
+        self.expect(&Tok::Arrow, "'->' in the lambda")?;
         let body = self.parse_expr()?;
         let end = self.span_here().0;
         Ok(Expr::Lam(pats, Box::new(body), (s, end)))
@@ -700,7 +700,7 @@ impl<'a> Parser<'a> {
         let (s, _) = self.span_here();
         self.bump(); // let
         let binds = self.block(Parser::top_item).map(merge_funcs)?;
-        self.expect(&Tok::In, "'in' após o bloco 'let'")?;
+        self.expect(&Tok::In, "'in' after the 'let' block")?;
         let body = self.parse_expr()?;
         let end = self.span_here().0;
         Ok(Expr::Let(binds, Box::new(body), (s, end)))
@@ -710,10 +710,10 @@ impl<'a> Parser<'a> {
         let (s, _) = self.span_here();
         self.bump(); // case
         let scrut = self.parse_expr()?;
-        self.expect(&Tok::Of, "'of' no case")?;
+        self.expect(&Tok::Of, "'of' in the case")?;
         let arms = self.block(|p| {
             let pat = p.parse_pat()?;
-            p.expect(&Tok::Arrow, "'->' no ramo do case")?;
+            p.expect(&Tok::Arrow, "'->' in the case arm")?;
             let body = p.parse_expr()?;
             Ok((pat, body))
         })?;
@@ -795,8 +795,8 @@ impl<'a> Parser<'a> {
                 lhs = Expr::BinOp("*".to_string(), Box::new(lhs), Box::new(rhs), sp);
             } else if self.at_v(&LTok::Tok(Tok::Backtick)) {
                 self.pos += 1;
-                let (op, _) = self.var_name("operador infixo")?;
-                self.expect(&Tok::Backtick, "'`' de fecho")?;
+                let (op, _) = self.var_name("infix operator")?;
+                self.expect(&Tok::Backtick, "closing '`'")?;
                 let rhs = self.parse_compose()?;
                 let sp = (lhs.span().0, rhs.span().1);
                 lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
@@ -860,7 +860,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_record_fields(&mut self) -> PResult<Vec<(String, Expr)>> {
-        self.expect(&Tok::LBrace, "'{' no registo")?;
+        self.expect(&Tok::LBrace, "'{' in the record")?;
         let mut fields = Vec::new();
         if !self.at(&Tok::RBrace) {
             fields.push(self.parse_field_assign()?);
@@ -868,13 +868,13 @@ impl<'a> Parser<'a> {
                 fields.push(self.parse_field_assign()?);
             }
         }
-        self.expect(&Tok::RBrace, "'}' no registo")?;
+        self.expect(&Tok::RBrace, "'}' in the record")?;
         Ok(fields)
     }
 
     fn parse_field_assign(&mut self) -> PResult<(String, Expr)> {
-        let (name, _) = self.var_name("nome do campo")?;
-        self.expect(&Tok::Equals, "'=' no campo do registo")?;
+        let (name, _) = self.var_name("field name")?;
+        self.expect(&Tok::Equals, "'=' in the record field")?;
         let value = self.parse_expr()?;
         Ok((name, value))
     }
@@ -949,7 +949,7 @@ impl<'a> Parser<'a> {
                 while self.eat(&Tok::Comma) {
                     es.push(self.parse_expr()?);
                 }
-                self.expect(&Tok::RParen, "')' na expressão")?;
+                self.expect(&Tok::RParen, "')' in the expression")?;
                 let end = self.span_here().0;
                 if es.len() == 1 {
                     Ok(es.into_iter().next().unwrap())
@@ -967,7 +967,7 @@ impl<'a> Parser<'a> {
                 // intervalo `[a..b]` → `range a b`
                 if self.eat(&Tok::DotDot) {
                     let hi = self.parse_expr()?;
-                    self.expect(&Tok::RBracket, "']' no intervalo")?;
+                    self.expect(&Tok::RBracket, "']' in the range")?;
                     let sp = (s, self.span_here().0);
                     return Ok(app2(Expr::Var("range".to_string(), sp), first, hi, sp));
                 }
@@ -976,7 +976,7 @@ impl<'a> Parser<'a> {
                 while self.eat(&Tok::Comma) {
                     elems.push(self.parse_expr()?);
                 }
-                self.expect(&Tok::RBracket, "']' na lista")?;
+                self.expect(&Tok::RBracket, "']' in the list")?;
                 let sp = (s, self.span_here().0);
                 let mut list = Expr::Con("Nil".to_string(), sp);
                 for e in elems.into_iter().rev() {
@@ -984,7 +984,7 @@ impl<'a> Parser<'a> {
                 }
                 Ok(list)
             }
-            _ => Err(self.syntax_err("uma expressão")),
+            _ => Err(self.syntax_err("an expression")),
         }
     }
 }

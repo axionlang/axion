@@ -164,7 +164,7 @@ pub fn run(module: &Module) -> Result<(), RunError> {
     let main = prog
         .funcs
         .get("main")
-        .ok_or_else(|| "não há 'main' para correr".to_string())?
+        .ok_or_else(|| "there is no 'main' to run".to_string())?
         .clone();
     let base = empty_env();
     let v = run_func(&prog, &main, &base, Vec::new())?;
@@ -185,7 +185,7 @@ pub fn run(module: &Module) -> Result<(), RunError> {
             Ok(())
         }
         other => Err(format!(
-            "'main' devia ser uma acção IO (ou Int), foi {}",
+            "'main' should be an IO action (or Int), was {}",
             type_name(&other)
         )),
     }
@@ -199,14 +199,14 @@ fn type_name(v: &Value) -> &'static str {
         Value::Unit => "()",
         Value::Io(_) => "IO",
         Value::Tuple(_) => "tuplo",
-        Value::Record { .. } => "registo",
+        Value::Record { .. } => "record",
         Value::Endpoint(_) => "endpoint",
         Value::Closure { .. }
         | Value::Builtin { .. }
         | Value::Ctor { .. }
         | Value::Selector { .. }
         | Value::Method { .. }
-        | Value::Foreign { .. } => "função",
+        | Value::Foreign { .. } => "function",
     }
 }
 
@@ -281,7 +281,7 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             Value::Bool(true) => eval(prog, env, t),
             Value::Bool(false) => eval(prog, env, el),
             other => Err(format!(
-                "condição de 'if' devia ser Bool, foi {}",
+                "'if' condition should be Bool, was {}",
                 type_name(&other)
             )),
         },
@@ -318,7 +318,7 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
                     });
                 }
             }
-            Err("nenhum ramo do 'case' encaixou".to_string())
+            Err("no 'case' arm matched".to_string())
         }
         Expr::RecordCon(con, fields, _) => {
             let mut vals = Vec::with_capacity(fields.len());
@@ -334,7 +334,7 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             let base = eval(prog, env, base)?;
             let Value::Record { con, mut fields } = base else {
                 return Err(format!(
-                    "actualização de registo sobre um {} (não é registo)",
+                    "record update over a {} (not a record)",
                     type_name(&base)
                 ));
             };
@@ -427,7 +427,7 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "join",
             args: Vec::new(),
         }),
-        _ => Err(format!("nome não encontrado em runtime: '{name}'")),
+        _ => Err(format!("name not found at runtime: '{name}'")),
     }
 }
 
@@ -493,9 +493,9 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
                 .into_iter()
                 .find(|(f, _)| *f == field)
                 .map(|(_, v)| v)
-                .ok_or_else(|| format!("registo sem o campo '{field}'")),
+                .ok_or_else(|| format!("record without the field '{field}'")),
             other => Err(format!(
-                "selector '.{field}' aplicado a um {} (não é registo)",
+                "selector '.{field}' applied to a {} (not a record)",
                 type_name(&other)
             )),
         },
@@ -516,7 +516,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         Value::Method { name } => {
             let head = value_type_head(prog, &arg).ok_or_else(|| {
                 format!(
-                    "não há instância para o método '{name}' sobre um {}",
+                    "no instance for method '{name}' over a {}",
                     type_name(&arg)
                 )
             })?;
@@ -524,7 +524,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
             let def = prog
                 .funcs
                 .get(&impl_fn)
-                .ok_or_else(|| format!("sem instância do método '{name}' para o tipo {head}"))?;
+                .ok_or_else(|| format!("no instance of method '{name}' for type {head}"))?;
             let callee = force(
                 prog,
                 Value::Closure {
@@ -536,7 +536,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
             apply(prog, callee, arg)
         }
         other => Err(format!(
-            "tentou aplicar algo que não é função: {}",
+            "tried to apply something that is not a function: {}",
             type_name(&other)
         )),
     }
@@ -551,10 +551,10 @@ extern "C" {
 }
 
 fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
-    let cname = std::ffi::CString::new(name).map_err(|_| "nome FFI inválido".to_string())?;
+    let cname = std::ffi::CString::new(name).map_err(|_| "invalid FFI name".to_string())?;
     let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
     if p.is_null() {
-        return Err(format!("símbolo FFI não encontrado: '{name}'"));
+        return Err(format!("FFI symbol not found: '{name}'"));
     }
     let mut a = [0i64; 3];
     for (i, v) in args.iter().enumerate() {
@@ -562,7 +562,7 @@ fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
             Value::Int(n) => *n,
             other => {
                 return Err(format!(
-                    "FFI '{name}': argumento não-Int ({})",
+                    "FFI '{name}': non-Int argument ({})",
                     type_name(other)
                 ))
             }
@@ -577,7 +577,7 @@ fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
             3 => std::mem::transmute::<P, extern "C" fn(i64, i64, i64) -> i64>(p)(a[0], a[1], a[2]),
             n => {
                 return Err(format!(
-                    "FFI '{name}': aridade {n} não suportada no interp (até 3)"
+                    "FFI '{name}': arity {n} not supported in the interp (up to 3)"
                 ))
             }
         }
@@ -599,7 +599,7 @@ fn run_func(
         }
     }
     Err(format!(
-        "nenhuma cláusula de '{}' encaixou nos argumentos",
+        "no clause of '{}' matched the arguments",
         def.name
     ))
 }
@@ -614,7 +614,7 @@ fn eval_body(prog: &Program, env: &Env, body: &Body) -> Result<Value, RunError> 
                     _ => continue,
                 }
             }
-            Err("nenhuma guarda foi verdadeira".to_string())
+            Err("no guard was true".to_string())
         }
     }
 }
@@ -688,12 +688,12 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("-", Int(x), Int(y)) => Ok(Int(x.wrapping_sub(y))),
         ("*", Int(x), Int(y)) => Ok(Int(x.wrapping_mul(y))),
         ("mod", Int(x), Int(y)) if y != 0 => Ok(Int(x.rem_euclid(y))),
-        ("mod", Int(_), Int(_)) => Err("mod por zero".to_string()),
+        ("mod", Int(_), Int(_)) => Err("mod by zero".to_string()),
         ("==", Int(x), Int(y)) => Ok(Bool(x == y)),
         ("<", Int(x), Int(y)) => Ok(Bool(x < y)),
         (">", Int(x), Int(y)) => Ok(Bool(x > y)),
         (op, x, y) => Err(format!(
-            "operador '{op}' não se aplica a {} e {}",
+            "operator '{op}' does not apply to {} and {}",
             type_name(&x),
             type_name(&y)
         )),
@@ -710,7 +710,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // valor); join recombina — semântica trivial no interpretador.
         ("split", [v]) => Ok(Value::Tuple(vec![v.clone(), v.clone()])),
         ("join", [a, _b]) => Ok(a.clone()),
-        (name, _) => Err(format!("builtin '{name}' recebeu argumentos inválidos")),
+        (name, _) => Err(format!("builtin '{name}' received invalid arguments")),
     }
 }
 
@@ -735,7 +735,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
     let def = prog
         .funcs
         .get(name)
-        .ok_or_else(|| format!("sem definição '{name}'"))?
+        .ok_or_else(|| format!("no definition '{name}'"))?
         .clone();
     let v = run_func(&prog, &def, &empty_env(), Vec::new())?;
     Ok(match v {
@@ -827,7 +827,7 @@ enum StepOut {
 fn ep_id(v: &Value) -> Result<usize, RunError> {
     match v {
         Value::Endpoint(id) => Ok(*id),
-        other => Err(format!("esperava um endpoint, obtive {}", type_name(other))),
+        other => Err(format!("expected an endpoint, got {}", type_name(other))),
     }
 }
 
@@ -862,7 +862,7 @@ fn perform_op(
         "select" => {
             let label = match args[0] {
                 Expr::Con(l, _) | Expr::Var(l, _) => l.clone(),
-                _ => return Err("select: rótulo inválido".into()),
+                _ => return Err("select: invalid label".into()),
             };
             let ep = ep_id(&eval(prog, env, args[1])?)?;
             sched.send(ep, Value::Str(label));
@@ -879,7 +879,7 @@ fn perform_op(
             sched.send(ep, Value::Str("Closed".to_string()));
             Some(Value::Unit)
         }
-        "offer" => return Err("`offer` tem de ser o escrutínio de um `case`".into()),
+        "offer" => return Err("`offer` must be the scrutinee of a `case`".into()),
         "recv" => {
             let ep = ep_id(&eval(prog, env, args[0])?)?;
             // buffer vazio → `None` (bloqueia); senão o par (valor, endpoint)
@@ -887,7 +887,7 @@ fn perform_op(
                 .recv(ep)
                 .map(|v| Value::Tuple(vec![v, Value::Endpoint(ep)]))
         }
-        _ => unreachable!("op de sessão desconhecido: {head}"),
+        _ => unreachable!("unknown session op: {head}"),
     })
 }
 
@@ -915,7 +915,7 @@ fn step(
                 Some(Value::Str(l)) => l,
                 Some(other) => {
                     return Err(format!(
-                        "offer: esperava um rótulo, veio {}",
+                        "offer: expected a label, got {}",
                         type_name(&other)
                     ))
                 }
@@ -934,7 +934,7 @@ fn step(
                     }));
                 }
             }
-            return Err(format!("offer: nenhum ramo trata o rótulo '{label}'"));
+            return Err(format!("offer: no branch handles the label '{label}'"));
         }
     }
     // `case <op> of pat -> resto` → executa, liga `pat`, continua com `resto`.
@@ -976,7 +976,7 @@ fn step(
 fn fork_child(f: Value, arg: Value) -> Result<Task, RunError> {
     match f {
         Value::Closure { def, env, args } if args.is_empty() => {
-            let clause = def.clauses.first().ok_or("spawn: closure sem cláusula")?;
+            let clause = def.clauses.first().ok_or("spawn: closure with no clause")?;
             let child = child_env(&env);
             if let Some(p) = clause.pats.first() {
                 match_pat(p, &arg, &child);
@@ -986,11 +986,11 @@ fn fork_child(f: Value, arg: Value) -> Result<Task, RunError> {
                     cont: b.clone(),
                     env: child,
                 }),
-                _ => Err("spawn: corpo com guardas não suportado".into()),
+                _ => Err("spawn: guarded body not supported".into()),
             }
         }
         other => Err(format!(
-            "spawn espera uma função, obteve {}",
+            "spawn expects a function, got {}",
             type_name(&other)
         )),
     }
@@ -1016,7 +1016,7 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
             loop {
                 budget -= 1;
                 if budget == 0 {
-                    return Err("scheduler de sessões: sem progresso (limite)".into());
+                    return Err("session scheduler: no progress (limit)".into());
                 }
                 let Some(task) = tasks[i].take() else { break };
                 let mut spawned = Vec::new();
@@ -1044,7 +1044,7 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
             }
         }
         if !progressed {
-            return Err("deadlock no scheduler (não devia ocorrer — tipos garantem)".into());
+            return Err("deadlock in the scheduler (should not happen — types guarantee it)".into());
         }
     }
 }

@@ -763,12 +763,12 @@ impl<'a> Infer<'a> {
                     self.diags.push(
                         Diagnostic::error(
                             "AX0404",
-                            format!("sem instância de `{}` para `{name}`", o.class),
+                            format!("no instance of `{}` for `{name}`", o.class),
                         )
-                        .label(o.span.0, o.span.1, "método usado aqui, sobre este tipo")
+                        .label(o.span.0, o.span.1, "method used here, over this type")
                         .with_help(format!(
-                            "declare `instance {} {name} where …`, ou use um tipo \
-                             que tenha instância desta classe.",
+                            "declare `instance {} {name} where …`, or use a type \
+                             that has an instance of this class.",
                             o.class
                         )),
                     );
@@ -785,15 +785,15 @@ impl<'a> Infer<'a> {
                         Diagnostic::error(
                             "AX0405",
                             format!(
-                                "método da classe `{}` usado sobre um tipo polimórfico \
-                                 sem constraint",
+                                "class `{}` method used over a polymorphic type \
+                                 without a constraint",
                                 o.class
                             ),
                         )
-                        .label(o.span.0, o.span.1, "tipo genérico aqui")
+                        .label(o.span.0, o.span.1, "generic type here")
                         .with_help(format!(
-                            "acrescente `{} a =>` à assinatura da função para permitir \
-                             o método sobre um tipo genérico.",
+                            "add `{} a =>` to the function signature to allow \
+                             the method over a generic type.",
                             o.class
                         )),
                     );
@@ -971,10 +971,10 @@ impl<'a> Infer<'a> {
         }
         if self.occurs(v, t) {
             self.diags.push(
-                Diagnostic::error("AX0201", "tipo infinito (occurs-check falhou)").label(
+                Diagnostic::error("AX0201", "infinite type (occurs-check failed)").label(
                     span.0,
                     span.1,
-                    "a inferência formaria um tipo recursivo aqui",
+                    "inference would form a recursive type here",
                 ),
             );
             return false;
@@ -989,12 +989,12 @@ impl<'a> Infer<'a> {
         self.diags.push(
             Diagnostic::error(
                 "AX0200",
-                format!("incompatibilidade de tipos: {sa} vs {sb}"),
+                format!("type mismatch: {sa} vs {sb}"),
             )
-            .label(span.0, span.1, format!("esperava {sa}, encontrei {sb}"))
+            .label(span.0, span.1, format!("expected {sa}, found {sb}"))
             .with_help(
-                "a inferência exigia estes dois tipos iguais; verifique a assinatura e os \
-                 argumentos da aplicação.",
+                "inference required these two types to be equal; check the signature and the \
+                 arguments of the application.",
             ),
         );
     }

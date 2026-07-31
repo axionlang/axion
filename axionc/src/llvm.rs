@@ -116,7 +116,7 @@ pub fn build_and_run(
     let fns = core::lower(module, inplace);
     if !fns.iter().any(|f| f.name == entry && f.params.is_empty()) {
         return Err(format!(
-            "'{entry}' tem de ser uma função nativa sem parâmetros"
+            "'{entry}' must be a native function with no parameters"
         ));
     }
     let ir = emit_ir(module, inplace)?;
@@ -147,7 +147,7 @@ pub fn build_and_run(
         cmd.arg(&lib);
     }
     let status = cmd.status().map_err(|e| {
-        format!("não consegui invocar '{clang}' ({e}); define AXION_CLANG ou usa nix")
+        format!("could not invoke '{clang}' ({e}); set AXION_CLANG or use nix")
     })?;
     if !status.success() {
         return Err("clang falhou a compilar o LLVM IR".into());
@@ -158,7 +158,7 @@ pub fn build_and_run(
     let _ = std::fs::remove_file(&exe);
     match run {
         Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("o binário --release saiu com {s}")),
+        Ok(s) => Err(format!("the --release binary exited with {s}")),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -397,7 +397,7 @@ impl Emit<'_> {
                     let v = self.load(sval, off);
                     self.scope.insert(n.clone(), v);
                 }
-                _ => return Err("padrão aninhado num construtor não compila no --release".into()),
+                _ => return Err("nested pattern in a constructor does not compile under --release".into()),
             }
         }
         Ok(())
@@ -410,9 +410,9 @@ impl Emit<'_> {
                 .scope
                 .get(n)
                 .cloned()
-                .ok_or_else(|| format!("variável '{n}' não ligada no LLVM IR")),
+                .ok_or_else(|| format!("variable '{n}' not bound in the LLVM IR")),
             Atom::Str(s) => {
-                let i = self.strings.get(s).ok_or("string não internada")?;
+                let i = self.strings.get(s).ok_or("string not interned")?;
                 // constante-expressão: o ponteiro da string como i64
                 Ok(format!("ptrtoint (ptr @.str{i} to i64)"))
             }
@@ -497,14 +497,14 @@ impl Emit<'_> {
                             let v = self.load(sval, j as i32 * 8);
                             self.scope.insert(n.clone(), v);
                         }
-                        _ => return Err("padrão de tuplo aninhado não compila no --release".into()),
+                        _ => return Err("nested tuple pattern does not compile under --release".into()),
                     }
                 }
                 self.term(body)
             }
             CPat::Int(lit) => {
                 if i + 1 >= arms.len() {
-                    return Err("case sem catch-all não compila no --release".into());
+                    return Err("case without catch-all does not compile under --release".into());
                 }
                 let c1 = self.val();
                 self.ins(&format!("{c1} = icmp eq i64 {sval}, {lit}"));
@@ -583,7 +583,7 @@ impl Emit<'_> {
                     "==" => (format!("icmp eq i64 {x}, {y}"), true),
                     "<" => (format!("icmp slt i64 {x}, {y}"), true),
                     ">" => (format!("icmp sgt i64 {x}, {y}"), true),
-                    other => return Err(format!("operador '{other}' não compila no --release")),
+                    other => return Err(format!("operator '{other}' does not compile under --release")),
                 };
                 let r = self.val();
                 self.ins(&format!("{r} = {expr}"));
@@ -679,7 +679,7 @@ impl Emit<'_> {
                 let target = if *inplace {
                     base_ptr
                 } else {
-                    let first = &fields.first().ok_or("actualização vazia")?.0;
+                    let first = &fields.first().ok_or("empty update")?.0;
                     let nfields = self
                         .records
                         .field(first)
@@ -784,7 +784,7 @@ impl Emit<'_> {
                 self.ins(&format!("{r} = call i64 @{name}({a})"));
                 Ok(r)
             }
-            Op::Unsupported(m) => Err(format!("{m} não compila no --release")),
+            Op::Unsupported(m) => Err(format!("{m} does not compile under --release")),
         }
     }
 }

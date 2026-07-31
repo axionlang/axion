@@ -140,18 +140,18 @@ fn check_instances(module: &Module, diags: &mut Diagnostics) {
                 Diagnostic::error(
                     "AX0403",
                     format!(
-                        "instância duplicada de `{}` para `{}`",
+                        "duplicate instance of `{}` for `{}`",
                         inst.class_name, inst.ty_head
                     ),
                 )
                 .label(
                     inst.span.0,
                     inst.span.1,
-                    "já existe uma instância para este tipo",
+                    "an instance for this type already exists",
                 )
                 .with_help(
-                    "cada par (classe, tipo) só pode ter UMA instância — a \
-                     resolução de método tem de ser inequívoca (coerência).",
+                    "each (class, type) pair may have only ONE instance — method \
+                     resolution must be unambiguous (coherence).",
                 ),
             );
             continue;
@@ -160,9 +160,9 @@ fn check_instances(module: &Module, diags: &mut Diagnostics) {
             diags.push(
                 Diagnostic::error(
                     "AX0400",
-                    format!("instância de classe desconhecida `{}`", inst.class_name),
+                    format!("instance of unknown class `{}`", inst.class_name),
                 )
-                .label(inst.span.0, inst.span.1, "esta classe não foi declarada")
+                .label(inst.span.0, inst.span.1, "this class was not declared")
                 .with_help("declare `class C a where …` antes de a instanciar."),
             );
             continue;
@@ -174,16 +174,16 @@ fn check_instances(module: &Module, diags: &mut Diagnostics) {
                     Diagnostic::error(
                         "AX0401",
                         format!(
-                            "a instância `{} {}` não implementa o método `{m}`",
+                            "instance `{} {}` does not implement method `{m}`",
                             inst.class_name, inst.ty_head
                         ),
                     )
                     .label(
                         inst.span.0,
                         inst.span.1,
-                        "método da classe em falta nesta instância",
+                        "class method missing in this instance",
                     )
-                    .with_help("uma instância tem de implementar todos os métodos da classe."),
+                    .with_help("an instance must implement all methods of the class."),
                 );
             }
         }
@@ -193,12 +193,12 @@ fn check_instances(module: &Module, diags: &mut Diagnostics) {
                     Diagnostic::error(
                         "AX0402",
                         format!(
-                            "`{}` não é um método da classe `{}`",
+                            "`{}` is not a method of class `{}`",
                             f.name, inst.class_name
                         ),
                     )
-                    .label(f.span.0, f.span.1, "método desconhecido nesta classe")
-                    .with_help("verifique o nome do método, ou declare-o na `class`."),
+                    .label(f.span.0, f.span.1, "method unknown in this class")
+                    .with_help("check the method name, or declare it in the `class`."),
                 );
             }
         }
@@ -290,16 +290,16 @@ fn check_bound(body: &Expr, diags: &mut Diagnostics) {
     let tail = peel_bound_spine(body, &mut eps, diags);
     if let Some(sp) = tail_endpoint(tail, &eps) {
         diags.push(
-            Diagnostic::error("AX0302", "um endpoint escapa do nursery `bound`")
+            Diagnostic::error("AX0302", "an endpoint escapes the `bound` nursery")
                 .label(
                     sp.0,
                     sp.1,
-                    "devolvido daqui — o endpoint sobreviveria ao nursery",
+                    "returned from here — the endpoint would outlive the nursery",
                 )
                 .with_help(
-                    "os endpoints nascem confinados ao `bound` para o grafo de \
-                 comunicação ser uma árvore (deadlock-freedom, §9); consome-os \
-                 dentro do bloco (`close`/`send`/`recv`), não os devolvas.",
+                    "endpoints are born confined to the `bound` so the communication \
+                 graph is a tree (deadlock-freedom, §9); consume them inside the \
+                 block (`close`/`send`/`recv`), don't return them.",
                 ),
         );
     }
@@ -355,14 +355,15 @@ fn check_spawn_capture(e: &Expr, eps: &HashSet<String>, diags: &mut Diagnostics)
                 Diagnostic::error(
                     "AX0305",
                     format!(
-                        "a closure de `spawn` captura o endpoint '{ep}' do exterior — \
-                         quebraria a topologia em árvore do nursery"
+                        "the `spawn` closure captures endpoint '{ep}' from outside — \
+                         it would break the nursery's tree topology"
                     ),
                 )
-                .label(sp.0, sp.1, "captura de endpoint proibida")
+                .label(sp.0, sp.1, "endpoint capture forbidden")
                 .with_help(
-                    "um filho spawnado só comunica com o pai pelo seu endpoint-parâmetro \
-                     (aresta pai↔filho); não capture canais do exterior (§9, deadlock-freedom).",
+                    "a spawned child communicates with the parent only through its \
+                     endpoint parameter (parent↔child edge); don't capture outside \
+                     channels (§9, deadlock-freedom).",
                 ),
             );
         }
@@ -603,13 +604,13 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
                             Diagnostic::error(
                                 "AX0301",
                                 format!(
-                                    "o endpoint '{n}' não completou o seu protocolo de sessão \
-                                     (falta consumi-lo até `close`)"
+                                    "endpoint '{n}' did not complete its session protocol \
+                                     (it must be consumed up to `close`)"
                                 ),
                             )
-                            .label(f.span.0, f.span.1, "protocolo incompleto aqui")
+                            .label(f.span.0, f.span.1, "incomplete protocol here")
                             .with_help(
-                                "leve o endpoint até `close`, ou consuma-o com `offer`/`cancel`.",
+                                "carry the endpoint to `close`, or consume it with `offer`/`cancel`.",
                             ),
                         );
                     }
@@ -714,14 +715,14 @@ fn check_offer_case(
                     Diagnostic::error(
                         "AX0304",
                         format!(
-                            "o `case offer {chan}` não trata o ramo '{label}' da escolha \
-                             externa (a sessão oferece-o)"
+                            "the `case offer {chan}` does not handle branch '{label}' of the \
+                             external choice (the session offers it)"
                         ),
                     )
-                    .label(span.0, span.1, "ramo de sessão não tratado")
+                    .label(span.0, span.1, "unhandled session branch")
                     .with_help(
-                        "acrescenta um braço para cada rótulo do `Offer` (incl. `Closed`, \
-                         o cancelamento — §7/T5).",
+                        "add an arm for each label of the `Offer` (incl. `Closed`, the \
+                         cancellation — §7/T5).",
                     ),
                 );
             }
@@ -743,11 +744,11 @@ fn check_offer_case(
                     Diagnostic::error(
                         "AX0301",
                         format!(
-                            "o endpoint '{n}' não completou o seu protocolo de sessão \
-                             (falta consumi-lo até `close`)"
+                            "endpoint '{n}' did not complete its session protocol \
+                             (it must be consumed up to `close`)"
                         ),
                     )
-                    .label(span.0, span.1, "protocolo incompleto neste braço"),
+                    .label(span.0, span.1, "incomplete protocol in this arm"),
                 );
             }
         }
@@ -802,14 +803,14 @@ fn classify_op(
                             Diagnostic::error(
                                 "AX0300",
                                 format!(
-                                    "`select {label}` no endpoint '{chan}': o protocolo \
-                                     `Select` não oferece o rótulo '{label}'"
+                                    "`select {label}` on endpoint '{chan}': the `Select` \
+                                     protocol does not offer the label '{label}'"
                                 ),
                             )
                             .label(
                                 sp.0,
                                 sp.1,
-                                "rótulo de escolha inválido",
+                                "invalid choice label",
                             ),
                         );
                         None
@@ -890,14 +891,14 @@ fn check_closed_branches(s: &SessTy, chan: &str, sp: Span, diags: &mut Diagnosti
                     Diagnostic::error(
                         "AX0303",
                         format!(
-                            "a escolha externa (`Offer`) do endpoint '{chan}' não tem o ramo \
-                             `Closed` — o cancelamento de um par em pânico ficaria por tratar (§7)"
+                            "the external choice (`Offer`) of endpoint '{chan}' has no \
+                             `Closed` branch — cancellation of a panicking peer would go unhandled (§7)"
                         ),
                     )
-                    .label(sp.0, sp.1, "falta o ramo `Closed`")
+                    .label(sp.0, sp.1, "missing the `Closed` branch")
                     .with_help(
-                        "acrescenta um ramo `Closed` ao `Offer` (é o rótulo que o \
-                         Linear Unwinding envia ao cancelar — T5).",
+                        "add a `Closed` branch to the `Offer` (it is the label that \
+                         Linear Unwinding sends when cancelling — T5).",
                     ),
                 );
             }
@@ -910,31 +911,31 @@ fn check_closed_branches(s: &SessTy, chan: &str, sp: Span, diags: &mut Diagnosti
 
 fn session_mismatch(diags: &mut Diagnostics, sp: Span, chan: &str, op: &str, got: &SessTy) {
     let expect = match op {
-        "send" => "um `Send`",
-        "recv" => "um `Recv`",
-        "select" => "um `Select`",
-        "offer" => "um `Offer`",
-        _ => "um `End`",
+        "send" => "a `Send`",
+        "recv" => "a `Recv`",
+        "select" => "a `Select`",
+        "offer" => "an `Offer`",
+        _ => "an `End`",
     };
     let got = match got {
-        SessTy::End => "está em `End`",
-        SessTy::Send(_) => "está em `Send`",
-        SessTy::Recv(_) => "está em `Recv`",
-        SessTy::Select(_) => "está em `Select`",
-        SessTy::Offer(_) => "está em `Offer`",
+        SessTy::End => "it is at `End`",
+        SessTy::Send(_) => "it is at `Send`",
+        SessTy::Recv(_) => "it is at `Recv`",
+        SessTy::Select(_) => "it is at `Select`",
+        SessTy::Offer(_) => "it is at `Offer`",
     };
     diags.push(
         Diagnostic::error(
             "AX0300",
             format!(
-                "`{op}` no endpoint '{chan}' não segue o protocolo: esperava {expect}, mas {got}"
+                "`{op}` on endpoint '{chan}' does not follow the protocol: expected {expect}, but {got}"
             ),
         )
-        .label(sp.0, sp.1, "operação de sessão inválida")
+        .label(sp.0, sp.1, "invalid session operation")
         .with_help(
-            "a operação tem de seguir o tipo de sessão do endpoint: `send` num `Send`, \
-             `recv` num `Recv`, `close` num `End`, e o rótulo de `select` tem de pertencer \
-             ao `Select`.",
+            "the operation must follow the endpoint's session type: `send` on a `Send`, \
+             `recv` on a `Recv`, `close` on an `End`, and the label of `select` must belong \
+             to the `Select`.",
         ),
     );
 }
@@ -1139,56 +1140,56 @@ fn report_resource(
             Diagnostic::error(
                 "AX0001",
                 format!(
-                    "recurso linear '{name}' consumido {} vezes (contração proibida)",
+                    "linear resource '{name}' consumed {} times (contraction forbidden)",
                     u.consumes
                 ),
             )
             .label(
                 label.0,
                 label.1,
-                format!("'{name}' é %1: consumível uma só vez"),
+                format!("'{name}' is %1: consumable only once"),
             )
             .with_help(
-                "ler (emprestar) um %1 é livre e ilimitado; mover a posse (consumir) \
-                 só pode acontecer uma vez — para o partilhar por posse, use 'split' \
-                 em duas metades %0.5 (§2).",
+                "reading (borrowing) a %1 is free and unlimited; moving ownership \
+                 (consuming) may happen only once — to share it by ownership, use \
+                 'split' into two %0.5 halves (§2).",
             ),
         );
     } else if let Some((mv, use_sp)) = u.uam {
         diags.push(
             Diagnostic::error(
                 "AX0004",
-                format!("uso de '{name}' após a posse ter sido movida"),
+                format!("use of '{name}' after ownership was moved"),
             )
-            .label(use_sp.0, use_sp.1, format!("'{name}' usado aqui…"))
-            .label(mv.0, mv.1, "…mas a posse já tinha sido movida aqui")
+            .label(use_sp.0, use_sp.1, format!("'{name}' used here…"))
+            .label(mv.0, mv.1, "…but ownership had already been moved here")
             .with_help(
-                "depois de mover um %1 (consumir), não se pode voltar a lê-lo nem \
-                     a consumi-lo — a posse já saiu deste âmbito (§2).",
+                "after moving a %1 (consuming), you cannot read or consume it \
+                     again — ownership has left this scope (§2).",
             ),
         );
     } else if u.consumes == 0 && class.must_use {
         diags.push(
             Diagnostic::error(
                 "AX0002",
-                format!("recurso must-use '{name}' largado sem ser consumido"),
+                format!("must-use resource '{name}' dropped without being consumed"),
             )
             .label(
                 label.0,
                 label.1,
-                format!("'{name}' : {} %1 (sem Drop)", class.ty),
+                format!("'{name}' : {} %1 (no Drop)", class.ty),
             )
             .with_help(
-                "endpoints, Token e handles são must-use (não têm Drop); consuma-o \
-                     ou devolva-o (§2).",
+                "endpoints, Token and handles are must-use (they have no Drop); \
+                     consume it or return it (§2).",
             ),
         );
     } else if u.consumes == 0 {
         // droppable, nunca consumido: Auto-Drop no ponto de morte (última
         // leitura, ou a entrada se nunca lido).
         let (death, reason) = match u.death {
-            Some(s) if u.borrows > 0 => (s, "morre após a última leitura"),
-            _ => (label, "morre à entrada (nunca usado)"),
+            Some(s) if u.borrows > 0 => (s, "dies after the last read"),
+            _ => (label, "dies at entry (never used)"),
         };
         out.drops.push(DropPoint {
             func: func.to_string(),
@@ -1250,11 +1251,11 @@ fn resolve_expr(
         Expr::Var(n, sp) => {
             if !scope.contains(n) && !globals.contains(n) {
                 diags.push(
-                    Diagnostic::error("AX0101", format!("nome não encontrado: '{n}'"))
-                        .label(sp.0, sp.1, "não está em âmbito")
+                    Diagnostic::error("AX0101", format!("name not found: '{n}'"))
+                        .label(sp.0, sp.1, "not in scope")
                         .with_help(
-                            "verifique a ortografia, ou se é um parâmetro/local em âmbito, \
-                             ou uma função de topo/import em falta.",
+                            "check the spelling, or whether it is a parameter/local in \
+                             scope, or a missing top-level function/import.",
                         ),
                 );
             }
@@ -1953,16 +1954,16 @@ fn check_sub_scope(
     if let Some(origin) = region_of(tail, sub, &sub_bound) {
         let esc = tail.span();
         diags.push(
-            Diagnostic::error("AX0003", "um valor escapa da sua sub-arena")
+            Diagnostic::error("AX0003", "a value escapes its sub-arena")
                 .label(
                     esc.0,
                     esc.1,
-                    "devolvido daqui — sobreviveria ao reset da sub-arena",
+                    "returned from here — it would outlive the sub-arena reset",
                 )
-                .label(origin.0, origin.1, format!("vive na sub-arena '{sub}'"))
+                .label(origin.0, origin.1, format!("lives in sub-arena '{sub}'"))
                 .with_help(
-                    "no reset a RAM da sub-arena é recuperada; mova o valor para a \
-                     arena-pai antes do reset com 'promote parent valor' (§3).",
+                    "on reset the sub-arena's RAM is reclaimed; move the value to the \
+                     parent arena before the reset with 'promote parent value' (§3).",
                 ),
         );
         return; // com escape, o reset é irrelevante
@@ -2232,22 +2233,22 @@ fn check_released_uses(
                 diags.push(
                     Diagnostic::error(
                         "AX0005",
-                        format!("'{n}' usado após o 'arena_release' (memória já recuperada)"),
+                        format!("'{n}' used after 'arena_release' (memory already reclaimed)"),
                     )
                     .label(sp.0, sp.1, format!("'{n}' usado aqui…"))
                     .label(
                         rel.0,
                         rel.1,
-                        "…mas o arena_release recuperou a memória aqui",
+                        "…but arena_release reclaimed the memory here",
                     )
                     .label(
                         bc.alloc.0,
                         bc.alloc.1,
-                        format!("'{n}' foi alocado depois da marca aqui"),
+                        format!("'{n}' was allocated after the mark here"),
                     )
                     .with_help(
-                        "tudo o que é alocado depois de uma marca é recuperado no \
-                         arena_release; consuma-o antes, ou promova-o para lá da marca (§3).",
+                        "everything allocated after a mark is reclaimed on \
+                         arena_release; consume it before, or promote it past the mark (§3).",
                     ),
                 );
             }
@@ -2361,15 +2362,15 @@ fn check_fractional(e: &Expr, ctx: &Ctx, diags: &mut Diagnostics) {
 /// Emite o AX0006 de escrita através de uma metade %0.5.
 fn push_write(diags: &mut Diagnostics, half: &str, sp: Span, what: &str) {
     diags.push(
-        Diagnostic::error("AX0006", format!("escrita através da metade %0.5 '{half}'"))
+        Diagnostic::error("AX0006", format!("write through the %0.5 half '{half}'"))
             .label(
                 sp.0,
                 sp.1,
-                format!("'{half}' é %0.5 (leitura partilhada): {what}"),
+                format!("'{half}' is %0.5 (shared read): {what}"),
             )
             .with_help(
-                "uma metade %0.5 só concede leitura; para recuperar a escrita, \
-                 recombine as duas metades com 'join a b' (que devolve o %1) (§2).",
+                "a %0.5 half grants read only; to recover write access, recombine \
+                 the two halves with 'join a b' (which returns the %1) (§2).",
             ),
     );
 }
@@ -2382,7 +2383,7 @@ fn check_half_writes(e: &Expr, half: &str, ctx: &Ctx, diags: &mut Diagnostics) {
             let mults = head_mults(head, ctx);
             for (i, a) in args.iter().enumerate() {
                 if is_var(a, half) && mults.get(i) == Some(&Mult::One) {
-                    push_write(diags, half, a.span(), "passado a um parâmetro %1 (escrita)");
+                    push_write(diags, half, a.span(), "passed to a %1 parameter (write)");
                 }
                 check_half_writes(a, half, ctx, diags);
             }
@@ -2394,7 +2395,7 @@ fn check_half_writes(e: &Expr, half: &str, ctx: &Ctx, diags: &mut Diagnostics) {
                     diags,
                     half,
                     base.span(),
-                    "base de uma actualização de registo (escrita)",
+                    "base of a record update (write)",
                 );
             } else {
                 check_half_writes(base, half, ctx, diags);
@@ -2409,7 +2410,7 @@ fn check_half_writes(e: &Expr, half: &str, ctx: &Ctx, diags: &mut Diagnostics) {
 fn check_half_assigns(assigns: &[(String, Expr)], half: &str, ctx: &Ctx, diags: &mut Diagnostics) {
     for (fname, val) in assigns {
         if is_var(val, half) && ctx.field_mults.get(fname) == Some(&Mult::One) {
-            push_write(diags, half, val.span(), "posto num campo %1 (escrita)");
+            push_write(diags, half, val.span(), "placed in a %1 field (write)");
         } else {
             check_half_writes(val, half, ctx, diags);
         }

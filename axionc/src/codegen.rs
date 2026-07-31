@@ -559,7 +559,7 @@ impl Fx<'_, '_> {
             }
             Atom::Var(name) => match self.vars.get(name) {
                 Some(v) => Ok(self.builder.use_var(*v)),
-                None => Err(format!("variável '{name}' não ligada no Core")),
+                None => Err(format!("variable '{name}' not bound in the Core")),
             },
         }
     }
@@ -583,7 +583,7 @@ impl Fx<'_, '_> {
                     .vars
                     .get(name)
                     .copied()
-                    .ok_or_else(|| format!("drop de variável '{name}' não ligada"))?;
+                    .ok_or_else(|| format!("drop of unbound variable '{name}'"))?;
                 let ptr = self.builder.use_var(v);
                 let deep = ty
                     .as_deref()
@@ -660,16 +660,16 @@ impl Fx<'_, '_> {
                     "==" => cmp(self, IntCC::Equal),
                     "<" => cmp(self, IntCC::SignedLessThan),
                     ">" => cmp(self, IntCC::SignedGreaterThan),
-                    other => return Err(format!("operador '{other}' não compila nativamente")),
+                    other => return Err(format!("operator '{other}' does not compile natively")),
                 })
             }
             Op::CallDirect(name, args) => {
                 let (id, arity) = *self
                     .ids
                     .get(name)
-                    .ok_or_else(|| format!("função '{name}' não é compilável nativamente"))?;
+                    .ok_or_else(|| format!("function '{name}' is not natively compilable"))?;
                 if args.len() != arity {
-                    return Err(format!("'{name}' chamada com aridade errada"));
+                    return Err(format!("'{name}' called with wrong arity"));
                 }
                 let vals = self.atoms(args)?;
                 let callee = self.module.declare_func_in_func(id, self.builder.func);
@@ -685,7 +685,7 @@ impl Fx<'_, '_> {
                 let (lam_id, _) = *self
                     .ids
                     .get(func)
-                    .ok_or_else(|| format!("lambda '{func}' não declarada"))?;
+                    .ok_or_else(|| format!("lambda '{func}' not declared"))?;
                 let env = self.alloc(1 + captures.len());
                 let fref = self.module.declare_func_in_func(lam_id, self.builder.func);
                 let faddr = self.builder.ins().func_addr(types::I64, fref);
@@ -754,7 +754,7 @@ impl Fx<'_, '_> {
                 } else {
                     let first = &fields
                         .first()
-                        .ok_or_else(|| "actualização de registo vazia".to_string())?
+                        .ok_or_else(|| "empty record update".to_string())?
                         .0;
                     let nfields = self
                         .records
@@ -885,7 +885,7 @@ impl Fx<'_, '_> {
                 let call = self.builder.ins().call(callee, &vals);
                 Ok(self.builder.inst_results(call)[0])
             }
-            Op::Unsupported(m) => Err(format!("{m} não compila nativamente (ainda)")),
+            Op::Unsupported(m) => Err(format!("{m} does not compile natively (yet)")),
         }
     }
 
@@ -920,14 +920,14 @@ impl Fx<'_, '_> {
                             );
                             self.bind_val(n, v);
                         }
-                        _ => return Err("padrão de tuplo aninhado não compila nativamente".into()),
+                        _ => return Err("nested tuple pattern does not compile natively".into()),
                     }
                 }
                 self.emit_term(body)
             }
             CPat::Int(lit) => {
                 if i + 1 >= arms.len() {
-                    return Err("case sem catch-all não compila nativamente (ainda)".into());
+                    return Err("case without catch-all does not compile natively (yet)".into());
                 }
                 let k = self.builder.ins().iconst(types::I64, *lit);
                 let cond = self.builder.ins().icmp(IntCC::Equal, sval, k);
@@ -1009,7 +1009,7 @@ impl Fx<'_, '_> {
                         .load(types::I64, MemFlags::new(), sval, off);
                     self.bind_val(n, v);
                 }
-                _ => return Err("padrão aninhado num construtor não compila nativamente".into()),
+                _ => return Err("nested pattern in a constructor does not compile natively".into()),
             }
         }
         Ok(())
@@ -1032,7 +1032,7 @@ pub fn run(
         .unwrap_or(false);
     if !entry_ok {
         return Err(format!(
-            "'{entry}' tem de ser uma função nativa (Int/IO) sem parâmetros"
+            "'{entry}' must be a native function (Int/IO) with no parameters"
         ));
     }
 
@@ -1089,7 +1089,7 @@ pub fn run(
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
     let fns = core::lower(module, inplace);
     if fns.is_empty() {
-        return Ok("; nenhuma função compilável nativamente (núcleo Int).\n".into());
+        return Ok("; no natively compilable function (Int core).\n".into());
     }
     let mut cg = Cg::new(RecordInfo::build(module))?;
     cg.declare_all(&fns)?;
