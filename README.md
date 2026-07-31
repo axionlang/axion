@@ -173,8 +173,9 @@ calmly and tested, without breaking the philosophy:
 mutex, not yet work-stealing** — tasks run in parallel on both backends and are
 ThreadSanitizer-clean, but the scheduler serializes channel ops on one lock and
 there is no `io_uring`/`epoll` for async I/O yet; **recursion in a session body**
-(server loops, recursive `Rec`/`Loop` session types) now typechecks and runs in
-the interpreter but is not native yet, and delegation is still interpreter-only;
+(server loops, recursive `Rec`/`Loop` session types) typechecks and runs on all
+three executors (native via a re-queue that re-dispatches the state machine), but
+its formal CFSM-oracle proof is still pending and delegation is interpreter-only;
 no `Float` yet;
 over-application (functions that return functions and are re-applied) and
 mechanized metatheory (Iris/Actris) still to do. None is a correctness hole —

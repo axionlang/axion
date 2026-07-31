@@ -364,17 +364,20 @@ static void *sess_worker(void *arg) {
     unsigned long gen0 = s->gen;
     pthread_mutex_unlock(&s->mtx);
 
+    /* step status: 1 = done, 2 = re-queue (a recursive session loop iterated),
+     * 0 = blocked on an empty recv. */
     long fin = step((long)s, st); /* runs WITHOUT the lock (parallel) */
 
     pthread_mutex_lock(&s->mtx);
     s->running--;
-    if (fin) {
+    if (fin == 1) {
       if (i == 0) {
         s->result = *(long *)st;
         s->done = 1;
       }
-    } else if (s->gen != gen0) {
-      /* a send happened during this step → don't park (lost-wakeup guard) */
+    } else if (fin == 2 || s->gen != gen0) {
+      /* 2: the task looped (§6 recursion) → re-run at the loop head. Also the
+       * lost-wakeup guard: a send during this step → re-run, don't park. */
       ready_push(s, i);
     } else {
       blocked_push(s, i);

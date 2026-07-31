@@ -408,18 +408,20 @@ fn sess_worker(sched: i64) {
             eprintln!("session scheduler: budget exhausted");
             std::process::exit(1);
         }
-        let finished = step(sched, st) != 0; // runs WITHOUT the lock (parallel)
+        // step status: 1 = done, 2 = re-queue (a recursive session loop iterated),
+        // 0 = blocked on an empty recv.
+        let status = step(sched, st); // runs WITHOUT the lock (parallel)
         let mut g = s.inner.lock().unwrap();
         g.running -= 1;
-        if finished {
+        if status == 1 {
             if i == 0 {
                 let res = unsafe { *(st as *const i64) };
                 s.result.store(res, Release);
                 s.done.store(true, Release);
             }
-        } else if g.gen != gen0 {
-            // a `send` happened during this step → don't park (lost-wakeup guard),
-            // re-run so the task re-checks its channel.
+        } else if status == 2 || g.gen != gen0 {
+            // 2: the task looped (§6 recursion) → re-run at the loop head. Also the
+            // lost-wakeup guard: a `send` during this step → re-run, don't park.
             g.ready.push_back(i);
         } else {
             g.blocked.push(i); // parked until a `send` wakes it

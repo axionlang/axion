@@ -1347,6 +1347,7 @@ fn sess_layout(pats: &[Pat], body: &Expr, step: String) -> SessLayout {
 
 /// Generator of one task's state machine.
 struct SessGen<'a> {
+    name: &'a str, // this task's session function name (for self-recursion)
     lay: &'a SessLayout,
     all: &'a HashMap<String, SessLayout>,
     tags: &'a HashMap<String, i64>, // choice label (constructor) → tag
@@ -1429,6 +1430,25 @@ impl SessGen<'_> {
 
     /// Generates the tail (block value): stores it into `result` and returns done.
     fn gen_tail(&mut self, tail: &Expr) -> Term {
+        // self-recursive session tail call `f d` (§6, server loop): store the new
+        // endpoint into the parameter slot, reset the resume tag to the loop head,
+        // and return status 2 (re-queue) so the scheduler re-dispatches the task.
+        let (head, args) = sess_spine(tail);
+        if head == Some(self.name) && args.len() == 1 {
+            if let Some(&pslot) = self.lay.param_slots.first() {
+                let mut binds = Vec::new();
+                let ep = self.val(args[0], &mut binds);
+                binds.push((
+                    self.fresh(),
+                    Rhs::Op(Op::StoreRaw(Self::state_atom(), pslot, ep)),
+                ));
+                binds.push((
+                    self.fresh(),
+                    Rhs::Op(Op::StoreRaw(Self::state_atom(), 8, Atom::Int(0))),
+                ));
+                return wrap(binds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(2)))));
+            }
+        }
         let mut binds = Vec::new();
         let result = match sess_spine(tail).0 {
             Some("close") | Some("cancel") => Atom::Int(0), // effect as tail → unit
@@ -1851,6 +1871,7 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
     let step_of = |name: &str, pats: &[Pat], body: &Expr, layouts: &HashMap<String, SessLayout>| {
         let lay = &layouts[name];
         let mut g = SessGen {
+            name,
             lay,
             all: layouts,
             tags: &tags,

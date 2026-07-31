@@ -197,10 +197,11 @@ fn session_richer_shapes_run_natively() {
 fn recursive_session_server_loop_runs() {
     // §6 recursion (server loops): a worker with a RECURSIVE session type
     // `Rec (Offer (More (Recv Int (Send Int Loop))) (Closed End))` loops via a tail
-    // call `worker d'` — which the checker now accepts (the recursion continues the
-    // protocol instead of reaching `close`, relaxing AX0301) and the interpreter
-    // runs (the scheduler re-enters the body as a tail call). Three rounds
-    // incrementing 10/20/30 → 11+21+31 = 63.
+    // call `worker d'` — the checker accepts it (the recursion continues the
+    // protocol instead of reaching `close`, relaxing AX0301), and it runs in ALL
+    // three executors: the interpreter re-enters the body as a tail call, and the
+    // native backends lower the tail to a re-queue (status 2) that re-dispatches the
+    // state machine at the loop head. Three rounds 10/20/30 → 11+21+31 = 63.
     let fx = fixture("session_run_server.axi");
     let check = axionc().args(["--check", &fx]).output().unwrap();
     assert!(
@@ -208,13 +209,27 @@ fn recursive_session_server_loop_runs() {
         "recursive session should typecheck: {}",
         String::from_utf8_lossy(&check.stdout)
     );
-    let run = axionc().arg(&fx).output().unwrap();
+    let interp = axionc().arg(&fx).output().unwrap();
     assert!(
-        run.status.success(),
+        interp.status.success(),
         "server loop should run: {}",
-        String::from_utf8_lossy(&run.stderr)
+        String::from_utf8_lossy(&interp.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "63\n");
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "63\n");
+    let native = axionc()
+        .args(["--backend", "cranelift", &fx])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "server loop should run natively: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "63\n",
+        "native and interpreter diverge on the server loop"
+    );
 }
 
 #[test]
@@ -1321,6 +1336,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("session_run_choice3.axi"), "2\n"), // 3-way choice dispatch
         (fixture("session_run_fib.axi"), "6765\n"), // compute-heavy worker (value-position call)
         (fixture("session_run_parfib.axi"), "300100\n"), // four compute-heavy workers
+        (fixture("session_run_server.axi"), "63\n"), // recursive session (server loop)
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1372,6 +1388,7 @@ fn native_runtime_is_leak_free_under_lsan() {
         "session_run_choice3",
         "session_run_fib",
         "session_run_parfib",
+        "session_run_server",
     ] {
         // lower to LLVM IR
         let ll = dir.join(format!("{name}.ll"));

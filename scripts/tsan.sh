@@ -35,6 +35,7 @@ CASES=(
   "session_run_choice3 2"
   "session_run_fib 6765"
   "session_run_parfib 300100" # four workers in parallel — the real stress
+  "session_run_server 63"     # recursive session: a server loop (§6)
 )
 
 fail=0
