@@ -1,25 +1,25 @@
-//! Interpretador de referência do **Axion Session Core (ASC)** — a semântica
-//! executável do cálculo de sessões (ver `docs/phase-3-calculus.md`), para
-//! validar os teoremas T1–T5 por execução ANTES de o compilador de produção
-//! ganhar canais. Não é o backend: é o oráculo contra o qual o typechecker de
-//! sessões da Fase 3 será depois cruzado (como o GHC é o oráculo da linearidade).
+//! Reference interpreter for the **Axion Session Core (ASC)** — the executable
+//! semantics of the session calculus (see `docs/phase-3-calculus.md`), to
+//! validate theorems T1–T5 by execution BEFORE the production compiler
+//! gains channels. It is not the backend: it is the oracle against which the Phase 3
+//! session typechecker is later cross-checked (as GHC is the linearity oracle).
 //!
-//! Modela **configurações**: threads (cada uma um `Proc` — uma continuação
-//! defuncionalizada) + buffers de canal assíncronos + a árvore de `spawn`. Um
-//! gerador determinístico produz protocolos **bem-tipados por construção** (um
-//! lado segue `S`, o outro `dual(S)`) com topologia em **árvore** (nursery), e
-//! os testes verificam: termina sem deadlock (T2/T4), a fidelidade de sessão
-//! aguenta (T3), e um pânico cancela sem órfãos (T5).
+//! Models **configurations**: threads (each a `Proc` — a defunctionalized
+//! continuation) + asynchronous channel buffers + the `spawn` tree. A
+//! deterministic generator produces protocols **well-typed by construction** (one
+//! side follows `S`, the other `dual(S)`) with a **tree** topology (nursery), and
+//! the tests check: it terminates without deadlock (T2/T4), session fidelity
+//! holds (T3), and a panic cancels without orphans (T5).
 #![cfg(test)]
 
 use std::collections::{HashMap, VecDeque};
 
-// --- tipos de sessão + dualidade (§2) ---
+// --- session types + duality (§2) ---
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Session {
     End,
-    Send(Box<Session>),   // !T.S  (payload abstraído: um valor)
+    Send(Box<Session>),   // !T.S  (payload abstracted: a value)
     Recv(Box<Session>),   // ?T.S
     Select(Vec<Session>), // ⊕ — escolhe um ramo (lado interno)
     Offer(Vec<Session>),  // & — oferece todos os ramos (lado externo)
@@ -35,7 +35,7 @@ fn dual(s: &Session) -> Session {
     }
 }
 
-// --- programa de uma thread: uma continuação defuncionalizada sobre endpoints ---
+// --- a thread's program: a defunctionalized continuation over endpoints ---
 
 type EpId = u32;
 
@@ -47,18 +47,18 @@ enum Proc {
     Close(EpId, Box<Proc>),
     Sel(EpId, usize, Box<Proc>),
     Off(EpId, Vec<Proc>),
-    /// cria um canal (my_ep ↔ child_ep), lança o filho e continua
+    /// creates a channel (my_ep ↔ child_ep), spawns the child and continues
     Spawn {
         my_ep: EpId,
         child_ep: EpId,
         child: Box<Proc>,
         cont: Box<Proc>,
     },
-    /// pânico (§7): o Linear Unwinding cancela os endpoints vivos da thread
+    /// panic (§7): Linear Unwinding cancels the thread's live endpoints
     Raise,
 }
 
-// --- gerador determinístico de protocolos bem-tipados em árvore ---
+// --- deterministic generator of well-typed tree protocols ---
 
 struct Rng(u64);
 impl Rng {
@@ -93,7 +93,7 @@ fn gen_session(rng: &mut Rng, depth: u32) -> Session {
     }
 }
 
-/// Constrói o `Proc` que executa `s` no endpoint `ep` e depois continua com `cont`.
+/// Builds the `Proc` that runs `s` on endpoint `ep` and then continues with `cont`.
 fn follow(rng: &mut Rng, s: &Session, ep: EpId, cont: Proc) -> Proc {
     match s {
         Session::End => Proc::Close(ep, Box::new(cont)),
@@ -118,7 +118,7 @@ fn follow(rng: &mut Rng, s: &Session, ep: EpId, cont: Proc) -> Proc {
 }
 
 /// Gera o `Proc` de uma thread: 0..2 filhos (cada um um sub-protocolo), depois
-/// (se tiver) o protocolo do canal para o pai. `up` = (sessão, endpoint) do pai.
+/// (if any) the channel protocol to the parent. `up` = (session, endpoint) of the parent.
 fn gen_thread(rng: &mut Rng, up: Option<(Session, EpId)>, depth: u32, ctr: &mut EpId) -> Proc {
     let tail = match up {
         Some((s, ep)) => follow(rng, &s, ep, Proc::Done),
@@ -137,7 +137,7 @@ fn gen_thread(rng: &mut Rng, up: Option<(Session, EpId)>, depth: u32, ctr: &mut 
             *ctr
         };
         let child = gen_thread(rng, Some((dual(&s2), child_ep)), depth - 1, ctr);
-        // o pai faz `s2` no seu lado e depois continua com o que já tinha
+        // the parent does `s2` on its side and then continues with what it had
         let after = follow(rng, &s2, my_ep, proc);
         proc = Proc::Spawn {
             my_ep,
@@ -155,7 +155,7 @@ fn gen_program(seed: u64, depth: u32) -> Proc {
     gen_thread(&mut rng, None, depth, &mut ctr)
 }
 
-// --- interpretador de configurações (semântica operacional §5) ---
+// --- configuration interpreter (operational semantics §5) ---
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Msg {
@@ -166,7 +166,7 @@ enum Msg {
 
 struct Thread {
     proc: Option<Proc>,                   // None = terminada
-    eps: std::collections::HashSet<EpId>, // endpoints vivos (para cancelar no pânico)
+    eps: std::collections::HashSet<EpId>, // live endpoints (to cancel on panic)
 }
 
 struct Config {
@@ -179,8 +179,8 @@ struct Config {
 enum RunResult {
     Ok,               // todas as threads terminaram
     Deadlock,         // sweep sem progresso com threads vivas (viola T2/T4)
-    Fidelity(String), // mensagem recebida não casa com o protocolo (viola T3)
-    StepCap,          // orçamento esgotado (indício de não-terminação)
+    Fidelity(String), // received message doesn't match the protocol (violates T3)
+    StepCap,          // budget exhausted (a sign of non-termination)
 }
 
 enum Step {
@@ -209,8 +209,8 @@ impl Config {
         }
     }
 
-    /// Pânico / cancelamento (§7): entrega `Closed` ao par de cada endpoint vivo
-    /// e termina a thread. O(filhos) em mensagens; sem órfãos.
+    /// Panic / cancellation (§7): delivers `Closed` to the peer of each live endpoint
+    /// and terminates the thread. O(children) in messages; no orphans.
     fn cancel(&mut self, tid: usize) {
         let eps: Vec<EpId> = self.threads[tid].eps.drain().collect();
         for ep in eps {
@@ -274,7 +274,7 @@ impl Config {
                     self.cancel(tid); // par cancelou → propaga (§7)
                     Step::Cancelled
                 }
-                Some(Msg::Label(_)) => Step::Fidelity, // esperava valor, veio rótulo
+                Some(Msg::Label(_)) => Step::Fidelity, // expected a value, got a label
             },
             Proc::Off(ep, arms) => match self.buf.get(&ep).and_then(|q| q.front()).copied() {
                 None => {
@@ -291,7 +291,7 @@ impl Config {
                     self.cancel(tid);
                     Step::Cancelled
                 }
-                Some(_) => Step::Fidelity, // rótulo fora do intervalo, ou veio valor
+                Some(_) => Step::Fidelity, // label out of range, or a value came
             },
             Proc::Raise => {
                 self.cancel(tid);
@@ -339,8 +339,8 @@ impl Config {
     }
 }
 
-/// Injecta um `raise` (pânico) numa posição aleatória do programa, para testar o
-/// cancelamento (T5). Só substitui continuações (nunca em `Done`).
+/// Injects a `raise` (panic) at a random position in the program, to test
+/// cancellation (T5). Only replaces continuations (never on `Done`).
 fn inject_raise(p: Proc, rng: &mut Rng) -> Proc {
     if !matches!(p, Proc::Done | Proc::Raise) && rng.below(100) < 20 {
         return Proc::Raise;
@@ -368,12 +368,12 @@ fn inject_raise(p: Proc, rng: &mut Rng) -> Proc {
     }
 }
 
-// --- property tests dos teoremas T1–T5 (§6 do cálculo) ---
+// --- property tests of theorems T1–T5 (§6 of the calculus) ---
 
 #[test]
 fn t1_duality_is_involutive() {
-    // A base da preservação (T1): a dualidade dos canais é involutiva, logo a
-    // tipagem das duas pontas mantém-se coerente sob redução.
+    // The basis of preservation (T1): channel duality is involutive, so the
+    // typing of the two ends stays coherent under reduction.
     for seed in 1..=500u64 {
         let s = gen_session(&mut Rng(seed | 1), 6);
         assert_eq!(dual(&dual(&s)), s, "dual não-involutivo para {s:?}");
@@ -383,8 +383,8 @@ fn t1_duality_is_involutive() {
 #[test]
 fn t2_t3_t4_welltyped_trees_run_to_completion() {
     // T2/T4 (progresso + deadlock-freedom): todo o programa bem-tipado com
-    // topologia em árvore (nursery) corre até ao fim sem encravar. T3 (fidelidade
-    // de sessão): nenhuma mensagem recebida contradiz o protocolo.
+    // tree topology (nursery) runs to the end without getting stuck. T3 (session
+    // fidelity): no received message contradicts the protocol.
     for seed in 1..=2000u64 {
         let p = gen_program(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 5);
         let mut cfg = Config::new(p);
@@ -397,9 +397,9 @@ fn t2_t3_t4_welltyped_trees_run_to_completion() {
 
 #[test]
 fn t5_panic_cancels_without_orphans() {
-    // T5 (segurança do cancelamento): um pânico injectado propaga `Closed` pela
-    // árvore e a configuração DRENA — todas as threads terminam, sem deadlock nem
-    // órfãos (o `Closed` é um ramo de 1.ª classe, tratado por todos os pares).
+    // T5 (cancellation safety): an injected panic propagates `Closed` through the
+    // tree and the configuration DRAINS — all threads terminate, without deadlock or
+    // orphans (`Closed` is a first-class branch, handled by every peer).
     for seed in 1..=2000u64 {
         let base = gen_program(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 5);
         let mut rng = Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
@@ -412,13 +412,13 @@ fn t5_panic_cancels_without_orphans() {
     }
 }
 
-// --- não-vacuidade: o interpretador TEM de apanhar violações reais ---
+// --- non-vacuity: the interpreter MUST catch real violations ---
 
 #[test]
 fn detector_catches_a_real_deadlock() {
-    // Espera cíclica (a topologia que o `bound`/árvore torna inexprimível, mas que
-    // construímos à mão): A espera em ch1, B espera em ch2, nenhum envia primeiro.
-    // Prova que T2/T4 não é vácuo — o detetor de deadlock dispara.
+    // Cyclic wait (the topology the `bound`/tree makes inexpressible, but which
+    // we build by hand): A waits on ch1, B waits on ch2, neither sends first.
+    // Proves T2/T4 is not vacuous — the deadlock detector fires.
     use std::collections::HashSet;
     let a = Proc::Recv(1, Box::new(Proc::Send(2, 0, Box::new(Proc::Done))));
     let b = Proc::Recv(4, Box::new(Proc::Send(3, 0, Box::new(Proc::Done))));
@@ -446,8 +446,8 @@ fn detector_catches_a_real_deadlock() {
 
 #[test]
 fn detector_catches_a_fidelity_violation() {
-    // A envia um VALOR; B faz `offer` (espera um RÓTULO). O par não segue o
-    // protocolo dual → viola a Fidelidade de Sessão. Prova que T3 não é vácuo.
+    // A sends a VALUE; B does `offer` (expects a LABEL). The pair does not follow the
+    // dual protocol → violates Session Fidelity. Proves T3 is not vacuous.
     use std::collections::HashSet;
     let a = Proc::Send(1, 42, Box::new(Proc::Done));
     let b = Proc::Off(2, vec![Proc::Done]);
@@ -470,8 +470,8 @@ fn detector_catches_a_fidelity_violation() {
 
 #[test]
 fn generated_programs_are_nontrivial() {
-    // sanidade: os programas gerados exercitam MESMO concorrência (várias threads
-    // e trocas), senão os testes T2–T5 passariam vaziamente.
+    // sanity: the generated programs REALLY exercise concurrency (several threads
+    // and exchanges), otherwise the T2–T5 tests would pass vacuously.
     let mut max_threads = 0;
     for seed in 1..=200u64 {
         let p = gen_program(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 5);
@@ -485,19 +485,19 @@ fn generated_programs_are_nontrivial() {
     );
 }
 
-// --- model-checking de CFSMs (Deniélou & Yoshida, ESOP 2012) ---
+// --- CFSM model-checking (Deniélou & Yoshida, ESOP 2012) ---
 //
-// Projeta cada sessão numa máquina de estados comunicante: o ESTADO é a sessão
-// restante; as transições são `!` (enviar valor/rótulo) e `?` (receber). Duas
-// máquinas duais comunicam por dois canais FIFO assíncronos (um por sentido).
-// Explora-se EXAUSTIVAMENTE o espaço de estados global alcançável — cobertura
-// que o teste aleatório (interpretador) não dá — e verifica-se:
-//   · deadlock-freedom: nenhum estado alcançável fica preso (sem transições e
-//     não-terminal);
-//   · compatibilidade (sem receção não-especificada): a cabeça da fila casa
+// Projects each session onto a communicating state machine: the STATE is the
+// remaining session; transitions are `!` (send value/label) and `?` (receive). Two
+// dual machines communicate over two asynchronous FIFO channels (one per direction).
+// The reachable global state space is explored EXHAUSTIVELY — coverage
+// the random test (interpreter) does not give — and it checks:
+//   · deadlock-freedom: no reachable state gets stuck (no transitions and
+//     non-terminal);
+//   · compatibility (no unspecified reception): the queue head matches
 //     sempre com o que o recetor espera;
-//   · sem órfãos: no estado terminal, as filas estão vazias.
-// Para um par dual, a teoria garante tudo isto; aqui prova-se por enumeração.
+//   · no orphans: in the terminal state, the queues are empty.
+// For a dual pair, the theory guarantees all of this; here it is proven by enumeration.
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Move {
@@ -505,23 +505,23 @@ enum Move {
     Lab(usize),
 }
 
-// Estado global: (sessão restante de M, de N, fila M→N, fila N→M).
+// Global state: (remaining session of M, of N, queue M→N, queue N→M).
 type Gs = (Session, Session, Vec<Move>, Vec<Move>);
-// Transição de um lado: (sessão-seguinte, fila de saída, fila de entrada).
+// One side's transition: (next-session, output queue, input queue).
 type SideMove = (Session, Vec<Move>, Vec<Move>);
 
 #[derive(Debug, PartialEq)]
 enum Check {
     Ok,
     Deadlock,
-    Unspecified, // receção não-especificada (viola compatibilidade/fidelidade)
+    Unspecified, // unspecified reception (violates compatibility/fidelity)
     Orphan,      // terminou com mensagens por consumir
-    TooBig,      // espaço de estados excedeu o limite (indício de não-terminação)
+    TooBig,      // state space exceeded the limit (a sign of non-termination)
 }
 
-/// Transições de um lado com sessão `s`: envia para `out`, recebe de `inp`.
-/// Devolve os pares (sessão-seguinte, out', inp') e se houve receção
-/// não-especificada (cabeça da fila incompatível com o esperado).
+/// One side's transitions with session `s`: sends to `out`, receives from `inp`.
+/// Returns the pairs (next-session, out', inp') and whether there was an
+/// unspecified reception (queue head incompatible with the expected).
 fn side_moves(s: &Session, out: &[Move], inp: &[Move]) -> (Vec<SideMove>, bool) {
     let push = |q: &[Move], m: Move| {
         let mut v = q.to_vec();
@@ -545,14 +545,14 @@ fn side_moves(s: &Session, out: &[Move], inp: &[Move]) -> (Vec<SideMove>, bool) 
         Session::Recv(k) => match inp.first() {
             None => (vec![], false), // bloqueado (fila vazia)
             Some(Move::Val) => (vec![((**k).clone(), out.to_vec(), pop(inp))], false),
-            Some(Move::Lab(_)) => (vec![], true), // esperava valor, veio rótulo
+            Some(Move::Lab(_)) => (vec![], true), // expected a value, got a label
         },
         Session::Offer(bs) => match inp.first() {
             None => (vec![], false),
             Some(Move::Lab(j)) if *j < bs.len() => {
                 (vec![(bs[*j].clone(), out.to_vec(), pop(inp))], false)
             }
-            Some(_) => (vec![], true), // rótulo fora do intervalo, ou veio valor
+            Some(_) => (vec![], true), // label out of range, or a value came
         },
     }
 }
@@ -594,7 +594,7 @@ fn model_check(m0: &Session, n0: &Session) -> Check {
             return Check::Unspecified;
         }
         if succs.is_empty() && !is_terminal(&gs) {
-            // preso: ambos terminados com filas por consumir = órfão; senão deadlock
+            // stuck: both terminated with unconsumed queues = orphan; else deadlock
             return if gs.0 == Session::End && gs.1 == Session::End {
                 Check::Orphan
             } else {
@@ -610,7 +610,7 @@ fn model_check(m0: &Session, n0: &Session) -> Check {
     Check::Ok
 }
 
-/// Enumera EXAUSTIVAMENTE todas as sessões até `depth` (conjunto finito).
+/// Enumerates EXHAUSTIVELY all sessions up to `depth` (a finite set).
 fn enum_sessions(depth: u32) -> Vec<Session> {
     if depth == 0 {
         return vec![Session::End];
@@ -621,7 +621,7 @@ fn enum_sessions(depth: u32) -> Vec<Session> {
         out.push(Session::Send(Box::new(s.clone())));
         out.push(Session::Recv(Box::new(s.clone())));
     }
-    // ramos: 1 ou 2 (o suficiente para exercitar ⊕/& sem explosão)
+    // branches: 1 or 2 (enough to exercise ⊕/& without explosion)
     for a in &subs {
         out.push(Session::Select(vec![a.clone()]));
         out.push(Session::Offer(vec![a.clone()]));
@@ -635,9 +635,9 @@ fn enum_sessions(depth: u32) -> Vec<Session> {
 
 #[test]
 fn cfsm_exhaustive_dual_pairs_are_deadlock_free() {
-    // TODA a sessão até profundidade 3, projetada com a sua dual, dá um sistema de
-    // CFSMs sem deadlock, compatível e sem órfãos — verificado por exploração
-    // EXAUSTIVA do espaço de estados (não amostragem).
+    // EVERY session up to depth 3, projected with its dual, gives a system of
+    // CFSMs that is deadlock-free, compatible and orphan-free — verified by EXHAUSTIVE
+    // exploration of the state space (not sampling).
     let sessions = enum_sessions(3);
     assert!(sessions.len() > 1000, "cobertura fraca: {}", sessions.len());
     for s in &sessions {
@@ -652,7 +652,7 @@ fn cfsm_exhaustive_dual_pairs_are_deadlock_free() {
 
 #[test]
 fn cfsm_random_large_dual_pairs_ok() {
-    // complemento em PROFUNDIDADE: protocolos grandes (depth 6) aleatórios, cada
+    // DEPTH complement: large random protocols (depth 6), each
     // um exaustivamente explorado.
     for seed in 1..=2000u64 {
         let s = gen_session(&mut Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1), 6);
@@ -663,9 +663,9 @@ fn cfsm_random_large_dual_pairs_ok() {
 
 #[test]
 fn cfsm_detectors_are_nonvacuous() {
-    // O model-checker TEM de apanhar violações reais em pares NÃO-duais.
+    // The model-checker MUST catch real violations in NON-dual pairs.
     let end = || Session::End;
-    // ambos recebem primeiro, filas vazias → espera cíclica → deadlock
+    // both receive first, empty queues → cyclic wait → deadlock
     assert_eq!(
         model_check(
             &Session::Recv(Box::new(end())),
@@ -673,7 +673,7 @@ fn cfsm_detectors_are_nonvacuous() {
         ),
         Check::Deadlock
     );
-    // ambos enviam e terminam → chegam a End com filas por consumir → órfão
+    // both send and terminate → reach End with unconsumed queues → orphan
     assert_eq!(
         model_check(
             &Session::Send(Box::new(end())),
@@ -681,7 +681,7 @@ fn cfsm_detectors_are_nonvacuous() {
         ),
         Check::Orphan
     );
-    // M envia um VALOR, N faz `offer` (espera um RÓTULO) → receção não-especificada
+    // M sends a VALUE, N does `offer` (expects a LABEL) → unspecified reception
     assert_eq!(
         model_check(
             &Session::Send(Box::new(end())),
@@ -691,16 +691,16 @@ fn cfsm_detectors_are_nonvacuous() {
     );
 }
 
-// --- diferencial superfície→ASC (valida o typechecker contra o oráculo) ---
+// --- surface→ASC differential (validates the typechecker against the oracle) ---
 //
-// O typechecker de sessões (`check.rs`, AX0300–AX0305) foi construído por
-// raciocínio + fixtures. Este diferencial ancora-o à referência: extrai a sessão
+// The session typechecker (`check.rs`, AX0300–AX0305) was built by
+// reasoning + fixtures. This differential anchors it to the reference: it extracts the session
 // de cada fixture ACEITE (pelo mesmo pipeline lex→layout→parse que o compilador
-// usa), traduz para o `Session` do ASC, e cruza-a com o oráculo CFSM (exploração
-// exaustiva de estados) — como o GHC é o oráculo da linearidade. As sessões que
-// o compilador aceita têm de ser deadlock-free/compatíveis segundo a referência.
+// uses), translates to the ASC `Session`, and cross-checks with the CFSM oracle (exhaustive
+// state exploration) — as GHC is the linearity oracle. The sessions the
+// compiler accepts must be deadlock-free/compatible according to the reference.
 
-/// Cabeça e argumentos de um `ast::Type` (espinha de `App`).
+/// Head and arguments of an `ast::Type` (spine of `App`).
 fn ast_ty_spine(t: &crate::ast::Type) -> (Option<&str>, Vec<&crate::ast::Type>) {
     use crate::ast::Type;
     let mut args = Vec::new();
@@ -720,7 +720,7 @@ fn ast_ty_spine(t: &crate::ast::Type) -> (Option<&str>, Vec<&crate::ast::Type>) 
     }
 }
 
-/// Traduz um tipo de sessão de superfície (`Send`/`Recv`/`End`/`Select`/`Offer`
+/// Translates a surface session type (`Send`/`Recv`/`End`/`Select`/`Offer`
 /// com ramos `Label Cont`) para o `Session` do ASC. Espelha `check::parse_sess`.
 fn from_surface_type(t: &crate::ast::Type) -> Option<Session> {
     let (h, args) = ast_ty_spine(t);
@@ -735,8 +735,8 @@ fn from_surface_type(t: &crate::ast::Type) -> Option<Session> {
 }
 
 fn from_surface_branches(args: &[&crate::ast::Type]) -> Option<Vec<Session>> {
-    // o ASC abstrai os rótulos (posicional); só a continuação de cada ramo importa
-    // para a compatibilidade/deadlock — o `Closed`-como-rótulo é regra do check.rs.
+    // the ASC abstracts labels (positional); only each branch's continuation matters
+    // for compatibility/deadlock — `Closed`-as-a-label is a check.rs rule.
     args.iter()
         .map(|a| {
             let (_, bargs) = ast_ty_spine(a);
@@ -749,7 +749,7 @@ fn from_surface_branches(args: &[&crate::ast::Type]) -> Option<Vec<Session>> {
         .collect()
 }
 
-/// Se `t` é um endpoint `Ep S` (ou `Channel`/`Chan`/`Endpoint`), devolve a sessão S.
+/// If `t` is an endpoint `Ep S` (or `Channel`/`Chan`/`Endpoint`), returns the session S.
 fn endpoint_of(t: &crate::ast::Type) -> Option<&crate::ast::Type> {
     let (h, args) = ast_ty_spine(t);
     match h? {
@@ -770,9 +770,9 @@ fn parse_fixture(name: &str) -> crate::ast::Module {
 
 #[test]
 fn surface_sessions_agree_with_asc_cfsm_oracle() {
-    // Para cada fixture de sessão ACEITE, toda a sessão que aparece numa
-    // assinatura (extraída pelo pipeline real) é deadlock-free/compatível segundo
-    // o oráculo CFSM da referência — o cruzamento superfície→ASC.
+    // For each ACCEPTED session fixture, every session that appears in a
+    // signature (extracted by the real pipeline) is deadlock-free/compatible according to
+    // the reference CFSM oracle — the surface→ASC cross-check.
     let accepted = [
         "session_ok.axi",
         "session_recv_ok.axi",

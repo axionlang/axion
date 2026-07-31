@@ -1,6 +1,6 @@
-//! Interpretador tree-walking do subconjunto L0/L1 — o "correr" do esqueleto
-//! ambulante (§17). Será o embrião do fast-path de `--dev`; o backend nativo
-//! (Cranelift/LLVM) é alvo das fases seguintes.
+//! Tree-walking interpreter for the L0/L1 subset — the "run" of the walking
+//! skeleton (§17). It is the embryo of the `--dev` fast-path; the native backend
+//! (Cranelift/LLVM) is the target of later phases.
 
 use crate::ast::*;
 use std::cell::RefCell;
@@ -14,14 +14,14 @@ struct Scope {
     parent: Option<Env>,
 }
 
-/// Tabela de funções e construtores de topo, resolvidos por nome em execução.
+/// Table of top-level functions and constructors, resolved by name at runtime.
 pub struct Program {
     funcs: HashMap<String, Rc<Func>>,
     cons: HashMap<String, Vec<String>>, // construtor → nomes dos campos (por ordem)
-    selectors: HashSet<String>,         // nomes de campo usáveis como selectores
-    foreigns: HashMap<String, usize>,   // importações FFI: nome C → aridade
-    methods: HashSet<String>,           // nomes de método de typeclasse (despacho dinâmico)
-    con_type: HashMap<String, String>,  // construtor → nome do tipo de dados (p/ despacho)
+    selectors: HashSet<String>,         // field names usable as selectors
+    foreigns: HashMap<String, usize>,   // FFI imports: C name → arity
+    methods: HashSet<String>,           // typeclass method names (dynamic dispatch)
+    con_type: HashMap<String, String>,  // constructor → data type name (for dispatch)
 }
 
 #[derive(Clone)]
@@ -31,7 +31,7 @@ enum Value {
     Bool(bool),
     #[allow(dead_code)] // `()` — ainda tratado nos matches (main :: (), etc.)
     Unit,
-    /// Acção de IO ainda por executar (o texto a imprimir).
+    /// An IO action still to execute (the text to print).
     Io(String),
     Closure {
         def: Rc<Func>,
@@ -42,33 +42,33 @@ enum Value {
         name: &'static str,
         args: Vec<Value>,
     },
-    /// Um tuplo (ex.: o resultado de `split`).
+    /// A tuple (e.g. the result of `split`).
     Tuple(Vec<Value>),
-    /// Um registo: construtor + campos (por ordem de construção).
+    /// A record: constructor + fields (in construction order).
     Record {
         con: String,
         fields: Vec<(String, Value)>,
     },
-    /// Um construtor por aplicar (aridade = nº de campos).
+    /// A constructor not yet applied (arity = number of fields).
     Ctor {
         name: String,
         field_names: Vec<String>,
         args: Vec<Value>,
     },
-    /// Um selector de campo (`pid`, `status`, …), aridade 1.
+    /// A field selector (`pid`, `status`, …), arity 1.
     Selector {
         field: String,
     },
-    /// Uma importação FFI (§18) por aplicar (ABI de Int; resolvida por dlsym).
+    /// An FFI import (§18) not yet applied (Int ABI; resolved by dlsym).
     Foreign {
         name: String,
         arity: usize,
         args: Vec<Value>,
     },
-    /// Um endpoint de sessão (§6): o id do seu buffer no scheduler (§11).
+    /// A session endpoint (§6): the id of its buffer in the scheduler (§11).
     Endpoint(usize),
-    /// Um método de typeclasse por resolver: ao receber o 1º argumento, despacha
-    /// pela cabeça-de-tipo desse argumento para a implementação da instância.
+    /// An unresolved typeclass method: on receiving the 1st argument, it dispatches
+    /// by that argument's type head to the instance implementation.
     Method {
         name: String,
     },
@@ -101,7 +101,7 @@ fn lookup(env: &Env, name: &str) -> Option<Value> {
     None
 }
 
-/// Constrói a tabela de topo (funções, construtores, selectores) do módulo.
+/// Builds the top-level table (functions, constructors, selectors) of the module.
 fn build_program(module: &Module) -> Program {
     let mut funcs = HashMap::new();
     for f in &module.funcs {
@@ -113,7 +113,7 @@ fn build_program(module: &Module) -> Program {
     for d in &module.datas {
         for c in &d.cons {
             con_type.insert(c.name.clone(), d.name.clone());
-            // campos posicionais recebem nomes sintéticos "_0", "_1", …
+            // positional fields get synthetic names "_0", "_1", …
             let names: Vec<String> = c
                 .fields
                 .iter()
@@ -139,7 +139,7 @@ fn build_program(module: &Module) -> Program {
         .iter()
         .map(|f| (f.name.clone(), f.sig.param_mults().len()))
         .collect();
-    // nomes de método de todas as classes (o que dispara o despacho dinâmico)
+    // method names of all classes (what triggers dynamic dispatch)
     let methods = module
         .classes
         .iter()
@@ -155,10 +155,10 @@ fn build_program(module: &Module) -> Program {
     }
 }
 
-/// Compila o módulo para um `Program` e corre `main`, executando o IO resultante.
+/// Compiles the module into a `Program` and runs `main`, executing the resulting IO.
 pub fn run(module: &Module) -> Result<(), RunError> {
-    // FFI (§18): carrega as bibliotecas do utilizador para o espaço global de
-    // símbolos, para o `dlsym(RTLD_DEFAULT)` de `call_foreign` as encontrar.
+    // FFI (§18): loads the user's libraries into the global symbol space,
+    // so `call_foreign`'s `dlsym(RTLD_DEFAULT)` finds them.
     crate::ffi::load_libs(&module.foreign_libs())?;
     let prog = build_program(module);
     let main = prog
@@ -210,7 +210,7 @@ fn type_name(v: &Value) -> &'static str {
     }
 }
 
-/// Cabeça-de-tipo de um valor, para despachar um método de typeclasse. Os
+/// Type head of a value, to dispatch a typeclass method. Records
 /// registos mapeiam-se ao nome do seu tipo de dados (`Some 42` → "Maybe").
 fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
     match v {
@@ -240,13 +240,13 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         Expr::Con(name, _) => match name.as_str() {
             "True" => Ok(Value::Bool(true)),
             "False" => Ok(Value::Bool(false)),
-            // construtor de `data` (nulário constrói já o registo; senão é um Ctor)
+            // `data` constructor (nullary already builds the record; else a Ctor)
             _ => resolve_var(prog, env, name),
         },
         Expr::Var(name, _) => resolve_var(prog, env, name),
         Expr::App(f, x, _) => {
             // `bound <corpo>` (§9/§11): abre o nursery e corre o scheduler
-            // cooperativo de sessões em vez da avaliação normal.
+            // cooperative session scheduler instead of normal evaluation.
             if let (Some("bound"), args) = app_head(e) {
                 if let Some(body) = args.last() {
                     return run_session(prog, body, env);
@@ -260,8 +260,8 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             let a = eval(prog, env, l)?;
             let b = eval(prog, env, r)?;
             match op.as_str() {
-                // `++` polimórfico: strings concatenam; listas (ou qualquer outra
-                // coisa) delegam no `append` do prelúdio — uma só definição.
+                // polymorphic `++`: strings concatenate; lists (or anything
+                // else) delegate to the prelude's `append` — a single definition.
                 "++" => match (a, b) {
                     (Value::Str(x), Value::Str(y)) => Ok(Value::Str(x + &y)),
                     (a, b) => {
@@ -299,10 +299,10 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         }
         Expr::Case(scrut, arms, _) => {
             let v = eval(prog, env, scrut)?;
-            // Sequenciamento de IO: um `do` desugara para `case acção of _ -> resto`.
-            // Se o escrutínio é uma acção de IO, o seu output PRECEDE o do resto
-            // (senão perder-se-ia — o valor do `case` é só o do ramo). O modelo de
-            // IO do interp é `Io(String)` acumulado; o nativo imprime na hora.
+            // IO sequencing: a `do` desugars to `case action of _ -> rest`.
+            // If the scrutinee is an IO action, its output PRECEDES the rest's
+            // (otherwise it would be lost — the `case` value is only the arm's). The
+            // interp's IO model is accumulated `Io(String)`; native prints immediately.
             let io_prefix = match &v {
                 Value::Io(s) => Some(s.clone()),
                 _ => None,
@@ -347,8 +347,8 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             }
             Ok(Value::Record { con, fields })
         }
-        // uma lambda vira uma closure de uma só cláusula, capturando o env
-        // actual — reutiliza toda a maquinaria de aplicação das funções.
+        // a lambda becomes a one-clause closure, capturing the current
+        // env — reusing all the function-application machinery.
         Expr::Lam(pats, body, sp) => Ok(Value::Closure {
             def: Rc::new(Func {
                 name: "<lambda>".to_string(),
@@ -431,7 +431,7 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
     }
 }
 
-/// Força CAFs (funções de aridade 0, como `main`, e construtores nulários)
+/// Forces CAFs (arity-0 functions, like `main`, and nullary constructors)
 /// avaliando o corpo / construindo o registo.
 fn force(prog: &Program, v: Value) -> Result<Value, RunError> {
     match v {
@@ -511,8 +511,8 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
                 Ok(Value::Foreign { name, arity, args })
             }
         }
-        // Método de typeclasse: despacha pela cabeça-de-tipo do 1º argumento para
-        // a implementação da instância (`eq` sobre um Int → `eq$Int`), e aplica.
+        // Typeclass method: dispatches by the 1st argument's type head to
+        // the instance implementation (`eq` over an Int → `eq$Int`), and applies.
         Value::Method { name } => {
             let head = value_type_head(prog, &arg).ok_or_else(|| {
                 format!(
@@ -542,7 +542,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
     }
 }
 
-// FFI (§18): resolve o símbolo C por dlsym e chama-o com a ABI de Int (i64).
+// FFI (§18): resolves the C symbol via dlsym and calls it with the Int ABI (i64).
 extern "C" {
     fn dlsym(
         handle: *mut std::ffi::c_void,
@@ -619,8 +619,8 @@ fn eval_body(prog: &Program, env: &Env, body: &Body) -> Result<Value, RunError> 
     }
 }
 
-/// Insere funções locais (`where`/`let`) no env, capturando esse mesmo env
-/// (para recursão e recursão mútua).
+/// Inserts local functions (`where`/`let`) into the env, capturing that same env
+/// (for recursion and mutual recursion).
 fn bind_funcs(funcs: &[Func], env: &Env) {
     for f in funcs {
         env.vars.borrow_mut().insert(
@@ -651,7 +651,7 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
         Pat::Int(n, _) => matches!(v, Value::Int(m) if m == n),
         Pat::Con(name, subpats, _) => match v {
             Value::Bool(b) => (name == "True" && *b) || (name == "False" && !*b),
-            // construtor: casa se o nome bate e liga os sub-padrões aos campos
+            // constructor: matches if the name matches and binds sub-patterns to fields
             Value::Record { con, fields } => {
                 con == name
                     && subpats.len() <= fields.len()
@@ -671,10 +671,10 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
     }
 }
 
-/// Os operadores infixos EMBUTIDOS (aritmética/comparação de `Int`). Tudo o que
-/// não estiver aqui é um operador infixo de utilizador — uma função nomeada
+/// The BUILT-IN infix operators (`Int` arithmetic/comparison). Anything
+/// not here is a user infix operator — a named function
 /// aplicada a dois argumentos (`x `f` y` ≡ `f x y`). O conjunto tem de coincidir
-/// com o dos backends nativos (`core::is_builtin_op`) para os três concordarem.
+/// with that of the native backends (`core::is_builtin_op`) so the three agree.
 fn is_builtin_op(op: &str) -> bool {
     matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
 }
@@ -682,8 +682,8 @@ fn is_builtin_op(op: &str) -> bool {
 fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
     use Value::*;
     match (op, a, b) {
-        // Int é de largura fixa (§ Listagem 1.4): a aritmética faz wrapping,
-        // semântica total que evita panics de overflow.
+        // Int is fixed-width (§ Listing 1.4): arithmetic wraps,
+        // a total semantics that avoids overflow panics.
         ("+", Int(x), Int(y)) => Ok(Int(x.wrapping_add(y))),
         ("-", Int(x), Int(y)) => Ok(Int(x.wrapping_sub(y))),
         ("*", Int(x), Int(y)) => Ok(Int(x.wrapping_mul(y))),
@@ -707,14 +707,14 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("show", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
         ("show", [Value::Bool(b)]) => Ok(Value::Str(b.to_string())),
         // split divide num par de metades de leitura partilhada (partilham o
-        // valor); join recombina — semântica trivial no interpretador.
+        // value); join recombines — trivial semantics in the interpreter.
         ("split", [v]) => Ok(Value::Tuple(vec![v.clone(), v.clone()])),
         ("join", [a, _b]) => Ok(a.clone()),
         (name, _) => Err(format!("builtin '{name}' received invalid arguments")),
     }
 }
 
-/// Tipo de runtime de um valor — usado pelos property tests de preservação.
+/// Runtime type of a value — used by the preservation property tests.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RtType {
@@ -727,8 +727,8 @@ pub(crate) enum RtType {
     Fun,
 }
 
-/// Avalia a definição de topo `name` (aridade 0) e devolve o tipo de runtime do
-/// valor. Ponto de entrada para os property tests de progresso/preservação.
+/// Evaluates the top-level definition `name` (arity 0) and returns the runtime type
+/// of the value. Entry point for the progress/preservation property tests.
 #[cfg(test)]
 pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunError> {
     let prog = build_program(module);
@@ -755,17 +755,17 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
     })
 }
 
-// --- runtime de sessões: scheduler cooperativo (§11) ---
+// --- session runtime: cooperative scheduler (§11) ---
 //
-// Dá EXECUÇÃO aos programas de `bound`/`spawn`/canais. Segue a §11: as tarefas
-// são «continuações defuncionalizadas» — e a continuação de um `do` é, muito
+// Gives EXECUTION to `bound`/`spawn`/channel programs. Follows §11: tasks
+// are "defunctionalized continuations" — and the continuation of a `do` is, quite
 // literalmente, o `Expr` restante (a cadeia de `case` que o desugar produz).
-// Um scheduler cooperativo single-thread corre cada tarefa até ela bloquear num
-// `recv` de canal vazio (o único ponto de suspensão, §11), e então troca. Sem
-// threads nem `Send` — os `Value` (Rc) ficam sempre numa só thread. A ausência
-// de deadlock é garantida pelos tipos (AX0302); o scheduler só executa.
+// A single-thread cooperative scheduler runs each task until it blocks on a
+// `recv` on an empty channel (the only suspension point, §11), then switches. No
+// threads nor `Send` — the `Value`s (Rc) always stay on a single thread. The
+// absence of deadlock is guaranteed by types (AX0302); the scheduler only executes.
 
-/// Cabeça-nome e argumentos de uma aplicação `f a b …` (para reconhecer os ops).
+/// Head name and arguments of an application `f a b …` (to recognize the ops).
 fn app_head(e: &Expr) -> (Option<&str>, Vec<&Expr>) {
     let mut args = Vec::new();
     let mut cur = e;
@@ -788,7 +788,7 @@ fn is_session_op(name: &str) -> bool {
 }
 
 struct Sched {
-    /// buffer de entrada de cada endpoint (mensagens à espera de serem recebidas
+    /// input buffer of each endpoint (messages waiting to be received
     /// pelo dono deste endpoint); enviar em `e` empurra para o buffer do par.
     bufs: Vec<std::collections::VecDeque<Value>>,
     peer: Vec<usize>,
@@ -819,7 +819,7 @@ struct Task {
 }
 
 enum StepOut {
-    Went(Task),    // avançou (uma operação não-bloqueante); continuar a correr
+    Went(Task),    // advanced (a non-blocking operation); keep running
     Blocked(Task), // recv de buffer vazio → suspender e trocar de tarefa
     Done(Value),   // a tarefa terminou com este valor
 }
@@ -831,8 +831,8 @@ fn ep_id(v: &Value) -> Result<usize, RunError> {
     }
 }
 
-/// Executa uma operação de canal reconhecida (`head args`) no env dado. Devolve
-/// `Some(valor)` (o resultado da operação) ou `None` se bloqueia (recv de buffer
+/// Executes a recognized channel operation (`head args`) in the given env. Returns
+/// `Some(value)` (the operation's result) or `None` if it blocks (recv on an empty
 /// vazio). Os `spawn` acrescentam tarefas-filho a `spawned`.
 fn perform_op(
     prog: &Program,
@@ -873,7 +873,7 @@ fn perform_op(
             Some(Value::Unit)
         }
         "cancel" => {
-            // §7: descarta o endpoint e avisa o par com `Closed` (o rótulo que o
+            // §7: discards the endpoint and warns the peer with `Closed` (the label
             // `offer` do par recebe como o ramo de cancelamento — T5).
             let ep = ep_id(&eval(prog, env, args[0])?)?;
             sched.send(ep, Value::Str("Closed".to_string()));
@@ -882,7 +882,7 @@ fn perform_op(
         "offer" => return Err("`offer` must be the scrutinee of a `case`".into()),
         "recv" => {
             let ep = ep_id(&eval(prog, env, args[0])?)?;
-            // buffer vazio → `None` (bloqueia); senão o par (valor, endpoint)
+            // empty buffer → `None` (blocks); otherwise the pair (value, endpoint)
             sched
                 .recv(ep)
                 .map(|v| Value::Tuple(vec![v, Value::Endpoint(ep)]))
@@ -891,27 +891,27 @@ fn perform_op(
     })
 }
 
-/// Se `e` é uma operação de sessão aplicada, devolve `(head, args)`.
+/// If `e` is an applied session operation, returns `(head, args)`.
 fn as_session_op(e: &Expr) -> Option<(&str, Vec<&Expr>)> {
     let (head, args) = app_head(e);
     head.filter(|h| is_session_op(h)).map(|h| (h, args))
 }
 
-/// Um passo do scheduler sobre uma tarefa: trata um op de sessão à cabeça (seja
-/// escrutínio de `case`, seja a cauda do `do`), ou avalia normalmente.
+/// A scheduler step over a task: handles a session op at the head (whether
+/// a `case` scrutinee or the tail of the `do`), or evaluates normally.
 fn step(
     prog: &Program,
     sched: &mut Sched,
     task: Task,
     spawned: &mut Vec<Task>,
 ) -> Result<StepOut, RunError> {
-    // `case offer c of { L1 e1 -> N1 ; … }` (&): recebe o rótulo e despacha para
-    // o ramo correspondente. `offer` é o único op com escrutínio multi-braço.
+    // `case offer c of { L1 e1 -> N1 ; … }` (&): receives the label and dispatches to
+    // the corresponding branch. `offer` is the only op with a multi-arm scrutinee.
     if let Expr::Case(scrut, arms, _) = &task.cont {
         if let (Some("offer"), oargs) = app_head(scrut) {
             let ep = ep_id(&eval(prog, &task.env, oargs[0])?)?;
             let label = match sched.recv(ep) {
-                None => return Ok(StepOut::Blocked(task)), // rótulo ainda não chegou
+                None => return Ok(StepOut::Blocked(task)), // label not arrived yet
                 Some(Value::Str(l)) => l,
                 Some(other) => {
                     return Err(format!(
@@ -920,7 +920,7 @@ fn step(
                     ))
                 }
             };
-            // valor etiquetado que carrega o endpoint avançado: `L (Endpoint c)`.
+            // tagged value carrying the advanced endpoint: `L (Endpoint c)`.
             let tagged = Value::Record {
                 con: label.clone(),
                 fields: vec![("_0".to_string(), Value::Endpoint(ep))],
@@ -958,7 +958,7 @@ fn step(
             }
         }
     }
-    // op de sessão como cauda do `do` (ex.: `close c` final) → é o valor do bloco.
+    // session op as the tail of the `do` (e.g. final `close c`) → it is the block's value.
     if let Some((head, args)) = as_session_op(&task.cont) {
         return Ok(
             match perform_op(prog, sched, spawned, &task.env, head, &args)? {
@@ -967,12 +967,12 @@ fn step(
             },
         );
     }
-    // folha sem op de sessão → avalia normalmente
+    // leaf without a session op → evaluates normally
     Ok(StepOut::Done(eval(prog, &task.env, &task.cont)?))
 }
 
-/// Constrói a tarefa-filho para `spawn f`: aplica a closure `f` ao endpoint,
-/// mas em vez de a correr até ao fim, devolve o seu corpo como continuação.
+/// Builds the child task for `spawn f`: applies the closure `f` to the endpoint,
+/// but instead of running it to the end, returns its body as a continuation.
 fn fork_child(f: Value, arg: Value) -> Result<Task, RunError> {
     match f {
         Value::Closure { def, env, args } if args.is_empty() => {
@@ -996,9 +996,9 @@ fn fork_child(f: Value, arg: Value) -> Result<Task, RunError> {
     }
 }
 
-/// O scheduler cooperativo: corre a tarefa raiz (do `bound`) e os seus filhos até
-/// a raiz terminar. Round-robin; uma varredura sem progresso com tarefas vivas é
-/// deadlock (não deve acontecer — os tipos garantem, AX0302).
+/// The cooperative scheduler: runs the root task (of the `bound`) and its children until
+/// the root finishes. Round-robin; a sweep with no progress and live tasks is
+/// deadlock (should not happen — the types guarantee it, AX0302).
 fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError> {
     let mut sched = Sched {
         bufs: Vec::new(),
