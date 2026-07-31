@@ -79,10 +79,44 @@ Times (ms, best of 3):
 This confirms the premise of the **two backends** (§11/§18): Cranelift for the
 instant edit-run cycle, LLVM for performance competitive with C in release.
 
+## Concurrency (§11) — Axion sessions vs raw C/Rust threads
+
+A fork-join workload (`bench/conc.{axi,c,rs}`): **4 workers each compute `fib 34`,
+the parent sums** (= 22811548). C uses **pthreads**, Rust uses **std::thread** —
+raw, unchecked threads; Axion uses **session tasks on the M:N scheduler**, where
+the workers talk over linear channels whose protocol is checked by types
+(race-freedom + deadlock-freedom, no manual locks). Wall time (best of 9, same
+`clang -O2` for C and Axion `--release`), 1 vs 4 worker threads:
+
+```
+  language           1 thread  4 threads  speedup
+  C (pthreads)         0.059s     0.016s     3.7×
+  Rust (threads)       0.067s     0.018s     3.7×
+  Axion --release      0.062s     0.017s     3.6×
+```
+
+- **Single-thread compute — parity.** ~0.06 s in all three: Axion's `fib` lowers to
+  the same LLVM as C/Rust, and running the four workers on one scheduler thread is
+  the same total work. (Fairness note: the C/Rust sequential path needs `volatile`/
+  `black_box` so `-O2` doesn't hoist the four identical `fib` calls to one — Axion
+  can't be so optimized because each `34` arrives over a channel.)
+- **Parallel scaling — parity.** Axion reaches **3.6×** on 4 cores, essentially the
+  same as raw pthreads (3.7×) and std::thread (3.7×): at coarse granularity the
+  `fib` compute dominates and the scheduler/channel overhead is negligible. Axion
+  gets the type-checked race- and deadlock-freedom **for free** here.
+- **Where the overhead would show:** a *channel-bound* workload (many small messages)
+  would hit the scheduler's global mutex (~10–14 M ops/s, [`session-scaling.md`](session-scaling.md)) —
+  that is the frontier work-stealing addresses, not reachable by coarse compute.
+
+Harness: [`scripts/concurrency-bench.sh`](../scripts/concurrency-bench.sh)
+(`AXION_SESS_THREADS` sets Axion's worker-thread count). Numbers vary run-to-run;
+the parity, not the third decimal, is the point.
+
 ## Reproduce
 
 ```sh
-AXION_CLANG=/path/to/clang ./scripts/bench.sh        # full table
+AXION_CLANG=/path/to/clang ./scripts/bench.sh              # single-thread kernels
+AXION_CLANG=/path/to/clang ./scripts/concurrency-bench.sh  # fork-join: C/Rust/Axion
 AXION_CLANG=$(nix eval --raw nixpkgs#llvmPackages_18.clang)/bin/clang \
   RUNS=5 ./scripts/bench.sh
 ```
