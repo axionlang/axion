@@ -1,29 +1,29 @@
-//! Axion Core IR (§11): a representação intermédia **estrita/linear** de onde os
-//! backends nativos baixam (hoje o Cranelift `--dev`; amanhã o LLVM `--release`),
-//! em vez de baixar do AST directamente.
+//! Axion Core IR (§11): the **strict/linear** intermediate representation from which
+//! the native backends lower (Cranelift `--dev` and LLVM `--release`),
+//! instead of lowering from the AST directly.
 //!
-//! Está em **A-normal form (ANF)**: toda a subexpressão composta é nomeada por um
-//! `let`, e os argumentos de operações/chamadas são **átomos** (literal ou
-//! variável). O controlo (`if`/`case`) vive num `Rhs`, pelo que um `let` pode
-//! ligar o resultado de um ramo (estilo *join-point*). O desugar de
-//! multi-cláusula (cadeia de `if`), o *lifting* de `where` e a **conversão de
-//! closures** (lambda → função + ambiente de captura) acontecem já nesta baixada,
-//! ficando o codegen um mero emissor Core→máquina.
+//! It is in **A-normal form (ANF)**: every compound subexpression is named by a
+//! `let`, and the arguments of operations/calls are **atoms** (literal or
+//! variable). Control (`if`/`case`) lives in an `Rhs`, so a `let` can
+//! bind the result of a branch (*join-point* style). Multi-clause
+//! desugaring (`if` chain), `where` *lifting* and **closure
+//! conversion** (lambda → function + capture environment) already happen in this lowering,
+//! leaving codegen a plain Core→machine emitter.
 //!
-//! O **Drop estrutural** (Auto-Drop §2) é um **nó explícito** do Core: uma
-//! análise de reclamação (`insert_drops`) insere `drop x` no ponto de morte dos
-//! objectos que a função possui (locais, resultados de chamada, params `%1`) e
-//! que não escapam; o runtime liberta-os (`axion_free`). As **arenas** (§3)
-//! também têm Ops próprios (`WithArena`/`ArenaAlloc`/`Promote`/`ArenaMark`/…) e
-//! um runtime bump com reset em massa. O **in-place** (Linear Elision, §2) é um
-//! flag no `Op::UpdateRecord`: se o `check.rs` provar que o base é linear e morre
-//! ali, muta-se o bloco existente em vez de alocar+copiar.
+//! **Structural Drop** (Auto-Drop §2) is an **explicit node** in the Core: a
+//! reclamation analysis (`insert_drops`) inserts `drop x` at the death point of the
+//! objects the function owns (locals, call results, `%1` params) and
+//! that don't escape; the runtime frees them (`axion_free`). **Arenas** (§3)
+//! also have their own Ops (`WithArena`/`ArenaAlloc`/`Promote`/`ArenaMark`/…) and
+//! a bump runtime with bulk reset. **In-place** (Linear Elision, §2) is a
+//! flag on `Op::UpdateRecord`: if `check.rs` proves the base is linear and dies
+//! there, the existing block is mutated instead of allocating+copying.
 
 use crate::ast::{self, Body, Expr, Pat, Span, Type};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-/// Valor atómico: literal ou referência a uma variável já ligada.
+/// Atomic value: a literal or a reference to an already-bound variable.
 #[derive(Debug, Clone)]
 pub enum Atom {
     Int(i64),
@@ -31,37 +31,37 @@ pub enum Atom {
     Var(String),
 }
 
-/// Uma computação-folha (lado direito de um `let`, sem controlo).
+/// A leaf computation (right-hand side of a `let`, no control).
 #[derive(Debug, Clone)]
 pub enum Op {
     Atom(Atom),
-    /// operação primitiva binária: `+ - * mod == < > band`
+    /// binary primitive operation: `+ - * mod == < > band`
     Prim(String, Atom, Atom),
-    /// chamada directa a função nomeada (topo ou local de `where` já mangled)
+    /// direct call to a named function (top-level or `where` local, already mangled)
     CallDirect(String, Vec<Atom>),
-    /// chamada indirecta através de uma closure (o átomo é o ponteiro)
+    /// indirect call through a closure (the atom is the pointer)
     CallClosure(Atom, Vec<Atom>),
-    /// construir closure: função liftada + valores capturados
+    /// build a closure: lifted function + captured values
     MakeClosure {
         func: String,
         captures: Vec<Atom>,
     },
     /// alocar tuplo na heap (um `i64` por componente)
     MakeTuple(Vec<Atom>),
-    /// construir registo `Con { campo = átomo, … }`
+    /// build a record `Con { field = atom, … }`
     MakeRecord {
         con: String,
         fields: Vec<(String, Atom)>,
     },
-    /// construir um valor `data` posicional `Con a b …` (tipos-soma incluídos —
+    /// build a positional `data` value `Con a b …` (sum types included —
     /// leva o tag se o tipo tiver >1 construtor).
     MakeCon {
         con: String,
         args: Vec<Atom>,
     },
-    /// actualizar registo `base { campo = átomo, … }`. `inplace` (Linear Elision,
-    /// §2): o base é linear e morre aqui → muta-se o bloco existente em vez de
-    /// alocar+copiar (o `check.rs` prova a segurança).
+    /// update a record `base { field = atom, … }`. `inplace` (Linear Elision,
+    /// §2): the base is linear and dies here → the existing block is mutated instead of
+    /// allocating+copying (`check.rs` proves the safety).
     UpdateRecord {
         base: Atom,
         fields: Vec<(String, Atom)>,
@@ -72,7 +72,7 @@ pub enum Op {
         name: String,
         rec: Atom,
     },
-    /// carga i64 crua em `ptr + offset` (bytes). Só a geração de destrutores
+    /// raw i64 load at `ptr + offset` (bytes). Only destructor generation
     /// (deep-drop, §2) a usa — acede a campos por offset, incluindo o tag.
     LoadRaw(Atom, i32),
     /// `putStrLn :: String -> IO ()` (runtime)
@@ -83,27 +83,27 @@ pub enum Op {
     ShowInt(Atom),
     // --- arenas (§3): a `clos` recebe a arena; no fim faz-se o reset ---
     /// `withArena`/`withSubArena`: cria a (sub-)arena, corre `clos` com ela, e
-    /// **reseta-a** no fim (reclamação em massa). `parent` só serve o `promote`.
+    /// **resets it** at the end (bulk reclamation). `parent` only serves `promote`.
     WithArena {
         parent: Option<Atom>,
         clos: Atom,
     },
-    /// `allocateCell arena` — bump-alloca uma célula na arena.
+    /// `allocateCell arena` — bump-allocates a cell in the arena.
     ArenaAlloc(Atom),
-    /// `promote target cell` — copia a célula para a arena `target` (safa-a do reset).
+    /// `promote target cell` — copies the cell to arena `target` (saves it from the reset).
     Promote(Atom, Atom),
     /// `arena_mark arena` — guarda o topo do bump-pointer.
     ArenaMark(Atom),
-    /// `arena_release mark` — repõe o bump-pointer (reclama o alocado desde a marca).
+    /// `arena_release mark` — restores the bump-pointer (reclaims what was allocated since the mark).
     ArenaRelease(Atom),
-    /// Chamada a uma função de runtime nomeada (builtins de `Buffer`/§4 e afins):
+    /// Call to a named runtime function (`Buffer`/§4 builtins and the like):
     /// `func(args…)`, devolvendo valor sse `returns`.
     RtCall {
         func: String,
         args: Vec<Atom>,
         returns: bool,
     },
-    /// Chamada FFI (§18): a função C `name` com ABI de Int (i64), resolvida por
+    /// FFI call (§18): the C function `name` with the Int ABI (i64), resolved by
     /// `dlsym`. Devolve i64.
     Ffi {
         name: String,
@@ -121,55 +121,55 @@ pub enum Rhs {
     Case(Atom, Vec<(CPat, Term)>),
 }
 
-/// Sequência de `let`s terminada num resultado.
+/// A sequence of `let`s ending in a result.
 #[derive(Debug, Clone)]
 pub enum Term {
     Let(String, Rhs, Box<Term>),
     /// `drop x; …` — liberta o objecto de heap `x` no seu ponto de morte
-    /// (Auto-Drop, §2; inserido pela análise de reclamação, não pela baixada).
-    /// O `Option<String>` é o nome do tipo-`data` de `x` (quando conhecido): se o
+    /// (Auto-Drop, §2; inserted by the reclamation analysis, not the lowering).
+    /// The `Option<String>` is the `data` type name of `x` (when known): if the
     /// tipo possuir campos de heap, o backend chama o destrutor recursivo
-    /// `axion_drop_<T>` (deep-drop); senão, um `free` plano.
+    /// `axion_drop_<T>` (deep-drop); otherwise, a flat `free`.
     Drop(String, Option<String>, Box<Term>),
     Ret(Rhs),
 }
 
-/// Padrões de `case` suportados nativamente.
+/// `case` patterns supported natively.
 #[derive(Debug, Clone)]
 pub enum CPat {
     Int(i64),
     Var(String),
     Wild,
     Tuple(Vec<CPat>),
-    /// construtor + sub-padrões. Tipos de 1 construtor destructuram sem tag;
+    /// constructor + sub-patterns. 1-constructor types destructure without a tag;
     /// tipos-soma comparam o tag (offset 0) do valor com o do construtor.
     Con(String, Vec<CPat>),
 }
 
-/// Uma função no Core: de topo, local de `where`, ou lambda liftada.
+/// A function in the Core: top-level, `where` local, or lifted lambda.
 #[derive(Debug, Clone)]
 pub struct CoreFn {
     pub name: String,
     pub params: Vec<String>,
-    /// nomes capturados (vazio para não-lambdas); carregados do env em codegen
+    /// captured names (empty for non-lambdas); loaded from the env in codegen
     pub captures: Vec<String>,
     pub is_closure: bool,
-    /// parâmetros `%1` de tipo-heap: o callee **possui-os** e liberta-os no seu
-    /// ponto de morte (reclamação entre funções — Auto-Drop, §2)
+    /// `%1` heap-typed parameters: the callee **owns them** and frees them at their
+    /// death point (cross-function reclamation — Auto-Drop, §2)
     pub owned_params: Vec<String>,
     pub body: Term,
 }
 
-// --- classificação de tipos nativos (partilhada com o codegen) ---
+// --- native type classification (shared with codegen) ---
 
 /// Tipos representados por um `i64`: `Int`, `String`, `IO`, um `data`, ou uma
-/// função (ponteiro para closure `{fn_ptr, capturas…}`).
+/// function (pointer to closure `{fn_ptr, captures…}`).
 pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
-    // Arrow/Unit/variável de tipo → i64. O ABI nativo é uniformemente i64
-    // (Int/Bool/ponteiros/closures), por isso uma posição polimórfica é sempre
-    // i64-representável — o que deixa funções paramétricas/de ordem superior
-    // (compose, foldr, …) compilarem, agora que a eta-expansão garante que são
-    // aplicadas à aridade completa (sem o erro de aplicação parcial de antes).
+    // Arrow/Unit/type variable → i64. The native ABI is uniformly i64
+    // (Int/Bool/pointers/closures), so a polymorphic position is always
+    // i64-representable — which lets parametric/higher-order functions
+    // (compose, foldr, …) compile, now that eta-expansion guarantees they are
+    // applied at full arity (without the earlier partial-application error).
     if matches!(t, Type::Arrow { .. } | Type::Unit | Type::Var(_)) {
         return true;
     }
@@ -194,8 +194,8 @@ pub fn result_type(sig: &Type) -> &Type {
 }
 
 /// Tipo alocado na heap por `axion_alloc` (registo/`data` ou tuplo). Exclui
-/// `Int`/`IO` (i64 puro), `String` (C-string do runtime, não é nossa) e funções
-/// (as closures são reclamadas conservadoramente — podem ser chamadas).
+/// `Int`/`IO` (pure i64), `String` (a runtime C-string, not ours) and functions
+/// (closures are reclaimed conservatively — they may be called).
 fn heap_ty(t: &Type, data_types: &HashSet<String>) -> bool {
     match t {
         Type::Tuple(_) => true,
@@ -207,8 +207,8 @@ pub fn is_int(t: &Type) -> bool {
     matches!(t.head_con(), Some("Int"))
 }
 
-/// Operadores infixos EMBUTIDOS (aritmética/comparação de `Int`), que baixam a
-/// `Op::Prim`. O resto é um operador infixo de utilizador — uma função nomeada
+/// BUILT-IN infix operators (`Int` arithmetic/comparison), which lower to
+/// `Op::Prim`. The rest is a user infix operator — a named function
 /// aplicada a dois argumentos. Coincide com `interp::is_builtin_op`.
 pub fn is_builtin_op(op: &str) -> bool {
     matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
@@ -218,22 +218,22 @@ pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
     module.datas.iter().map(|d| d.name.clone()).collect()
 }
 
-/// Layout dos registos/valores `data`. Um tipo de **um só** construtor não tem
+/// Layout of records/`data` values. A **single**-constructor type has no
 /// tag: `[campo0][campo1]…` (campo i em i×8). Um tipo-**soma** (multi-construtor)
-/// leva um **tag** (o índice do construtor) no offset 0: `[tag][campo0]…` (campo
+/// carries a **tag** (the constructor index) at offset 0: `[tag][field0]…` (field
 /// i em (1+i)×8). Partilhado pelos backends; um `i64` por slot.
 #[derive(Default)]
 pub struct RecordInfo {
     con_fields: HashMap<String, Vec<String>>, // campos com nome
     field_owner: HashMap<String, String>,
     single_con: HashSet<String>,   // construtores sem tag (tipo de 1 con)
-    con_tag: HashMap<String, i32>, // índice do construtor no seu tipo
+    con_tag: HashMap<String, i32>, // constructor index within its type
     con_arity: HashMap<String, usize>, // nº total de campos (com ou sem nome)
-    // --- deep-drop (§2): reclamação estrutural de campos aninhados ---
+    // --- deep-drop (§2): structural reclamation of nested fields ---
     con_type: HashMap<String, String>, // construtor → nome do seu tipo
     type_cons: HashMap<String, Vec<String>>, // tipo → construtores (por ordem de tag)
     /// construtor → campos de tipo-`data` que ele **possui**: (offset, nome do tipo).
-    /// São alocações separadas que um `free` plano não reclama → deep-drop.
+    /// They are separate allocations that a flat `free` doesn't reclaim → deep-drop.
     con_drop_slots: HashMap<String, Vec<(i32, String)>>,
     /// tipos que possuem (algures) um campo de tipo-`data` → precisam de destrutor.
     needs_deep: HashSet<String>,
@@ -267,14 +267,14 @@ impl RecordInfo {
                 }
             }
         }
-        // segundo passo: offsets já calculáveis (tag/aridade prontos) → drop slots.
+        // second pass: offsets now computable (tag/arity ready) → drop slots.
         for d in &module.datas {
             for c in &d.cons {
                 let mut slots = Vec::new();
                 for (i, f) in c.fields.iter().enumerate() {
-                    // um campo de tipo-`data` é uma alocação de heap possuída pelo
+                    // a `data`-typed field is a heap allocation owned by the
                     // registo → tem de ser reclamada quando o pai morre. Tuplos e
-                    // não-heap (Int/String/Buffer/função) ficam de fora (ver docs).
+                    // non-heap (Int/String/Buffer/function) are left out (see docs).
                     if let Some(h) = f.ty.head_con() {
                         if data_names.contains(h) {
                             slots.push((r.field_offset(&c.name, i), h.to_string()));
@@ -311,19 +311,19 @@ impl RecordInfo {
         self.con_drop_slots.get(con).map_or(&[], Vec::as_slice)
     }
 
-    /// Tipos que precisam de destrutor gerado, por ordem determinística.
+    /// Types that need a generated destructor, in deterministic order.
     pub fn deep_drop_types(&self) -> Vec<String> {
         let mut v: Vec<String> = self.needs_deep.iter().cloned().collect();
         v.sort();
         v
     }
 
-    /// `true` se o construtor pertence a um tipo com um só construtor (sem tag).
+    /// `true` if the constructor belongs to a single-constructor type (no tag).
     pub fn is_single_con(&self, con: &str) -> bool {
         self.single_con.contains(con)
     }
 
-    /// O tag (índice) de um construtor, se o seu tipo for uma soma (>1 con).
+    /// The tag (index) of a constructor, if its type is a sum (>1 con).
     pub fn tag(&self, con: &str) -> Option<i32> {
         (!self.is_single_con(con))
             .then(|| self.con_tag.get(con).copied())
@@ -341,7 +341,7 @@ impl RecordInfo {
             .map(|n| n + usize::from(self.tag(con).is_some()))
     }
 
-    /// Offset do i-ésimo campo (posicional) de um construtor (ajustado ao tag).
+    /// Offset of the i-th (positional) field of a constructor (adjusted for the tag).
     pub fn field_offset(&self, con: &str, i: usize) -> i32 {
         let base = usize::from(self.tag(con).is_some());
         (base + i) as i32 * 8
@@ -356,11 +356,11 @@ impl RecordInfo {
     }
 }
 
-/// Candidata a nativa: todos os parâmetros e o retorno são `i64`-representáveis,
-/// e o corpo não chama nenhum método de typeclasse (que é interp-only na fatia 1
-/// — o despacho é dinâmico, sem símbolo nativo). Sem isto, funções genéricas do
-/// prelúdio como `maxOr`/`nub` (assinatura i64-ok, mas que chamam `le`/`eq`)
-/// passariam o filtro e rebentariam no codegen com um símbolo por ligar.
+/// Native candidate: all parameters and the return are `i64`-representable,
+/// and the body calls no typeclass method (which is interp-only when unresolved
+/// — dispatch is dynamic, no native symbol). Without this, generic prelude
+/// functions like `maxOr`/`nub` (i64-ok signature, but calling `le`/`eq`)
+/// would pass the filter and blow up in codegen with an unbound symbol.
 fn top_candidate(
     f: &ast::Func,
     data_types: &HashSet<String>,
@@ -373,8 +373,8 @@ fn top_candidate(
     ok.then(|| f.clauses.first().map(|c| c.pats.len()).unwrap_or(0))
 }
 
-/// Verdadeiro se algum corpo (cláusula, guarda ou `where`) referencia um nome de
-/// método de typeclasse — nesse caso a função não é compilável nativamente.
+/// True if some body (clause, guard or `where`) references a typeclass method
+/// name — in which case the function is not natively compilable.
 fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
     if methods.is_empty() {
         return false;
@@ -399,9 +399,9 @@ fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
     fv.iter().any(|n| methods.contains(n))
 }
 
-/// Todos os nomes referenciados nos corpos de `f` (cláusulas, guardas, `where`),
-/// para a candidatura nativa transitiva — os que forem funções de topo têm de ser
-/// eles próprios compiláveis.
+/// All names referenced in `f`'s bodies (clauses, guards, `where`),
+/// for the transitive native candidacy — those that are top-level functions must be
+/// themselves compilable.
 fn body_refs(f: &ast::Func, out: &mut HashSet<String>) {
     for c in &f.clauses {
         match &c.body {
@@ -419,7 +419,7 @@ fn body_refs(f: &ast::Func, out: &mut HashSet<String>) {
     }
 }
 
-// --- utilitários de âmbito (variáveis livres, para a captura de closures) ---
+// --- scope utilities (free variables, for closure capture) ---
 
 fn pat_vars(p: &Pat, out: &mut Vec<String>) {
     match p {
@@ -527,8 +527,8 @@ fn find_lams<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-/// Nomes resolvidos como globais (não capturados nem chamados por ponteiro):
-/// funções de topo, locais de `where`, construtores, selectores e builtins.
+/// Names resolved as globals (not captured nor called by pointer):
+/// top-level functions, `where` locals, constructors, selectors and builtins.
 fn global_names(module: &ast::Module) -> HashSet<String> {
     let mut g = HashSet::new();
     for f in &module.funcs {
@@ -577,14 +577,14 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
 type LamMeta = HashMap<Span, (String, Vec<String>)>;
 
 /// Contexto de baixada: os nomes globais, os selectores de campo, o mangling de
-/// `where` da função corrente, e a meta-informação das lambdas.
+/// `where` of the current function, and the lambdas' meta-information.
 struct Lower<'a> {
     globals: &'a HashSet<String>,
     fields: &'a HashSet<String>,
     lam_meta: &'a LamMeta,
-    /// spans dos `RecordUpd` elegíveis a mutação in-place (Linear Elision, §2)
+    /// spans of the `RecordUpd`s eligible for in-place mutation (Linear Elision, §2)
     inplace: &'a HashSet<Span>,
-    /// nomes das importações FFI (§18) — chamadas via `Op::Ffi`
+    /// names of the FFI imports (§18) — called via `Op::Ffi`
     foreigns: &'a HashSet<String>,
     locals: HashMap<String, String>,
     tmp: u32,
@@ -597,7 +597,7 @@ impl Lower<'_> {
         n
     }
 
-    /// Baixa `e` a um átomo, empilhando `let`s intermédios em `buf`.
+    /// Lowers `e` to an atom, pushing intermediate `let`s onto `buf`.
     fn atom(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Atom {
         match e {
             Expr::Int(n, _) => Atom::Int(*n),
@@ -645,7 +645,7 @@ impl Lower<'_> {
         }
     }
 
-    /// Baixa `e` a um `Op`-folha (o chamador garante que não é if/case/let).
+    /// Lowers `e` to a leaf `Op` (the caller guarantees it is not if/case/let).
     fn op(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Op {
         match e {
             Expr::Int(_, _) | Expr::Str(_, _) | Expr::Var(_, _) => Op::Atom(self.atom(e, buf)),
@@ -655,12 +655,12 @@ impl Lower<'_> {
                 if is_builtin_op(op) {
                     Op::Prim(op.clone(), a, b)
                 } else if op == "++" {
-                    // concatenação: baixa ao `append` do prelúdio (listas). As
-                    // strings são um efeito de nível-interp (como show/IO).
+                    // concatenation: lowers to the prelude's `append` (lists). The
+                    // strings are an interp-level effect (like show/IO).
                     self.call_named("append", vec![a, b])
                 } else {
                     // operador infixo de utilizador: `x `f` y` ≡ `f x y`. Baixa a
-                    // uma chamada — logo funciona também no nativo (1ª ordem).
+                    // a call — so it works natively too (first-order).
                     self.call_named(op, vec![a, b])
                 }
             }
@@ -694,20 +694,20 @@ impl Lower<'_> {
             Expr::Con(name, _) => match name.as_str() {
                 "True" => Op::Atom(Atom::Int(1)),
                 "False" => Op::Atom(Atom::Int(0)),
-                // construtor nulário (ex.: `Nothing`)
+                // nullary constructor (e.g. `Nothing`)
                 _ => Op::MakeCon {
                     con: name.clone(),
                     args: Vec::new(),
                 },
             },
             Expr::If(_, _, _, _) | Expr::Case(_, _, _) | Expr::Let(_, _, _) => {
-                // controlo em posição de folha: nomeia-o via `buf`
+                // control in leaf position: name it via `buf`
                 Op::Atom(self.atom(e, buf))
             }
         }
     }
 
-    /// Baixa uma aplicação, classificando a cabeça (builtin / selector / chamada
+    /// Lowers an application, classifying the head (builtin / selector / call
     /// directa / chamada indirecta a closure).
     fn app(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Op {
         let (head, args) = spine(e);
@@ -720,7 +720,7 @@ impl Lower<'_> {
             };
         }
         let Expr::Var(name, _) = head else {
-            // cabeça composta (ex.: lambda aplicada) → closure
+            // compound head (e.g. an applied lambda) → closure
             let clos = self.atom(head, buf);
             let vals = args.iter().map(|a| self.atom(a, buf)).collect();
             return Op::CallClosure(clos, vals);
@@ -763,16 +763,16 @@ impl Lower<'_> {
             }
             ("arena_mark", 1) => return Op::ArenaMark(self.atom(args[0], buf)),
             ("arena_release", 1) => return Op::ArenaRelease(self.atom(args[0], buf)),
-            // Buffer U8 linear (§4/§5): builtins que são chamadas de runtime
+            // linear Buffer U8 (§4/§5): builtins that are runtime calls
             ("newBuffer", 1) => return self.rtcall("axion_buf_new", &args, true, buf),
             ("bufIota", 1) => return self.rtcall("axion_buf_iota", &args, true, buf),
             ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
             ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
             ("free", 1) => return self.rtcall("axion_buf_free", &args, false, buf),
             ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
-            // `imperative e` = e (o bloco imperativo é identidade; §5)
+            // `imperative e` = e (the imperative block is identity; §5)
             ("imperative", 1) => return self.op(args[0], buf),
-            // withBuffer n f = f (newBuffer n): aloca e passa à closure (que consome)
+            // withBuffer n f = f (newBuffer n): allocates and passes to the closure (which consumes)
             ("withBuffer", 2) => {
                 let n = self.atom(args[0], buf);
                 let clos = self.atom(args[1], buf);
@@ -793,19 +793,19 @@ impl Lower<'_> {
         self.call_named(name, vals)
     }
 
-    /// Baixa uma chamada por nome (`name` aplicado a `vals`), resolvendo se é
-    /// FFI, função de topo (chamada directa, com mangling), ou variável local de
-    /// tipo-função (chamada indirecta). Partilhado entre a aplicação normal e os
+    /// Lowers a call by name (`name` applied to `vals`), resolving whether it is
+    /// FFI, a top-level function (direct call, with mangling), or a local variable of
+    /// function type (indirect call). Shared between normal application and the
     /// operadores infixos de utilizador.
     fn call_named(&self, name: &str, vals: Vec<Atom>) -> Op {
         if self.foreigns.contains(name) {
-            // importação FFI (§18): chamada C com ABI de Int
+            // FFI import (§18): C call with the Int ABI
             Op::Ffi {
                 name: name.to_string(),
                 args: vals,
             }
         } else if self.globals.contains(name) {
-            // função de topo / local de `where` (resolve o mangling)
+            // top-level function / `where` local (resolves the mangling)
             let target = self
                 .locals
                 .get(name)
@@ -813,12 +813,12 @@ impl Lower<'_> {
                 .unwrap_or_else(|| name.to_string());
             Op::CallDirect(target, vals)
         } else {
-            // variável local de tipo-função → chamada indirecta
+            // local variable of function type → indirect call
             Op::CallClosure(Atom::Var(name.to_string()), vals)
         }
     }
 
-    /// Baixa um builtin que é chamada de runtime (`Buffer`/§4).
+    /// Lowers a builtin that is a runtime call (`Buffer`/§4).
     fn rtcall(
         &mut self,
         func: &str,
@@ -833,14 +833,14 @@ impl Lower<'_> {
         }
     }
 
-    /// Baixa `e` a um `Term` (sequência de `let`s + resultado).
+    /// Lowers `e` to a `Term` (sequence of `let`s + result).
     fn term(&mut self, e: &Expr) -> Term {
         let mut buf = Vec::new();
         let rhs = self.rhs(e, &mut buf);
         wrap(buf, Term::Ret(rhs))
     }
 
-    /// Desugar de multi-cláusula numa cadeia de `if` (exige catch-all no fim).
+    /// Desugars multi-clause into an `if` chain (requires a catch-all at the end).
     fn clauses(&mut self, clauses: &[ast::Clause], params: &[String], i: usize) -> Term {
         let clause = &clauses[i];
         let lits: Vec<(usize, i64)> = clause
@@ -853,7 +853,7 @@ impl Lower<'_> {
             })
             .collect();
 
-        // liga os padrões-variável desta cláusula aos parâmetros e emite o corpo
+        // binds this clause's variable patterns to the parameters and emits the body
         let body_term = |me: &mut Self| -> Term {
             let mut inner = me.clause_body(clause);
             for (j, p) in clause.pats.iter().enumerate() {
@@ -918,8 +918,8 @@ impl Lower<'_> {
     }
 
     /// Guardas → cadeia de `if`: `| g0 = r0 | g1 = r1 | otherwise = rn` vira
-    /// `if g0 then r0 else if g1 then r1 else rn`. `otherwise`/`True` são
-    /// incondicionais; se nenhuma guarda cobrir, é exaustão (não-suportado).
+    /// `if g0 then r0 else if g1 then r1 else rn`. `otherwise`/`True` are
+    /// unconditional; if no guard covers, it is exhaustion (unsupported).
     fn guarded(&mut self, arms: &[(Expr, Expr)]) -> Term {
         let mut acc = Term::Ret(Rhs::Op(Op::Unsupported("non-exhaustive guards".into())));
         for (g, r) in arms.iter().rev() {
@@ -948,7 +948,7 @@ fn lower_pat(p: &Pat) -> CPat {
     }
 }
 
-/// Enrola os `let`s de `buf` (na ordem) à volta de `tail`.
+/// Wraps the `let`s of `buf` (in order) around `tail`.
 fn wrap(buf: Vec<(String, Rhs)>, tail: Term) -> Term {
     let mut term = tail;
     for (name, rhs) in buf.into_iter().rev() {
@@ -968,10 +968,10 @@ fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
     (cur, args)
 }
 
-/// Baixa uma função (de topo ou `where`), devolvendo `(params, corpo,
-/// params-possuídos)`. Funções de cláusula única com padrões só variável/`_`
-/// nomeiam os parâmetros directamente (sem o alias redundante `let n = _p0`),
-/// o que dá um Core mais legível e nomes limpos para a reclamação de params.
+/// Lowers a function (top-level or `where`), returning `(params, body,
+/// owned-params)`. Single-clause functions with only variable/`_` patterns
+/// name the parameters directly (without the redundant alias `let n = _p0`),
+/// which gives a more readable Core and clean names for param reclamation.
 #[allow(clippy::too_many_arguments)]
 fn lower_func(
     f: &ast::Func,
@@ -1018,7 +1018,7 @@ fn lower_func(
         let body = lw.clauses(&f.clauses, &params, 0);
         (params, body)
     };
-    // parâmetros `%1` de tipo-heap → o callee possui-os e liberta-os
+    // `%1` heap-typed parameters → the callee owns them and frees them
     let owned: Vec<String> = match &f.sig {
         Some(sig) => {
             let mults = sig.param_mults();
@@ -1036,12 +1036,12 @@ fn lower_func(
     (params, body, owned)
 }
 
-/// Baixa o módulo para o Core: funções de topo candidatas, os seus locais de
+/// Lowers the module to the Core: candidate top-level functions, their `where`
 /// `where` (mangled) e as lambdas liftadas (com captura).
-/// Eta-expande as funções/construtores usados como valor ou aplicados
+/// Eta-expands the functions/constructors used as a value or partially
 /// parcialmente, para o backend nativo (first-class functions via closures).
 fn eta_expand(module: &ast::Module) -> ast::Module {
-    // aridade de cada nome chamável: funções de topo (nº de padrões), construtores
+    // arity of each callable name: top-level functions (number of patterns), constructors
     // (nº de campos), e os builtins de IO que baixam a um `Op`.
     let mut arity: HashMap<String, usize> = HashMap::new();
     for f in &module.funcs {
@@ -1075,7 +1075,7 @@ struct Eta {
 }
 
 impl Eta {
-    /// Nome + span sintético únicos (fora da gama dos offsets de byte reais).
+    /// Unique name + synthetic span (outside the range of real byte offsets).
     fn fresh(&mut self) -> (String, Span) {
         let n = self.counter;
         self.counter += 1;
@@ -1106,7 +1106,7 @@ impl Eta {
         }
     }
 
-    /// Envolve `base` (chamável, com `gap` argumentos em falta) numa lambda que
+    /// Wraps `base` (callable, with `gap` missing arguments) in a lambda that
     /// recebe os que faltam: `base` → `\v0 … v_{gap-1} -> base v0 … v_{gap-1}`.
     fn wrap(&mut self, base: Expr, gap: usize) -> Expr {
         let (_, lam_sp) = self.fresh();
@@ -1130,7 +1130,7 @@ impl Eta {
     fn expr(&mut self, e: &Expr) -> Expr {
         match e {
             Expr::Int(_, _) | Expr::Str(_, _) => e.clone(),
-            // nome chamável usado como VALOR → eta-expande.
+            // callable name used as a VALUE → eta-expand.
             Expr::Var(_, _) | Expr::Con(_, _) => match self.name_arity(e) {
                 Some(k) if k > 0 => self.wrap(e.clone(), k),
                 _ => e.clone(),
@@ -1139,7 +1139,7 @@ impl Eta {
                 let (head, args) = spine(e);
                 let targs: Vec<Expr> = args.iter().map(|a| self.expr(a)).collect();
                 let n = targs.len();
-                // a cabeça: se é nome/construtor mantém-se; senão recorre.
+                // the head: if it is a name/constructor it stays; otherwise recurse.
                 let head_e = match head {
                     Expr::Var(_, _) | Expr::Con(_, _) => head.clone(),
                     _ => self.expr(head),
@@ -1149,7 +1149,7 @@ impl Eta {
                     .into_iter()
                     .fold(head_e, |acc, a| Expr::App(Box::new(acc), Box::new(a), sp));
                 match self.name_arity(head) {
-                    // aplicação PARCIAL → completa-se com uma lambda.
+                    // PARTIAL application → completed with a lambda.
                     Some(k) if n < k => self.wrap(applied, k - n),
                     _ => applied,
                 }
@@ -1195,10 +1195,10 @@ impl Eta {
 }
 
 pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
-    // Eta-expansão (só no caminho nativo): reescreve funções/construtores usados
+    // Eta-expansion (native path only): rewrites functions/constructors used
     // como VALOR ou aplicados PARCIALMENTE (`f`, `compose g h`) em lambdas
-    // (`\v -> f v`), que a maquinaria de closures já compila. É identidade
-    // semântica — o interp já trata aplicação parcial, por isso fica cá.
+    // (`\v -> f v`), which the closure machinery already compiles. It is semantic
+    // identity — the interp already handles partial application, so it stays here.
     let module = &eta_expand(module);
     let data_types = data_type_names(module);
     let globals = global_names(module);
@@ -1212,8 +1212,8 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             }
         }
     }
-    // funções cujo retorno é um objecto de heap → o resultado da chamada passa
-    // a ser propriedade do chamador (reclamável quando morre e não escapa)
+    // functions whose return is a heap object → the call result becomes
+    // the caller's property (reclaimable when it dies and doesn't escape)
     let heap_ret: HashSet<String> = module
         .funcs
         .iter()
@@ -1225,18 +1225,18 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .map(|f| f.name.clone())
         .collect();
     let foreigns: HashSet<String> = module.foreigns.iter().map(|f| f.name.clone()).collect();
-    // nomes de método de typeclasse (interp-only): excluem a função do nativo
+    // typeclass method names (interp-only): exclude the function from native
     let methods: HashSet<String> = module
         .classes
         .iter()
         .flat_map(|c| c.methods.iter().map(|(m, _)| m.clone()))
         .collect();
 
-    // candidatura nativa TRANSITIVA: uma função só é compilável se, além de passar
-    // `top_candidate`, todas as funções de topo que chama também o forem. Ponto-
+    // TRANSITIVE native candidacy: a function is only compilable if, besides passing
+    // `top_candidate`, all top-level functions it calls also are. Fixpoint.
     // fixo. Fecha o buraco de um candidato chamar uma NÃO-candidata (ex.: uma spec
-    // monomorfizada que chame `foldr`, cujo resultado é uma var de tipo pura) —
-    // que de outro modo partiria o codegen com um símbolo por ligar. Exclui-a
+    // monomorphized spec that calls `foldr`, whose result is a pure type var) —
+    // which would otherwise break codegen with an unbound symbol. It excludes it
     // graciosamente (recai no interp) em vez de abortar.
     let func_set: HashSet<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
     let mut native_ok: HashMap<String, usize> = module
@@ -1268,7 +1268,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         }
     }
 
-    // pré-passo: nomeia + calcula capturas de todas as lambdas (por span)
+    // pre-pass: names + computes captures of all lambdas (by span)
     let mut lam_meta: LamMeta = HashMap::new();
     let mut lam_ctr = 0u32;
     let mut lam_sites: Vec<(&Expr, HashMap<String, String>)> = Vec::new();
@@ -1396,8 +1396,8 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         });
     }
 
-    // multiplicidades dos parâmetros das funções de topo com assinatura, para a
-    // reclamação de argumentos emprestados
+    // parameter multiplicities of top-level functions with a signature, for
+    // borrowed-argument reclamation
     let param_mults: HashMap<String, Vec<ast::Mult>> = module
         .funcs
         .iter()
@@ -1428,15 +1428,15 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             insert_drops(f, &heap_ret, &borrow_args, dty)
         })
         .collect();
-    // destrutores gerados: acrescentados APÓS a inserção de drops (gerem a
-    // memória à mão, não passam pela análise de reclamação)
+    // generated destructors: added AFTER drop insertion (they manage
+    // memory by hand, they don't go through the reclamation analysis)
     result.extend(gen_destructors(&recinfo));
     result
 }
 
 /// Gera os destrutores recursivos `axion_drop_<T>` para cada tipo com campos de
-/// heap (deep-drop, §2): liberta os campos de tipo-`data` possuídos (via o
-/// destrutor deles, ou `free` se forem folhas) e depois o próprio bloco;
+/// heap (deep-drop, §2): frees the owned `data`-typed fields (via their
+/// destructor, or `free` if they are leaves) and then the block itself;
 /// tipos-soma despacham pelo tag.
 fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
     let mut out = Vec::new();
@@ -1452,7 +1452,7 @@ fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
             }
         } else {
             // multi-con: carrega o tag e um `if` independente por construtor com
-            // campos; só o tag correspondente dispara em runtime.
+            // fields; only the matching tag fires at runtime.
             let mut chain = free_ret;
             for con in cons.iter().rev() {
                 if recinfo.drop_slots(con).is_empty() {
@@ -1516,7 +1516,7 @@ fn free_then_ret(p: &str) -> Term {
     )
 }
 
-/// Liberta os campos de tipo-`data` possuídos por `con` (carregados por offset a
+/// Frees the `data`-typed fields owned by `con` (loaded by offset one at
 /// partir de `p`), antes de `cont`.
 fn drop_con_fields(recinfo: &RecordInfo, con: &str, p: &str, ctr: &mut u32, cont: Term) -> Term {
     let mut term = cont;
@@ -1540,7 +1540,7 @@ fn drop_con_fields(recinfo: &RecordInfo, con: &str, p: &str, ctr: &mut u32, cont
     term
 }
 
-/// Para cada função, o tipo-`data` de cada droppable (parâmetros `%1` possuídos +
+/// For each function, the `data` type of each droppable (owned `%1` parameters +
 /// resultados de `Make*`/chamadas que devolvem heap). Alimenta o deep-drop.
 fn build_all_drop_ty(
     fns: &[CoreFn],
@@ -1551,7 +1551,7 @@ fn build_all_drop_ty(
     let mut out = HashMap::new();
     for f in fns {
         let mut dty: HashMap<String, Option<String>> = HashMap::new();
-        // parâmetros `%1` possuídos → tipo da assinatura da função de topo
+        // owned `%1` parameters → type from the top-level function signature
         if let Some(mf) = module.funcs.iter().find(|m| m.name == f.name) {
             if let Some(sig) = &mf.sig {
                 let ptys = sig.param_types();
@@ -1573,9 +1573,9 @@ fn build_all_drop_ty(
     out
 }
 
-/// Regista o tipo-`data` das variáveis ligadas a `Make*`/chamadas-heap em `t`.
-/// (Resultados de `if`/`case` ligados a `let` não são tipados — ficam com `free`
-/// plano; conservador, são — ver docs/backend.md.)
+/// Records the `data` type of variables bound to `Make*`/heap-calls in `t`.
+/// (Results of `if`/`case` bound to `let` are not typed — they get a flat
+/// `free`; conservative, safe — see docs/backend.md.)
 fn collect_drop_types(
     t: &Term,
     recinfo: &RecordInfo,
@@ -1624,36 +1624,36 @@ fn collect_rhs_drop_types(
     }
 }
 
-// --- análise de reclamação: Drop estrutural (Auto-Drop §2) ---
+// --- reclamation analysis: structural Drop (Auto-Drop §2) ---
 //
-// Insere nós `drop` no Core que libertam objectos de heap **locais** no seu
-// ponto de morte. Um objecto é *droppable* se for alocado na função (via
-// `Make{Tuple,Record,Closure}` ou `UpdateRecord`) e **nunca escapar**: nunca é
+// Inserts `drop` nodes into the Core that free **local** heap objects at their
+// death point. An object is *droppable* if it is allocated in the function (via
+// `Make{Tuple,Record,Closure}` or `UpdateRecord`) and **never escapes**: it is never
 // devolvido, embebido noutro objecto, passado a uma chamada, nem aliased. As
-// suas ocorrências são então todas leituras locais (`Field`, escrutínio de
-// `case`), pelo que libertá-lo após a última leitura é são (a disciplina linear
-// garante ausência de aliasing; o objecto não é alcançável por ninguém). Os
-// casos que escapam ou mudam de dono ficam por libertar (conservador — são),
-// tal como a reclamação entre funções e o reset de arena (incrementos
+// its occurrences are then all local reads (`Field`, `case`
+// scrutinee), so freeing it after the last read is sound (the linear discipline
+// guarantees no aliasing; the object is not reachable by anyone). The
+// cases that escape or change owner are left unfreed (conservative — safe),
+// like cross-function reclamation and arena reset (later
 // seguintes).
 
-/// Reclamação de argumentos emprestados (§2): mapa nome-de-função → índices de
-/// parâmetros que são *empréstimos puros* — parâmetros `Many` (o chamador retém
-/// a posse) que o corpo **só lê localmente** (`Field.rec`/escrutínio de `case`),
+/// Borrowed-argument reclamation (§2): map function-name → indices of
+/// parameters that are *pure borrows* — `Many` parameters (the caller retains
+/// ownership) that the body **only reads locally** (`Field.rec`/`case` scrutinee),
 /// nunca os devolvendo, embebendo, aliasing nem passando adiante. Como o callee
-/// não os retém, o chamador pode libertar o argumento **após** a chamada, em vez
-/// de o dar por perdido. Conservador: um parâmetro passado a *qualquer* chamada
-/// (mesmo que essa a empreste também) conta como escape (sem ponto-fixo entre
-/// funções); e só se sabe o multiplicidade de funções de topo com assinatura.
+/// doesn't retain them, the caller can free the argument **after** the call, instead
+/// of giving it up as lost. Conservative: a parameter passed to *any* call
+/// (even if that one also borrows it) counts as an escape (no fixpoint between
+/// functions); and the multiplicity is only known for top-level functions with a signature.
 type BorrowArgs = HashMap<String, HashSet<usize>>;
 
 fn atom_is(v: &str, a: &Atom) -> bool {
     matches!(a, Atom::Var(n) if n == v)
 }
 
-/// `true` se `v` aparece nalguma posição que **não** seja leitura local dentro
+/// `true` if `v` appears in some position that is **not** a local read inside
 /// de `t` — i.e. escapa do callee (devolvido, embebido, aliased, ou passado a
-/// uma chamada). Um parâmetro `Many` para o qual isto é `false` é empréstimo puro.
+/// a call). A `Many` parameter for which this is `false` is a pure borrow.
 fn occurs_nonborrow(v: &str, t: &Term) -> bool {
     match t {
         Term::Let(_, rhs, body) => rhs_nonborrow(v, rhs) || occurs_nonborrow(v, body),
@@ -1665,7 +1665,7 @@ fn occurs_nonborrow(v: &str, t: &Term) -> bool {
 fn rhs_nonborrow(v: &str, rhs: &Rhs) -> bool {
     match rhs {
         Rhs::Op(op) => op_nonborrow(v, op),
-        // condição de `if`/escrutínio de `case` são leituras locais (empréstimo)
+        // `if` condition / `case` scrutinee are local reads (borrow)
         Rhs::If(_, t, e) => occurs_nonborrow(v, t) || occurs_nonborrow(v, e),
         Rhs::Case(_, arms) => arms.iter().any(|(_, b)| occurs_nonborrow(v, b)),
     }
@@ -1673,7 +1673,7 @@ fn rhs_nonborrow(v: &str, rhs: &Rhs) -> bool {
 
 fn op_nonborrow(v: &str, op: &Op) -> bool {
     match op {
-        Op::Field { .. } => false,    // ler um campo é empréstimo
+        Op::Field { .. } => false,    // reading a field is a borrow
         Op::Atom(a) => atom_is(v, a), // alias/retorno
         Op::Prim(_, a, b) => atom_is(v, a) || atom_is(v, b),
         Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
@@ -1684,10 +1684,10 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
             fields,
             inplace,
         } => {
-            // update por cópia lê a base (empréstimo) e aloca um registo novo com
-            // cópias dos campos; in-place muta a base e devolve-a (escape). Copiar
+            // by-copy update reads the base (borrow) and allocates a new record with
+            // copies of the fields; in-place mutates the base and returns it (escape). Copying
             // um campo linear seria rejeitado pela linearidade, logo os campos
-            // copiados são não-lineares (aliasing seguro, sem dupla-free).
+            // copied ones are non-linear (safe aliasing, no double-free).
             (*inplace && atom_is(v, base)) || fields.iter().any(|(_, a)| atom_is(v, a))
         }
         Op::MakeClosure { captures, .. } => captures.iter().any(|a| atom_is(v, a)),
@@ -1696,13 +1696,13 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::Promote(t, c) => atom_is(v, t) || atom_is(v, c),
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
         Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => atom_is(v, a),
-        // só em destrutores gerados (não analisados) — leitura, como `Field`
+        // only in generated destructors (not analyzed) — a read, like `Field`
         Op::LoadRaw(..) => false,
         Op::Unsupported(_) => false,
     }
 }
 
-/// Calcula os empréstimos puros de cada função de topo (as que têm assinatura,
+/// Computes the pure borrows of each top-level function (those with a signature,
 /// logo multiplicidade conhecida). Ver [`BorrowArgs`].
 fn compute_borrow_args(
     fns: &[CoreFn],
@@ -1715,7 +1715,7 @@ fn compute_borrow_args(
         };
         let mut set = HashSet::new();
         for (i, pname) in f.params.iter().enumerate() {
-            // emprestado (não `%1` → o chamador retém a posse) e só lido localmente
+            // borrowed (not `%1` → the caller retains ownership) and only read locally
             let borrowed = mults.get(i) != Some(&ast::Mult::One);
             if borrowed && !occurs_nonborrow(pname, &f.body) {
                 set.insert(i);
@@ -1728,10 +1728,10 @@ fn compute_borrow_args(
     out
 }
 
-/// Uso de um átomo, se for uma variável droppable **livre** (não ligada por um
-/// `let` dentro do termo em análise). Excluir as ligadas localmente é essencial
-/// para o equilíbrio de ramos: uma droppable ligada dentro de um ramo é local a
-/// esse ramo e não pode ser libertada no ramo irmão (onde não existe).
+/// Use of an atom, if it is a **free** droppable variable (not bound by a
+/// `let` within the term being analyzed). Excluding the locally-bound ones is essential
+/// for branch balancing: a droppable bound inside a branch is local to
+/// that branch and cannot be freed in the sibling branch (where it doesn't exist).
 fn atom_use(a: &Atom, drp: &HashSet<String>, bound: &HashSet<String>, out: &mut HashSet<String>) {
     if let Atom::Var(n) = a {
         if drp.contains(n) && !bound.contains(n) {
@@ -1740,8 +1740,8 @@ fn atom_use(a: &Atom, drp: &HashSet<String>, bound: &HashSet<String>, out: &mut 
     }
 }
 
-/// Variáveis droppable **livres** lidas em `t` (posições de leitura de heap:
-/// `Field.rec`, escrutínio de `case`, args emprestados, closure de `withArena`).
+/// **Free** droppable variables read in `t` (heap read positions:
+/// `Field.rec`, `case` scrutinee, borrowed args, `withArena` closure).
 fn fv_drop(t: &Term, drp: &HashSet<String>, ba: &BorrowArgs, out: &mut HashSet<String>) {
     fv_drop_in(t, drp, ba, &mut HashSet::new(), out);
 }
@@ -1760,7 +1760,7 @@ fn fv_drop_in(
     match t {
         Term::Let(x, rhs, body) => {
             fv_rhs_in(rhs, drp, ba, bound, out);
-            // `x` fica ligado no corpo — as suas menções aí não são livres
+            // `x` is bound in the body — its mentions there are not free
             let fresh = bound.insert(x.clone());
             fv_drop_in(body, drp, ba, bound, out);
             if fresh {
@@ -1802,13 +1802,13 @@ fn fv_op_in(
     bound: &HashSet<String>,
     out: &mut HashSet<String>,
 ) {
-    // `Field` lê uma droppable (o registo). Uma chamada directa a uma função com
-    // parâmetros de empréstimo puro **também** conta como uso do argumento (a
-    // liberta-se após a chamada, não antes). Os restantes args escapam (movem-se
-    // para o callee) → droppable não aparece lá. Prim opera sobre Ints.
+    // `Field` reads a droppable (the record). A direct call to a function with
+    // pure-borrow parameters **also** counts as a use of the argument (it's
+    // freed after the call, not before). The remaining args escape (they move
+    // to the callee) → the droppable doesn't appear there. Prim operates on Ints.
     match op {
         Op::Field { rec, .. } => atom_use(rec, drp, bound, out),
-        // a closure passada a `withArena` é usada durante a chamada e morre a
+        // the closure passed to `withArena` is used during the call and dies
         // seguir → conta como uso para o drop cair DEPOIS (como um arg emprestado)
         Op::WithArena { clos, .. } => atom_use(clos, drp, bound, out),
         Op::CallDirect(g, xs) => {
@@ -1824,9 +1824,9 @@ fn fv_op_in(
     }
 }
 
-/// O conjunto droppable de uma função: objectos que ela **possui** — alocados
+/// The droppable set of a function: objects it **owns** — allocated
 /// localmente (`Make*`), resultados de chamadas que devolvem heap (`heap_ret`),
-/// e os seus parâmetros `%1` de heap — menos os que escapam.
+/// and its `%1` heap parameters — minus those that escape.
 fn droppable_vars(f: &CoreFn, heap_ret: &HashSet<String>, ba: &BorrowArgs) -> HashSet<String> {
     let mut allocated: HashSet<String> = f.owned_params.iter().cloned().collect();
     let mut escaped = HashSet::new();
@@ -1845,7 +1845,7 @@ fn scan_body(
         Term::Let(x, rhs, body) => {
             match rhs {
                 Rhs::Op(op) => {
-                    // alocação local, ou resultado de chamada que devolve heap
+                    // local allocation, or result of a call that returns heap
                     if is_heap_alloc(op) || returns_owned_heap(op, heap_ret) {
                         alloc.insert(x.clone());
                     }
@@ -1875,7 +1875,7 @@ fn scan_body(
     }
 }
 
-/// Uma chamada directa a uma função que devolve heap → o resultado é do chamador.
+/// A direct call to a function that returns heap → the result is the caller's.
 fn returns_owned_heap(op: &Op, heap_ret: &HashSet<String>) -> bool {
     matches!(op, Op::CallDirect(name, _) if heap_ret.contains(name))
 }
@@ -1891,7 +1891,7 @@ fn is_heap_alloc(op: &Op) -> bool {
     )
 }
 
-/// Nomes de variáveis que escapam por aparecerem numa posição de dono
+/// Names of variables that escape by appearing in an owner position
 /// (argumento de chamada, embebimento noutro objecto, alias directo).
 fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     let mut mark = |a: &Atom| {
@@ -1902,7 +1902,7 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     match op {
         Op::Atom(a) => mark(a), // alias directo `let y = x`
         // uma chamada directa move os argumentos para o callee — excepto os que
-        // ela apenas empresta (empréstimo puro), que o chamador retém e liberta
+        // it only borrows (pure borrow), which the caller retains and frees
         Op::CallDirect(g, xs) => {
             let borrow = ba.get(g);
             for (i, a) in xs.iter().enumerate() {
@@ -1917,11 +1917,11 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
             fields.iter().for_each(|(_, a)| mark(a))
         }
         Op::MakeClosure { captures, .. } => captures.iter().for_each(&mut mark),
-        // arenas: os seus objectos (arena/célula/closure) são geridos pelo reset
-        // da arena, não pelo Auto-Drop — marcam-se como escape para o ignorar.
-        // a arena/pai são geridos pelo reset; a closure, porém, é um objecto de
+        // arenas: their objects (arena/cell/closure) are managed by the arena
+        // reset, not by Auto-Drop — they are marked as escape to ignore them.
+        // the arena/parent are managed by the reset; the closure, however, is a heap
         // heap normal que o `withArena` apenas *empresta* (chama-a e retorna) —
-        // não escapa, é reclamável após a chamada (ver `fv_op`).
+        // doesn't escape, is reclaimable after the call (see `fv_op`).
         Op::WithArena { parent, .. } => parent.iter().for_each(&mut mark),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => mark(a),
         Op::Promote(t, c) => {
@@ -1931,7 +1931,7 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().for_each(&mut mark),
         _ => {}
     }
-    // a closure receptora de uma chamada indirecta também muda de mãos
+    // the receiving closure of an indirect call also changes hands
     if let Op::CallClosure(c, _) = op {
         mark(c);
     }
@@ -1945,7 +1945,7 @@ fn scan_op_escapes_ret(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     }
 }
 
-/// Insere os `drop`s numa função (Drop estrutural + reclamação entre funções).
+/// Inserts the `drop`s into a function (structural Drop + cross-function reclamation).
 /// `drop_ty` mapeia cada droppable ao nome do seu tipo-`data` (para o deep-drop).
 fn insert_drops(
     mut f: CoreFn,
@@ -1988,9 +1988,9 @@ impl Elab<'_> {
         self.drop_ty.get(v).cloned().flatten()
     }
 
-    /// Elabora `t`, libertando as variáveis droppable no seu ponto de morte.
+    /// Elaborates `t`, freeing the droppable variables at their death point.
     /// `live_out` = droppable vivas *depois* de `t` (a libertar pelo contexto
-    /// envolvente), que `t` não deve libertar.
+    /// enclosing), which `t` must not free.
     fn go(&mut self, t: Term, live_out: &HashSet<String>) -> Term {
         match t {
             Term::Drop(v, ty, body) => {
@@ -2006,7 +2006,7 @@ impl Elab<'_> {
                     if dying.is_empty() {
                         return Term::Ret(Rhs::Op(op));
                     }
-                    // introduz um temporário, liberta os moribundos, devolve-o
+                    // introduces a temporary, frees the dying ones, returns it
                     let tmp = self.fresh();
                     let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))));
                     for v in dying {
@@ -2035,7 +2035,7 @@ impl Elab<'_> {
                         .into_iter()
                         .filter(|v| !fvb.contains(v) && !live_out.contains(v))
                         .collect();
-                    // `x` recém-alocado e nunca lido → morre já
+                    // `x` freshly allocated and never read → dies immediately
                     if self.drp.contains(&x) && !fvb.contains(&x) && !live_out.contains(&x) {
                         dying.push(x.clone());
                     }
@@ -2068,8 +2068,8 @@ impl Elab<'_> {
         }
     }
 
-    /// Elabora os dois ramos de um `if`, equilibrando: uma droppable usada só num
-    /// ramo é libertada à entrada do outro (para libertar uma vez por caminho).
+    /// Elaborates the two branches of an `if`, balancing: a droppable used in only one
+    /// branch is freed at the entry of the other (to free once per path).
     fn branches2(&mut self, th: Term, el: Term, live_out: &HashSet<String>) -> (Term, Term) {
         let mut fth = HashSet::new();
         fv_drop(&th, &self.drp, self.ba, &mut fth);
@@ -2090,15 +2090,15 @@ impl Elab<'_> {
         (th2, el2)
     }
 
-    /// Elabora os braços de um `case`, equilibrando entre braços e libertando o
-    /// escrutínio (se droppable e a morrer) à cabeça de cada braço.
+    /// Elaborates the arms of a `case`, balancing across arms and freeing the
+    /// scrutinee (if droppable and dying) at the head of each arm.
     fn case_arms(
         &mut self,
         scrut: &Atom,
         arms: Vec<(CPat, Term)>,
         live_out: &HashSet<String>,
     ) -> Vec<(CPat, Term)> {
-        // variáveis livres de cada braço
+        // free variables of each arm
         let fvs: Vec<HashSet<String>> = arms
             .iter()
             .map(|(_, b)| {
@@ -2117,13 +2117,13 @@ impl Elab<'_> {
         let mut out = Vec::with_capacity(arms.len());
         for (i, (pat, body)) in arms.into_iter().enumerate() {
             let mut b = self.go(body, live_out);
-            // equilíbrio entre braços: droppable usada noutro braço mas não neste
+            // cross-arm balancing: droppable used in another arm but not this one
             for v in union.difference(&fvs[i]) {
                 if !live_out.contains(v) {
                     b = Term::Drop(v.clone(), self.dty(v), Box::new(b));
                 }
             }
-            // liberta o escrutínio à cabeça (após a destructuração)
+            // frees the scrutinee at the head (after destructuring)
             if let Some(s) = &scrut_drop {
                 b = Term::Drop(s.clone(), self.dty(s), Box::new(b));
             }
@@ -2133,7 +2133,7 @@ impl Elab<'_> {
     }
 }
 
-// --- impressão do Core (`--emit core`) ---
+// --- Core printing (`--emit core`) ---
 
 pub fn dump(fns: &[CoreFn]) -> String {
     let mut s = String::new();
