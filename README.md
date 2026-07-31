@@ -160,8 +160,13 @@ calmly and tested, without breaking the philosophy:
   workers each computing `fib` run in parallel (measured CPU ≈ 4–5× wall), with
   deterministic results (session types ⇒ no races), and the runtime is
   **ThreadSanitizer-clean** (`scripts/tsan.sh`). Blocked tasks park until a `send`
-  wakes them (lost-wakeup-safe via a generation counter). Next: work-stealing
-  (lock-free deques instead of the global mutex); then io_uring/epoll for async I/O.
+  wakes them (lost-wakeup-safe via a generation counter). **Work-stealing is
+  deferred on measured grounds** — the global mutex tops out at ~10–14 M
+  channel-ops/s but no expressible session comes near it (no session recursion +
+  an O(N²) fan-in codegen cap ⇒ a few hundred ops/program); see
+  [`docs/session-scaling.md`](docs/session-scaling.md) and
+  `scripts/session-scaling.sh`. Real prerequisites: recursion in session bodies,
+  then fixing the O(N²) codegen; then io_uring/epoll for async I/O.
 
 **Honesty about the state.** Known and documented debt: `Integer`/bignum missing
 (`factorial 20` runs, `50` doesn't); **native sessions are M:N but with a global

@@ -432,10 +432,18 @@ fn sess_worker(sched: i64) {
 extern "C" fn axion_sess_run(sched: i64, step: i64, state: i64) -> i64 {
     use std::sync::atomic::Ordering::Acquire;
     axion_sess_spawn(sched, step, state); // root = task 0
-    let nthreads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .clamp(1, 8);
+                                          // worker threads: `AXION_SESS_THREADS` overrides (for scaling benchmarks),
+                                          // else min(available parallelism, 8).
+    let nthreads = std::env::var("AXION_SESS_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .clamp(1, 8)
+        });
     let sp = sched; // i64 is Send; the box is alive until the scope joins below
     std::thread::scope(|scope| {
         for _ in 0..nthreads {

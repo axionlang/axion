@@ -388,11 +388,20 @@ static void *sess_worker(void *arg) {
 long axion_sess_run(long sched, long step, long state) {
   Sched *s = (Sched *)sched;
   axion_sess_spawn(sched, step, state); /* root = task 0 */
-  long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-  int nthreads = (int)(ncpu < 1 ? 1 : (ncpu > 8 ? 8 : ncpu));
-  pthread_t threads[8];
+  /* worker threads: AXION_SESS_THREADS overrides (for scaling benchmarks), else
+   * min(online CPUs, 8). */
+  int nthreads;
+  const char *env = getenv("AXION_SESS_THREADS");
+  if (env && atoi(env) > 0) {
+    nthreads = atoi(env);
+  } else {
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    nthreads = (int)(ncpu < 1 ? 1 : (ncpu > 8 ? 8 : ncpu));
+  }
+  pthread_t *threads = (pthread_t *)malloc((size_t)nthreads * sizeof(pthread_t));
   for (int t = 0; t < nthreads; t++) pthread_create(&threads[t], NULL, sess_worker, s);
   for (int t = 0; t < nthreads; t++) pthread_join(threads[t], NULL);
+  free(threads);
   long result = s->result;
   for (int i = 0; i < s->neps; i++) free(s->eps[i].q);
   for (int i = 0; i < s->nallocs; i++) free(s->allocs[i]);
