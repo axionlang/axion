@@ -1,17 +1,17 @@
 //! `axionc` — o compilador da Axion (§17–18).
 //!
-//! Pipeline: fonte `.axi` → lexer (logos) → layout → parser → verificação
-//! (nomes + linearidade + Auto-Drop) → inferência de tipos (HM) → interpretador.
-//! Diagnósticos com códigos `AXnnnn` estáveis (§8), em texto ou JSON.
+//! Pipeline: source `.axi` → lexer (logos) → layout → parser → checking
+//! (names + linearity + Auto-Drop) → type inference (HM) → interpreter.
+//! Diagnostics with stable `AXnnnn` codes (§8), as text or JSON.
 //!
 //! Uso:
 //!   axionc <ficheiro.axi>            compila e corre
-//!   axionc --check <ficheiro.axi>    só compila (parse + typecheck)
-//!   axionc --emit json <ficheiro>    diagnósticos em JSON
-//!   axionc --explain AX0001          explica um código de erro
+//!   axionc --check <file.axi>        compile only (parse + typecheck)
+//!   axionc --emit json <file>        diagnostics as JSON
+//!   axionc --explain AX0001          explain an error code
 
-// O modelo AST e alguns utilitários de diagnóstico estão deliberadamente à
-// frente do que o esqueleto ambulante já consome (crescem nas fases seguintes).
+// The AST model and some diagnostic utilities are deliberately ahead
+// of what the walking skeleton consumes (they grow in later phases).
 #[allow(dead_code)]
 mod ast;
 mod check;
@@ -137,7 +137,7 @@ fn main() -> ExitCode {
     let mut diags = Diagnostics::new();
     let (module, analysis) = compile_front(&src, &mut diags);
 
-    // reporta diagnósticos
+    // report diagnostics
     if emit == Emit::Json {
         println!("{}", serde_json::to_string_pretty(&diags.items).unwrap());
     } else {
@@ -168,7 +168,7 @@ fn main() -> ExitCode {
         None => return ExitCode::FAILURE,
     };
 
-    // spans dos `RecordUpd` elegíveis a mutação in-place (Linear Elision, §2),
+    // spans of the `RecordUpd`s eligible for in-place mutation (Linear Elision, §2),
     // que os backends usam para mutar o bloco em vez de alocar+copiar.
     let inplace: std::collections::HashSet<(usize, usize)> =
         analysis.inplace.iter().map(|ip| ip.span).collect();
@@ -211,7 +211,7 @@ fn main() -> ExitCode {
                 println!("{n}");
                 ExitCode::SUCCESS
             }
-            Ok(None) => ExitCode::SUCCESS, // main :: IO () — já imprimiu
+            Ok(None) => ExitCode::SUCCESS, // main :: IO () — already printed
             Err(e) => {
                 eprintln!("cranelift backend: {e}");
                 ExitCode::FAILURE
@@ -220,7 +220,7 @@ fn main() -> ExitCode {
     }
     if backend == Backend::Llvm {
         return match llvm::build_and_run(&module, "main", &inplace) {
-            Ok(()) => ExitCode::SUCCESS, // o binário já imprimiu o resultado
+            Ok(()) => ExitCode::SUCCESS, // the binary already printed the result
             Err(e) => {
                 eprintln!("llvm backend (--release): {e}");
                 ExitCode::FAILURE
@@ -245,7 +245,7 @@ fn main() -> ExitCode {
 }
 
 /// Corre o front-end (lex → layout → parse → check → infer), acumulando
-/// diagnósticos e devolvendo os `free` injectados pelo Auto-Drop.
+/// diagnostics and returning the `free`s inserted by Auto-Drop.
 fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, check::Analysis) {
     let tokens = match lexer::lex(src) {
         Ok(t) => t,
@@ -270,21 +270,21 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, ch
     inject_prelude(&mut module);
     lower_classes(&mut module);
     let analysis = check::check(&module, diags);
-    // A inferência devolve as resoluções de método monomórficas (span do uso →
-    // implementação concreta da instância). Reescrevemo-las como chamadas
-    // directas (`eq 3 3` → `eq$Int 3 3`): monomorfização (fatia 2b-ii) — o uso
-    // deixa de ser um método (despacho dinâmico) e passa a compilar nativamente.
+    // Inference returns the monomorphic method resolutions (use span →
+    // concrete instance implementation). We rewrite them as direct
+    // calls (`eq 3 3` → `eq$Int 3 3`): monomorphization — the use
+    // stops being a method (dynamic dispatch) and now compiles natively.
     let mono = infer::infer(&module, diags);
     resolve_methods(&mut module, &mono.resolutions);
     materialize_specs(&mut module, &mono.specs);
     (Some(module), analysis)
 }
 
-/// Materializa as funções constrangidas especializadas (fatia 2b-β): clona cada
-/// `src` (já reescrita pelas resoluções α), especializa a assinatura (var de
-/// constraint → tipo concreto), reescreve os usos internos (métodos→`m$T`,
-/// auto-recursão→`f$T`), e junta ao módulo. Assim o polimorfismo restrito
-/// compila nativamente (monomorfização estilo Rust).
+/// Materializes the specialized constrained functions: clones each
+/// `src` (already rewritten by the direct resolutions), specializes the signature
+/// (constraint var → concrete type), rewrites the internal uses (methods→`m$T`,
+/// self-recursion→`f$T`), and appends to the module. So constrained polymorphism
+/// compiles natively (Rust-style monomorphization).
 fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
     if specs.is_empty() {
         return;
@@ -318,9 +318,9 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
     module.funcs.extend(new_funcs);
 }
 
-/// Reescreve os usos de método monomórficos para chamadas directas à impl da
-/// instância, segundo o mapa `span → nome-da-impl` da inferência. Percorre todos
-/// os corpos (funções de topo, `where`, lambdas, ramos de `case`, `let`).
+/// Rewrites the monomorphic method uses to direct calls to the instance
+/// impl, per inference's `span → impl-name` map. Walks all
+/// bodies (top-level functions, `where`, lambdas, `case` arms, `let`).
 type Resolutions = std::collections::HashMap<(String, ast::Span), String>;
 
 fn resolve_methods(module: &mut ast::Module, res: &Resolutions) {
@@ -344,7 +344,7 @@ fn rewrite_func(f: &mut ast::Func, fname: &str, res: &Resolutions) {
                 }
             }
         }
-        // as funções de `where` são inferidas com o nome do PAI como `cur_fn`
+        // `where` functions are inferred with the PARENT's name as `cur_fn`
         // (fazem parte do corpo dele), por isso reescrevem-se com `fname`.
         for w in &mut c.wher {
             rewrite_func_body(w, fname, res);
@@ -352,8 +352,8 @@ fn rewrite_func(f: &mut ast::Func, fname: &str, res: &Resolutions) {
     }
 }
 
-/// Como `rewrite_func`, mas mantém o nome de chave (`fname`) — para `where`, cujo
-/// `cur_fn` na inferência é o da função-pai.
+/// Like `rewrite_func`, but keeps the key name (`fname`) — for `where`, whose
+/// `cur_fn` in inference is the parent function's.
 fn rewrite_func_body(f: &mut ast::Func, fname: &str, res: &Resolutions) {
     for c in &mut f.clauses {
         match &mut c.body {
@@ -419,10 +419,10 @@ fn rewrite_expr(e: &mut ast::Expr, fname: &str, res: &Resolutions) {
     }
 }
 
-/// Prelúdio L0 embutido: o tipo `List` e as funções de lista básicas. É
-/// prepended a cada módulo (só os nomes que o utilizador não redefine), para que
+/// Built-in L0 prelude: the `List` type and the basic list functions. It is
+/// prepended to every module (only the names the user doesn't redefine), so that
 /// `[1..100]`/`:`/`.` (que desugaram para `range`/`Cons`/`compose`) e `map`
-/// funcionem sem import. `mapM_` é um builtin (precisa do modelo de IO).
+/// they work without import. `mapM_` is a prelude function too.
 const PRELUDE: &str = "\
 data List a = Nil | Cons a (List a)
 compose :: (b -> c) -> (a -> b) -> a -> c
@@ -528,13 +528,13 @@ mapM_ f xs = case xs of
     _ -> mapM_ f ys
 ";
 
-/// Baixa as instâncias de typeclasse (fatia 1): cada método de cada `instance`
-/// torna-se uma função de topo com nome mangled (`eq$Int`), a que o despacho
-/// dinâmico do interpretador chama pela cabeça-de-tipo do 1º argumento. As
-/// `ClassDecl` ficam no módulo (dão os nomes de método sobrecarregados ao check,
+/// Lowers the typeclass instances: each method of each `instance`
+/// becomes a top-level function with a mangled name (`eq$Int`), which the
+/// interpreter's dynamic dispatch calls by the 1st argument's type head. The
+/// `ClassDecl`s stay in the module (they give the overloaded method names to check,
 /// infer e interp).
 fn lower_classes(module: &mut ast::Module) {
-    // (classe, método) → assinatura-molde (var da classe marcada) p/ especializar
+    // (class, method) → template signature (class var marked) to specialize
     let mut sigs: std::collections::HashMap<(String, String), ast::Type> =
         std::collections::HashMap::new();
     for c in &module.classes {
@@ -547,10 +547,10 @@ fn lower_classes(module: &mut ast::Module) {
         for m in &inst.methods {
             let mut impl_fn = m.clone();
             impl_fn.name = ast::method_impl_name(&m.name, &inst.ty_head);
-            // assinatura especializada: a da classe com a var substituída pelo
-            // tipo da instância (`eq :: a->a->Bool` @ Shape → `Shape->Shape->Bool`).
-            // Sem isto, o corpo da instância (sem assinatura) pareceria polimórfico
-            // e os seus usos de método disparariam falsos "sem constraint".
+            // specialized signature: the class's, with the var replaced by the
+            // instance type (`eq :: a->a->Bool` @ Shape → `Shape->Shape->Bool`).
+            // Without this, the instance body (unsigned) would look polymorphic
+            // and its method uses would fire false "no constraint" errors.
             if let Some(tmpl) = sigs.get(&(inst.class_name.clone(), m.name.clone())) {
                 impl_fn.sig = Some(specialize(tmpl, &inst.ty_head));
             }
@@ -560,8 +560,8 @@ fn lower_classes(module: &mut ast::Module) {
     module.funcs.extend(impls);
 }
 
-/// Marca a variável da classe num tipo, substituindo-a por um sentinela único
-/// (`$cls`) para depois a `specialize` a trocar pelo tipo concreto da instância.
+/// Marks the class variable in a type, replacing it with a unique sentinel
+/// (`$cls`) so that `specialize` later swaps it for the instance's concrete type.
 fn subst_head(ty: &ast::Type, tyvar: &str) -> ast::Type {
     match ty {
         ast::Type::Var(v) if v == tyvar => ast::Type::Var("$cls".to_string()),
@@ -579,7 +579,7 @@ fn subst_head(ty: &ast::Type, tyvar: &str) -> ast::Type {
     }
 }
 
-/// Troca o sentinela `$cls` pela cabeça-de-tipo concreta da instância.
+/// Swaps the `$cls` sentinel for the instance's concrete type head.
 fn specialize(ty: &ast::Type, ty_head: &str) -> ast::Type {
     match ty {
         ast::Type::Var(v) if v == "$cls" => ast::Type::Con(ty_head.to_string()),
@@ -608,7 +608,7 @@ fn inject_prelude(module: &mut ast::Module) {
         module.datas.iter().map(|d| d.name.clone()).collect();
     let has_func: std::collections::HashSet<String> =
         module.funcs.iter().map(|f| f.name.clone()).collect();
-    // prepend só o que o utilizador não redefine (sem clashes)
+    // prepend only what the user doesn't redefine (no clashes)
     for d in prelude.datas.into_iter().rev() {
         if !has_data.contains(&d.name) {
             module.datas.insert(0, d);
@@ -619,10 +619,10 @@ fn inject_prelude(module: &mut ast::Module) {
             module.funcs.insert(0, f);
         }
     }
-    // classes e instâncias do prelúdio: injecta só as que o utilizador não
-    // redefine — uma classe pelo nome, uma instância pelo par (classe, tipo) —
-    // para que redeclarar `class Eq` ou `instance Eq Int` substitua a do prelúdio
-    // sem colidir (nomes de método/impl duplicados).
+    // prelude classes and instances: inject only those the user doesn't
+    // redefine — a class by name, an instance by the (class, type) pair —
+    // so redeclaring `class Eq` or `instance Eq Int` replaces the prelude's
+    // without clashing (duplicate method/impl names).
     let has_class: std::collections::HashSet<String> =
         module.classes.iter().map(|c| c.name.clone()).collect();
     let has_inst: std::collections::HashSet<(String, String)> = module

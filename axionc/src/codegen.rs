@@ -1,12 +1,12 @@
 //! Backend nativo `--dev` (§11/§18): o «Fast-Path Backend» sobre Cranelift.
 //!
-//! Emite código nativo a partir do **Axion Core IR** (ver `core.rs`), não do AST:
-//! o Core já está em ANF (cada subexpressão nomeada), com o desugar de
-//! multi-cláusula, o *lifting* de `where` e a conversão de closures resolvidos,
-//! pelo que este ficheiro é um mero emissor Core→Cranelift. JIT-compila via
-//! `cranelift-jit`. Todos os valores são `i64` (Int, ponteiros, tokens de IO).
-//! Strings/IO e alocação (registos, tuplos, closures) via um runtime mínimo
-//! (`axion_puts`/`axion_show_int`/`axion_alloc`). O mesmo Core servirá o backend
+//! Emits native code from the **Axion Core IR** (see `core.rs`), not the AST:
+//! the Core is already in ANF (each subexpression named), with multi-clause
+//! desugaring, `where` *lifting* and closure conversion resolved,
+//! so this file is a plain Core→Cranelift emitter. JIT-compiles via
+//! `cranelift-jit`. All values are `i64` (Int, pointers, IO tokens).
+//! Strings/IO and allocation (records, tuples, closures) via a minimal runtime
+//! (`axion_puts`/`axion_show_int`/`axion_alloc`). The same Core serves the
 //! LLVM `--release` (incremento seguinte).
 
 use crate::ast;
@@ -23,7 +23,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-// FFI (§18): resolve um símbolo já carregado no processo (libc + o runtime do
+// FFI (§18): resolves a symbol already loaded in the process (libc + axionc's
 // axionc) por `dlsym(RTLD_DEFAULT, …)`. Serve o `symbol_lookup_fn` do JIT.
 extern "C" {
     fn dlsym(
@@ -34,12 +34,12 @@ extern "C" {
 
 fn resolve_symbol(name: &str) -> Option<*const u8> {
     let cname = std::ffi::CString::new(name).ok()?;
-    // RTLD_DEFAULT = ponteiro nulo (glibc): procura na ordem normal de resolução.
+    // RTLD_DEFAULT = null pointer (glibc): searches in the normal resolution order.
     let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
     (!p.is_null()).then_some(p as *const u8)
 }
 
-// --- runtime nativo mínimo (registado como símbolos no JIT) ---
+// --- minimal native runtime (registered as symbols in the JIT) ---
 
 /// `putStrLn`: imprime uma C-string com nova-linha.
 extern "C" fn axion_puts(ptr: *const u8) {
@@ -56,33 +56,33 @@ extern "C" fn axion_put(ptr: *const u8) {
 }
 
 /// `show :: Int -> String`: formata um inteiro e devolve uma C-string (leaked;
-/// vive até ao fim do processo — aceitável para um único `run`).
+/// lives until the end of the process — acceptable for a single `run`).
 extern "C" fn axion_show_int(n: i64) -> *const u8 {
     let s = std::ffi::CString::new(n.to_string()).unwrap();
     s.into_raw() as *const u8
 }
 
-// Contadores de heap (§13): quantas alocações e libertações ocorreram. Com
-// `AXION_HEAP_STATS=1` o `run` imprime-os no fim — evidência de que o Auto-Drop
-// reclama de facto (não é só análise estática).
+// Heap counters (§13): how many allocations and frees occurred. With
+// `AXION_HEAP_STATS=1` the `run` prints them at the end — evidence that Auto-Drop
+// actually reclaims (not just static analysis).
 static HEAP_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static HEAP_FREES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Aloca `size` bytes de *payload* na heap. Prefixa um cabeçalho de 8 bytes com
+/// Allocates `size` bytes of *payload* on the heap. Prefixes an 8-byte header with
 /// o tamanho total, para que `axion_free` reconstrua o `Layout`; devolve o
-/// ponteiro para o payload (a seguir ao cabeçalho).
+/// pointer to the payload (right after the header).
 extern "C" fn axion_alloc(size: i64) -> *mut u8 {
     let total = size.max(1) as usize + 8;
     let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
     unsafe {
         let base = std::alloc::alloc(layout);
-        *(base as *mut u64) = total as u64; // cabeçalho: tamanho total
+        *(base as *mut u64) = total as u64; // header: total size
         HEAP_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         base.add(8) // payload
     }
 }
 
-/// Liberta um objecto alocado por `axion_alloc` (lê o tamanho do cabeçalho).
+/// Frees an object allocated by `axion_alloc` (reads the size from the header).
 extern "C" fn axion_free(ptr: *mut u8) {
     unsafe {
         let base = ptr.sub(8);
@@ -102,7 +102,7 @@ static CELL_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// Tamanho fixo de uma `Cell` (§3). Opaca ao programa (`useCell` devolve 0).
 const CELL_SIZE: i64 = 16;
 
-/// Estado de uma arena: *chunks* fixos (não movem → ponteiros estáveis) com um
+/// State of an arena: fixed *chunks* (don't move → stable pointers) with a
 /// bump-pointer. O reset larga todos os chunks de uma vez.
 struct ArenaState {
     chunks: Vec<Box<[u8]>>,
@@ -133,7 +133,7 @@ impl ArenaState {
     }
 }
 
-/// Uma marca: a arena e a posição do bump-pointer no momento de a criar.
+/// A mark: the arena and the bump-pointer position at the moment of creating it.
 struct MarkState {
     arena: *mut ArenaState,
     chunk: usize,
@@ -166,7 +166,7 @@ extern "C" fn axion_arena_mark(arena: *mut u8) -> *mut u8 {
     })) as *mut u8
 }
 
-/// Repõe o bump-pointer na marca (reclama o alocado desde então).
+/// Restores the bump-pointer to the mark (reclaims what was allocated since).
 extern "C" fn axion_arena_release(mark: *mut u8) {
     let m = unsafe { Box::from_raw(mark as *mut MarkState) };
     let st = unsafe { &mut *m.arena };
@@ -175,7 +175,7 @@ extern "C" fn axion_arena_release(mark: *mut u8) {
     st.off = m.off;
 }
 
-/// Copia uma célula para a arena `target` (safa-a do reset da sub-arena).
+/// Copies a cell to arena `target` (saves it from the sub-arena reset).
 extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> *mut u8 {
     let st = unsafe { &mut *(target as *mut ArenaState) };
     let dst = st.alloc(size as usize);
@@ -183,9 +183,9 @@ extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> 
     dst
 }
 
-// --- Buffer U8 linear (§4/§5): [len(i64)][bytes…]. As operações em massa são o
-// escape-hatch imperativo/vectorizável (no --release; no --dev à velocidade do
-// runtime Rust do axionc). Layout de 8 (cabeçalho) + n bytes; aloca-se 8+n
+// --- Linear Buffer U8 (§4/§5): [len(i64)][bytes…]. The bulk operations are the
+// imperative/vectorizable escape-hatch (in --release; in --dev at the speed of
+// axionc's Rust runtime). Layout of 8 (header) + n bytes; 8+n is allocated
 // arredondado para o alinhamento do `Layout`. ---
 
 fn buf_layout(n: usize) -> std::alloc::Layout {
@@ -242,8 +242,8 @@ extern "C" fn axion_buf_free(buf: *mut u8) {
     }
 }
 
-/// `foldBytes f init buf`: dobra a closure `f` sobre os bytes. Lê o `fn_ptr` de
-/// `f[0]` e chama `fn_ptr(f, acc, byte)` por byte (a closure é o env).
+/// `foldBytes f init buf`: folds the closure `f` over the bytes. Reads the `fn_ptr` from
+/// `f[0]` and calls `fn_ptr(f, acc, byte)` per byte (the closure is the env).
 extern "C" fn axion_fold_bytes(f: *mut u8, init: i64, buf: *mut u8) -> i64 {
     unsafe {
         let fn_ptr = *(f as *const i64);
@@ -269,7 +269,7 @@ struct Arena {
     promote: FuncId,
 }
 
-/// Ambiente de compilação: JIT + os `FuncId`/aridade das funções do Core.
+/// Compilation environment: JIT + the `FuncId`/arity of the Core functions.
 struct Cg {
     module: JITModule,
     ids: HashMap<String, (FuncId, usize)>,
@@ -294,7 +294,7 @@ impl Cg {
             .finish(cranelift::codegen::settings::Flags::new(flags))
             .map_err(|e| e.to_string())?;
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        // FFI (§18): símbolos não registados resolvem-se por dlsym (libc, …).
+        // FFI (§18): unregistered symbols resolve via dlsym (libc, …).
         builder.symbol_lookup_fn(Box::new(resolve_symbol));
         builder.symbol("axion_puts", axion_puts as *const u8);
         builder.symbol("axion_put", axion_put as *const u8);
@@ -374,7 +374,7 @@ impl Cg {
     fn declare_all(&mut self, fns: &[CoreFn]) -> Result<(), String> {
         for f in fns {
             let mut sig = self.module.make_signature();
-            // closures recebem o ponteiro de env como 1.º parâmetro
+            // closures receive the env pointer as the 1st parameter
             let nparams = f.params.len() + usize::from(f.is_closure);
             for _ in 0..nparams {
                 sig.params.push(AbiParam::new(types::I64));
@@ -389,7 +389,7 @@ impl Cg {
         Ok(())
     }
 
-    /// Constrói o corpo de uma função do Core e devolve o `Context` preenchido.
+    /// Builds the body of a Core function and returns the filled `Context`.
     fn build(&mut self, f: &CoreFn) -> Result<Context, String> {
         let (id, _) = self.ids[&f.name];
         let nparams = f.params.len() + usize::from(f.is_closure);
@@ -453,7 +453,7 @@ impl Cg {
     }
 }
 
-/// Contexto de emissão de uma função.
+/// Context of emitting a function.
 struct Fx<'a, 'b> {
     builder: FunctionBuilder<'b>,
     vars: HashMap<String, Variable>,
@@ -495,7 +495,7 @@ impl Fx<'_, '_> {
         Ok(id)
     }
 
-    /// Cria uma `Variable` fresca já definida com `val`.
+    /// Creates a fresh `Variable` already defined with `val`.
     fn fresh_var(&mut self, val: Value) -> Variable {
         let v = Variable::new(self.next as usize);
         self.next += 1;
@@ -527,8 +527,8 @@ impl Fx<'_, '_> {
         }
     }
 
-    /// Chamada indirecta através de uma closure: `fn_ptr = clos[0]`, depois
-    /// `fn_ptr(clos, args…)` (a closure é passada como env).
+    /// Indirect call through a closure: `fn_ptr = clos[0]`, then
+    /// `fn_ptr(clos, args…)` (the closure is passed as env).
     fn call_closure(&mut self, clos: Value, args: &[Value]) -> Value {
         let fn_ptr = self
             .builder
@@ -548,7 +548,7 @@ impl Fx<'_, '_> {
         self.builder.inst_results(call)[0]
     }
 
-    /// Valor de um átomo (literal ou variável ligada).
+    /// Value of an atom (a literal or a bound variable).
     fn atom(&mut self, a: &Atom) -> Result<Value, String> {
         match a {
             Atom::Int(n) => Ok(self.builder.ins().iconst(types::I64, *n)),
@@ -578,7 +578,7 @@ impl Fx<'_, '_> {
             Term::Drop(name, ty, body) => {
                 // Auto-Drop: liberta o objecto de heap no seu ponto de morte. Se o
                 // tipo possui campos de heap, chama o destrutor recursivo gerado
-                // (deep-drop); senão, um `free` plano.
+                // (deep-drop); otherwise, a flat `free`.
                 let v = self
                     .vars
                     .get(name)
@@ -645,8 +645,8 @@ impl Fx<'_, '_> {
             Op::Prim(o, l, r) => {
                 let a = self.atom(l)?;
                 let b = self.atom(r)?;
-                // comparações devolvem I8; estende-se a I64 para que todo valor
-                // do Core seja uniformemente i64 (ligável a uma Variable I64).
+                // comparisons return I8; extended to I64 so every Core value
+                // is uniformly i64 (bindable to an I64 Variable).
                 let cmp = |me: &mut Self, cc| {
                     let c = me.builder.ins().icmp(cc, a, b);
                     me.builder.ins().uextend(types::I64, c)
@@ -748,7 +748,7 @@ impl Fx<'_, '_> {
             } => {
                 let base_ptr = self.atom(base)?;
                 // Linear Elision (§2): in-place muta o bloco do base e devolve-o;
-                // senão aloca um novo e copia os campos não-actualizados.
+                // otherwise allocates a new one and copies the non-updated fields.
                 let target = if *inplace {
                     base_ptr
                 } else {
@@ -869,7 +869,7 @@ impl Fx<'_, '_> {
                 }))
             }
             Op::Ffi { name, args } => {
-                // FFI (§18): declara a função C (ABI de Int) e chama-a; o símbolo
+                // FFI (§18): declares the C function (Int ABI) and calls it; the symbol
                 // resolve-se por dlsym (symbol_lookup_fn).
                 let mut sig = self.module.make_signature();
                 for _ in args {
@@ -889,15 +889,15 @@ impl Fx<'_, '_> {
         }
     }
 
-    /// Chama uma função de runtime pelo `FuncId`; devolve o resultado se houver.
+    /// Calls a runtime function by `FuncId`; returns the result if any.
     fn rt_call(&mut self, id: FuncId, args: &[Value]) -> Option<Value> {
         let callee = self.module.declare_func_in_func(id, self.builder.func);
         let call = self.builder.ins().call(callee, args);
         self.builder.inst_results(call).first().copied()
     }
 
-    /// `case s of arms` — cadeia de `if` sobre o escrutínio. Padrões: `Int`
-    /// (compara), variável/`_` (catch-all), tuplo `(a, b)` (destructura por
+    /// `case s of arms` — an `if` chain over the scrutinee. Patterns: `Int`
+    /// (compare), variable/`_` (catch-all), tuple `(a, b)` (destructure by
     /// offset). Exige um catch-all no fim.
     fn emit_case(&mut self, sval: Value, arms: &[(CPat, Term)], i: usize) -> Result<Value, String> {
         let (pat, body) = &arms[i];
@@ -952,8 +952,8 @@ impl Fx<'_, '_> {
                 Ok(self.builder.block_params(merge_b)[0])
             }
             CPat::Con(con, subpats) => {
-                // Tipo de 1 construtor (sem tag) ou último braço: destructura sem
-                // testar o tag (assume-se exaustivo). Senão, compara o tag.
+                // 1-constructor type (no tag) or last arm: destructure without
+                // testing the tag (assumed exhaustive). Otherwise, compare the tag.
                 match self.records.tag(con) {
                     None => {
                         self.destructure_con(con, subpats, sval)?;
@@ -996,7 +996,7 @@ impl Fx<'_, '_> {
         }
     }
 
-    /// Liga os sub-padrões (variáveis) de um construtor aos seus campos.
+    /// Binds the sub-patterns (variables) of a constructor to its fields.
     fn destructure_con(&mut self, con: &str, subpats: &[CPat], sval: Value) -> Result<(), String> {
         for (j, p) in subpats.iter().enumerate() {
             match p {
@@ -1016,9 +1016,9 @@ impl Fx<'_, '_> {
     }
 }
 
-/// JIT-compila o Core e corre `entry` (função sem parâmetros). Devolve `Some(n)`
-/// se `entry :: Int` (o chamador imprime `n`); `None` se `:: IO ()` (os efeitos
-/// já foram executados durante a corrida).
+/// JIT-compiles the Core and runs `entry` (a parameterless function). Returns `Some(n)`
+/// if `entry :: Int` (the caller prints `n`); `None` if `:: IO ()` (the effects
+/// have already been executed during the run).
 pub fn run(
     module: &ast::Module,
     entry: &str,
@@ -1037,7 +1037,7 @@ pub fn run(
     }
 
     // FFI (§18): carrega as bibliotecas do utilizador (RTLD_GLOBAL) antes de o
-    // JIT resolver símbolos por `dlsym` (`symbol_lookup_fn`).
+    // JIT to resolve symbols via `dlsym` (`symbol_lookup_fn`).
     crate::ffi::load_libs(&module.foreign_libs())?;
 
     let mut cg = Cg::new(RecordInfo::build(module))?;
@@ -1085,7 +1085,7 @@ pub fn run(
     Ok(returns_int.then_some(val))
 }
 
-/// Emite o Cranelift IR (texto) das funções do Core, sem JIT (`--emit clif`).
+/// Emits the Cranelift IR (text) of the Core functions, without JIT (`--emit clif`).
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
     let fns = core::lower(module, inplace);
     if fns.is_empty() {

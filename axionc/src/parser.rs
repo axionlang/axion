@@ -1,9 +1,9 @@
-//! Parser recursivo-descendente do subconjunto L0/L1 (ver `docs/grammar.md`).
+//! Recursive-descent parser for the L0/L1 subset (see `docs/grammar.md`).
 //!
-//! Consome os tokens já com layout ([`crate::layout`]) e produz o AST. Sem
-//! recuperação de erros na Fase 1: o primeiro erro de sintaxe é reportado como
-//! `AX0100` e a análise pára (o esqueleto ambulante prioriza correr, não a
-//! resiliência do LSP — essa vem com o rowan CST na Fase 4).
+//! Consumes the already-laid-out tokens ([`crate::layout`]) and produces the AST.
+//! No error recovery in Phase 1: the first syntax error is reported as
+//! `AX0100` and analysis stops (the walking skeleton prioritizes running, not
+//! LSP resilience — that comes with the rowan CST in Phase 4).
 
 use crate::ast::*;
 use crate::diag::Diagnostic;
@@ -48,7 +48,7 @@ struct Assembled {
     instances: Vec<InstanceDecl>,
 }
 
-/// Junta assinaturas e cláusulas por nome (funções) e separa as
+/// Joins signatures and clauses by name (functions) and separates the
 /// `data`/`foreign`/`class`/`instance`.
 fn assemble(items: Vec<TopItem>) -> Assembled {
     let mut asm = Assembled::default();
@@ -96,14 +96,14 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
     asm
 }
 
-/// Como `assemble`, mas para blocos `where`/`let` (só funções).
+/// Like `assemble`, but for `where`/`let` blocks (functions only).
 fn merge_funcs(items: Vec<TopItem>) -> Vec<Func> {
     assemble(items).funcs
 }
 
-/// Extrai os constraints `(classe, var)` de um contexto de classe: `Eq a` →
-/// `[(Eq, a)]`; `(Eq a, Ord b)` → `[(Eq, a), (Ord, b)]`. Formas inesperadas são
-/// ignoradas (o contexto é conselho para o descarregamento, não crítico).
+/// Extracts the `(class, var)` constraints from a class context: `Eq a` →
+/// `[(Eq, a)]`; `(Eq a, Ord b)` → `[(Eq, a), (Ord, b)]`. Unexpected forms are
+/// ignored (the context is advice for the discharge, not critical).
 fn context_constraints(t: &Type) -> Vec<(String, String)> {
     fn one(t: &Type, out: &mut Vec<(String, String)>) {
         match t {
@@ -121,7 +121,7 @@ fn context_constraints(t: &Type) -> Vec<(String, String)> {
     out
 }
 
-/// Uma instrução de um bloco `do`.
+/// A statement of a `do` block.
 enum Stmt {
     Bind(Pat, Expr), // `pat <- e`  (var ou tuplo, p.ex. `(x, c) <- recv c`)
     Expr(Expr),      // `e`
@@ -229,7 +229,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // --- declarações de topo (assinatura ou cláusula) ---
+    // --- top-level declarations (signature or clause) ---
     fn top_item(&mut self) -> PResult<TopItem> {
         if self.at(&Tok::Data) {
             return Ok(TopItem::Data(self.parse_data()?));
@@ -267,7 +267,7 @@ impl<'a> Parser<'a> {
             let (constraints, ty) = self.parse_qualified_type()?;
             Ok(TopItem::Sig(name, constraints, ty))
         } else {
-            // cláusula: padrões até '=' ou '|'
+            // clause: patterns up to '=' or '|'
             let mut pats = Vec::new();
             while !self.at(&Tok::Equals) && !self.at(&Tok::Bar) {
                 pats.push(self.parse_apat()?);
@@ -331,12 +331,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // --- declarações de dados / registos ---
+    // --- data / record declarations ---
     fn parse_data(&mut self) -> PResult<DataDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'data'
         let name = self.con_name("type name")?;
-        // parâmetros de tipo (ex.: `a` em `data List a`)
+        // type parameters (e.g. `a` in `data List a`)
         let mut params = Vec::new();
         while let Some(LTok::Tok(Tok::VarId(p))) = self.cur() {
             params.push(p.clone());
@@ -356,7 +356,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `class C a where { m :: T ; … }` — só assinaturas de método no corpo.
+    /// `class C a where { m :: T ; … }` — method signatures only in the body.
     fn parse_class(&mut self) -> PResult<ClassDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'class'
@@ -378,8 +378,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `instance C T where { cláusulas }` — `T` é a cabeça do tipo (ConId, ou um
-    /// tipo aplicado/parentizado de que se extrai a cabeça: `Maybe`, `List`, …).
+    /// `instance C T where { clauses }` — `T` is the type head (a ConId, or an
+    /// applied/parenthesized type from which the head is extracted: `Maybe`, `List`, …).
     fn parse_instance(&mut self) -> PResult<InstanceDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'instance'
@@ -445,8 +445,8 @@ impl<'a> Parser<'a> {
 
     // --- tipos ---
     /// Assinatura possivelmente qualificada: `[Contexto =>] Tipo`. O contexto
-    /// (`C a` ou `(C a, D b)`) é RETIDO como lista de constraints (fatia 2b), para
-    /// descarregar as obrigações de método. Backtrack se não houver `=>`.
+    /// (`C a` or `(C a, D b)`) is RETAINED as a list of constraints, to
+    /// discharge the method obligations. Backtracks if there is no `=>`.
     fn parse_qualified_type(&mut self) -> PResult<(Vec<(String, String)>, Type)> {
         let save = self.pos;
         let ctx = self.parse_btype()?;
@@ -462,7 +462,7 @@ impl<'a> Parser<'a> {
 
     fn parse_type(&mut self) -> PResult<Type> {
         let from = self.parse_btype()?;
-        // multiplicidade: numa seta (`A %1 -> B`) marca o parâmetro; num tipo
+        // multiplicity: on an arrow (`A %1 -> B`) it marks the parameter; on a
         // terminal (`... -> Process %1`) marca o resultado linear.
         if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
             let mult = parse_mult(m);
@@ -475,8 +475,8 @@ impl<'a> Parser<'a> {
                     to: Box::new(to),
                 });
             }
-            // `%1` num tipo de retorno (sem seta a seguir): a análise de
-            // parâmetros só olha às setas, por isso a anotação é ignorada aqui.
+            // `%1` on a return type (no arrow following): parameter analysis
+            // only looks at arrows, so the annotation is ignored here.
             return Ok(from);
         }
         if self.eat(&Tok::Arrow) {
@@ -540,7 +540,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // --- padrões ---
+    // --- patterns ---
     fn parse_apat(&mut self) -> PResult<Pat> {
         let (s, e) = self.span_here();
         match self.cur() {
@@ -605,7 +605,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // --- expressões ---
+    // --- expressions ---
     fn parse_expr(&mut self) -> PResult<Expr> {
         match self.cur() {
             Some(LTok::Tok(Tok::If)) => self.parse_if(),
@@ -617,7 +617,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `f $ x` = `f x` — aplicação de baixa precedência, associa à direita.
+    /// `f $ x` = `f x` — low-precedence application, right-associative.
     fn parse_dollar(&mut self) -> PResult<Expr> {
         let lhs = self.parse_cmp()?;
         if self.at(&Tok::Dollar) {
@@ -630,10 +630,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Bloco `do`: desugar sequencial (estrito) via `case` — o escrutínio do
-    /// `case` é avaliado estritamente (força o efeito), ao contrário de um `let`.
+    /// `do` block: sequential (strict) desugaring via `case` — the `case`
+    /// scrutinee is evaluated strictly (forces the effect), unlike a `let`.
     /// `x <- e; resto` → `case e of x -> resto`; `e; resto` → `case e of _ ->
-    /// resto`; a última instrução é o valor do bloco.
+    /// rest`; the last statement is the block's value.
     fn parse_do(&mut self) -> PResult<Expr> {
         let (s, _) = self.span_here();
         self.bump(); // do
@@ -657,8 +657,8 @@ impl<'a> Parser<'a> {
         Ok(acc)
     }
 
-    /// Uma instrução de `do`: `pat <- expr` (ligação; `pat` é var ou tuplo) ou
-    /// `expr` (efeito/valor). Tenta o padrão especulativamente e recua se não
+    /// A `do` statement: `pat <- expr` (bind; `pat` is a var or tuple) or
+    /// `expr` (effect/value). Tries the pattern speculatively and backtracks if
     /// houver `<-`.
     fn parse_stmt(&mut self) -> PResult<Stmt> {
         let save = self.pos;
@@ -667,7 +667,7 @@ impl<'a> Parser<'a> {
                 return Ok(Stmt::Bind(pat, self.parse_expr()?));
             }
         }
-        self.pos = save; // recua: era uma expressão, não uma ligação
+        self.pos = save; // backtrack: it was an expression, not a bind
         Ok(Stmt::Expr(self.parse_expr()?))
     }
 
@@ -731,19 +731,19 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// Cons `x : xs` e concatenação `xs ++ ys` (ambos infixr 5, entre `==` e
-    /// `+`) → `Cons x xs` / `BinOp "++"`. O `++` é polimórfico: listas (append) e
+    /// Cons `x : xs` and concatenation `xs ++ ys` (both infixr 5, between `==` and
+    /// `+`) → `Cons x xs` / `BinOp "++"`. `++` is polymorphic: lists (append) and
     /// strings (concat) — ver `interp`/`core`.
     fn parse_cons(&mut self) -> PResult<Expr> {
         let lhs = self.parse_add()?;
         if self.at(&Tok::Colon) {
             self.pos += 1;
-            let rhs = self.parse_cons()?; // associativo à direita
+            let rhs = self.parse_cons()?; // right-associative
             let sp = (lhs.span().0, rhs.span().1);
             Ok(cons_expr(lhs, rhs, sp))
         } else if self.at(&Tok::PlusPlus) {
             self.pos += 1;
-            let rhs = self.parse_cons()?; // associativo à direita
+            let rhs = self.parse_cons()?; // right-associative
             let sp = (lhs.span().0, rhs.span().1);
             Ok(Expr::BinOp(
                 "++".to_string(),
@@ -807,13 +807,13 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// Composição de funções `f . g` (infixr, quase tão forte como a aplicação)
+    /// Function composition `f . g` (infixr, almost as tight as application)
     /// → `compose f g`.
     fn parse_compose(&mut self) -> PResult<Expr> {
         let lhs = self.parse_app()?;
         if self.at(&Tok::Dot) {
             self.pos += 1;
-            let rhs = self.parse_compose()?; // associativo à direita
+            let rhs = self.parse_compose()?; // right-associative
             let sp = (lhs.span().0, rhs.span().1);
             Ok(app2(Expr::Var("compose".to_string(), sp), lhs, rhs, sp))
         } else {
@@ -846,7 +846,7 @@ impl<'a> Parser<'a> {
     fn parse_atom(&mut self) -> PResult<Expr> {
         let (s, _) = self.span_here();
         let mut base = self.parse_atom_base()?;
-        // registos ligam mais forte do que a aplicação: `Con { ... }` constrói,
+        // records bind tighter than application: `Con { ... }` constructs,
         // `expr { ... }` actualiza (Listagem 2.1).
         while self.at(&Tok::LBrace) {
             let fields = self.parse_record_fields()?;
@@ -879,7 +879,7 @@ impl<'a> Parser<'a> {
         Ok((name, value))
     }
 
-    /// Reconhece uma secção de operador `(op)` — se o token corrente for um
+    /// Recognizes an operator section `(op)` — if the current token is an
     /// operador seguido de `)`, consome ambos e devolve o nome do operador.
     fn op_section(&mut self) -> Option<String> {
         let op = match self.cur() {
@@ -927,8 +927,8 @@ impl<'a> Parser<'a> {
             }
             Some(LTok::Tok(Tok::LParen)) => {
                 self.pos += 1;
-                // secção de operador `(+)` `(-)` `(*)` `(==)` `(<)` `(>)` →
-                // `\a b -> a op b` (valor de função de primeira classe).
+                // operator section `(+)` `(-)` `(*)` `(==)` `(<)` `(>)` →
+                // `\a b -> a op b` (a first-class function value).
                 if let Some(op) = self.op_section() {
                     let end = self.span_here().0;
                     let sp = (s, end);
@@ -989,7 +989,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// `App(App(head, a), b)` — aplicação binária.
+/// `App(App(head, a), b)` — binary application.
 fn app2(head: Expr, a: Expr, b: Expr, sp: Span) -> Expr {
     Expr::App(
         Box::new(Expr::App(Box::new(head), Box::new(a), sp)),
