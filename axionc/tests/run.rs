@@ -158,6 +158,64 @@ fn session_choice_and_cancel_run_natively() {
 }
 
 #[test]
+fn session_richer_shapes_run_natively() {
+    // Broader coverage of the native session generator, agreeing with the interp:
+    // - two concurrent children + TWO `recv` suspensions in `main` (the multi-
+    //   suspension resume dispatch must save/restore `x` across the second recv) → 42;
+    // - a 3-label external choice where the result observes the selected branch
+    //   (`Fast`, the middle of three), proving a real 3-way tag dispatch → 2.
+    for (fx, expected) in [
+        ("session_run_twospawn.axi", "42\n"),
+        ("session_run_choice3.axi", "2\n"),
+    ] {
+        let native = axionc()
+            .args(["--backend", "cranelift", &fixture(fx)])
+            .output()
+            .unwrap();
+        assert!(
+            native.status.success(),
+            "{fx} native should run: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), expected, "{fx}");
+        let interp = axionc().arg(fixture(fx)).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&interp.stdout),
+            String::from_utf8_lossy(&native.stdout),
+            "{fx}: native and interpreter diverge"
+        );
+    }
+}
+
+#[test]
+fn session_out_of_subset_fails_natively_not_silently() {
+    // Graceful-failure contract: sessions bypass the native-candidacy filter, so a
+    // session shape outside the native subset must be REJECTED by native codegen,
+    // never silently miscompiled. Here the block value is a call (`inc r`): the
+    // interpreter is correct (43), and `--backend cranelift` fails loudly.
+    let fx = fixture("session_native_unsupported.axi");
+    let interp = axionc().arg(&fx).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        "43\n",
+        "interpreter should still run the out-of-subset session"
+    );
+    let native = axionc()
+        .args(["--backend", "cranelift", &fx])
+        .output()
+        .unwrap();
+    assert!(
+        !native.status.success(),
+        "out-of-subset session must fail natively, not miscompile"
+    );
+    assert!(
+        String::from_utf8_lossy(&native.stderr).contains("outside the native subset"),
+        "expected a clear 'outside the native subset' message, got: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+}
+
+#[test]
 fn session_offer_and_cancel_run() {
     // §6/§7: external choice (`offer`) and cancellation (`cancel` → `Closed`)
     // execute. One: `select Live` → the worker dispatches to the Live branch (→7).
@@ -1213,6 +1271,8 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("session_run_pingpong.axi"), "42\n"), // native sessions (§11): ping-pong
         (fixture("session_run_offer.axi"), "7\n"), // native choice (select/offer)
         (fixture("session_run_cancel.axi"), "5\n"), // native cancellation (cancel/T5)
+        (fixture("session_run_twospawn.axi"), "42\n"), // two children + 2 recv suspensions
+        (fixture("session_run_choice3.axi"), "2\n"), // 3-way choice dispatch
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1260,6 +1320,8 @@ fn native_runtime_is_leak_free_under_lsan() {
         "session_run_pingpong",
         "session_run_offer",
         "session_run_cancel",
+        "session_run_twospawn",
+        "session_run_choice3",
     ] {
         // lower to LLVM IR
         let ll = dir.join(format!("{name}.ll"));

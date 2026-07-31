@@ -1238,10 +1238,13 @@ fn as_bound(e: &Expr) -> Option<&Expr> {
     }
 }
 
-/// The span of a `Case` expression (used to key its suspension index).
-fn case_span(e: &Expr) -> Span {
+/// A unique key for a suspension `Case`: the span of its **scrutinee** (the
+/// `recv`/`offer` application). The `Case` node's own span is NOT usable — the do
+/// desugaring gives every `Case` in a block the same (whole-block) span, so it
+/// would collapse distinct suspensions onto one index.
+fn susp_key(e: &Expr) -> Span {
     match e {
-        Expr::Case(_, _, sp) => *sp,
+        Expr::Case(scrut, _, _) => scrut.span(),
         _ => (0, 0),
     }
 }
@@ -1441,13 +1444,14 @@ impl SessGen<'_> {
 
     /// Lowers one session continuation expression (a `Case` chain or a tail).
     fn gen_cont(&mut self, e: &Expr) -> Term {
-        let Expr::Case(scrut, arms, span) = e else {
+        let Expr::Case(scrut, arms, _) = e else {
             return self.gen_tail(e);
         };
+        let key = scrut.span(); // suspension key = scrutinee span (see susp_key)
         let (head, args) = sess_spine(scrut);
         match head {
-            Some("recv") => self.gen_recv(&arms[0].0, &arms[0].1, args[0], *span),
-            Some("offer") => self.gen_offer(args[0], arms, *span),
+            Some("recv") => self.gen_recv(&arms[0].0, &arms[0].1, args[0], key),
+            Some("offer") => self.gen_offer(args[0], arms, key),
             Some("spawn") => self.gen_spawn(&arms[0].0, args[0], &arms[0].1),
             Some("send") => self.gen_send(&arms[0].0, &args, &arms[0].1),
             Some("select") => self.gen_select(&arms[0].0, &args, &arms[0].1),
@@ -1705,7 +1709,7 @@ impl SessGen<'_> {
         self.susp = susps
             .iter()
             .enumerate()
-            .map(|(i, (e, _))| (case_span(e), i as i32))
+            .map(|(i, (e, _))| (susp_key(e), i as i32))
             .collect();
         self.susp_live = susps.iter().map(|(_, l)| l.clone()).collect();
 
