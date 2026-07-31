@@ -1,19 +1,19 @@
--- Programa-alvo 4/5 — L1 Auto-Drop + mutação in-place inferidos (Listagem 2.1).
--- Sucesso da Fase 1: um registo com campo linear embutido; a última menção viva
--- de 'p' vira mutação in-place do campo; se 'p'' não fosse devolvido, o
--- Auto-Drop injectaria free(p'.buffer).
+-- Target program 4/5 — L1 inferred Auto-Drop + in-place mutation (Listing 2.1).
+-- Phase 1 success: a record with an embedded linear field; the last live mention
+-- of 'p' becomes an in-place mutation of the field; if 'p'' were not returned,
+-- Auto-Drop would insert free(p'.buffer).
 
 data Process = Process
   { pid    :: Int
   , status :: String
-  , buffer :: Buffer U8 %1     -- campo linear embutido no registo
+  , buffer :: Buffer U8 %1     -- linear field embedded in the record
   }
 
--- 'p' é consumido (%1) e devolvido (%1): a posse entra e sai, nunca clonada.
+-- 'p' is consumed (%1) and returned (%1): ownership goes in and out, never cloned.
 updateKernel :: Process %1 -> Process %1
 updateKernel p =
-  let p' = p { status = "Running" }   -- última menção viva de 'p'
+  let p' = p { status = "Running" }   -- last live mention of 'p'
   in  p'
-  -- 1. O buffer interno nunca é copiado (elisão de empréstimos).
-  -- 2. 'p' morre aqui -> o compilador MUTA o campo 'status' in-place.
-  -- 3. Se 'p'' não fosse devolvido, o Auto-Drop injectaria free(p'.buffer).
+  -- 1. The inner buffer is never copied (borrow elision).
+  -- 2. 'p' dies here -> the compiler MUTATES the 'status' field in-place.
+  -- 3. If 'p'' were not returned, Auto-Drop would insert free(p'.buffer).

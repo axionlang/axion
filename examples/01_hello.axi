@@ -1,6 +1,6 @@
--- Programa-alvo 1/5 — L0 «Olá Mundo» (Listagem 1.1 da spec).
--- Sucesso da Fase 1: parse -> typecheck -> correr, sem qualquer anotação de
--- linearidade. Quem sabe FP lê isto no dia 1.
+-- Target program 1/5 — L0 "Hello World" (Listing 1.1 of the spec).
+-- Phase 1 success: parse -> typecheck -> run, without any linearity
+-- annotation. Anyone who knows FP reads this on day 1.
 
 main :: IO ()
 main = putStrLn "Hello, Axion!"

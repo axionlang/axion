@@ -1,5 +1,5 @@
--- Listagem 1.3 da spec (L0): FizzBuzz — guardas, `mod`, ranges `[1..N]`,
--- composição `.`, `mapM_`. `mapM_ (putStrLn . fizzbuzz) [1..15]`.
+-- Listing 1.3 of the spec (L0): FizzBuzz — guards, `mod`, ranges `[1..N]`,
+-- composition `.`, `mapM_`. `mapM_ (putStrLn . fizzbuzz) [1..15]`.
 fizzbuzz :: Int -> String
 fizzbuzz n
   | n `mod` 15 == 0 = "FizzBuzz"

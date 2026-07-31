@@ -1,13 +1,13 @@
--- Programa-alvo 2/5 — L0 recursão + «loop» funcional por acumulador
--- (Listagem 1.2). Sucesso da Fase 1: pattern matching, recursão, aritmética,
--- where, e a versão O(n) iterativa que o compilador deve compilar sem alocar.
+-- Target program 2/5 — L0 recursion + functional "loop" via accumulator
+-- (Listing 1.2). Phase 1 success: pattern matching, recursion, arithmetic,
+-- where, and the iterative O(n) version the compiler should compile without allocating.
 
 fib :: Int -> Int
 fib 0 = 0
 fib 1 = 1
 fib n = fib (n - 1) + fib (n - 2)
 
--- Versão rápida: o acumulador é o «loop» funcional (Stream Fusion, sem heap).
+-- Fast version: the accumulator is the functional "loop" (Stream Fusion, no heap).
 fibFast :: Int -> Int
 fibFast n = go n 0 1
   where

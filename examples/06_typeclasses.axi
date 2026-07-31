@@ -1,6 +1,6 @@
--- Typeclasses (propósito geral): despacho por instância + polimorfismo restrito
--- `Eq a =>`. A monomorfização (fatia 2b) especializa `count` por tipo e o LLVM
--- inlina os métodos — abstração de custo-zero, à Rust. Corre nos três executores.
+-- Typeclasses (general-purpose): per-instance dispatch + constrained polymorphism
+-- `Eq a =>`. Monomorphization specializes `count` per type and LLVM inlines the
+-- methods — zero-cost abstraction, à la Rust. Runs on all three executors.
 -- count Red [Red,Green,Red,Blue,Red] = 3 ; count 7 [7,1,7,7] = 3 ; total = 6.
 class Eq a where
   eq :: a -> a -> Bool
