@@ -380,7 +380,7 @@ fn rewrite_expr(e: &mut ast::Expr, fname: &str, res: &Resolutions) {
         return;
     }
     match e {
-        Int(_, _) | Str(_, _) | Con(_, _) => {}
+        Int(_, _) | Float(_, _) | Str(_, _) | Con(_, _) => {}
         App(a, b, _) | BinOp(_, a, b, _) => {
             rewrite_expr(a, fname, res);
             rewrite_expr(b, fname, res);

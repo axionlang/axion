@@ -27,9 +27,10 @@ pub struct Program {
 #[derive(Clone)]
 enum Value {
     Int(i64),
+    Float(f64),
     Str(String),
     Bool(bool),
-    #[allow(dead_code)] // `()` — ainda tratado nos matches (main :: (), etc.)
+    #[allow(dead_code)] // `()` — still handled in the matches (main :: (), etc.)
     Unit,
     /// An IO action still to execute (the text to print).
     Io(String),
@@ -180,6 +181,10 @@ pub fn run(module: &Module) -> Result<(), RunError> {
             println!("{n}");
             Ok(())
         }
+        Value::Float(f) => {
+            println!("{f}");
+            Ok(())
+        }
         Value::Bool(b) => {
             println!("{b}");
             Ok(())
@@ -194,11 +199,12 @@ pub fn run(module: &Module) -> Result<(), RunError> {
 fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(_) => "Int",
+        Value::Float(_) => "Float",
         Value::Str(_) => "String",
         Value::Bool(_) => "Bool",
         Value::Unit => "()",
         Value::Io(_) => "IO",
-        Value::Tuple(_) => "tuplo",
+        Value::Tuple(_) => "tuple",
         Value::Record { .. } => "record",
         Value::Endpoint(_) => "endpoint",
         Value::Closure { .. }
@@ -211,10 +217,11 @@ fn type_name(v: &Value) -> &'static str {
 }
 
 /// Type head of a value, to dispatch a typeclass method. Records
-/// registos mapeiam-se ao nome do seu tipo de dados (`Some 42` → "Maybe").
+/// map to the name of their data type (`Some 42` → "Maybe").
 fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
     match v {
         Value::Int(_) => Some("Int".into()),
+        Value::Float(_) => Some("Float".into()),
         Value::Bool(_) => Some("Bool".into()),
         Value::Str(_) => Some("String".into()),
         Value::Record { con, .. } => prog.con_type.get(con).cloned(),
@@ -236,6 +243,7 @@ fn clause_arity(def: &Func) -> usize {
 fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
     match e {
         Expr::Int(n, _) => Ok(Value::Int(*n)),
+        Expr::Float(f, _) => Ok(Value::Float(*f)),
         Expr::Str(s, _) => Ok(Value::Str(s.clone())),
         Expr::Con(name, _) => match name.as_str() {
             "True" => Ok(Value::Bool(true)),
@@ -670,7 +678,10 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
 /// aplicada a dois argumentos (`x `f` y` ≡ `f x y`). O conjunto tem de coincidir
 /// with that of the native backends (`core::is_builtin_op`) so the three agree.
 fn is_builtin_op(op: &str) -> bool {
-    matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
+    matches!(
+        op,
+        "+" | "-" | "*" | "mod" | "==" | "<" | ">" | "+." | "-." | "*." | "/."
+    )
 }
 
 fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
@@ -686,6 +697,11 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("==", Int(x), Int(y)) => Ok(Bool(x == y)),
         ("<", Int(x), Int(y)) => Ok(Bool(x < y)),
         (">", Int(x), Int(y)) => Ok(Bool(x > y)),
+        // float arithmetic (§4): `+. -. *. /.`
+        ("+.", Float(x), Float(y)) => Ok(Float(x + y)),
+        ("-.", Float(x), Float(y)) => Ok(Float(x - y)),
+        ("*.", Float(x), Float(y)) => Ok(Float(x * y)),
+        ("/.", Float(x), Float(y)) => Ok(Float(x / y)),
         (op, x, y) => Err(format!(
             "operator '{op}' does not apply to {} and {}",
             type_name(&x),
@@ -699,6 +715,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("putStrLn", [Value::Str(s)]) => Ok(Value::Io(format!("{s}\n"))),
         ("putStr", [Value::Str(s)]) => Ok(Value::Io(s.clone())),
         ("show", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
+        ("show", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
         ("show", [Value::Bool(b)]) => Ok(Value::Str(b.to_string())),
         // split divides into a pair of shared-read halves (they share the
         // value); join recombines — trivial semantics in the interpreter.
@@ -713,6 +730,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RtType {
     Int,
+    Float,
     Bool,
     Str,
     Unit,
@@ -734,6 +752,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
     let v = run_func(&prog, &def, &empty_env(), Vec::new())?;
     Ok(match v {
         Value::Int(_) => RtType::Int,
+        Value::Float(_) => RtType::Float,
         Value::Bool(_) => RtType::Bool,
         Value::Str(_) => RtType::Str,
         Value::Unit => RtType::Unit,

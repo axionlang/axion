@@ -27,6 +27,9 @@ use std::collections::HashSet;
 #[derive(Debug, Clone)]
 pub enum Atom {
     Int(i64),
+    /// Float literal, carried through the uniformly-i64 ABI as its f64 bit
+    /// pattern; float arithmetic (`PrimF`) bitcasts to/from f64 (§4).
+    Float(f64),
     Str(String),
     Var(String),
 }
@@ -37,6 +40,9 @@ pub enum Op {
     Atom(Atom),
     /// binary primitive operation: `+ - * mod == < > band`
     Prim(String, Atom, Atom),
+    /// binary FLOAT primitive (`+. -. *. /.`): operands are f64 bit patterns in
+    /// i64; the backend bitcasts to f64, computes, and bitcasts the result back.
+    PrimF(String, Atom, Atom),
     /// direct call to a named function (top-level or `where` local, already mangled)
     CallDirect(String, Vec<Atom>),
     /// indirect call through a closure (the atom is the pointer)
@@ -181,11 +187,11 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         return true;
     }
     match t.head_con() {
-        // Int/String/IO; arena (Arena/Cell/Mark); Buffer (§4); unit-token;
-        // inteiros de largura fixa (§4) — i64 na ABI
+        // Int/Float/String/IO; arena (Arena/Cell/Mark); Buffer (§4); unit-token;
+        // fixed-width integers (§4) — i64 in the ABI (Float as its f64 bit pattern)
         Some(
-            "Int" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer" | "()" | "U8"
-            | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte",
+            "Int" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer"
+            | "()" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte",
         ) => true,
         Some(h) => data_types.contains(h),
         None => false,
@@ -214,11 +220,20 @@ pub fn is_int(t: &Type) -> bool {
     matches!(t.head_con(), Some("Int"))
 }
 
+pub fn is_float(t: &Type) -> bool {
+    matches!(t.head_con(), Some("Float"))
+}
+
 /// BUILT-IN infix operators (`Int` arithmetic/comparison), which lower to
 /// `Op::Prim`. The rest is a user infix operator — a named function
 /// applied to two arguments. Matches `interp::is_builtin_op`.
 pub fn is_builtin_op(op: &str) -> bool {
     matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
+}
+
+/// FLOAT infix operators (`+. -. *. /.`), which lower to `Op::PrimF`.
+pub fn is_float_op(op: &str) -> bool {
+    matches!(op, "+." | "-." | "*." | "/.")
 }
 
 pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
@@ -443,7 +458,7 @@ fn free_vars(e: &Expr, bound: &HashSet<String>, out: &mut HashSet<String>) {
                 out.insert(n.clone());
             }
         }
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
         Expr::App(f, a, _) | Expr::BinOp(_, f, a, _) => {
             free_vars(f, bound, out);
             free_vars(a, bound, out);
@@ -608,6 +623,7 @@ impl Lower<'_> {
     fn atom(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Atom {
         match e {
             Expr::Int(n, _) => Atom::Int(*n),
+            Expr::Float(f, _) => Atom::Float(*f),
             Expr::Str(s, _) => Atom::Str(s.clone()),
             Expr::Var(n, _) => Atom::Var(n.clone()),
             _ => {
@@ -655,19 +671,23 @@ impl Lower<'_> {
     /// Lowers `e` to a leaf `Op` (the caller guarantees it is not if/case/let).
     fn op(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Op {
         match e {
-            Expr::Int(_, _) | Expr::Str(_, _) | Expr::Var(_, _) => Op::Atom(self.atom(e, buf)),
+            Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Var(_, _) => {
+                Op::Atom(self.atom(e, buf))
+            }
             Expr::BinOp(op, l, r, _) => {
                 let a = self.atom(l, buf);
                 let b = self.atom(r, buf);
-                if is_builtin_op(op) {
+                if is_float_op(op) {
+                    Op::PrimF(op.clone(), a, b)
+                } else if is_builtin_op(op) {
                     Op::Prim(op.clone(), a, b)
                 } else if op == "++" {
                     // concatenation: lowers to the prelude's `append` (lists). The
                     // strings are an interp-level effect (like show/IO).
                     self.call_named("append", vec![a, b])
                 } else {
-                    // operador infixo de utilizador: `x `f` y` ≡ `f x y`. Baixa a
-                    // a call — so it works natively too (first-order).
+                    // user infix operator: `x `f` y` ≡ `f x y`. Lowers to a call —
+                    // so it works natively too (first-order).
                     self.call_named(op, vec![a, b])
                 }
             }
@@ -1136,7 +1156,7 @@ impl Eta {
 
     fn expr(&mut self, e: &Expr) -> Expr {
         match e {
-            Expr::Int(_, _) | Expr::Str(_, _) => e.clone(),
+            Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) => e.clone(),
             // callable name used as a VALUE → eta-expand.
             Expr::Var(_, _) | Expr::Con(_, _) => match self.name_arity(e) {
                 Some(k) if k > 0 => self.wrap(e.clone(), k),
@@ -2438,7 +2458,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::Atom(a) => atom_is(v, a), // alias/return
         Op::FuncAddr(_) => false,
         Op::StoreRaw(ptr, _, val) => atom_is(v, ptr) || atom_is(v, val),
-        Op::Prim(_, a, b) => atom_is(v, a) || atom_is(v, b),
+        Op::Prim(_, a, b) | Op::PrimF(_, a, b) => atom_is(v, a) || atom_is(v, b),
         Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(v, a)),
@@ -2976,7 +2996,7 @@ fn dump_op(op: &Op) -> String {
         Op::Atom(a) => atom(a),
         Op::StoreRaw(p, off, val) => format!("store {}[{off}] = {}", atom(p), atom(val)),
         Op::FuncAddr(n) => format!("&{n}"),
-        Op::Prim(o, a, b) => format!("{o} {} {}", atom(a), atom(b)),
+        Op::Prim(o, a, b) | Op::PrimF(o, a, b) => format!("{o} {} {}", atom(a), atom(b)),
         Op::CallDirect(f, xs) => format!("call {f}{}", args(xs)),
         Op::CallClosure(c, xs) => format!("callclo {}{}", atom(c), args(xs)),
         Op::MakeClosure { func, captures } => format!("closure {func}{}", args(captures)),
@@ -3029,6 +3049,7 @@ fn args(xs: &[Atom]) -> String {
 fn atom(a: &Atom) -> String {
     match a {
         Atom::Int(n) => n.to_string(),
+        Atom::Float(f) => format!("{f}f"),
         Atom::Str(s) => format!("{s:?}"),
         Atom::Var(n) => n.clone(),
     }

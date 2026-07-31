@@ -11,7 +11,9 @@
 
 use crate::ast;
 use crate::ast::Span;
-use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term};
+use crate::core::{
+    self, is_float, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term,
+};
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
 use cranelift::prelude::{
@@ -774,6 +776,8 @@ impl Fx<'_, '_> {
     fn atom(&mut self, a: &Atom) -> Result<Value, String> {
         match a {
             Atom::Int(n) => Ok(self.builder.ins().iconst(types::I64, *n)),
+            // float literal: carry its f64 bit pattern in the i64 ABI slot.
+            Atom::Float(f) => Ok(self.builder.ins().iconst(types::I64, f.to_bits() as i64)),
             Atom::Str(s) => {
                 let data = self.intern(s)?;
                 let gv = self.module.declare_data_in_func(data, self.builder.func);
@@ -884,6 +888,22 @@ impl Fx<'_, '_> {
                     ">" => cmp(self, IntCC::SignedGreaterThan),
                     other => return Err(format!("operator '{other}' does not compile natively")),
                 })
+            }
+            // float op: bitcast the i64 bit-pattern operands to f64, compute, and
+            // bitcast the f64 result back into the i64 ABI slot.
+            Op::PrimF(o, l, r) => {
+                let a = self.atom(l)?;
+                let b = self.atom(r)?;
+                let af = self.builder.ins().bitcast(types::F64, MemFlags::new(), a);
+                let bf = self.builder.ins().bitcast(types::F64, MemFlags::new(), b);
+                let rf = match o.as_str() {
+                    "+." => self.builder.ins().fadd(af, bf),
+                    "-." => self.builder.ins().fsub(af, bf),
+                    "*." => self.builder.ins().fmul(af, bf),
+                    "/." => self.builder.ins().fdiv(af, bf),
+                    other => return Err(format!("float operator '{other}' does not compile natively")),
+                };
+                Ok(self.builder.ins().bitcast(types::I64, MemFlags::new(), rf))
             }
             Op::CallDirect(name, args) => {
                 let (id, arity) = *self
@@ -1311,13 +1331,19 @@ pub fn run(
         }
     }
 
-    let returns_int = module
+    let result = module
         .funcs
         .iter()
         .find(|f| f.name == entry)
         .and_then(|f| f.sig.as_ref())
-        .map(|s| is_int(result_type(s)))
-        .unwrap_or(true);
+        .map(result_type);
+    // `main :: Float` carries its f64 bit-pattern in the i64 ABI: reinterpret
+    // and print here (the caller only knows how to print an Int).
+    if result.is_some_and(is_float) {
+        println!("{}", f64::from_bits(val as u64));
+        return Ok(None);
+    }
+    let returns_int = result.map(is_int).unwrap_or(true);
     Ok(returns_int.then_some(val))
 }
 

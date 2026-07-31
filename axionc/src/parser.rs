@@ -774,6 +774,10 @@ impl<'a> Parser<'a> {
                 "+"
             } else if self.at(&Tok::Minus) {
                 "-"
+            } else if self.at(&Tok::PlusDot) {
+                "+."
+            } else if self.at(&Tok::MinusDot) {
+                "-."
             } else {
                 break;
             };
@@ -793,6 +797,12 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_compose()?;
                 let sp = (lhs.span().0, rhs.span().1);
                 lhs = Expr::BinOp("*".to_string(), Box::new(lhs), Box::new(rhs), sp);
+            } else if self.at(&Tok::StarDot) || self.at(&Tok::SlashDot) {
+                let op = if self.at(&Tok::StarDot) { "*." } else { "/." };
+                self.pos += 1;
+                let rhs = self.parse_compose()?;
+                let sp = (lhs.span().0, rhs.span().1);
+                lhs = Expr::BinOp(op.to_string(), Box::new(lhs), Box::new(rhs), sp);
             } else if self.at_v(&LTok::Tok(Tok::Backtick)) {
                 self.pos += 1;
                 let (op, _) = self.var_name("infix operator")?;
@@ -909,6 +919,11 @@ impl<'a> Parser<'a> {
                 let n = *n;
                 self.pos += 1;
                 Ok(Expr::Int(n, (s, e)))
+            }
+            Some(LTok::Tok(Tok::Float(f))) => {
+                let f = *f;
+                self.pos += 1;
+                Ok(Expr::Float(f, (s, e)))
             }
             Some(LTok::Tok(Tok::Str(v))) => {
                 let v = v.clone();

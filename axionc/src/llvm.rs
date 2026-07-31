@@ -12,7 +12,9 @@
 
 use crate::ast;
 use crate::ast::Span;
-use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term};
+use crate::core::{
+    self, is_float, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term,
+};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -63,11 +65,24 @@ fn main_returns_int(module: &ast::Module, entry: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `true` if `main :: Float` — the driver reinterprets the i64 ABI value as a
+/// double and prints it (`%g`).
+fn main_returns_float(module: &ast::Module, entry: &str) -> bool {
+    module
+        .funcs
+        .iter()
+        .find(|f| f.name == entry)
+        .and_then(|f| f.sig.as_ref())
+        .map(|s| is_float(result_type(s)))
+        .unwrap_or(false)
+}
+
 /// Emits the LLVM IR module (text) from the Core (`--emit llvm`).
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
     let fns = core::lower(module, inplace);
     let records = RecordInfo::build(module);
     let main_int = main_returns_int(module, "main");
+    let main_float = main_returns_float(module, "main");
 
     // pre-pass: interns the string literals
     let mut strings: HashMap<String, usize> = HashMap::new();
@@ -89,6 +104,7 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
         out.push_str(&format!("declare i64 @{name}({params})\n"));
     }
     out.push_str("@.fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\"\n");
+    out.push_str("@.ffmt = private unnamed_addr constant [4 x i8] c\"%g\\0A\\00\"\n");
     // string globals
     let mut sorted: Vec<(&String, &usize)> = strings.iter().collect();
     sorted.sort_by_key(|(_, i)| **i);
@@ -110,6 +126,10 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
     out.push_str("define i32 @main() {\nentry:\n  %r = call i64 @\"ax_main\"()\n");
     if main_int {
         out.push_str("  call i32 (ptr, ...) @printf(ptr @.fmt, i64 %r)\n");
+    } else if main_float {
+        // reinterpret the i64 ABI value as a double and print it (`%g`).
+        out.push_str("  %rf = bitcast i64 %r to double\n");
+        out.push_str("  call i32 (ptr, ...) @printf(ptr @.ffmt, double %rf)\n");
     }
     out.push_str("  ret i32 0\n}\n");
     Ok(out)
@@ -223,7 +243,7 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
         Op::LoadRaw(a, _) => vec![a],
         Op::StoreRaw(p, _, v) => vec![p, v],
         Op::FuncAddr(_) => vec![],
-        Op::Prim(_, a, b) | Op::Promote(a, b) => vec![a, b],
+        Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::Promote(a, b) => vec![a, b],
         Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
             xs.iter().collect()
         }
@@ -421,6 +441,8 @@ impl Emit<'_> {
     fn atom(&self, a: &Atom) -> Result<String, String> {
         match a {
             Atom::Int(n) => Ok(n.to_string()),
+            // float literal: its f64 bit pattern as an i64 immediate.
+            Atom::Float(f) => Ok((f.to_bits() as i64).to_string()),
             Atom::Var(n) => self
                 .scope
                 .get(n)
@@ -617,6 +639,26 @@ impl Emit<'_> {
                 } else {
                     Ok(r)
                 }
+            }
+            // float op: bitcast i64 bit-patterns to double, compute, bitcast back.
+            Op::PrimF(o, a, b) => {
+                let x = self.atom(a)?;
+                let y = self.atom(b)?;
+                let fop = match o.as_str() {
+                    "+." => "fadd",
+                    "-." => "fsub",
+                    "*." => "fmul",
+                    "/." => "fdiv",
+                    other => {
+                        return Err(format!("float operator '{other}' does not compile under --release"))
+                    }
+                };
+                let (xf, yf, rf, z) = (self.val(), self.val(), self.val(), self.val());
+                self.ins(&format!("{xf} = bitcast i64 {x} to double"));
+                self.ins(&format!("{yf} = bitcast i64 {y} to double"));
+                self.ins(&format!("{rf} = {fop} double {xf}, {yf}"));
+                self.ins(&format!("{z} = bitcast double {rf} to i64"));
+                Ok(z)
             }
             Op::CallDirect(name, args) => {
                 let a = self

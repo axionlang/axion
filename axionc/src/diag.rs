@@ -84,7 +84,7 @@ impl Diagnostic {
             ));
         }
         if let Some(help) = &self.help {
-            out.push_str(&format!("  = ajuda: {help}\n"));
+            out.push_str(&format!("  = help: {help}\n"));
         }
         out
     }

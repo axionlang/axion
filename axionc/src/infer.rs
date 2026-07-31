@@ -404,6 +404,11 @@ impl<'a> Infer<'a> {
         for op in ["+", "-", "*", "mod"] {
             env.insert(op.into(), mono(bin(int())));
         }
+        // float arithmetic (§4): `+. -. *. /.` :: Float -> Float -> Float
+        let float = || Ty::Con("Float".into(), vec![]);
+        for op in ["+.", "-.", "*.", "/."] {
+            env.insert(op.into(), mono(bin(float())));
+        }
         // ++ :: forall a. a -> a -> a  (polymorphic concatenation; without typeclasses
         // yet, the Semigroup-ish type only forces both sides to match —
         // lists and strings both pass, `"x" ++ [1]` does not).
@@ -1165,6 +1170,7 @@ impl<'a> Infer<'a> {
     fn infer_expr(&mut self, env: &Env, e: &Expr) -> Ty {
         match e {
             Expr::Int(_, _) => Ty::Con("Int".into(), vec![]),
+            Expr::Float(_, _) => Ty::Con("Float".into(), vec![]),
             Expr::Str(_, _) => Ty::Con("String".into(), vec![]),
             Expr::Var(n, span) => {
                 let ty = match env.get(n) {

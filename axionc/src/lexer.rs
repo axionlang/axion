@@ -86,6 +86,17 @@ pub enum Tok {
     // operators
     #[token("++")]
     PlusPlus,
+    // float arithmetic (§4): `+.` `-.` `*.` `/.` — distinct from the Int operators
+    // (OCaml-style), so codegen is not type-directed. Longer than `+`/`-`/`*`, so
+    // logos picks them (and `2.0 *. 3.0` splits as Float StarDot Float).
+    #[token("+.")]
+    PlusDot,
+    #[token("-.")]
+    MinusDot,
+    #[token("*.")]
+    StarDot,
+    #[token("/.")]
+    SlashDot,
     #[token("+")]
     Plus,
     #[token("-")]
@@ -100,7 +111,10 @@ pub enum Tok {
     Gt,
 
     // literals (decimal and hexadecimal `0x…`; logos picks the longest
-    // match, so `0x5A` matches the hex, not `0`)
+    // match, so `0x5A` matches the hex, not `0`). A `Float` needs a fractional
+    // part (`3.14`) so it wins over `Int` `.` `Int`.
+    #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().ok())]
+    Float(f64),
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
     #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(&lex.slice()[2..], 16).ok())]
     Int(i64),

@@ -68,6 +68,7 @@ pub enum Pat {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Int(i64, Span),
+    Float(f64, Span),
     Str(String, Span),
     Var(String, Span),
     Con(String, Span),
@@ -89,6 +90,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Int(_, s)
+            | Expr::Float(_, s)
             | Expr::Str(_, s)
             | Expr::Var(_, s)
             | Expr::Con(_, s)

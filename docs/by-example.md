@@ -84,6 +84,23 @@ executors: `$AX --backend cranelift …` (Cranelift), `$AX --release …` (LLVM)
 
 ---
 
+### 4b. Floating point — `Float`, `+. -. *. /.`
+
+```haskell
+main :: Float
+main = 3.0 *. 2.0 +. 1.5                              -- → 7.5
+```
+```sh
+$AX axionc/tests/fixtures/float_arith.axi             # → 7.5
+```
+`Float` is `f64`. Arithmetic uses **distinct operators** — `+.` `-.` `*.` `/.`
+(OCaml-style) — so the backends need no type-directed dispatch: `Int +. Int` is a
+type error (`Float` and `Int` are distinct types). Under the uniform i64 native
+ABI the `f64` travels as its bit-pattern; the operators bitcast `i64 ↔ f64`. All
+three executors agree bit-for-bit.
+
+---
+
 ## L1 — linearity and GC-free memory (the differentiator)
 
 Axion's core: every datum has an owner, and the compiler frees it at exact static

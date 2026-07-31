@@ -1799,3 +1799,58 @@ fn typeclass_constraints_are_checked_at_use_site() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "true\n");
 }
+
+#[test]
+fn float_arithmetic_agrees_across_backends() {
+    // §4 (Float): `f64` carried as its bit-pattern in the i64 ABI; the distinct
+    // operators `+. -. *. /.` bitcast i64↔f64. The interpreter uses real f64.
+    // All three executors must agree.
+    for (fx, expected) in [("float_arith.axi", "7.5\n"), ("float_divsub.axi", "2\n")] {
+        let interp = axionc().arg(fixture(fx)).output().unwrap();
+        assert!(
+            interp.status.success(),
+            "{fx} interp: {}",
+            String::from_utf8_lossy(&interp.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&interp.stdout), expected, "{fx} interp");
+
+        let cranelift = axionc()
+            .args(["--backend", "cranelift", &fixture(fx)])
+            .output()
+            .unwrap();
+        assert!(
+            cranelift.status.success(),
+            "{fx} cranelift: {}",
+            String::from_utf8_lossy(&cranelift.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&cranelift.stdout),
+            expected,
+            "{fx} cranelift"
+        );
+
+        let llvm = axionc().args(["--release", &fixture(fx)]).output().unwrap();
+        assert!(
+            llvm.status.success(),
+            "{fx} llvm: {}",
+            String::from_utf8_lossy(&llvm.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&llvm.stdout), expected, "{fx} llvm");
+    }
+}
+
+#[test]
+fn float_operators_do_not_apply_to_int() {
+    // The distinct float operators are type-directed: `Int +. Int` must be
+    // rejected by inference (Float and Int are distinct types).
+    let out = axionc()
+        .args(["--check", &fixture("float_type_mismatch.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "expected a type error");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Float") && text.contains("Int"),
+        "expected a Float/Int mismatch, output: {text}"
+    );
+}

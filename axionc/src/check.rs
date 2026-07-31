@@ -280,7 +280,7 @@ fn find_bounds(e: &Expr, diags: &mut Diagnostics) {
             assigns.iter().for_each(|(_, e)| go(e))
         }
         Expr::Lam(_, body, _) => go(body),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
     }
 }
 
@@ -1350,7 +1350,7 @@ fn resolve_expr(
                 );
             }
         }
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
         Expr::App(f, x, _) => {
             resolve_expr(f, scope, globals, diags);
             resolve_expr(x, scope, globals, diags);
@@ -1547,7 +1547,7 @@ fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
                 (0, 0)
             }
         }
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => (0, 0),
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => (0, 0),
         // arithmetic/comparison operands are read, not consumed
         Expr::BinOp(_, l, r, _) => add(
             analyze(l, x, Mode::Borrow, ctx),
@@ -1680,7 +1680,7 @@ fn collect_last(e: &Expr, x: &str, best: &mut Option<Span>) {
                 *best = Some(*sp);
             }
         }
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
         Expr::App(f, a, _) => {
             collect_last(f, x, best);
             collect_last(a, x, best);
@@ -1772,7 +1772,7 @@ fn walk(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, mut st: MoveState) -> MoveStat
             }
             st
         }
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => st,
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => st,
         Expr::BinOp(_, l, r, _) => {
             st = walk(l, x, Mode::Borrow, ctx, st);
             walk(r, x, Mode::Borrow, ctx, st)
@@ -1954,7 +1954,7 @@ fn scan_lets<'a>(
             }
         }
         Expr::Lam(_, body, _) => scan_lets(body, lin, ctx, lets, inplace, func),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
     }
 }
 
@@ -2023,7 +2023,7 @@ fn check_arena_escapes(
             assigns.iter().for_each(|(_, e)| go(e))
         }
         Expr::Lam(_, body, _) => go(body),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
     }
 }
 
@@ -2182,7 +2182,7 @@ fn captured_sub_ref(
             }
             captured_sub_ref(body, sub_bound, shadowed)
         }
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => None,
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => None,
     }
 }
 
@@ -2347,7 +2347,7 @@ fn check_released_uses(
 fn collect_var_refs(e: &Expr, f: &mut dyn FnMut(&str, Span)) {
     match e {
         Expr::Var(n, sp) => f(n, *sp),
-        Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
         Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
             collect_var_refs(a, f);
             collect_var_refs(b, f);
@@ -2403,6 +2403,7 @@ fn check_nested_marks(e: &Expr, diags: &mut Diagnostics) {
         Expr::Let(_, _, _)
         | Expr::Var(_, _)
         | Expr::Int(_, _)
+        | Expr::Float(_, _)
         | Expr::Str(_, _)
         | Expr::Con(_, _) => {}
     }
@@ -2527,6 +2528,6 @@ fn for_each_child(e: &Expr, f: &mut dyn FnMut(&Expr)) {
             assigns.iter().for_each(|(_, e)| f(e))
         }
         Expr::Lam(_, body, _) => f(body),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
     }
 }

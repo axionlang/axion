@@ -31,7 +31,7 @@ arrow       = "->"                         (* normal arrow (%Many)         *)
             | "%1" "->"                     (* full linear ownership        *)
             | "%0.5" "->" ;                 (* fractional permission (L2+)  *)
 btype       = atype { atype } ;             (* type application: Buffer U8  *)
-atype       = conName                       (* Int, IO, Buffer, U8, U32 …   *)
+atype       = conName                       (* Int, Float, IO, Buffer, U8 … *)
             | varName                       (* type variable                *)
             | "(" type { "," type } ")" ;   (* tuple / parentheses           *)
 
@@ -72,6 +72,7 @@ literal     = intLit | stringLit | charLit ;
 varName     = lower { alnum | "'" } ;
 conName     = upper { alnum | "'" } ;
 binop       = "+" | "-" | "*" | "==" | "." | "<>"
+            | "+." | "-." | "*." | "/."     (* Float arithmetic (§4)        *)
             | "`" varName "`" ;             (* infix function: `mod`        *)
 ```
 
