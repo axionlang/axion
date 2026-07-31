@@ -172,8 +172,10 @@ calmly and tested, without breaking the philosophy:
 (`factorial 20` runs, `50` doesn't); **native sessions are M:N but with a global
 mutex, not yet work-stealing** — tasks run in parallel on both backends and are
 ThreadSanitizer-clean, but the scheduler serializes channel ops on one lock and
-there is no `io_uring`/`epoll` for async I/O yet; recursion in a session body
-(server loops) and delegation are still interpreter-only; no `Float` yet;
+there is no `io_uring`/`epoll` for async I/O yet; **recursion in a session body**
+(server loops, recursive `Rec`/`Loop` session types) now typechecks and runs in
+the interpreter but is not native yet, and delegation is still interpreter-only;
+no `Float` yet;
 over-application (functions that return functions and are re-applied) and
 mechanized metatheory (Iris/Actris) still to do. None is a correctness hole —
 they are growth.

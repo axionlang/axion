@@ -194,6 +194,46 @@ fn session_richer_shapes_run_natively() {
 }
 
 #[test]
+fn recursive_session_server_loop_runs() {
+    // §6 recursion (server loops): a worker with a RECURSIVE session type
+    // `Rec (Offer (More (Recv Int (Send Int Loop))) (Closed End))` loops via a tail
+    // call `worker d'` — which the checker now accepts (the recursion continues the
+    // protocol instead of reaching `close`, relaxing AX0301) and the interpreter
+    // runs (the scheduler re-enters the body as a tail call). Three rounds
+    // incrementing 10/20/30 → 11+21+31 = 63.
+    let fx = fixture("session_run_server.axi");
+    let check = axionc().args(["--check", &fx]).output().unwrap();
+    assert!(
+        check.status.success(),
+        "recursive session should typecheck: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+    let run = axionc().arg(&fx).output().unwrap();
+    assert!(
+        run.status.success(),
+        "server loop should run: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "63\n");
+}
+
+#[test]
+fn recursive_session_wrong_state_is_rejected_ax0300() {
+    // A recursive tail call must continue the protocol at the function's parameter
+    // session state; recursing with an endpoint at the wrong state → AX0300.
+    let out = axionc()
+        .args(["--check", &fixture("session_rec_mismatch.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "recursion at the wrong state should fail"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0300"), "expected AX0300, output: {text}");
+}
+
+#[test]
 fn session_out_of_subset_fails_natively_not_silently() {
     // Graceful-failure contract: sessions bypass the native-candidacy filter, so a
     // session shape outside the native subset must be REJECTED by native codegen,

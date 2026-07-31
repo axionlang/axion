@@ -477,7 +477,7 @@ fn tail_endpoint(e: &Expr, eps: &HashSet<String>) -> Option<Span> {
 // pass. This pass checks what HM does not express: that each channel operation
 // follows the endpoint's session type (send on a `Send`, recv on a `Recv`,
 // close on an `End`) and that the protocol is carried to the end. AX03xx band.
-// v1: fragmento send/recv/close sobre a espinha linear de `do`/`let`; escolha
+// v1: the send/recv/close fragment over the linear spine of `do`/`let`; choice
 // (⊕/&), `bound`/`spawn` and branches (multi-arm `if`/`case`) are left for later
 // increments (there the tracking stops, conservative, no false positives).
 
@@ -488,6 +488,43 @@ enum SessTy {
     Recv(Box<SessTy>),
     Select(Vec<(String, SessTy)>), // ⊕ — chooses a label (internal side)
     Offer(Vec<(String, SessTy)>),  // & — offers all labels (external side)
+    // recursive session types (§6, server loops): `Rec S` binds, `Loop` refers
+    // back to the nearest enclosing `Rec` (single level, de Bruijn 0).
+    Rec(Box<SessTy>),
+    Var,
+}
+
+/// Substitutes the recursion variable `Loop`/`Var` with `r` (does not descend
+/// into a nested `Rec`, which binds its own variable).
+fn subst(t: &SessTy, r: &SessTy) -> SessTy {
+    match t {
+        SessTy::Var => r.clone(),
+        SessTy::Rec(_) => t.clone(),
+        SessTy::End => SessTy::End,
+        SessTy::Send(s) => SessTy::Send(Box::new(subst(s, r))),
+        SessTy::Recv(s) => SessTy::Recv(Box::new(subst(s, r))),
+        SessTy::Select(bs) => {
+            SessTy::Select(bs.iter().map(|(l, s)| (l.clone(), subst(s, r))).collect())
+        }
+        SessTy::Offer(bs) => {
+            SessTy::Offer(bs.iter().map(|(l, s)| (l.clone(), subst(s, r))).collect())
+        }
+    }
+}
+
+/// One-level unfold of a `Rec`: `Rec B` → `B[Loop := Rec B]`. Idempotent on
+/// non-`Rec` types. Applied wherever an endpoint's session is inspected.
+fn unfold(t: SessTy) -> SessTy {
+    match &t {
+        SessTy::Rec(body) => subst(body, &t),
+        _ => t,
+    }
+}
+
+/// Structural equality up to one `Rec` unfold on either side (enough to close a
+/// single-level recursion: the folded `Rec B` and its unfolding are equal).
+fn sess_eq(a: &SessTy, b: &SessTy) -> bool {
+    a == b || unfold(a.clone()) == unfold(b.clone())
 }
 
 /// Decomposes a type into its head and arguments (the `App` spine).
@@ -520,6 +557,9 @@ fn parse_sess(t: &Type) -> Option<SessTy> {
         // (label = ConId; a branch without a continuation = `End`).
         ("Select", n) if n >= 1 => Some(SessTy::Select(parse_branches(&args)?)),
         ("Offer", n) if n >= 1 => Some(SessTy::Offer(parse_branches(&args)?)),
+        // recursion (§6): `Rec S` and the back-reference `Loop`
+        ("Rec", 1) => Some(SessTy::Rec(Box::new(parse_sess(args[0])?))),
+        ("Loop", 0) => Some(SessTy::Var),
         _ => None,
     }
 }
@@ -572,6 +612,17 @@ enum OpResult {
 }
 
 fn check_sessions(module: &Module, diags: &mut Diagnostics) {
+    // session functions → their endpoint parameter's session type, for closing a
+    // recursive tail call (`server d'` continues the protocol; §6, server loops).
+    let sess_fns: HashMap<String, SessTy> = module
+        .funcs
+        .iter()
+        .filter_map(|f| {
+            let ptys = f.sig.as_ref()?.param_types();
+            let s = ptys.iter().find_map(|t| endpoint_session(t))?;
+            Some((f.name.clone(), s))
+        })
+        .collect();
     for f in &module.funcs {
         let Some(sig) = &f.sig else { continue };
         let ptys = sig.param_types();
@@ -593,8 +644,8 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
             }
             if let Body::Plain(e) = &c.body {
                 let mut tracked = true;
-                walk_sess(e, &mut env, &mut tracked, f.span, diags);
-                // completude (T-progresso): se seguimos toda a espinha, nenhum
+                walk_sess(e, &mut env, &mut tracked, f.span, &sess_fns, diags);
+                // completeness (T-progress): if we followed the whole spine, no
                 // endpoint may be left uncarried to `close`.
                 if tracked {
                     // a closed endpoint was removed from the env; what remains was not
@@ -623,12 +674,13 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
 /// Walks the linear spine (desugared `do` = 1-arm `case`, and `let`),
 /// advancing each endpoint's session state. `tracked` becomes `false` if
 /// it hits non-session branching (not trackable in v1) — there nothing is reported
-/// incompletude. `span` = o local a apontar nas incompletudes por-ramo.
+/// as incomplete. `span` = where to point in the per-branch incompleteness errors.
 fn walk_sess(
     e: &Expr,
     env: &mut HashMap<String, SessTy>,
     tracked: &mut bool,
     span: Span,
+    sess_fns: &HashMap<String, SessTy>,
     diags: &mut Diagnostics,
 ) {
     // `case offer c of { L1 p1 -> N1 ; … }` (&): the external choice. Checks
@@ -636,7 +688,7 @@ fn walk_sess(
     // its continuation. It is the only multi-arm `case` that is tracked.
     if let Expr::Case(scrut, arms, _) = e {
         if let Some(chan) = offer_chan(scrut) {
-            check_offer_case(&chan, arms, env, span, diags);
+            check_offer_case(&chan, arms, env, span, sess_fns, diags);
             return;
         }
     }
@@ -645,7 +697,7 @@ fn walk_sess(
             if let Some(r) = classify_op(scrut, env, diags) {
                 bind_result(&arms[0].0, r, env);
             }
-            walk_sess(&arms[0].1, env, tracked, span, diags);
+            walk_sess(&arms[0].1, env, tracked, span, sess_fns, diags);
         }
         Expr::Let(funcs, body, _) => {
             for g in funcs {
@@ -659,14 +711,49 @@ fn walk_sess(
                     }
                 }
             }
-            walk_sess(body, env, tracked, span, diags);
+            walk_sess(body, env, tracked, span, sess_fns, diags);
         }
         // real branching: not trackable in v1 → stop (conservative, no false+)
         Expr::If(..) | Expr::Case(..) => *tracked = false,
-        // leaf: may be the last operation (`close c`)
+        // leaf: a session op (`close c`), or a recursive tail call `f d'` that
+        // continues the protocol (§6, server loops).
         other => {
+            if let Some((fname, chan)) = sess_tail_call(other) {
+                if let (Some(param_ty), Some(cur)) = (sess_fns.get(&fname), env.get(&chan)) {
+                    if sess_eq(cur, param_ty) {
+                        env.remove(&chan); // the recursion consumes it (loops)
+                        return;
+                    }
+                    let got = cur.clone();
+                    env.remove(&chan);
+                    diags.push(
+                        Diagnostic::error(
+                            "AX0300",
+                            format!(
+                                "recursive call `{fname} {chan}` does not continue the session \
+                                 protocol of '{chan}' (its type here is not `{fname}`'s parameter type)"
+                            ),
+                        )
+                        .label(span.0, span.1, "session recursion type mismatch")
+                        .with_help("the endpoint passed to the recursive call must be at the \
+                                    same session state as the function's parameter."),
+                    );
+                    let _ = got;
+                    return;
+                }
+            }
             classify_op(other, env, diags);
         }
+    }
+}
+
+/// If `e` is a call `f d` whose single argument is a plain endpoint variable,
+/// returns `(f, d)` — a candidate recursive session tail call.
+fn sess_tail_call(e: &Expr) -> Option<(String, String)> {
+    let (head, args) = app_spine(e);
+    match (head, args.as_slice()) {
+        (Some(f), [Expr::Var(d, _)]) => Some((f.to_string(), d.clone())),
+        _ => None,
     }
 }
 
@@ -689,9 +776,10 @@ fn check_offer_case(
     arms: &[(Pat, Expr)],
     env: &mut HashMap<String, SessTy>,
     span: Span,
+    sess_fns: &HashMap<String, SessTy>,
     diags: &mut Diagnostics,
 ) {
-    let branches = match env.remove(chan) {
+    let branches = match env.remove(chan).map(unfold) {
         Some(SessTy::Offer(bs)) => bs,
         Some(other) => {
             session_mismatch(diags, span, chan, "offer", &other);
@@ -737,7 +825,7 @@ fn check_offer_case(
             }
         }
         let mut t = true;
-        walk_sess(body, &mut arm_env, &mut t, span, diags);
+        walk_sess(body, &mut arm_env, &mut t, span, sess_fns, diags);
         if t {
             for n in arm_env.keys() {
                 diags.push(
@@ -794,7 +882,7 @@ fn classify_op(
             Expr::Var(n, _) => n.clone(),
             _ => return None,
         };
-        return match env.remove(&chan) {
+        return match env.remove(&chan).map(unfold) {
             Some(SessTy::Select(branches)) => {
                 match branches.into_iter().find(|(bl, _)| *bl == label) {
                     Some((_, cont)) => Some(OpResult::Advance(cont)),
@@ -824,8 +912,10 @@ fn classify_op(
         Some(Expr::Var(n, _)) => n.clone(),
         _ => return None,
     };
+    // unfold a top-level `Rec` so the op can match the exposed Send/Recv/Offer.
+    let cur = env.remove(&chan).map(unfold);
     match head {
-        "send" if args.len() >= 2 => match env.remove(&chan) {
+        "send" if args.len() >= 2 => match cur {
             Some(SessTy::Send(s)) => Some(OpResult::Advance(*s)),
             Some(other) => {
                 session_mismatch(diags, sp, &chan, "send", &other);
@@ -833,7 +923,7 @@ fn classify_op(
             }
             None => None,
         },
-        "recv" => match env.remove(&chan) {
+        "recv" => match cur {
             Some(SessTy::Recv(s)) => Some(OpResult::Recv(*s)),
             Some(other) => {
                 session_mismatch(diags, sp, &chan, "recv", &other);
@@ -841,7 +931,7 @@ fn classify_op(
             }
             None => None,
         },
-        "close" => match env.remove(&chan) {
+        "close" => match cur {
             Some(SessTy::End) => Some(OpResult::Closed),
             Some(other) => {
                 session_mismatch(diags, sp, &chan, "close", &other);
@@ -851,7 +941,7 @@ fn classify_op(
         },
         // `offer c` (&): receives the choice and consumes the endpoint. The exhaustiveness of the
         // branches (incl. `Closed`) is checked in the type (`check_closed_branches`).
-        "offer" => match env.remove(&chan) {
+        "offer" => match cur {
             Some(SessTy::Offer(_)) => Some(OpResult::Closed),
             Some(other) => {
                 session_mismatch(diags, sp, &chan, "offer", &other);
@@ -859,7 +949,7 @@ fn classify_op(
             }
             None => None,
         },
-        // `cancel c` (§7): descarta o endpoint em QUALQUER estado (pode-se sempre
+        // `cancel c` (§7): discards the endpoint in ANY state (you can always
         // cancel) — consumes it.
         "cancel" => {
             env.remove(&chan);
@@ -902,6 +992,8 @@ fn check_closed_branches(s: &SessTy, chan: &str, sp: Span, diags: &mut Diagnosti
                 check_closed_branches(k, chan, sp, diags);
             }
         }
+        SessTy::Rec(k) => check_closed_branches(k, chan, sp, diags),
+        SessTy::Var => {} // back-reference: its body is checked at the enclosing `Rec`
     }
 }
 
@@ -919,6 +1011,8 @@ fn session_mismatch(diags: &mut Diagnostics, sp: Span, chan: &str, op: &str, got
         SessTy::Recv(_) => "it is at `Recv`",
         SessTy::Select(_) => "it is at `Select`",
         SessTy::Offer(_) => "it is at `Offer`",
+        SessTy::Rec(_) => "it is at `Rec`",
+        SessTy::Var => "it is at `Loop`",
     };
     diags.push(
         Diagnostic::error(

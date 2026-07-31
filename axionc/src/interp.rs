@@ -961,6 +961,20 @@ fn step(
             },
         );
     }
+    // recursive session tail call `f d` (§6, server loop): re-enter `f`'s body
+    // with the endpoint bound, as a tail call (reuse the task, no new spawn). This
+    // is what closes a recursive session protocol — the task loops instead of
+    // reaching `close`.
+    if let Expr::App(f, arg, _) = &task.cont {
+        let av = eval(prog, &task.env, arg)?;
+        if matches!(av, Value::Endpoint(_)) {
+            let fv = eval(prog, &task.env, f)?;
+            if matches!(&fv, Value::Closure { args, .. } if args.is_empty()) {
+                let child = fork_child(fv, av)?;
+                return Ok(StepOut::Went(child));
+            }
+        }
+    }
     // leaf without a session op → evaluates normally
     Ok(StepOut::Done(eval(prog, &task.env, &task.cont)?))
 }
@@ -1032,7 +1046,7 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
                         if i == 0 {
                             return Ok(v); // the root finished → the `bound` value
                         }
-                        break; // um filho terminou → descarta
+                        break; // a child finished → discard it
                     }
                 }
             }
