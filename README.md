@@ -147,17 +147,18 @@ calmly and tested, without breaking the philosophy:
   `compose`/partial application, functions as values — all compile to native
   (FizzBuzz runs under `--release`). This is the **1st layer of the road to native
   M:N concurrency**.
-- **Native sessions (Layer 2, in progress)** — `spawn`/`send`/`recv`/`close`
-  lower to defunctionalized cooperative state machines over a native scheduler
-  (`axion_sess_*`); the concurrent ping-pong runs under `--backend cranelift`,
-  matching the interpreter. Next: choice/cancellation, `--release` parity, then M:N.
+- **Native sessions (Layer 2, in progress)** — `spawn`/`send`/`recv`/`close`,
+  **choice** (`select`/`case offer`) and **cancellation** (`cancel`) lower to
+  defunctionalized cooperative state machines over a native scheduler
+  (`axion_sess_*`); ping-pong, offer and cancel all run under `--backend cranelift`,
+  matching the interpreter. Next: `--release` (LLVM) parity, then M:N.
 
 **Honesty about the state.** Known and documented debt: `Integer`/bignum missing
-(`factorial 20` runs, `50` doesn't); **session choice/cancellation still run only
-in the interpreter** and native sessions are cooperative, not yet M:N (the native
-road is climbing: IO/effects + first-class functions, and now the ping-pong,
-already
-native); no `Float` yet; over-application (functions that return functions and are
+(`factorial 20` runs, `50` doesn't); **native sessions run under `--dev`
+(Cranelift) but not yet `--release` (LLVM)**, and the scheduler is cooperative,
+not yet M:N (the native road is climbing: IO/effects + first-class functions, and
+now sessions — ping-pong, choice and cancellation — run native under `--dev`);
+no `Float` yet; over-application (functions that return functions and are
 re-applied) and mechanized metatheory (Iris/Actris) still to do. None is a
 correctness hole — they are growth.
 

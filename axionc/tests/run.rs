@@ -128,6 +128,36 @@ fn session_pingpong_runs_natively() {
 }
 
 #[test]
+fn session_choice_and_cancel_run_natively() {
+    // §6/§7, Layer 2a (native choice + cancellation): `select`/`case offer` and
+    // `cancel` lower to native. `offer` is a label suspension that dispatches to
+    // the matching branch (whose body may hold further `recv` suspensions); `cancel`
+    // sends the `Closed` label (T5). Both agree with the interpreter under
+    // `--backend cranelift`: session_run_offer → 7, session_run_cancel → 5.
+    for (fx, expected) in [
+        ("session_run_offer.axi", "7\n"),
+        ("session_run_cancel.axi", "5\n"),
+    ] {
+        let native = axionc()
+            .args(["--backend", "cranelift", &fixture(fx)])
+            .output()
+            .unwrap();
+        assert!(
+            native.status.success(),
+            "{fx} native should run: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), expected, "{fx}");
+        let interp = axionc().arg(fixture(fx)).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&interp.stdout),
+            String::from_utf8_lossy(&native.stdout),
+            "{fx}: native and interpreter diverge"
+        );
+    }
+}
+
+#[test]
 fn session_offer_and_cancel_run() {
     // §6/§7: external choice (`offer`) and cancellation (`cancel` → `Closed`)
     // execute. One: `select Live` → the worker dispatches to the Live branch (→7).

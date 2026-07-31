@@ -1230,10 +1230,6 @@ fn sess_spine(e: &Expr) -> (Option<&str>, Vec<&Expr>) {
     }
 }
 
-fn is_suspension(h: Option<&str>) -> bool {
-    matches!(h, Some("recv"))
-}
-
 /// `bound X` or `bound $ X` → `X`.
 fn as_bound(e: &Expr) -> Option<&Expr> {
     match sess_spine(e) {
@@ -1242,36 +1238,68 @@ fn as_bound(e: &Expr) -> Option<&Expr> {
     }
 }
 
-/// Flattens a session do-body (chain of single-arm `Case`) into `(pattern, op)`
-/// statements plus the tail expression (the block's value).
-fn flatten_sess(body: &Expr) -> (Vec<(&Pat, &Expr)>, &Expr) {
-    let mut stmts = Vec::new();
-    let mut cur = body;
-    while let Expr::Case(scrut, arms, _) = cur {
-        if arms.len() != 1 {
-            break;
-        }
-        stmts.push((&arms[0].0, scrut.as_ref()));
-        cur = &arms[0].1;
+/// The span of a `Case` expression (used to key its suspension index).
+fn case_span(e: &Expr) -> Span {
+    match e {
+        Expr::Case(_, _, sp) => *sp,
+        _ => (0, 0),
     }
-    (stmts, cur)
 }
 
-/// The `spawn` targets named in a session do-body.
-fn spawn_targets(body: &Expr) -> Vec<String> {
-    let (stmts, tail) = flatten_sess(body);
-    let mut out = Vec::new();
-    for (_, scrut) in stmts
-        .iter()
-        .chain(std::iter::once(&(&Pat::Wild((0, 0)), tail)))
-    {
+/// The `spawn` targets named anywhere in a session body (including choice arms).
+fn spawn_targets(body: &Expr, out: &mut Vec<String>) {
+    if let Expr::Case(scrut, arms, _) = body {
         if let (Some("spawn"), args) = sess_spine(scrut) {
             if let (Some(t), _) = sess_spine(args[0]) {
                 out.push(t.to_string());
             }
         }
+        for (_, b) in arms {
+            spawn_targets(b, out);
+        }
     }
-    out
+}
+
+/// All variables bound (by patterns) anywhere in a session body.
+fn collect_bound_vars(e: &Expr, out: &mut Vec<String>) {
+    if let Expr::Case(_, arms, _) = e {
+        for (pat, body) in arms {
+            pat_vars(pat, out);
+            collect_bound_vars(body, out);
+        }
+    }
+}
+
+/// Collects the suspension points (`recv` value, `offer` label) in DFS order,
+/// each with the variables live in scope just before it (params + earlier binds).
+fn collect_suspensions<'a>(
+    e: &'a Expr,
+    scope: &mut Vec<String>,
+    out: &mut Vec<(&'a Expr, Vec<String>)>,
+) {
+    let Expr::Case(scrut, arms, _) = e else {
+        return;
+    };
+    let head = sess_spine(scrut).0;
+    let is_offer = head == Some("offer");
+    if head == Some("recv") || is_offer {
+        out.push((e, scope.clone()));
+    }
+    if arms.len() == 1 && !is_offer {
+        let (pat, rest) = &arms[0];
+        let base = scope.len();
+        pat_vars(pat, scope);
+        collect_suspensions(rest, scope, out);
+        scope.truncate(base);
+    } else {
+        // choice (`offer`): each arm binds its endpoint, then continues
+        for (pat, body) in arms {
+            let base = scope.len();
+            pat_vars(pat, scope);
+            collect_suspensions(body, scope, out);
+            scope.truncate(base);
+        }
+    }
 }
 
 /// State-block layout of one session task: `[result@0, resume@8, locals@16…]`.
@@ -1292,21 +1320,18 @@ fn sess_layout(pats: &[Pat], body: &Expr, step: String) -> SessLayout {
         *off += 8;
         o
     };
+    let mut params = Vec::new();
     for p in pats {
-        let mut vs = Vec::new();
-        pat_vars(p, &mut vs);
-        for v in vs {
-            param_slots.push(add(&v, &mut off, &mut slot));
-        }
+        pat_vars(p, &mut params);
     }
-    let (stmts, _) = flatten_sess(body);
-    for (pat, _) in &stmts {
-        let mut vs = Vec::new();
-        pat_vars(pat, &mut vs);
-        for v in vs {
-            if !slot.contains_key(&v) {
-                add(&v, &mut off, &mut slot);
-            }
+    for v in &params {
+        param_slots.push(add(v, &mut off, &mut slot));
+    }
+    let mut vars = Vec::new();
+    collect_bound_vars(body, &mut vars);
+    for v in &vars {
+        if !slot.contains_key(v) {
+            add(v, &mut off, &mut slot);
         }
     }
     SessLayout {
@@ -1321,6 +1346,9 @@ fn sess_layout(pats: &[Pat], body: &Expr, step: String) -> SessLayout {
 struct SessGen<'a> {
     lay: &'a SessLayout,
     all: &'a HashMap<String, SessLayout>,
+    tags: &'a HashMap<String, i64>, // choice label (constructor) → tag
+    susp: HashMap<Span, i32>,       // suspension `Case` span → index (resume = index+1)
+    susp_live: Vec<Vec<String>>,    // live vars in scope at each suspension
     tmp: u32,
 }
 
@@ -1375,240 +1403,303 @@ impl SessGen<'_> {
         wrap(binds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1)))))
     }
 
-    /// Generates the code executing statements `idx..` inline (SSA success path).
-    fn gen_from(
-        &mut self,
-        stmts: &[(&Pat, &Expr)],
-        tail: &Expr,
-        idx: usize,
-        recv_order: &HashMap<usize, i32>,
-        bound_before: &[Vec<String>],
-    ) -> Term {
-        if idx == stmts.len() {
-            return self.gen_tail(tail);
+    /// `store x = <val>` as an anonymous binding.
+    fn store(&mut self, off: i32, val: Atom) -> (String, Rhs) {
+        (
+            self.fresh(),
+            Rhs::Op(Op::StoreRaw(Self::state_atom(), off, val)),
+        )
+    }
+
+    /// The blocked branch of a suspension `idx`: save its live locals, set the
+    /// resume tag to `idx+1`, and return 0 (not done).
+    fn block(&mut self, idx: i32) -> Term {
+        let live = self.susp_live[idx as usize].clone();
+        let mut binds = Vec::new();
+        for v in &live {
+            let s = self.lay.slot[v];
+            binds.push(self.store(s, Atom::Var(v.clone())));
         }
-        let (pat, scrut) = stmts[idx];
+        let r = self.store(8, Atom::Int((idx + 1) as i64));
+        binds.push(r);
+        wrap(binds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))))
+    }
+
+    /// Lowers one session continuation expression (a `Case` chain or a tail).
+    fn gen_cont(&mut self, e: &Expr) -> Term {
+        let Expr::Case(scrut, arms, span) = e else {
+            return self.gen_tail(e);
+        };
         let (head, args) = sess_spine(scrut);
-        let mut pv = Vec::new();
-        pat_vars(pat, &mut pv);
         match head {
-            Some("recv") => {
-                let k = recv_order[&idx];
-                let mut binds = Vec::new();
-                let ep = self.val(args[0], &mut binds);
-                let pend = self.fresh();
-                binds.push((
-                    pend.clone(),
-                    Self::rt(
-                        "axion_sess_pending",
-                        vec![Self::sched_atom(), ep.clone()],
-                        true,
-                    ),
-                ));
-                // success: rv = recv; bind (value, endpoint); continue
-                let rv = self.fresh();
-                let mut cbinds = vec![(
-                    rv.clone(),
-                    Self::rt(
-                        "axion_sess_recv",
-                        vec![Self::sched_atom(), ep.clone()],
-                        true,
-                    ),
-                )];
-                if let Some(v0) = pv.first() {
-                    cbinds.push((v0.to_string(), Rhs::Op(Op::Atom(Atom::Var(rv)))));
-                }
-                if let Some(v1) = pv.get(1) {
-                    cbinds.push((v1.to_string(), Rhs::Op(Op::Atom(ep))));
-                }
-                let cont = wrap(
-                    cbinds,
-                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
-                );
-                // blocked: save live locals, set resume = k+1, return 0
-                let mut bbinds = Vec::new();
-                for v in &bound_before[idx] {
-                    let s = self.lay.slot[v];
-                    bbinds.push((
-                        self.fresh(),
-                        Rhs::Op(Op::StoreRaw(Self::state_atom(), s, Atom::Var(v.clone()))),
-                    ));
-                }
-                bbinds.push((
-                    self.fresh(),
-                    Rhs::Op(Op::StoreRaw(
-                        Self::state_atom(),
-                        8,
-                        Atom::Int((k + 1) as i64),
-                    )),
-                ));
-                let blocked = wrap(bbinds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
-                wrap(
-                    binds,
-                    Term::Ret(Rhs::If(Atom::Var(pend), Box::new(cont), Box::new(blocked))),
-                )
-            }
-            Some("spawn") => {
-                let target = sess_spine(args[0]).0.expect("spawn target").to_string();
-                let tl = &self.all[&target];
-                let mut binds = Vec::new();
-                let a = self.fresh();
-                binds.push((
-                    a.clone(),
-                    Self::rt("axion_sess_channel", vec![Self::sched_atom()], true),
-                ));
-                let cs = self.fresh();
-                binds.push((
-                    cs.clone(),
-                    Self::rt(
-                        "axion_sess_alloc",
-                        vec![Self::sched_atom(), Atom::Int(tl.size as i64)],
-                        true,
-                    ),
-                ));
-                // the child's first parameter is the peer endpoint (a + 1)
-                let ap1 = self.fresh();
-                binds.push((
-                    ap1.clone(),
-                    Rhs::Op(Op::Prim("+".into(), Atom::Var(a.clone()), Atom::Int(1))),
-                ));
-                if let Some(&pslot) = tl.param_slots.first() {
-                    binds.push((
-                        self.fresh(),
-                        Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), pslot, Atom::Var(ap1))),
-                    ));
-                }
-                binds.push((
-                    self.fresh(),
-                    Self::rt(
-                        "axion_sess_spawn",
-                        vec![
-                            Self::sched_atom(),
-                            {
-                                // FuncAddr is not an atom → materialize via a let below
-                                Atom::Var(String::new())
-                            },
-                            Atom::Var(cs.clone()),
-                        ],
-                        false,
-                    ),
-                ));
-                // materialize the step address in a let, then patch the spawn args
-                let fa = self.fresh();
-                // insert FuncAddr binding just before the spawn call
-                let spawn_bind = binds.pop().unwrap();
-                binds.push((fa.clone(), Rhs::Op(Op::FuncAddr(tl.step.clone()))));
-                let Rhs::Op(Op::RtCall {
-                    func,
-                    mut args,
-                    returns,
-                }) = spawn_bind.1
-                else {
-                    unreachable!()
-                };
-                args[1] = Atom::Var(fa);
-                binds.push((
-                    spawn_bind.0,
-                    Rhs::Op(Op::RtCall {
-                        func,
-                        args,
-                        returns,
-                    }),
-                ));
-                if let Some(c) = pv.first() {
-                    binds.push((c.to_string(), Rhs::Op(Op::Atom(Atom::Var(a)))));
-                }
-                wrap(
-                    binds,
-                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
-                )
-            }
-            Some("send") => {
-                let mut binds = Vec::new();
-                let ep = self.val(args[0], &mut binds);
-                let v = self.val(args[1], &mut binds);
-                binds.push((
-                    self.fresh(),
-                    Self::rt(
-                        "axion_sess_send",
-                        vec![Self::sched_atom(), ep.clone(), v],
-                        false,
-                    ),
-                ));
-                if let Some(c) = pv.first() {
-                    binds.push((c.to_string(), Rhs::Op(Op::Atom(ep))));
-                }
-                wrap(
-                    binds,
-                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
-                )
-            }
-            Some("close") => {
-                let mut binds = Vec::new();
-                if let Some(x) = pv.first() {
-                    binds.push((x.to_string(), Rhs::Op(Op::Atom(Atom::Int(0)))));
-                }
-                wrap(
-                    binds,
-                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
-                )
-            }
-            _ => Term::Ret(Rhs::Op(Op::Unsupported(format!(
-                "session op not in the native subset yet: {:?}",
-                head
-            )))),
+            Some("recv") => self.gen_recv(&arms[0].0, &arms[0].1, args[0], *span),
+            Some("offer") => self.gen_offer(args[0], arms, *span),
+            Some("spawn") => self.gen_spawn(&arms[0].0, args[0], &arms[0].1),
+            Some("send") => self.gen_send(&arms[0].0, &args, &arms[0].1),
+            Some("select") => self.gen_select(&arms[0].0, &args, &arms[0].1),
+            Some("cancel") => self.gen_cancel(args[0], &arms[0].1),
+            Some("close") => self.gen_close(&arms[0].0, &arms[0].1),
+            _ => self.gen_tail(e),
         }
     }
 
-    /// Builds the full step function body (resume dispatch + regions).
-    fn build_step(&mut self, pats: &[Pat], body: &Expr) -> Term {
-        let (stmts, tail) = flatten_sess(body);
-        let recv_positions: Vec<usize> = stmts
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, s))| is_suspension(sess_spine(s).0))
-            .map(|(i, _)| i)
-            .collect();
-        let recv_order: HashMap<usize, i32> = recv_positions
-            .iter()
-            .enumerate()
-            .map(|(k, &p)| (p, k as i32))
-            .collect();
-        // vars in scope at each statement index (params + earlier pattern vars)
-        let mut bound_before: Vec<Vec<String>> = Vec::with_capacity(stmts.len() + 1);
-        let mut acc: Vec<String> = Vec::new();
-        for p in pats {
-            let mut vs = Vec::new();
-            pat_vars(p, &mut vs);
-            acc.extend(vs);
+    /// `(value, endpoint) <- recv ep; rest` — the only value suspension.
+    fn gen_recv(&mut self, pat: &Pat, rest: &Expr, ep_expr: &Expr, span: Span) -> Term {
+        let idx = self.susp[&span];
+        let mut binds = Vec::new();
+        let ep = self.val(ep_expr, &mut binds);
+        let pend = self.fresh();
+        binds.push((
+            pend.clone(),
+            Self::rt(
+                "axion_sess_pending",
+                vec![Self::sched_atom(), ep.clone()],
+                true,
+            ),
+        ));
+        let rv = self.fresh();
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        let mut cbinds = vec![(
+            rv.clone(),
+            Self::rt(
+                "axion_sess_recv",
+                vec![Self::sched_atom(), ep.clone()],
+                true,
+            ),
+        )];
+        if let Some(v0) = pv.first() {
+            cbinds.push((v0.clone(), Rhs::Op(Op::Atom(Atom::Var(rv)))));
         }
-        for idx in 0..=stmts.len() {
-            bound_before.push(acc.clone());
-            if idx < stmts.len() {
-                let mut vs = Vec::new();
-                pat_vars(stmts[idx].0, &mut vs);
-                acc.extend(vs);
-            }
+        if let Some(v1) = pv.get(1) {
+            cbinds.push((v1.clone(), Rhs::Op(Op::Atom(ep))));
         }
-        let nrecv = recv_positions.len();
-        // dispatch: resume==0 → fresh entry; resume==k (1..=nrecv) → re-enter recv#(k-1)
-        let mut chain = self.region(
-            &stmts,
-            tail,
-            nrecv,
-            &recv_positions,
-            &recv_order,
-            &bound_before,
+        let cont = wrap(cbinds, self.gen_cont(rest));
+        let blocked = self.block(idx);
+        wrap(
+            binds,
+            Term::Ret(Rhs::If(Atom::Var(pend), Box::new(cont), Box::new(blocked))),
+        )
+    }
+
+    /// `case offer ep of { L1 d -> B1 ; … }` — a label suspension + dispatch.
+    fn gen_offer(&mut self, ep_expr: &Expr, arms: &[(Pat, Expr)], span: Span) -> Term {
+        let idx = self.susp[&span];
+        let mut binds = Vec::new();
+        let ep = self.val(ep_expr, &mut binds);
+        let pend = self.fresh();
+        binds.push((
+            pend.clone(),
+            Self::rt(
+                "axion_sess_pending",
+                vec![Self::sched_atom(), ep.clone()],
+                true,
+            ),
+        ));
+        let label = self.fresh();
+        let recv_bind = (
+            label.clone(),
+            Self::rt(
+                "axion_sess_recv",
+                vec![Self::sched_atom(), ep.clone()],
+                true,
+            ),
         );
-        for rv in (0..nrecv).rev() {
-            let then_t = self.region(
-                &stmts,
-                tail,
-                rv,
-                &recv_positions,
-                &recv_order,
-                &bound_before,
+        // one term per arm (binding the branch endpoint = ep), then a tag dispatch
+        let mut arm_terms: Vec<(Option<i64>, Term)> = Vec::new();
+        for (pat, body) in arms {
+            let (tag, mut inner) = match pat {
+                Pat::Con(lname, ps, _) => (self.tags.get(lname).copied(), ps.iter().collect()),
+                _ => (None, Vec::<&Pat>::new()),
+            };
+            let mut ab = Vec::new();
+            if let Some(p0) = inner.pop() {
+                let mut iv = Vec::new();
+                pat_vars(p0, &mut iv);
+                if let Some(d) = iv.first() {
+                    ab.push((d.clone(), Rhs::Op(Op::Atom(ep.clone()))));
+                }
+            }
+            let t = wrap(ab, self.gen_cont(body));
+            arm_terms.push((tag, t));
+        }
+        // fold into nested ifs; the last arm is the (exhaustive) else
+        let mut dispatch = arm_terms
+            .pop()
+            .map(|(_, t)| t)
+            .unwrap_or_else(|| Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
+        for (tag, t) in arm_terms.into_iter().rev() {
+            let eq = self.fresh();
+            dispatch = Term::Let(
+                eq.clone(),
+                Rhs::Op(Op::Prim(
+                    "==".into(),
+                    Atom::Var(label.clone()),
+                    Atom::Int(tag.unwrap_or(0)),
+                )),
+                Box::new(Term::Ret(Rhs::If(
+                    Atom::Var(eq),
+                    Box::new(t),
+                    Box::new(dispatch),
+                ))),
             );
+        }
+        let success = wrap(vec![recv_bind], dispatch);
+        let blocked = self.block(idx);
+        wrap(
+            binds,
+            Term::Ret(Rhs::If(
+                Atom::Var(pend),
+                Box::new(success),
+                Box::new(blocked),
+            )),
+        )
+    }
+
+    /// `c <- spawn f; rest` — fork a child task on a fresh channel.
+    fn gen_spawn(&mut self, pat: &Pat, target_expr: &Expr, rest: &Expr) -> Term {
+        let target = sess_spine(target_expr).0.expect("spawn target").to_string();
+        let tl = &self.all[&target];
+        let (size, pslot, step) = (tl.size, tl.param_slots.first().copied(), tl.step.clone());
+        let mut binds = Vec::new();
+        let a = self.fresh();
+        binds.push((
+            a.clone(),
+            Self::rt("axion_sess_channel", vec![Self::sched_atom()], true),
+        ));
+        let cs = self.fresh();
+        binds.push((
+            cs.clone(),
+            Self::rt(
+                "axion_sess_alloc",
+                vec![Self::sched_atom(), Atom::Int(size as i64)],
+                true,
+            ),
+        ));
+        // the child's first parameter is the peer endpoint (a + 1)
+        let ap1 = self.fresh();
+        binds.push((
+            ap1.clone(),
+            Rhs::Op(Op::Prim("+".into(), Atom::Var(a.clone()), Atom::Int(1))),
+        ));
+        if let Some(pslot) = pslot {
+            binds.push((
+                self.fresh(),
+                Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), pslot, Atom::Var(ap1))),
+            ));
+        }
+        let fa = self.fresh();
+        binds.push((fa.clone(), Rhs::Op(Op::FuncAddr(step))));
+        binds.push((
+            self.fresh(),
+            Self::rt(
+                "axion_sess_spawn",
+                vec![Self::sched_atom(), Atom::Var(fa), Atom::Var(cs)],
+                false,
+            ),
+        ));
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        if let Some(c) = pv.first() {
+            binds.push((c.clone(), Rhs::Op(Op::Atom(Atom::Var(a)))));
+        }
+        wrap(binds, self.gen_cont(rest))
+    }
+
+    /// `c <- send ep v; rest`.
+    fn gen_send(&mut self, pat: &Pat, args: &[&Expr], rest: &Expr) -> Term {
+        let mut binds = Vec::new();
+        let ep = self.val(args[0], &mut binds);
+        let v = self.val(args[1], &mut binds);
+        binds.push((
+            self.fresh(),
+            Self::rt(
+                "axion_sess_send",
+                vec![Self::sched_atom(), ep.clone(), v],
+                false,
+            ),
+        ));
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        if let Some(c) = pv.first() {
+            binds.push((c.clone(), Rhs::Op(Op::Atom(ep))));
+        }
+        wrap(binds, self.gen_cont(rest))
+    }
+
+    /// `c <- select Label ep; rest` — send the label's tag (internal choice, ⊕).
+    fn gen_select(&mut self, pat: &Pat, args: &[&Expr], rest: &Expr) -> Term {
+        let label_tag = match args[0] {
+            Expr::Con(n, _) => self.tags.get(n).copied().unwrap_or(0),
+            _ => 0,
+        };
+        let mut binds = Vec::new();
+        let ep = self.val(args[1], &mut binds);
+        binds.push((
+            self.fresh(),
+            Self::rt(
+                "axion_sess_send",
+                vec![Self::sched_atom(), ep.clone(), Atom::Int(label_tag)],
+                false,
+            ),
+        ));
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        if let Some(c) = pv.first() {
+            binds.push((c.clone(), Rhs::Op(Op::Atom(ep))));
+        }
+        wrap(binds, self.gen_cont(rest))
+    }
+
+    /// `cancel ep; rest` — send the peer the `Closed` label (§7/T5), then continue.
+    fn gen_cancel(&mut self, ep_expr: &Expr, rest: &Expr) -> Term {
+        let closed = self.tags.get("Closed").copied().unwrap_or(0);
+        let mut binds = Vec::new();
+        let ep = self.val(ep_expr, &mut binds);
+        binds.push((
+            self.fresh(),
+            Self::rt(
+                "axion_sess_send",
+                vec![Self::sched_atom(), ep, Atom::Int(closed)],
+                false,
+            ),
+        ));
+        wrap(binds, self.gen_cont(rest))
+    }
+
+    /// `_ <- close ep; rest` — a no-op in the cooperative model (consumes ep).
+    fn gen_close(&mut self, pat: &Pat, rest: &Expr) -> Term {
+        let mut binds = Vec::new();
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        if let Some(x) = pv.first() {
+            binds.push((x.clone(), Rhs::Op(Op::Atom(Atom::Int(0)))));
+        }
+        wrap(binds, self.gen_cont(rest))
+    }
+
+    /// Builds the full step function body: resume dispatch → regions, with the
+    /// task's parameters loaded from the state block up front.
+    fn build_step(&mut self, pats: &[Pat], body: &Expr) -> Term {
+        // collect suspensions (recv/offer) in DFS order, with their live-in vars
+        let mut scope: Vec<String> = Vec::new();
+        for p in pats {
+            pat_vars(p, &mut scope);
+        }
+        let mut susps: Vec<(&Expr, Vec<String>)> = Vec::new();
+        collect_suspensions(body, &mut scope, &mut susps);
+        self.susp = susps
+            .iter()
+            .enumerate()
+            .map(|(i, (e, _))| (case_span(e), i as i32))
+            .collect();
+        self.susp_live = susps.iter().map(|(_, l)| l.clone()).collect();
+
+        let nsusp = susps.len();
+        // resume==0 → fresh entry; resume==k → re-enter suspension #(k-1)
+        let mut chain = self.region(nsusp, &susps, body);
+        for rv in (0..nsusp).rev() {
+            let then_t = self.region(rv, &susps, body);
             let eq = self.fresh();
             chain = Term::Let(
                 eq.clone(),
@@ -1629,48 +1720,38 @@ impl SessGen<'_> {
             Rhs::Op(Op::LoadRaw(Self::state_atom(), 8)),
             Box::new(chain),
         );
-        // load the task's parameters from the state block (the spawner stored them
-        // there) so the fresh-entry path can use them like any local.
+        // load the task's parameters from the state block (the spawner stored them)
         let mut param_loads = Vec::new();
+        let mut params = Vec::new();
         for p in pats {
-            let mut vs = Vec::new();
-            pat_vars(p, &mut vs);
-            for v in vs {
-                param_loads.push((
-                    v.clone(),
-                    Rhs::Op(Op::LoadRaw(Self::state_atom(), self.lay.slot[&v])),
-                ));
-            }
+            pat_vars(p, &mut params);
+        }
+        for v in params {
+            param_loads.push((
+                v.clone(),
+                Rhs::Op(Op::LoadRaw(Self::state_atom(), self.lay.slot[&v])),
+            ));
         }
         wrap(param_loads, dispatch)
     }
 
-    /// The region entered for a given resume value: `0` = fresh start at stmt 0;
-    /// `k>=1` = re-enter recv#(k-1), loading its live-in locals from the state.
-    fn region(
-        &mut self,
-        stmts: &[(&Pat, &Expr)],
-        tail: &Expr,
-        rv: usize,
-        recv_positions: &[usize],
-        recv_order: &HashMap<usize, i32>,
-        bound_before: &[Vec<String>],
-    ) -> Term {
+    /// The region for a resume value: `0` = fresh entry at the body root;
+    /// `k>=1` = re-enter suspension #(k-1), loading its live-in locals.
+    fn region(&mut self, rv: usize, susps: &[(&Expr, Vec<String>)], body: &Expr) -> Term {
         if rv == 0 {
-            return self.gen_from(stmts, tail, 0, recv_order, bound_before);
+            return self.gen_cont(body);
         }
-        let p = recv_positions[rv - 1];
+        let (case_e, live) = &susps[rv - 1];
+        let case_e = *case_e;
+        let live = live.clone();
         let mut binds = Vec::new();
-        for v in &bound_before[p] {
+        for v in &live {
             binds.push((
                 v.clone(),
                 Rhs::Op(Op::LoadRaw(Self::state_atom(), self.lay.slot[v])),
             ));
         }
-        wrap(
-            binds,
-            self.gen_from(stmts, tail, p, recv_order, bound_before),
-        )
+        wrap(binds, self.gen_cont(case_e))
     }
 }
 
@@ -1689,10 +1770,18 @@ fn session_fns(module: &ast::Module) -> Vec<CoreFn> {
     let Some(bound_body) = main.and_then(clause_body).and_then(as_bound) else {
         return Vec::new();
     };
+    // choice labels (data constructors) → tag = position in their `data` decl
+    let mut tags: HashMap<String, i64> = HashMap::new();
+    for d in &module.datas {
+        for (i, c) in d.cons.iter().enumerate() {
+            tags.insert(c.name.clone(), i as i64);
+        }
+    }
     // collect spawn targets transitively
     let mut workers: Vec<&ast::Func> = Vec::new();
     let mut seen = HashSet::new();
-    let mut worklist = spawn_targets(bound_body);
+    let mut worklist = Vec::new();
+    spawn_targets(bound_body, &mut worklist);
     while let Some(name) = worklist.pop() {
         if !seen.insert(name.clone()) {
             continue;
@@ -1700,7 +1789,7 @@ fn session_fns(module: &ast::Module) -> Vec<CoreFn> {
         if let Some(wf) = module.funcs.iter().find(|f| f.name == name) {
             workers.push(wf);
             if let Some(b) = clause_body(wf) {
-                worklist.extend(spawn_targets(b));
+                spawn_targets(b, &mut worklist);
             }
         }
     }
@@ -1725,6 +1814,9 @@ fn session_fns(module: &ast::Module) -> Vec<CoreFn> {
         let mut g = SessGen {
             lay,
             all: layouts,
+            tags: &tags,
+            susp: HashMap::new(),
+            susp_live: Vec::new(),
             tmp: 0,
         };
         CoreFn {
