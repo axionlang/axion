@@ -1,16 +1,16 @@
-//! Property tests de **preservação** e **progresso** (solidez de tipos).
+//! Property tests for **preservation** and **progress** (type soundness).
 //!
-//! - *Progresso*: um termo bem-tipado não encrava — avalia para um valor, nunca
-//!   um erro de "stuck" (aplicar um não-função, operador em tipos errados, …).
-//! - *Preservação*: a avaliação preserva o tipo — o valor final tem o tipo
-//!   estático do termo.
+//! - *Progress*: a well-typed term does not get stuck — it evaluates to a value,
+//!   never a "stuck" error (applying a non-function, operator on wrong types, …).
+//! - *Preservation*: evaluation preserves the type — the final value has the
+//!   static type of the term.
 //!
-//! Estratégia: um gerador de termos **bem-tipados por construção** (Int/Bool:
-//! literais, aritmética, comparações, `if`, `let` + variáveis). Para cada termo:
-//!   1. o typechecker (nomes + linearidade + inferência HM) aceita-o — o que
-//!      ancora a noção de "bem-tipado" do gerador à do `axionc`;
-//!   2. a avaliação não encrava (progresso);
-//!   3. o valor tem o tipo esperado (preservação).
+//! Strategy: a generator of terms **well-typed by construction** (Int/Bool:
+//! literals, arithmetic, comparisons, `if`, `let` + variables). For each term:
+//!   1. the typechecker (names + linearity + HM inference) accepts it — which
+//!      anchors the generator's notion of "well-typed" to `axionc`'s;
+//!   2. evaluation does not get stuck (progress);
+//!   3. the value has the expected type (preservation).
 
 use crate::ast::*;
 use crate::check;
@@ -18,7 +18,7 @@ use crate::diag::Diagnostics;
 use crate::infer;
 use crate::interp::{self, RtType};
 
-/// PRNG determinístico (xorshift64*) — sem dependências externas.
+/// Deterministic PRNG (xorshift64*) — no external dependencies.
 struct Rng(u64);
 
 impl Rng {
@@ -44,9 +44,9 @@ enum GTy {
 
 const SP: Span = (0, 0);
 
-/// Gera uma expressão bem-tipada do tipo pedido, com variáveis em âmbito.
+/// Generates a well-typed expression of the requested type, with variables in scope.
 fn gen(rng: &mut Rng, ty: GTy, depth: u32, vars: &[(String, GTy)]) -> Expr {
-    // hipóteses de variável do tipo certo, em âmbito
+    // candidate variables of the right type, in scope
     let usable: Vec<&String> = vars
         .iter()
         .filter(|(_, t)| *t == ty)
@@ -54,7 +54,7 @@ fn gen(rng: &mut Rng, ty: GTy, depth: u32, vars: &[(String, GTy)]) -> Expr {
         .collect();
 
     if depth == 0 {
-        // folha: literal, ou uma variável em âmbito (metade das vezes)
+        // leaf: a literal, or a variable in scope (half the time)
         if !usable.is_empty() && rng.below(2) == 0 {
             let n = usable[rng.below(usable.len() as u32) as usize].clone();
             return Expr::Var(n, SP);
@@ -115,7 +115,7 @@ fn leaf(rng: &mut Rng, ty: GTy) -> Expr {
     }
 }
 
-/// `let v = <bind> in <corpo>`, com `v` (de tipo `bind_ty`) em âmbito no corpo.
+/// `let v = <bind> in <body>`, with `v` (of type `bind_ty`) in scope in the body.
 fn gen_let(rng: &mut Rng, result_ty: GTy, depth: u32, vars: &[(String, GTy)]) -> Expr {
     let bind_ty = if rng.below(2) == 0 {
         GTy::Int
@@ -156,7 +156,7 @@ fn expected_rt(ty: GTy) -> RtType {
     }
 }
 
-/// Embrulha uma expressão numa definição de topo `test :: T`.
+/// Wraps an expression in a top-level definition `test :: T`.
 fn wrap(ty: GTy, e: Expr) -> Module {
     Module {
         funcs: vec![Func {
@@ -184,26 +184,26 @@ fn run_props(ty: GTy, seed: u64, n: u32) {
         let e = gen(&mut rng, ty, 4, &[]);
         let module = wrap(ty, e.clone());
 
-        // (1) o typechecker do axionc aceita o termo gerado
+        // (1) axionc's typechecker accepts the generated term
         let mut diags = Diagnostics::new();
         check::check(&module, &mut diags);
         infer::infer(&module, &mut diags);
         assert!(
             !diags.has_errors(),
-            "iter {i}: o gerador produziu um termo que o typechecker REJEITA\n  \
-             termo: {e:?}\n  diagnósticos: {:?}",
+            "iter {i}: the generator produced a term the typechecker REJECTS\n  \
+             term: {e:?}\n  diagnostics: {:?}",
             diags.items.iter().map(|d| &d.code).collect::<Vec<_>>()
         );
 
-        // (2) progresso + (3) preservação
+        // (2) progress + (3) preservation
         match interp::eval_binding(&module, "test") {
             Ok(rt) => assert_eq!(
                 rt,
                 expected_rt(ty),
-                "iter {i}: PRESERVAÇÃO falhou — valor de tipo errado\n  termo: {e:?}"
+                "iter {i}: PRESERVATION failed — value of the wrong type\n  term: {e:?}"
             ),
             Err(err) => {
-                panic!("iter {i}: PROGRESSO falhou — a avaliação encravou: {err}\n  termo: {e:?}")
+                panic!("iter {i}: PROGRESS failed — evaluation got stuck: {err}\n  term: {e:?}")
             }
         }
     }

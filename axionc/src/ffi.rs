@@ -1,9 +1,9 @@
-//! Carregamento de bibliotecas partilhadas para o FFI (§18).
+//! Loading shared libraries for the FFI (§18).
 //!
-//! `foreign "lib.so" nome :: …` carrega `lib.so` com `RTLD_NOW | RTLD_GLOBAL`,
-//! tornando os seus símbolos visíveis à resolução por `dlsym(RTLD_DEFAULT)` que
-//! os três executores usam (interp, `--dev`/JIT, `--release`/clang). Sem string
-//! → só se resolvem símbolos **já** carregados (libc + runtime do axionc).
+//! `foreign "lib.so" name :: …` loads `lib.so` with `RTLD_NOW | RTLD_GLOBAL`,
+//! making its symbols visible to the `dlsym(RTLD_DEFAULT)` resolution the
+//! three executors use (interp, `--dev`/JIT, `--release`/clang). Without a
+//! string → only symbols **already** loaded resolve (libc + axionc runtime).
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 
@@ -15,10 +15,10 @@ extern "C" {
     fn dlerror() -> *const c_char;
 }
 
-/// Carrega cada biblioteca no espaço **global** de símbolos. `RTLD_GLOBAL` fá-los
-/// aparecer nas resoluções `dlsym(RTLD_DEFAULT)` seguintes (interp e `--dev`);
-/// idempotente por caminho (o `dlopen` reaproveita o handle). Os handles ficam
-/// abertos toda a execução (sem `dlclose`). Falha com a mensagem de `dlerror`.
+/// Loads each library into the **global** symbol space. `RTLD_GLOBAL` makes them
+/// appear in the subsequent `dlsym(RTLD_DEFAULT)` resolutions (interp and `--dev`);
+/// idempotent per path (`dlopen` reuses the handle). The handles stay
+/// open for the whole run (no `dlclose`). Fails with the `dlerror` message.
 pub fn load_libs(libs: &[String]) -> Result<(), String> {
     for lib in libs {
         let c = CString::new(lib.as_str())

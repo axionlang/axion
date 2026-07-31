@@ -1,4 +1,4 @@
-//! AST do subconjunto L0/L1 da Axion (ver `docs/grammar.md`).
+//! AST of Axion's L0/L1 subset (see `docs/grammar.md`).
 
 pub type Span = (usize, usize); // (start, end) em offsets de bytes
 
@@ -6,7 +6,7 @@ pub type Span = (usize, usize); // (start, end) em offsets de bytes
 pub enum Mult {
     Many, // seta normal
     One,  // %1 — posse linear
-    Half, // %0.5 — permissão fraccionária (parseável; não imposta na Fase 1)
+    Half, // %0.5 — fractional permission (parseable; not enforced in Phase 1)
 }
 
 #[derive(Debug, Clone)]
@@ -24,7 +24,7 @@ pub enum Type {
 }
 
 impl Type {
-    /// Multiplicidades dos parâmetros, esquerda→direita (a partir das setas de topo).
+    /// Parameter multiplicities, left→right (from the top-level arrows).
     pub fn param_mults(&self) -> Vec<Mult> {
         let mut out = Vec::new();
         let mut t = self;
@@ -35,7 +35,7 @@ impl Type {
         out
     }
 
-    /// Tipos dos parâmetros, esquerda→direita (o `from` de cada seta de topo).
+    /// Parameter types, left→right (the `from` of each top-level arrow).
     pub fn param_types(&self) -> Vec<&Type> {
         let mut out = Vec::new();
         let mut t = self;
@@ -46,7 +46,7 @@ impl Type {
         out
     }
 
-    /// Nome do construtor de topo do tipo (ex.: `Buffer U8` → "Buffer").
+    /// Head constructor name of the type (e.g. `Buffer U8` → "Buffer").
     pub fn head_con(&self) -> Option<&str> {
         match self {
             Type::Con(n) => Some(n),
@@ -77,11 +77,11 @@ pub enum Expr {
     Let(Vec<Func>, Box<Expr>, Span),
     Case(Box<Expr>, Vec<(Pat, Expr)>, Span),
     Tuple(Vec<Expr>, Span),
-    /// Construção de registo: `Con { campo = expr, ... }`.
+    /// Record construction: `Con { field = expr, ... }`.
     RecordCon(String, Vec<(String, Expr)>, Span),
-    /// Actualização de registo: `base { campo = expr, ... }` (Listagem 2.1).
+    /// Record update: `base { field = expr, ... }` (Listing 2.1).
     RecordUpd(Box<Expr>, Vec<(String, Expr)>, Span),
-    /// Abstracção lambda: `\p1 p2 -> corpo` (usada por `withSubArena`, §3).
+    /// Lambda abstraction: `\p1 p2 -> body` (used by `withSubArena`, §3).
     Lam(Vec<Pat>, Box<Expr>, Span),
 }
 
@@ -125,14 +125,14 @@ pub struct Func {
     pub sig: Option<Type>,
     pub clauses: Vec<Clause>,
     pub span: Span,
-    /// Contexto de classe da assinatura: `(classe, var)` de cada `C a =>`
-    /// (fatia 2b). Vazio quando não há constraints. Usado para descarregar as
-    /// obrigações de método (um uso polimórfico de método tem de ser coberto por
-    /// um constraint declarado).
+    /// Class context of the signature: `(class, var)` of each `C a =>`
+    /// Empty when there are no constraints. Used to discharge the
+    /// method obligations (a polymorphic method use must be covered by
+    /// a declared constraint).
     pub constraints: Vec<(String, String)>,
 }
 
-/// Um campo de registo: nome, tipo e multiplicidade (`%1` marca campo linear).
+/// A record field: name, type and multiplicity (`%1` marks a linear field).
 #[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
@@ -140,7 +140,7 @@ pub struct Field {
     pub mult: Mult,
 }
 
-/// Um construtor de dados, com campos nomeados (registo) ou posicionais.
+/// A data constructor, with named (record) or positional fields.
 #[derive(Debug, Clone)]
 pub struct ConDecl {
     pub name: String,
@@ -157,23 +157,23 @@ impl ConDecl {
 #[derive(Debug, Clone)]
 pub struct DataDecl {
     pub name: String,
-    pub params: Vec<String>, // parâmetros de tipo (ex.: `a` em `data List a`)
+    pub params: Vec<String>, // type parameters (e.g. `a` in `data List a`)
     pub cons: Vec<ConDecl>,
     pub span: Span,
 }
 
-/// `class C a where <assinaturas de método>` (§ typeclasses). Uma classe declara
-/// nomes de método sobrecarregados; cada `instance` fornece as implementações.
+/// `class C a where <method signatures>` (§ typeclasses). A class declares
+/// overloaded method names; each `instance` provides the implementations.
 #[derive(Debug, Clone)]
 pub struct ClassDecl {
     pub name: String,                 // ex.: "Eq"
-    pub tyvar: String,                // a variável de tipo da classe (ex.: "a")
-    pub methods: Vec<(String, Type)>, // assinatura de cada método
+    pub tyvar: String,                // the class type variable (e.g. "a")
+    pub methods: Vec<(String, Type)>, // signature of each method
     pub span: Span,
 }
 
-/// `instance C T where <cláusulas>` — as implementações dos métodos da classe `C`
-/// para o tipo cuja cabeça é `ty_head` (ex.: "Int", "Maybe").
+/// `instance C T where <clauses>` — the implementations of class `C`'s methods
+/// for the type whose head is `ty_head` (e.g. "Int", "Maybe").
 #[derive(Debug, Clone)]
 pub struct InstanceDecl {
     pub class_name: String,
@@ -182,9 +182,9 @@ pub struct InstanceDecl {
     pub span: Span,
 }
 
-/// Nome mangled da implementação de um método para um tipo concreto: `eq$Int`.
-/// Fonte única de verdade — usada tanto na baixada (`lower_classes`) como no
-/// despacho dinâmico do interpretador.
+/// Mangled name of a method implementation for a concrete type: `eq$Int`.
+/// Single source of truth — used both in lowering (`lower_classes`) and in
+/// the interpreter's dynamic dispatch.
 pub fn method_impl_name(method: &str, ty_head: &str) -> String {
     format!("{method}${ty_head}")
 }
@@ -199,8 +199,8 @@ pub struct Module {
 }
 
 impl Module {
-    /// Caminhos de bibliotecas `.so` a carregar para o FFI (§18), sem repetições
-    /// e por ordem de primeira menção.
+    /// Paths of `.so` libraries to load for the FFI (§18), without repetitions
+    /// and in order of first mention.
     pub fn foreign_libs(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for f in &self.foreigns {
@@ -214,9 +214,9 @@ impl Module {
     }
 }
 
-/// Uma importação FFI: `foreign ["lib.so"] nome :: Int -> … -> Int` chama a
-/// função C `nome` (ABI de Int/i64), resolvida por `dlsym` (§18). Com o caminho
-/// de biblioteca opcional, essa `.so` é carregada antes de resolver os símbolos.
+/// An FFI import: `foreign ["lib.so"] name :: Int -> … -> Int` calls the
+/// C function `name` (Int/i64 ABI), resolved by `dlsym` (§18). With the optional
+/// library path, that `.so` is loaded before resolving the symbols.
 #[derive(Debug, Clone)]
 pub struct Foreign {
     pub name: String,

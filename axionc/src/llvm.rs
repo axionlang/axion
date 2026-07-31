@@ -1,14 +1,14 @@
-//! Backend `--release` (§18): baixa o **mesmo Axion Core IR** (ver `core.rs`)
-//! para **LLVM IR textual** e compila com `clang -O2 -flto`, ligando um pequeno
-//! **runtime C** (`axion_rt.c`) — o `-flto` deixa o LLVM inlinar as operações
-//! quentes (bump-alloc, alloc) no chamador. Ao contrário do `inkwell`/`llvm-sys`,
-//! não acrescenta dependências de build ao `axionc` (compila com `cargo` puro); o
-//! `clang` é só dependência de runtime (`AXION_CLANG`, ou no PATH — p.ex. via nix).
+//! `--release` backend (§18): lowers the **same Axion Core IR** (see `core.rs`)
+//! to **textual LLVM IR** and compiles with `clang -O2 -flto`, linking a small
+//! **C runtime** (`axion_rt.c`) — `-flto` lets LLVM inline the hot
+//! operations (bump-alloc, alloc) into the caller. Unlike `inkwell`/`llvm-sys`,
+//! it adds no build dependencies to `axionc` (builds with pure `cargo`);
+//! `clang` is only a runtime dependency (`AXION_CLANG`, or on PATH — e.g. via nix).
 //!
-//! Cobre o mesmo subconjunto que o `--dev`/Cranelift: núcleo Int, `if`, chamadas
-//! (recursão), `let`, **registos/tuplos** na heap, **strings/IO**, **`case`**,
-//! **closures** (env + chamada indirecta), **arenas** (§3) e os `drop` do
-//! Auto-Drop. Todos os valores são `i64` (Int, ponteiros, tokens).
+//! Covers the same subset as `--dev`/Cranelift: Int core, `if`, calls
+//! (recursion), `let`, **records/tuples** on the heap, **strings/IO**, **`case`**,
+//! **closures** (env + indirect call), **arenas** (§3) and the Auto-Drop
+//! `drop`s. All values are `i64` (Int, pointers, tokens).
 
 use crate::ast;
 use crate::ast::Span;
@@ -16,13 +16,13 @@ use crate::core::{self, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo,
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-/// Tamanho de uma `Cell` de arena (bytes), igual ao runtime.
+/// Size of an arena `Cell` (bytes), equal to the runtime.
 const CELL_SIZE: i64 = 16;
 
-/// Runtime C, embebido e escrito ao lado do `.ll` para o `clang` compilar.
+/// C runtime, embedded and written next to the `.ll` for `clang` to compile.
 const RUNTIME_C: &str = include_str!("axion_rt.c");
 
-/// Declarações do runtime (as funções C, com ABI i64 uniforme).
+/// Runtime declarations (the C functions, with a uniform i64 ABI).
 const RT_DECLS: &str = "\
 declare void @axion_puts(i64)
 declare void @axion_put(i64)
@@ -44,7 +44,7 @@ declare i64 @axion_fold_bytes(i64, i64, i64)
 declare i32 @printf(ptr, ...)
 ";
 
-/// `true` se `main :: Int` (o driver imprime); senão `:: IO ()` (já imprimiu).
+/// `true` if `main :: Int` (the driver prints); otherwise `:: IO ()` (already printed).
 fn main_returns_int(module: &ast::Module, entry: &str) -> bool {
     module
         .funcs
@@ -55,13 +55,13 @@ fn main_returns_int(module: &ast::Module, entry: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Emite o módulo LLVM IR (texto) a partir do Core (`--emit llvm`).
+/// Emits the LLVM IR module (text) from the Core (`--emit llvm`).
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
     let fns = core::lower(module, inplace);
     let records = RecordInfo::build(module);
     let main_int = main_returns_int(module, "main");
 
-    // pré-passo: interna os literais de string
+    // pre-pass: interns the string literals
     let mut strings: HashMap<String, usize> = HashMap::new();
     for f in &fns {
         collect_strings(&f.body, &mut strings);
@@ -69,7 +69,7 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
 
     let mut out = String::from("; Axion --release (LLVM IR)\n");
     out.push_str(RT_DECLS);
-    // declarações das importações FFI (§18): `declare i64 @name(i64, …)`
+    // declarations of the FFI imports (§18): `declare i64 @name(i64, …)`
     let mut ffi: HashMap<String, usize> = HashMap::new();
     for f in &fns {
         collect_ffi(&f.body, &mut ffi);
@@ -81,7 +81,7 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
         out.push_str(&format!("declare i64 @{name}({params})\n"));
     }
     out.push_str("@.fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\"\n");
-    // globais das strings
+    // string globals
     let mut sorted: Vec<(&String, &usize)> = strings.iter().collect();
     sorted.sort_by_key(|(_, i)| **i);
     for (s, i) in sorted {
@@ -98,7 +98,7 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
         out.push('\n');
     }
 
-    // driver: chama `ax_main`; imprime o Int, ou nada se for IO ().
+    // driver: calls `ax_main`; prints the Int, or nothing if it is IO ().
     out.push_str("define i32 @main() {\nentry:\n  %r = call i64 @\"ax_main\"()\n");
     if main_int {
         out.push_str("  call i32 (ptr, ...) @printf(ptr @.fmt, i64 %r)\n");
@@ -107,7 +107,7 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
     Ok(out)
 }
 
-/// Compila o Core com `clang -O2 -flto` (+ runtime C) e corre o binário.
+/// Compiles the Core with `clang -O2 -flto` (+ C runtime) and runs the binary.
 pub fn build_and_run(
     module: &ast::Module,
     entry: &str,
@@ -136,8 +136,8 @@ pub fn build_and_run(
         .arg(&rt)
         .arg("-o")
         .arg(&exe);
-    // FFI (§18): liga as bibliotecas do utilizador (caminho directo) e grava o
-    // seu directório em rpath, para o carregador dinâmico as achar em runtime.
+    // FFI (§18): links the user's libraries (direct path) and records their
+    // directory in rpath, so the dynamic loader finds them at runtime.
     for lib in module.foreign_libs() {
         let path = std::path::Path::new(&lib);
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -163,7 +163,7 @@ pub fn build_and_run(
     }
 }
 
-// --- interning de strings ---
+// --- string interning ---
 
 fn collect_strings(t: &Term, out: &mut HashMap<String, usize>) {
     let mut atom = |a: &Atom, out: &mut HashMap<String, usize>| {
@@ -201,7 +201,7 @@ fn collect_rhs(
     }
 }
 
-/// Os átomos que aparecem num `Op` (para o interning de strings).
+/// The atoms that appear in an `Op` (for string interning).
 fn op_atoms(op: &Op) -> Vec<&Atom> {
     match op {
         Op::Atom(a)
@@ -229,7 +229,7 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
     }
 }
 
-/// Recolhe as importações FFI usadas (nome → aridade), para as declarar no IR.
+/// Collects the used FFI imports (name → arity), to declare them in the IR.
 fn collect_ffi(t: &Term, out: &mut HashMap<String, usize>) {
     fn rhs(r: &Rhs, out: &mut HashMap<String, usize>) {
         match r {
@@ -254,7 +254,7 @@ fn collect_ffi(t: &Term, out: &mut HashMap<String, usize>) {
     }
 }
 
-/// Codifica uma string para o formato `c"…"` do LLVM (bytes não seguros → `\XX`).
+/// Encodes a string to LLVM's `c"…"` format (unsafe bytes → `\XX`).
 fn encode_cstr(s: &str) -> String {
     let mut out = String::new();
     for &b in s.as_bytes() {
@@ -268,7 +268,7 @@ fn encode_cstr(s: &str) -> String {
     out
 }
 
-// --- emissão de uma função ---
+// --- emitting a function ---
 
 fn emit_fn(
     f: &CoreFn,
@@ -298,7 +298,7 @@ fn emit_fn(
         f.name,
         params.join(", ")
     );
-    // carrega as capturas de env[(i+1)*8]
+    // loads the captures from env[(i+1)*8]
     if f.is_closure {
         for (i, cap) in f.captures.iter().enumerate() {
             let v = e.load("%env", (i as i32 + 1) * 8);
@@ -309,7 +309,7 @@ fn emit_fn(
     Ok(format!("{header}{}  ret i64 {ret}\n}}\n", e.out))
 }
 
-/// Estado da emissão de uma função.
+/// State of emitting a function.
 struct Emit<'a> {
     out: String,
     ssa: u32,
@@ -342,7 +342,7 @@ impl Emit<'_> {
         self.cur_block = l.to_string();
     }
 
-    /// `load i64` de `base + off` (base é um i64-ponteiro).
+    /// `load i64` from `base + off` (base is an i64-pointer).
     fn load(&mut self, base: &str, off: i32) -> String {
         let p = self.val();
         self.ins(&format!("{p} = inttoptr i64 {base} to ptr"));
@@ -359,7 +359,7 @@ impl Emit<'_> {
         self.ins(&format!("{g} = getelementptr i8, ptr {p}, i64 {off}"));
         self.ins(&format!("store i64 {val}, ptr {g}"));
     }
-    /// Chamada a uma função de runtime (`ret` indica se devolve valor).
+    /// Call to a runtime function (`ret` indicates whether it returns a value).
     fn rt(&mut self, name: &str, ret: bool, args: &[String]) -> String {
         let a = args
             .iter()
@@ -375,19 +375,19 @@ impl Emit<'_> {
             "0".into()
         }
     }
-    /// Aloca `nslots` × 8 bytes na heap; devolve o ponteiro (i64).
+    /// Allocates `nslots` × 8 bytes on the heap; returns the pointer (i64).
     fn alloc(&mut self, nslots: usize) -> String {
         self.rt("axion_alloc", true, &[(nslots as i64 * 8).to_string()])
     }
 
-    /// Escreve o tag do construtor no offset 0, se o tipo for uma soma (>1 con).
+    /// Writes the constructor tag at offset 0, if the type is a sum (>1 con).
     fn store_tag(&mut self, con: &str, ptr: &str) {
         if let Some(tag) = self.records.tag(con) {
             self.store(ptr, 0, &tag.to_string());
         }
     }
 
-    /// Liga os sub-padrões (variáveis) de um construtor aos seus campos.
+    /// Binds the sub-patterns (variables) of a constructor to its fields.
     fn destructure_con(&mut self, con: &str, subpats: &[CPat], sval: &str) -> Result<(), String> {
         for (j, p) in subpats.iter().enumerate() {
             match p {
@@ -413,7 +413,7 @@ impl Emit<'_> {
                 .ok_or_else(|| format!("variable '{n}' not bound in the LLVM IR")),
             Atom::Str(s) => {
                 let i = self.strings.get(s).ok_or("string not interned")?;
-                // constante-expressão: o ponteiro da string como i64
+                // constant expression: the string pointer as i64
                 Ok(format!("ptrtoint (ptr @.str{i} to i64)"))
             }
         }
@@ -430,8 +430,8 @@ impl Emit<'_> {
                 self.term(body)
             }
             Term::Drop(x, ty, body) => {
-                // deep-drop: destrutor recursivo se o tipo tem campos de heap;
-                // senão, `free` plano.
+                // deep-drop: recursive destructor if the type has heap fields;
+                // otherwise, flat `free`.
                 let v = self.atom(&Atom::Var(x.clone()))?;
                 match ty.as_deref().filter(|t| self.records.needs_deep_drop(t)) {
                     Some(t) => {
@@ -480,7 +480,7 @@ impl Emit<'_> {
         }
     }
 
-    /// `case` como cadeia de `if` (padrões Int/var/`_`/tuplo; catch-all no fim).
+    /// `case` as an `if` chain (Int/var/`_`/tuple patterns; catch-all at the end).
     fn case(&mut self, sval: &str, arms: &[(CPat, Term)], i: usize) -> Result<String, String> {
         let (pat, body) = &arms[i];
         match pat {
@@ -527,8 +527,8 @@ impl Emit<'_> {
                 Ok(r)
             }
             CPat::Con(con, subpats) => {
-                // Tipo de 1 construtor (sem tag) ou último braço: destructura sem
-                // testar o tag; senão compara o tag (offset 0) com o do construtor.
+                // 1-constructor type (no tag) or last arm: destructure without
+                // testing the tag; otherwise compare the tag (offset 0) with the constructor's.
                 let last = i + 1 >= arms.len();
                 match self.records.tag(con) {
                     None => {
@@ -674,7 +674,7 @@ impl Emit<'_> {
                 inplace,
             } => {
                 let base_ptr = self.atom(base)?;
-                // Linear Elision (§2): in-place muta o bloco do base; senão aloca
+                // Linear Elision (§2): in-place mutates the base's block; otherwise allocates
                 // um novo e copia.
                 let target = if *inplace {
                     base_ptr

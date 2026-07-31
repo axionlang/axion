@@ -1,9 +1,9 @@
-//! Análise léxica do `.axi` com `logos` (§18) + tabela de linhas para spans.
+//! Lexical analysis of `.axi` with `logos` (§18) + a line table for spans.
 //!
-//! O lexer ignora espaços, novas-linhas e comentários; a posição (linha,
-//! coluna) de cada token é recuperada do offset de bytes contra uma tabela de
-//! inícios de linha. A regra de layout (indentação) é aplicada à parte, em
-//! [`crate::layout`], sobre estes tokens já posicionados.
+//! The lexer ignores spaces, newlines and comments; the (line, column) position
+//! of each token is recovered from the byte offset against a table of
+//! line starts. The layout rule (indentation) is applied separately, in
+//! [`crate::layout`], over these already-positioned tokens.
 
 use logos::Logos;
 
@@ -11,7 +11,7 @@ use logos::Logos;
 #[logos(skip r"[ \t\r\n\f]+")]
 #[logos(skip r"--[^\n]*")]
 pub enum Tok {
-    // --- palavras-chave (prioridade sobre VarId por serem literais) ---
+    // --- keywords (priority over VarId since they are literals) ---
     #[token("where")]
     Where,
     #[token("let")]
@@ -39,7 +39,7 @@ pub enum Tok {
     #[token("instance")]
     Instance,
 
-    // --- pontuação e símbolos ---
+    // --- punctuation and symbols ---
     #[token("::")]
     ColonColon,
     #[token("=>")]
@@ -79,11 +79,11 @@ pub enum Tok {
     #[token("`")]
     Backtick,
 
-    // multiplicidade: %1 (linear), %0.5 (fraccionária) — a marca de L1
+    // multiplicity: %1 (linear), %0.5 (fractional) — the L1 mark
     #[regex(r"%[0-9]+(\.[0-9]+)?", |lex| lex.slice().to_string())]
     Mult(String),
 
-    // operadores
+    // operators
     #[token("++")]
     PlusPlus,
     #[token("+")]
@@ -99,15 +99,15 @@ pub enum Tok {
     #[token(">")]
     Gt,
 
-    // literais (decimal e hexadecimal `0x…`; logos escolhe a correspondência
-    // mais longa, logo `0x5A` casa o hex, não `0`)
+    // literals (decimal and hexadecimal `0x…`; logos picks the longest
+    // match, so `0x5A` matches the hex, not `0`)
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
     #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(&lex.slice()[2..], 16).ok())]
     Int(i64),
     #[regex(r#""([^"\\]|\\.)*""#, |lex| unquote(lex.slice()))]
     Str(String),
 
-    // identificadores
+    // identifiers
     #[regex(r"[a-z_][A-Za-z0-9_']*", |lex| lex.slice().to_string())]
     VarId(String),
     #[regex(r"[A-Z][A-Za-z0-9_']*", |lex| lex.slice().to_string())]
@@ -115,7 +115,7 @@ pub enum Tok {
 }
 
 fn unquote(s: &str) -> String {
-    // remove aspas e resolve escapes simples
+    // strip quotes and resolve simple escapes
     let inner = &s[1..s.len() - 1];
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
@@ -136,7 +136,7 @@ fn unquote(s: &str) -> String {
     out
 }
 
-/// Um token com o seu intervalo de bytes na fonte.
+/// A token with its byte range in the source.
 #[derive(Debug, Clone)]
 pub struct Spanned {
     pub tok: Tok,
@@ -144,7 +144,7 @@ pub struct Spanned {
     pub end: usize,
 }
 
-/// Mapa de offsets → (linha, coluna), ambos 1-based.
+/// Map of offsets → (line, column), both 1-based.
 pub struct LineMap {
     line_starts: Vec<usize>,
 }
@@ -160,7 +160,7 @@ impl LineMap {
         LineMap { line_starts }
     }
 
-    /// (linha, coluna) 1-based do offset dado.
+    /// 1-based (line, column) of the given offset.
     pub fn pos(&self, offset: usize) -> (usize, usize) {
         let line = match self.line_starts.binary_search(&offset) {
             Ok(i) => i,
@@ -171,14 +171,14 @@ impl LineMap {
     }
 }
 
-/// Erro léxico (caractere inesperado): reportado como AX0100.
+/// Lexical error (unexpected character): reported as AX0100.
 #[derive(Debug, Clone)]
 pub struct LexError {
     pub start: usize,
     pub end: usize,
 }
 
-/// Tokeniza a fonte inteira. Devolve os tokens posicionados ou o primeiro erro.
+/// Tokenizes the whole source. Returns the positioned tokens or the first error.
 pub fn lex(src: &str) -> Result<Vec<Spanned>, LexError> {
     let mut out = Vec::new();
     let mut lexer = Tok::lexer(src);

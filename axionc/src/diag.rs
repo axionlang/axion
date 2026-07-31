@@ -1,9 +1,9 @@
-//! Diagnósticos estruturados com códigos `AXnnnn` estáveis (§8).
+//! Structured diagnostics with stable `AXnnnn` codes (§8).
 //!
-//! Um `Diagnostic` carrega código, severidade, mensagem, spans rotulados e uma
-//! ajuda opcional. Renderiza-se em texto (estilo rustc: ficheiro:linha:coluna,
-//! linha-fonte e setas) ou em JSON (`--emit json`), como manda a §8. O registo
-//! dos códigos vive em `docs/error-codes.md`.
+//! A `Diagnostic` carries a code, severity, message, labeled spans and an
+//! optional help. It renders as text (rustc style: file:line:column,
+//! source line and arrows) or as JSON (`--emit json`), as §8 mandates. The
+//! registry of codes lives in `docs/error-codes.md`.
 
 use crate::lexer::LineMap;
 use serde::Serialize;
@@ -57,7 +57,7 @@ impl Diagnostic {
         self
     }
 
-    /// Render em texto, no estilo rustc/§8.
+    /// Text render, in the rustc/§8 style.
     pub fn render(&self, path: &str, src: &str, lines: &LineMap) -> String {
         let sev = match self.severity {
             Severity::Error => "error",
@@ -90,7 +90,7 @@ impl Diagnostic {
     }
 }
 
-/// Coleção de diagnósticos de uma compilação.
+/// Collection of diagnostics from a compilation.
 #[derive(Debug, Default)]
 pub struct Diagnostics {
     pub items: Vec<Diagnostic>,
