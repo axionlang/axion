@@ -71,9 +71,12 @@ stmt        = pat "<-" expr | expr | "let" { funDef } ;
 literal     = intLit | stringLit | charLit ;
 varName     = lower { alnum | "'" } ;
 conName     = upper { alnum | "'" } ;
-binop       = "+" | "-" | "*" | "==" | "." | "<>"  (* `+ - *`: Num (Int/Float)     *)
-            | "/." | "<." | ">." | "==."    (* Float-only: division/compares(§4)*)
+binop       = "+" | "-" | "*"                (* Num  (Int/Float): arithmetic     *)
+            | "==" | "<" | ">"              (* Ord  (Int/Float): comparisons    *)
+            | "." | "<>"                    (* compose / mappend                *)
+            | "/."                          (* Float-only division (§4)         *)
             | "+." | "-." | "*."            (* dotted forms (internal rewrite)  *)
+            | "<." | ">." | "==."           (* dotted comparisons (internal)    *)
             | "`" varName "`" ;             (* infix function: `mod`        *)
 ```
 

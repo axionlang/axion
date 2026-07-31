@@ -93,11 +93,12 @@ main = 3.0 * 2.0 + 1.5                                -- → 7.5
 ```sh
 $AX axionc/tests/fixtures/num_float_plain.axi         # → 7.5
 ```
-`Float` is `f64`. The arithmetic operators `+ - *` are overloaded by a built-in
-**`Num`** class over `Int` and `Float` — inference resolves each use by the
-operand type, and a use over `Float` is rewritten to a dotted internal operator
-(`+` → `+.`) that the backends lower directly (so there is still no type-directed
-codegen). A `Num a =>` function specializes per type, Rust-style:
+`Float` is `f64`. Arithmetic `+ - *` (built-in **`Num`**) and comparisons
+`== < >` (built-in **`Ord`**) are overloaded over `Int` and `Float` — inference
+resolves each use by the operand type, and a use over `Float` is rewritten to a
+dotted internal operator (`+` → `+.`, `<` → `<.`) that the backends lower directly
+(so there is still no type-directed codegen). A `Num a =>` / `Ord a =>` function
+specializes per type, Rust-style:
 
 ```haskell
 sq :: Num a => a -> a
@@ -106,19 +107,21 @@ main :: Float
 main = sq 3.0 + sq 2.0                                -- → 13  (sq$Int / sq$Float)
 ```
 
-`Num` does **not** coerce: `3 + 2.0` is a type error. Conversions bridge the two
-worlds explicitly — `toFloat :: Int -> Float`, `truncate :: Float -> Int`:
+`Num`/`Ord` do **not** coerce: `3 + 2.0` is a type error. Conversions bridge the
+two worlds explicitly — `toFloat :: Int -> Float`, `truncate :: Float -> Int`:
 
 ```haskell
 main :: Int
 main = truncate (toFloat 7 /. 2.0)                    -- → 3  (3.5 truncated)
 ```
 
-Comparisons still use the distinct forms `<.` `>.` `==.` (`:: Float -> Float ->
-Bool`), and division `/.` is Float-only (`Int` has no `/`). Under the uniform i64
-native ABI the `f64` travels as its bit-pattern; the operators bitcast `i64 ↔ f64`
-(`toFloat`/`truncate` are `sitofp`/`fptosi`). All three executors agree
-bit-for-bit.
+Division `/.` stays Float-only (`Int` has no `/`); the dotted forms `+. <. …`
+remain valid (they are the internal rewrite targets). The class name `Ord` is
+distinct from a user's `Eq` (whose methods are identifiers like `eq`), so there
+is no collision — and the prelude's `Ord` (`maxOr`/`minOr`, via `le`) now works
+on `Float` too. Under the uniform i64 native ABI the `f64` travels as its
+bit-pattern; the operators bitcast `i64 ↔ f64` (`toFloat`/`truncate` are
+`sitofp`/`fptosi`). All three executors agree bit-for-bit.
 
 ---
 

@@ -514,6 +514,10 @@ instance Eq Int where
   eq x y = x == y
 instance Ord Int where
   le x y = if x < y then True else x == y
+instance Eq Float where
+  eq x y = x == y
+instance Ord Float where
+  le x y = if x < y then True else x == y
 instance Eq Bool where
   eq x y = if x then y else if y then False else True
 maxOr :: Ord a => a -> List a -> a

@@ -1,0 +1,2 @@
+main :: Float
+main = maxOr 0.0 [3.0, 7.0, 2.0]

@@ -1902,6 +1902,19 @@ fn num_class_unifies_arithmetic_over_int_and_float() {
 }
 
 #[test]
+fn ord_class_unifies_comparisons_over_int_and_float() {
+    // built-in `Ord`: the plain comparisons `== < >` work on Float (no `<.`),
+    // resolved by inference and rewritten to the dotted form for the backends.
+    agree_across_backends("ord_float_compare.axi", "1\n");
+    // an `Ord a =>` function specializes to Float (`maxOf$Float`, `<` → `<.`):
+    // maxOf 3.0 5.0 + maxOf 1.0 2.0 = 5.0 + 2.0 = 7.
+    agree_across_backends("ord_poly.axi", "7\n");
+    // the prelude's `Ord` (maxOr / le) now has a Float instance — le is defined
+    // via `<`/`==`, which are unified: maxOr 0.0 [3.0,7.0,2.0] = 7.
+    agree_across_backends("ord_prelude_float.axi", "7\n");
+}
+
+#[test]
 fn num_arithmetic_does_not_mix_int_and_float() {
     // `Num` does not coerce: `Int + Float` stays a type error (no implicit
     // conversion — use `toFloat`/`truncate`).
