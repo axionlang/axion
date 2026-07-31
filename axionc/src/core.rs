@@ -1385,7 +1385,21 @@ impl SessGen<'_> {
                 binds.push((t.clone(), Rhs::Op(Op::Prim(op.clone(), av, bv))));
                 Atom::Var(t)
             }
-            _ => Atom::Int(0), // outside the skeleton subset
+            // Outside the native session subset (e.g. a recursive/looping worker,
+            // a value from a call, delegation). Fail LOUDLY — sessions bypass the
+            // native-candidacy filter, so a silent `0` here would miscompile while
+            // the interpreter stays correct. `Op::Unsupported` makes the native
+            // backends reject it with a clear message (use the interpreter).
+            _ => {
+                let t = self.fresh();
+                binds.push((
+                    t.clone(),
+                    Rhs::Op(Op::Unsupported(
+                        "session value outside the native subset".into(),
+                    )),
+                ));
+                Atom::Var(t)
+            }
         }
     }
 
