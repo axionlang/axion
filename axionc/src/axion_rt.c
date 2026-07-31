@@ -151,3 +151,158 @@ long axion_fold_bytes(long f, long init, long buf) {
   for (long i = 0; i < n; i++) acc = fn(f, acc, (long)d[i]);
   return acc;
 }
+
+/* --- cooperative session scheduler (§11): single-thread, defunctionalized.
+ * Native mirror of the interpreter's runtime (interp.rs). A task is a state
+ * machine `long step(long sched, long state)` that returns 1=done / 0=blocked,
+ * writing its result into state[0] when done. The only suspension point is a
+ * `recv` on an empty endpoint. Round-robin until the root task finishes; the
+ * absence of deadlock is guaranteed by types (AX0302), so a full sweep with no
+ * progress and a live root is a compiler/runtime bug, not a user error. */
+
+typedef long (*SessStep)(long, long);
+
+typedef struct {
+  long *q;
+  int head, len, cap;
+} SessEp; /* FIFO of i64 messages waiting for this endpoint's owner */
+typedef struct {
+  SessStep step;
+  long state;
+  int done;
+} SessTask;
+
+typedef struct {
+  SessEp *eps;
+  int *peer;
+  int neps, capeps;
+  SessTask *tasks;
+  int ntasks, captasks;
+  void **allocs;
+  int nallocs, capallocs; /* task states, freed in bulk at run end */
+  int dirty;              /* a channel op happened this sweep → progress was made */
+} Sched;
+
+long axion_sess_new(void) { return (long)calloc(1, sizeof(Sched)); }
+
+static int sess_new_ep(Sched *s) {
+  if (s->neps + 1 > s->capeps) {
+    s->capeps = s->capeps ? s->capeps * 2 : 8;
+    s->eps = (SessEp *)realloc(s->eps, (size_t)s->capeps * sizeof(SessEp));
+    s->peer = (int *)realloc(s->peer, (size_t)s->capeps * sizeof(int));
+  }
+  int id = s->neps++;
+  s->eps[id].q = NULL;
+  s->eps[id].head = s->eps[id].len = s->eps[id].cap = 0;
+  return id;
+}
+
+/* create a channel: two peer endpoints, a and a+1 (mirrors newChannel) */
+long axion_sess_channel(long sched) {
+  Sched *s = (Sched *)sched;
+  int a = sess_new_ep(s);
+  int b = sess_new_ep(s);
+  s->peer[a] = b;
+  s->peer[b] = a;
+  s->dirty = 1;
+  return a;
+}
+
+/* send v on ep → push to the peer's input queue */
+void axion_sess_send(long sched, long ep, long v) {
+  Sched *s = (Sched *)sched;
+  SessEp *e = &s->eps[s->peer[ep]];
+  if (e->head + e->len >= e->cap) {
+    if (e->head > 0) { /* compact */
+      memmove(e->q, e->q + e->head, (size_t)e->len * sizeof(long));
+      e->head = 0;
+    } else { /* grow */
+      e->cap = e->cap ? e->cap * 2 : 8;
+      e->q = (long *)realloc(e->q, (size_t)e->cap * sizeof(long));
+    }
+  }
+  e->q[e->head + e->len] = v;
+  e->len++;
+  s->dirty = 1;
+}
+
+/* 1 if a message is waiting on ep, 0 if empty (would block) */
+long axion_sess_pending(long sched, long ep) {
+  Sched *s = (Sched *)sched;
+  return s->eps[ep].len > 0 ? 1 : 0;
+}
+
+/* pop and return the message on ep (caller guarantees pending) */
+long axion_sess_recv(long sched, long ep) {
+  Sched *s = (Sched *)sched;
+  SessEp *e = &s->eps[ep];
+  long v = e->q[e->head];
+  e->head++;
+  e->len--;
+  s->dirty = 1;
+  return v;
+}
+
+/* allocate a zeroed task-state block owned by the scheduler (the nursery arena);
+ * all such blocks are freed in bulk when axion_sess_run returns. */
+long axion_sess_alloc(long sched, long nbytes) {
+  Sched *s = (Sched *)sched;
+  if (s->nallocs + 1 > s->capallocs) {
+    s->capallocs = s->capallocs ? s->capallocs * 2 : 8;
+    s->allocs = (void **)realloc(s->allocs, (size_t)s->capallocs * sizeof(void *));
+  }
+  void *p = calloc(1, (size_t)(nbytes < 8 ? 8 : nbytes));
+  s->allocs[s->nallocs++] = p;
+  return (long)p;
+}
+
+void axion_sess_spawn(long sched, long step, long state) {
+  Sched *s = (Sched *)sched;
+  if (s->ntasks + 1 > s->captasks) {
+    s->captasks = s->captasks ? s->captasks * 2 : 8;
+    s->tasks = (SessTask *)realloc(s->tasks, (size_t)s->captasks * sizeof(SessTask));
+  }
+  SessTask *t = &s->tasks[s->ntasks++];
+  t->step = (SessStep)step;
+  t->state = state;
+  t->done = 0;
+  s->dirty = 1;
+}
+
+/* run the root task (task 0) and its children until the root finishes; returns
+ * the root's result (read from state[0]). */
+long axion_sess_run(long sched, long step, long state) {
+  Sched *s = (Sched *)sched;
+  axion_sess_spawn(sched, step, state); /* root = task 0 */
+  long budget = 5000000;
+  for (;;) {
+    int progressed = 0;
+    s->dirty = 0;
+    int n = s->ntasks; /* children spawned this sweep run on the next one */
+    for (int i = 0; i < n; i++) {
+      if (s->tasks[i].done) continue;
+      if (s->tasks[i].step(sched, s->tasks[i].state)) {
+        s->tasks[i].done = 1;
+        progressed = 1;
+      }
+      if (--budget <= 0) {
+        fprintf(stderr, "session scheduler: budget exhausted\n");
+        exit(1);
+      }
+    }
+    if (s->tasks[0].done) break;
+    if (!progressed && !s->dirty) {
+      fprintf(stderr, "session scheduler: no progress (deadlock)\n");
+      exit(1);
+    }
+  }
+  long result = *(long *)s->tasks[0].state;
+  for (int i = 0; i < s->neps; i++) free(s->eps[i].q);
+  for (int i = 0; i < s->nallocs; i++) free(s->allocs[i]);
+  free(s->allocs);
+  free(s->eps);
+  free(s->peer);
+  free(s->tasks);
+  free(s);
+  return result;
+}

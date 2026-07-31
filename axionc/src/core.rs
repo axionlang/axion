@@ -75,6 +75,13 @@ pub enum Op {
     /// raw i64 load at `ptr + offset` (bytes). Only destructor generation
     /// (deep-drop, §2) uses it — accesses fields by offset, including the tag.
     LoadRaw(Atom, i32),
+    /// raw i64 store `value` at `ptr + offset` (bytes); evaluates to `value`.
+    /// Used by the native session state machines (§11) to save/restore task
+    /// locals across a `recv` suspension into the task-state block.
+    StoreRaw(Atom, i32, Atom),
+    /// address of a top-level function as an i64 — the `step` function pointer a
+    /// `spawn` hands to the session scheduler (§11).
+    FuncAddr(String),
     /// `putStrLn :: String -> IO ()` (runtime)
     PutStrLn(Atom),
     /// `putStr :: String -> IO ()` (runtime, no newline)
@@ -1194,9 +1201,600 @@ impl Eta {
     }
 }
 
+// ---------------- native session lowering (§11) ----------------
+//
+// Lowers `main = bound $ do …` and its `spawn` targets into cooperative
+// state-machine `step` functions + a driver `main`, over the `axion_sess_*`
+// runtime (codegen.rs / axion_rt.c). Each task is a defunctionalized
+// continuation (§11): the only suspension point is a `recv` on an empty
+// endpoint, at which the live locals are saved into a scheduler-owned state
+// block (`[result, resume, locals…]`) and re-loaded on resume. Single-thread
+// cooperative; M:N is a later layer. Handles the linear do-chain
+// (spawn/send/recv/close); choice/cancellation are follow-up slices.
+
+const SESS_SCHED: &str = "sess$sched";
+const SESS_STATE: &str = "sess$st";
+
+/// Head name and arguments of an application spine `f a b …`.
+fn sess_spine(e: &Expr) -> (Option<&str>, Vec<&Expr>) {
+    let mut args = Vec::new();
+    let mut cur = e;
+    while let Expr::App(f, a, _) = cur {
+        args.push(a.as_ref());
+        cur = f;
+    }
+    args.reverse();
+    match cur {
+        Expr::Var(n, _) | Expr::Con(n, _) => (Some(n.as_str()), args),
+        _ => (None, args),
+    }
+}
+
+fn is_suspension(h: Option<&str>) -> bool {
+    matches!(h, Some("recv"))
+}
+
+/// `bound X` or `bound $ X` → `X`.
+fn as_bound(e: &Expr) -> Option<&Expr> {
+    match sess_spine(e) {
+        (Some("bound"), args) if args.len() == 1 => Some(args[0]),
+        _ => None,
+    }
+}
+
+/// Flattens a session do-body (chain of single-arm `Case`) into `(pattern, op)`
+/// statements plus the tail expression (the block's value).
+fn flatten_sess(body: &Expr) -> (Vec<(&Pat, &Expr)>, &Expr) {
+    let mut stmts = Vec::new();
+    let mut cur = body;
+    while let Expr::Case(scrut, arms, _) = cur {
+        if arms.len() != 1 {
+            break;
+        }
+        stmts.push((&arms[0].0, scrut.as_ref()));
+        cur = &arms[0].1;
+    }
+    (stmts, cur)
+}
+
+/// The `spawn` targets named in a session do-body.
+fn spawn_targets(body: &Expr) -> Vec<String> {
+    let (stmts, tail) = flatten_sess(body);
+    let mut out = Vec::new();
+    for (_, scrut) in stmts
+        .iter()
+        .chain(std::iter::once(&(&Pat::Wild((0, 0)), tail)))
+    {
+        if let (Some("spawn"), args) = sess_spine(scrut) {
+            if let (Some(t), _) = sess_spine(args[0]) {
+                out.push(t.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// State-block layout of one session task: `[result@0, resume@8, locals@16…]`.
+struct SessLayout {
+    slot: HashMap<String, i32>, // var → byte offset
+    size: i32,                  // block size in bytes
+    param_slots: Vec<i32>,      // offsets of the params (filled in by `spawn`)
+    step: String,               // step-function name
+}
+
+fn sess_layout(pats: &[Pat], body: &Expr, step: String) -> SessLayout {
+    let mut slot = HashMap::new();
+    let mut off = 16; // 0 = result, 8 = resume
+    let mut param_slots = Vec::new();
+    let add = |v: &str, off: &mut i32, slot: &mut HashMap<String, i32>| -> i32 {
+        let o = *off;
+        slot.insert(v.to_string(), o);
+        *off += 8;
+        o
+    };
+    for p in pats {
+        let mut vs = Vec::new();
+        pat_vars(p, &mut vs);
+        for v in vs {
+            param_slots.push(add(&v, &mut off, &mut slot));
+        }
+    }
+    let (stmts, _) = flatten_sess(body);
+    for (pat, _) in &stmts {
+        let mut vs = Vec::new();
+        pat_vars(pat, &mut vs);
+        for v in vs {
+            if !slot.contains_key(&v) {
+                add(&v, &mut off, &mut slot);
+            }
+        }
+    }
+    SessLayout {
+        slot,
+        size: off,
+        param_slots,
+        step,
+    }
+}
+
+/// Generator of one task's state machine.
+struct SessGen<'a> {
+    lay: &'a SessLayout,
+    all: &'a HashMap<String, SessLayout>,
+    tmp: u32,
+}
+
+impl SessGen<'_> {
+    fn fresh(&mut self) -> String {
+        let n = self.tmp;
+        self.tmp += 1;
+        format!("sess$t{n}")
+    }
+    fn sched_atom() -> Atom {
+        Atom::Var(SESS_SCHED.to_string())
+    }
+    fn state_atom() -> Atom {
+        Atom::Var(SESS_STATE.to_string())
+    }
+    fn rt(func: &str, args: Vec<Atom>, returns: bool) -> Rhs {
+        Rhs::Op(Op::RtCall {
+            func: func.to_string(),
+            args,
+            returns,
+        })
+    }
+
+    /// Lowers a simple value expression (`Int`/`Var`/arithmetic) to an atom,
+    /// pushing any needed `let`s into `binds`.
+    fn val(&mut self, e: &Expr, binds: &mut Vec<(String, Rhs)>) -> Atom {
+        match e {
+            Expr::Int(n, _) => Atom::Int(*n),
+            Expr::Var(n, _) => Atom::Var(n.clone()),
+            Expr::BinOp(op, a, b, _) => {
+                let av = self.val(a, binds);
+                let bv = self.val(b, binds);
+                let t = self.fresh();
+                binds.push((t.clone(), Rhs::Op(Op::Prim(op.clone(), av, bv))));
+                Atom::Var(t)
+            }
+            _ => Atom::Int(0), // outside the skeleton subset
+        }
+    }
+
+    /// Generates the tail (block value): stores it into `result` and returns done.
+    fn gen_tail(&mut self, tail: &Expr) -> Term {
+        let mut binds = Vec::new();
+        let result = match sess_spine(tail).0 {
+            Some("close") | Some("cancel") => Atom::Int(0), // effect as tail → unit
+            _ => self.val(tail, &mut binds),
+        };
+        binds.push((
+            self.fresh(),
+            Rhs::Op(Op::StoreRaw(Self::state_atom(), 0, result)),
+        ));
+        wrap(binds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1)))))
+    }
+
+    /// Generates the code executing statements `idx..` inline (SSA success path).
+    fn gen_from(
+        &mut self,
+        stmts: &[(&Pat, &Expr)],
+        tail: &Expr,
+        idx: usize,
+        recv_order: &HashMap<usize, i32>,
+        bound_before: &[Vec<String>],
+    ) -> Term {
+        if idx == stmts.len() {
+            return self.gen_tail(tail);
+        }
+        let (pat, scrut) = stmts[idx];
+        let (head, args) = sess_spine(scrut);
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        match head {
+            Some("recv") => {
+                let k = recv_order[&idx];
+                let mut binds = Vec::new();
+                let ep = self.val(args[0], &mut binds);
+                let pend = self.fresh();
+                binds.push((
+                    pend.clone(),
+                    Self::rt(
+                        "axion_sess_pending",
+                        vec![Self::sched_atom(), ep.clone()],
+                        true,
+                    ),
+                ));
+                // success: rv = recv; bind (value, endpoint); continue
+                let rv = self.fresh();
+                let mut cbinds = vec![(
+                    rv.clone(),
+                    Self::rt(
+                        "axion_sess_recv",
+                        vec![Self::sched_atom(), ep.clone()],
+                        true,
+                    ),
+                )];
+                if let Some(v0) = pv.first() {
+                    cbinds.push((v0.to_string(), Rhs::Op(Op::Atom(Atom::Var(rv)))));
+                }
+                if let Some(v1) = pv.get(1) {
+                    cbinds.push((v1.to_string(), Rhs::Op(Op::Atom(ep))));
+                }
+                let cont = wrap(
+                    cbinds,
+                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
+                );
+                // blocked: save live locals, set resume = k+1, return 0
+                let mut bbinds = Vec::new();
+                for v in &bound_before[idx] {
+                    let s = self.lay.slot[v];
+                    bbinds.push((
+                        self.fresh(),
+                        Rhs::Op(Op::StoreRaw(Self::state_atom(), s, Atom::Var(v.clone()))),
+                    ));
+                }
+                bbinds.push((
+                    self.fresh(),
+                    Rhs::Op(Op::StoreRaw(
+                        Self::state_atom(),
+                        8,
+                        Atom::Int((k + 1) as i64),
+                    )),
+                ));
+                let blocked = wrap(bbinds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
+                wrap(
+                    binds,
+                    Term::Ret(Rhs::If(Atom::Var(pend), Box::new(cont), Box::new(blocked))),
+                )
+            }
+            Some("spawn") => {
+                let target = sess_spine(args[0]).0.expect("spawn target").to_string();
+                let tl = &self.all[&target];
+                let mut binds = Vec::new();
+                let a = self.fresh();
+                binds.push((
+                    a.clone(),
+                    Self::rt("axion_sess_channel", vec![Self::sched_atom()], true),
+                ));
+                let cs = self.fresh();
+                binds.push((
+                    cs.clone(),
+                    Self::rt(
+                        "axion_sess_alloc",
+                        vec![Self::sched_atom(), Atom::Int(tl.size as i64)],
+                        true,
+                    ),
+                ));
+                // the child's first parameter is the peer endpoint (a + 1)
+                let ap1 = self.fresh();
+                binds.push((
+                    ap1.clone(),
+                    Rhs::Op(Op::Prim("+".into(), Atom::Var(a.clone()), Atom::Int(1))),
+                ));
+                if let Some(&pslot) = tl.param_slots.first() {
+                    binds.push((
+                        self.fresh(),
+                        Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), pslot, Atom::Var(ap1))),
+                    ));
+                }
+                binds.push((
+                    self.fresh(),
+                    Self::rt(
+                        "axion_sess_spawn",
+                        vec![
+                            Self::sched_atom(),
+                            {
+                                // FuncAddr is not an atom → materialize via a let below
+                                Atom::Var(String::new())
+                            },
+                            Atom::Var(cs.clone()),
+                        ],
+                        false,
+                    ),
+                ));
+                // materialize the step address in a let, then patch the spawn args
+                let fa = self.fresh();
+                // insert FuncAddr binding just before the spawn call
+                let spawn_bind = binds.pop().unwrap();
+                binds.push((fa.clone(), Rhs::Op(Op::FuncAddr(tl.step.clone()))));
+                let Rhs::Op(Op::RtCall {
+                    func,
+                    mut args,
+                    returns,
+                }) = spawn_bind.1
+                else {
+                    unreachable!()
+                };
+                args[1] = Atom::Var(fa);
+                binds.push((
+                    spawn_bind.0,
+                    Rhs::Op(Op::RtCall {
+                        func,
+                        args,
+                        returns,
+                    }),
+                ));
+                if let Some(c) = pv.first() {
+                    binds.push((c.to_string(), Rhs::Op(Op::Atom(Atom::Var(a)))));
+                }
+                wrap(
+                    binds,
+                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
+                )
+            }
+            Some("send") => {
+                let mut binds = Vec::new();
+                let ep = self.val(args[0], &mut binds);
+                let v = self.val(args[1], &mut binds);
+                binds.push((
+                    self.fresh(),
+                    Self::rt(
+                        "axion_sess_send",
+                        vec![Self::sched_atom(), ep.clone(), v],
+                        false,
+                    ),
+                ));
+                if let Some(c) = pv.first() {
+                    binds.push((c.to_string(), Rhs::Op(Op::Atom(ep))));
+                }
+                wrap(
+                    binds,
+                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
+                )
+            }
+            Some("close") => {
+                let mut binds = Vec::new();
+                if let Some(x) = pv.first() {
+                    binds.push((x.to_string(), Rhs::Op(Op::Atom(Atom::Int(0)))));
+                }
+                wrap(
+                    binds,
+                    self.gen_from(stmts, tail, idx + 1, recv_order, bound_before),
+                )
+            }
+            _ => Term::Ret(Rhs::Op(Op::Unsupported(format!(
+                "session op not in the native subset yet: {:?}",
+                head
+            )))),
+        }
+    }
+
+    /// Builds the full step function body (resume dispatch + regions).
+    fn build_step(&mut self, pats: &[Pat], body: &Expr) -> Term {
+        let (stmts, tail) = flatten_sess(body);
+        let recv_positions: Vec<usize> = stmts
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, s))| is_suspension(sess_spine(s).0))
+            .map(|(i, _)| i)
+            .collect();
+        let recv_order: HashMap<usize, i32> = recv_positions
+            .iter()
+            .enumerate()
+            .map(|(k, &p)| (p, k as i32))
+            .collect();
+        // vars in scope at each statement index (params + earlier pattern vars)
+        let mut bound_before: Vec<Vec<String>> = Vec::with_capacity(stmts.len() + 1);
+        let mut acc: Vec<String> = Vec::new();
+        for p in pats {
+            let mut vs = Vec::new();
+            pat_vars(p, &mut vs);
+            acc.extend(vs);
+        }
+        for idx in 0..=stmts.len() {
+            bound_before.push(acc.clone());
+            if idx < stmts.len() {
+                let mut vs = Vec::new();
+                pat_vars(stmts[idx].0, &mut vs);
+                acc.extend(vs);
+            }
+        }
+        let nrecv = recv_positions.len();
+        // dispatch: resume==0 → fresh entry; resume==k (1..=nrecv) → re-enter recv#(k-1)
+        let mut chain = self.region(
+            &stmts,
+            tail,
+            nrecv,
+            &recv_positions,
+            &recv_order,
+            &bound_before,
+        );
+        for rv in (0..nrecv).rev() {
+            let then_t = self.region(
+                &stmts,
+                tail,
+                rv,
+                &recv_positions,
+                &recv_order,
+                &bound_before,
+            );
+            let eq = self.fresh();
+            chain = Term::Let(
+                eq.clone(),
+                Rhs::Op(Op::Prim(
+                    "==".into(),
+                    Atom::Var("sess$resume".into()),
+                    Atom::Int(rv as i64),
+                )),
+                Box::new(Term::Ret(Rhs::If(
+                    Atom::Var(eq),
+                    Box::new(then_t),
+                    Box::new(chain),
+                ))),
+            );
+        }
+        let dispatch = Term::Let(
+            "sess$resume".into(),
+            Rhs::Op(Op::LoadRaw(Self::state_atom(), 8)),
+            Box::new(chain),
+        );
+        // load the task's parameters from the state block (the spawner stored them
+        // there) so the fresh-entry path can use them like any local.
+        let mut param_loads = Vec::new();
+        for p in pats {
+            let mut vs = Vec::new();
+            pat_vars(p, &mut vs);
+            for v in vs {
+                param_loads.push((
+                    v.clone(),
+                    Rhs::Op(Op::LoadRaw(Self::state_atom(), self.lay.slot[&v])),
+                ));
+            }
+        }
+        wrap(param_loads, dispatch)
+    }
+
+    /// The region entered for a given resume value: `0` = fresh start at stmt 0;
+    /// `k>=1` = re-enter recv#(k-1), loading its live-in locals from the state.
+    fn region(
+        &mut self,
+        stmts: &[(&Pat, &Expr)],
+        tail: &Expr,
+        rv: usize,
+        recv_positions: &[usize],
+        recv_order: &HashMap<usize, i32>,
+        bound_before: &[Vec<String>],
+    ) -> Term {
+        if rv == 0 {
+            return self.gen_from(stmts, tail, 0, recv_order, bound_before);
+        }
+        let p = recv_positions[rv - 1];
+        let mut binds = Vec::new();
+        for v in &bound_before[p] {
+            binds.push((
+                v.clone(),
+                Rhs::Op(Op::LoadRaw(Self::state_atom(), self.lay.slot[v])),
+            ));
+        }
+        wrap(
+            binds,
+            self.gen_from(stmts, tail, p, recv_order, bound_before),
+        )
+    }
+}
+
+/// If `main = bound $ do …`, returns the native session CoreFns: one `step` per
+/// task (`main$step`, `<worker>$step`, …) plus the driver `main`. Empty otherwise.
+fn sess_clause_body(f: &ast::Func) -> Option<&Expr> {
+    match f.clauses.first().map(|c| &c.body) {
+        Some(Body::Plain(e)) => Some(e),
+        _ => None,
+    }
+}
+
+fn session_fns(module: &ast::Module) -> Vec<CoreFn> {
+    let clause_body = sess_clause_body;
+    let main = module.funcs.iter().find(|f| f.name == "main");
+    let Some(bound_body) = main.and_then(clause_body).and_then(as_bound) else {
+        return Vec::new();
+    };
+    // collect spawn targets transitively
+    let mut workers: Vec<&ast::Func> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut worklist = spawn_targets(bound_body);
+    while let Some(name) = worklist.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(wf) = module.funcs.iter().find(|f| f.name == name) {
+            workers.push(wf);
+            if let Some(b) = clause_body(wf) {
+                worklist.extend(spawn_targets(b));
+            }
+        }
+    }
+    // layouts (needed by `spawn` to fill in a child's params)
+    let mut layouts: HashMap<String, SessLayout> = HashMap::new();
+    layouts.insert(
+        "main".into(),
+        sess_layout(&[], bound_body, "main$step".into()),
+    );
+    for wf in &workers {
+        let pats = &wf.clauses[0].pats;
+        layouts.insert(
+            wf.name.clone(),
+            sess_layout(pats, clause_body(wf).unwrap(), format!("{}$step", wf.name)),
+        );
+    }
+
+    let mut out = Vec::new();
+    // one step function per task
+    let step_of = |name: &str, pats: &[Pat], body: &Expr, layouts: &HashMap<String, SessLayout>| {
+        let lay = &layouts[name];
+        let mut g = SessGen {
+            lay,
+            all: layouts,
+            tmp: 0,
+        };
+        CoreFn {
+            name: lay.step.clone(),
+            params: vec![SESS_SCHED.into(), SESS_STATE.into()],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            body: g.build_step(pats, body),
+        }
+    };
+    out.push(step_of("main", &[], bound_body, &layouts));
+    for wf in &workers {
+        out.push(step_of(
+            &wf.name,
+            &wf.clauses[0].pats,
+            clause_body(wf).unwrap(),
+            &layouts,
+        ));
+    }
+    // driver `main`: create scheduler, alloc root state, run, return result
+    let size = layouts["main"].size;
+    let driver = Term::Let(
+        "sess$sched".into(),
+        SessGen::rt("axion_sess_new", vec![], true),
+        Box::new(Term::Let(
+            "sess$root".into(),
+            SessGen::rt(
+                "axion_sess_alloc",
+                vec![Atom::Var("sess$sched".into()), Atom::Int(size as i64)],
+                true,
+            ),
+            Box::new(Term::Let(
+                "sess$res".into(),
+                Rhs::Op(Op::RtCall {
+                    func: "axion_sess_run".into(),
+                    args: vec![
+                        Atom::Var("sess$sched".into()),
+                        Atom::Var("sess$fa".into()),
+                        Atom::Var("sess$root".into()),
+                    ],
+                    returns: true,
+                }),
+                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var("sess$res".into()))))),
+            )),
+        )),
+    );
+    // materialize the step address before the run call
+    let driver = Term::Let(
+        "sess$fa".into(),
+        Rhs::Op(Op::FuncAddr("main$step".into())),
+        Box::new(driver),
+    );
+    out.push(CoreFn {
+        name: "main".into(),
+        params: Vec::new(),
+        captures: Vec::new(),
+        is_closure: false,
+        owned_params: Vec::new(),
+        body: driver,
+    });
+    out
+}
+
 pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
+    // native session lowering runs on the ORIGINAL AST (before eta-expansion,
+    // which would wrap a bare `spawn worker` target into a lambda).
+    let session = session_fns(module);
     // Eta-expansion (native path only): rewrites functions/constructors used
-    // como VALOR ou aplicados PARCIALMENTE (`f`, `compose g h`) em lambdas
+    // as a VALUE or applied PARTIALLY (`f`, `compose g h`) into lambdas
     // (`\v -> f v`), which the closure machinery already compiles. It is semantic
     // identity — the interp already handles partial application, so it stays here.
     let module = &eta_expand(module);
@@ -1233,11 +1831,11 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .collect();
 
     // TRANSITIVE native candidacy: a function is only compilable if, besides passing
-    // `top_candidate`, all top-level functions it calls also are. Fixpoint.
-    // fixpoint. Closes the hole of a candidate calling a NON-candidate (e.g. a spec
-    // monomorphized spec that calls `foldr`, whose result is a pure type var) —
-    // which would otherwise break codegen with an unbound symbol. It excludes it
-    // graciosamente (recai no interp) em vez de abortar.
+    // `top_candidate`, all top-level functions it calls also are (fixpoint). Closes
+    // the hole of a candidate calling a NON-candidate (e.g. a monomorphized spec that
+    // calls `foldr`, whose result is a pure type var) — which would otherwise break
+    // codegen with an unbound symbol. It excludes it gracefully (falls back to the
+    // interp) instead of aborting.
     let func_set: HashSet<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
     let mut native_ok: HashMap<String, usize> = module
         .funcs
@@ -1431,6 +2029,9 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
     result.extend(gen_destructors(&recinfo));
+    // native session state machines (§11): also hand-managed (task states live in
+    // the scheduler's nursery arena), so they bypass the drop analysis too.
+    result.extend(session);
     result
 }
 
@@ -1674,7 +2275,9 @@ fn rhs_nonborrow(v: &str, rhs: &Rhs) -> bool {
 fn op_nonborrow(v: &str, op: &Op) -> bool {
     match op {
         Op::Field { .. } => false,    // reading a field is a borrow
-        Op::Atom(a) => atom_is(v, a), // alias/retorno
+        Op::Atom(a) => atom_is(v, a), // alias/return
+        Op::FuncAddr(_) => false,
+        Op::StoreRaw(ptr, _, val) => atom_is(v, ptr) || atom_is(v, val),
         Op::Prim(_, a, b) => atom_is(v, a) || atom_is(v, b),
         Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
@@ -2211,6 +2814,8 @@ fn dump_rhs(rhs: &Rhs, n: usize, s: &mut String) {
 fn dump_op(op: &Op) -> String {
     match op {
         Op::Atom(a) => atom(a),
+        Op::StoreRaw(p, off, val) => format!("store {}[{off}] = {}", atom(p), atom(val)),
+        Op::FuncAddr(n) => format!("&{n}"),
         Op::Prim(o, a, b) => format!("{o} {} {}", atom(a), atom(b)),
         Op::CallDirect(f, xs) => format!("call {f}{}", args(xs)),
         Op::CallClosure(c, xs) => format!("callclo {}{}", atom(c), args(xs)),

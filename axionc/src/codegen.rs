@@ -258,7 +258,145 @@ extern "C" fn axion_fold_bytes(f: *mut u8, init: i64, buf: *mut u8) -> i64 {
     }
 }
 
-/// Os `FuncId` do runtime de arena (§3).
+// --- cooperative session scheduler (§11): the --dev mirror of the C runtime
+// (axion_rt.c). Same ABI: a task is a state machine `long step(sched, state)`
+// returning 1=done / 0=blocked, storing its result into state[0] when done. The
+// only suspension point is a `recv` on an empty endpoint. Round-robin until the
+// root task finishes; deadlock-freedom is guaranteed by types (AX0302). To stay
+// sound under Rust's aliasing rules, no `&mut` to the scheduler is held across a
+// `step` call (which re-enters through the same raw pointer) — every access
+// re-derives a fresh, short-lived reference. ---
+
+type SessStep = extern "C" fn(i64, i64) -> i64;
+
+struct SessSched {
+    bufs: Vec<std::collections::VecDeque<i64>>, // input queue per endpoint
+    peer: Vec<usize>,                           // peer[ep]
+    tasks: Vec<(SessStep, i64, bool)>,          // (step, state, done)
+    allocs: Vec<(*mut u8, std::alloc::Layout)>, // task states (freed at run end)
+    dirty: bool,                                // a channel op happened this sweep
+}
+
+extern "C" fn axion_sess_new() -> i64 {
+    Box::into_raw(Box::new(SessSched {
+        bufs: Vec::new(),
+        peer: Vec::new(),
+        tasks: Vec::new(),
+        allocs: Vec::new(),
+        dirty: false,
+    })) as i64
+}
+
+/// Creates a channel: two peer endpoints, `a` and `a+1` (mirrors newChannel).
+extern "C" fn axion_sess_channel(sched: i64) -> i64 {
+    let s = unsafe { &mut *(sched as *mut SessSched) };
+    let a = s.bufs.len();
+    s.bufs.push(Default::default());
+    s.bufs.push(Default::default());
+    s.peer.push(a + 1);
+    s.peer.push(a);
+    s.dirty = true;
+    a as i64
+}
+
+/// Sends `v` on `ep` → pushes to the peer's input queue.
+extern "C" fn axion_sess_send(sched: i64, ep: i64, v: i64) {
+    let s = unsafe { &mut *(sched as *mut SessSched) };
+    let p = s.peer[ep as usize];
+    s.bufs[p].push_back(v);
+    s.dirty = true;
+}
+
+/// 1 if a message is waiting on `ep`, 0 if empty (would block).
+extern "C" fn axion_sess_pending(sched: i64, ep: i64) -> i64 {
+    let s = unsafe { &*(sched as *const SessSched) };
+    i64::from(!s.bufs[ep as usize].is_empty())
+}
+
+/// Pops and returns the message on `ep` (caller guarantees pending).
+extern "C" fn axion_sess_recv(sched: i64, ep: i64) -> i64 {
+    let s = unsafe { &mut *(sched as *mut SessSched) };
+    s.dirty = true;
+    s.bufs[ep as usize].pop_front().unwrap_or(0)
+}
+
+/// Allocates a zeroed task-state block owned by the scheduler (the nursery arena);
+/// all such blocks are freed in bulk when `axion_sess_run` returns.
+extern "C" fn axion_sess_alloc(sched: i64, nbytes: i64) -> i64 {
+    let s = unsafe { &mut *(sched as *mut SessSched) };
+    let size = nbytes.max(8) as usize;
+    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
+    let p = unsafe { std::alloc::alloc_zeroed(layout) };
+    s.allocs.push((p, layout));
+    p as i64
+}
+
+extern "C" fn axion_sess_spawn(sched: i64, step: i64, state: i64) {
+    let s = unsafe { &mut *(sched as *mut SessSched) };
+    let f: SessStep = unsafe { std::mem::transmute::<i64, SessStep>(step) };
+    s.tasks.push((f, state, false));
+    s.dirty = true;
+}
+
+/// Runs the root task (task 0) and its children round-robin until the root ends;
+/// returns the root's result (read from `state[0]`).
+extern "C" fn axion_sess_run(sched: i64, step: i64, state: i64) -> i64 {
+    {
+        let s = unsafe { &mut *(sched as *mut SessSched) };
+        let f: SessStep = unsafe { std::mem::transmute::<i64, SessStep>(step) };
+        s.tasks.push((f, state, false)); // root = task 0
+        s.dirty = true;
+    }
+    let mut budget: i64 = 5_000_000;
+    loop {
+        let mut progressed = false;
+        let n = unsafe {
+            let s = &mut *(sched as *mut SessSched);
+            s.dirty = false;
+            s.tasks.len()
+        };
+        for i in 0..n {
+            // re-derive fresh, short-lived reads; do NOT hold `&mut` across `step`.
+            let (done, stepfn, st) = unsafe {
+                let s = &*(sched as *const SessSched);
+                (s.tasks[i].2, s.tasks[i].0, s.tasks[i].1)
+            };
+            if done {
+                continue;
+            }
+            let finished = stepfn(sched, st) != 0; // may re-enter through `sched`
+            if finished {
+                let s = unsafe { &mut *(sched as *mut SessSched) };
+                s.tasks[i].2 = true;
+                progressed = true;
+            }
+            budget -= 1;
+            if budget <= 0 {
+                eprintln!("session scheduler: budget exhausted");
+                std::process::exit(1);
+            }
+        }
+        let (root_done, dirty) = unsafe {
+            let s = &*(sched as *const SessSched);
+            (s.tasks[0].2, s.dirty)
+        };
+        if root_done {
+            break;
+        }
+        if !progressed && !dirty {
+            eprintln!("session scheduler: no progress (deadlock)");
+            std::process::exit(1);
+        }
+    }
+    let s = unsafe { Box::from_raw(sched as *mut SessSched) };
+    let result = unsafe { *(s.tasks[0].1 as *const i64) };
+    for (p, layout) in &s.allocs {
+        unsafe { std::alloc::dealloc(*p, *layout) };
+    }
+    result
+}
+
+/// The arena runtime's `FuncId`s (§3).
 #[derive(Clone, Copy)]
 struct Arena {
     new: FuncId,
@@ -313,6 +451,14 @@ impl Cg {
         builder.symbol("axion_buf_sum", axion_buf_sum as *const u8);
         builder.symbol("axion_buf_free", axion_buf_free as *const u8);
         builder.symbol("axion_fold_bytes", axion_fold_bytes as *const u8);
+        builder.symbol("axion_sess_new", axion_sess_new as *const u8);
+        builder.symbol("axion_sess_channel", axion_sess_channel as *const u8);
+        builder.symbol("axion_sess_send", axion_sess_send as *const u8);
+        builder.symbol("axion_sess_pending", axion_sess_pending as *const u8);
+        builder.symbol("axion_sess_recv", axion_sess_recv as *const u8);
+        builder.symbol("axion_sess_alloc", axion_sess_alloc as *const u8);
+        builder.symbol("axion_sess_spawn", axion_sess_spawn as *const u8);
+        builder.symbol("axion_sess_run", axion_sess_run as *const u8);
         let mut module = JITModule::new(builder);
 
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {
@@ -349,8 +495,17 @@ impl Cg {
             ("axion_buf_sum", 1, true),
             ("axion_buf_free", 1, false),
             ("axion_fold_bytes", 3, true),
-            // usado pelos destrutores gerados (deep-drop) via RtCall
+            // used by the generated destructors (deep-drop) via RtCall
             ("axion_free", 1, false),
+            // cooperative session scheduler (§11)
+            ("axion_sess_new", 0, true),
+            ("axion_sess_channel", 1, true),
+            ("axion_sess_send", 3, false),
+            ("axion_sess_pending", 2, true),
+            ("axion_sess_recv", 2, true),
+            ("axion_sess_alloc", 2, true),
+            ("axion_sess_spawn", 3, false),
+            ("axion_sess_run", 3, true),
         ] {
             rt_fns.insert(name.into(), (import(&mut module, name, nparams, ret)?, ret));
         }
@@ -798,6 +953,20 @@ impl Fx<'_, '_> {
                     .builder
                     .ins()
                     .load(types::I64, MemFlags::new(), r, *off))
+            }
+            Op::StoreRaw(ptr, off, val) => {
+                let p = self.atom(ptr)?;
+                let v = self.atom(val)?;
+                self.builder.ins().store(MemFlags::new(), v, p, *off);
+                Ok(v)
+            }
+            Op::FuncAddr(name) => {
+                let (id, _) = *self
+                    .ids
+                    .get(name)
+                    .ok_or_else(|| format!("FuncAddr of undeclared function '{name}'"))?;
+                let fref = self.module.declare_func_in_func(id, self.builder.func);
+                Ok(self.builder.ins().func_addr(types::I64, fref))
             }
             Op::PutStrLn(a) => {
                 let v = self.atom(a)?;

@@ -96,6 +96,38 @@ fn session_program_runs_concurrently() {
 }
 
 #[test]
+fn session_pingpong_runs_natively() {
+    // §11, Layer 2 (native sessions): the ping-pong compiles to a cooperative
+    // state machine (`main$step`/`worker$step` over the `axion_sess_*` runtime) and
+    // runs under `--backend cranelift`, agreeing with the interpreter (both → 42).
+    // `spawn`/`send`/`recv`/`close` lowered to native; the only suspension point is
+    // a `recv` on an empty channel (defunctionalized continuation).
+    let native = axionc()
+        .args([
+            "--backend",
+            "cranelift",
+            &fixture("session_run_pingpong.axi"),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "native session should run: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "42\n");
+    let interp = axionc()
+        .arg(fixture("session_run_pingpong.axi"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "native and interpreter diverge on the session ping-pong"
+    );
+}
+
+#[test]
 fn session_offer_and_cancel_run() {
     // §6/§7: external choice (`offer`) and cancellation (`cancel` → `Closed`)
     // execute. One: `select Live` → the worker dispatches to the Live branch (→7).

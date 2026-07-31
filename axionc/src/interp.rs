@@ -814,7 +814,7 @@ struct Task {
 
 enum StepOut {
     Went(Task),    // advanced (a non-blocking operation); keep running
-    Blocked(Task), // recv de buffer vazio → suspender e trocar de tarefa
+    Blocked(Task), // recv on an empty buffer → suspend and switch tasks
     Done(Value),   // the task finished with this value
 }
 
@@ -827,7 +827,7 @@ fn ep_id(v: &Value) -> Result<usize, RunError> {
 
 /// Executes a recognized channel operation (`head args`) in the given env. Returns
 /// `Some(value)` (the operation's result) or `None` if it blocks (recv on an empty
-/// vazio). Os `spawn` acrescentam tarefas-filho a `spawned`.
+/// buffer). `spawn`s append child tasks to `spawned`.
 fn perform_op(
     prog: &Program,
     sched: &mut Sched,

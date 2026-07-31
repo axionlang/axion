@@ -40,8 +40,10 @@ Three executors for the same program, all in agreement:
 
 The general-purpose core compiles **to native**: higher-order functions
 (`map`/`filter`/`foldr`), **typeclasses** (with zero-cost monomorphization),
-`compose`/partial application, and looping IO (`mapM_`, do-blocks). Sessions
-(concurrency) still run only in the interpreter — see the roadmap.
+`compose`/partial application, and looping IO (`mapM_`, do-blocks). Native
+**sessions** have started: `spawn`/`send`/`recv`/`close` lower to a cooperative
+state machine and the concurrent ping-pong runs under `--backend cranelift`
+(choice/cancellation and `--release` still interp-only) — see the roadmap.
 
 `rustc`-style diagnostics (span + label + fix suggestion + JSON), with stable
 codes: `axionc --explain AX0001`.
@@ -145,11 +147,16 @@ calmly and tested, without breaking the philosophy:
   `compose`/partial application, functions as values — all compile to native
   (FizzBuzz runs under `--release`). This is the **1st layer of the road to native
   M:N concurrency**.
+- **Native sessions (Layer 2, in progress)** — `spawn`/`send`/`recv`/`close`
+  lower to defunctionalized cooperative state machines over a native scheduler
+  (`axion_sess_*`); the concurrent ping-pong runs under `--backend cranelift`,
+  matching the interpreter. Next: choice/cancellation, `--release` parity, then M:N.
 
 **Honesty about the state.** Known and documented debt: `Integer`/bignum missing
-(`factorial 20` runs, `50` doesn't); **sessions (concurrency) and arenas run in
-the interpreter**, not native — the scheduler is cooperative, not M:N (the native
-road is started from the bottom: IO/effects + first-class functions already
+(`factorial 20` runs, `50` doesn't); **session choice/cancellation still run only
+in the interpreter** and native sessions are cooperative, not yet M:N (the native
+road is climbing: IO/effects + first-class functions, and now the ping-pong,
+already
 native); no `Float` yet; over-application (functions that return functions and are
 re-applied) and mechanized metatheory (Iris/Actris) still to do. None is a
 correctness hole — they are growth.

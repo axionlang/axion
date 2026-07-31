@@ -212,6 +212,8 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
             vec![a]
         }
         Op::LoadRaw(a, _) => vec![a],
+        Op::StoreRaw(p, _, v) => vec![p, v],
+        Op::FuncAddr(_) => vec![],
         Op::Prim(_, a, b) | Op::Promote(a, b) => vec![a, b],
         Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
             xs.iter().collect()
@@ -729,6 +731,16 @@ impl Emit<'_> {
                 let r = self.atom(a)?;
                 Ok(self.load(&r, *off))
             }
+            Op::StoreRaw(ptr, off, val) => {
+                let p = self.atom(ptr)?;
+                let v = self.atom(val)?;
+                self.store(&p, *off, &v);
+                Ok(v)
+            }
+            Op::FuncAddr(_) => Err(
+                "native sessions are not yet supported under --release (use --backend cranelift)"
+                    .into(),
+            ),
             Op::PutStrLn(a) => {
                 let v = self.atom(a)?;
                 self.rt("axion_puts", false, &[v]);
