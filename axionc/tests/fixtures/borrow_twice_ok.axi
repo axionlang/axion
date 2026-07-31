@@ -1,5 +1,4 @@
--- Deve PASSAR: ler um %1 duas vezes são dois EMPRÉSTIMOS (Elisão de
--- Empréstimos, §2), não uma contração. O Auto-Drop injecta 'free' após a
--- última leitura (o segundo 'x').
+-- Must PASS: reading a %1 twice is two BORROWS (Borrow Elision, §2), not a
+-- contraction. Auto-Drop injects 'free' after the last read (the second 'x').
 readTwice :: Int %1 -> Int
 readTwice x = x + x

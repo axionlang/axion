@@ -36,7 +36,7 @@ use std::collections::{HashMap, HashSet};
 /// Everything else is droppable by default (§2).
 const MUST_USE_PRIMS: &[&str] = &["Ep", "Token", "Endpoint", "Transaction", "Buffer"];
 
-/// Um `free` injectado pelo Auto-Drop no ponto de morte de um recurso linear.
+/// A `free` injected by Auto-Drop at the death point of a linear resource.
 #[derive(Debug, Clone)]
 pub struct DropPoint {
     pub func: String,
@@ -67,7 +67,7 @@ pub struct ArenaReset {
 }
 
 /// Analysis result: Auto-Drop `free`s, in-place updates, and the
-/// pontos de reset NLL das sub-arenas.
+/// NLL reset points of the sub-arenas.
 #[derive(Default)]
 pub struct Analysis {
     pub drops: Vec<DropPoint>,
@@ -113,7 +113,7 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
 }
 
 /// Static typeclass coherence. Each `instance`:
-/// - refere uma classe declarada (**AX0400**);
+/// - refers to a declared class (**AX0400**);
 /// - implements ALL methods of that class (**AX0401** per missing method);
 /// - does not implement methods the class doesn't declare (**AX0402**);
 /// - is unique for its (class, type) pair — no overlap (**AX0403**).
@@ -163,7 +163,7 @@ fn check_instances(module: &Module, diags: &mut Diagnostics) {
                     format!("instance of unknown class `{}`", inst.class_name),
                 )
                 .label(inst.span.0, inst.span.1, "this class was not declared")
-                .with_help("declare `class C a where …` antes de a instanciar."),
+                .with_help("declare `class C a where …` before instantiating it."),
             );
             continue;
         };
@@ -223,7 +223,7 @@ enum Prod {
     No,
 }
 
-/// Reconhece `bound <corpo>` (ou `bound arena <corpo>`) e devolve o corpo.
+/// Recognizes `bound <body>` (or `bound arena <body>`) and returns the body.
 fn as_bound(e: &Expr) -> Option<&Expr> {
     let (head, args) = app_spine(e);
     match head {
@@ -338,7 +338,7 @@ fn peel_bound_spine<'a>(
 
 /// §9: the closure passed to `spawn` cannot CAPTURE an endpoint from outside — it can only
 /// use its parameter (the spawn's channel end). If it captured, two
-/// filhos podiam partilhar canais e formar um ciclo na topologia → deadlock.
+/// children could share channels and form a cycle in the topology → deadlock.
 /// Ensures each `spawn` only creates a parent↔child edge (tree). **AX0305**.
 fn check_spawn_capture(e: &Expr, eps: &HashSet<String>, diags: &mut Diagnostics) {
     let (head, args) = app_spine(e);
@@ -459,7 +459,7 @@ fn bind_prod(pat: &Pat, prod: Prod, eps: &mut HashSet<String>) {
 }
 
 /// If the tail returns an endpoint (a recorded var, or an operation producing one
-/// endpoint), devolve o span do escape.
+/// endpoint), returns the escape's span.
 fn tail_endpoint(e: &Expr, eps: &HashSet<String>) -> Option<Span> {
     match e {
         Expr::Var(n, _) if eps.contains(n) => Some(e.span()),
@@ -581,7 +581,7 @@ fn check_sessions(module: &Module, diags: &mut Diagnostics) {
             for (i, p) in c.pats.iter().enumerate() {
                 if let (Pat::Var(n, _), Some(t)) = (p, ptys.get(i)) {
                     if let Some(s) = endpoint_session(t) {
-                        // T5: toda a escolha externa (`Offer`/`&`) tem de incluir o
+                        // T5: every external choice (`Offer`/`&`) must include the
                         // `Closed` branch — so cancellation is always handleable.
                         check_closed_branches(&s, n, f.span, diags);
                         env.insert(n.clone(), s);
@@ -631,8 +631,8 @@ fn walk_sess(
     span: Span,
     diags: &mut Diagnostics,
 ) {
-    // `case offer c of { L1 p1 -> N1 ; … }` (&): a escolha externa. Verifica a
-    // exaustividade (todos os ramos do `Offer` tratados) e segue cada ramo com a
+    // `case offer c of { L1 p1 -> N1 ; … }` (&): the external choice. Checks
+    // exhaustiveness (all `Offer` branches handled) and follows each branch with
     // its continuation. It is the only multi-arm `case` that is tracked.
     if let Expr::Case(scrut, arms, _) = e {
         if let Some(chan) = offer_chan(scrut) {
@@ -681,7 +681,7 @@ fn offer_chan(scrut: &Expr) -> Option<String> {
     None
 }
 
-/// Verifica a escolha externa `case offer c of {ramos}`: exaustividade dos ramos
+/// Checks the external choice `case offer c of {branches}`: exhaustiveness of the branches
 /// of the `Offer` (AX0304) + fidelity/completeness of each branch (with the
 /// that label's continuation bound to the endpoint).
 fn check_offer_case(
@@ -807,11 +807,7 @@ fn classify_op(
                                      protocol does not offer the label '{label}'"
                                 ),
                             )
-                            .label(
-                                sp.0,
-                                sp.1,
-                                "invalid choice label",
-                            ),
+                            .label(sp.0, sp.1, "invalid choice label"),
                         );
                         None
                     }
@@ -853,7 +849,7 @@ fn classify_op(
             }
             None => None,
         },
-        // `offer c` (&): recebe a escolha e consome o endpoint. A exaustividade dos
+        // `offer c` (&): receives the choice and consumes the endpoint. The exhaustiveness of the
         // branches (incl. `Closed`) is checked in the type (`check_closed_branches`).
         "offer" => match env.remove(&chan) {
             Some(SessTy::Offer(_)) => Some(OpResult::Closed),
@@ -864,7 +860,7 @@ fn classify_op(
             None => None,
         },
         // `cancel c` (§7): descarta o endpoint em QUALQUER estado (pode-se sempre
-        // cancelar) — consome-o.
+        // cancel) — consumes it.
         "cancel" => {
             env.remove(&chan);
             Some(OpResult::Closed)
@@ -873,7 +869,7 @@ fn classify_op(
     }
 }
 
-/// T5 (§7): verifica recursivamente que toda a escolha externa (`Offer`/`&`) na
+/// T5 (§7): recursively checks that every external choice (`Offer`/`&`) in the
 /// session includes the `Closed` branch — so cancellation (the panicking peer sends
 /// `Closed`) is always a handleable branch of the protocol, never silently ignored.
 fn check_closed_branches(s: &SessTy, chan: &str, sp: Span, diags: &mut Diagnostics) {
@@ -1032,7 +1028,7 @@ fn builtins() -> HashSet<String> {
         // fractional permissions (§2)
         "split",
         "join",
-        // canais / session types (§6)
+        // channels / session types (§6)
         "send",
         "recv",
         "close",
@@ -1345,9 +1341,9 @@ enum Mode {
 struct Ctx {
     /// function/constructor → multiplicities of the parameters/fields (in order)
     consumers: HashMap<String, Vec<Mult>>,
-    /// nome de campo → multiplicidade declarada (para registos)
+    /// field name → declared multiplicity (for records)
     field_mults: HashMap<String, Mult>,
-    /// tipos `data` must-use (por conterem, recursivamente, um campo sem `Drop`)
+    /// must-use `data` types (because they recursively contain a field without `Drop`)
     must_use_types: HashSet<String>,
 }
 
@@ -1364,16 +1360,16 @@ fn build_ctx(module: &Module) -> Ctx {
             consumers.insert(c.name.clone(), c.fields.iter().map(|f| f.mult).collect());
             for f in &c.fields {
                 if !f.name.is_empty() {
-                    consumers.insert(f.name.clone(), vec![Mult::Many]); // selector: empresta
+                    consumers.insert(f.name.clone(), vec![Mult::Many]); // selector: borrows
                     field_mults.insert(f.name.clone(), f.mult);
                 }
             }
         }
     }
-    // `split` consome o %1 que divide (para o repartir em duas metades %0.5).
+    // `split` consumes the %1 it divides (to split it into two %0.5 halves).
     consumers.insert("split".to_string(), vec![Mult::One]);
     // Buffer U8 linear (§4/§5): as ops in-place (bufIota/xorInPlace) e o `free`
-    // consomem o Buffer %1 (xorInPlace devolve um novo %1 — o fio linear);
+    // consume the %1 Buffer (xorInPlace returns a fresh %1 — the linear thread);
     // sumBytes/withBuffer only borrow.
     consumers.insert("bufIota".to_string(), vec![Mult::One]);
     consumers.insert("xorInPlace".to_string(), vec![Mult::One, Mult::Many]);
@@ -1386,14 +1382,14 @@ fn build_ctx(module: &Module) -> Ctx {
         "foldBytes".to_string(),
         vec![Mult::Many, Mult::Many, Mult::Many],
     );
-    // canais / session types (§6): send/recv/close CONSOMEM o endpoint %1 (a posse
+    // channels / session types (§6): send/recv/close CONSUME the %1 endpoint (ownership
     // it moves; the result is the advanced endpoint — the session's linear thread). The
     // `send` payload is borrowed. Protocol fidelity is checked
     // parte (`check_sessions`).
     consumers.insert("send".to_string(), vec![Mult::One, Mult::Many]);
     consumers.insert("recv".to_string(), vec![Mult::One]);
     consumers.insert("close".to_string(), vec![Mult::One]);
-    // escolha: `select L c` consome o endpoint (arg 1); `offer c` consome-o.
+    // choice: `select L c` consumes the endpoint (arg 1); `offer c` consumes it.
     consumers.insert("select".to_string(), vec![Mult::Many, Mult::One]);
     consumers.insert("offer".to_string(), vec![Mult::One]);
     consumers.insert("cancel".to_string(), vec![Mult::One]);
@@ -1492,7 +1488,7 @@ fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
                 .fold((0, 0), add);
             add(in_binds, analyze(body, x, mode, ctx))
         }
-        // um tuplo devolvido faz a posse dos componentes fluir para fora
+        // a returned tuple makes ownership of the components flow outward
         Expr::Tuple(es, _) => es
             .iter()
             .map(|e| analyze(e, x, mode, ctx))
@@ -1714,7 +1710,7 @@ fn walk(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, mut st: MoveState) -> MoveStat
                         st.error = Some((mv, u));
                     }
                 }
-                // um bind que consome x deixa a posse movida no corpo
+                // a bind that consumes x leaves ownership moved in the body
                 if analyze_clause(c, x, ctx).0 > 0 {
                     st.moved = st.moved.or(Some(c.span));
                 }
@@ -1749,7 +1745,7 @@ fn walk_assigns(assigns: &[(String, Expr)], x: &str, ctx: &Ctx, mut st: MoveStat
     st
 }
 
-/// Junta dois caminhos alternativos (ramos): movido se algum mover; 1.º erro.
+/// Joins two alternative paths (branches): moved if either moves; 1st error.
 fn join(a: MoveState, b: MoveState) -> MoveState {
     MoveState {
         moved: a.moved.or(b.moved),
@@ -1784,7 +1780,7 @@ fn simple_bind_rhs(f: &Func) -> Option<&Expr> {
     }
 }
 
-/// Percorre o corpo recolhendo (1) os `let` que recebem posse de um recurso
+/// Walks the body collecting (1) the `let`s that take ownership of a linear
 /// linear — which become linear resources in their scope — and (2) the sites
 /// of in-place update (RecordUpd whose base is a live linear resource).
 fn scan_lets<'a>(
@@ -1801,7 +1797,7 @@ fn scan_lets<'a>(
             for b in binds {
                 if let Some(rhs) = simple_bind_rhs(b) {
                     scan_lets(rhs, &cur, ctx, lets, inplace, func);
-                    // um bind cujo RHS consome um recurso linear herda a posse
+                    // a bind whose RHS consumes a linear resource inherits ownership
                     let consumed = cur
                         .keys()
                         .find(|w| analyze(rhs, w, Mode::Consume, ctx).0 > 0)
@@ -1875,7 +1871,7 @@ fn scan_lets<'a>(
 // compile error; `promote parent v` rebinds the value to the parent arena and saves it.
 // Region provenance tracking, analogous to the move analysis.
 
-/// Reconhece `withSubArena <parent> (\sub -> corpo)` e devolve `(sub, corpo)`.
+/// Recognizes `withSubArena <parent> (\sub -> body)` and returns `(sub, body)`.
 fn as_with_sub_arena(e: &Expr) -> Option<(&str, &Expr)> {
     let (head, args) = spine(e);
     let is_wsa = matches!(head, Expr::Var(n, _) if n == "withSubArena");
@@ -1889,7 +1885,7 @@ fn as_with_sub_arena(e: &Expr) -> Option<(&str, &Expr)> {
     None
 }
 
-/// Procura recursivamente formas `withSubArena` e verifica o escape em cada uma.
+/// Recursively looks for `withSubArena` forms and checks the escape in each one.
 fn check_arena_escapes(
     e: &Expr,
     func: &str,
@@ -2033,8 +2029,8 @@ fn region_of(e: &Expr, sub: &str, sub_bound: &HashMap<String, Span>) -> Option<S
         Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => assigns
             .iter()
             .find_map(|(_, e)| region_of(e, sub, sub_bound)),
-        // uma closure que capture um valor da sub-arena carrega-o para fora
-        // (§3C: o escape pode ser por retorno OU por captura em closure).
+        // a closure that captures a sub-arena value carries it outward
+        // (§3C: the escape can be by return OR by capture in a closure).
         Expr::Lam(pats, body, _) => {
             let mut shadowed = HashSet::new();
             for p in pats {
@@ -2099,7 +2095,7 @@ fn captured_sub_ref(
 // --- arena marks: intra-scope reclamation (AX0005, Listing 3.6, §3) ---
 //
 // `mark = arena_mark arena` guarda o topo do bump-pointer; `arena_release mark`
-// recua-o, recuperando tudo o que foi alocado depois da marca. Logo, um valor
+// rolls it back, reclaiming everything allocated after the mark. Hence, a value
 // allocated after the mark cannot be used AFTER the release — its memory has
 // already been reclaimed. Ordered analysis over the `let` spine.
 
@@ -2235,12 +2231,8 @@ fn check_released_uses(
                         "AX0005",
                         format!("'{n}' used after 'arena_release' (memory already reclaimed)"),
                     )
-                    .label(sp.0, sp.1, format!("'{n}' usado aqui…"))
-                    .label(
-                        rel.0,
-                        rel.1,
-                        "…but arena_release reclaimed the memory here",
-                    )
+                    .label(sp.0, sp.1, format!("'{n}' used here…"))
+                    .label(rel.0, rel.1, "…but arena_release reclaimed the memory here")
                     .label(
                         bc.alloc.0,
                         bc.alloc.1,
@@ -2324,7 +2316,7 @@ fn check_nested_marks(e: &Expr, diags: &mut Diagnostics) {
 
 // --- fractional permissions %0.5: split/join (AX0006, §2, Listing 2.3) ---
 //
-// `split cfg` divide um %1 em duas metades %0.5 de LEITURA PARTILHADA; `join a b`
+// `split cfg` divides a %1 into two %0.5 SHARED-READ halves; `join a b`
 // recombines them into %1. A %0.5 half can be read (borrowed) freely and
 // recombined by `join`, but NEVER written: using it in a write position
 // (argument of a function's %1 parameter, or base of a record
@@ -2339,7 +2331,7 @@ fn is_split_call(e: &Expr) -> bool {
     matches!(spine(e).0, Expr::Var(n, _) if n == "split")
 }
 
-/// Procura `case (split …) of (a, b) -> arm` e verifica que as metades `a`/`b`
+/// Looks for `case (split …) of (a, b) -> arm` and checks that the halves `a`/`b`
 /// are not written in the arm.
 fn check_fractional(e: &Expr, ctx: &Ctx, diags: &mut Diagnostics) {
     if let Expr::Case(scrut, arms, _) = e {
@@ -2391,12 +2383,7 @@ fn check_half_writes(e: &Expr, half: &str, ctx: &Ctx, diags: &mut Diagnostics) {
         }
         Expr::RecordUpd(base, assigns, _) => {
             if is_var(base, half) {
-                push_write(
-                    diags,
-                    half,
-                    base.span(),
-                    "base of a record update (write)",
-                );
+                push_write(diags, half, base.span(), "base of a record update (write)");
             } else {
                 check_half_writes(base, half, ctx, diags);
             }

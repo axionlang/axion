@@ -1,6 +1,6 @@
--- Buffer U8 %1 linear + mutação in-place (§5, estilo exemplo 03). 'encrypt'
--- consome o Buffer U8 %1 e devolve a posse (XOR in-place) — um único fio linear
--- b0→b1→b2→free, nunca clonado. sum de ((i&0xFF) ^ 90) para i em 0..1000.
+-- Linear U8 %1 Buffer + in-place mutation (§5, example-03 style). 'encrypt'
+-- consumes the %1 U8 Buffer and returns ownership (in-place XOR) — a single linear
+-- thread b0→b1→b2→free, never cloned. sum of ((i&0xFF) ^ 90) for i in 0..1000.
 encrypt :: Buffer U8 %1 -> Buffer U8 %1
 encrypt buf = xorInPlace buf 90
 

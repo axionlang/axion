@@ -1,6 +1,6 @@
--- Sessão bem-tipada (§6): o endpoint envia um Int e fecha, seguindo o protocolo
--- `Send Int End`. O `check_sessions` aceita; a linearidade do endpoint (%1) e a
--- fidelidade de protocolo estão ambas satisfeitas.
+-- Well-typed session (§6): the endpoint sends an Int and closes, following the
+-- protocol `Send Int End`. `check_sessions` accepts; the endpoint's linearity (%1)
+-- and protocol fidelity are both satisfied.
 worker :: Ep (Send Int End) %1 -> IO ()
 worker chan = do
   c2 <- send chan 42

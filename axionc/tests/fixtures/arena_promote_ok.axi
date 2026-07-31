@@ -1,5 +1,5 @@
--- Deve PASSAR: 'node' vive na sub-arena, mas é movido para a arena-pai com
--- 'promote parent node' antes do reset — logo 'node2' sobrevive (Listagem 3.4).
+-- Must PASS: 'node' lives in the sub-arena, but is moved to the parent arena
+-- with 'promote parent node' before the reset — so 'node2' survives (Listing 3.4).
 ok :: Arena -> Cell
 ok parent =
   withSubArena parent (\sub ->

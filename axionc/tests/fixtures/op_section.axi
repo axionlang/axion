@@ -1,5 +1,5 @@
--- Secção de operador: `(+)` como valor de função de primeira classe →
--- desugar `\a b -> a + b`. Passada a uma função de ordem superior. = 7.
+-- Operator section: `(+)` as a first-class function value →
+-- desugars to `\a b -> a + b`. Passed to a higher-order function. = 7.
 apply2 :: (Int -> Int -> Int) -> Int -> Int -> Int
 apply2 f x y = f x y
 

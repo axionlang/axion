@@ -1,7 +1,7 @@
-# Fase 0 — configuração mínima do hlint para o protótipo EDSL.
+# Phase 0 — minimal hlint configuration for the EDSL prototype.
 - arguments: [-XLinearTypes, -XGHC2021]
 
-# O idioma linear (consumir-e-devolver) usa tuplos e case-of-() de propósito;
-# não deixar o hlint "simplificar" o que carrega a semântica de posse.
+# The linear idiom (consume-and-return) uses tuples and case-of-() on purpose;
+# don't let hlint "simplify" what carries the ownership semantics.
 - ignore: {name: "Use camelCase"}
 - ignore: {name: "Redundant bracket"}

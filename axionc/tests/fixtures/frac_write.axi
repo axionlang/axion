@@ -1,6 +1,6 @@
--- Deve FALHAR com AX0006: 'a' é uma metade %0.5 (leitura partilhada) e é
--- passada a 'writeCfg' (parâmetro %1) — escrever através de uma metade não é
--- permitido; recombine com 'join' para recuperar a escrita (§2, Listagem 2.3).
+-- Must FAIL with AX0006: 'a' is a %0.5 half (shared read) and is passed to
+-- 'writeCfg' (a %1 parameter) — writing through a half is not allowed; recombine
+-- with 'join' to recover write access (§2, Listing 2.3).
 data Config = Config { level :: Int }
 
 writeCfg :: Config %1 -> Config

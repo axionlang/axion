@@ -1,4 +1,4 @@
--- AX0402: a instância implementa um método que a classe não declara.
+-- AX0402: the instance implements a method the class does not declare.
 class Eq2 a where
   eq2 :: a -> a -> Bool
 

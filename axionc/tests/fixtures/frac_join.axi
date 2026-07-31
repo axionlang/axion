@@ -1,5 +1,5 @@
--- Deve PASSAR e correr: 'split' divide o Config %1 em duas metades %0.5, que
--- são lidas/recombinadas por 'join' (recuperando o %1). level (join a b) == 7.
+-- Must PASS and run: 'split' divides the %1 Config into two %0.5 halves, which
+-- are read/recombined by 'join' (recovering the %1). level (join a b) == 7.
 data Config = Config { level :: Int }
 
 splitJoin :: Config %1 -> Int

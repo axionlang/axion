@@ -1,4 +1,4 @@
--- AX0401: a instância não implementa todos os métodos da classe.
+-- AX0401: the instance does not implement all of the class's methods.
 class Eq2 a where
   eq2 :: a -> a -> Bool
   ne2 :: a -> a -> Bool

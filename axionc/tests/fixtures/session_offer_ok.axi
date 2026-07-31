@@ -1,3 +1,3 @@
--- Escolha externa bem-formada: o `Offer` inclui o ramo `Closed` (T5). Aceite.
+-- Well-formed external choice: the `Offer` includes the `Closed` branch (T5). Accepted.
 handler :: Ep (Offer (Live End) (Closed End)) %1 -> IO ()
 handler c = offer c

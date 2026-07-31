@@ -1,6 +1,6 @@
--- Deep-drop (§2): registo aninhado. `Box` possui um `P` (alocação separada). O
--- destrutor gerado `axion_drop_Box` liberta o `P` interno e depois o `Box` — um
--- free plano perderia o interno. main = a(inner)+b(inner)+tag = 3+4+5 = 12.
+-- Deep-drop (§2): nested record. `Box` owns a `P` (a separate allocation). The
+-- generated destructor `axion_drop_Box` frees the inner `P` and then the `Box` — a
+-- flat free would leak the inner one. main = a(inner)+b(inner)+tag = 3+4+5 = 12.
 data P = P { a :: Int, b :: Int }
 data Box = Box { inner :: P, tag :: Int }
 

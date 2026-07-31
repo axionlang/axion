@@ -17,7 +17,7 @@ struct Scope {
 /// Table of top-level functions and constructors, resolved by name at runtime.
 pub struct Program {
     funcs: HashMap<String, Rc<Func>>,
-    cons: HashMap<String, Vec<String>>, // construtor → nomes dos campos (por ordem)
+    cons: HashMap<String, Vec<String>>, // constructor → field names (in order)
     selectors: HashSet<String>,         // field names usable as selectors
     foreigns: HashMap<String, usize>,   // FFI imports: C name → arity
     methods: HashSet<String>,           // typeclass method names (dynamic dispatch)
@@ -174,8 +174,8 @@ pub fn run(module: &Module) -> Result<(), RunError> {
             Ok(())
         }
         Value::Unit => Ok(()),
-        // 'main :: Int' / 'main :: Bool' — imprime o resultado, tal como o
-        // backend nativo, para os dois caminhos concordarem.
+        // 'main :: Int' / 'main :: Bool' — prints the result, just like the
+        // native backend, so the two paths agree.
         Value::Int(n) => {
             println!("{n}");
             Ok(())
@@ -245,7 +245,7 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         },
         Expr::Var(name, _) => resolve_var(prog, env, name),
         Expr::App(f, x, _) => {
-            // `bound <corpo>` (§9/§11): abre o nursery e corre o scheduler
+            // `bound <body>` (§9/§11): opens the nursery and runs the scheduler
             // cooperative session scheduler instead of normal evaluation.
             if let (Some("bound"), args) = app_head(e) {
                 if let Some(body) = args.last() {
@@ -432,7 +432,7 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
 }
 
 /// Forces CAFs (arity-0 functions, like `main`, and nullary constructors)
-/// avaliando o corpo / construindo o registo.
+/// evaluating the body / building the record.
 fn force(prog: &Program, v: Value) -> Result<Value, RunError> {
     match v {
         Value::Closure { def, env, args } if args.len() >= clause_arity(&def) => {
@@ -515,10 +515,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         // the instance implementation (`eq` over an Int → `eq$Int`), and applies.
         Value::Method { name } => {
             let head = value_type_head(prog, &arg).ok_or_else(|| {
-                format!(
-                    "no instance for method '{name}' over a {}",
-                    type_name(&arg)
-                )
+                format!("no instance for method '{name}' over a {}", type_name(&arg))
             })?;
             let impl_fn = crate::ast::method_impl_name(&name, &head);
             let def = prog
@@ -598,10 +595,7 @@ fn run_func(
             return eval_body(prog, &child, &clause.body);
         }
     }
-    Err(format!(
-        "no clause of '{}' matched the arguments",
-        def.name
-    ))
+    Err(format!("no clause of '{}' matched the arguments", def.name))
 }
 
 fn eval_body(prog: &Program, env: &Env, body: &Body) -> Result<Value, RunError> {
@@ -706,7 +700,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("putStr", [Value::Str(s)]) => Ok(Value::Io(s.clone())),
         ("show", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
         ("show", [Value::Bool(b)]) => Ok(Value::Str(b.to_string())),
-        // split divide num par de metades de leitura partilhada (partilham o
+        // split divides into a pair of shared-read halves (they share the
         // value); join recombines — trivial semantics in the interpreter.
         ("split", [v]) => Ok(Value::Tuple(vec![v.clone(), v.clone()])),
         ("join", [a, _b]) => Ok(a.clone()),
@@ -759,7 +753,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
 //
 // Gives EXECUTION to `bound`/`spawn`/channel programs. Follows §11: tasks
 // are "defunctionalized continuations" — and the continuation of a `do` is, quite
-// literalmente, o `Expr` restante (a cadeia de `case` que o desugar produz).
+// literally, the remaining `Expr` (the chain of `case` the desugar produces).
 // A single-thread cooperative scheduler runs each task until it blocks on a
 // `recv` on an empty channel (the only suspension point, §11), then switches. No
 // threads nor `Send` — the `Value`s (Rc) always stay on a single thread. The
@@ -789,7 +783,7 @@ fn is_session_op(name: &str) -> bool {
 
 struct Sched {
     /// input buffer of each endpoint (messages waiting to be received
-    /// pelo dono deste endpoint); enviar em `e` empurra para o buffer do par.
+    /// by this endpoint's owner); sending on `e` pushes to the peer's buffer.
     bufs: Vec<std::collections::VecDeque<Value>>,
     peer: Vec<usize>,
 }
@@ -814,14 +808,14 @@ impl Sched {
 }
 
 struct Task {
-    cont: Expr, // o `do`-corpo restante (cadeia de `case`)
+    cont: Expr, // the remaining `do`-body (chain of `case`)
     env: Env,
 }
 
 enum StepOut {
     Went(Task),    // advanced (a non-blocking operation); keep running
     Blocked(Task), // recv de buffer vazio → suspender e trocar de tarefa
-    Done(Value),   // a tarefa terminou com este valor
+    Done(Value),   // the task finished with this value
 }
 
 fn ep_id(v: &Value) -> Result<usize, RunError> {
@@ -869,12 +863,12 @@ fn perform_op(
             Some(Value::Endpoint(ep))
         }
         "close" => {
-            eval(prog, env, args[0])?; // consome o endpoint
+            eval(prog, env, args[0])?; // consumes the endpoint
             Some(Value::Unit)
         }
         "cancel" => {
             // §7: discards the endpoint and warns the peer with `Closed` (the label
-            // `offer` do par recebe como o ramo de cancelamento — T5).
+            // the peer's `offer` receives as the cancellation branch — T5).
             let ep = ep_id(&eval(prog, env, args[0])?)?;
             sched.send(ep, Value::Str("Closed".to_string()));
             Some(Value::Unit)
@@ -937,7 +931,7 @@ fn step(
             return Err(format!("offer: no branch handles the label '{label}'"));
         }
     }
-    // `case <op> of pat -> resto` → executa, liga `pat`, continua com `resto`.
+    // `case <op> of pat -> rest` → runs, binds `pat`, continues with `rest`.
     if let Expr::Case(scrut, arms, _) = &task.cont {
         if arms.len() == 1 {
             if let Some((head, args)) = as_session_op(scrut) {
@@ -1036,7 +1030,7 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
                     StepOut::Done(v) => {
                         progressed = true;
                         if i == 0 {
-                            return Ok(v); // a raiz terminou → o valor do `bound`
+                            return Ok(v); // the root finished → the `bound` value
                         }
                         break; // um filho terminou → descarta
                     }
@@ -1044,7 +1038,9 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
             }
         }
         if !progressed {
-            return Err("deadlock in the scheduler (should not happen — types guarantee it)".into());
+            return Err(
+                "deadlock in the scheduler (should not happen — types guarantee it)".into(),
+            );
         }
     }
 }

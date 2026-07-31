@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Suíte de micro-benchmarks (§13): compara os DOIS backends da Axion — --dev
-# (Cranelift, sem opt) e --release (LLVM -O2 -flto) — contra C e Rust em -O0/-O2.
-# Kernels: fib (recursão/ramos), loop (200M iterações aritméticas), alloc (40M
-# alocações — arena na Axion, malloc/Box em C/Rust), simd (redução vectorizável;
-# Axion N/A — §4 por construir). Usa o MESMO clang (LLVM) para o C e para o
-# Axion --release, para o escalão ser comparável. Precisa de clang (AXION_CLANG
-# ou no PATH; p.ex. `nix shell nixpkgs#llvmPackages_18.clang`).
+# Micro-benchmark suite (§13): compares Axion's TWO backends — --dev
+# (Cranelift, no opt) and --release (LLVM -O2 -flto) — against C and Rust at -O0/-O2.
+# Kernels: fib (recursion/branches), loop (200M arithmetic iterations), alloc (40M
+# allocations — arena in Axion, malloc/Box in C/Rust), simd (vectorizable reduction;
+# Axion N/A — §4 to be built). Uses the SAME clang (LLVM) for C and for
+# Axion --release, so the tier is comparable. Needs clang (AXION_CLANG
+# or on PATH; e.g. `nix shell nixpkgs#llvmPackages_18.clang`).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,12 +16,12 @@ RUNS="${RUNS:-3}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "A compilar o axionc…"
+echo "Building axionc…"
 (cd axionc && cargo build -q) || exit 2
-command -v "$CLANG" >/dev/null 2>&1 || { echo "clang não encontrado (define AXION_CLANG)"; exit 2; }
+command -v "$CLANG" >/dev/null 2>&1 || { echo "clang not found (set AXION_CLANG)"; exit 2; }
 have_rust=1; command -v rustc >/dev/null 2>&1 || have_rust=0
 
-# timeit CMD…  → menor tempo (ms) em MS, stdout em OUT (melhor de RUNS).
+# timeit CMD…  → lowest time (ms) in MS, stdout in OUT (best of RUNS).
 timeit() {
   local best="" out t0 t1 ms
   for _ in $(seq "$RUNS"); do
@@ -32,7 +32,7 @@ timeit() {
   MS=$best; OUT=$out
 }
 
-declare -A T R           # T[kernel:variante]=ms   R[kernel:variante]=resultado
+declare -A T R           # T[kernel:variant]=ms   R[kernel:variant]=result
 run() { local key="$1"; shift; if [ "$1" = "SKIP" ]; then T[$key]="-"; R[$key]=""; return; fi
         timeit "$@"; T[$key]=$MS; R[$key]=$OUT; }
 
@@ -61,7 +61,7 @@ KERNELS="fib loop alloc simd dispatch"
 for k in $KERNELS; do bench_kernel "$k"; bench_c "$k"; bench_rust "$k"; done
 
 echo
-echo "Tempos (ms, melhor de $RUNS) — o mesmo clang (LLVM) para C e para Axion --release:"
+echo "Times (ms, best of $RUNS) — the same clang (LLVM) for C and for Axion --release:"
 printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "kernel" "Ax --dev" "Ax --rel" "C -O0" "C -O2" "Rs -O0" "Rs -O2"
 printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "------" "--------" "--------" "-----" "-----" "------" "------"
 for k in fib loop alloc simd dispatch; do
@@ -70,15 +70,15 @@ for k in fib loop alloc simd dispatch; do
 done
 
 echo
-# verifica correção: por kernel, todos os resultados presentes têm de coincidir.
+# checks correctness: per kernel, all present results must match.
 ok=1
 for k in fib loop alloc simd dispatch; do
   ref=""
   for v in dev rel c0 c2 r0 r2; do
     r="${R[$k:$v]:-}"; [ -n "$r" ] || continue
     if [ -z "$ref" ]; then ref="$r"; elif [ "$r" != "$ref" ]; then
-      echo "AVISO: $k/$v = '$r' ≠ '$ref'"; ok=0
+      echo "WARNING: $k/$v = '$r' ≠ '$ref'"; ok=0
     fi
   done
 done
-[ "$ok" = 1 ] && echo "OK: em cada kernel, todas as variantes concordam no resultado." || exit 1
+[ "$ok" = 1 ] && echo "OK: in each kernel, all variants agree on the result." || exit 1

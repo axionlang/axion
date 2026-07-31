@@ -1,9 +1,9 @@
--- Monomorfização (fatia 2b-ii): chamadas de método sobre recetores estaticamente
--- concretos são reescritas para chamadas directas à impl (`sz (Box 10)` →
--- `sz$Box (Box 10)`), logo COMPILAM NATIVAMENTE. Corre nos três executores
--- (interp, --dev/Cranelift, --release/LLVM), todos a dar 20.
--- Instâncias escritas com `case`/aritmética (nativa-amigáveis): padrões-construtor
--- em cabeças multi-cláusula ainda são interp-only (limitação nativa ortogonal).
+-- Monomorphization (slice 2b-ii): method calls on statically concrete receivers
+-- are rewritten to direct calls to the impl (`sz (Box 10)` →
+-- `sz$Box (Box 10)`), so they COMPILE NATIVELY. Runs in all three executors
+-- (interp, --dev/Cranelift, --release/LLVM), all yielding 20.
+-- Instances written with `case`/arithmetic (native-friendly): constructor patterns
+-- in multi-clause heads are still interp-only (an orthogonal native limitation).
 class Sized a where
   sz :: a -> Int
 

@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  # Fase 0 — a bancada EDSL (Haskell) corre no dev shell reprodutível do flake.
+  # Phase 0 — the EDSL bench (Haskell) runs in the flake's reproducible dev shell.
   prototype:
     runs-on: ubuntu-latest
     steps:
@@ -17,22 +17,22 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build (biblioteca + exe + testes)
+      - name: Build (library + exe + tests)
         run: nix develop --command cabal build all
 
-      - name: Testes (tasty — unidade + andaime de propriedades)
+      - name: Tests (tasty — unit + property scaffold)
         run: nix develop --command cabal test --test-show-details=direct
 
-      - name: Teste negativo (Buffer %1 usado 2x tem de FALHAR — AX0001)
+      - name: Negative test (a %1 Buffer used 2x must FAIL — AX0001)
         run: nix develop --command ./scripts/check-negative.sh
 
-      - name: Formatação (fourmolu)
+      - name: Formatting (fourmolu)
         run: nix develop --command fourmolu --mode check prototype
 
       - name: Lint (hlint)
         run: nix develop --command hlint prototype
 
-  # Fase 1 — o compilador próprio (axionc, Rust): parse → typecheck → correr.
+  # Phase 1 — the own compiler (axionc, Rust): parse → typecheck → run.
   axionc:
     runs-on: ubuntu-latest
     defaults:
@@ -47,17 +47,17 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
-      - name: Testes de integração (corre 01/02, rejeita AX0001/AX0002)
+      - name: Integration tests (runs 01/02, rejects AX0001/AX0002)
         run: cargo test --verbose
 
-      - name: Formatação (rustfmt)
+      - name: Formatting (rustfmt)
         run: cargo fmt --check
 
       - name: Lint (clippy, incl. testes)
         run: cargo clippy --all-targets -- -D warnings
 
-  # Diferencial (§17): axionc e o oráculo GHC (bancada EDSL) têm de dar o mesmo
-  # veredito de linearidade. Precisa de Rust (axionc) e Nix (GHC).
+  # Differential (§17): axionc and the GHC oracle (EDSL bench) must give the same
+  # linearity verdict. Needs Rust (axionc) and Nix (GHC).
   differential:
     runs-on: ubuntu-latest
     steps:
@@ -68,19 +68,19 @@ jobs:
             experimental-features = nix-command flakes
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: axionc vs oráculo GHC
+      - name: axionc vs the GHC oracle
         run: ./scripts/differential.sh
 
-  # Sanitizers (§2/§11): a memória segura sem GC tem de o ser de facto. O runtime
-  # nativo (LLVM IR do --release + runtime C) corre sob AddressSanitizer (zero
-  # uso-após-livre/dupla-free em todas as fixtures) e LeakSanitizer (allocs==frees
-  # no subconjunto provado sem fugas). Precisa de Rust (axionc) e clang.
+  # Sanitizers (§2/§11): GC-free memory safety has to actually be safe. The native
+  # runtime (--release LLVM IR + C runtime) runs under AddressSanitizer (zero
+  # use-after-free/double-free across all fixtures) and LeakSanitizer (allocs==frees
+  # on the proven leak-free subset). Needs Rust (axionc) and clang.
   sanitize:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Instalar clang
+      - name: Install clang
         run: sudo apt-get update && sudo apt-get install -y clang
-      - name: Runtime nativo sob ASan + LSan
+      - name: Native runtime under ASan + LSan
         run: AXION_CLANG=clang ./scripts/sanitize.sh

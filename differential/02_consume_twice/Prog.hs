@@ -1,7 +1,7 @@
 {-# LANGUAGE LinearTypes #-}
 
--- Mesmo cenário na bancada EDSL: o Buffer %1 é consumido DUAS vezes → o GHC
--- rejeita com erro de multiplicidade (o análogo de AX0001).
+-- Same scenario on the EDSL bench: the %1 Buffer is consumed TWICE → GHC
+-- rejects with a multiplicity error (the analog of AX0001).
 module Prog where
 
 import Axion.Prototype.Buffer (free, withBuffer)

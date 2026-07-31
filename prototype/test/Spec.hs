@@ -15,19 +15,19 @@ main = defaultMain tests
 tests :: TestTree
 tests =
   testGroup
-    "Axion · Fase 0 — bancada de validação semântica"
+    "Axion · Phase 0 — semantic validation bench"
     [ testGroup
-        "Unidade (fios lineares bem-tipados)"
-        [ testCase "checksum após set 42 @0 == 42" $
+        "Unit (well-typed linear threads)"
+        [ testCase "checksum after set 42 @0 == 42" $
             case writeThenChecksum of Ur c -> c @?= 42
-        , testCase "get 0 após set 7 @0 == 7" $
+        , testCase "get 0 after set 7 @0 == 7" $
             case firstByte of Ur b -> b @?= 7
         ]
-    , -- Andaime de propriedades (§17: «o andaime, não os testes ainda»). Na
-      -- Fase 1 este grupo cresce para preservação/progresso do typechecker.
+    , -- Property scaffold (§17: "the scaffold, not the tests yet"). In
+      -- Phase 1 this group grows into typechecker preservation/progress.
       testGroup
-        "Propriedades (andaime)"
-        [ testProperty "checksum de buffer de zeros com x escrito em 0 vale x" $
+        "Properties (scaffold)"
+        [ testProperty "checksum of a zero buffer with x written at 0 equals x" $
             \(Positive n) (x :: Word8) ->
               checksumWith n 0 x === fromIntegral x
         ]

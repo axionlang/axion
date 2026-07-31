@@ -1,4 +1,4 @@
--- 40M células em arenas (§3): withArena bump-aloca 20000/chamada, reset em massa.
+-- 40M cells in arenas (§3): withArena bump-allocates 20000/call, bulk reset.
 useCell :: Cell -> Int
 useCell c = 0
 

@@ -6,7 +6,7 @@
 checksum :: Buffer U8 -> U32            -- borrow: no %1, 'buf' is NOT consumed
 checksum buf = foldBytes (+) 0 buf
 
-encrypt :: Buffer U8 %1 -> Buffer U8 %1 -- consome e devolve a posse
+encrypt :: Buffer U8 %1 -> Buffer U8 %1 -- consumes and returns ownership
 encrypt buf = imperative $ do xorInPlace buf 0x5A
 
 process :: Buffer U8 %1 -> (U32, Buffer U8 %1)

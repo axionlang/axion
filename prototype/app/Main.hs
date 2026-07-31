@@ -7,7 +7,7 @@ main :: IO ()
 main = do
   let Ur c = writeThenChecksum
       Ur b = firstByte
-  putStrLn "Axion · Fase 0 — protótipo EDSL (validação semântica de linearidade)"
-  putStrLn ("  checksum após set 42 @0 : " <> show c)
-  putStrLn ("  get 0 após set 7 @0     : " <> show b)
-  putStrLn "OK: o fio linear compilou e correu (um Buffer %1, consumido uma vez)."
+  putStrLn "Axion · Phase 0 — EDSL prototype (semantic validation of linearity)"
+  putStrLn ("  checksum after set 42 @0 : " <> show c)
+  putStrLn ("  get 0 after set 7 @0     : " <> show b)
+  putStrLn "OK: the linear thread compiled and ran (a %1 Buffer, consumed once)."

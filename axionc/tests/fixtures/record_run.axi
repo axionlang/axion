@@ -1,6 +1,6 @@
--- Registo executável: construção, actualização e selector de campo.
--- Exercita o mesmo maquinário da Listagem 2.1 (04), mas sem o Buffer linear
--- (que é território da Fase 2), para poder correr end-to-end.
+-- Executable record: construction, update and field selector.
+-- Exercises the same machinery as Listing 2.1 (04), but without the linear Buffer
+-- (which is Phase 2 territory), so it can run end-to-end.
 data Point = Point { x :: Int, y :: Int }
 
 shiftX :: Point -> Point

@@ -1,6 +1,6 @@
--- Deep-drop (§2): tipo-soma com payload de heap. `Some P` possui um `P`; o
--- destrutor `axion_drop_Opt` despacha pelo tag e liberta o `P` no braço `Some`.
--- main = val (Some (P 10 5)) + val None = 15 + 0 = 15.
+-- Deep-drop (§2): sum type with a heap payload. `Some P` owns a `P`; the
+-- destructor `axion_drop_Opt` dispatches on the tag and frees the `P` in the `Some`
+-- arm. main = val (Some (P 10 5)) + val None = 15 + 0 = 15.
 data P = P { a :: Int, b :: Int }
 data Opt = None | Some P
 

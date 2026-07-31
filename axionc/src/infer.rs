@@ -70,12 +70,12 @@ struct Obl {
     func: String,
 }
 
-/// Um uso de uma FUNÇÃO CONSTRANGIDA (`f :: C a => …`) — recolhido para a
-/// monomorphization: if the constraint var resolves to a concrete type
-/// concreto no call-site, especializa-se `f` a esse tipo.
+/// A use of a CONSTRAINED FUNCTION (`f :: C a => …`) — collected for
+/// monomorphization: if the constraint var resolves to a concrete type at the
+/// call-site, `f` is specialized to that type.
 struct SpecObl {
     target: String, // the constrained function called
-    ty: Ty,         // o tipo da var de constraint neste uso
+    ty: Ty,         // the type of the constraint var at this use
     span: Span,
     func: String, // function where the use occurs (caller)
 }
@@ -88,7 +88,7 @@ pub struct Mono {
 }
 
 /// Instruction to clone `src` into a monomorphic function `name`, substituting the
-/// de constraint `tyvar` pelo tipo `ty_head` na assinatura, e reescrevendo os usos
+/// the constraint var `tyvar` by the type `ty_head` in the signature, and rewriting the
 /// internal uses (span → direct name: methods→`m$T`, self-recursion→`name`).
 pub struct SpecPlan {
     pub src: String,
@@ -121,7 +121,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
 
     // types of constructors and selectors from the `data` declarations. A
     // vars map SHARED per decl links the type parameters (`a` in
-    // `data List a`) ao mesmo `Ty::Var` no resultado (`List a`) e nos campos,
+    // `data List a`) to the same `Ty::Var` in the result (`List a`) and in the fields,
     // e o esquema generaliza-os (`Cons :: forall a. a -> List a -> List a`).
     for d in &module.datas {
         let mut vars: HashMap<String, u32> = HashMap::new();
@@ -147,7 +147,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
                 })
                 .collect();
 
-            // construtor: campo1 -> ... -> T params, quantificado sobre as vars
+            // constructor: field1 -> ... -> T params, quantified over the vars
             let mut cty = result.clone();
             for (_, ft) in fields.iter().rev() {
                 cty = Ty::Fun(Box::new(ft.clone()), Box::new(cty));
@@ -284,7 +284,7 @@ fn nth_param(ty: &Ty, idx: usize) -> Option<Ty> {
     }
 }
 
-/// Os inteiros de largura fixa (§4) colapsam para `Int` neste sistema de tipos
+/// The fixed-width integers (§4) collapse to `Int` in this type system,
 /// simplified (arithmetic is all `Int`); e.g. `U8`, `U32` → `Int`.
 fn normalize_num(n: &str) -> String {
     match n {
@@ -297,7 +297,7 @@ fn normalize_num(n: &str) -> String {
 
 /// Converts an AST `Type` into `Ty`, mapping variables by name via `vars`
 /// (shared, so the same name — e.g. the `a` of `data List a` — gives the same
-/// `Ty::Var` no resultado e nos campos). Vars novas apanham ids a partir de `next`.
+/// `Ty::Var` in the result and in the fields). Fresh vars take ids starting from `next`.
 fn ast_ty(t: &Type, vars: &mut HashMap<String, u32>, next: &mut u32) -> Ty {
     match t {
         Type::Con(n) => Ty::Con(normalize_num(n), Vec::new()),
@@ -559,9 +559,9 @@ impl<'a> Infer<'a> {
             },
         );
         // `mapM_` is no longer a builtin — it is a prelude function (pure Axion
-        // sobre `case`), para compilar nativamente como qualquer HOF (IO nativo).
-        // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
-        // corpo e reclama tudo no fim (a entrada para correr programas de arena).
+        // over `case`), to compile natively like any HOF (native IO).
+        // withArena :: forall a. (Arena -> a) -> a — creates the root arena, runs the
+        // body and reclaims everything at the end (the entry point to run arena programs).
         env.insert(
             "withArena".into(),
             Scheme {
@@ -808,7 +808,7 @@ impl<'a> Infer<'a> {
         let specs_obls = std::mem::take(&mut self.spec_obligations);
         for s in specs_obls {
             match self.resolve(&s.ty) {
-                // chamada num tipo concreto → semente `(fn, T)` + call-site.
+                // called at a concrete type → seed `(fn, T)` + call-site.
                 Ty::Con(t, _) => seeds.push((s.func.clone(), s.span, s.target.clone(), t)),
                 // call over the generic var → rewritten to `$T` when the
                 // caller is specialized (self-recursion is the `g == f` case).
@@ -987,15 +987,12 @@ impl<'a> Infer<'a> {
         let sa = show_ty(&self.apply(a));
         let sb = show_ty(&self.apply(b));
         self.diags.push(
-            Diagnostic::error(
-                "AX0200",
-                format!("type mismatch: {sa} vs {sb}"),
-            )
-            .label(span.0, span.1, format!("expected {sa}, found {sb}"))
-            .with_help(
-                "inference required these two types to be equal; check the signature and the \
+            Diagnostic::error("AX0200", format!("type mismatch: {sa} vs {sb}"))
+                .label(span.0, span.1, format!("expected {sa}, found {sb}"))
+                .with_help(
+                    "inference required these two types to be equal; check the signature and the \
                  arguments of the application.",
-            ),
+                ),
         );
     }
 
@@ -1118,7 +1115,7 @@ impl<'a> Infer<'a> {
                 t
             }
             Pat::Con(name, args, span) => {
-                // construtor aplicado: instancia o tipo do construtor
+                // applied constructor: instantiates the constructor's type
                 let cty = match env.get(name) {
                     Some(s) => self.instantiate(s),
                     None => return self.fresh(),
@@ -1137,7 +1134,7 @@ impl<'a> Infer<'a> {
     }
 
     /// Infers a group of bindings (`let`/`where`) with generalization and
-    /// devolve o env estendido.
+    /// returns the extended env.
     fn infer_group(&mut self, env: &Env, funcs: &[Func]) -> Env {
         if funcs.is_empty() {
             return env.clone();
@@ -1293,7 +1290,7 @@ impl<'a> Infer<'a> {
                         }
                     }
                 } else {
-                    // base ainda desconhecida: apenas infere os campos
+                    // base still unknown: only infers the fields
                     for (_, fexpr) in assigns {
                         self.infer_expr(env, fexpr);
                     }

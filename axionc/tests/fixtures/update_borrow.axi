@@ -1,8 +1,8 @@
--- Reclamação da base de um update por cópia (Auto-Drop §2): `shiftX` empresta o
--- registo (lê os campos para alocar uma cópia com `x` alterado, não o retém),
--- pelo que `main` — que o aloca — o liberta após a chamada. Sem `show`/IO, para
--- o resultado ser um Int puro (sem a string do runtime) e o LSan provar 0 fugas.
--- shiftX (Point 1 2) = Point 99 2;  soma dos campos de ambos = (1+2)+(99+2) = 104.
+-- Reclaiming the base of a copy-update (Auto-Drop §2): `shiftX` borrows the
+-- record (reads the fields to allocate a copy with `x` changed, does not retain it),
+-- so `main` — which allocates it — frees it after the call. No `show`/IO, so the
+-- result is a pure Int (no runtime string) and LSan can prove 0 leaks.
+-- shiftX (Point 1 2) = Point 99 2;  sum of both records' fields = (1+2)+(99+2) = 104.
 data Point = Point { x :: Int, y :: Int }
 
 sumP :: Point -> Int

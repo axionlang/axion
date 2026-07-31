@@ -1,5 +1,5 @@
--- Prelúdio, degrau 3: ++ (concatenação), concat, zipWith, zip. Tudo Axion puro
--- sobre o `List` embutido. sum ([1,2]++[3,4]++[10]) = 20; sum(concat[[1],[2,3]])
+-- Prelude, step 3: ++ (concatenation), concat, zipWith, zip. All pure Axion over
+-- the built-in `List`. sum ([1,2]++[3,4]++[10]) = 20; sum(concat[[1],[2,3]])
 -- = 6; sum(zipWith (*) [1,2,3] [10,20,30,40]) = 140; sum(map snd (zip[1,2][5,6]))
 -- = 11. Total = 20 + 6 + 140 + 11 = 177.
 snd :: (Int, Int) -> Int

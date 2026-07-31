@@ -1,4 +1,4 @@
--- 200M iterações: acumulação aritmética com `mod` (não-fechável pelo -O2).
+-- 200M iterations: arithmetic accumulation with `mod` (not foldable by -O2).
 inner :: Int -> Int -> Int
 inner acc 0 = acc
 inner acc n = inner ((acc + n * n) `mod` 2147483647) (n - 1)

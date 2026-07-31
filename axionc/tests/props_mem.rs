@@ -1,19 +1,19 @@
-//! Property tests **generativos** das análises de memória (Auto-Drop §2).
+//! **Generative** property tests of the memory analyses (Auto-Drop §2).
 //!
-//! Gera programas lineares aleatórios (registos planos, leituras de campo,
-//! empréstimos, moves `%1`, `if`/`let`, aritmética) — o fragmento *totalmente
-//! reclamável* — e, para cada um, exige três invariantes no backend nativo:
+//! Generates random linear programs (flat records, field reads, borrows, `%1`
+//! moves, `if`/`let`, arithmetic) — the *fully reclaimable* fragment — and, for
+//! each one, requires three invariants in the native backend:
 //!
-//!   1. **Sem corrupção:** o `--backend cranelift` compila e corre sem crashar
-//!      (um uso-após-livre/dupla-free rebentaria).
-//!   2. **Sem fugas / dupla-free:** `AXION_HEAP_STATS` dá `allocs == frees` —
-//!      cada registo alocado é libertado exactamente uma vez.
-//!   3. **Concordância de executores:** o resultado nativo == o do interpretador.
+//!   1. **No corruption:** `--backend cranelift` compiles and runs without crashing
+//!      (a use-after-free/double-free would blow up).
+//!   2. **No leaks / double-free:** `AXION_HEAP_STATS` gives `allocs == frees` —
+//!      each allocated record is freed exactly once.
+//!   3. **Executor agreement:** the native result == the interpreter's.
 //!
-//! Cobre exactamente as análises endurecidas (empréstimo puro `BorrowArgs`, Drop
-//! estrutural, equilíbrio de `if`/`case`, reclamação entre funções). O fragmento
-//! evita de propósito o que ainda vaza por opção conservadora (registos
-//! aninhados, `show`, closures devolvidas) — ver docs/backend.md.
+//! Covers exactly the hardened analyses (pure `BorrowArgs` borrow, structural Drop,
+//! `if`/`case` balancing, cross-function reclamation). The fragment deliberately
+//! avoids what still leaks by conservative choice (nested records, `show`,
+//! returned closures) — see docs/backend.md.
 
 use std::process::Command;
 
@@ -21,7 +21,7 @@ fn axionc() -> Command {
     Command::new(env!("CARGO_BIN_EXE_axionc"))
 }
 
-/// PRNG determinístico (xorshift64*), sem dependências — igual ao de `props.rs`.
+/// Deterministic PRNG (xorshift64*), no dependencies — same as in `props.rs`.
 struct Gen {
     state: u64,
     fresh: u32,
@@ -47,10 +47,10 @@ impl Gen {
         format!("{prefix}{n}")
     }
 
-    /// Uma expressão de tipo `Int`, bem-tipada e totalmente reclamável, no
-    /// ambiente dado (`ints`/`ps` = variáveis Int / de registo `P` em escopo).
+    /// An expression of type `Int`, well-typed and fully reclaimable, in the
+    /// given environment (`ints`/`ps` = Int / record-`P` variables in scope).
     fn int_expr(&mut self, depth: u32, ints: &[String], ps: &[String]) -> String {
-        // folha: com prob. alta perto do fundo
+        // leaf: with high probability near the bottom
         if depth == 0 || self.below(100) < 35 {
             return self.leaf(ints, ps);
         }
@@ -70,7 +70,7 @@ impl Gen {
                 format!("(if {cl} {cmp} {cr} then {th} else {el})")
             }
             2 => {
-                // let-Int: liga um novo Int e continua
+                // let-Int: binds a new Int and continues
                 let e = self.int_expr(depth - 1, ints, ps);
                 let name = self.fresh_name('x');
                 let mut ints2 = ints.to_vec();
@@ -79,8 +79,8 @@ impl Gen {
                 format!("(let {name} = {e} in {body})")
             }
             3 => {
-                // let-P: aloca um registo plano e continua (pode lê-lo/emprestá-lo
-                // ou não — Auto-Drop reclama-o de qualquer forma)
+                // let-P: allocates a flat record and continues (may read/borrow it
+                // or not — Auto-Drop reclaims it either way)
                 let ea = self.int_expr(depth - 1, ints, ps);
                 let eb = self.int_expr(depth - 1, ints, ps);
                 let name = self.fresh_name('p');
@@ -90,20 +90,20 @@ impl Gen {
                 format!("(let {name} = P {{ a = {ea}, b = {eb} }} in {body})")
             }
             4 if !ps.is_empty() => {
-                // chamada que empresta um registo em escopo
+                // a call that borrows a record in scope
                 let f = ["sumP", "fstP"][self.below(2) as usize];
                 let p = &ps[self.below(ps.len() as u32) as usize];
                 format!("({f} {p})")
             }
             5 => {
-                // move: constrói um registo fresco e consome-o (%1 → o callee liberta)
+                // move: builds a fresh record and consumes it (%1 → the callee frees it)
                 let ea = self.int_expr(depth - 1, ints, ps);
                 let eb = self.int_expr(depth - 1, ints, ps);
                 format!("(useP (P {{ a = {ea}, b = {eb} }}))")
             }
             _ => {
-                // aninhamento: um `Box` que possui um `P` → exercita o deep-drop
-                // (o destrutor liberta o `P` interno e depois o `Box`).
+                // nesting: a `Box` that owns a `P` → exercises deep-drop
+                // (the destructor frees the inner `P` and then the `Box`).
                 let ea = self.int_expr(depth - 1, ints, ps);
                 let eb = self.int_expr(depth - 1, ints, ps);
                 let et = self.int_expr(depth - 1, ints, ps);
@@ -132,7 +132,7 @@ impl Gen {
     }
 }
 
-/// Prelúdio fixo: um registo plano + leitores que o emprestam + um consumidor `%1`.
+/// Fixed prelude: a flat record + readers that borrow it + a `%1` consumer.
 const PRELUDE: &str = "\
 data P = P { a :: Int, b :: Int }
 data Box = Box { inner :: P, tag :: Int }
@@ -168,7 +168,7 @@ fn generated_linear_programs_reclaim_exactly() {
         std::fs::write(&path, &src).unwrap();
         let p = path.to_str().unwrap();
 
-        // nativo (--dev) com contadores de heap
+        // native (--dev) with heap counters
         let native = axionc()
             .args(["--backend", "cranelift", p])
             .env("AXION_HEAP_STATS", "1")
@@ -176,7 +176,7 @@ fn generated_linear_programs_reclaim_exactly() {
             .unwrap();
         assert!(
             native.status.success(),
-            "seed {seed}: nativo falhou (possível corrupção)\n--- programa ---\n{src}\n--- stderr ---\n{}",
+            "seed {seed}: native failed (possible corruption)\n--- program ---\n{src}\n--- stderr ---\n{}",
             String::from_utf8_lossy(&native.stderr)
         );
         let nres = String::from_utf8_lossy(&native.stdout).trim().to_string();
@@ -184,7 +184,7 @@ fn generated_linear_programs_reclaim_exactly() {
         let line = stats
             .lines()
             .find(|l| l.contains("heap:"))
-            .unwrap_or_else(|| panic!("seed {seed}: sem stats de heap"));
+            .unwrap_or_else(|| panic!("seed {seed}: no heap stats"));
         // "heap: N allocs, M frees"
         let nums: Vec<u64> = line
             .split(|c: char| !c.is_ascii_digit())
@@ -193,17 +193,17 @@ fn generated_linear_programs_reclaim_exactly() {
             .collect();
         assert_eq!(
             nums[0], nums[1],
-            "seed {seed}: fuga/dupla-free ({} allocs != {} frees)\n{src}",
+            "seed {seed}: leak/double-free ({} allocs != {} frees)\n{src}",
             nums[0], nums[1]
         );
 
-        // concordância com o interpretador
+        // agreement with the interpreter
         let interp = axionc().arg(p).output().unwrap();
-        assert!(interp.status.success(), "seed {seed}: interp falhou\n{src}");
+        assert!(interp.status.success(), "seed {seed}: interp failed\n{src}");
         let ires = String::from_utf8_lossy(&interp.stdout).trim().to_string();
         assert_eq!(
             nres, ires,
-            "seed {seed}: nativo={nres} != interp={ires}\n{src}"
+            "seed {seed}: native={nres} != interp={ires}\n{src}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

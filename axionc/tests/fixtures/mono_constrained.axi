@@ -1,8 +1,8 @@
--- Monomorfização de funções CONSTRANGIDAS (fatia 2b-β): `count :: Eq a =>` é
--- especializada por tipo concreto no call-site — `count 2 [..]` gera `count$Int`
--- com `eq → eq$Int` e a recursão `count → count$Int`. Assim o polimorfismo
--- restrito compila NATIVAMENTE (monomorfização estilo Rust, zero-cost). Corre
--- nos três executores (interp, --dev/Cranelift, --release/LLVM), todos → 3.
+-- Monomorphization of CONSTRAINED functions (slice 2b-β): `count :: Eq a =>` is
+-- specialized per concrete type at the call-site — `count 2 [..]` generates `count$Int`
+-- with `eq → eq$Int` and the recursion `count → count$Int`. Thus constrained
+-- polymorphism compiles NATIVELY (Rust-style monomorphization, zero-cost). Runs
+-- in all three executors (interp, --dev/Cranelift, --release/LLVM), all → 3.
 class Eq a where
   eq :: a -> a -> Bool
 

@@ -1,6 +1,6 @@
--- Nursery bem-confinado (§9): cria um par de endpoints dentro do `bound` e
--- consome ambos lá dentro (`close`). Nada escapa → o grafo de comunicação fica
--- uma árvore (deadlock-freedom por construção). Aceite.
+-- Well-confined nursery (§9): creates a pair of endpoints inside the `bound` and
+-- consumes both in there (`close`). Nothing escapes → the communication graph is
+-- a tree (deadlock-freedom by construction). Accepted.
 main :: IO ()
 main = bound $ do
   (c, d) <- newChannel

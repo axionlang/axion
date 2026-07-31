@@ -1,5 +1,5 @@
--- Tipo-soma (multi-construtor) com tag em runtime. `case` compara o tag do
--- valor (offset 0) com o de cada construtor e destructura os campos.
+-- Sum type (multi-constructor) with a runtime tag. `case` compares the value's
+-- tag (offset 0) with each constructor's and destructures the fields.
 -- val(Pos 7) + val Neg + val Zero = 7 + (-1) + 0 = 6.
 data Sig = Neg | Zero | Pos Int
 

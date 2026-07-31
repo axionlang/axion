@@ -1,5 +1,5 @@
--- Padrão de construtor no `case` (tipo de um só construtor): destructura por
--- posição, sem tag. `case p of Point a b -> a + b`. main = 3 + 4 = 7.
+-- Constructor pattern in `case` (single-constructor type): destructures by
+-- position, no tag. `case p of Point a b -> a + b`. main = 3 + 4 = 7.
 data Point = Point { x :: Int, y :: Int }
 
 sumP :: Point -> Int

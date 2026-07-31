@@ -1,7 +1,7 @@
--- Reclamação entre funções (Auto-Drop §2, linear). 'make' aloca um Box e
--- devolve-o (o chamador passa a possuí-lo); 'take' recebe-o por %1 (posse
--- movida) e liberta-o no seu ponto de morte. main = take (make 42) → 42, com
--- 1 alloc == 1 free (o objecto atravessa a fronteira e é libertado uma vez).
+-- Cross-function reclamation (Auto-Drop §2, linear). 'make' allocates a Box and
+-- returns it (the caller now owns it); 'take' receives it by %1 (ownership moved)
+-- and frees it at its death point. main = take (make 42) → 42, with 1 alloc == 1
+-- free (the object crosses the boundary and is freed once).
 data Box = Box { val :: Int }
 
 make :: Int -> Box

@@ -46,7 +46,7 @@ pub enum Op {
         func: String,
         captures: Vec<Atom>,
     },
-    /// alocar tuplo na heap (um `i64` por componente)
+    /// allocate a tuple on the heap (one `i64` per component)
     MakeTuple(Vec<Atom>),
     /// build a record `Con { field = atom, … }`
     MakeRecord {
@@ -54,7 +54,7 @@ pub enum Op {
         fields: Vec<(String, Atom)>,
     },
     /// build a positional `data` value `Con a b …` (sum types included —
-    /// leva o tag se o tipo tiver >1 construtor).
+    /// carries the tag if the type has >1 constructor).
     MakeCon {
         con: String,
         args: Vec<Atom>,
@@ -67,22 +67,22 @@ pub enum Op {
         fields: Vec<(String, Atom)>,
         inplace: bool,
     },
-    /// selector de campo `campo rec`
+    /// field selector `field rec`
     Field {
         name: String,
         rec: Atom,
     },
     /// raw i64 load at `ptr + offset` (bytes). Only destructor generation
-    /// (deep-drop, §2) a usa — acede a campos por offset, incluindo o tag.
+    /// (deep-drop, §2) uses it — accesses fields by offset, including the tag.
     LoadRaw(Atom, i32),
     /// `putStrLn :: String -> IO ()` (runtime)
     PutStrLn(Atom),
-    /// `putStr :: String -> IO ()` (runtime, sem nova-linha)
+    /// `putStr :: String -> IO ()` (runtime, no newline)
     PutStr(Atom),
     /// `show :: Int -> String` (runtime)
     ShowInt(Atom),
-    // --- arenas (§3): a `clos` recebe a arena; no fim faz-se o reset ---
-    /// `withArena`/`withSubArena`: cria a (sub-)arena, corre `clos` com ela, e
+    // --- arenas (§3): `clos` receives the arena; at the end the reset happens ---
+    /// `withArena`/`withSubArena`: creates the (sub-)arena, runs `clos` with it, and
     /// **resets it** at the end (bulk reclamation). `parent` only serves `promote`.
     WithArena {
         parent: Option<Atom>,
@@ -92,7 +92,7 @@ pub enum Op {
     ArenaAlloc(Atom),
     /// `promote target cell` — copies the cell to arena `target` (saves it from the reset).
     Promote(Atom, Atom),
-    /// `arena_mark arena` — guarda o topo do bump-pointer.
+    /// `arena_mark arena` — saves the top of the bump-pointer.
     ArenaMark(Atom),
     /// `arena_release mark` — restores the bump-pointer (reclaims what was allocated since the mark).
     ArenaRelease(Atom),
@@ -104,12 +104,12 @@ pub enum Op {
         returns: bool,
     },
     /// FFI call (§18): the C function `name` with the Int ABI (i64), resolved by
-    /// `dlsym`. Devolve i64.
+    /// `dlsym`. Returns i64.
     Ffi {
         name: String,
         args: Vec<Atom>,
     },
-    /// forma do AST fora do subconjunto nativo — o codegen recusa com este texto
+    /// AST shape outside the native subset — codegen rejects with this text
     Unsupported(String),
 }
 
@@ -125,10 +125,10 @@ pub enum Rhs {
 #[derive(Debug, Clone)]
 pub enum Term {
     Let(String, Rhs, Box<Term>),
-    /// `drop x; …` — liberta o objecto de heap `x` no seu ponto de morte
+    /// `drop x; …` — frees the heap object `x` at its death point
     /// (Auto-Drop, §2; inserted by the reclamation analysis, not the lowering).
     /// The `Option<String>` is the `data` type name of `x` (when known): if the
-    /// tipo possuir campos de heap, o backend chama o destrutor recursivo
+    /// type owns heap fields, the backend calls the recursive destructor
     /// `axion_drop_<T>` (deep-drop); otherwise, a flat `free`.
     Drop(String, Option<String>, Box<Term>),
     Ret(Rhs),
@@ -142,7 +142,7 @@ pub enum CPat {
     Wild,
     Tuple(Vec<CPat>),
     /// constructor + sub-patterns. 1-constructor types destructure without a tag;
-    /// tipos-soma comparam o tag (offset 0) do valor com o do construtor.
+    /// sum types compare the value's tag (offset 0) with the constructor's.
     Con(String, Vec<CPat>),
 }
 
@@ -162,7 +162,7 @@ pub struct CoreFn {
 
 // --- native type classification (shared with codegen) ---
 
-/// Tipos representados por um `i64`: `Int`, `String`, `IO`, um `data`, ou uma
+/// Types represented by an `i64`: `Int`, `String`, `IO`, a `data`, or a
 /// function (pointer to closure `{fn_ptr, captures…}`).
 pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
     // Arrow/Unit/type variable → i64. The native ABI is uniformly i64
@@ -193,7 +193,7 @@ pub fn result_type(sig: &Type) -> &Type {
     t
 }
 
-/// Tipo alocado na heap por `axion_alloc` (registo/`data` ou tuplo). Exclui
+/// Type allocated on the heap by `axion_alloc` (record/`data` or tuple). Excludes
 /// `Int`/`IO` (pure i64), `String` (a runtime C-string, not ours) and functions
 /// (closures are reclaimed conservatively — they may be called).
 fn heap_ty(t: &Type, data_types: &HashSet<String>) -> bool {
@@ -209,7 +209,7 @@ pub fn is_int(t: &Type) -> bool {
 
 /// BUILT-IN infix operators (`Int` arithmetic/comparison), which lower to
 /// `Op::Prim`. The rest is a user infix operator — a named function
-/// aplicada a dois argumentos. Coincide com `interp::is_builtin_op`.
+/// applied to two arguments. Matches `interp::is_builtin_op`.
 pub fn is_builtin_op(op: &str) -> bool {
     matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
 }
@@ -219,23 +219,23 @@ pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
 }
 
 /// Layout of records/`data` values. A **single**-constructor type has no
-/// tag: `[campo0][campo1]…` (campo i em i×8). Um tipo-**soma** (multi-construtor)
+/// tag: `[field0][field1]…` (field i at i×8). A **sum** type (multi-constructor)
 /// carries a **tag** (the constructor index) at offset 0: `[tag][field0]…` (field
 /// i em (1+i)×8). Partilhado pelos backends; um `i64` por slot.
 #[derive(Default)]
 pub struct RecordInfo {
-    con_fields: HashMap<String, Vec<String>>, // campos com nome
+    con_fields: HashMap<String, Vec<String>>, // named fields
     field_owner: HashMap<String, String>,
-    single_con: HashSet<String>,   // construtores sem tag (tipo de 1 con)
+    single_con: HashSet<String>, // tagless constructors (single-con type)
     con_tag: HashMap<String, i32>, // constructor index within its type
-    con_arity: HashMap<String, usize>, // nº total de campos (com ou sem nome)
+    con_arity: HashMap<String, usize>, // total number of fields (named or not)
     // --- deep-drop (§2): structural reclamation of nested fields ---
-    con_type: HashMap<String, String>, // construtor → nome do seu tipo
-    type_cons: HashMap<String, Vec<String>>, // tipo → construtores (por ordem de tag)
-    /// construtor → campos de tipo-`data` que ele **possui**: (offset, nome do tipo).
+    con_type: HashMap<String, String>, // constructor → name of its type
+    type_cons: HashMap<String, Vec<String>>, // type → constructors (in tag order)
+    /// constructor → `data`-typed fields it **owns**: (offset, type name).
     /// They are separate allocations that a flat `free` doesn't reclaim → deep-drop.
     con_drop_slots: HashMap<String, Vec<(i32, String)>>,
-    /// tipos que possuem (algures) um campo de tipo-`data` → precisam de destrutor.
+    /// types that own (somewhere) a `data`-typed field → need a destructor.
     needs_deep: HashSet<String>,
 }
 
@@ -273,7 +273,7 @@ impl RecordInfo {
                 let mut slots = Vec::new();
                 for (i, f) in c.fields.iter().enumerate() {
                     // a `data`-typed field is a heap allocation owned by the
-                    // registo → tem de ser reclamada quando o pai morre. Tuplos e
+                    // record → must be reclaimed when the parent dies. Tuples and
                     // non-heap (Int/String/Buffer/function) are left out (see docs).
                     if let Some(h) = f.ty.head_con() {
                         if data_names.contains(h) {
@@ -290,23 +290,23 @@ impl RecordInfo {
         r
     }
 
-    /// `true` se o tipo (nome) possui campos de heap → precisa de destrutor
-    /// recursivo em vez de um `free` plano.
+    /// `true` if the type (name) owns heap fields → needs a recursive
+    /// destructor instead of a flat `free`.
     pub fn needs_deep_drop(&self, ty: &str) -> bool {
         self.needs_deep.contains(ty)
     }
 
-    /// Nome do tipo de um construtor.
+    /// Name of a constructor's type.
     pub fn con_type(&self, con: &str) -> Option<&str> {
         self.con_type.get(con).map(String::as_str)
     }
 
-    /// Construtores de um tipo, por ordem de tag.
+    /// Constructors of a type, in tag order.
     pub fn type_cons(&self, ty: &str) -> Option<&[String]> {
         self.type_cons.get(ty).map(Vec::as_slice)
     }
 
-    /// Campos de tipo-`data` que um construtor possui: (offset, nome do tipo).
+    /// `data`-typed fields a constructor owns: (offset, type name).
     pub fn drop_slots(&self, con: &str) -> &[(i32, String)] {
         self.con_drop_slots.get(con).map_or(&[], Vec::as_slice)
     }
@@ -330,12 +330,12 @@ impl RecordInfo {
             .flatten()
     }
 
-    /// Aridade total (campos com ou sem nome) de um construtor.
+    /// Total arity (named or unnamed fields) of a constructor.
     pub fn con_arity(&self, con: &str) -> Option<usize> {
         self.con_arity.get(con).copied()
     }
 
-    /// Nº de slots a alocar para um construtor (campos + eventual tag).
+    /// Number of slots to allocate for a constructor (fields + optional tag).
     pub fn con_slots(&self, con: &str) -> Option<usize> {
         self.con_arity(con)
             .map(|n| n + usize::from(self.tag(con).is_some()))
@@ -347,7 +347,7 @@ impl RecordInfo {
         (base + i) as i32 * 8
     }
 
-    /// Offset (em bytes) de um campo com nome, e a lista de campos do seu registo.
+    /// Offset (in bytes) of a named field, and the list of its record's fields.
     pub fn field(&self, name: &str) -> Option<(i32, &[String])> {
         let con = self.field_owner.get(name)?;
         let fields = self.con_fields.get(con)?;
@@ -576,7 +576,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
 
 type LamMeta = HashMap<Span, (String, Vec<String>)>;
 
-/// Contexto de baixada: os nomes globais, os selectores de campo, o mangling de
+/// Lowering context: the global names, the field selectors, the mangling of
 /// `where` of the current function, and the lambdas' meta-information.
 struct Lower<'a> {
     globals: &'a HashSet<String>,
@@ -628,12 +628,12 @@ impl Lower<'_> {
                 Rhs::Case(sa, carms)
             }
             Expr::Let(binds, body, _) => {
-                // arrasta os binds triviais para `buf` e continua no corpo
+                // drags the trivial binds into `buf` and continues in the body
                 for f in binds {
                     let rhs = match f.clauses.as_slice() {
                         [c] if c.pats.is_empty() => match &c.body {
                             Body::Plain(e) => self.rhs(e, buf),
-                            _ => Rhs::Op(Op::Unsupported("let com guardas".into())),
+                            _ => Rhs::Op(Op::Unsupported("let with guards".into())),
                         },
                         _ => Rhs::Op(Op::Unsupported("non-trivial let".into())),
                     };
@@ -708,10 +708,10 @@ impl Lower<'_> {
     }
 
     /// Lowers an application, classifying the head (builtin / selector / call
-    /// directa / chamada indirecta a closure).
+    /// direct / indirect call to a closure).
     fn app(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Op {
         let (head, args) = spine(e);
-        // construtor aplicado `Con a b …` → valor `data` posicional
+        // applied constructor `Con a b …` → positional `data` value
         if let Expr::Con(cname, _) = head {
             let vals = args.iter().map(|a| self.atom(a, buf)).collect();
             return Op::MakeCon {
@@ -741,7 +741,7 @@ impl Lower<'_> {
                 rec,
             };
         }
-        // builtins de arena (§3)
+        // arena builtins (§3)
         match (name.as_str(), args.len()) {
             ("withArena", 1) => {
                 let clos = self.atom(args[0], buf);
@@ -917,7 +917,7 @@ impl Lower<'_> {
         }
     }
 
-    /// Guardas → cadeia de `if`: `| g0 = r0 | g1 = r1 | otherwise = rn` vira
+    /// Guards → chain of `if`: `| g0 = r0 | g1 = r1 | otherwise = rn` becomes
     /// `if g0 then r0 else if g1 then r1 else rn`. `otherwise`/`True` are
     /// unconditional; if no guard covers, it is exhaustion (unsupported).
     fn guarded(&mut self, arms: &[(Expr, Expr)]) -> Term {
@@ -1037,12 +1037,12 @@ fn lower_func(
 }
 
 /// Lowers the module to the Core: candidate top-level functions, their `where`
-/// `where` (mangled) e as lambdas liftadas (com captura).
+/// `where` (mangled) and the lifted lambdas (with capture).
 /// Eta-expands the functions/constructors used as a value or partially
 /// parcialmente, para o backend nativo (first-class functions via closures).
 fn eta_expand(module: &ast::Module) -> ast::Module {
     // arity of each callable name: top-level functions (number of patterns), constructors
-    // (nº de campos), e os builtins de IO que baixam a um `Op`.
+    // (field count), and the IO builtins that lower to an `Op`.
     let mut arity: HashMap<String, usize> = HashMap::new();
     for f in &module.funcs {
         arity.insert(
@@ -1107,7 +1107,7 @@ impl Eta {
     }
 
     /// Wraps `base` (callable, with `gap` missing arguments) in a lambda that
-    /// recebe os que faltam: `base` → `\v0 … v_{gap-1} -> base v0 … v_{gap-1}`.
+    /// receives the missing ones: `base` → `\v0 … v_{gap-1} -> base v0 … v_{gap-1}`.
     fn wrap(&mut self, base: Expr, gap: usize) -> Expr {
         let (_, lam_sp) = self.fresh();
         let mut pats = Vec::new();
@@ -1234,7 +1234,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
 
     // TRANSITIVE native candidacy: a function is only compilable if, besides passing
     // `top_candidate`, all top-level functions it calls also are. Fixpoint.
-    // fixo. Fecha o buraco de um candidato chamar uma NÃO-candidata (ex.: uma spec
+    // fixpoint. Closes the hole of a candidate calling a NON-candidate (e.g. a spec
     // monomorphized spec that calls `foldr`, whose result is a pure type var) —
     // which would otherwise break codegen with an unbound symbol. It excludes it
     // graciosamente (recai no interp) em vez de abortar.
@@ -1363,7 +1363,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         }
     }
 
-    // as lambdas liftadas (na ordem em que foram numeradas)
+    // the lifted lambdas (in the order they were numbered)
     for (lam, locals) in lam_sites {
         let Expr::Lam(pats, body, span) = lam else {
             continue;
@@ -1405,8 +1405,8 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .collect();
     let borrow_args = compute_borrow_args(&out, &param_mults);
 
-    // deep-drop (§2): tipo-`data` de cada droppable, para o backend reclamar
-    // campos aninhados via destrutor recursivo em vez de um `free` plano.
+    // deep-drop (§2): `data` type of each droppable, so the backend reclaims
+    // nested fields via a recursive destructor instead of a flat `free`.
     let recinfo = RecordInfo::build(module);
     let fn_ret_ty: HashMap<String, String> = module
         .funcs
@@ -1434,10 +1434,10 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     result
 }
 
-/// Gera os destrutores recursivos `axion_drop_<T>` para cada tipo com campos de
+/// Generates the recursive destructors `axion_drop_<T>` for each type with
 /// heap (deep-drop, §2): frees the owned `data`-typed fields (via their
 /// destructor, or `free` if they are leaves) and then the block itself;
-/// tipos-soma despacham pelo tag.
+/// sum types dispatch on the tag.
 fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
     let mut out = Vec::new();
     for ty in recinfo.deep_drop_types() {
@@ -1451,7 +1451,7 @@ fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
                 None => free_ret,
             }
         } else {
-            // multi-con: carrega o tag e um `if` independente por construtor com
+            // multi-con: loads the tag and one independent `if` per constructor with
             // fields; only the matching tag fires at runtime.
             let mut chain = free_ret;
             for con in cons.iter().rev() {
@@ -1541,7 +1541,7 @@ fn drop_con_fields(recinfo: &RecordInfo, con: &str, p: &str, ctr: &mut u32, cont
 }
 
 /// For each function, the `data` type of each droppable (owned `%1` parameters +
-/// resultados de `Make*`/chamadas que devolvem heap). Alimenta o deep-drop.
+/// results of `Make*`/calls that return heap). Feeds the deep-drop.
 fn build_all_drop_ty(
     fns: &[CoreFn],
     module: &ast::Module,
@@ -1629,7 +1629,7 @@ fn collect_rhs_drop_types(
 // Inserts `drop` nodes into the Core that free **local** heap objects at their
 // death point. An object is *droppable* if it is allocated in the function (via
 // `Make{Tuple,Record,Closure}` or `UpdateRecord`) and **never escapes**: it is never
-// devolvido, embebido noutro objecto, passado a uma chamada, nem aliased. As
+// returned, embedded in another object, passed to a call, nor aliased. As
 // its occurrences are then all local reads (`Field`, `case`
 // scrutinee), so freeing it after the last read is sound (the linear discipline
 // guarantees no aliasing; the object is not reachable by anyone). The
@@ -1652,7 +1652,7 @@ fn atom_is(v: &str, a: &Atom) -> bool {
 }
 
 /// `true` if `v` appears in some position that is **not** a local read inside
-/// de `t` — i.e. escapa do callee (devolvido, embebido, aliased, ou passado a
+/// of `t` — i.e. it escapes the callee (returned, embedded, aliased, or passed to
 /// a call). A `Many` parameter for which this is `false` is a pure borrow.
 fn occurs_nonborrow(v: &str, t: &Term) -> bool {
     match t {
@@ -1686,7 +1686,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         } => {
             // by-copy update reads the base (borrow) and allocates a new record with
             // copies of the fields; in-place mutates the base and returns it (escape). Copying
-            // um campo linear seria rejeitado pela linearidade, logo os campos
+            // a linear field would be rejected by linearity, so the fields
             // copied ones are non-linear (safe aliasing, no double-free).
             (*inplace && atom_is(v, base)) || fields.iter().any(|(_, a)| atom_is(v, a))
         }
@@ -1809,7 +1809,7 @@ fn fv_op_in(
     match op {
         Op::Field { rec, .. } => atom_use(rec, drp, bound, out),
         // the closure passed to `withArena` is used during the call and dies
-        // seguir → conta como uso para o drop cair DEPOIS (como um arg emprestado)
+        // follow → counts as a use so the drop falls AFTER (like a borrowed arg)
         Op::WithArena { clos, .. } => atom_use(clos, drp, bound, out),
         Op::CallDirect(g, xs) => {
             if let Some(bs) = ba.get(g) {
@@ -1825,7 +1825,7 @@ fn fv_op_in(
 }
 
 /// The droppable set of a function: objects it **owns** — allocated
-/// localmente (`Make*`), resultados de chamadas que devolvem heap (`heap_ret`),
+/// locally (`Make*`), results of calls that return heap (`heap_ret`),
 /// and its `%1` heap parameters — minus those that escape.
 fn droppable_vars(f: &CoreFn, heap_ret: &HashSet<String>, ba: &BorrowArgs) -> HashSet<String> {
     let mut allocated: HashSet<String> = f.owned_params.iter().cloned().collect();
@@ -1901,7 +1901,7 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     };
     match op {
         Op::Atom(a) => mark(a), // alias directo `let y = x`
-        // uma chamada directa move os argumentos para o callee — excepto os que
+        // a direct call moves the arguments into the callee — except those that
         // it only borrows (pure borrow), which the caller retains and frees
         Op::CallDirect(g, xs) => {
             let borrow = ba.get(g);
@@ -1920,7 +1920,7 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
         // arenas: their objects (arena/cell/closure) are managed by the arena
         // reset, not by Auto-Drop — they are marked as escape to ignore them.
         // the arena/parent are managed by the reset; the closure, however, is a heap
-        // heap normal que o `withArena` apenas *empresta* (chama-a e retorna) —
+        // normal heap that `withArena` only *borrows* (calls it and returns) —
         // doesn't escape, is reclaimable after the call (see `fv_op`).
         Op::WithArena { parent, .. } => parent.iter().for_each(&mut mark),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => mark(a),
@@ -1939,14 +1939,14 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
 
 fn scan_op_escapes_ret(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     scan_op_escapes(op, ba, esc);
-    // o valor devolvido escapa
+    // the returned value escapes
     if let Op::Atom(Atom::Var(n)) = op {
         esc.insert(n.clone());
     }
 }
 
 /// Inserts the `drop`s into a function (structural Drop + cross-function reclamation).
-/// `drop_ty` mapeia cada droppable ao nome do seu tipo-`data` (para o deep-drop).
+/// `drop_ty` maps each droppable to its `data`-type name (for the deep-drop).
 fn insert_drops(
     mut f: CoreFn,
     heap_ret: &HashSet<String>,
@@ -1982,14 +1982,14 @@ impl Elab<'_> {
         n
     }
 
-    /// O nome do tipo-`data` de uma droppable (para o backend escolher deep-drop
+    /// The `data` type name of a droppable (so the backend picks deep-drop
     /// vs. `free` plano), se conhecido.
     fn dty(&self, v: &str) -> Option<String> {
         self.drop_ty.get(v).cloned().flatten()
     }
 
     /// Elaborates `t`, freeing the droppable variables at their death point.
-    /// `live_out` = droppable vivas *depois* de `t` (a libertar pelo contexto
+    /// `live_out` = droppables live *after* `t` (to be freed by the context
     /// enclosing), which `t` must not free.
     fn go(&mut self, t: Term, live_out: &HashSet<String>) -> Term {
         match t {

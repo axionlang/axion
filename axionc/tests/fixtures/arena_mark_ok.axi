@@ -1,5 +1,5 @@
--- Deve PASSAR: 'tmp' (alocado depois da marca) é usado ANTES do 'arena_release';
--- o que é devolvido ('n') não vive na região reclamada (Listagem 3.6).
+-- Must PASS: 'tmp' (allocated after the mark) is used BEFORE 'arena_release';
+-- what is returned ('n') does not live in the reclaimed region (Listing 3.6).
 useCell :: Cell -> Int
 useCell c = 0
 

@@ -189,7 +189,7 @@ impl<'a> Parser<'a> {
         .label(s, e, "unexpected here")
     }
 
-    // --- blocos com chavetas virtuais ---
+    // --- blocks with virtual braces ---
     fn block<T>(&mut self, mut item: impl FnMut(&mut Self) -> PResult<T>) -> PResult<Vec<T>> {
         self.expect_v(&LTok::VLBrace, "start of block")?;
         let mut items = Vec::new();
@@ -403,7 +403,7 @@ impl<'a> Parser<'a> {
     fn parse_con(&mut self) -> PResult<ConDecl> {
         let name = self.con_name("constructor name")?;
         if self.eat(&Tok::LBrace) {
-            // construtor com campos nomeados (registo)
+            // constructor with named fields (record)
             let mut fields = Vec::new();
             if !self.at(&Tok::RBrace) {
                 fields.push(self.parse_field()?);
@@ -414,7 +414,7 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::RBrace, "'}' in the record")?;
             Ok(ConDecl { name, fields })
         } else {
-            // construtor posicional: Con atype*
+            // positional constructor: Con atype*
             let mut fields = Vec::new();
             while self.starts_atype() {
                 let ty = self.parse_atype()?;
@@ -432,7 +432,7 @@ impl<'a> Parser<'a> {
         let (name, _) = self.var_name("field name")?;
         self.expect(&Tok::ColonColon, "'::' in the field")?;
         let ty = self.parse_btype()?;
-        // multiplicidade do campo: `campo :: Buffer U8 %1` marca campo linear
+        // field multiplicity: `field :: Buffer U8 %1` marks a linear field
         let mult = if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
             let m = parse_mult(m);
             self.pos += 1;
@@ -443,8 +443,8 @@ impl<'a> Parser<'a> {
         Ok(Field { name, ty, mult })
     }
 
-    // --- tipos ---
-    /// Assinatura possivelmente qualificada: `[Contexto =>] Tipo`. O contexto
+    // --- types ---
+    /// Possibly qualified signature: `[Context =>] Type`. The context
     /// (`C a` or `(C a, D b)`) is RETAINED as a list of constraints, to
     /// discharge the method obligations. Backtracks if there is no `=>`.
     fn parse_qualified_type(&mut self) -> PResult<(Vec<(String, String)>, Type)> {
@@ -463,7 +463,7 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) -> PResult<Type> {
         let from = self.parse_btype()?;
         // multiplicity: on an arrow (`A %1 -> B`) it marks the parameter; on a
-        // terminal (`... -> Process %1`) marca o resultado linear.
+        // terminal (`... -> Process %1`) marks the linear result.
         if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
             let mult = parse_mult(m);
             self.pos += 1;
@@ -583,7 +583,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pat(&mut self) -> PResult<Pat> {
-        // construtor aplicado: Con apat*
+        // applied constructor: Con apat*
         if let Some(LTok::Tok(Tok::ConId(name))) = self.cur() {
             let name = name.clone();
             let (s, _) = self.span_here();
@@ -880,7 +880,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Recognizes an operator section `(op)` — if the current token is an
-    /// operador seguido de `)`, consome ambos e devolve o nome do operador.
+    /// operator followed by `)`, consumes both and returns the operator name.
     fn op_section(&mut self) -> Option<String> {
         let op = match self.cur() {
             Some(LTok::Tok(Tok::Plus)) => "+",

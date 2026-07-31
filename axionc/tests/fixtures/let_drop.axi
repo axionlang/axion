@@ -1,6 +1,6 @@
--- Deve PASSAR: 'b' é consumido para 'b2' (derive b), e 'b2' (Buf droppable) é
--- largado sem consumo → o Auto-Drop injecta 'free(b2)'. Drops de valores 'let',
--- não só de parâmetros. Ver `axionc --emit drops`.
+-- Must PASS: 'b' is consumed into 'b2' (derive b), and 'b2' (a droppable Buf) is
+-- dropped without being consumed → Auto-Drop injects 'free(b2)'. Drops of 'let'
+-- values, not only of parameters. See `axionc --emit drops`.
 data Buf = Buf { size :: Int }
 
 derive :: Buf %1 -> Buf %1

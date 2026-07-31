@@ -41,13 +41,13 @@ fn resolve_symbol(name: &str) -> Option<*const u8> {
 
 // --- minimal native runtime (registered as symbols in the JIT) ---
 
-/// `putStrLn`: imprime uma C-string com nova-linha.
+/// `putStrLn`: prints a C-string with a newline.
 extern "C" fn axion_puts(ptr: *const u8) {
     let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
     println!("{}", s.to_string_lossy());
 }
 
-/// `putStr`: imprime uma C-string SEM nova-linha.
+/// `putStr`: prints a C-string WITHOUT a newline.
 extern "C" fn axion_put(ptr: *const u8) {
     use std::io::Write;
     let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
@@ -55,7 +55,7 @@ extern "C" fn axion_put(ptr: *const u8) {
     let _ = std::io::stdout().flush();
 }
 
-/// `show :: Int -> String`: formata um inteiro e devolve uma C-string (leaked;
+/// `show :: Int -> String`: formats an integer and returns a C-string (leaked;
 /// lives until the end of the process — acceptable for a single `run`).
 extern "C" fn axion_show_int(n: i64) -> *const u8 {
     let s = std::ffi::CString::new(n.to_string()).unwrap();
@@ -69,7 +69,7 @@ static HEAP_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 static HEAP_FREES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Allocates `size` bytes of *payload* on the heap. Prefixes an 8-byte header with
-/// o tamanho total, para que `axion_free` reconstrua o `Layout`; devolve o
+/// the total size, so `axion_free` can reconstruct the `Layout`; returns the
 /// pointer to the payload (right after the header).
 extern "C" fn axion_alloc(size: i64) -> *mut u8 {
     let total = size.max(1) as usize + 8;
@@ -93,17 +93,17 @@ extern "C" fn axion_free(ptr: *mut u8) {
     }
 }
 
-// --- runtime de arena (§3): bump-allocator com reset em massa ---
+// --- arena runtime (§3): bump-allocator with bulk reset ---
 
 static ARENA_NEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static ARENA_RESETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static CELL_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Tamanho fixo de uma `Cell` (§3). Opaca ao programa (`useCell` devolve 0).
+/// Fixed size of a `Cell` (§3). Opaque to the program (`useCell` returns 0).
 const CELL_SIZE: i64 = 16;
 
 /// State of an arena: fixed *chunks* (don't move → stable pointers) with a
-/// bump-pointer. O reset larga todos os chunks de uma vez.
+/// bump-pointer. The reset drops all the chunks at once.
 struct ArenaState {
     chunks: Vec<Box<[u8]>>,
     chunk: usize,
@@ -151,7 +151,7 @@ extern "C" fn axion_arena_alloc(arena: *mut u8, size: i64) -> *mut u8 {
     st.alloc(size as usize)
 }
 
-/// Reset em massa: larga a arena inteira (todos os chunks de uma vez).
+/// Bulk reset: drops the whole arena (all chunks at once).
 extern "C" fn axion_arena_reset(arena: *mut u8) {
     ARENA_RESETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     unsafe { drop(Box::from_raw(arena as *mut ArenaState)) };
@@ -186,7 +186,7 @@ extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> 
 // --- Linear Buffer U8 (§4/§5): [len(i64)][bytes…]. The bulk operations are the
 // imperative/vectorizable escape-hatch (in --release; in --dev at the speed of
 // axionc's Rust runtime). Layout of 8 (header) + n bytes; 8+n is allocated
-// arredondado para o alinhamento do `Layout`. ---
+// rounded up to the `Layout`'s alignment. ---
 
 fn buf_layout(n: usize) -> std::alloc::Layout {
     std::alloc::Layout::from_size_align(8 + n, 8).unwrap()
@@ -340,7 +340,7 @@ impl Cg {
             release: import(&mut module, "axion_arena_release", 1, false)?,
             promote: import(&mut module, "axion_arena_promote", 3, true)?,
         };
-        // builtins de runtime nomeados (Buffer/§4): nome → (FuncId, devolve valor)
+        // named runtime builtins (Buffer/§4): name → (FuncId, returns a value)
         let mut rt_fns: HashMap<String, (FuncId, bool)> = HashMap::new();
         for (name, nparams, ret) in [
             ("axion_buf_new", 1, true),
@@ -509,7 +509,7 @@ impl Fx<'_, '_> {
         self.vars.insert(name.to_string(), v);
     }
 
-    /// Aloca um bloco de `nslots` campos (i64 cada) e devolve o ponteiro.
+    /// Allocates a block of `nslots` fields (i64 each) and returns the pointer.
     fn alloc(&mut self, nslots: usize) -> Value {
         let size = self.builder.ins().iconst(types::I64, nslots as i64 * 8);
         let callee = self
@@ -519,7 +519,7 @@ impl Fx<'_, '_> {
         self.builder.inst_results(call)[0]
     }
 
-    /// Escreve o tag do construtor no offset 0, se o tipo for uma soma (>1 con).
+    /// Writes the constructor tag at offset 0, if the type is a sum (>1 con).
     fn store_tag(&mut self, con: &str, ptr: Value) {
         if let Some(tag) = self.records.tag(con) {
             let t = self.builder.ins().iconst(types::I64, tag as i64);
@@ -576,8 +576,8 @@ impl Fx<'_, '_> {
                 self.emit_term(body)
             }
             Term::Drop(name, ty, body) => {
-                // Auto-Drop: liberta o objecto de heap no seu ponto de morte. Se o
-                // tipo possui campos de heap, chama o destrutor recursivo gerado
+                // Auto-Drop: frees the heap object at its death point. If the
+                // type owns heap fields, calls the generated recursive destructor
                 // (deep-drop); otherwise, a flat `free`.
                 let v = self
                     .vars
@@ -712,7 +712,7 @@ impl Fx<'_, '_> {
                 let slots = self
                     .records
                     .con_slots(con)
-                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
+                    .ok_or_else(|| format!("unknown constructor '{con}'"))?;
                 let ptr = self.alloc(slots);
                 self.store_tag(con, ptr);
                 for (fname, a) in fields {
@@ -720,18 +720,18 @@ impl Fx<'_, '_> {
                         .records
                         .field(fname)
                         .map(|(o, _)| o)
-                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                        .ok_or_else(|| format!("unknown field '{fname}'"))?;
                     let v = self.atom(a)?;
                     self.builder.ins().store(MemFlags::new(), v, ptr, off);
                 }
                 Ok(ptr)
             }
             Op::MakeCon { con, args } => {
-                // valor `data` posicional (com tag se for tipo-soma)
+                // positional `data` value (with a tag if it is a sum type)
                 let slots = self
                     .records
                     .con_slots(con)
-                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
+                    .ok_or_else(|| format!("unknown constructor '{con}'"))?;
                 let ptr = self.alloc(slots);
                 self.store_tag(con, ptr);
                 for (i, a) in args.iter().enumerate() {
@@ -747,7 +747,7 @@ impl Fx<'_, '_> {
                 inplace,
             } => {
                 let base_ptr = self.atom(base)?;
-                // Linear Elision (§2): in-place muta o bloco do base e devolve-o;
+                // Linear Elision (§2): in-place mutates the base's block and returns it;
                 // otherwise allocates a new one and copies the non-updated fields.
                 let target = if *inplace {
                     base_ptr
@@ -760,7 +760,7 @@ impl Fx<'_, '_> {
                         .records
                         .field(first)
                         .map(|(_, fs)| fs.len())
-                        .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
+                        .ok_or_else(|| format!("unknown field '{first}'"))?;
                     let newptr = self.alloc(nfields);
                     for i in 0..nfields {
                         let off = i as i32 * 8;
@@ -777,7 +777,7 @@ impl Fx<'_, '_> {
                         .records
                         .field(fname)
                         .map(|(o, _)| o)
-                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                        .ok_or_else(|| format!("unknown field '{fname}'"))?;
                     let v = self.atom(a)?;
                     self.builder.ins().store(MemFlags::new(), v, target, off);
                 }
@@ -788,7 +788,7 @@ impl Fx<'_, '_> {
                     .records
                     .field(name)
                     .map(|(o, _)| o)
-                    .ok_or_else(|| format!("campo '{name}' desconhecido"))?;
+                    .ok_or_else(|| format!("unknown field '{name}'"))?;
                 let r = self.atom(rec)?;
                 Ok(self.builder.ins().load(types::I64, MemFlags::new(), r, off))
             }
@@ -825,7 +825,7 @@ impl Fx<'_, '_> {
             }
             // --- arenas (§3) ---
             Op::WithArena { clos, .. } => {
-                // cria a (sub-)arena, corre a closure com ela, reseta-a no fim.
+                // creates the (sub-)arena, runs the closure with it, resets it at the end.
                 let cv = self.atom(clos)?;
                 let arena = self.rt_call(self.arena.new, &[]).unwrap();
                 let r = self.call_closure(cv, &[arena]);
@@ -860,7 +860,7 @@ impl Fx<'_, '_> {
                 let (id, _) = *self
                     .rt_fns
                     .get(func)
-                    .ok_or_else(|| format!("builtin de runtime '{func}' desconhecido"))?;
+                    .ok_or_else(|| format!("unknown runtime builtin '{func}'"))?;
                 let vals = self.atoms(args)?;
                 let r = self.rt_call(id, &vals);
                 Ok(r.unwrap_or_else(|| {
@@ -870,7 +870,7 @@ impl Fx<'_, '_> {
             }
             Op::Ffi { name, args } => {
                 // FFI (§18): declares the C function (Int ABI) and calls it; the symbol
-                // resolve-se por dlsym (symbol_lookup_fn).
+                // resolved via dlsym (symbol_lookup_fn).
                 let mut sig = self.module.make_signature();
                 for _ in args {
                     sig.params.push(AbiParam::new(types::I64));
@@ -898,7 +898,7 @@ impl Fx<'_, '_> {
 
     /// `case s of arms` — an `if` chain over the scrutinee. Patterns: `Int`
     /// (compare), variable/`_` (catch-all), tuple `(a, b)` (destructure by
-    /// offset). Exige um catch-all no fim.
+    /// offset). Requires a catch-all at the end.
     fn emit_case(&mut self, sval: Value, arms: &[(CPat, Term)], i: usize) -> Result<Value, String> {
         let (pat, body) = &arms[i];
         match pat {

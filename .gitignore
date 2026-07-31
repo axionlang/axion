@@ -8,7 +8,7 @@ result-*
 .ghc.environment.*
 examples/axionc
 
-# binários compilados pelos benchmarks
+# binaries compiled by the benchmarks
 bench/axionc
 bench/fib_c
 bench/fib_rs

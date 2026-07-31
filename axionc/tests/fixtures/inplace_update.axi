@@ -1,6 +1,6 @@
--- Linear Elision (§2): 'bump' actualiza um Cell %1 na sua última menção viva →
--- o compilador muta o bloco existente (nó `update!` no Core) em vez de
--- alocar+copiar. Resultado 99, com 1 só alocação (o Cell), não 2.
+-- Linear Elision (§2): 'bump' updates a %1 Cell at its last live mention →
+-- the compiler mutates the existing block (an `update!` node in Core) instead of
+-- alloc+copy. Result 99, with just 1 allocation (the Cell), not 2.
 data Cell = Cell { val :: Int }
 
 bump :: Cell %1 -> Cell %1

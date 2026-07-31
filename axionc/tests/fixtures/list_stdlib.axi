@@ -1,6 +1,6 @@
--- Biblioteca de listas do prelúdio (L0, degrau 1 para propósito geral): length,
--- append, reverse, foldr, foldl, take, drop, filter, null, elem, sum — todas
--- Axion puro sobre o `List` embutido. Soma = 4+10+60+6+15+300+5+12+1+1 = 414.
+-- Prelude list library (L0, step 1 toward general purpose): length,
+-- append, reverse, foldr, foldl, take, drop, filter, null, elem, sum — all
+-- pure Axion over the built-in `List`. Sum = 4+10+60+6+15+300+5+12+1+1 = 414.
 b2i :: Bool -> Int
 b2i b = if b then 1 else 0
 

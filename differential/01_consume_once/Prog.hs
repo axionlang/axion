@@ -1,6 +1,6 @@
 {-# LANGUAGE LinearTypes #-}
 
--- Mesmo cenário na bancada EDSL: o Buffer %1 é consumido uma vez (free) → compila.
+-- Same scenario on the EDSL bench: the %1 Buffer is consumed once (free) → compiles.
 module Prog where
 
 import Axion.Prototype.Buffer (free, withBuffer)

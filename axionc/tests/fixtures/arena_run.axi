@@ -1,6 +1,6 @@
--- Arena executável (§3): 'withArena' cria a arena-raiz, 'allocN' bump-aloca N
--- células lá dentro, e no fim a arena é reclamada de UMA vez (um só reset, não
--- N frees). main = withArena (\a -> allocN a 100) = 100 → 100 células, 1 reset.
+-- Executable arena (§3): 'withArena' creates the root arena, 'allocN' bump-allocates
+-- N cells inside it, and at the end the arena is reclaimed in ONE go (a single reset,
+-- not N frees). main = withArena (\a -> allocN a 100) = 100 → 100 cells, 1 reset.
 useCell :: Cell -> Int
 useCell c = 0
 

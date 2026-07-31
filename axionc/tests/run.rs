@@ -1,5 +1,5 @@
-//! Testes de integração do esqueleto ambulante: parse → typecheck → correr,
-//! e a rejeição de uso-após-consumo (a meta da Fase 1, §17).
+//! Integration tests for the walking skeleton: parse → typecheck → run,
+//! and the rejection of use-after-consume (the Phase 1 goal, §17).
 
 use std::process::Command;
 
@@ -35,20 +35,20 @@ fn use_after_consume_is_rejected_ax0001() {
         .args(["--check", &fixture("use_after_consume.axi")])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "uso-após-consumo devia falhar");
+    assert!(!out.status.success(), "use-after-consume should fail");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0001"), "esperava AX0001, saída: {text}");
+    assert!(text.contains("AX0001"), "expected AX0001, output: {text}");
 }
 
 #[test]
 fn session_well_typed_protocols_are_accepted() {
-    // §6: um protocolo `Send Int End` (envia+fecha) e um `Recv Int End`
-    // (recebe+fecha) seguem o tipo de sessão → aceites por `check_sessions`.
+    // §6: a `Send Int End` protocol (send+close) and a `Recv Int End`
+    // (recv+close) follow the session type → accepted by `check_sessions`.
     for fx in ["session_ok.axi", "session_recv_ok.axi"] {
         let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
         assert!(
             out.status.success(),
-            "{fx} devia passar: {}",
+            "{fx} should pass: {}",
             String::from_utf8_lossy(&out.stdout)
         );
     }
@@ -56,40 +56,40 @@ fn session_well_typed_protocols_are_accepted() {
 
 #[test]
 fn session_wrong_operation_is_rejected_ax0300() {
-    // faz `recv` num endpoint cujo protocolo é `Send …` → viola a fidelidade.
+    // does `recv` on an endpoint whose protocol is `Send …` → violates fidelity.
     let out = axionc()
         .args(["--check", &fixture("session_bad_op.axi")])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "op de sessão errada devia falhar");
+    assert!(!out.status.success(), "wrong session op should fail");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0300"), "esperava AX0300, saída: {text}");
+    assert!(text.contains("AX0300"), "expected AX0300, output: {text}");
 }
 
 #[test]
 fn session_incomplete_protocol_is_rejected_ax0301() {
-    // envia mas nunca `close` → o endpoint não completa o protocolo.
+    // sends but never `close`s → the endpoint does not complete the protocol.
     let out = axionc()
         .args(["--check", &fixture("session_incomplete.axi")])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "protocolo incompleto devia falhar");
+    assert!(!out.status.success(), "incomplete protocol should fail");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0301"), "esperava AX0301, saída: {text}");
+    assert!(text.contains("AX0301"), "expected AX0301, output: {text}");
 }
 
 #[test]
 fn session_program_runs_concurrently() {
-    // §11: um programa de sessão CORRE de facto — o `bound` abre o nursery, o
-    // scheduler cooperativo forka o worker e faz o ping-pong (21 → 42) sem
-    // deadlock, devolvendo 42.
+    // §11: a session program actually RUNS — the `bound` opens the nursery, the
+    // cooperative scheduler forks the worker and does the ping-pong (21 → 42)
+    // without deadlock, returning 42.
     let out = axionc()
         .arg(fixture("session_run_pingpong.axi"))
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "devia correr: {}",
+        "should run: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
@@ -97,9 +97,9 @@ fn session_program_runs_concurrently() {
 
 #[test]
 fn session_offer_and_cancel_run() {
-    // §6/§7: a escolha externa (`offer`) e o cancelamento (`cancel` → `Closed`)
-    // executam. Um: `select Live` → o worker despacha para o ramo Live (→7).
-    // Outro: `cancel` → o worker recebe `Closed` e toma o ramo de cancelamento (→5).
+    // §6/§7: external choice (`offer`) and cancellation (`cancel` → `Closed`)
+    // execute. One: `select Live` → the worker dispatches to the Live branch (→7).
+    // Other: `cancel` → the worker receives `Closed` and takes the cancel branch (→5).
     for (fx, expected) in [
         ("session_run_offer.axi", "7\n"),
         ("session_run_cancel.axi", "5\n"),
@@ -107,7 +107,7 @@ fn session_offer_and_cancel_run() {
         let out = axionc().arg(fixture(fx)).output().unwrap();
         assert!(
             out.status.success(),
-            "{fx} devia correr: {}",
+            "{fx} should run: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{fx}");
@@ -116,54 +116,54 @@ fn session_offer_and_cancel_run() {
 
 #[test]
 fn session_choice_and_closed_exhaustiveness() {
-    // §6/§9: escolha interna (⊕) e a exaustividade do ramo `Closed` (T5).
+    // §6/§9: internal choice (⊕) and the exhaustiveness of the `Closed` branch (T5).
     let ok = |fx: &str| {
         let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
         assert!(
             out.status.success(),
-            "{fx} devia passar: {}",
+            "{fx} should pass: {}",
             String::from_utf8_lossy(&out.stdout)
         );
     };
     let reject = |fx: &str, code: &str| {
         let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
-        assert!(!out.status.success(), "{fx} devia falhar");
+        assert!(!out.status.success(), "{fx} should fail");
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(text.contains(code), "{fx}: esperava {code}, saída: {text}");
+        assert!(text.contains(code), "{fx}: expected {code}, output: {text}");
     };
-    ok("session_select_ok.axi"); // select de um rótulo válido (⊕)
-    ok("session_offer_ok.axi"); // Offer com ramo Closed (T5)
-    reject("session_select_bad.axi", "AX0300"); // rótulo inexistente
-    reject("session_offer_no_closed.axi", "AX0303"); // Offer sem Closed no tipo (T5)
-    reject("session_offer_incomplete.axi", "AX0304"); // case omite um ramo do Offer
-    reject("session_spawn_capture.axi", "AX0305"); // spawn captura endpoint (árvore)
+    ok("session_select_ok.axi"); // select of a valid label (⊕)
+    ok("session_offer_ok.axi"); // Offer with a Closed branch (T5)
+    reject("session_select_bad.axi", "AX0300"); // nonexistent label
+    reject("session_offer_no_closed.axi", "AX0303"); // Offer without Closed in the type (T5)
+    reject("session_offer_incomplete.axi", "AX0304"); // case omits an Offer branch
+    reject("session_spawn_capture.axi", "AX0305"); // spawn captures an endpoint (tree)
 }
 
 #[test]
 fn bound_confined_nursery_is_accepted() {
-    // §9: um `bound` que cria endpoints e os consome lá dentro (nada escapa) é
-    // aceite — topologia em árvore, deadlock-free por construção.
+    // §9: a `bound` that creates endpoints and consumes them in there (nothing
+    // escapes) is accepted — tree topology, deadlock-free by construction.
     let out = axionc()
         .args(["--check", &fixture("bound_ok.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "nursery confinado devia passar: {}",
+        "confined nursery should pass: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
 
 #[test]
 fn bound_endpoint_escape_is_rejected_ax0302() {
-    // devolver um endpoint do `bound` quebraria a topologia acíclica → AX0302.
+    // returning an endpoint from the `bound` would break the acyclic topology → AX0302.
     let out = axionc()
         .args(["--check", &fixture("bound_escape.axi")])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "escape de endpoint devia falhar");
+    assert!(!out.status.success(), "endpoint escape should fail");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0302"), "esperava AX0302, saída: {text}");
+    assert!(text.contains("AX0302"), "expected AX0302, output: {text}");
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn linear_use_once_is_accepted() {
         .args(["--check", &fixture("use_once_ok.axi")])
         .output()
         .unwrap();
-    assert!(out.status.success(), "uso único devia passar");
+    assert!(out.status.success(), "single use should pass");
 }
 
 #[test]
@@ -183,20 +183,20 @@ fn dropped_linear_is_rejected_ax0002() {
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0002"), "esperava AX0002, saída: {text}");
+    assert!(text.contains("AX0002"), "expected AX0002, output: {text}");
 }
 
 #[test]
 fn listing_2_1_typechecks() {
-    // 04 (Listagem 2.1): registo com campo linear + actualização de registo,
-    // param Process %1 consumido uma vez. Sem main -> só --check.
+    // 04 (Listing 2.1): record with a linear field + record update,
+    // param Process %1 consumed once. No main -> --check only.
     let out = axionc()
         .args(["--check", &example("04_process_inplace.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "04 devia compilar; saída: {}",
+        "04 should compile; output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
@@ -216,19 +216,19 @@ fn linear_record_used_twice_is_rejected_ax0001() {
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0001"), "esperava AX0001, saída: {text}");
+    assert!(text.contains("AX0001"), "expected AX0001, output: {text}");
 }
 
 #[test]
 fn droppable_linear_unused_is_accepted_by_autodrop() {
-    // Buf é droppable: largá-lo sem consumo é OK (Auto-Drop injecta free).
+    // Buf is droppable: dropping it without consuming is OK (Auto-Drop injects free).
     let out = axionc()
         .args(["--check", &fixture("drop_ok.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "droppable não consumido devia ser aceite; saída: {}",
+        "unconsumed droppable should be accepted; output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
@@ -243,27 +243,27 @@ fn autodrop_emits_injected_free() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("free(b)") && text.contains("Buf"),
-        "esperava um free injectado para 'b : Buf', saída: {text}"
+        "expected an injected free for 'b : Buf', output: {text}"
     );
 }
 
 #[test]
 fn borrowing_a_linear_twice_is_accepted() {
-    // Ler (emprestar) um %1 duas vezes é permitido — não é contração.
+    // Reading (borrowing) a %1 twice is allowed — it is not a contraction.
     let out = axionc()
         .args(["--check", &fixture("borrow_twice_ok.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "dois empréstimos deviam ser aceites; saída: {}",
+        "two borrows should be accepted; output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
 
 #[test]
 fn autodrop_death_point_is_the_last_read() {
-    // free injectado no ponto de morte fino (após a última leitura), não à entrada.
+    // free injected at the fine death point (after the last read), not at entry.
     let out = axionc()
         .args(["--emit", "drops", &fixture("borrow_twice_ok.axi")])
         .output()
@@ -277,14 +277,14 @@ fn autodrop_death_point_is_the_last_read() {
 
 #[test]
 fn structural_drop_makes_record_must_use_ax0002() {
-    // Sess contém um campo Ep %1 → must-use por propagação estrutural → AX0002.
+    // Sess contains an Ep %1 field → must-use by structural propagation → AX0002.
     let out = axionc()
         .args(["--check", &fixture("struct_mustuse.axi")])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0002"), "esperava AX0002, saída: {text}");
+    assert!(text.contains("AX0002"), "expected AX0002, output: {text}");
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn let_bound_droppable_is_autodropped() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("free(b2)"),
-        "esperava free(b2), saída: {text}"
+        "expected free(b2), output: {text}"
     );
 }
 
@@ -311,14 +311,14 @@ fn let_bound_must_use_is_rejected_ax0002() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("AX0002") && text.contains("s2"),
-        "esperava AX0002 em s2, saída: {text}"
+        "expected AX0002 on s2, output: {text}"
     );
 }
 
 #[test]
 fn inplace_update_on_linear_base_reported() {
-    // Listagem 2.1: 'p { status = ... }' é a última menção viva de 'p' (%1) →
-    // mutação in-place (Linear Elision).
+    // Listing 2.1: 'p { status = ... }' is the last live mention of 'p' (%1) →
+    // in-place mutation (Linear Elision).
     let out = axionc()
         .args(["--emit", "inplace", &example("04_process_inplace.axi")])
         .output()
@@ -333,52 +333,52 @@ fn inplace_update_on_linear_base_reported() {
 
 #[test]
 fn arena_escape_is_rejected_ax0003() {
-    // Um valor alocado numa sub-arena, devolvido do withSubArena → AX0003.
+    // A value allocated in a sub-arena, returned from withSubArena → AX0003.
     let out = axionc()
         .args(["--check", &fixture("arena_escape.axi")])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0003"), "esperava AX0003, saída: {text}");
+    assert!(text.contains("AX0003"), "expected AX0003, output: {text}");
 }
 
 #[test]
 fn arena_promote_is_accepted() {
-    // 'promote parent node' move o valor para a arena-pai → não escapa.
+    // 'promote parent node' moves the value to the parent arena → it does not escape.
     let out = axionc()
         .args(["--check", &fixture("arena_promote_ok.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "promote devia ser aceite; saída: {}",
+        "promote should be accepted; output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
 
 #[test]
 fn arena_closure_capture_escape_is_rejected_ax0003() {
-    // Uma closure que captura um valor da sub-arena e escapa → AX0003.
+    // A closure that captures a sub-arena value and escapes → AX0003.
     let out = axionc()
         .args(["--check", &fixture("arena_capture.axi")])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0003"), "esperava AX0003, saída: {text}");
+    assert!(text.contains("AX0003"), "expected AX0003, output: {text}");
 }
 
 #[test]
 fn arena_use_after_release_is_rejected_ax0005() {
-    // Um valor alocado após uma marca e usado após o arena_release → AX0005.
+    // A value allocated after a mark and used after arena_release → AX0005.
     let out = axionc()
         .args(["--check", &fixture("arena_mark_release.axi")])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0005"), "esperava AX0005, saída: {text}");
+    assert!(text.contains("AX0005"), "expected AX0005, output: {text}");
 }
 
 #[test]
@@ -389,15 +389,15 @@ fn arena_mark_used_before_release_is_accepted() {
         .unwrap();
     assert!(
         out.status.success(),
-        "uso antes do release devia ser aceite; saída: {}",
+        "use before release should be accepted; output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
 
 #[test]
 fn arena_reset_nll_point_reported() {
-    // Reset NLL: o reset da sub-arena é injectado após a última menção viva
-    // ('node', na promoção), não no fim léxico.
+    // NLL reset: the sub-arena's reset is injected after the last live mention
+    // ('node', at the promotion), not at the lexical end.
     let out = axionc()
         .args(["--emit", "arenas", &fixture("arena_promote_ok.axi")])
         .output()
@@ -406,20 +406,20 @@ fn arena_reset_nll_point_reported() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("reset 'sub'") && text.contains("node"),
-        "esperava reset NLL de 'sub' após 'node', saída: {text}"
+        "expected NLL reset of 'sub' after 'node', output: {text}"
     );
 }
 
 #[test]
 fn use_after_move_is_rejected_ax0004() {
-    // Ler um %1 depois de a posse ter sido movida (consumida) → AX0004.
+    // Reading a %1 after ownership has been moved (consumed) → AX0004.
     let out = axionc()
         .args(["--check", &fixture("use_after_move.axi")])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0004"), "esperava AX0004, saída: {text}");
+    assert!(text.contains("AX0004"), "expected AX0004, output: {text}");
 }
 
 #[test]
@@ -430,7 +430,7 @@ fn type_mismatch_is_rejected_ax0200() {
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0200"), "esperava AX0200, saída: {text}");
+    assert!(text.contains("AX0200"), "expected AX0200, output: {text}");
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn inference_accepts_where_and_runs() {
     let out = axionc().arg(fixture("type_ok_poly.axi")).output().unwrap();
     assert!(
         out.status.success(),
-        "saída: {}",
+        "output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "55\n");
@@ -446,23 +446,23 @@ fn inference_accepts_where_and_runs() {
 
 #[test]
 fn writing_through_a_fractional_half_is_rejected_ax0006() {
-    // Escrever através de uma metade %0.5 (passá-la a um parâmetro %1) → AX0006.
+    // Writing through a %0.5 half (passing it to a %1 parameter) → AX0006.
     let out = axionc()
         .args(["--check", &fixture("frac_write.axi")])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0006"), "esperava AX0006, saída: {text}");
+    assert!(text.contains("AX0006"), "expected AX0006, output: {text}");
 }
 
 #[test]
 fn split_join_reads_and_recombines_and_runs() {
-    // split → duas metades %0.5 lidas/recombinadas por join; corre → 7.
+    // split → two %0.5 halves read/recombined by join; runs → 7.
     let out = axionc().arg(fixture("frac_join.axi")).output().unwrap();
     assert!(
         out.status.success(),
-        "saída: {}",
+        "output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n");
@@ -470,11 +470,11 @@ fn split_join_reads_and_recombines_and_runs() {
 
 #[test]
 fn lambdas_run_higher_order_and_currying() {
-    // funções de ordem superior + currying via lambdas encadeadas → 42.
+    // higher-order functions + currying via chained lambdas → 42.
     let out = axionc().arg(fixture("lambda_hof.axi")).output().unwrap();
     assert!(
         out.status.success(),
-        "saída: {}",
+        "output: {}",
         String::from_utf8_lossy(&out.stdout)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
@@ -482,14 +482,14 @@ fn lambdas_run_higher_order_and_currying() {
 
 #[test]
 fn cranelift_backend_jits_and_runs_fib() {
-    // Backend nativo --dev: JIT-compila o núcleo Int e corre main :: Int → 6765.
+    // Native --dev backend: JIT-compiles the Int core and runs main :: Int → 6765.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("native_fib.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "saída: {}",
+        "output: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "6765\n");
@@ -497,14 +497,14 @@ fn cranelift_backend_jits_and_runs_fib() {
 
 #[test]
 fn cranelift_backend_compiles_multiclause_and_where() {
-    // fibFast: multi-cláusula com padrão literal + where ('go' liftado) → 832040.
+    // fibFast: multi-clause with a literal pattern + where ('go' lifted) → 832040.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("native_fibfast.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "saída: {}",
+        "output: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "832040\n");
@@ -512,7 +512,7 @@ fn cranelift_backend_compiles_multiclause_and_where() {
 
 #[test]
 fn cranelift_backend_runs_hello_with_string_io() {
-    // 01_hello.axi nativo: literal de string + putStrLn (runtime axion_puts).
+    // 01_hello.axi native: string literal + putStrLn (axion_puts runtime).
     let out = axionc()
         .args(["--backend", "cranelift", &example("01_hello.axi")])
         .output()
@@ -527,7 +527,7 @@ fn cranelift_backend_runs_hello_with_string_io() {
 
 #[test]
 fn cranelift_backend_runs_fib_example_with_show() {
-    // 02_fib.axi nativo: putStrLn (show (fibFast 30)) → 832040, igual ao interp.
+    // 02_fib.axi native: putStrLn (show (fibFast 30)) → 832040, same as interp.
     let out = axionc()
         .args(["--backend", "cranelift", &example("02_fib.axi")])
         .output()
@@ -542,7 +542,7 @@ fn cranelift_backend_runs_fib_example_with_show() {
 
 #[test]
 fn cranelift_backend_runs_records_on_the_heap() {
-    // record_run.axi nativo: Point{x,y} na heap (axion_alloc), update e selector.
+    // record_run.axi native: Point{x,y} on the heap (axion_alloc), update and selector.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("record_run.axi")])
         .output()
@@ -557,7 +557,7 @@ fn cranelift_backend_runs_records_on_the_heap() {
 
 #[test]
 fn cranelift_backend_compiles_case_and_tuples() {
-    // 'case' (cadeia de if) + tuplos na heap; nativo e interp concordam (200).
+    // 'case' (chain of if) + tuples on the heap; native and interp agree (200).
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("native_case.axi")])
         .output()
@@ -569,19 +569,19 @@ fn cranelift_backend_compiles_case_and_tuples() {
     );
     assert_eq!(String::from_utf8_lossy(&native.stdout), "200\n");
 
-    // o mesmo programa no interpretador (main :: Int imprime o resultado)
+    // the same program in the interpreter (main :: Int prints the result)
     let interp = axionc().arg(fixture("native_case.axi")).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&interp.stdout),
         String::from_utf8_lossy(&native.stdout),
-        "nativo e interpretador divergem"
+        "native and interpreter diverge"
     );
 }
 
 #[test]
 fn cranelift_backend_compiles_closures() {
-    // closures: lambda-lifting + captura (addN) + chamada indirecta (apply).
-    // main = apply (addN 10) 32 = 42; nativo e interp concordam.
+    // closures: lambda-lifting + capture (addN) + indirect call (apply).
+    // main = apply (addN 10) 32 = 42; native and interp agree.
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("native_closure.axi")])
         .output()
@@ -600,14 +600,14 @@ fn cranelift_backend_compiles_closures() {
     assert_eq!(
         String::from_utf8_lossy(&interp.stdout),
         String::from_utf8_lossy(&native.stdout),
-        "nativo e interpretador divergem"
+        "native and interpreter diverge"
     );
 }
 
 #[test]
 fn auto_drop_frees_local_heap_at_runtime() {
-    // Reclamação real (Auto-Drop §2): cada chamada de 'step' aloca um tuplo
-    // local e liberta-o → 300 allocs == 300 frees, memória constante, sem GC.
+    // Real reclamation (Auto-Drop §2): each call to 'step' allocates a local
+    // tuple and frees it → 300 allocs == 300 frees, constant memory, no GC.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("heap_loop.axi")])
         .env("AXION_HEAP_STATS", "1")
@@ -622,18 +622,18 @@ fn auto_drop_frees_local_heap_at_runtime() {
     let stats = String::from_utf8_lossy(&out.stderr);
     assert!(
         stats.contains("300 allocs, 300 frees"),
-        "esperava reclamação total, stats: {stats}"
+        "expected total reclamation, stats: {stats}"
     );
 
-    // o mesmo resultado no interpretador (cross-check)
+    // the same result in the interpreter (cross-check)
     let interp = axionc().arg(fixture("heap_loop.axi")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&interp.stdout), "90300\n");
 }
 
 #[test]
 fn cross_function_reclamation_frees_moved_linear_object() {
-    // 'make' aloca um Box e devolve-o; 'take' recebe-o por %1 e liberta-o. O
-    // objecto atravessa a fronteira e é libertado exactamente uma vez.
+    // 'make' allocates a Box and returns it; 'take' receives it by %1 and frees
+    // it. The object crosses the boundary and is freed exactly once.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("linear_move.axi")])
         .env("AXION_HEAP_STATS", "1")
@@ -648,23 +648,23 @@ fn cross_function_reclamation_frees_moved_linear_object() {
     let stats = String::from_utf8_lossy(&out.stderr);
     assert!(
         stats.contains("1 allocs, 1 frees"),
-        "esperava reclamação entre funções (1==1), stats: {stats}"
+        "expected cross-function reclamation (1==1), stats: {stats}"
     );
-    // o param %1 é libertado no callee (nó de drop no Core)
+    // the %1 param is freed in the callee (a drop node in Core)
     let core = axionc()
         .args(["--emit", "core", &fixture("linear_move.axi")])
         .output()
         .unwrap();
     assert!(
         String::from_utf8_lossy(&core.stdout).contains("drop b"),
-        "esperava 'drop b' no corpo de 'take'"
+        "expected 'drop b' in the body of 'take'"
     );
 }
 
 #[test]
 fn borrowed_arg_reclaimed_after_call() {
-    // 'dist' só lê os campos do registo (empréstimo puro), pelo que 'main' — que
-    // o aloca — o liberta APÓS a chamada, em vez de o dar por perdido: 1==1.
+    // 'dist' only reads the record's fields (a pure borrow), so 'main' — which
+    // allocates it — frees it AFTER the call, instead of giving it up for lost: 1==1.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("borrow_reclaim.axi")])
         .env("AXION_HEAP_STATS", "1")
@@ -679,30 +679,30 @@ fn borrowed_arg_reclaimed_after_call() {
     let stats = String::from_utf8_lossy(&out.stderr);
     assert!(
         stats.contains("1 allocs, 1 frees"),
-        "esperava reclamação do argumento emprestado (1==1), stats: {stats}"
+        "expected reclamation of the borrowed argument (1==1), stats: {stats}"
     );
-    // o drop do registo tem de vir DEPOIS da chamada que o empresta
+    // the record's drop must come AFTER the call that borrows it
     let core = axionc()
         .args(["--emit", "core", &fixture("borrow_reclaim.axi")])
         .output()
         .unwrap();
     let core = String::from_utf8_lossy(&core.stdout);
-    // procura só dentro do corpo de `main` (o prelúdio injectado traz outras
-    // funções com temporários `_tN` à frente no dump).
-    let main = &core[core.find("main  =").expect("função main no Core")..];
-    let call = main.find("call dist").expect("chamada a dist");
-    let drop = main.find("drop _t0").expect("drop do registo");
+    // look only inside the body of `main` (the injected prelude brings other
+    // functions with `_tN` temporaries ahead in the dump).
+    let main = &core[core.find("main  =").expect("main function in Core")..];
+    let call = main.find("call dist").expect("call to dist");
+    let drop = main.find("drop _t0").expect("drop of the record");
     assert!(
         drop > call,
-        "o drop tem de vir depois da chamada emprestada:\n{main}"
+        "the drop must come after the borrowed call:\n{main}"
     );
 }
 
 #[test]
 fn deep_drop_reclaims_nested_objects() {
-    // Deep-drop (§2): objectos aninhados (registo-em-registo e payload de
-    // tipo-soma) são reclamados por destrutores gerados — allocs == frees, em vez
-    // de perder o objecto interno (free plano).
+    // Deep-drop (§2): nested objects (record-in-record and sum-type payload) are
+    // reclaimed by generated destructors — allocs == frees, instead of leaking the
+    // inner object (flat free).
     for (fx, expected, allocs) in [
         ("nested_drop.axi", "12\n", "2 allocs, 2 frees"),
         ("sum_payload.axi", "15\n", "3 allocs, 3 frees"),
@@ -721,25 +721,26 @@ fn deep_drop_reclaims_nested_objects() {
         let stats = String::from_utf8_lossy(&out.stderr);
         assert!(
             stats.contains(allocs),
-            "{fx}: esperava '{allocs}' (deep-drop reclama o aninhado), stats: {stats}"
+            "{fx}: expected '{allocs}' (deep-drop reclaims the nested one), stats: {stats}"
         );
     }
-    // o destrutor recursivo aparece no Core para o tipo aninhado
+    // the recursive destructor appears in Core for the nested type
     let core = axionc()
         .args(["--emit", "core", &fixture("nested_drop.axi")])
         .output()
         .unwrap();
     assert!(
         String::from_utf8_lossy(&core.stdout).contains("axion_drop_Box"),
-        "esperava o destrutor gerado 'axion_drop_Box' no Core"
+        "expected the generated destructor 'axion_drop_Box' in Core"
     );
 }
 
 #[test]
 fn arena_runs_natively_with_bulk_reset() {
-    // Arena (§3): 'withArena' cria a raiz, allocN bump-aloca 100 células, e a
-    // arena é reclamada com UM só reset (não 100 frees). O interpretador não
-    // corre arenas (são --check-only), logo verifica-se só o nativo + stats.
+    // Arena (§3): 'withArena' creates the root, allocN bump-allocates 100 cells,
+    // and the arena is reclaimed with a SINGLE reset (not 100 frees). The interpreter
+    // does not run arenas (they are --check-only), so only the native path + stats
+    // are checked.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("arena_run.axi")])
         .env("AXION_HEAP_STATS", "1")
@@ -754,13 +755,13 @@ fn arena_runs_natively_with_bulk_reset() {
     let stats = String::from_utf8_lossy(&out.stderr);
     assert!(
         stats.contains("1 news, 1 resets, 100 cells"),
-        "esperava 100 células e 1 reset em massa, stats: {stats}"
+        "expected 100 cells and 1 bulk reset, stats: {stats}"
     );
 }
 
 #[test]
 fn buffer_sum_runs_natively() {
-    // Buffer U8 (§4/§5): newBuffer/bufIota/sumBytes/free. sum(0..99)=4950.
+    // U8 Buffer (§4/§5): newBuffer/bufIota/sumBytes/free. sum(0..99)=4950.
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("buffer_sum.axi")])
         .output()
@@ -775,7 +776,7 @@ fn buffer_sum_runs_natively() {
 
 #[test]
 fn linear_buffer_inplace_runs_natively() {
-    // Buffer %1 + XOR in-place (§5): o fio linear corre; encrypt consome+devolve.
+    // %1 Buffer + in-place XOR (§5): the linear thread runs; encrypt consumes+returns.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("buffer_linear.axi")])
         .output()
@@ -790,7 +791,7 @@ fn linear_buffer_inplace_runs_natively() {
 
 #[test]
 fn do_and_dollar_and_hex_sugar_runs() {
-    // `imperative $ do xorInPlace buf 0x5A` desugar → xorInPlace buf 90 → 126444.
+    // `imperative $ do xorInPlace buf 0x5A` desugars → xorInPlace buf 90 → 126444.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("do_sugar.axi")])
         .output()
@@ -805,42 +806,42 @@ fn do_and_dollar_and_hex_sugar_runs() {
 
 #[test]
 fn do_block_sequences_io_statements() {
-    // `do { putStrLn a; putStrLn b }` corre as duas instruções em ordem. Testa-se
-    // no backend nativo — o interpretador usa um modelo de IO de acção única
-    // (só corre a acção final de main), não sequencia (§ limitação assumida).
+    // `do { putStrLn a; putStrLn b }` runs the two statements in order. Tested on
+    // the native backend — the interpreter uses a single-action IO model (it only
+    // runs main's final action), it does not sequence (§ assumed limitation).
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("do_io.axi")])
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "um\ndois\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "one\ntwo\n");
 }
 
 #[test]
 fn fizzbuzz_runs_l0() {
-    // Listagem 1.3 da spec (L0): FizzBuzz com ranges `[1..15]`, composição `.`,
-    // `mapM_`, guardas e `mod`. Um exemplo "dia 1" da spec, a correr.
+    // Listing 1.3 of the spec (L0): FizzBuzz with ranges `[1..15]`, composition `.`,
+    // `mapM_`, guards and `mod`. A "day 1" example from the spec, running.
     let out = axionc().arg(example("03b_fizzbuzz.axi")).output().unwrap();
     assert!(
         out.status.success(),
-        "FizzBuzz devia correr: {}",
+        "FizzBuzz should run: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.starts_with("1\n2\nFizz\n4\nBuzz\nFizz\n") && text.contains("FizzBuzz"),
-        "saída inesperada:\n{text}"
+        "unexpected output:\n{text}"
     );
 }
 
 #[test]
 fn list_syntax_and_ops_l0() {
-    // §1 (L0): literais `[..]`, cons `:`, `map`, `range` — o tipo `List` vem do
-    // prelúdio embutido (sem `data` do utilizador). Resultado 26.
+    // §1 (L0): literals `[..]`, cons `:`, `map`, `range` — the `List` type comes
+    // from the built-in prelude (no user `data`). Result 26.
     let out = axionc().arg(fixture("list_ops.axi")).output().unwrap();
     assert!(
         out.status.success(),
-        "listas deviam correr: {}",
+        "lists should run: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "26\n");
@@ -848,8 +849,8 @@ fn list_syntax_and_ops_l0() {
 
 #[test]
 fn parametric_data_types_work() {
-    // §1 (L0): tipos-soma paramétricos (`Maybe a`, `Either a b`) — os construtores
-    // generalizam sobre os parâmetros de tipo. Corre nos três executores.
+    // §1 (L0): parametric sum types (`Maybe a`, `Either a b`) — the constructors
+    // generalize over the type parameters. Runs in all three executors.
     let fx = fixture("parametric_data.axi");
     for args in [
         vec![fx.as_str()],
@@ -867,8 +868,8 @@ fn parametric_data_types_work() {
 
 #[test]
 fn sum_type_case_matches_on_tag() {
-    // Tipo-soma (3 construtores) com tag em runtime; o case compara o tag e
-    // destructura. val(Pos 7)+val Neg+val Zero = 6. Igual nos três executores.
+    // Sum type (3 constructors) with a runtime tag; the case compares the tag and
+    // destructures. val(Pos 7)+val Neg+val Zero = 6. Same in all three executors.
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("sum_type.axi")])
         .output()
@@ -885,8 +886,8 @@ fn sum_type_case_matches_on_tag() {
 
 #[test]
 fn ffi_calls_libc_via_dlsym() {
-    // FFI: `foreign labs :: Int -> Int` chama a labs() da libc (dlsym). Corre
-    // nos três executores; labs(-42) = 42.
+    // FFI: `foreign labs :: Int -> Int` calls libc's labs() (dlsym). Runs in all
+    // three executors; labs(-42) = 42.
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("ffi_labs.axi")])
         .output()
@@ -903,8 +904,8 @@ fn ffi_calls_libc_via_dlsym() {
 
 #[test]
 fn constructor_pattern_in_case_destructures() {
-    // `case p of Point a b -> a + b` (tipo de um só construtor). interp e nativo
-    // concordam (7).
+    // `case p of Point a b -> a + b` (single-constructor type). interp and native
+    // agree (7).
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("con_pattern.axi")])
         .output()
@@ -921,8 +922,8 @@ fn constructor_pattern_in_case_destructures() {
 
 #[test]
 fn fold_bytes_runs_with_operator_section() {
-    // foldBytes (+) 0 buf: dobra a closure sobre os bytes (chamada indirecta por
-    // byte no runtime). soma dos bytes 0..99 = 4950.
+    // foldBytes (+) 0 buf: folds the closure over the bytes (indirect call per
+    // byte at runtime). sum of bytes 0..99 = 4950.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("fold_bytes.axi")])
         .output()
@@ -937,7 +938,7 @@ fn fold_bytes_runs_with_operator_section() {
 
 #[test]
 fn guards_compile_and_run() {
-    // guardas → cadeia de if; interp e nativo concordam (0).
+    // guards → chain of if; interp and native agree (0).
     let native = axionc()
         .args(["--backend", "cranelift", &fixture("guards.axi")])
         .output()
@@ -954,15 +955,15 @@ fn guards_compile_and_run() {
 
 #[test]
 fn linear_elision_updates_record_in_place() {
-    // Linear Elision (§2): 'bump c = c { val = 99 }' com c :: Cell %1 muta o
-    // bloco (nó `update!` no Core) → 1 só alocação, não 2. Resultado 99.
+    // Linear Elision (§2): 'bump c = c { val = 99 }' with c :: Cell %1 mutates the
+    // block (an `update!` node in Core) → only 1 allocation, not 2. Result 99.
     let core = axionc()
         .args(["--emit", "core", &fixture("inplace_update.axi")])
         .output()
         .unwrap();
     assert!(
         String::from_utf8_lossy(&core.stdout).contains("update!"),
-        "esperava o nó in-place `update!` no Core"
+        "expected the in-place `update!` node in Core"
     );
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("inplace_update.axi")])
@@ -978,13 +979,13 @@ fn linear_elision_updates_record_in_place() {
     let stats = String::from_utf8_lossy(&out.stderr);
     assert!(
         stats.contains("1 allocs"),
-        "in-place devia poupar a alocação da cópia, stats: {stats}"
+        "in-place should save the copy's allocation, stats: {stats}"
     );
 }
 
 #[test]
 fn operator_section_is_a_first_class_value() {
-    // `(+)` como valor (secção) passada a uma HOF: apply2 (+) 3 4 = 7.
+    // `(+)` as a value (section) passed to a HOF: apply2 (+) 3 4 = 7.
     let out = axionc()
         .args(["--backend", "cranelift", &fixture("op_section.axi")])
         .output()
@@ -999,50 +1000,50 @@ fn operator_section_is_a_first_class_value() {
 
 #[test]
 fn example_05_checksum_borrow_typechecks() {
-    // O programa-alvo 5 (§5, elisão de empréstimos) compila INTACTO: foldBytes
-    // com a secção `(+)`, U8/U32, e a elisão (checksum empresta, depois encrypt
-    // consome — sem AX0001). Sem main → só --check.
+    // Target program 5 (§5, borrow elision) compiles INTACT: foldBytes with the
+    // `(+)` section, U8/U32, and the elision (checksum borrows, then encrypt
+    // consumes — no AX0001). No main → --check only.
     let out = axionc()
         .args(["--check", &example("05_checksum_borrow.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "05 devia compilar: {}",
+        "05 should compile: {}",
         String::from_utf8_lossy(&out.stdout)
     );
 }
 
 #[test]
 fn example_03_linear_buffer_compiles_and_runs() {
-    // O programa-alvo 3 (§5) corre INTACTO: Buffer U8 %1 + imperative $ do +
-    // withBuffer + \-lambda. main :: IO () (só aloca/xor/liberta, sem output).
+    // Target program 3 (§5) runs INTACT: U8 %1 Buffer + imperative $ do +
+    // withBuffer + \-lambda. main :: IO () (only allocates/xors/frees, no output).
     let out = axionc()
         .args(["--backend", "cranelift", &example("03_linear_buffer.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "03 devia correr: {}",
+        "03 should run: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
 
 #[test]
 fn linear_buffer_consumed_twice_is_rejected_ax0001() {
-    // consumir o Buffer %1 duas vezes (xorInPlace) → contração → AX0001.
+    // consuming the %1 Buffer twice (xorInPlace) → contraction → AX0001.
     let out = axionc()
         .args(["--check", &fixture("buffer_use_twice.axi")])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0001"), "esperava AX0001, saída: {text}");
+    assert!(text.contains("AX0001"), "expected AX0001, output: {text}");
 }
 
 #[test]
 fn arena_escape_still_rejected_statically_ax0003() {
-    // a reclamação em runtime não dispensa a análise estática de escape.
+    // runtime reclamation does not waive the static escape analysis.
     let out = axionc()
         .args(["--check", &fixture("arena_escape.axi")])
         .output()
@@ -1053,45 +1054,45 @@ fn arena_escape_still_rejected_statically_ax0003() {
 
 #[test]
 fn auto_drop_inserts_drop_nodes_in_core() {
-    // o tuplo local do 'case' é libertado à cabeça do braço (após destructuração).
+    // the local tuple of the 'case' is freed at the head of the arm (after destructuring).
     let out = axionc()
         .args(["--emit", "core", &fixture("native_case.axi")])
         .output()
         .unwrap();
     assert!(out.status.success());
     let ir = String::from_utf8_lossy(&out.stdout);
-    assert!(ir.contains("drop _t1"), "sem nó de drop no Core:\n{ir}");
+    assert!(ir.contains("drop _t1"), "no drop node in Core:\n{ir}");
 }
 
 #[test]
 fn emit_core_dumps_anf_ir() {
-    // o Core IR (ANF) da closure: converte a lambda e a aplicação indirecta.
+    // the Core IR (ANF) of the closure: converts the lambda and the indirect application.
     let out = axionc()
         .args(["--emit", "core", &fixture("native_closure.axi")])
         .output()
         .unwrap();
     assert!(out.status.success());
     let ir = String::from_utf8_lossy(&out.stdout);
-    // função liftada com ambiente de captura + chamada indirecta + closure. O
-    // índice da lambda (`lam$N`) não é fixado — o prelúdio também traz lambdas
-    // ao dump; a captura de `n` é que identifica esta.
+    // lifted function with a capture environment + indirect call + closure. The
+    // lambda index (`lam$N`) is not pinned — the prelude also brings lambdas into
+    // the dump; the capture of `n` is what identifies this one.
     assert!(
         ir.contains("[env n]"),
-        "sem lambda liftada com captura:\n{ir}"
+        "no lifted lambda with capture:\n{ir}"
     );
-    assert!(ir.contains("callclo"), "sem chamada indirecta:\n{ir}");
+    assert!(ir.contains("callclo"), "no indirect call:\n{ir}");
     assert!(
         ir.contains("closure lam$"),
-        "sem construção de closure:\n{ir}"
+        "no closure construction:\n{ir}"
     );
-    // ANF: os argumentos das chamadas são átomos nomeados por `let`
-    assert!(ir.contains("let "), "não está em ANF:\n{ir}");
+    // ANF: call arguments are atoms named by `let`
+    assert!(ir.contains("let "), "not in ANF:\n{ir}");
 }
 
 #[test]
 fn emit_llvm_dumps_llvm_ir() {
-    // o backend --release (§18) baixa o MESMO Core para LLVM IR textual.
-    // Verifica-se o IR sem invocar o clang (que pode não estar no CI).
+    // the --release backend (§18) lowers the SAME Core to textual LLVM IR.
+    // The IR is checked without invoking clang (which may not be on CI).
     let out = axionc()
         .args(["--emit", "llvm", &fixture("native_fib.axi")])
         .output()
@@ -1100,20 +1101,20 @@ fn emit_llvm_dumps_llvm_ir() {
     let ir = String::from_utf8_lossy(&out.stdout);
     assert!(
         ir.contains("define i64 @\"ax_fib\"(i64"),
-        "sem def de fib:\n{ir}"
+        "no def of fib:\n{ir}"
     );
-    assert!(ir.contains("call i64 @\"ax_fib\""), "sem recursão:\n{ir}");
-    assert!(ir.contains("phi i64"), "sem phi do if:\n{ir}");
+    assert!(ir.contains("call i64 @\"ax_fib\""), "no recursion:\n{ir}");
+    assert!(ir.contains("phi i64"), "no phi from the if:\n{ir}");
     assert!(
         ir.contains("define i32 @main()") && ir.contains("@printf"),
-        "sem driver que imprime:\n{ir}"
+        "no driver that prints:\n{ir}"
     );
 }
 
 #[test]
 fn release_backend_compiles_and_runs_when_clang_present() {
-    // se houver clang (AXION_CLANG ou no PATH), o --release compila e corre, e
-    // o seu output coincide com o do --dev em todo o Core (registos, closures,
+    // if clang is available (AXION_CLANG or on PATH), --release compiles and runs, and
+    // its output matches --dev's across all of Core (records, closures,
     // strings/IO, case, arenas, drops).
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
     if std::process::Command::new(&clang)
@@ -1121,32 +1122,32 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         .output()
         .is_err()
     {
-        return; // sem clang neste ambiente — o teste de IR acima já cobre
+        return; // no clang in this environment — the IR test above already covers it
     }
     let cases = [
         (fixture("native_fib.axi"), "6765\n"),
-        (fixture("native_case.axi"), "200\n"), // case + tuplos
+        (fixture("native_case.axi"), "200\n"), // case + tuples
         (fixture("native_closure.axi"), "42\n"), // closures
-        (fixture("record_run.axi"), "99\n"),   // registos na heap
+        (fixture("record_run.axi"), "99\n"),   // records on the heap
         (fixture("linear_move.axi"), "42\n"),  // Auto-Drop + free
         (fixture("arena_run.axi"), "100\n"),   // arenas
-        (fixture("buffer_sum.axi"), "4950\n"), // Buffer U8 / §4
-        (fixture("buffer_linear.axi"), "126444\n"), // Buffer %1 in-place / §5
+        (fixture("buffer_sum.axi"), "4950\n"), // U8 Buffer / §4
+        (fixture("buffer_linear.axi"), "126444\n"), // %1 Buffer in-place / §5
         (fixture("inplace_update.axi"), "99\n"), // Linear Elision / §2
         (fixture("ffi_labs.axi"), "42\n"),     // FFI via dlsym / §18
         (example("01_hello.axi"), "Hello, Axion!\n"), // strings / IO
         (example("02_fib.axi"), "832040\n"),
-        (fixture("mono_typeclass.axi"), "20\n"), // typeclasses monomorfizadas → nativo
-        (fixture("mono_constrained.axi"), "3\n"), // `Eq a =>` especializada → nativo
-        (fixture("mono_transitive.axi"), "2\n"), // especialização transitiva (β-2)
-        (fixture("typeclasses.axi"), "125\n"),   // exemplo completo (count + eq Shape)
-        (fixture("native_io.axi"), "sum=6\n2\n4\n6\n"), // IO nativo: do + mapM_ + putStr
-        (fixture("native_hof.axi"), "56\n"),     // first-class fns: filter/map/foldr + nomeadas
+        (fixture("mono_typeclass.axi"), "20\n"), // monomorphized typeclasses → native
+        (fixture("mono_constrained.axi"), "3\n"), // `Eq a =>` specialized → native
+        (fixture("mono_transitive.axi"), "2\n"), // transitive specialization (β-2)
+        (fixture("typeclasses.axi"), "125\n"),   // full example (count + eq Shape)
+        (fixture("native_io.axi"), "sum=6\n2\n4\n6\n"), // native IO: do + mapM_ + putStr
+        (fixture("native_hof.axi"), "56\n"),     // first-class fns: filter/map/foldr + named
         (
             example("03b_fizzbuzz.axi"),
             "1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n",
-        ), // compose parcial + putStrLn como valor → nativo
-        (example("06_typeclasses.axi"), "6\n"),  // typeclasses monomorfizadas (exemplo do README)
+        ), // partial compose + putStrLn as a value → native
+        (example("06_typeclasses.axi"), "6\n"),  // monomorphized typeclasses (README example)
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1158,18 +1159,18 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
             expected,
-            "--release divergiu em {path}"
+            "--release diverged on {path}"
         );
     }
 }
 
 #[test]
 fn native_runtime_is_leak_free_under_lsan() {
-    // A proposta de valor da Axion é memória segura sem GC. Compila fixtures de
-    // heap/arena/empréstimo com o LLVM IR do --release + AddressSanitizer +
-    // LeakSanitizer e exige execução limpa (0 corrupção, 0 fugas). Cobre em
-    // particular as duas fugas fechadas: a closure do `withArena` (arena_run) e
-    // a base de um update por cópia (update_borrow). Precisa de clang.
+    // Axion's value proposition is memory safety without a GC. Compiles heap/arena/
+    // borrow fixtures with the --release LLVM IR + AddressSanitizer +
+    // LeakSanitizer and requires a clean run (0 corruption, 0 leaks). In particular
+    // it covers the two closed leaks: the `withArena` closure (arena_run) and the
+    // base of a copy-update (update_borrow). Needs clang.
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
     if std::process::Command::new(&clang)
         .arg("--version")
@@ -1190,15 +1191,15 @@ fn native_runtime_is_leak_free_under_lsan() {
         "linear_move",
         "inplace_update",
     ] {
-        // baixa para LLVM IR
+        // lower to LLVM IR
         let ll = dir.join(format!("{name}.ll"));
         let ir = axionc()
             .args(["--emit", "llvm", &fixture(&format!("{name}.axi"))])
             .output()
             .unwrap();
-        assert!(ir.status.success(), "{name}: --emit llvm falhou");
+        assert!(ir.status.success(), "{name}: --emit llvm failed");
         std::fs::write(&ll, &ir.stdout).unwrap();
-        // compila com ASan + LSan
+        // compile with ASan + LSan
         let exe = dir.join(format!("{name}.san"));
         let cc = std::process::Command::new(&clang)
             .args(["-fsanitize=address,leak", "-O1", "-w"])
@@ -1208,15 +1209,15 @@ fn native_runtime_is_leak_free_under_lsan() {
             .arg(&exe)
             .status()
             .unwrap();
-        assert!(cc.success(), "{name}: clang+sanitizer falhou");
-        // corre com deteção de fugas ligada — tem de sair limpo
+        assert!(cc.success(), "{name}: clang+sanitizer failed");
+        // run with leak detection on — it must exit clean
         let run = std::process::Command::new(&exe)
             .env("ASAN_OPTIONS", "detect_leaks=1")
             .output()
             .unwrap();
         assert!(
             run.status.success(),
-            "{name}: ASan/LSan reportou erro:\n{}",
+            "{name}: ASan/LSan reported an error:\n{}",
             String::from_utf8_lossy(&run.stderr)
         );
     }
@@ -1225,9 +1226,9 @@ fn native_runtime_is_leak_free_under_lsan() {
 
 #[test]
 fn ffi_calls_user_shared_library() {
-    // FFI (§18) a `dlopen`: `foreign "lib.so" nome :: …` carrega a `.so` do
-    // utilizador e chama-a nos três executores (interp, --dev, --release).
-    // Precisa de clang para compilar a `.so`.
+    // FFI (§18) to `dlopen`: `foreign "lib.so" name :: …` loads the user's `.so`
+    // and calls it in all three executors (interp, --dev, --release).
+    // Needs clang to compile the `.so`.
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
     if std::process::Command::new(&clang)
         .arg("--version")
@@ -1255,7 +1256,7 @@ fn ffi_calls_user_shared_library() {
         .status()
         .unwrap()
         .success();
-    assert!(ok, "clang não compilou a .so de teste");
+    assert!(ok, "clang did not compile the test .so");
 
     let axi = dir.join("prog.axi");
     std::fs::write(
@@ -1285,7 +1286,7 @@ fn ffi_calls_user_shared_library() {
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
             "17\n",
-            "FFI a .so do utilizador divergiu em {args:?}"
+            "FFI to the user's .so diverged on {args:?}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -1301,7 +1302,7 @@ fn emit_clif_dumps_cranelift_ir() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("brif") && text.contains("call") && text.contains("-> i64"),
-        "IR inesperado: {text}"
+        "unexpected IR: {text}"
     );
 }
 
@@ -1314,18 +1315,18 @@ fn json_diagnostics_are_emitted() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("\"code\": \"AX0001\""),
-        "JSON inesperado: {text}"
+        "unexpected JSON: {text}"
     );
 }
 
 #[test]
 fn list_stdlib_functions() {
-    // Biblioteca de listas do prelúdio (degrau 1 → propósito geral): length,
+    // Prelude list library (step 1 → general purpose): length,
     // append, reverse, foldr, foldl, take, drop, filter, null, elem, sum.
     let out = axionc().arg(fixture("list_stdlib.axi")).output().unwrap();
     assert!(
         out.status.success(),
-        "stdlib devia correr: {}",
+        "stdlib should run: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "414\n");
@@ -1333,8 +1334,8 @@ fn list_stdlib_functions() {
 
 #[test]
 fn user_defined_infix_operators() {
-    // Degrau 2: `x `f` y` ≡ `f x y` para uma função nomeada. Corre nos três
-    // executores (1ª ordem → também nativo): 100 `min` (7 `plus` 5) = 12.
+    // Step 2: `x `f` y` ≡ `f x y` for a named function. Runs in all three
+    // executors (first order → native too): 100 `min` (7 `plus` 5) = 12.
     let interp = axionc().arg(fixture("user_infix.axi")).output().unwrap();
     assert!(
         interp.status.success(),
@@ -1357,8 +1358,8 @@ fn user_defined_infix_operators() {
 
 #[test]
 fn list_extra_concat_zip() {
-    // Degrau 3 da stdlib: ++ (concatenação), concat, zipWith, zip. Puro Axion
-    // sobre List. 20 + 6 + 140 + 11 = 177.
+    // stdlib step 3: ++ (concatenation), concat, zipWith, zip. Pure Axion over
+    // List. 20 + 6 + 140 + 11 = 177.
     let out = axionc().arg(fixture("list_extra.axi")).output().unwrap();
     assert!(
         out.status.success(),
@@ -1370,8 +1371,8 @@ fn list_extra_concat_zip() {
 
 #[test]
 fn concat_operator_agrees_natively() {
-    // `++` sobre listas baixa a `append` (1ª ordem) → corre nos três executores.
-    // sum ([1,2] ++ [3,4] ++ [10]) = 20 em interp e Cranelift.
+    // `++` on lists lowers to `append` (first order) → runs in all three executors.
+    // sum ([1,2] ++ [3,4] ++ [10]) = 20 in interp and Cranelift.
     let interp = axionc().arg(fixture("plus_plus.axi")).output().unwrap();
     assert!(interp.status.success());
     assert_eq!(String::from_utf8_lossy(&interp.stdout), "20\n");
@@ -1389,7 +1390,7 @@ fn concat_operator_agrees_natively() {
 
 #[test]
 fn rich_strings_concat_unwords_unlines() {
-    // Strings mais ricas: ++, unwords, unlines, putStr (nível-interp, como IO).
+    // Richer strings: ++, unwords, unlines, putStr (interp-level, as IO).
     let out = axionc().arg(fixture("rich_strings.axi")).output().unwrap();
     assert!(
         out.status.success(),
@@ -1398,15 +1399,15 @@ fn rich_strings_concat_unwords_unlines() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "Olá Axion!\nlinha 1\nlinha 2\n"
+        "Hello Axion!\nline 1\nline 2\n"
     );
 }
 
 #[test]
 fn typeclasses_dispatch_and_constraints() {
-    // Fatia 1 das typeclasses: class/instance + despacho dinâmico pela cabeça-de-
-    // tipo do 1º argumento, e polimorfismo restrito `Eq a =>`. Duas classes,
-    // instância que reutiliza métodos de outra, função genérica `count`.
+    // Typeclasses slice 1: class/instance + dynamic dispatch on the type-head of
+    // the 1st argument, and constrained polymorphism `Eq a =>`. Two classes,
+    // an instance that reuses methods from another, a generic function `count`.
     // 3 (count) + 10 + 12 (size) + 100 (eq via size) = 125.
     let out = axionc().arg(fixture("typeclasses.axi")).output().unwrap();
     assert!(
@@ -1419,8 +1420,8 @@ fn typeclasses_dispatch_and_constraints() {
 
 #[test]
 fn generic_prelude_over_typeclasses() {
-    // Solidificação da fatia 1: maxOr/minOr (Ord a =>) e nub (Eq a =>) no
-    // prelúdio, a despachar para as instâncias Eq Int / Ord Int. 9 + 1 + 4 = 14.
+    // Hardening of slice 1: maxOr/minOr (Ord a =>) and nub (Eq a =>) in the
+    // prelude, dispatching to the Eq Int / Ord Int instances. 9 + 1 + 4 = 14.
     let out = axionc()
         .arg(fixture("generic_stdlib.axi"))
         .output()
@@ -1431,31 +1432,31 @@ fn generic_prelude_over_typeclasses() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "14\n");
-    // Não-regressão nativa: as novas funções genéricas (maxOr/nub) chamam métodos
-    // → são interp-only e o filtro nativo exclui-as. A prova de que o nativo
-    // continua a compilar está no teste release_backend_compiles_and_runs_*.
+    // Native non-regression: the new generic functions (maxOr/nub) call methods
+    // → they are interp-only and the native filter excludes them. The proof that
+    // the native path still compiles is in the test release_backend_compiles_and_runs_*.
 }
 
 #[test]
 fn typeclass_coherence_is_checked_statically() {
-    // Fatia 2a: coerência/completude de classes e instâncias em compile-time.
+    // Slice 2a: class and instance coherence/completeness at compile time.
     let reject = |fx: &str, code: &str| {
         let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
-        assert!(!out.status.success(), "{fx} devia falhar");
+        assert!(!out.status.success(), "{fx} should fail");
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(text.contains(code), "{fx}: esperava {code}, saída: {text}");
+        assert!(text.contains(code), "{fx}: expected {code}, output: {text}");
     };
-    reject("tc_unknown_class.axi", "AX0400"); // instância de classe não declarada
-    reject("tc_missing_method.axi", "AX0401"); // método da classe em falta
-    reject("tc_extra_method.axi", "AX0402"); // método fora da classe
-    reject("tc_dup_instance.axi", "AX0403"); // instância duplicada (incoerência)
+    reject("tc_unknown_class.axi", "AX0400"); // instance of an undeclared class
+    reject("tc_missing_method.axi", "AX0401"); // missing class method
+    reject("tc_extra_method.axi", "AX0402"); // method outside the class
+    reject("tc_dup_instance.axi", "AX0403"); // duplicate instance (incoherence)
 }
 
 #[test]
 fn first_class_functions_run_natively() {
-    // Fecho da camada 1: funções de ordem superior (filter/map/foldr) com
-    // lambdas E funções nomeadas como valor, via eta-expansão. Interp e --dev
-    // concordam em 56 (o --release está na lista release_backend_*).
+    // Closing layer 1: higher-order functions (filter/map/foldr) with lambdas AND
+    // named functions as values, via eta-expansion. Interp and --dev agree on 56
+    // (--release is in the release_backend_* list).
     for args in [
         vec![fixture("native_hof.axi")],
         vec![
@@ -1476,9 +1477,9 @@ fn first_class_functions_run_natively() {
 
 #[test]
 fn native_io_effects_run_on_interp_and_dev() {
-    // 1ª fatia da estrada M:N: IO/efeitos nativos. do-blocks sequenciam (o output
-    // de cada acção precede o da próxima), `mapM_` é função de prelúdio, `putStr`
-    // é runtime. Interp e --dev concordam (--release na lista release_backend_*).
+    // 1st slice of the M:N road: native IO/effects. do-blocks sequence (each action's
+    // output precedes the next), `mapM_` is a prelude function, `putStr` is runtime.
+    // Interp and --dev agree (--release in the release_backend_* list).
     for args in [
         vec![fixture("native_io.axi")],
         vec![
@@ -1503,9 +1504,9 @@ fn native_io_effects_run_on_interp_and_dev() {
 
 #[test]
 fn monomorphized_typeclass_runs_on_all_backends() {
-    // Fatia 2b-ii: um uso de método sobre um tipo concreto é reescrito para uma
-    // chamada directa à impl → compila nativamente. Interp e --dev concordam em
-    // 20 (o --release está coberto por release_backend_compiles_and_runs_*).
+    // Slice 2b-ii: a method use over a concrete type is rewritten to a direct
+    // call to the impl → compiles natively. Interp and --dev agree on 20
+    // (--release is covered by release_backend_compiles_and_runs_*).
     let interp = axionc()
         .arg(fixture("mono_typeclass.axi"))
         .output()
@@ -1531,9 +1532,9 @@ fn monomorphized_typeclass_runs_on_all_backends() {
 
 #[test]
 fn monomorphized_constrained_function_runs_on_all_backends() {
-    // Fatia 2b-β: `count :: Eq a =>` especializada por tipo no call-site
-    // (`count 2 [..]` → `count$Int`, `eq → eq$Int`, recursão → `count$Int`).
-    // Interp e --dev concordam em 3 (o --release está na lista release_backend_*).
+    // Slice 2b-β: `count :: Eq a =>` specialized per type at the call-site
+    // (`count 2 [..]` → `count$Int`, `eq → eq$Int`, recursion → `count$Int`).
+    // Interp and --dev agree on 3 (--release is in the release_backend_* list).
     for args in [
         vec![fixture("mono_constrained.axi")],
         vec![
@@ -1554,9 +1555,9 @@ fn monomorphized_constrained_function_runs_on_all_backends() {
 
 #[test]
 fn transitively_monomorphized_constraints_run_on_all_backends() {
-    // Fatia 2b-β-2: `countNeq :: Eq a =>` chama `neq :: Eq a =>` (constrangida) —
-    // a especialização propaga-se transitivamente (countNeq$Int → neq$Int →
-    // eq$Int). Interp e --dev concordam em 2 (--release na lista release_backend_*).
+    // Slice 2b-β-2: `countNeq :: Eq a =>` calls `neq :: Eq a =>` (constrained) —
+    // the specialization propagates transitively (countNeq$Int → neq$Int →
+    // eq$Int). Interp and --dev agree on 2 (--release in the release_backend_* list).
     for args in [
         vec![fixture("mono_transitive.axi")],
         vec![
@@ -1577,17 +1578,17 @@ fn transitively_monomorphized_constraints_run_on_all_backends() {
 
 #[test]
 fn typeclass_constraints_are_checked_at_use_site() {
-    // Fatia 2b-i: verificação estática de constraints no ponto de uso.
+    // Slice 2b-i: static checking of constraints at the use site.
     let reject = |fx: &str, code: &str| {
         let out = axionc().args(["--check", &fixture(fx)]).output().unwrap();
-        assert!(!out.status.success(), "{fx} devia falhar");
+        assert!(!out.status.success(), "{fx} should fail");
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(text.contains(code), "{fx}: esperava {code}, saída: {text}");
+        assert!(text.contains(code), "{fx}: expected {code}, output: {text}");
     };
-    reject("tc_no_instance.axi", "AX0404"); // método sobre tipo concreto sem instância
-    reject("tc_unconstrained_method.axi", "AX0405"); // uso polimórfico sem constraint
+    reject("tc_no_instance.axi", "AX0404"); // method over a concrete type with no instance
+    reject("tc_unconstrained_method.axi", "AX0405"); // polymorphic use without a constraint
 
-    // Positivo: com `Eq a =>` declarado, compila e resolve à instância (→ True).
+    // Positive: with `Eq a =>` declared, it compiles and resolves to the instance (→ True).
     let out = axionc()
         .arg(fixture("tc_constraint_ok.axi"))
         .output()

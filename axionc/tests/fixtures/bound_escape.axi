@@ -1,6 +1,6 @@
--- AX0302: um endpoint criado no nursery é DEVOLVIDO do `bound` — escaparia ao
--- nursery e poderia ligar nurseries em ciclo (deadlock). Rejeitado: os endpoints
--- são confinados ao `bound` (não há `promote` de endpoints).
+-- AX0302: an endpoint created in the nursery is RETURNED from the `bound` — it
+-- would escape the nursery and could link nurseries in a cycle (deadlock). Rejected:
+-- endpoints are confined to the `bound` (there is no `promote` for endpoints).
 leak :: Ep a
 leak = bound $ do
   (c, d) <- newChannel

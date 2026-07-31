@@ -1,6 +1,6 @@
--- Deve PASSAR (Auto-Drop): 'Buf' é droppable (tem Drop). Largado sem consumo,
--- o compilador injecta 'free' no ponto de morte — não é erro.
--- `axionc --emit drops drop_ok.axi` mostra o free injectado.
+-- Must PASS (Auto-Drop): 'Buf' is droppable (has Drop). Dropped without being
+-- consumed, the compiler injects 'free' at the death point — it is not an error.
+-- `axionc --emit drops drop_ok.axi` shows the injected free.
 data Buf = Buf { size :: Int }
 
 makeAndDrop :: Buf %1 -> Int

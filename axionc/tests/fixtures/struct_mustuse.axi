@@ -1,6 +1,6 @@
--- Deve FALHAR com AX0002 (propagação estrutural de Drop): 'Sess' é droppable à
--- primeira vista, mas contém um campo 'Ep %1' (must-use) → 'Sess' é must-use,
--- logo não pode ser auto-dropped.
+-- Must FAIL with AX0002 (structural Drop propagation): 'Sess' looks droppable at
+-- first sight, but it contains an 'Ep %1' field (must-use) → 'Sess' is must-use,
+-- so it cannot be auto-dropped.
 data Sess = Sess { ep :: Ep %1, count :: Int }
 
 useSession :: Sess %1 -> Int

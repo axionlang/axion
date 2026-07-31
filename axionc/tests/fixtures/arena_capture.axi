@@ -1,6 +1,6 @@
--- Deve FALHAR com AX0003: a closure '\x -> node' captura 'node' (que vive na
--- sub-arena) e é devolvida — o escape pode ser por retorno OU por captura em
--- closure (§3C).
+-- Must FAIL with AX0003: the closure '\x -> node' captures 'node' (which lives
+-- in the sub-arena) and is returned — the escape can be by return OR by capture
+-- in a closure (§3C).
 grab :: Arena -> (Cell -> Cell)
 grab parent =
   withSubArena parent (\sub ->

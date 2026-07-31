@@ -1,5 +1,5 @@
--- Deve PASSAR: exercita inferência com 'where' (go polimórfico/monomórfico),
--- aritmética e show/putStrLn.
+-- Must PASS: exercises inference with 'where' (polymorphic/monomorphic go),
+-- arithmetic and show/putStrLn.
 sumTo :: Int -> Int
 sumTo n = go n 0
   where

@@ -1,7 +1,7 @@
--- Auto-Drop no runtime: cada chamada de 'step' aloca um tuplo local e
--- liberta-o no ponto de morte (após a destructuração). 'sumTo 300' chama
--- 'step' 300 vezes → 300 allocs == 300 frees, memória constante (sem GC).
--- Resultado: soma de step(n)=2n para n=1..300 = 90300.
+-- Auto-Drop at runtime: each call to 'step' allocates a local tuple and frees
+-- it at the death point (after destructuring). 'sumTo 300' calls 'step' 300
+-- times → 300 allocs == 300 frees, constant memory (no GC).
+-- Result: sum of step(n)=2n for n=1..300 = 90300.
 step :: Int -> Int
 step n = case (n, n) of
   (a, b) -> a + b

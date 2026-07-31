@@ -1,7 +1,7 @@
 {-# LANGUAGE LinearTypes #-}
 
--- Mesmo cenário na bancada EDSL: o Buffer %1 nunca é consumido → o GHC rejeita
--- (a continuação linear tem de usar 'buf' exactamente uma vez).
+-- Same scenario on the EDSL bench: the %1 Buffer is never consumed → GHC rejects
+-- (the linear continuation must use 'buf' exactly once).
 module Prog where
 
 import Axion.Prototype.Buffer (withBuffer)

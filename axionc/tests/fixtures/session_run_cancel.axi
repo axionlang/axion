@@ -1,6 +1,6 @@
--- Runtime do cancelamento (§7, T5): o pai faz `cancel c`, que envia `Closed` ao
--- par; o worker faz `offer` e recebe `Closed`, tomando o ramo de cancelamento.
--- O `Closed` é um ramo normal do protocolo, não uma excepção. main devolve 5.
+-- Cancellation runtime (§7, T5): the parent does `cancel c`, which sends `Closed`
+-- to the peer; the worker does `offer` and receives `Closed`, taking the cancellation
+-- branch. `Closed` is a normal protocol branch, not an exception. main returns 5.
 data Resp = Live (Ep End) | Closed (Ep End)
 
 worker :: Ep (Offer (Live End) (Closed End)) %1 -> IO ()

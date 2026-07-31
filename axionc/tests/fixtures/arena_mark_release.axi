@@ -1,5 +1,5 @@
--- Deve FALHAR com AX0005: 'tmp' é alocado depois da marca e usado (devolvido)
--- DEPOIS do 'arena_release' — a sua memória já foi recuperada (Listagem 3.6).
+-- Must FAIL with AX0005: 'tmp' is allocated after the mark and used (returned)
+-- AFTER 'arena_release' — its memory has already been reclaimed (Listing 3.6).
 badMark :: Arena -> Cell
 badMark arena =
   let mark = arena_mark arena in

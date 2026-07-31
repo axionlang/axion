@@ -1,6 +1,6 @@
--- AX0305: a closure passada a `spawn` captura o endpoint `a` do exterior. Dois
--- filhos podiam então partilhar canais e formar um ciclo → deadlock. Um filho só
--- pode comunicar com o pai pelo seu endpoint-parâmetro (topologia em árvore, §9).
+-- AX0305: the closure passed to `spawn` captures the endpoint `a` from outside. Two
+-- children could then share channels and form a cycle → deadlock. A child can only
+-- communicate with the parent through its endpoint parameter (tree topology, §9).
 main :: Int
 main = bound $ do
   (a, b) <- newChannel

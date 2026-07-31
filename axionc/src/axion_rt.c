@@ -1,13 +1,13 @@
-/* Runtime C do backend --release da Axion (§18). É compilado JUNTO com o LLVM
- * IR do programa (clang -O2 -flto), pelo que as operações quentes (bump-alloc,
- * alloc) podem inlinar no chamador. Espelha o runtime Rust do --dev
- * (codegen.rs). Todos os ponteiros atravessam a fronteira como `long` (i64),
- * para o IR gerado ser uniformemente i64. */
+/* C runtime of Axion's --release backend (§18). It is compiled TOGETHER with the
+ * program's LLVM IR (clang -O2 -flto), so the hot operations (bump-alloc,
+ * alloc) can inline into the caller. Mirrors the --dev Rust runtime
+ * (codegen.rs). All pointers cross the boundary as `long` (i64), so the
+ * generated IR is uniformly i64. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* --- heap com cabeçalho de tamanho (Auto-Drop, §2) --- */
+/* --- heap with a size header (Auto-Drop, §2) --- */
 long axion_alloc(long size) {
   long total = (size < 1 ? 1 : size) + 8;
   char *base = (char *)malloc(total);
@@ -25,7 +25,7 @@ long axion_show_int(long n) {
   return (long)buf;
 }
 
-/* --- arenas (§3): bump-allocator por chunks fixos (ponteiros estáveis) --- */
+/* --- arenas (§3): bump-allocator over fixed chunks (stable pointers) --- */
 #define ARENA_CHUNK (64 * 1024)
 typedef struct Chunk {
   struct Chunk *prev;
@@ -70,7 +70,7 @@ long axion_arena_alloc(long arena, long size) {
   return (long)p;
 }
 
-/* reset em massa: larga todos os chunks de uma vez */
+/* bulk reset: drops all the chunks at once */
 void axion_arena_reset(long arena) {
   Arena *a = (Arena *)arena;
   Chunk *c = a->cur;
@@ -91,7 +91,7 @@ long axion_arena_mark(long arena) {
   return (long)m;
 }
 
-/* repõe o bump-pointer na marca (liberta os chunks alocados desde então) */
+/* restores the bump-pointer to the mark (frees the chunks allocated since) */
 void axion_arena_release(long mark) {
   Mark *m = (Mark *)mark;
   Arena *a = m->arena;
@@ -110,9 +110,9 @@ long axion_arena_promote(long target, long cell, long size) {
   return dst;
 }
 
-/* --- Buffer U8 linear (§4/§5): [len(i64)][bytes…]. As operações em massa
- * (sum) e in-place (iota/xor) são laços que o clang -O2 auto-vectoriza; com
- * -flto inlinam no chamador. É o escape-hatch imperativo/vectorizável. */
+/* --- linear U8 Buffer (§4/§5): [len(i64)][bytes…]. The bulk operations
+ * (sum) and in-place ones (iota/xor) are loops that clang -O2 auto-vectorizes; with
+ * -flto they inline into the caller. It is the imperative/vectorizable escape-hatch. */
 long axion_buf_new(long n) {
   char *b = (char *)malloc(8 + (n < 0 ? 0 : n));
   *(long *)b = n;
@@ -131,7 +131,7 @@ long axion_buf_xor(long buf, long key) { /* in-place: data[i] ^= key */
   for (long i = 0; i < n; i++) d[i] ^= (unsigned char)key;
   return buf;
 }
-long axion_buf_sum(long buf) { /* redução vectorizável (empresta) */
+long axion_buf_sum(long buf) { /* vectorizable reduction (borrows) */
   long n = *(long *)buf, s = 0;
   unsigned char *d = (unsigned char *)(buf + 8);
   for (long i = 0; i < n; i++) s += d[i];
@@ -139,10 +139,10 @@ long axion_buf_sum(long buf) { /* redução vectorizável (empresta) */
 }
 void axion_buf_free(long buf) { free((void *)buf); }
 
-/* foldBytes f init buf: dobra `f` sobre os bytes. `f` é uma closure Axion
- * {fn_ptr, capturas…}; chama-se `fn_ptr(f, acc, byte)` (a closure é o env do
- * 1.º parâmetro). Chamada indirecta por byte (não vectoriza — usar sumBytes
- * para somas). */
+/* foldBytes f init buf: folds `f` over the bytes. `f` is an Axion closure
+ * {fn_ptr, captures…}; call `fn_ptr(f, acc, byte)` (the closure is the env of the
+ * 1st parameter). Indirect call per byte (does not vectorize — use sumBytes
+ * for sums). */
 long axion_fold_bytes(long f, long init, long buf) {
   long (*fn)(long, long, long) = *(long (**)(long, long, long))f;
   long n = *(long *)buf;

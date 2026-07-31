@@ -1,5 +1,5 @@
--- Deve FALHAR com AX0004: 'x' é consumido por 'sink x' (a posse sai) e depois
--- lido outra vez em '+ x'. Ler ANTES de consumir (x + sink x) seria OK.
+-- Must FAIL with AX0004: 'x' is consumed by 'sink x' (ownership leaves) and then
+-- read again in '+ x'. Reading BEFORE consuming (x + sink x) would be OK.
 sink :: Int %1 -> Int
 sink x = x
 

@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
-# Sanitizers no runtime nativo (§2/§11): a proposta de valor da Axion é memória
-# segura sem GC, por isso o runtime tem de correr limpo sob os sanitizers do
-# LLVM. Dois portões, sobre o LLVM IR que o backend --release emite + o runtime C:
+# Sanitizers on the native runtime (§2/§11): Axion's value proposition is memory
+# safety without a GC, so the runtime must run clean under the LLVM sanitizers.
+# Two gates, over the LLVM IR the --release backend emits + the C runtime:
 #
-#   1. CORRUPÇÃO (AddressSanitizer, todas as fixtures nativas): zero
-#      uso-após-livre / dupla-free. É a garantia dura ("sem uso-após-livre").
-#   2. FUGAS (LeakSanitizer, subconjunto provado sem-fugas): allocs == frees.
-#      Exclui fixtures cuja fuga é conservadora e conhecida (ver LEAKY abaixo).
+#   1. CORRUPTION (AddressSanitizer, all native fixtures): zero
+#      use-after-free / double-free. This is the hard guarantee ("no use-after-free").
+#   2. LEAKS (LeakSanitizer, proven leak-free subset): allocs == frees.
+#      Excludes fixtures whose leak is conservative and known (see LEAKY below).
 #
-# Correr:  AXION_CLANG=<clang> ./scripts/sanitize.sh
+# Run:  AXION_CLANG=<clang> ./scripts/sanitize.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 CLANG="${AXION_CLANG:-clang}"
 if ! "$CLANG" --version >/dev/null 2>&1; then
-  echo "sem clang (define AXION_CLANG ou põe clang no PATH) — a saltar sanitizers"
+  echo "no clang (set AXION_CLANG or put clang on PATH) — skipping sanitizers"
   exit 0
 fi
 
 AXIONC="axionc/target/debug/axionc"
 if [ ! -x "$AXIONC" ]; then
-  echo "a compilar o axionc..."
-  (cd axionc && cargo build -q) || { echo "falha a compilar"; exit 2; }
+  echo "building axionc..."
+  (cd axionc && cargo build -q) || { echo "build failed"; exit 2; }
 fi
 RT="axionc/src/axion_rt.c"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# Fixtures nativas (main :: Int/IO) — o portão de corrupção corre todas as que
-# o backend --release consegue baixar; as --check-only saltam-se sozinhas.
+# Native fixtures (main :: Int/IO) — the corruption gate runs every one the
+# --release backend can lower; the --check-only ones skip themselves.
 NATIVE=(
   axionc/tests/fixtures/heap_loop.axi
   axionc/tests/fixtures/linear_move.axi
@@ -49,12 +49,12 @@ NATIVE=(
   examples/02_fib.axi
 )
 
-# Subconjunto PROVADO sem fugas (memória de heap/arena/empréstimo, sem IO). As
-# excluídas vazam por reclamação conservadora conhecida e documentada:
-#   · show/putStrLn → a C-string do runtime não é reclamada (heap vs. estática
-#     indistinguíveis no drop): record_run, 01_hello, 02_fib.
-#   · closure devolvida por função → pode ser um param emprestado, não fresca;
-#     reclamá-la seria insound: native_closure, lambda_hof.
+# PROVEN leak-free subset (heap/arena/borrow memory, no IO). The excluded ones
+# leak by known and documented conservative reclamation:
+#   · show/putStrLn → the runtime C-string is not reclaimed (heap vs. static
+#     indistinguishable at drop): record_run, 01_hello, 02_fib.
+#   · closure returned by a function → may be a borrowed param, not fresh;
+#     reclaiming it would be unsound: native_closure, lambda_hof.
 LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
@@ -62,7 +62,7 @@ LEAKFREE=(
 )
 is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 
-compile() { # <axi> <out> → emite LLVM e compila com ASan/LSan; 0 se nativa
+compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if native
   "$AXIONC" --emit llvm "$1" >"$WORK/ir.ll" 2>/dev/null || return 1
   "$CLANG" -fsanitize=address,leak -O1 -w "$WORK/ir.ll" "$RT" -o "$2" 2>/dev/null
 }
@@ -73,30 +73,30 @@ for f in "${NATIVE[@]}"; do
   name=$(basename "$f" .axi)
   exe="$WORK/$name.san"
   if ! compile "$f" "$exe"; then
-    echo "· $name: não é subconjunto nativo (saltada)"
+    echo "· $name: not in the native subset (skipped)"
     continue
   fi
-  # portão de corrupção (fugas desligadas)
+  # corruption gate (leaks off)
   if ! ASAN_OPTIONS=detect_leaks=0 "$exe" >/dev/null 2>"$WORK/e"; then
-    echo "✗ $name: CORRUPÇÃO de memória sob ASan"; grep -E 'ERROR|SUMMARY' "$WORK/e" | head -2; fail=1; continue
+    echo "✗ $name: memory CORRUPTION under ASan"; grep -E 'ERROR|SUMMARY' "$WORK/e" | head -2; fail=1; continue
   fi
   corr=$((corr + 1))
-  # portão de fugas (só no subconjunto provado)
+  # leak gate (only on the proven subset)
   if is_leakfree "$name"; then
     if ASAN_OPTIONS=detect_leaks=1 "$exe" >/dev/null 2>"$WORK/e"; then
-      echo "✓ $name: ASan + LSan limpo"; leak=$((leak + 1))
+      echo "✓ $name: ASan + LSan clean"; leak=$((leak + 1))
     else
-      echo "✗ $name: FUGA sob LSan (devia ser sem-fugas)"; grep -E 'SUMMARY' "$WORK/e" | head -1; fail=1
+      echo "✗ $name: LEAK under LSan (should be leak-free)"; grep -E 'SUMMARY' "$WORK/e" | head -1; fail=1
     fi
   else
-    echo "✓ $name: ASan limpo (fuga conservadora conhecida — fora do portão)"
+    echo "✓ $name: ASan clean (known conservative leak — outside the gate)"
   fi
 done
 
 echo "---"
 if [ "$fail" -eq 0 ]; then
-  echo "OK: $corr fixtures sem corrupção; $leak provadas sem fugas."
+  echo "OK: $corr fixtures without corruption; $leak proven leak-free."
 else
-  echo "FALHA: regressão de memória detetada."
+  echo "FAILURE: memory regression detected."
 fi
 exit $fail

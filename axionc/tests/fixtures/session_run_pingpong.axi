@@ -1,7 +1,7 @@
--- Runtime de sessões (§11): programa CONCORRENTE que corre. O `bound` abre um
--- nursery; `spawn worker` forka um filho ligado por um canal; o pai envia 21, o
--- worker recebe, dobra (42) e devolve, o pai recebe e devolve 42. O scheduler
--- cooperativo (tarefas = continuações defuncionalizadas) troca no `recv` vazio.
+-- Session runtime (§11): a CONCURRENT program that runs. The `bound` opens a
+-- nursery; `spawn worker` forks a child linked by a channel; the parent sends 21, the
+-- worker receives, doubles (42) and returns, the parent receives and returns 42. The
+-- cooperative scheduler (tasks = defunctionalized continuations) switches on an empty `recv`.
 worker :: Ep (Recv Int (Send Int End)) %1 -> IO ()
 worker d = do
   (n, d2) <- recv d

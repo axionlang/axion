@@ -1,4 +1,4 @@
--- Strings mais ricas: concatenação `++`, unwords (junta com espaços), unlines
--- (junta com '\n'). Constrói texto a partir de listas — dogfooding do prelúdio.
+-- Richer strings: concatenation `++`, unwords (joins with spaces), unlines
+-- (joins with '\n'). Builds text from lists — dogfooding the prelude.
 main :: IO ()
-main = putStr (unwords ["Olá", "Axion"] ++ "!\n" ++ unlines ["linha 1", "linha 2"])
+main = putStr (unwords ["Hello", "Axion"] ++ "!\n" ++ unlines ["line 1", "line 2"])

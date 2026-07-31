@@ -1,11 +1,11 @@
-//! `axionc` — o compilador da Axion (§17–18).
+//! `axionc` — Axion's compiler (§17–18).
 //!
 //! Pipeline: source `.axi` → lexer (logos) → layout → parser → checking
 //! (names + linearity + Auto-Drop) → type inference (HM) → interpreter.
 //! Diagnostics with stable `AXnnnn` codes (§8), as text or JSON.
 //!
-//! Uso:
-//!   axionc <ficheiro.axi>            compila e corre
+//! Usage:
+//!   axionc <file.axi>                compile and run
 //!   axionc --check <file.axi>        compile only (parse + typecheck)
 //!   axionc --emit json <file>        diagnostics as JSON
 //!   axionc --explain AX0001          explain an error code
@@ -169,7 +169,7 @@ fn main() -> ExitCode {
     };
 
     // spans of the `RecordUpd`s eligible for in-place mutation (Linear Elision, §2),
-    // que os backends usam para mutar o bloco em vez de alocar+copiar.
+    // which the backends use to mutate the block instead of alloc+copy.
     let inplace: std::collections::HashSet<(usize, usize)> =
         analysis.inplace.iter().map(|ip| ip.span).collect();
 
@@ -179,7 +179,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // --- backend nativo --dev (Cranelift): dump do IR ou JIT+correr main::Int ---
+    // --- native --dev backend (Cranelift): IR dump or JIT+run main::Int ---
     if emit == Emit::Clif {
         match codegen::emit_ir(&module, &inplace) {
             Ok(ir) => {
@@ -244,7 +244,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Corre o front-end (lex → layout → parse → check → infer), acumulando
+/// Runs the front-end (lex → layout → parse → check → infer), accumulating
 /// diagnostics and returning the `free`s inserted by Auto-Drop.
 fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, check::Analysis) {
     let tokens = match lexer::lex(src) {
@@ -302,12 +302,12 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
         let mut clone = src.clone();
         clone.name = plan.name.clone();
         clone.constraints = Vec::new();
-        // assinatura especializada: var de constraint → tipo concreto
+        // specialized signature: constraint var → concrete type
         if let Some(sig) = &clone.sig {
             let templ = subst_head(sig, &plan.tyvar);
             clone.sig = Some(specialize(&templ, &plan.ty_head));
         }
-        // reescreve os usos internos (span → nome directo) no corpo do clone
+        // rewrites the internal uses (span → direct name) in the clone's body
         let mut res: Resolutions = std::collections::HashMap::new();
         for (span, name) in &plan.rewrites {
             res.insert((plan.name.clone(), *span), name.clone());
@@ -345,7 +345,7 @@ fn rewrite_func(f: &mut ast::Func, fname: &str, res: &Resolutions) {
             }
         }
         // `where` functions are inferred with the PARENT's name as `cur_fn`
-        // (fazem parte do corpo dele), por isso reescrevem-se com `fname`.
+        // (they are part of its body), so they are rewritten with `fname`.
         for w in &mut c.wher {
             rewrite_func_body(w, fname, res);
         }
@@ -421,7 +421,7 @@ fn rewrite_expr(e: &mut ast::Expr, fname: &str, res: &Resolutions) {
 
 /// Built-in L0 prelude: the `List` type and the basic list functions. It is
 /// prepended to every module (only the names the user doesn't redefine), so that
-/// `[1..100]`/`:`/`.` (que desugaram para `range`/`Cons`/`compose`) e `map`
+/// `[1..100]`/`:`/`.` (which desugar to `range`/`Cons`/`compose`) and `map`
 /// they work without import. `mapM_` is a prelude function too.
 const PRELUDE: &str = "\
 data List a = Nil | Cons a (List a)

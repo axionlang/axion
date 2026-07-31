@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Testes diferenciais (§17): cada cenário em differential/ tem de receber o
-# MESMO veredito (accept/reject) do axionc E do oráculo GHC (bancada EDSL da
-# Fase 0). Ancora o verificador de linearidade do axionc à referência do GHC.
+# Differential tests (§17): each scenario in differential/ must get the SAME
+# verdict (accept/reject) from axionc AND from the GHC oracle (Phase 0 EDSL
+# bench). Anchors axionc's linearity checker to the GHC reference.
 #
-# Correr:  ./scripts/differential.sh
+# Run:  ./scripts/differential.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 if [ ! -x "$AXIONC" ]; then
-  echo "a compilar o axionc..."
+  echo "building axionc..."
   (cd axionc && cargo build -q) || {
-    echo "falha a compilar o axionc"
+    echo "failed to build axionc"
     exit 2
   }
 fi
@@ -24,14 +24,14 @@ for dir in differential/*/; do
   expected=$(cat "$dir/expected")
   total=$((total + 1))
 
-  # veredito do axionc
+  # axionc verdict
   if "$AXIONC" --check "$dir/prog.axi" >/dev/null 2>&1; then
     axi=accept
   else
     axi=reject
   fi
 
-  # veredito do GHC (oráculo EDSL), dentro do dev shell reprodutível
+  # GHC verdict (EDSL oracle), inside the reproducible dev shell
   if nix develop --command ghc -fno-code -XLinearTypes -iprototype/src \
       "$dir/Prog.hs" >/dev/null 2>&1; then
     ghc=accept
@@ -40,17 +40,17 @@ for dir in differential/*/; do
   fi
 
   if [ "$axi" = "$expected" ] && [ "$ghc" = "$expected" ]; then
-    echo "✓ $name: axionc=$axi · ghc=$ghc (esperado: $expected)"
+    echo "✓ $name: axionc=$axi · ghc=$ghc (expected: $expected)"
   else
-    echo "✗ $name: axionc=$axi · ghc=$ghc (esperado: $expected) — DIVERGE"
+    echo "✗ $name: axionc=$axi · ghc=$ghc (expected: $expected) — DIVERGES"
     fail=1
   fi
 done
 
 echo "---"
 if [ "$fail" -eq 0 ]; then
-  echo "OK: $total cenários, axionc e GHC concordam em todos."
+  echo "OK: $total scenarios, axionc and GHC agree on all."
 else
-  echo "FALHA: há divergência entre o axionc e o oráculo GHC."
+  echo "FAILURE: divergence between axionc and the GHC oracle."
 fi
 exit $fail

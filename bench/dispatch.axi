@@ -1,8 +1,8 @@
--- Kernel `dispatch` (§ zero-cost): 200M passos (4000×50000, laços encaixados —
--- profundidade limitada) em que a operação quente é um MÉTODO de typeclasse.
--- `inner :: Stepper a =>` é genérica; a monomorfização (fatia 2b) especializa-a
--- a `inner$Int` com `step → step$Int`, e o LLVM -O2 -flto inlina o método —
--- abstração de custo-zero, à Rust. `step` usa `mod` (não-fechável pelo -O2).
+-- `dispatch` kernel (§ zero-cost): 200M steps (4000×50000, nested loops —
+-- bounded depth) where the hot operation is a typeclass METHOD.
+-- `inner :: Stepper a =>` is generic; monomorphization (slice 2b) specializes it
+-- to `inner$Int` with `step → step$Int`, and LLVM -O2 -flto inlines the method —
+-- zero-cost abstraction, à la Rust. `step` uses `mod` (not foldable by -O2).
 class Stepper a where
   step :: a -> a
 

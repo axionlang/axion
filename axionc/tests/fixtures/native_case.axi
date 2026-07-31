@@ -1,4 +1,4 @@
--- Backend nativo: 'case' (cadeia de if) + tuplos na heap.
+-- Native backend: 'case' (chain of if) + tuples on the heap.
 -- swapSum 10 = (10,11) → b-a = 1;  classify 1 = 200.  main = 200.
 swapSum :: Int -> Int
 swapSum n = case (n, n + 1) of

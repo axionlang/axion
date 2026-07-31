@@ -1,4 +1,4 @@
--- AX0403: duas instâncias para o mesmo (classe, tipo) — incoerência.
+-- AX0403: two instances for the same (class, type) — incoherence.
 class Eq2 a where
   eq2 :: a -> a -> Bool
 

@@ -1,4 +1,4 @@
--- Guardas: `| g = r` desugar numa cadeia de `if` (com `otherwise` incondicional).
+-- Guards: `| g = r` desugars into a chain of `if` (with unconditional `otherwise`).
 -- sign(-7)+sign(5)+sign(0) = -1 + 1 + 0 = 0.
 sign :: Int -> Int
 sign n

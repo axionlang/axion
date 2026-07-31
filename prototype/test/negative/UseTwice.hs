@@ -1,16 +1,15 @@
 {-# LANGUAGE LinearTypes #-}
 
 {- |
-NÃO COMPILA POR DESIGN.
+DOES NOT COMPILE BY DESIGN.
 
-Este ficheiro é a garantia central da Fase 0 escrita como teste executável:
-um @Buffer %1@ usado __duas vezes__ tem de ser rejeitado pelo typechecker —
-o análogo, na bancada, do diagnóstico @AX0001@ (uso-após-consumo) do
-compilador próprio.
+This file is Phase 0's central guarantee written as an executable test:
+a @Buffer %1@ used __twice__ must be rejected by the typechecker —
+the bench analog of the own compiler's @AX0001@ diagnostic (use-after-consume).
 
-@./scripts/check-negative.sh@ compila-o e __exige que a compilação falhe__
-com um erro de multiplicidade. Se um dia isto compilar, a linearidade deixou
-de estar a ser imposta e o CI parte.
+@./scripts/check-negative.sh@ compiles it and __requires the compilation to fail__
+with a multiplicity error. If this ever compiles, linearity has stopped being
+enforced and CI breaks.
 -}
 module UseTwice where
 
@@ -18,15 +17,15 @@ import Axion.Prototype.Buffer (free, withBuffer)
 import Data.Unrestricted.Linear (Ur (..))
 import Data.Word (Word8)
 
--- 'buf' é consumido pelo primeiro 'free buf' e depois usado OUTRA VEZ no
--- segundo. A contracção (usar duas vezes) é proibida para todo o %1 => o GHC
--- rejeita com um erro de multiplicidade. É o análogo de AX0001.
+-- 'buf' is consumed by the first 'free buf' and then used AGAIN in the second.
+-- Contraction (using it twice) is forbidden for every %1 => GHC rejects with a
+-- multiplicity error. It is the analog of AX0001.
 useTwice :: Ur Word8
 useTwice =
   withBuffer
     8
     ( \buf ->
         case free buf of
-          () -> case free buf of -- <-- ERRO: 'buf' já foi consumido acima
+          () -> case free buf of -- <-- ERROR: 'buf' was already consumed above
             () -> Ur 0
     )

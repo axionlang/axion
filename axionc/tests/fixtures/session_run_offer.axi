@@ -1,6 +1,6 @@
--- Runtime da escolha (§6): o pai faz `select Live`, o worker faz `offer` e
--- despacha para o ramo Live, recebe 99 e fecha. Um valor-soma etiquetado
--- (`Live (Ep …)`) transporta o endpoint avançado. main devolve 7.
+-- Choice runtime (§6): the parent does `select Live`, the worker does `offer` and
+-- dispatches to the Live branch, receives 99 and closes. A tagged sum value
+-- (`Live (Ep …)`) carries the advanced endpoint. main returns 7.
 data Resp = Live (Ep (Recv Int End)) | Closed (Ep End)
 
 worker :: Ep (Offer (Live (Recv Int End)) (Closed End)) %1 -> IO ()

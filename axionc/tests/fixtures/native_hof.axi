@@ -1,7 +1,7 @@
--- First-class functions no NATIVO (fecho da camada 1): funções de ordem superior
--- do prelúdio (filter/map/foldr) com lambdas, funções nomeadas como valor, e
--- aplicação parcial — tudo via eta-expansão + closures. Compila nos três
--- executores. 2² + 4² + 6² = 56.
+-- First-class functions in the NATIVE backend (closing layer 1): higher-order
+-- functions from the prelude (filter/map/foldr) with lambdas, named functions as
+-- values, and partial application — all via eta-expansion + closures. Compiles in
+-- all three executors. 2² + 4² + 6² = 56.
 sq :: Int -> Int
 sq n = n * n
 

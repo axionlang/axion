@@ -1,3 +1,3 @@
--- Deve PASSAR: o recurso linear 'x' (%1) é consumido exactamente uma vez.
+-- Must PASS: the linear resource 'x' (%1) is consumed exactly once.
 useOnce :: Int %1 -> Int
 useOnce x = x + 1

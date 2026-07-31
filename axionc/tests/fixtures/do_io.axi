@@ -1,5 +1,5 @@
--- Bloco `do` multi-instrução (IO): desugar sequencial (estrito) para `let`s.
+-- Multi-statement `do` block (IO): sequential (strict) desugaring into `let`s.
 main :: IO ()
 main = do
-  putStrLn "um"
-  putStrLn "dois"
+  putStrLn "one"
+  putStrLn "two"

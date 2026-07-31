@@ -5,7 +5,7 @@ pub type Span = (usize, usize); // (start, end) em offsets de bytes
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mult {
     Many, // seta normal
-    One,  // %1 — posse linear
+    One,  // %1 — linear ownership
     Half, // %0.5 — fractional permission (parseable; not enforced in Phase 1)
 }
 
@@ -116,7 +116,7 @@ pub struct Clause {
 #[derive(Debug, Clone)]
 pub enum Body {
     Plain(Expr),
-    Guarded(Vec<(Expr, Expr)>), // (guarda, resultado)
+    Guarded(Vec<(Expr, Expr)>), // (guard, result)
 }
 
 #[derive(Debug, Clone)]
@@ -144,7 +144,7 @@ pub struct Field {
 #[derive(Debug, Clone)]
 pub struct ConDecl {
     pub name: String,
-    pub fields: Vec<Field>, // nome vazio ("") para campos posicionais
+    pub fields: Vec<Field>, // empty name ("") for positional fields
 }
 
 impl ConDecl {

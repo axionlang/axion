@@ -1,7 +1,7 @@
 {
-  description = "Axión — Fase 0: protótipo EDSL descartável (validação semântica de linearidade sobre Linear Haskell)";
+  description = "Axion — Phase 0: disposable EDSL prototype (semantic validation of linearity over Linear Haskell)";
 
-  # Nixpkgs estável, bem servido pelo binary cache (cache.nixos.org).
+  # Stable nixpkgs, well served by the binary cache (cache.nixos.org).
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
 
   outputs = { self, nixpkgs }:
@@ -11,7 +11,7 @@
     in {
       devShells = forAllSystems (pkgs:
         let
-          # Dependências Haskell do protótipo, embutidas no GHC para build offline.
+          # The prototype's Haskell dependencies, embedded in GHC for offline builds.
           ghcDeps = hp: [
             hp.linear-base
             hp.vector
@@ -31,7 +31,7 @@
               pkgs.haskell-language-server
             ];
             shellHook = ''
-              echo "Axión · Fase 0 — dev shell (GHC $(ghc --numeric-version), LinearTypes + linear-base)"
+              echo "Axion · Phase 0 — dev shell (GHC $(ghc --numeric-version), LinearTypes + linear-base)"
               echo "  cabal build   ·   cabal test   ·   ./scripts/check-negative.sh"
             '';
           };

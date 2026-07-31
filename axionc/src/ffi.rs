@@ -21,8 +21,8 @@ extern "C" {
 /// open for the whole run (no `dlclose`). Fails with the `dlerror` message.
 pub fn load_libs(libs: &[String]) -> Result<(), String> {
     for lib in libs {
-        let c = CString::new(lib.as_str())
-            .map_err(|_| format!("invalid FFI library path: '{lib}'"))?;
+        let c =
+            CString::new(lib.as_str()).map_err(|_| format!("invalid FFI library path: '{lib}'"))?;
         let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
         if h.is_null() {
             let err = unsafe {
@@ -33,9 +33,7 @@ pub fn load_libs(libs: &[String]) -> Result<(), String> {
                     CStr::from_ptr(e).to_string_lossy().into_owned()
                 }
             };
-            return Err(format!(
-                "could not load FFI library '{lib}': {err}"
-            ));
+            return Err(format!("could not load FFI library '{lib}': {err}"));
         }
     }
     Ok(())

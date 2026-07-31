@@ -1,8 +1,8 @@
--- Monomorfização TRANSITIVA (fatia 2b-β-2): uma função constrangida que chama
--- OUTRA função constrangida sobre a var genérica. `countNeq :: Eq a =>` chama
--- `neq :: Eq a =>`, que chama o método `eq`. A especialização propaga-se por
--- worklist: `countNeq$Int` → `neq$Int` → `eq$Int`. Tudo compila nativamente.
--- Corre nos três executores; conta os elementos != 2 em [1,2,2,3,2] → 2.
+-- TRANSITIVE monomorphization (slice 2b-β-2): a constrained function that calls
+-- ANOTHER constrained function over the generic var. `countNeq :: Eq a =>` calls
+-- `neq :: Eq a =>`, which calls the method `eq`. The specialization propagates via
+-- a worklist: `countNeq$Int` → `neq$Int` → `eq$Int`. Everything compiles natively.
+-- Runs in all three executors; counts the elements != 2 in [1,2,2,3,2] → 2.
 class Eq a where
   eq :: a -> a -> Bool
 

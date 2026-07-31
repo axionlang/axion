@@ -1,15 +1,15 @@
 cabal-version:      3.0
 name:               axion-prototype
 version:            0.0.0
-synopsis:           Fase 0 — protótipo EDSL descartável de validação semântica da Axión
+synopsis:           Phase 0 — disposable EDSL prototype for Axion's semantic validation
 description:
-  Bancada de validação semântica da linguagem Axión (§17 da spec), NÃO o embrião
-  do compilador. Usa a extensão LinearTypes do GHC + linear-base para validar o
-  núcleo linear %1 (níveis L0/L1): um @Buffer %1@ que o typechecker recusa usar
-  duas vezes. Descartável por design; o axionc real (em Rust) nasce na Fase 1.
+  Semantic validation bench for the Axion language (spec §17), NOT the embryo of
+  the compiler. Uses GHC's LinearTypes extension + linear-base to validate the
+  linear %1 core (levels L0/L1): a @Buffer %1@ that the typechecker refuses to use
+  twice. Disposable by design; the real axionc (in Rust) is born in Phase 1.
 
 license:            NONE
-author:             Axión
+author:             Axion
 build-type:         Simple
 extra-doc-files:    README.md
 

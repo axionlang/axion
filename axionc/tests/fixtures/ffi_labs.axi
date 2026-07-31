@@ -1,5 +1,5 @@
--- FFI (§18): chama a `labs` da libc (ABI de Int), resolvida por dlsym nos três
--- executores (interp/--dev/--release). labs(-42) = 42.
+-- FFI (§18): calls libc's `labs` (Int ABI), resolved via dlsym in all three
+-- executors (interp/--dev/--release). labs(-42) = 42.
 foreign labs :: Int -> Int
 
 main :: Int

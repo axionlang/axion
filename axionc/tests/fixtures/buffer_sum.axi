@@ -1,6 +1,6 @@
--- Buffer U8 linear (§4/§5): newBuffer aloca, bufIota preenche in-place
--- (byte[i]=i&0xFF), sumBytes soma (empresta), free consome. Para 100 bytes,
--- byte[i]=i → sum(0..99)=4950. O fio linear (%1) é único: b→b1→free.
+-- Linear U8 Buffer (§4/§5): newBuffer allocates, bufIota fills in-place
+-- (byte[i]=i&0xFF), sumBytes sums (borrows), free consumes. For 100 bytes,
+-- byte[i]=i → sum(0..99)=4950. The linear thread (%1) is unique: b→b1→free.
 main :: Int
 main =
   let b = newBuffer 100 in

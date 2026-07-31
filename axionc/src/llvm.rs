@@ -146,11 +146,11 @@ pub fn build_and_run(
         }
         cmd.arg(&lib);
     }
-    let status = cmd.status().map_err(|e| {
-        format!("could not invoke '{clang}' ({e}); set AXION_CLANG or use nix")
-    })?;
+    let status = cmd
+        .status()
+        .map_err(|e| format!("could not invoke '{clang}' ({e}); set AXION_CLANG or use nix"))?;
     if !status.success() {
-        return Err("clang falhou a compilar o LLVM IR".into());
+        return Err("clang failed to compile the LLVM IR".into());
     }
     let run = std::process::Command::new(&exe).status();
     let _ = std::fs::remove_file(&ll);
@@ -397,7 +397,11 @@ impl Emit<'_> {
                     let v = self.load(sval, off);
                     self.scope.insert(n.clone(), v);
                 }
-                _ => return Err("nested pattern in a constructor does not compile under --release".into()),
+                _ => {
+                    return Err(
+                        "nested pattern in a constructor does not compile under --release".into(),
+                    )
+                }
             }
         }
         Ok(())
@@ -497,7 +501,11 @@ impl Emit<'_> {
                             let v = self.load(sval, j as i32 * 8);
                             self.scope.insert(n.clone(), v);
                         }
-                        _ => return Err("nested tuple pattern does not compile under --release".into()),
+                        _ => {
+                            return Err(
+                                "nested tuple pattern does not compile under --release".into()
+                            )
+                        }
                     }
                 }
                 self.term(body)
@@ -583,7 +591,11 @@ impl Emit<'_> {
                     "==" => (format!("icmp eq i64 {x}, {y}"), true),
                     "<" => (format!("icmp slt i64 {x}, {y}"), true),
                     ">" => (format!("icmp sgt i64 {x}, {y}"), true),
-                    other => return Err(format!("operator '{other}' does not compile under --release")),
+                    other => {
+                        return Err(format!(
+                            "operator '{other}' does not compile under --release"
+                        ))
+                    }
                 };
                 let r = self.val();
                 self.ins(&format!("{r} = {expr}"));
@@ -640,7 +652,7 @@ impl Emit<'_> {
                 let slots = self
                     .records
                     .con_slots(con)
-                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
+                    .ok_or_else(|| format!("unknown constructor '{con}'"))?;
                 let ptr = self.alloc(slots);
                 self.store_tag(con, &ptr);
                 for (fname, a) in fields {
@@ -648,7 +660,7 @@ impl Emit<'_> {
                         .records
                         .field(fname)
                         .map(|(o, _)| o)
-                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                        .ok_or_else(|| format!("unknown field '{fname}'"))?;
                     let v = self.atom(a)?;
                     self.store(&ptr, off, &v);
                 }
@@ -658,7 +670,7 @@ impl Emit<'_> {
                 let slots = self
                     .records
                     .con_slots(con)
-                    .ok_or_else(|| format!("construtor '{con}' desconhecido"))?;
+                    .ok_or_else(|| format!("unknown constructor '{con}'"))?;
                 let ptr = self.alloc(slots);
                 self.store_tag(con, &ptr);
                 for (i, a) in args.iter().enumerate() {
@@ -684,7 +696,7 @@ impl Emit<'_> {
                         .records
                         .field(first)
                         .map(|(_, fs)| fs.len())
-                        .ok_or_else(|| format!("campo '{first}' desconhecido"))?;
+                        .ok_or_else(|| format!("unknown field '{first}'"))?;
                     let ptr = self.alloc(nfields);
                     for i in 0..nfields {
                         let off = i as i32 * 8;
@@ -698,7 +710,7 @@ impl Emit<'_> {
                         .records
                         .field(fname)
                         .map(|(o, _)| o)
-                        .ok_or_else(|| format!("campo '{fname}' desconhecido"))?;
+                        .ok_or_else(|| format!("unknown field '{fname}'"))?;
                     let v = self.atom(a)?;
                     self.store(&target, off, &v);
                 }
@@ -709,7 +721,7 @@ impl Emit<'_> {
                     .records
                     .field(name)
                     .map(|(o, _)| o)
-                    .ok_or_else(|| format!("campo '{name}' desconhecido"))?;
+                    .ok_or_else(|| format!("unknown field '{name}'"))?;
                 let r = self.atom(rec)?;
                 Ok(self.load(&r, off))
             }

@@ -1,30 +1,30 @@
-# Testes diferenciais — `axionc` vs bancada EDSL (oráculo GHC)
+# Differential tests — `axionc` vs the EDSL bench (GHC oracle)
 
-> §17: «Typechecker próprio com linearidade — **validado por diferencial contra
-> o protótipo EDSL da Fase 0**.»
+> §17: "Own typechecker with linearity — **validated differentially against the
+> Phase 0 EDSL prototype**."
 
-Cada subpasta é um **cenário de linearidade** com o mesmo veredito esperado em
-dois verificadores independentes:
+Each subfolder is a **linearity scenario** with the same expected verdict from
+two independent checkers:
 
-- `prog.axi` — corrido pelo `axionc` (`--check`): aceita (exit 0) ou rejeita
-  (exit ≠ 0, com `AX0001`/`AX0002`).
-- `Prog.hs` — corrido pelo **GHC** através da bancada EDSL da Fase 0 (importa
-  `Axion.Prototype.Buffer`): aceita (compila) ou rejeita (erro de multiplicidade).
-- `expected` — o veredito comum: `accept` ou `reject`.
+- `prog.axi` — run by `axionc` (`--check`): accepts (exit 0) or rejects
+  (exit ≠ 0, with `AX0001`/`AX0002`).
+- `Prog.hs` — run by **GHC** through the Phase 0 EDSL bench (imports
+  `Axion.Prototype.Buffer`): accepts (compiles) or rejects (multiplicity error).
+- `expected` — the shared verdict: `accept` or `reject`.
 
-O runner [`../scripts/differential.sh`](../scripts/differential.sh) exige que
-**ambos** concordem com `expected`. É isto que ancora o verificador de
-linearidade do `axionc` ao oráculo do GHC: o mesmo invariante da linguagem,
-duas implementações, um só veredito.
+The runner [`../scripts/differential.sh`](../scripts/differential.sh) requires
+**both** to agree with `expected`. This is what anchors `axionc`'s linearity
+checker to the GHC oracle: the same language invariant, two implementations, one
+verdict.
 
-| Cenário | Ideia | Veredito |
-|---------|-------|----------|
-| `01_consume_once` | recurso `%1` consumido exactamente uma vez | `accept` |
-| `02_consume_twice` | contração: `%1` usado duas vezes (`AX0001`) | `reject` |
-| `03_drop_unused` | must-use (`Token`) largado sem consumo (`AX0002`) | `reject` |
+| Scenario | Idea | Verdict |
+|----------|------|---------|
+| `01_consume_once` | `%1` resource consumed exactly once | `accept` |
+| `02_consume_twice` | contraction: `%1` used twice (`AX0001`) | `reject` |
+| `03_drop_unused` | must-use (`Token`) dropped without consuming (`AX0002`) | `reject` |
 
-> **Nota (Auto-Drop, Fase 2).** O cenário `03` usa um tipo **must-use**
-> (`Token`) de propósito: um tipo *droppable* seria aceite pelo `axionc` via
-> Auto-Drop (o compilador injecta `free`), mas o GHC rejeitá-lo-ia à mesma (o
-> `LinearTypes` trata todo o linear como must-use, sem Auto-Drop). Restringir o
-> cenário a must-use mantém os dois verificadores concordantes.
+> **Note (Auto-Drop, Phase 2).** Scenario `03` uses a **must-use** type
+> (`Token`) on purpose: a *droppable* type would be accepted by `axionc` via
+> Auto-Drop (the compiler injects `free`), but GHC would reject it all the same
+> (`LinearTypes` treats every linear value as must-use, with no Auto-Drop).
+> Restricting the scenario to must-use keeps the two checkers in agreement.
