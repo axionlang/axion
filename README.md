@@ -62,7 +62,7 @@ Not claims — **measurements**, under CI:
 | *Zero latency, C-level control* | benchmarks: **`--release` ≈ C `-O2`** on fib/loop/simd |
 | *Zero-cost abstraction (generics)* | **monomorphized typeclasses** = hand-written C: dispatch **563 ≈ 564 (C) ≈ 561 (Rust trait)** ms |
 | *No GC — release at static points* | the **arena crushes `malloc`** (~10×) and Rust's `Box` (~16×) in the allocation kernel |
-| *Zero data races / deadlocks — by types* | linearity (race-freedom) + tree topology of `bound` (deadlock-freedom); anchored to a **formal calculus + CFSM model-checking** |
+| *Zero data races / deadlocks — by types* | linearity (race-freedom) + tree topology of `bound` (deadlock-freedom); anchored to a **formal calculus + CFSM model-checking**, and the M:N runtime is **ThreadSanitizer-clean** (`scripts/tsan.sh`) |
 | *Faithful linearity* | **differential against GHC** (Linear Haskell) — same verdict in every scenario |
 
 Benchmarks (ms, best of 3; same `clang` for C and Axion `--release` —
@@ -155,20 +155,23 @@ calmly and tested, without breaking the philosophy:
   (the scheduler's nursery arena reclaims every task state — no leaks, no
   use-after-free). Workers do **real compute** between channel ops (value-position
   calls to native functions, e.g. `send d2 (fib n)`).
-- **M:N sessions (Layer 2b, in progress)** — the `--dev` scheduler runs tasks on a
-  **pool of OS threads**: four workers each computing `fib` run in parallel
-  (measured CPU ≈ 4× wall), with deterministic results (session types ⇒ no races).
-  Blocked tasks park until a `send` wakes them (lost-wakeup-safe via a generation
-  counter). Next: the same for the `--release` C runtime + ThreadSanitizer;
-  then work-stealing; then io_uring/epoll for async I/O.
+- **M:N sessions (Layer 2b, in progress)** — **both** native runtimes (`--dev`
+  Rust and `--release` C/pthreads) run tasks on a **pool of OS threads**: four
+  workers each computing `fib` run in parallel (measured CPU ≈ 4–5× wall), with
+  deterministic results (session types ⇒ no races), and the runtime is
+  **ThreadSanitizer-clean** (`scripts/tsan.sh`). Blocked tasks park until a `send`
+  wakes them (lost-wakeup-safe via a generation counter). Next: work-stealing
+  (lock-free deques instead of the global mutex); then io_uring/epoll for async I/O.
 
 **Honesty about the state.** Known and documented debt: `Integer`/bignum missing
-(`factorial 20` runs, `50` doesn't); **native sessions are cooperative
-(single-thread), not yet M:N** — they run on both native backends and are
-ASan/LSan-clean, but there are no worker threads / work-stealing / io_uring yet;
-no `Float` yet; over-application (functions that return functions and are
-re-applied) and mechanized metatheory (Iris/Actris) still to do. None is a
-correctness hole — they are growth.
+(`factorial 20` runs, `50` doesn't); **native sessions are M:N but with a global
+mutex, not yet work-stealing** — tasks run in parallel on both backends and are
+ThreadSanitizer-clean, but the scheduler serializes channel ops on one lock and
+there is no `io_uring`/`epoll` for async I/O yet; recursion in a session body
+(server loops) and delegation are still interpreter-only; no `Float` yet;
+over-application (functions that return functions and are re-applied) and
+mechanized metatheory (Iris/Actris) still to do. None is a correctness hole —
+they are growth.
 
 ## Requirements
 

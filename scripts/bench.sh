@@ -42,7 +42,7 @@ bench_kernel() {
   run "$k:dev" "$AXIONC" --backend cranelift "bench/$k.axi"
   # Axion --release (LLVM -O2 -flto)
   if "$AXIONC" --emit llvm "bench/$k.axi" > "$tmp/$k.ll" 2>/dev/null \
-     && "$CLANG" -O2 -flto -w "$tmp/$k.ll" "$RT" -o "$tmp/${k}_rel" 2>/dev/null; then
+     && "$CLANG" -O2 -flto -w -pthread "$tmp/$k.ll" "$RT" -o "$tmp/${k}_rel" 2>/dev/null; then
     run "$k:rel" "$tmp/${k}_rel"
   else run "$k:rel" SKIP; fi
 }

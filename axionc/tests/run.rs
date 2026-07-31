@@ -1344,7 +1344,7 @@ fn native_runtime_is_leak_free_under_lsan() {
         // compile with ASan + LSan
         let exe = dir.join(format!("{name}.san"));
         let cc = std::process::Command::new(&clang)
-            .args(["-fsanitize=address,leak", "-O1", "-w"])
+            .args(["-fsanitize=address,leak", "-pthread", "-O1", "-w"])
             .arg(&ll)
             .arg(&rt)
             .arg("-o")

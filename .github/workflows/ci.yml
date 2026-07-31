@@ -84,3 +84,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Native runtime under ASan + LSan
         run: AXION_CLANG=clang ./scripts/sanitize.sh
+      # §11: the M:N session scheduler runs on a thread pool → race-freedom must be
+      # proven too. The concurrent session fixtures run under ThreadSanitizer.
+      - name: Session scheduler under ThreadSanitizer
+        run: AXION_CLANG=clang ./scripts/tsan.sh

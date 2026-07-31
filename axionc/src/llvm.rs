@@ -139,7 +139,8 @@ pub fn build_and_run(
 
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
     let mut cmd = std::process::Command::new(&clang);
-    cmd.args(["-O2", "-flto", "-w"])
+    // `-pthread`: the session scheduler (§11) runs tasks on a thread pool.
+    cmd.args(["-O2", "-flto", "-w", "-pthread"])
         .arg(&ll)
         .arg(&rt)
         .arg("-o")

@@ -3,9 +3,12 @@
  * alloc) can inline into the caller. Mirrors the --dev Rust runtime
  * (codegen.rs). All pointers cross the boundary as `long` (i64), so the
  * generated IR is uniformly i64. */
+#include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* --- heap with a size header (Auto-Drop, §2) --- */
 long axion_alloc(long size) {
@@ -152,24 +155,26 @@ long axion_fold_bytes(long f, long init, long buf) {
   return acc;
 }
 
-/* --- cooperative session scheduler (§11): single-thread, defunctionalized.
- * Native mirror of the interpreter's runtime (interp.rs). A task is a state
- * machine `long step(long sched, long state)` that returns 1=done / 0=blocked,
- * writing its result into state[0] when done. The only suspension point is a
- * `recv` on an empty endpoint. Round-robin until the root task finishes; the
- * absence of deadlock is guaranteed by types (AX0302), so a full sweep with no
- * progress and a live root is a compiler/runtime bug, not a user error. */
+/* --- M:N session scheduler (§11): multi-threaded, defunctionalized. Mirror of
+ * the --dev Rust runtime (codegen.rs). A task is a state machine
+ * `long step(long sched, long state)` returning 1=done / 0=blocked, writing its
+ * result into state[0] when done. Tasks run on a pool of OS threads; one mutex
+ * guards the shared state, held ONLY during channel ops — the compute between
+ * them runs in parallel. Session-type linearity makes every channel SPSC, so the
+ * mutex is the only synchronization needed; deadlock-freedom is guaranteed by
+ * types (AX0302). Blocked tasks park in `blocked` and are woken by any `send`; a
+ * generation counter closes the lost-wakeup window between a step returning
+ * blocked and the worker recording it. */
 
 typedef long (*SessStep)(long, long);
 
 typedef struct {
   long *q;
   int head, len, cap;
-} SessEp; /* FIFO of i64 messages waiting for this endpoint's owner */
+} SessEp; /* SPSC FIFO of i64 messages waiting for this endpoint's owner */
 typedef struct {
   SessStep step;
   long state;
-  int done;
 } SessTask;
 
 typedef struct {
@@ -178,13 +183,28 @@ typedef struct {
   int neps, capeps;
   SessTask *tasks;
   int ntasks, captasks;
+  int *ready;
+  int rhead, rlen, rcap; /* queue of runnable task indices */
+  int *blocked;
+  int nblocked, capblocked; /* tasks parked on an empty recv */
+  int running;              /* tasks currently being stepped */
+  unsigned long gen;        /* bumped on every send (wakeups) */
   void **allocs;
   int nallocs, capallocs; /* task states, freed in bulk at run end */
-  int dirty;              /* a channel op happened this sweep → progress was made */
+  long budget;            /* safety net against a livelock bug */
+  pthread_mutex_t mtx;
+  int done;
+  long result;
 } Sched;
 
-long axion_sess_new(void) { return (long)calloc(1, sizeof(Sched)); }
+long axion_sess_new(void) {
+  Sched *s = (Sched *)calloc(1, sizeof(Sched));
+  pthread_mutex_init(&s->mtx, NULL);
+  s->budget = 2000000000L;
+  return (long)s;
+}
 
+/* all of the following static helpers run with s->mtx held */
 static int sess_new_ep(Sched *s) {
   if (s->neps + 1 > s->capeps) {
     s->capeps = s->capeps ? s->capeps * 2 : 8;
@@ -197,20 +217,51 @@ static int sess_new_ep(Sched *s) {
   return id;
 }
 
+static void ready_push(Sched *s, int i) {
+  if (s->rhead + s->rlen >= s->rcap) {
+    if (s->rhead > 0) {
+      memmove(s->ready, s->ready + s->rhead, (size_t)s->rlen * sizeof(int));
+      s->rhead = 0;
+    } else {
+      s->rcap = s->rcap ? s->rcap * 2 : 8;
+      s->ready = (int *)realloc(s->ready, (size_t)s->rcap * sizeof(int));
+    }
+  }
+  s->ready[s->rhead + s->rlen] = i;
+  s->rlen++;
+}
+
+static int ready_pop(Sched *s) {
+  int i = s->ready[s->rhead];
+  s->rhead++;
+  s->rlen--;
+  return i;
+}
+
+static void blocked_push(Sched *s, int i) {
+  if (s->nblocked + 1 > s->capblocked) {
+    s->capblocked = s->capblocked ? s->capblocked * 2 : 8;
+    s->blocked = (int *)realloc(s->blocked, (size_t)s->capblocked * sizeof(int));
+  }
+  s->blocked[s->nblocked++] = i;
+}
+
 /* create a channel: two peer endpoints, a and a+1 (mirrors newChannel) */
 long axion_sess_channel(long sched) {
   Sched *s = (Sched *)sched;
+  pthread_mutex_lock(&s->mtx);
   int a = sess_new_ep(s);
   int b = sess_new_ep(s);
   s->peer[a] = b;
   s->peer[b] = a;
-  s->dirty = 1;
+  pthread_mutex_unlock(&s->mtx);
   return a;
 }
 
-/* send v on ep → push to the peer's input queue */
+/* send v on ep → push to the peer's input queue and wake parked receivers */
 void axion_sess_send(long sched, long ep, long v) {
   Sched *s = (Sched *)sched;
+  pthread_mutex_lock(&s->mtx);
   SessEp *e = &s->eps[s->peer[ep]];
   if (e->head + e->len >= e->cap) {
     if (e->head > 0) { /* compact */
@@ -223,23 +274,30 @@ void axion_sess_send(long sched, long ep, long v) {
   }
   e->q[e->head + e->len] = v;
   e->len++;
-  s->dirty = 1;
+  s->gen++;
+  for (int k = 0; k < s->nblocked; k++) ready_push(s, s->blocked[k]);
+  s->nblocked = 0;
+  pthread_mutex_unlock(&s->mtx);
 }
 
 /* 1 if a message is waiting on ep, 0 if empty (would block) */
 long axion_sess_pending(long sched, long ep) {
   Sched *s = (Sched *)sched;
-  return s->eps[ep].len > 0 ? 1 : 0;
+  pthread_mutex_lock(&s->mtx);
+  long r = s->eps[ep].len > 0 ? 1 : 0;
+  pthread_mutex_unlock(&s->mtx);
+  return r;
 }
 
-/* pop and return the message on ep (caller guarantees pending) */
+/* pop and return the message on ep (caller guarantees pending; SPSC consumer) */
 long axion_sess_recv(long sched, long ep) {
   Sched *s = (Sched *)sched;
+  pthread_mutex_lock(&s->mtx);
   SessEp *e = &s->eps[ep];
   long v = e->q[e->head];
   e->head++;
   e->len--;
-  s->dirty = 1;
+  pthread_mutex_unlock(&s->mtx);
   return v;
 }
 
@@ -247,62 +305,104 @@ long axion_sess_recv(long sched, long ep) {
  * all such blocks are freed in bulk when axion_sess_run returns. */
 long axion_sess_alloc(long sched, long nbytes) {
   Sched *s = (Sched *)sched;
+  void *p = calloc(1, (size_t)(nbytes < 8 ? 8 : nbytes));
+  pthread_mutex_lock(&s->mtx);
   if (s->nallocs + 1 > s->capallocs) {
     s->capallocs = s->capallocs ? s->capallocs * 2 : 8;
     s->allocs = (void **)realloc(s->allocs, (size_t)s->capallocs * sizeof(void *));
   }
-  void *p = calloc(1, (size_t)(nbytes < 8 ? 8 : nbytes));
   s->allocs[s->nallocs++] = p;
+  pthread_mutex_unlock(&s->mtx);
   return (long)p;
 }
 
 void axion_sess_spawn(long sched, long step, long state) {
   Sched *s = (Sched *)sched;
+  pthread_mutex_lock(&s->mtx);
   if (s->ntasks + 1 > s->captasks) {
     s->captasks = s->captasks ? s->captasks * 2 : 8;
     s->tasks = (SessTask *)realloc(s->tasks, (size_t)s->captasks * sizeof(SessTask));
   }
-  SessTask *t = &s->tasks[s->ntasks++];
-  t->step = (SessStep)step;
-  t->state = state;
-  t->done = 0;
-  s->dirty = 1;
+  int i = s->ntasks++;
+  s->tasks[i].step = (SessStep)step;
+  s->tasks[i].state = state;
+  ready_push(s, i);
+  pthread_mutex_unlock(&s->mtx);
 }
 
-/* run the root task (task 0) and its children until the root finishes; returns
- * the root's result (read from state[0]). */
+/* one worker thread: pull a ready task, run its step without the lock, then mark
+ * it done / re-park it. Exits when the root task finishes. */
+static void *sess_worker(void *arg) {
+  Sched *s = (Sched *)arg;
+  for (;;) {
+    pthread_mutex_lock(&s->mtx);
+    if (s->done) {
+      pthread_mutex_unlock(&s->mtx);
+      return NULL;
+    }
+    if (s->rlen == 0) {
+      /* nothing runnable: if nothing is running either and tasks are parked, no
+       * one can wake them — a deadlock (types forbid it). */
+      int stuck = (s->running == 0 && s->nblocked > 0);
+      pthread_mutex_unlock(&s->mtx);
+      if (stuck) {
+        fprintf(stderr, "session scheduler: no progress (deadlock)\n");
+        exit(1);
+      }
+      sched_yield();
+      continue;
+    }
+    if (--s->budget <= 0) {
+      pthread_mutex_unlock(&s->mtx);
+      fprintf(stderr, "session scheduler: budget exhausted\n");
+      exit(1);
+    }
+    int i = ready_pop(s);
+    s->running++;
+    SessStep step = s->tasks[i].step;
+    long st = s->tasks[i].state;
+    unsigned long gen0 = s->gen;
+    pthread_mutex_unlock(&s->mtx);
+
+    long fin = step((long)s, st); /* runs WITHOUT the lock (parallel) */
+
+    pthread_mutex_lock(&s->mtx);
+    s->running--;
+    if (fin) {
+      if (i == 0) {
+        s->result = *(long *)st;
+        s->done = 1;
+      }
+    } else if (s->gen != gen0) {
+      /* a send happened during this step → don't park (lost-wakeup guard) */
+      ready_push(s, i);
+    } else {
+      blocked_push(s, i);
+    }
+    pthread_mutex_unlock(&s->mtx);
+  }
+}
+
+/* run the root task (task 0) and its children on a thread pool until the root
+ * finishes; returns the root's result (read from state[0]). */
 long axion_sess_run(long sched, long step, long state) {
   Sched *s = (Sched *)sched;
   axion_sess_spawn(sched, step, state); /* root = task 0 */
-  long budget = 5000000;
-  for (;;) {
-    int progressed = 0;
-    s->dirty = 0;
-    int n = s->ntasks; /* children spawned this sweep run on the next one */
-    for (int i = 0; i < n; i++) {
-      if (s->tasks[i].done) continue;
-      if (s->tasks[i].step(sched, s->tasks[i].state)) {
-        s->tasks[i].done = 1;
-        progressed = 1;
-      }
-      if (--budget <= 0) {
-        fprintf(stderr, "session scheduler: budget exhausted\n");
-        exit(1);
-      }
-    }
-    if (s->tasks[0].done) break;
-    if (!progressed && !s->dirty) {
-      fprintf(stderr, "session scheduler: no progress (deadlock)\n");
-      exit(1);
-    }
-  }
-  long result = *(long *)s->tasks[0].state;
+  long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+  int nthreads = (int)(ncpu < 1 ? 1 : (ncpu > 8 ? 8 : ncpu));
+  pthread_t threads[8];
+  for (int t = 0; t < nthreads; t++) pthread_create(&threads[t], NULL, sess_worker, s);
+  for (int t = 0; t < nthreads; t++) pthread_join(threads[t], NULL);
+  long result = s->result;
   for (int i = 0; i < s->neps; i++) free(s->eps[i].q);
   for (int i = 0; i < s->nallocs; i++) free(s->allocs[i]);
   free(s->allocs);
   free(s->eps);
   free(s->peer);
   free(s->tasks);
+  free(s->ready);
+  free(s->blocked);
+  pthread_mutex_destroy(&s->mtx);
   free(s);
   return result;
 }

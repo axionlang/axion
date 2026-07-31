@@ -73,7 +73,7 @@ is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return
 
 compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if native
   "$AXIONC" --emit llvm "$1" >"$WORK/ir.ll" 2>/dev/null || return 1
-  "$CLANG" -fsanitize=address,leak -O1 -w "$WORK/ir.ll" "$RT" -o "$2" 2>/dev/null
+  "$CLANG" -fsanitize=address,leak -pthread -O1 -w "$WORK/ir.ll" "$RT" -o "$2" 2>/dev/null
 }
 
 fail=0; corr=0; leak=0
