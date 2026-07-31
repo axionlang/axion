@@ -1,14 +1,14 @@
-//! Inferência de tipos — Hindley-Milner (Algoritmo W) para o subconjunto L0/L1.
+//! Type inference — Hindley-Milner (Algorithm W) for the L0/L1 subset.
 //!
-//! Corre a par da análise de linearidade (`check.rs`): a linearidade cuida do
-//! *quantas vezes* um recurso é usado (multiplicidades); a inferência cuida do
-//! *que tipo* tem. Emite `AX0200` (incompatibilidade de tipos) e `AX0201`
-//! (tipo infinito / occurs-check).
+//! Runs alongside the linearity analysis (`check.rs`): linearity handles
+//! *how many times* a resource is used (multiplicities); inference handles
+//! *what type* it has. Emits `AX0200` (type mismatch) and `AX0201`
+//! (infinite type / occurs-check).
 //!
-//! Suporta: literais, funções (multi-cláusula, pattern matching), aplicação,
-//! `let`/`where` com generalização, `if`, `case`, registos (construção,
-//! actualização, selectores) e os builtins. As multiplicidades das setas são
-//! ignoradas aqui (são o trabalho do `check.rs`).
+//! Supports: literals, functions (multi-clause, pattern matching), application,
+//! `let`/`where` with generalization, `if`, `case`, records (construction,
+//! update, selectors) and the builtins. The arrow multiplicities are
+//! ignored here (they are `check.rs`'s job).
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
@@ -34,62 +34,62 @@ struct Infer<'a> {
     subst: HashMap<u32, Ty>,
     counter: u32,
     diags: &'a mut Diagnostics,
-    /// construtor → (tipo do registo, campos com tipo)
+    /// constructor → (record type, typed fields)
     cons: HashMap<String, (String, Vec<(String, Ty)>)>,
-    /// tipo do registo → campos com tipo (para actualização)
+    /// record type → typed fields (for update)
     records: HashMap<String, Vec<(String, Ty)>>,
-    /// método de typeclasse → (classe, índice do parâmetro de despacho). O índice
-    /// é a posição do 1º parâmetro cujo tipo é a variável da classe (fatia 2b).
+    /// typeclass method → (class, dispatch parameter index). The index
+    /// is the position of the 1st parameter whose type is the class variable.
     method_meta: HashMap<String, (String, Option<usize>)>,
-    /// obrigações de instância recolhidas nos usos de método, descarregadas no fim.
+    /// instance obligations collected at method uses, discharged at the end.
     obligations: Vec<Obl>,
-    /// usos de funções constrangidas, para a monomorfização (fatia 2b-β).
+    /// uses of constrained functions, for monomorphization.
     spec_obligations: Vec<SpecObl>,
-    /// função constrangida → (var de constraint, índice do param de despacho).
+    /// constrained function → (constraint var, dispatch param index).
     constrained_meta: HashMap<String, (String, Option<usize>)>,
-    /// funções que referenciam uma função constrangida não-especializável (var de
-    /// constraint sem parâmetro directo) — não podem ser especializadas (β-2).
+    /// functions that reference an unspecializable constrained function (constraint
+    /// var not a direct parameter) — they cannot be specialized.
     refs_unspec: HashSet<String>,
-    /// classes com constraint declarado no âmbito da função a ser inferida.
+    /// classes with a declared constraint in the scope of the function being inferred.
     cur_constraints: Vec<String>,
-    /// nome da função a ser inferida (chave das resoluções, com o span).
+    /// name of the function being inferred (key of the resolutions, with the span).
     cur_fn: String,
 }
 
-/// Uma obrigação `classe C sobre o tipo T`, recolhida num uso de método e
-/// descarregada no fim (com a substituição resolvida): T concreto → tem de haver
-/// instância; T variável → tem de estar coberto por um constraint no âmbito.
+/// An obligation `class C over type T`, collected at a method use and
+/// discharged at the end (with the substitution resolved): T concrete → there must be
+/// an instance; T variable → must be covered by a constraint in scope.
 struct Obl {
     class: String,
     method: String,
     ty: Ty,
     span: Span,
     scope: Vec<String>,
-    /// função onde o uso ocorre — parte da chave da resolução, porque os spans
-    /// (offsets de byte) do prelúdio e do ficheiro do utilizador colidem.
+    /// function where the use occurs — part of the resolution key, because the spans
+    /// (byte offsets) of the prelude and the user file collide.
     func: String,
 }
 
 /// Um uso de uma FUNÇÃO CONSTRANGIDA (`f :: C a => …`) — recolhido para a
-/// monomorfização (fatia 2b-β): se a var de constraint resolve para um tipo
+/// monomorphization: if the constraint var resolves to a concrete type
 /// concreto no call-site, especializa-se `f` a esse tipo.
 struct SpecObl {
-    target: String, // a função constrangida chamada
+    target: String, // the constrained function called
     ty: Ty,         // o tipo da var de constraint neste uso
     span: Span,
-    func: String, // função onde o uso ocorre (chamador)
+    func: String, // function where the use occurs (caller)
 }
 
-/// O resultado da inferência para a monomorfização: as reescritas directas
-/// (`(função, span) → nome`) e o plano de funções especializadas a materializar.
+/// The inference result for monomorphization: the direct rewrites
+/// (`(function, span) → name`) and the plan of specialized functions to materialize.
 pub struct Mono {
     pub resolutions: HashMap<(String, Span), String>,
     pub specs: Vec<SpecPlan>,
 }
 
-/// Instrução para clonar `src` numa função monomórfica `name`, substituindo a var
+/// Instruction to clone `src` into a monomorphic function `name`, substituting the
 /// de constraint `tyvar` pelo tipo `ty_head` na assinatura, e reescrevendo os usos
-/// internos (span → nome directo: métodos→`m$T`, auto-recursão→`name`).
+/// internal uses (span → direct name: methods→`m$T`, self-recursion→`name`).
 pub struct SpecPlan {
     pub src: String,
     pub name: String,
@@ -98,10 +98,10 @@ pub struct SpecPlan {
     pub rewrites: HashMap<Span, String>,
 }
 
-/// Ponto de entrada: infere e verifica os tipos do módulo. Devolve as resoluções
-/// de método monomórficas (`(função, span do uso) → nome da impl`), para a
-/// monomorfização reescrever os usos como chamadas directas (fatia 2b-ii). A
-/// chave inclui a função porque os spans do prelúdio e do utilizador colidem.
+/// Entry point: infers and checks the module's types. Returns the monomorphic
+/// method resolutions (`(function, use span) → impl name`), so that
+/// monomorphization rewrites the uses as direct calls. The
+/// key includes the function because the prelude's and the user's spans collide.
 pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     let mut inf = Infer {
         subst: HashMap::new(),
@@ -119,13 +119,13 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     };
     let mut env: Env = inf.base_env();
 
-    // tipos dos construtores e selectores a partir das declarações `data`. Um
-    // mapa de vars PARTILHADO por decl liga os parâmetros de tipo (`a` em
+    // types of constructors and selectors from the `data` declarations. A
+    // vars map SHARED per decl links the type parameters (`a` in
     // `data List a`) ao mesmo `Ty::Var` no resultado (`List a`) e nos campos,
     // e o esquema generaliza-os (`Cons :: forall a. a -> List a -> List a`).
     for d in &module.datas {
         let mut vars: HashMap<String, u32> = HashMap::new();
-        let mut next = 2_000_000u32; // banda dos parâmetros de tipo
+        let mut next = 2_000_000u32; // band of type parameters
         let param_args: Vec<Ty> = d
             .params
             .iter()
@@ -183,16 +183,16 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         }
     }
 
-    // métodos de typeclasse: cada método é uma função polimórfica cujo esquema é
-    // a sua assinatura generalizada sobre a variável da classe (`eq :: forall a.
-    // a -> a -> Bool`). O despacho para a instância concreta é dinâmico (interp);
-    // aqui o método tipa-se como qualquer função polimórfica (fatia 1: os
-    // constraints `Eq a =>` são parseados e ignorados).
+    // typeclass methods: each method is a polymorphic function whose scheme is
+    // its signature generalized over the class variable (`eq :: forall a.
+    // a -> a -> Bool`). Dispatch to the concrete instance is dynamic (interp);
+    // here the method types like any polymorphic function (the
+    // `Eq a =>` constraints are parsed and used for discharge).
     for class in &module.classes {
         for (m, ty) in &class.methods {
             let scheme = inf.scheme_of_sig(ty);
             env.insert(m.clone(), scheme);
-            // índice do parâmetro de despacho = 1º cujo tipo é a var da classe
+            // dispatch parameter index = 1st whose type is the class var
             let idx = ty
                 .param_types()
                 .iter()
@@ -201,9 +201,9 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         }
     }
 
-    // esquemas das funções de topo: a partir da assinatura, ou monótipo fresco
+    // schemes of the top-level functions: from the signature, or a fresh monotype
     let mut placeholders: HashMap<String, Ty> = HashMap::new();
-    // importações FFI (§18): tipadas pela sua assinatura declarada
+    // FFI imports (§18): typed by their declared signature
     for fo in &module.foreigns {
         let scheme = inf.scheme_of_sig(&fo.sig);
         env.insert(fo.name.clone(), scheme);
@@ -228,8 +228,8 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         }
     }
 
-    // metadados das funções constrangidas (fatia 2b-β): var de constraint e
-    // índice do 1º parâmetro cujo tipo é essa var (o «despacho» da especialização).
+    // metadata of the constrained functions: constraint var and
+    // index of the 1st parameter whose type is that var (the specialization "dispatch").
     for f in &module.funcs {
         if let Some((_, cvar)) = f.constraints.first() {
             let idx = f.sig.as_ref().and_then(|s| {
@@ -242,21 +242,21 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         }
     }
 
-    // verifica cada função contra o seu tipo (em modo de checking quando há
-    // assinatura: os parâmetros herdam os tipos declarados antes do corpo)
+    // checks each function against its type (in checking mode when there is a
+    // signature: parameters inherit the declared types before the body)
     for f in &module.funcs {
         let declared = env.get(&f.name).cloned().map(|s| inf.instantiate(&s));
-        // Modo de checking (parâmetros herdam os tipos declarados) SÓ quando há
-        // assinatura. Sem assinatura, o `declared` é um placeholder `Var` que o
-        // `peel_fun` não sabe partir em setas — inferir livremente e unificar o
-        // resultado com o placeholder (isto liga a recursão monomórfica e é o que
-        // os métodos de instância, sem assinatura, precisam).
+        // Checking mode (parameters inherit the declared types) ONLY when there is a
+        // signature. Without a signature, `declared` is a `Var` placeholder that
+        // `peel_fun` cannot split into arrows — infer freely and unify the
+        // result with the placeholder (this ties monomorphic recursion and is what
+        // instance methods, without a signature, need).
         let expected = if f.sig.is_some() {
             declared.as_ref()
         } else {
             None
         };
-        // constraints no âmbito desta função (para descarregar usos polimórficos)
+        // constraints in scope of this function (to discharge polymorphic uses)
         inf.cur_constraints = f.constraints.iter().map(|(c, _)| c.clone()).collect();
         inf.cur_fn = f.name.clone();
         let inferred = inf.infer_func(&env, f, expected);
@@ -269,7 +269,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     mono
 }
 
-/// O `idx`-ésimo tipo de parâmetro de uma cadeia de setas (`a -> b -> c` @ 1 → b).
+/// The `idx`-th parameter type of an arrow chain (`a -> b -> c` @ 1 → b).
 fn nth_param(ty: &Ty, idx: usize) -> Option<Ty> {
     let mut cur = ty;
     for _ in 0..idx {
@@ -285,7 +285,7 @@ fn nth_param(ty: &Ty, idx: usize) -> Option<Ty> {
 }
 
 /// Os inteiros de largura fixa (§4) colapsam para `Int` neste sistema de tipos
-/// simplificado (a aritmética é toda `Int`); ex.: `U8`, `U32` → `Int`.
+/// simplified (arithmetic is all `Int`); e.g. `U8`, `U32` → `Int`.
 fn normalize_num(n: &str) -> String {
     match n {
         "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte" => {
@@ -295,8 +295,8 @@ fn normalize_num(n: &str) -> String {
     }
 }
 
-/// Converte um `Type` do AST em `Ty`, mapeando variáveis por nome via `vars`
-/// (partilhado, para que o mesmo nome — p.ex. o `a` de `data List a` — dê o mesmo
+/// Converts an AST `Type` into `Ty`, mapping variables by name via `vars`
+/// (shared, so the same name — e.g. the `a` of `data List a` — gives the same
 /// `Ty::Var` no resultado e nos campos). Vars novas apanham ids a partir de `next`.
 fn ast_ty(t: &Type, vars: &mut HashMap<String, u32>, next: &mut u32) -> Ty {
     match t {
@@ -326,13 +326,13 @@ fn ast_ty(t: &Type, vars: &mut HashMap<String, u32>, next: &mut u32) -> Ty {
 }
 
 fn ty_of_ast(t: &Type) -> Ty {
-    // espaço de nomes local; as variáveis são quantificadas por `scheme_of_sig`
+    // local namespace; the variables are quantified by `scheme_of_sig`
     let mut vars = HashMap::new();
     let mut next = 1_000_000; // banda separada
     ast_ty(t, &mut vars, &mut next)
 }
 
-/// Recolhe os ids das variáveis de tipo que ocorrem em `ty` (para generalizar).
+/// Collects the ids of the type variables occurring in `ty` (to generalize).
 fn free_ty_vars(ty: &Ty, out: &mut Vec<u32>) {
     match ty {
         Ty::Var(v) => {
@@ -400,13 +400,13 @@ impl<'a> Infer<'a> {
         env.insert("True".into(), mono(bool()));
         env.insert("False".into(), mono(bool()));
         env.insert("otherwise".into(), mono(bool()));
-        // aritmética e comparações (monomórficas em Int no subconjunto)
+        // arithmetic and comparisons (monomorphic in Int in the subset)
         for op in ["+", "-", "*", "mod"] {
             env.insert(op.into(), mono(bin(int())));
         }
-        // ++ :: forall a. a -> a -> a  (concatenação polimórfica; sem typeclasses
-        // ainda, o tipo Semigroup-óide só impõe que os dois lados coincidam —
-        // listas e strings ambos passam, `"x" ++ [1]` não).
+        // ++ :: forall a. a -> a -> a  (polymorphic concatenation; without typeclasses
+        // yet, the Semigroup-ish type only forces both sides to match —
+        // lists and strings both pass, `"x" ++ [1]` does not).
         env.insert(
             "++".into(),
             Scheme {
@@ -423,8 +423,8 @@ impl<'a> Infer<'a> {
                 )),
             );
         }
-        // arenas (§3). O arg da arena é emprestado (não %1): allocateCell e
-        // promote lêem a arena para bump-allocate, muitas vezes.
+        // arenas (§3). The arena arg is borrowed (not %1): allocateCell and
+        // promote read the arena to bump-allocate, many times.
         let arena = || Ty::Con("Arena".into(), vec![]);
         let cell = || Ty::Con("Cell".into(), vec![]);
         // allocateCell :: Arena -> Cell
@@ -454,9 +454,9 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // canais / session types (§6). O HM não exprime o avanço de sessão — a
-        // fidelidade de protocolo é verificada no passe `check_sessions`; aqui os
-        // tipos são permissivos (o endpoint é `Ep S`, a sessão avança de `a`→`c`).
+        // channels / session types (§6). HM does not express session progress — protocol
+        // fidelity is checked in the `check_sessions` pass; here the
+        // types are permissive (the endpoint is `Ep S`, the session advances `a`→`c`).
         let ep = |v: u32| Ty::Con("Ep".into(), vec![Ty::Var(v)]);
         // send :: forall a b c. Ep a -> b -> Ep c
         env.insert(
@@ -480,7 +480,7 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // close :: forall a. Ep a -> IO ()  (o fecho é um efeito → casa com `do`)
+        // close :: forall a. Ep a -> IO ()  (closing is an effect → fits with `do`)
         env.insert(
             "close".into(),
             Scheme {
@@ -491,10 +491,10 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // nursery de concorrência estruturada (§9). `bound` abre um nursery cujo
-        // corpo é confinado (os endpoints não escapam — `check_bound_escapes`);
-        // `newChannel` cria um par de endpoints duais; `spawn` lança um filho que
-        // consome um endpoint e devolve ao pai o dual. Tipos permissivos (o HM não
+        // structured-concurrency nursery (§9). `bound` opens a nursery whose
+        // body is confined (endpoints don't escape — `check_bound_escapes`);
+        // `newChannel` creates a dual endpoint pair; `spawn` forks a child that
+        // consumes an endpoint and returns the dual to the parent. Permissive types (HM does not
         // exprime a dualidade nem o confinamento).
         // bound :: forall a. a -> a
         env.insert(
@@ -523,9 +523,9 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // escolha de sessão (§6/§9): `select L c` escolhe o rótulo `L` (⊕) e
-        // avança; `offer c` recebe a escolha (&) e consome o endpoint. Tipos
-        // permissivos — a fidelidade/exaustividade é do `check_sessions`.
+        // session choice (§6/§9): `select L c` chooses the label `L` (⊕) and
+        // advances; `offer c` receives the choice (&) and consumes the endpoint. Permissive
+        // types — fidelity/exhaustiveness is `check_sessions`'s job.
         // select :: forall a b c. b -> Ep a -> Ep c
         env.insert(
             "select".into(),
@@ -537,9 +537,9 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // offer :: forall a b. Ep a -> b  (recebe a escolha externa; o resultado é
+        // offer :: forall a b. Ep a -> b  (receives the external choice; the result is
         // um valor-soma etiquetado — `L (Ep Cont)` — sobre o qual se faz `case`;
-        // retorno genérico porque os rótulos/continuações são do programa)
+        // a generic return because the labels/continuations are the program's)
         env.insert(
             "offer".into(),
             Scheme {
@@ -558,7 +558,7 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // `mapM_` deixou de ser builtin — é uma função do prelúdio (Axion puro
+        // `mapM_` is no longer a builtin — it is a prelude function (pure Axion
         // sobre `case`), para compilar nativamente como qualquer HOF (IO nativo).
         // withArena :: forall a. (Arena -> a) -> a — cria a arena-raiz, corre o
         // corpo e reclama tudo no fim (a entrada para correr programas de arena).
@@ -572,7 +572,7 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // marcas de arena (Listagem 3.6): reclamação intra-escopo
+        // arena marks (Listing 3.6): intra-scope reclamation
         let mark = || Ty::Con("Mark".into(), vec![]);
         let unit = || Ty::Con("()".into(), vec![]);
         // arena_mark :: Arena -> Mark
@@ -585,9 +585,9 @@ impl<'a> Infer<'a> {
             "arena_release".into(),
             mono(Ty::Fun(Box::new(mark()), Box::new(unit()))),
         );
-        // Buffer polimórfico no elemento (`Buffer a`, ex.: `Buffer U8`). A
-        // linearidade (%1) é imposta pelo check.rs (mapa `consumers` + must-use);
-        // aqui são só os tipos HM. `a`=var 0, `b`=var 1 (resultado do withBuffer).
+        // Buffer polymorphic in the element (`Buffer a`, e.g. `Buffer U8`). The
+        // linearity (%1) is enforced by check.rs (`consumers` map + must-use);
+        // here it's just the HM types. `a`=var 0, `b`=var 1 (result of withBuffer).
         let bufa = || Ty::Con("Buffer".into(), vec![Ty::Var(0)]);
         let int = || Ty::Con("Int".into(), vec![]);
         let io_unit = || Ty::Con("IO".into(), vec![unit()]);
@@ -647,7 +647,7 @@ impl<'a> Infer<'a> {
             },
         );
         // foldBytes :: forall a e. (a -> Int -> a) -> a -> Buffer e -> a
-        // — dobra sobre os bytes (empresta o buffer). O byte é `Int`.
+        // — folds over the bytes (borrows the buffer). The byte is `Int`.
         env.insert(
             "foldBytes".into(),
             Scheme {
@@ -664,7 +664,7 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
-        // imperative :: forall a. a -> a — o bloco imperativo (§5) é identidade.
+        // imperative :: forall a. a -> a — the imperative block (§5) is identity.
         env.insert(
             "imperative".into(),
             Scheme {
@@ -672,9 +672,9 @@ impl<'a> Infer<'a> {
                 ty: Ty::Fun(Box::new(Ty::Var(0)), Box::new(Ty::Var(0))),
             },
         );
-        // permissões fraccionárias (§2). split :: forall a. a -> (a, a);
-        // join :: forall a. a -> a -> a. As multiplicidades (%1/%0.5) são
-        // rastreadas à parte, pela análise em check.rs.
+        // fractional permissions (§2). split :: forall a. a -> (a, a);
+        // join :: forall a. a -> a -> a. The multiplicities (%1/%0.5) are
+        // tracked separately, by the analysis in check.rs.
         env.insert(
             "split".into(),
             Scheme {
@@ -700,10 +700,10 @@ impl<'a> Infer<'a> {
 
     fn scheme_of_sig(&mut self, sig: &Type) -> Scheme {
         let ty = ty_of_ast(sig);
-        // as variáveis da assinatura (banda 1_000_000+) tornam-se quantificadas
+        // the signature variables (band 1_000_000+) become quantified
         let mut vars = Vec::new();
         collect_sig_vars(&ty, &mut vars);
-        // renumera para variáveis frescas normais e quantifica-as
+        // renumbers to normal fresh variables and quantifies them
         let mut map = HashMap::new();
         for v in &vars {
             if let Ty::Var(f) = self.fresh() {
@@ -717,7 +717,7 @@ impl<'a> Infer<'a> {
         }
     }
 
-    // --- substituição / unificação ---
+    // --- substitution / unification ---
     fn resolve(&self, t: &Ty) -> Ty {
         match t {
             Ty::Var(v) => match self.subst.get(v) {
@@ -728,11 +728,11 @@ impl<'a> Infer<'a> {
         }
     }
 
-    /// Descarrega as obrigações de instância recolhidas (fatia 2b). Para cada uso
-    /// de método: se o tipo de despacho resolveu para um tipo CONCRETO sem
-    /// instância → **AX0404**; se ficou POLIMÓRFICO e a classe não está coberta
-    /// por um constraint no âmbito da função → **AX0405**. (Fun/Tuple: conservador,
-    /// não reporta.)
+    /// Discharges the collected instance obligations. For each method
+    /// use: if the dispatch type resolved to a CONCRETE type without an
+    /// instance → **AX0404**; if it stayed POLYMORPHIC and the class is not covered
+    /// by a constraint in the function's scope → **AX0405**. (Fun/Tuple: conservative,
+    /// does not report.)
     fn discharge_obligations(&mut self, module: &Module) -> Mono {
         use std::collections::{HashMap as Map, HashSet as Set};
         let instances: Set<(String, String)> = module
@@ -743,16 +743,16 @@ impl<'a> Infer<'a> {
         let func_names: Set<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
 
         let mut resolutions: Map<(String, Span), String> = Map::new();
-        // por função constrangida: usos polimórficos de método (span → método) e
-        // chamadas polimórficas a funções constrangidas (span → função, incluindo
-        // a auto-recursão) — os pontos que a especialização reescreve para `$T`.
+        // per constrained function: polymorphic method uses (span → method) and
+        // polymorphic calls to constrained functions (span → function, including
+        // self-recursion) — the points specialization rewrites to `$T`.
         let mut poly_methods: Map<String, Vec<(Span, String)>> = Map::new();
         let mut poly_calls: Map<String, Vec<(Span, String)>> = Map::new();
 
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
             match self.resolve(&o.ty) {
-                // tipo concreto COM instância → resolve para a impl directa.
+                // concrete type WITH instance → resolves to the direct impl.
                 Ty::Con(name, _) if instances.contains(&(o.class.clone(), name.clone())) => {
                     resolutions.insert(
                         (o.func.clone(), o.span),
@@ -773,7 +773,7 @@ impl<'a> Infer<'a> {
                         )),
                     );
                 }
-                // polimórfico coberto por constraint → uso especializável (2b-β).
+                // polymorphic covered by a constraint → specializable use.
                 Ty::Var(_) if o.scope.contains(&o.class) => {
                     poly_methods
                         .entry(o.func.clone())
@@ -802,16 +802,16 @@ impl<'a> Infer<'a> {
             }
         }
 
-        // usos de funções constrangidas → sementes de especialização (concretas)
-        // e chamadas polimórficas (transitivas, para a var de constraint).
+        // uses of constrained functions → specialization seeds (concrete)
+        // and polymorphic calls (transitive, for the constraint var).
         let mut seeds: Vec<(String, Span, String, String)> = Vec::new(); // caller,span,fn,T
         let specs_obls = std::mem::take(&mut self.spec_obligations);
         for s in specs_obls {
             match self.resolve(&s.ty) {
                 // chamada num tipo concreto → semente `(fn, T)` + call-site.
                 Ty::Con(t, _) => seeds.push((s.func.clone(), s.span, s.target.clone(), t)),
-                // chamada sobre a var genérica → reescreve-se para `$T` quando o
-                // chamador for especializado (a auto-recursão é o caso `g == f`).
+                // call over the generic var → rewritten to `$T` when the
+                // caller is specialized (self-recursion is the `g == f` case).
                 Ty::Var(_) => poly_calls
                     .entry(s.func.clone())
                     .or_default()
@@ -820,10 +820,10 @@ impl<'a> Infer<'a> {
             }
         }
 
-        // expande o conjunto de especializações necessárias por worklist: uma
-        // `(f, T)` puxa `(g, T)` por cada chamada constrangida polimórfica em `f`
-        // (a var de constraint de `g` é a mesma de `f`, logo o mesmo `T`). Fecha a
-        // especialização TRANSITIVA (fatia 2b-β-2).
+        // expands the set of required specializations by worklist: a
+        // `(f, T)` pulls `(g, T)` for each polymorphic constrained call in `f`
+        // (`g`'s constraint var is the same as `f`'s, hence the same `T`). Closes
+        // TRANSITIVE specialization.
         let mut cands: Set<(String, String)> = Set::new();
         let mut queue: Vec<(String, String)> = Vec::new();
         for (_, _, f, t) in &seeds {
@@ -840,9 +840,9 @@ impl<'a> Infer<'a> {
             }
         }
 
-        // validade por ponto-fixo: `(f, T)` é válida a menos que `f` seja
-        // inespecializável, falte a var de despacho, falte alguma impl de método
-        // `m$T`, ou alguma dependência `(g, T)` seja inválida.
+        // fixpoint validity: `(f, T)` is valid unless `f` is
+        // unspecializable, the dispatch var is missing, some method impl
+        // `m$T` is missing, or some dependency `(g, T)` is invalid.
         let mut invalid: Set<(String, String)> = Set::new();
         loop {
             let mut changed = false;
@@ -874,7 +874,7 @@ impl<'a> Infer<'a> {
             }
         }
 
-        // materializa cada especialização válida.
+        // materializes each valid specialization.
         let mut specs: Vec<SpecPlan> = Vec::new();
         for (f, t) in &cands {
             if invalid.contains(&(f.clone(), t.clone())) {
@@ -901,7 +901,7 @@ impl<'a> Infer<'a> {
                 rewrites,
             });
         }
-        // reescreve os call-sites-semente cujas especializações são válidas.
+        // rewrites the seed call-sites whose specializations are valid.
         for (caller, span, f, t) in seeds {
             if cands.contains(&(f.clone(), t.clone())) && !invalid.contains(&(f.clone(), t.clone()))
             {
@@ -1027,7 +1027,7 @@ impl<'a> Infer<'a> {
         Scheme { vars, ty }
     }
 
-    // --- inferência ---
+    // --- inference ---
     fn peel_fun(&self, ty: &Ty, n: usize) -> (Vec<Ty>, Ty) {
         let mut params = Vec::new();
         let mut cur = self.resolve(ty);
@@ -1078,7 +1078,7 @@ impl<'a> Infer<'a> {
             }
             params.push(pt);
         }
-        // where: grupo de bindings com generalização
+        // where: a group of bindings with generalization
         let local = self.infer_group(&local, &clause.wher);
         let body_ty = match &clause.body {
             Body::Plain(e) => self.infer_expr(&local, e),
@@ -1136,13 +1136,13 @@ impl<'a> Infer<'a> {
         }
     }
 
-    /// Infere um grupo de bindings (`let`/`where`) com generalização e
+    /// Infers a group of bindings (`let`/`where`) with generalization and
     /// devolve o env estendido.
     fn infer_group(&mut self, env: &Env, funcs: &[Func]) -> Env {
         if funcs.is_empty() {
             return env.clone();
         }
-        // fase monomórfica: cada nome recebe uma var fresca
+        // monomorphic phase: each name gets a fresh var
         let mut mono_env = env.clone();
         let mut vars = HashMap::new();
         for f in funcs {
@@ -1155,7 +1155,7 @@ impl<'a> Infer<'a> {
             let v = vars[&f.name].clone();
             self.unify(&v, &t, f.span);
         }
-        // fase de generalização: rebind com esquemas fechados sobre o env exterior
+        // generalization phase: rebind with schemes closed over the outer env
         let mut out = env.clone();
         for f in funcs {
             let t = self.apply(&vars[&f.name]);
@@ -1172,10 +1172,10 @@ impl<'a> Infer<'a> {
             Expr::Var(n, span) => {
                 let ty = match env.get(n) {
                     Some(s) => self.instantiate(s),
-                    None => self.fresh(), // nome não encontrado: reportado pelo check.rs
+                    None => self.fresh(), // name not found: reported by check.rs
                 };
-                // uso de método: recolhe a obrigação de instância sobre o tipo do
-                // parâmetro de despacho (resolvido no fim).
+                // method use: collects the instance obligation over the type of the
+                // dispatch parameter (resolved at the end).
                 if let Some((class, Some(idx))) = self.method_meta.get(n).cloned() {
                     if let Some(dispatch) = nth_param(&ty, idx) {
                         self.obligations.push(Obl {
@@ -1188,8 +1188,8 @@ impl<'a> Infer<'a> {
                         });
                     }
                 }
-                // uso de uma função constrangida: recolhe a obrigação de
-                // especialização sobre o tipo da var de constraint (fatia 2b-β).
+                // use of a constrained function: collects the specialization
+                // obligation over the type of the constraint var.
                 if let Some((_, idx)) = self.constrained_meta.get(n).cloned() {
                     match idx {
                         Some(i) => {
@@ -1202,8 +1202,8 @@ impl<'a> Infer<'a> {
                                 });
                             }
                         }
-                        // constrangida sem parâmetro de despacho → não capturável:
-                        // a função que a usa não pode ser especializada.
+                        // constrained without a dispatch parameter → not capturable:
+                        // the function that uses it cannot be specialized.
                         None => {
                             self.refs_unspec.insert(self.cur_fn.clone());
                         }
