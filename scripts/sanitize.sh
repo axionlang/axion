@@ -51,6 +51,7 @@ NATIVE=(
   axionc/tests/fixtures/session_run_twospawn.axi
   axionc/tests/fixtures/session_run_choice3.axi
   axionc/tests/fixtures/session_run_fib.axi
+  axionc/tests/fixtures/session_run_parfib.axi
   examples/01_hello.axi
   examples/02_fib.axi
 )
@@ -66,7 +67,7 @@ LEAKFREE=(
   buffer_sum buffer_linear inplace_update native_case native_fib
   nested_drop sum_payload
   session_run_pingpong session_run_offer session_run_cancel
-  session_run_twospawn session_run_choice3 session_run_fib
+  session_run_twospawn session_run_choice3 session_run_fib session_run_parfib
 )
 is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 

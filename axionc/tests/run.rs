@@ -165,11 +165,14 @@ fn session_richer_shapes_run_natively() {
     // - a 3-label external choice where the result observes the selected branch
     //   (`Fast`, the middle of three), proving a real 3-way tag dispatch → 2;
     // - a compute-heavy worker calling a native function (`fib n`) in value
-    //   position — real work between channel ops, ready for M:N → 6765.
+    //   position — real work between channel ops → 6765;
+    // - four compute-heavy workers whose `fib` calls run in PARALLEL on the --dev
+    //   M:N scheduler (deterministic result, session types ⇒ no races) → 300100.
     for (fx, expected) in [
         ("session_run_twospawn.axi", "42\n"),
         ("session_run_choice3.axi", "2\n"),
         ("session_run_fib.axi", "6765\n"),
+        ("session_run_parfib.axi", "300100\n"),
     ] {
         let native = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])
@@ -1277,6 +1280,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("session_run_twospawn.axi"), "42\n"), // two children + 2 recv suspensions
         (fixture("session_run_choice3.axi"), "2\n"), // 3-way choice dispatch
         (fixture("session_run_fib.axi"), "6765\n"), // compute-heavy worker (value-position call)
+        (fixture("session_run_parfib.axi"), "300100\n"), // four compute-heavy workers
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1327,6 +1331,7 @@ fn native_runtime_is_leak_free_under_lsan() {
         "session_run_twospawn",
         "session_run_choice3",
         "session_run_fib",
+        "session_run_parfib",
     ] {
         // lower to LLVM IR
         let ll = dir.join(format!("{name}.ll"));
