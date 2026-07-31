@@ -162,21 +162,25 @@ calmly and tested, without breaking the philosophy:
   **ThreadSanitizer-clean** (`scripts/tsan.sh`). Blocked tasks park until a `send`
   wakes them (lost-wakeup-safe via a generation counter). **Work-stealing is
   deferred on measured grounds** — the global mutex tops out at ~10–14 M
-  channel-ops/s but no expressible session comes near it (no session recursion +
-  an O(N²) fan-in codegen cap ⇒ a few hundred ops/program); see
+  channel-ops/s but no expressible session comes near it (an O(N²) fan-in codegen
+  cap ⇒ a few hundred ops/program); see
   [`docs/session-scaling.md`](docs/session-scaling.md) and
-  `scripts/session-scaling.sh`. Real prerequisites: recursion in session bodies,
-  then fixing the O(N²) codegen; then io_uring/epoll for async I/O.
+  `scripts/session-scaling.sh`. Remaining prerequisites: fixing the O(N²) codegen,
+  then io_uring/epoll for async I/O.
+- **Recursive sessions (Layer 3) ✅ proven** — server loops via recursive
+  `Rec`/`Loop` session types: a worker whose protocol loops (`worker d'` tail call)
+  typechecks (AX0300/AX0301 recursion-aware), runs on all three executors (native
+  via a re-queue that re-dispatches the state machine at the loop head), and is
+  **anchored to the formal oracle** — the CFSM model-checker proves the recursive
+  protocol deadlock-free over its (now cyclic) state graph, with T1 duality
+  involution and non-vacuity checks for `Rec`/`Var`.
 
 **Honesty about the state.** Known and documented debt: `Integer`/bignum missing
 (`factorial 20` runs, `50` doesn't); **native sessions are M:N but with a global
 mutex, not yet work-stealing** — tasks run in parallel on both backends and are
 ThreadSanitizer-clean, but the scheduler serializes channel ops on one lock and
-there is no `io_uring`/`epoll` for async I/O yet; **recursion in a session body**
-(server loops, recursive `Rec`/`Loop` session types) typechecks and runs on all
-three executors (native via a re-queue that re-dispatches the state machine), but
-its formal CFSM-oracle proof is still pending and delegation is interpreter-only;
-no `Float` yet;
+there is no `io_uring`/`epoll` for async I/O yet; delegation (endpoints over
+channels between siblings) is still interpreter-only; no `Float` yet;
 over-application (functions that return functions and are re-applied) and
 mechanized metatheory (Iris/Actris) still to do. None is a correctness hole —
 they are growth.

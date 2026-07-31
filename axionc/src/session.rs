@@ -23,6 +23,13 @@ enum Session {
     Recv(Box<Session>),   // ?T.S
     Select(Vec<Session>), // ⊕ — chooses a branch (internal side)
     Offer(Vec<Session>),  // & — offers all branches (external side)
+    // recursive session types (§6, server loops): `Rec S` binds, `Var` refers
+    // back to the nearest enclosing `Rec` (single level, de Bruijn 0). The CFSM
+    // keeps sessions FOLDED in the global state and unfolds only transiently in
+    // `side_moves`, so a loop returns to the same `Gs` and the visited-set
+    // terminates exploration over the (now cyclic) state graph.
+    Rec(Box<Session>),
+    Var,
 }
 
 fn dual(s: &Session) -> Session {
@@ -32,6 +39,29 @@ fn dual(s: &Session) -> Session {
         Session::Recv(k) => Session::Send(Box::new(dual(k))),
         Session::Select(bs) => Session::Offer(bs.iter().map(dual).collect()),
         Session::Offer(bs) => Session::Select(bs.iter().map(dual).collect()),
+        Session::Rec(k) => Session::Rec(Box::new(dual(k))),
+        Session::Var => Session::Var,
+    }
+}
+
+/// Substitutes `Var` with `r` (not descending into a nested `Rec`).
+fn subst_sess(s: &Session, r: &Session) -> Session {
+    match s {
+        Session::Var => r.clone(),
+        Session::Rec(_) => s.clone(),
+        Session::End => Session::End,
+        Session::Send(k) => Session::Send(Box::new(subst_sess(k, r))),
+        Session::Recv(k) => Session::Recv(Box::new(subst_sess(k, r))),
+        Session::Select(bs) => Session::Select(bs.iter().map(|b| subst_sess(b, r)).collect()),
+        Session::Offer(bs) => Session::Offer(bs.iter().map(|b| subst_sess(b, r)).collect()),
+    }
+}
+
+/// One-level unfold: `Rec B` → `B[Var := Rec B]` (identity on non-`Rec`).
+fn unfold_sess(s: &Session) -> Session {
+    match s {
+        Session::Rec(body) => subst_sess(body, s),
+        _ => s.clone(),
     }
 }
 
@@ -114,6 +144,10 @@ fn follow(rng: &mut Rng, s: &Session, ep: EpId, cont: Proc) -> Proc {
                 .collect();
             Proc::Off(ep, arms)
         }
+        // the reference interpreter runs FINITE trees (T2–T5); recursion is
+        // covered by the CFSM model-checker (which handles cycles), so the
+        // generator never produces `Rec`/`Var` and these arms are unreachable.
+        Session::Rec(_) | Session::Var => cont,
     }
 }
 
@@ -412,6 +446,36 @@ fn t5_panic_cancels_without_orphans() {
     }
 }
 
+#[test]
+fn recursive_sessions_are_dual_and_deadlock_free() {
+    // §6 recursion: `Rec`/`Var` session types. T1 (duality involution) and
+    // deadlock-freedom hold on the CYCLIC state graph — the CFSM keeps sessions
+    // folded and its visited-set terminates the exploration over the loop.
+    use Session::{End, Offer, Rec, Recv, Send, Var};
+    let rec = |s| Rec(Box::new(s));
+    let send = |s| Send(Box::new(s));
+    let recv = |s| Recv(Box::new(s));
+    // an echo server that loops forever: recv a value, send one back, repeat.
+    let echo = rec(recv(send(Var)));
+    // the `session_run_server` shape: offer More(recv;send;loop) or Closed(end).
+    let srv = rec(Offer(vec![recv(send(Var)), End]));
+    for s in [&echo, &srv] {
+        assert_eq!(dual(&dual(s)), s.clone(), "non-involutive dual for {s:?}");
+        assert_eq!(
+            model_check(s, &dual(s)),
+            Check::Ok,
+            "recursive session {s:?} is not deadlock-free vs its dual"
+        );
+    }
+    // non-vacuity: a recursive server against a NON-dual peer is caught (both
+    // recv-first ⇒ deadlock), so the clean results above are not vacuous.
+    assert_ne!(
+        model_check(&echo, &echo),
+        Check::Ok,
+        "a non-dual recursive pair must be flagged"
+    );
+}
+
 // --- non-vacuity: the interpreter MUST catch real violations ---
 
 #[test]
@@ -543,7 +607,7 @@ fn side_moves(s: &Session, out: &[Move], inp: &[Move]) -> (Vec<SideMove>, bool) 
             false,
         ),
         Session::Recv(k) => match inp.first() {
-            None => (vec![], false), // bloqueado (fila vazia)
+            None => (vec![], false), // blocked (empty queue)
             Some(Move::Val) => (vec![((**k).clone(), out.to_vec(), pop(inp))], false),
             Some(Move::Lab(_)) => (vec![], true), // expected a value, got a label
         },
@@ -554,6 +618,10 @@ fn side_moves(s: &Session, out: &[Move], inp: &[Move]) -> (Vec<SideMove>, bool) 
             }
             Some(_) => (vec![], true), // label out of range, or a value came
         },
+        // unfold the recursion transiently; the exposed continuations re-fold to
+        // `Rec B` (subst replaced `Var`), so successor states loop back to it.
+        Session::Rec(_) => side_moves(&unfold_sess(s), out, inp),
+        Session::Var => (vec![], false), // unreachable after unfold
     }
 }
 
@@ -730,6 +798,8 @@ fn from_surface_type(t: &crate::ast::Type) -> Option<Session> {
         ("Recv", 2) => Some(Session::Recv(Box::new(from_surface_type(args[1])?))),
         ("Select", n) if n >= 1 => Some(Session::Select(from_surface_branches(&args)?)),
         ("Offer", n) if n >= 1 => Some(Session::Offer(from_surface_branches(&args)?)),
+        ("Rec", 1) => Some(Session::Rec(Box::new(from_surface_type(args[0])?))),
+        ("Loop", 0) => Some(Session::Var),
         _ => None,
     }
 }
@@ -761,7 +831,7 @@ fn endpoint_of(t: &crate::ast::Type) -> Option<&crate::ast::Type> {
 /// Parses a fixture through the compiler's real pipeline → `Module`.
 fn parse_fixture(name: &str) -> crate::ast::Module {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(&path).expect("ler fixture");
+    let src = std::fs::read_to_string(&path).expect("read fixture");
     let tokens = crate::lexer::lex(&src).expect("lex");
     let lines = crate::lexer::LineMap::new(&src);
     let lt = crate::layout::layout(&tokens, &lines);
@@ -781,6 +851,7 @@ fn surface_sessions_agree_with_asc_cfsm_oracle() {
         "session_run_pingpong.axi",
         "session_run_offer.axi",
         "session_run_cancel.axi",
+        "session_run_server.axi", // recursive `Rec`/`Loop` protocol (server loop, §6)
     ];
     let mut checked = 0;
     for fx in accepted {
