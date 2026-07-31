@@ -163,10 +163,13 @@ fn session_richer_shapes_run_natively() {
     // - two concurrent children + TWO `recv` suspensions in `main` (the multi-
     //   suspension resume dispatch must save/restore `x` across the second recv) → 42;
     // - a 3-label external choice where the result observes the selected branch
-    //   (`Fast`, the middle of three), proving a real 3-way tag dispatch → 2.
+    //   (`Fast`, the middle of three), proving a real 3-way tag dispatch → 2;
+    // - a compute-heavy worker calling a native function (`fib n`) in value
+    //   position — real work between channel ops, ready for M:N → 6765.
     for (fx, expected) in [
         ("session_run_twospawn.axi", "42\n"),
         ("session_run_choice3.axi", "2\n"),
+        ("session_run_fib.axi", "6765\n"),
     ] {
         let native = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])
@@ -191,13 +194,13 @@ fn session_richer_shapes_run_natively() {
 fn session_out_of_subset_fails_natively_not_silently() {
     // Graceful-failure contract: sessions bypass the native-candidacy filter, so a
     // session shape outside the native subset must be REJECTED by native codegen,
-    // never silently miscompiled. Here the block value is a call (`inc r`): the
-    // interpreter is correct (43), and `--backend cranelift` fails loudly.
+    // never silently miscompiled. Here the block value is a `case` expression: the
+    // interpreter is correct (r=42 → 100), and `--backend cranelift` fails loudly.
     let fx = fixture("session_native_unsupported.axi");
     let interp = axionc().arg(&fx).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&interp.stdout),
-        "43\n",
+        "100\n",
         "interpreter should still run the out-of-subset session"
     );
     let native = axionc()
@@ -1273,6 +1276,7 @@ fn release_backend_compiles_and_runs_when_clang_present() {
         (fixture("session_run_cancel.axi"), "5\n"), // native cancellation (cancel/T5)
         (fixture("session_run_twospawn.axi"), "42\n"), // two children + 2 recv suspensions
         (fixture("session_run_choice3.axi"), "2\n"), // 3-way choice dispatch
+        (fixture("session_run_fib.axi"), "6765\n"), // compute-heavy worker (value-position call)
     ];
     for (path, expected) in cases {
         let out = axionc().args(["--release", &path]).output().unwrap();
@@ -1322,6 +1326,7 @@ fn native_runtime_is_leak_free_under_lsan() {
         "session_run_cancel",
         "session_run_twospawn",
         "session_run_choice3",
+        "session_run_fib",
     ] {
         // lower to LLVM IR
         let ll = dir.join(format!("{name}.ll"));

@@ -153,7 +153,10 @@ calmly and tested, without breaking the philosophy:
   (`axion_sess_*`); ping-pong, offer and cancel run on **both** `--backend cranelift`
   and `--release` (LLVM), matching the interpreter, and are **ASan/LSan-clean**
   (the scheduler's nursery arena reclaims every task state — no leaks, no
-  use-after-free). Next: **M:N** (worker threads + work-stealing + io_uring/epoll).
+  use-after-free). Workers can now do **real compute** between channel ops
+  (value-position calls to native functions, e.g. `send d2 (fib n)`) — the
+  prerequisite for M:N to have something to parallelise. Next: **M:N** (worker
+  threads + work-stealing; then io_uring/epoll for async I/O).
 
 **Honesty about the state.** Known and documented debt: `Integer`/bignum missing
 (`factorial 20` runs, `50` doesn't); **native sessions are cooperative

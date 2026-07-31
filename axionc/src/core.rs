@@ -1350,6 +1350,7 @@ struct SessGen<'a> {
     lay: &'a SessLayout,
     all: &'a HashMap<String, SessLayout>,
     tags: &'a HashMap<String, i64>, // choice label (constructor) → tag
+    fns: &'a HashSet<String>,       // top-level functions callable in value position
     susp: HashMap<Span, i32>,       // suspension `Case` span → index (resume = index+1)
     susp_live: Vec<Vec<String>>,    // live vars in scope at each suspension
     tmp: u32,
@@ -1388,22 +1389,42 @@ impl SessGen<'_> {
                 binds.push((t.clone(), Rhs::Op(Op::Prim(op.clone(), av, bv))));
                 Atom::Var(t)
             }
-            // Outside the native session subset (e.g. a recursive/looping worker,
-            // a value from a call, delegation). Fail LOUDLY — sessions bypass the
-            // native-candidacy filter, so a silent `0` here would miscompile while
-            // the interpreter stays correct. `Op::Unsupported` makes the native
-            // backends reject it with a clear message (use the interpreter).
-            _ => {
-                let t = self.fresh();
-                binds.push((
-                    t.clone(),
-                    Rhs::Op(Op::Unsupported(
-                        "session value outside the native subset".into(),
-                    )),
-                ));
-                Atom::Var(t)
+            // a call to a top-level native function (e.g. `fib n`) — lets a worker
+            // do real compute between channel ops. The callee is compiled by the
+            // normal native path (candidacy filter), so `CallDirect` resolves.
+            Expr::App(..) => {
+                let (head, args) = sess_spine(e);
+                match head.filter(|n| self.fns.contains(*n)) {
+                    Some(name) => {
+                        let name = name.to_string();
+                        let mut atoms = Vec::with_capacity(args.len());
+                        for a in &args {
+                            atoms.push(self.val(a, binds));
+                        }
+                        let t = self.fresh();
+                        binds.push((t.clone(), Rhs::Op(Op::CallDirect(name, atoms))));
+                        Atom::Var(t)
+                    }
+                    None => self.unsupported(binds),
+                }
             }
+            _ => self.unsupported(binds),
         }
+    }
+
+    /// Outside the native session subset (a recursive/looping worker, delegation,
+    /// a non-native call, …). Fail LOUDLY — sessions bypass the native-candidacy
+    /// filter, so a silent `0` here would miscompile while the interpreter stays
+    /// correct. `Op::Unsupported` makes the native backends reject it clearly.
+    fn unsupported(&mut self, binds: &mut Vec<(String, Rhs)>) -> Atom {
+        let t = self.fresh();
+        binds.push((
+            t.clone(),
+            Rhs::Op(Op::Unsupported(
+                "session value outside the native subset".into(),
+            )),
+        ));
+        Atom::Var(t)
     }
 
     /// Generates the tail (block value): stores it into `result` and returns done.
@@ -1782,7 +1803,7 @@ fn sess_clause_body(f: &ast::Func) -> Option<&Expr> {
     }
 }
 
-fn session_fns(module: &ast::Module) -> Vec<CoreFn> {
+fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn> {
     let clause_body = sess_clause_body;
     let main = module.funcs.iter().find(|f| f.name == "main");
     let Some(bound_body) = main.and_then(clause_body).and_then(as_bound) else {
@@ -1833,6 +1854,7 @@ fn session_fns(module: &ast::Module) -> Vec<CoreFn> {
             lay,
             all: layouts,
             tags: &tags,
+            fns: native_fns,
             susp: HashMap::new(),
             susp_live: Vec::new(),
             tmp: 0,
@@ -1901,8 +1923,10 @@ fn session_fns(module: &ast::Module) -> Vec<CoreFn> {
 
 pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
-    // which would wrap a bare `spawn worker` target into a lambda).
-    let session = session_fns(module);
+    // which would wrap a bare `spawn worker` target into a lambda). It needs the
+    // set of native functions (to resolve value-position calls), so it runs after
+    // `native_ok` below; keep the pre-eta module here.
+    let orig_module = module;
     // Eta-expansion (native path only): rewrites functions/constructors used
     // as a VALUE or applied PARTIALLY (`f`, `compose g h`) into lambdas
     // (`\v -> f v`), which the closure machinery already compiles. It is semantic
@@ -1975,6 +1999,11 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             None => break,
         }
     }
+
+    // native session state machines (§11), now that we know which functions are
+    // native (callable in value position from a worker's compute).
+    let native_fn_names: HashSet<String> = native_ok.keys().cloned().collect();
+    let session = session_fns(orig_module, &native_fn_names);
 
     // pre-pass: names + computes captures of all lambdas (by span)
     let mut lam_meta: LamMeta = HashMap::new();
