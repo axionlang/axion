@@ -427,6 +427,14 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "show",
             args: Vec::new(),
         }),
+        "toFloat" => Ok(Value::Builtin {
+            name: "toFloat",
+            args: Vec::new(),
+        }),
+        "truncate" => Ok(Value::Builtin {
+            name: "truncate",
+            args: Vec::new(),
+        }),
         "split" => Ok(Value::Builtin {
             name: "split",
             args: Vec::new(),
@@ -680,7 +688,8 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
 fn is_builtin_op(op: &str) -> bool {
     matches!(
         op,
-        "+" | "-" | "*" | "mod" | "==" | "<" | ">" | "+." | "-." | "*." | "/."
+        "+" | "-" | "*" | "mod" | "==" | "<" | ">" | "+." | "-." | "*." | "/." | "<." | ">."
+            | "==."
     )
 }
 
@@ -702,6 +711,10 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("-.", Float(x), Float(y)) => Ok(Float(x - y)),
         ("*.", Float(x), Float(y)) => Ok(Float(x * y)),
         ("/.", Float(x), Float(y)) => Ok(Float(x / y)),
+        // float comparisons (§4): `<. >. ==.` → Bool
+        ("==.", Float(x), Float(y)) => Ok(Bool(x == y)),
+        ("<.", Float(x), Float(y)) => Ok(Bool(x < y)),
+        (">.", Float(x), Float(y)) => Ok(Bool(x > y)),
         (op, x, y) => Err(format!(
             "operator '{op}' does not apply to {} and {}",
             type_name(&x),
@@ -721,6 +734,9 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // value); join recombines — trivial semantics in the interpreter.
         ("split", [v]) => Ok(Value::Tuple(vec![v.clone(), v.clone()])),
         ("join", [a, _b]) => Ok(a.clone()),
+        // conversions (§4): toFloat :: Int -> Float, truncate :: Float -> Int.
+        ("toFloat", [Value::Int(n)]) => Ok(Value::Float(*n as f64)),
+        ("truncate", [Value::Float(f)]) => Ok(Value::Int(*f as i64)),
         (name, _) => Err(format!("builtin '{name}' received invalid arguments")),
     }
 }

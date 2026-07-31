@@ -761,6 +761,9 @@ impl<'a> Parser<'a> {
             Some(LTok::Tok(Tok::EqEq)) => "==",
             Some(LTok::Tok(Tok::Lt)) => "<",
             Some(LTok::Tok(Tok::Gt)) => ">",
+            Some(LTok::Tok(Tok::EqEqDot)) => "==.",
+            Some(LTok::Tok(Tok::LtDot)) => "<.",
+            Some(LTok::Tok(Tok::GtDot)) => ">.",
             _ => return None,
         };
         self.pos += 1;

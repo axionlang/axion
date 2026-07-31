@@ -1805,7 +1805,14 @@ fn float_arithmetic_agrees_across_backends() {
     // §4 (Float): `f64` carried as its bit-pattern in the i64 ABI; the distinct
     // operators `+. -. *. /.` bitcast i64↔f64. The interpreter uses real f64.
     // All three executors must agree.
-    for (fx, expected) in [("float_arith.axi", "7.5\n"), ("float_divsub.axi", "2\n")] {
+    for (fx, expected) in [
+        ("float_arith.axi", "7.5\n"),
+        ("float_divsub.axi", "2\n"),
+        // comparisons (`<.`) inside an `if`, and Int↔Float conversions
+        // (`toFloat`/`truncate`): all three executors must agree.
+        ("float_compare.axi", "1\n"),
+        ("float_convert.axi", "3\n"),
+    ] {
         let interp = axionc().arg(fixture(fx)).output().unwrap();
         assert!(
             interp.status.success(),

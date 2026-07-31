@@ -95,8 +95,17 @@ $AX axionc/tests/fixtures/float_arith.axi             # → 7.5
 ```
 `Float` is `f64`. Arithmetic uses **distinct operators** — `+.` `-.` `*.` `/.`
 (OCaml-style) — so the backends need no type-directed dispatch: `Int +. Int` is a
-type error (`Float` and `Int` are distinct types). Under the uniform i64 native
-ABI the `f64` travels as its bit-pattern; the operators bitcast `i64 ↔ f64`. All
+type error (`Float` and `Int` are distinct types). Comparisons follow suit —
+`<.` `>.` `==.` (`:: Float -> Float -> Bool`) — and conversions bridge the two
+worlds: `toFloat :: Int -> Float`, `truncate :: Float -> Int`.
+
+```haskell
+main :: Int
+main = truncate (toFloat 7 /. 2.0)                    -- → 3  (3.5 truncated)
+```
+
+Under the uniform i64 native ABI the `f64` travels as its bit-pattern; the
+operators bitcast `i64 ↔ f64` (`toFloat`/`truncate` are `sitofp`/`fptosi`). All
 three executors agree bit-for-bit.
 
 ---

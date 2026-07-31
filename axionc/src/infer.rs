@@ -409,6 +409,25 @@ impl<'a> Infer<'a> {
         for op in ["+.", "-.", "*.", "/."] {
             env.insert(op.into(), mono(bin(float())));
         }
+        // float comparisons (§4): `<. >. ==.` :: Float -> Float -> Bool
+        let bin_pred = |t: Ty| {
+            Ty::Fun(
+                Box::new(t.clone()),
+                Box::new(Ty::Fun(Box::new(t), Box::new(bool()))),
+            )
+        };
+        for op in ["<.", ">.", "==."] {
+            env.insert(op.into(), mono(bin_pred(float())));
+        }
+        // conversions (§4): toFloat :: Int -> Float, truncate :: Float -> Int
+        env.insert(
+            "toFloat".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(float()))),
+        );
+        env.insert(
+            "truncate".into(),
+            mono(Ty::Fun(Box::new(float()), Box::new(int()))),
+        );
         // ++ :: forall a. a -> a -> a  (polymorphic concatenation; without typeclasses
         // yet, the Semigroup-ish type only forces both sides to match —
         // lists and strings both pass, `"x" ++ [1]` does not).

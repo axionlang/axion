@@ -17,8 +17,8 @@ use crate::core::{
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
 use cranelift::prelude::{
-    types, AbiParam, Configurable, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder,
-    IntCC, MemFlags, Value, Variable,
+    types, AbiParam, Configurable, EntityRef, FloatCC, FunctionBuilder, FunctionBuilderContext,
+    InstBuilder, IntCC, MemFlags, Value, Variable,
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -896,14 +896,48 @@ impl Fx<'_, '_> {
                 let b = self.atom(r)?;
                 let af = self.builder.ins().bitcast(types::F64, MemFlags::new(), a);
                 let bf = self.builder.ins().bitcast(types::F64, MemFlags::new(), b);
-                let rf = match o.as_str() {
-                    "+." => self.builder.ins().fadd(af, bf),
-                    "-." => self.builder.ins().fsub(af, bf),
-                    "*." => self.builder.ins().fmul(af, bf),
-                    "/." => self.builder.ins().fdiv(af, bf),
-                    other => return Err(format!("float operator '{other}' does not compile natively")),
+                // comparisons yield a Bool (i64 0/1); arithmetic yields an f64
+                // that is bitcast back into the i64 ABI slot.
+                let fcmp = |me: &mut Self, cc| {
+                    let c = me.builder.ins().fcmp(cc, af, bf);
+                    me.builder.ins().uextend(types::I64, c)
                 };
-                Ok(self.builder.ins().bitcast(types::I64, MemFlags::new(), rf))
+                Ok(match o.as_str() {
+                    "+." => {
+                        let rf = self.builder.ins().fadd(af, bf);
+                        self.builder.ins().bitcast(types::I64, MemFlags::new(), rf)
+                    }
+                    "-." => {
+                        let rf = self.builder.ins().fsub(af, bf);
+                        self.builder.ins().bitcast(types::I64, MemFlags::new(), rf)
+                    }
+                    "*." => {
+                        let rf = self.builder.ins().fmul(af, bf);
+                        self.builder.ins().bitcast(types::I64, MemFlags::new(), rf)
+                    }
+                    "/." => {
+                        let rf = self.builder.ins().fdiv(af, bf);
+                        self.builder.ins().bitcast(types::I64, MemFlags::new(), rf)
+                    }
+                    "==." => fcmp(self, FloatCC::Equal),
+                    "<." => fcmp(self, FloatCC::LessThan),
+                    ">." => fcmp(self, FloatCC::GreaterThan),
+                    other => {
+                        return Err(format!("float operator '{other}' does not compile natively"))
+                    }
+                })
+            }
+            // Int → Float (signed) and Float → Int (truncating). The f64 is
+            // carried as its i64 bit-pattern, so bitcast at the boundaries.
+            Op::IntToFloat(a) => {
+                let x = self.atom(a)?;
+                let f = self.builder.ins().fcvt_from_sint(types::F64, x);
+                Ok(self.builder.ins().bitcast(types::I64, MemFlags::new(), f))
+            }
+            Op::FloatToInt(a) => {
+                let x = self.atom(a)?;
+                let f = self.builder.ins().bitcast(types::F64, MemFlags::new(), x);
+                Ok(self.builder.ins().fcvt_to_sint(types::I64, f))
             }
             Op::CallDirect(name, args) => {
                 let (id, arity) = *self

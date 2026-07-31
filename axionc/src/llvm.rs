@@ -244,6 +244,7 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
         Op::StoreRaw(p, _, v) => vec![p, v],
         Op::FuncAddr(_) => vec![],
         Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::Promote(a, b) => vec![a, b],
+        Op::IntToFloat(a) | Op::FloatToInt(a) => vec![a],
         Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
             xs.iter().collect()
         }
@@ -640,10 +641,27 @@ impl Emit<'_> {
                     Ok(r)
                 }
             }
-            // float op: bitcast i64 bit-patterns to double, compute, bitcast back.
+            // float op: bitcast i64 bit-patterns to double, compute; arithmetic
+            // bitcasts the double result back to i64, a comparison zext's the i1.
             Op::PrimF(o, a, b) => {
                 let x = self.atom(a)?;
                 let y = self.atom(b)?;
+                let (xf, yf) = (self.val(), self.val());
+                self.ins(&format!("{xf} = bitcast i64 {x} to double"));
+                self.ins(&format!("{yf} = bitcast i64 {y} to double"));
+                // ordered comparisons (`o*`): false if either operand is NaN.
+                let cmp = match o.as_str() {
+                    "==." => Some("oeq"),
+                    "<." => Some("olt"),
+                    ">." => Some("ogt"),
+                    _ => None,
+                };
+                if let Some(pred) = cmp {
+                    let (r, z) = (self.val(), self.val());
+                    self.ins(&format!("{r} = fcmp {pred} double {xf}, {yf}"));
+                    self.ins(&format!("{z} = zext i1 {r} to i64"));
+                    return Ok(z);
+                }
                 let fop = match o.as_str() {
                     "+." => "fadd",
                     "-." => "fsub",
@@ -653,11 +671,25 @@ impl Emit<'_> {
                         return Err(format!("float operator '{other}' does not compile under --release"))
                     }
                 };
-                let (xf, yf, rf, z) = (self.val(), self.val(), self.val(), self.val());
-                self.ins(&format!("{xf} = bitcast i64 {x} to double"));
-                self.ins(&format!("{yf} = bitcast i64 {y} to double"));
+                let (rf, z) = (self.val(), self.val());
                 self.ins(&format!("{rf} = {fop} double {xf}, {yf}"));
                 self.ins(&format!("{z} = bitcast double {rf} to i64"));
+                Ok(z)
+            }
+            // Int → Float (signed) and Float → Int (truncating). The f64 is
+            // carried as its i64 bit-pattern, so bitcast at the boundaries.
+            Op::IntToFloat(a) => {
+                let x = self.atom(a)?;
+                let (f, z) = (self.val(), self.val());
+                self.ins(&format!("{f} = sitofp i64 {x} to double"));
+                self.ins(&format!("{z} = bitcast double {f} to i64"));
+                Ok(z)
+            }
+            Op::FloatToInt(a) => {
+                let x = self.atom(a)?;
+                let (f, z) = (self.val(), self.val());
+                self.ins(&format!("{f} = bitcast i64 {x} to double"));
+                self.ins(&format!("{z} = fptosi double {f} to i64"));
                 Ok(z)
             }
             Op::CallDirect(name, args) => {

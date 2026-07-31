@@ -103,6 +103,12 @@ pub enum Tok {
     Minus,
     #[token("*")]
     Star,
+    #[token("==.")]
+    EqEqDot,
+    #[token("<.")]
+    LtDot,
+    #[token(">.")]
+    GtDot,
     #[token("==")]
     EqEq,
     #[token("<")]

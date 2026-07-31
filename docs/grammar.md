@@ -73,6 +73,7 @@ varName     = lower { alnum | "'" } ;
 conName     = upper { alnum | "'" } ;
 binop       = "+" | "-" | "*" | "==" | "." | "<>"
             | "+." | "-." | "*." | "/."     (* Float arithmetic (§4)        *)
+            | "<." | ">." | "==."           (* Float comparisons (§4)       *)
             | "`" varName "`" ;             (* infix function: `mod`        *)
 ```
 

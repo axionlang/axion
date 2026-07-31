@@ -1103,6 +1103,9 @@ fn builtins() -> HashSet<String> {
         "otherwise",
         "True",
         "False",
+        // Float conversions (§4)
+        "toFloat",
+        "truncate",
         // arenas (§3)
         "withArena",
         "withSubArena",
