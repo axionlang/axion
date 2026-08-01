@@ -346,6 +346,12 @@ pub struct RecordInfo {
     /// mixed sum types (some nullary, some with fields): nullary constructors are
     /// tagged immediates `(idx<<1)|1`, others are heap pointers (low bit 0).
     mixed_types: HashSet<String>,
+    /// constructor → field indices whose declared type is a bare type variable
+    /// (`a` in `Cons a (List a)`). Under a heap instantiation these fields hold
+    /// heap payloads a generic destructor cannot see, so when such a field is
+    /// EXTRACTED and escapes, the scrutinee must be freed shallowly (as with a
+    /// concrete heap field) to avoid double-freeing the escaped payload.
+    con_poly_fields: HashMap<String, HashSet<usize>>,
 }
 
 impl RecordInfo {
@@ -389,6 +395,7 @@ impl RecordInfo {
         for d in &module.datas {
             for c in &d.cons {
                 let mut slots = Vec::new();
+                let mut poly = HashSet::new();
                 for (i, f) in c.fields.iter().enumerate() {
                     // a `data`-typed field is a heap allocation owned by the
                     // record → must be reclaimed when the parent dies. Tuples and
@@ -397,12 +404,18 @@ impl RecordInfo {
                         if data_names.contains(h) {
                             slots.push((r.field_offset(&c.name, i), h.to_string()));
                         }
+                    } else if matches!(f.ty, ast::Type::Var(_)) {
+                        // a bare type variable: possibly-heap once instantiated.
+                        poly.insert(i);
                     }
                 }
                 if !slots.is_empty() {
                     r.needs_deep.insert(d.name.clone());
                 }
                 r.con_drop_slots.insert(c.name.clone(), slots);
+                if !poly.is_empty() {
+                    r.con_poly_fields.insert(c.name.clone(), poly);
+                }
             }
         }
         r
@@ -502,6 +515,14 @@ impl RecordInfo {
     pub fn field_is_heap(&self, con: &str, i: usize) -> bool {
         let off = self.field_offset(con, i);
         self.drop_slots(con).iter().any(|(o, _)| *o == off)
+    }
+
+    /// `true` if field `i` of `con` has a bare type-variable type (`a`). Under a
+    /// heap instantiation it holds a payload that a specialized (monomorphized)
+    /// destructor frees, so — like a concrete heap field — extracting it out of
+    /// the scrutinee transfers ownership and forces a shallow scrutinee free.
+    pub fn field_is_poly(&self, con: &str, i: usize) -> bool {
+        self.con_poly_fields.get(con).is_some_and(|s| s.contains(&i))
     }
 
     /// Offset (in bytes) of a named field, and the list of its record's fields.
@@ -2366,7 +2387,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
                 .map(|h| (f.name.clone(), h.to_string()))
         })
         .collect();
-    let all_dty = build_all_drop_ty(&out, module, &recinfo, &fn_ret_ty);
+    let (all_dty, mono_seeds) = build_all_drop_ty(&out, module, &recinfo, &fn_ret_ty);
     let empty = HashMap::new();
     let enum_cons = enum_con_names(module);
 
@@ -2380,6 +2401,10 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
     result.extend(gen_destructors(&recinfo));
+    // specialized destructors for concrete instantiations of parametric types
+    // dropped as owned values (`List P` → `axion_drop_List$P`): they also free
+    // the polymorphic payloads a generic destructor cannot see.
+    result.extend(gen_mono_destructors(module, &recinfo, mono_seeds));
     // native session state machines (§11): also hand-managed (task states live in
     // the scheduler's nursery arena), so they bypass the drop analysis too.
     result.extend(session);
@@ -2509,6 +2534,231 @@ fn drop_con_fields(recinfo: &RecordInfo, con: &str, p: &str, ctr: &mut u32, cont
     term
 }
 
+// --- monomorphized destructors (§ polymorphic-payload reclamation) ---
+//
+// A generic `List a` destructor cannot free the element field `a` (its type is a
+// variable; at runtime an i64 is indistinguishable pointer-vs-Int). So a dropped
+// `List P` leaks its `P` payloads. Fix: for each concrete instantiation dropped
+// (`List P`), generate a specialized `axion_drop_List$P` that also frees the
+// element via `P`'s drop, recursing on the tail via `axion_drop_List$P`.
+
+/// The head constructor and applied arguments of a type: `List P` → ("List", [P]).
+fn ty_head_args(t: &ast::Type) -> (Option<&str>, Vec<&ast::Type>) {
+    let mut args = Vec::new();
+    let mut cur = t;
+    while let ast::Type::App(f, a) = cur {
+        args.push(a.as_ref());
+        cur = f;
+    }
+    args.reverse();
+    (cur.head_con(), args)
+}
+
+/// The monomorphic mangle key of a fully-concrete type: `List P` → `"List$P"`,
+/// `List (Maybe P)` → `"List$Maybe$P"`. `None` if any part is a type variable.
+fn mono_key(t: &ast::Type) -> Option<String> {
+    let (head, args) = ty_head_args(t);
+    let mut key = head?.to_string();
+    for a in args {
+        key.push('$');
+        key.push_str(&mono_key(a)?);
+    }
+    Some(key)
+}
+
+/// Substitutes type parameters (by name) in a field type.
+fn subst_ty(t: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
+    match t {
+        ast::Type::Var(v) => subst.get(v).cloned().unwrap_or_else(|| t.clone()),
+        ast::Type::Con(_) | ast::Type::Unit => t.clone(),
+        ast::Type::App(f, a) => ast::Type::App(
+            Box::new(subst_ty(f, subst)),
+            Box::new(subst_ty(a, subst)),
+        ),
+        ast::Type::Arrow { mult, from, to } => ast::Type::Arrow {
+            mult: *mult,
+            from: Box::new(subst_ty(from, subst)),
+            to: Box::new(subst_ty(to, subst)),
+        },
+        ast::Type::Tuple(ts) => ast::Type::Tuple(ts.iter().map(|x| subst_ty(x, subst)).collect()),
+    }
+}
+
+/// How to free a value of a (concrete) field type.
+enum DropWay {
+    Flat,          // heap object with no owned heap fields → a flat `free`
+    Deep(String),  // needs the destructor `axion_drop_<key>`
+    None,          // not a heap object (Int/String/function/tuple) → nothing to do
+}
+
+/// How to drop a (concrete) field type; pushes any parametric instantiation it
+/// references onto the worklist so its specialized destructor is generated too.
+fn drop_way(
+    t: &ast::Type,
+    recinfo: &RecordInfo,
+    parametric_data: &HashSet<String>,
+    work: &mut Vec<ast::Type>,
+) -> DropWay {
+    let (head, args) = ty_head_args(t);
+    let Some(head) = head else {
+        return DropWay::None;
+    };
+    if recinfo.type_cons(head).is_none() {
+        return DropWay::None; // not a `data` type (Int/String/Buffer/function/tuple)
+    }
+    // a PARAMETRIC data type instantiated with a concrete arg (List P) → the
+    // specialized destructor (and it may reference further instantiations).
+    if !args.is_empty() && parametric_data.contains(head) {
+        if let Some(key) = mono_key(t) {
+            work.push(t.clone());
+            return DropWay::Deep(key);
+        }
+    }
+    // monomorphic data type: its generic destructor, or a flat free.
+    if recinfo.needs_deep_drop(head) {
+        DropWay::Deep(head.to_string())
+    } else {
+        DropWay::Flat
+    }
+}
+
+/// Generates a specialized destructor per concrete parametric instantiation
+/// dropped (`List P`, `List (Maybe P)`, …), transitively. Reuses the same body
+/// shape as `gen_destructors` (mixed low-bit guard + tag dispatch), but the drop
+/// slots are the con fields resolved under the instantiation's substitution — so
+/// the (formerly polymorphic) element field is now a concrete, freed slot.
+fn gen_mono_destructors(module: &ast::Module, recinfo: &RecordInfo, seeds: Vec<ast::Type>) -> Vec<CoreFn> {
+    let parametric_data: HashSet<String> = module
+        .datas
+        .iter()
+        .filter(|d| !d.params.is_empty())
+        .map(|d| d.name.clone())
+        .collect();
+    let mut out = Vec::new();
+    let mut done: HashSet<String> = HashSet::new();
+    let mut work = seeds;
+    while let Some(t) = work.pop() {
+        let Some(key) = mono_key(&t) else { continue };
+        if !done.insert(key.clone()) {
+            continue;
+        }
+        let (head, args) = ty_head_args(&t);
+        let Some(head) = head else { continue };
+        let Some(d) = module.datas.iter().find(|d| d.name == head) else {
+            continue;
+        };
+        let subst: HashMap<String, ast::Type> = d
+            .params
+            .iter()
+            .cloned()
+            .zip(args.iter().map(|a| (*a).clone()))
+            .collect();
+
+        // per-constructor drop slots, resolved under the substitution. Computed
+        // eagerly (up front) so `work` is only borrowed here, not while the body
+        // is built. `all_slots[i]` are the drop slots of `d.cons[i]`.
+        let all_slots: Vec<Vec<(i32, DropWay)>> = d
+            .cons
+            .iter()
+            .map(|con| {
+                con.fields
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, f)| {
+                        let rty = subst_ty(&f.ty, &subst);
+                        match drop_way(&rty, recinfo, &parametric_data, &mut work) {
+                            DropWay::None => None,
+                            way => Some((recinfo.field_offset(&con.name, i), way)),
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let drop_fields = |slots: &[(i32, DropWay)], ctr: &mut u32, cont: Term| -> Term {
+            let mut term = cont;
+            for (off, way) in slots.iter().rev() {
+                let fp = fresh_dd(ctr);
+                let call = match way {
+                    DropWay::Deep(name) => {
+                        Op::CallDirect(format!("axion_drop_{name}"), vec![Atom::Var(fp.clone())])
+                    }
+                    _ => Op::RtCall {
+                        func: "axion_free".into(),
+                        args: vec![Atom::Var(fp.clone())],
+                        returns: false,
+                    },
+                };
+                term = Term::Let(
+                    fp.clone(),
+                    Rhs::Op(Op::LoadRaw(Atom::Var("_p".to_string()), *off)),
+                    Box::new(Term::Let(fresh_dd(ctr), Rhs::Op(call), Box::new(term))),
+                );
+            }
+            term
+        };
+
+        let p = "_p".to_string();
+        let mut ctr = 0u32;
+        let free_ret = free_then_ret(&p);
+        let body = if d.cons.len() <= 1 {
+            match all_slots.first() {
+                Some(slots) => drop_fields(slots, &mut ctr, free_ret),
+                None => free_ret,
+            }
+        } else {
+            let mut chain = free_ret;
+            for (c, slots) in d.cons.iter().zip(all_slots.iter()).rev() {
+                if slots.is_empty() {
+                    continue;
+                }
+                let tag = recinfo.tag(&c.name).unwrap_or(0) as i64;
+                let branch = drop_fields(slots, &mut ctr, unit0());
+                let cmp = fresh_dd(&mut ctr);
+                let ifstep = Term::Let(
+                    fresh_dd(&mut ctr),
+                    Rhs::If(Atom::Var(cmp.clone()), Box::new(branch), Box::new(unit0())),
+                    Box::new(chain),
+                );
+                chain = Term::Let(
+                    cmp,
+                    Rhs::Op(Op::Prim("==".into(), Atom::Var("_tag".into()), Atom::Int(tag))),
+                    Box::new(ifstep),
+                );
+            }
+            Term::Let(
+                "_tag".into(),
+                Rhs::Op(Op::LoadRaw(Atom::Var(p.clone()), 0)),
+                Box::new(chain),
+            )
+        };
+        // mixed type (some nullary): guard the immediate (Nil) on the low bit.
+        let body = if recinfo.is_mixed_type(head) {
+            let bit = fresh_dd(&mut ctr);
+            let res = fresh_dd(&mut ctr);
+            Term::Let(
+                bit.clone(),
+                Rhs::Op(Op::Prim("band".into(), Atom::Var(p.clone()), Atom::Int(1))),
+                Box::new(Term::Let(
+                    res,
+                    Rhs::If(Atom::Var(bit), Box::new(unit0()), Box::new(body)),
+                    Box::new(unit0()),
+                )),
+            )
+        } else {
+            body
+        };
+        out.push(CoreFn {
+            name: format!("axion_drop_{key}"),
+            params: vec![p],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            body,
+        });
+    }
+    out
+}
+
 /// For each function, the `data` type of each droppable (owned `%1` parameters +
 /// results of `Make*`/calls that return heap). Feeds the deep-drop.
 fn build_all_drop_ty(
@@ -2516,8 +2766,17 @@ fn build_all_drop_ty(
     module: &ast::Module,
     recinfo: &RecordInfo,
     fn_ret_ty: &HashMap<String, String>,
-) -> HashMap<String, HashMap<String, Option<String>>> {
+) -> (HashMap<String, HashMap<String, Option<String>>>, Vec<ast::Type>) {
+    // parametric data types (`data List a = …`): an owned param of a CONCRETE
+    // instantiation (`List P`) is dropped via a specialized destructor.
+    let parametric_data: HashSet<String> = module
+        .datas
+        .iter()
+        .filter(|d| !d.params.is_empty())
+        .map(|d| d.name.clone())
+        .collect();
     let mut out = HashMap::new();
+    let mut seeds: Vec<ast::Type> = Vec::new();
     for f in fns {
         let mut dty: HashMap<String, Option<String>> = HashMap::new();
         // owned `%1` parameters → type from the top-level function signature
@@ -2526,20 +2785,34 @@ fn build_all_drop_ty(
                 let ptys = sig.param_types();
                 for owned in &f.owned_params {
                     let idx = f.params.iter().position(|p| p == owned);
-                    let ty = idx
-                        .and_then(|i| ptys.get(i))
-                        .and_then(|t| t.head_con())
-                        .filter(|h| recinfo.type_cons(h).is_some());
-                    if let Some(h) = ty {
-                        dty.insert(owned.clone(), Some(h.to_string()));
-                    }
+                    let Some(t) = idx.and_then(|i| ptys.get(i)).copied() else {
+                        continue;
+                    };
+                    let Some(h) = t.head_con().filter(|h| recinfo.type_cons(h).is_some()) else {
+                        continue;
+                    };
+                    // a concrete instantiation of a parametric type (`List P`,
+                    // fully monomorphic) → the mangled key of its specialized
+                    // destructor, and seed its generation. Otherwise the type head.
+                    let key = if parametric_data.contains(h) {
+                        match mono_key(t) {
+                            Some(k) => {
+                                seeds.push((*t).clone());
+                                k
+                            }
+                            None => h.to_string(),
+                        }
+                    } else {
+                        h.to_string()
+                    };
+                    dty.insert(owned.clone(), Some(key));
                 }
             }
         }
         collect_drop_types(&f.body, recinfo, fn_ret_ty, &mut dty);
         out.insert(f.name.clone(), dty);
     }
-    out
+    (out, seeds)
 }
 
 /// Records the `data` type of variables bound to `Make*`/heap-calls in `t`.
@@ -2973,7 +3246,8 @@ fn transfers_heap_field(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
             // a heap field whose binding ESCAPES the arm (is consumed/moved out,
             // not merely borrowed) had its ownership transferred → the scrutinee
             // must be freed shallowly.
-            recinfo.field_is_heap(con, i) && occurs_nonborrow(n, body)
+            (recinfo.field_is_heap(con, i) || recinfo.field_is_poly(con, i))
+                && occurs_nonborrow(n, body)
         })
     } else {
         false
@@ -2991,6 +3265,51 @@ impl Elab<'_> {
     /// vs. `free` plano), se conhecido.
     fn dty(&self, v: &str) -> Option<String> {
         self.drop_ty.get(v).cloned().flatten()
+    }
+
+    /// Inserts `drop s` at every tail EXIT of `t` (after the exit's result value
+    /// is computed), so a borrowed heap field of `s` outlives its last use before
+    /// `s` is deep-dropped. `let`/nested `if`/`case` that flow their value into a
+    /// binding are not exits — only the terminal `Ret`s of `t` are.
+    fn drop_at_exits(&mut self, t: Term, s: &str, ty: &Option<String>) -> Term {
+        match t {
+            Term::Ret(rhs) => match rhs {
+                // exit value computed → bind it, drop `s`, then return it.
+                Rhs::Op(op) => {
+                    let tmp = self.fresh();
+                    Term::Let(
+                        tmp.clone(),
+                        Rhs::Op(op),
+                        Box::new(Term::Drop(
+                            s.to_string(),
+                            ty.clone(),
+                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))))),
+                        )),
+                    )
+                }
+                // the exits live in the branches → recurse into each.
+                Rhs::If(c, th, el) => {
+                    let th = self.drop_at_exits(*th, s, ty);
+                    let el = self.drop_at_exits(*el, s, ty);
+                    Term::Ret(Rhs::If(c, Box::new(th), Box::new(el)))
+                }
+                Rhs::Case(sc, arms) => {
+                    let arms = arms
+                        .into_iter()
+                        .map(|(p, b)| (p, self.drop_at_exits(b, s, ty)))
+                        .collect();
+                    Term::Ret(Rhs::Case(sc, arms))
+                }
+            },
+            // `let`/`drop` sequence a value into the continuation — not an exit;
+            // recurse into the continuation only (the rhs flows into `x`/past it).
+            Term::Let(x, rhs, body) => {
+                Term::Let(x, rhs, Box::new(self.drop_at_exits(*body, s, ty)))
+            }
+            Term::Drop(v, ty2, body) => {
+                Term::Drop(v, ty2, Box::new(self.drop_at_exits(*body, s, ty)))
+            }
+        }
     }
 
     /// Elaborates `t`, freeing the droppable variables at their death point.
@@ -3128,20 +3447,28 @@ impl Elab<'_> {
         let mut out = Vec::with_capacity(arms.len());
         for (i, (pat, body)) in arms.into_iter().enumerate() {
             let mut b = self.go(body, live_out);
+            // frees the scrutinee. Two cases:
+            //  · transfers=true — this arm moved a heap field of the scrutinee OUT
+            //    (e.g. `Cons y ys -> … ys …`). Free the shell only (`ty = None`),
+            //    at the head: a deep drop would double-free the transferred field.
+            //  · transfers=false — the scrutinee is still fully owned here, so
+            //    deep-drop it. But the body may BORROW a heap field (`Cons y ys ->
+            //    a y`); a deep drop frees that field, so it must run AFTER the body,
+            //    not at the head, or it is a use-after-free. Place it at the arm's
+            //    exits (after the result value is computed).
+            if let Some(s) = &scrut_drop {
+                if transfers[i] {
+                    b = Term::Drop(s.clone(), None, Box::new(b));
+                } else {
+                    let ty = self.dty(s);
+                    b = self.drop_at_exits(b, s, &ty);
+                }
+            }
             // cross-arm balancing: droppable used in another arm but not this one
             for v in union.difference(&fvs[i]) {
                 if !live_out.contains(v) {
                     b = Term::Drop(v.clone(), self.dty(v), Box::new(b));
                 }
-            }
-            // frees the scrutinee at the head (after destructuring). If this arm
-            // destructured a HEAP field of the scrutinee into a binding, that
-            // field's ownership moved out — free the scrutinee SHALLOWLY (shell
-            // only, `ty = None`), not deep, or the deep-drop would double-free the
-            // extracted field (e.g. `case xs of Cons y ys -> … ys …`).
-            if let Some(s) = &scrut_drop {
-                let ty = if transfers[i] { None } else { self.dty(s) };
-                b = Term::Drop(s.clone(), ty, Box::new(b));
             }
             out.push((pat, b));
         }

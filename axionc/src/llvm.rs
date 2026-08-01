@@ -100,6 +100,12 @@ fn main_returns_bool(module: &ast::Module, entry: &str) -> bool {
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
     let fns = core::lower(module, inplace);
     let records = RecordInfo::build(module);
+    // type keys with a generated destructor `axion_drop_<key>` — includes the
+    // monomorphized ones (`List$P`), whose key is not a `needs_deep_drop` type.
+    let drop_keys: HashSet<String> = fns
+        .iter()
+        .filter_map(|f| f.name.strip_prefix("axion_drop_").map(String::from))
+        .collect();
     let main_int = main_returns_int(module, "main");
     let main_float = main_returns_float(module, "main");
     let main_bool = main_returns_bool(module, "main");
@@ -142,7 +148,7 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
     out.push('\n');
 
     for f in &fns {
-        out.push_str(&emit_fn(f, &records, &strings)?);
+        out.push_str(&emit_fn(f, &records, &strings, &drop_keys)?);
         out.push('\n');
     }
 
@@ -339,6 +345,7 @@ fn emit_fn(
     f: &CoreFn,
     records: &RecordInfo,
     strings: &HashMap<String, usize>,
+    drop_keys: &HashSet<String>,
 ) -> Result<String, String> {
     let mut e = Emit {
         out: String::new(),
@@ -348,6 +355,7 @@ fn emit_fn(
         scope: HashMap::new(),
         records,
         strings,
+        drop_keys,
     };
     let mut params: Vec<String> = Vec::new();
     if f.is_closure {
@@ -383,6 +391,7 @@ struct Emit<'a> {
     scope: HashMap<String, String>,
     records: &'a RecordInfo,
     strings: &'a HashMap<String, usize>,
+    drop_keys: &'a HashSet<String>,
 }
 
 impl Emit<'_> {
@@ -504,7 +513,7 @@ impl Emit<'_> {
                 // deep-drop: recursive destructor if the type has heap fields;
                 // otherwise, flat `free`.
                 let v = self.atom(&Atom::Var(x.clone()))?;
-                match ty.as_deref().filter(|t| self.records.needs_deep_drop(t)) {
+                match ty.as_deref().filter(|t| self.drop_keys.contains(*t)) {
                     Some(t) => {
                         let r = self.val();
                         self.ins(&format!("{r} = call i64 @\"ax_axion_drop_{t}\"(i64 {v})"));

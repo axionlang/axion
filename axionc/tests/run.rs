@@ -893,6 +893,10 @@ fn deep_drop_reclaims_nested_objects() {
         // shallowly (shell only) as the tail is transferred — 5 LC cells, 5 frees,
         // no double-free, no leak.
         ("linear_recursive_adt.axi", "15\n", "5 allocs, 5 frees"),
+        // a generic container of HEAP elements (`List P`) dropped as a whole: the
+        // monomorphized destructor `axion_drop_List$P` frees the 3 payloads too,
+        // not just the spine — 3 Cons + 3 P = 6 allocs, 6 frees, no leak.
+        ("poly_payload_drop.axi", "3\n", "6 allocs, 6 frees"),
     ] {
         let out = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])

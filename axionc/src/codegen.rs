@@ -881,9 +881,10 @@ impl Fx<'_, '_> {
             .copied()
             .ok_or_else(|| format!("drop of unbound variable '{name}'"))?;
         let ptr = self.builder.use_var(v);
-        let deep = ty
-            .filter(|t| self.records.needs_deep_drop(t))
-            .map(|t| format!("axion_drop_{t}"));
+        // deep-drop if a destructor exists for this type key. The key may be a
+        // plain type name (`List`) or a monomorphized mangle (`List$P`) — the
+        // latter is not a `needs_deep_drop` type, so route by symbol presence.
+        let deep = ty.map(|t| format!("axion_drop_{t}"));
         let id = match deep.and_then(|n| self.ids.get(&n).copied()) {
             Some((id, _)) => id,
             None => self.free_id,

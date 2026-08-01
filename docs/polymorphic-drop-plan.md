@@ -1,6 +1,11 @@
 # Design plan — reclaiming polymorphic container payloads
 
-**Status:** proposal. **Goal:** close a real, latent leak — a generic container of
+**Status:** Phase 1–2 IMPLEMENTED (owned `%1` params of a concrete parametric
+type, transitively closed over nested/multi-parameter instantiations). See the
+"Implementation" section at the bottom. Phase 4 (`Make`-bound locals) and Phase 5
+(generic owning functions) remain deferred.
+
+**Goal:** close a real, latent leak — a generic container of
 heap elements (`List String`, `List (Maybe a)`, `List P`, a tree of records, …)
 leaks its **elements** when it dies. Confirmed: `List P` (record `P`) → `4 allocs,
 2 frees` (the 2 `Cons` cells are freed, the 2 `P` payloads leak). It is a leak
@@ -108,3 +113,53 @@ feature (type-threading + per-instantiation generation), memory-safety-critical,
 it is phased and ASan/LSan-gated at every step. Phase 1–2 close the common
 signature-typed case; the generic-owning-function case is a deferred, larger gap
 (function monomorphization).
+
+## 8. Implementation (Phase 1–2, done)
+
+`core.rs`:
+- `mono_key`/`ty_head_args`/`subst_ty` — mangle a concrete type (`List P` →
+  `List$P`), decompose an `App` chain, and substitute a data type's parameters.
+- `build_all_drop_ty` — for an owned `%1` param whose signature type is a concrete
+  instantiation of a parametric `data`, records the mangled key (`List$P`) as its
+  drop type and **seeds** the instantiation. Non-parametric / still-polymorphic
+  params keep the plain head, as before.
+- `gen_mono_destructors` — a worklist over the seeds: per unique key, substitutes
+  the data type's parameters into each constructor's fields, resolves each field's
+  drop way (`Flat` free / `Deep(key)` destructor / `None`), and emits a specialized
+  destructor with the same body shape as `gen_destructors` (mixed low-bit guard +
+  tag dispatch). Nested/element instantiations it references are pushed back on the
+  worklist, so `List (Maybe P)` transitively generates `Maybe$P` and `P`.
+
+Routing (`codegen.rs`/`llvm.rs`): the `Term::Drop` type key was routed by
+`needs_deep_drop(t)`; a mangled key (`List$P`) is not a `needs_deep_drop` type, so
+both backends now route by **destructor-symbol presence** (Cranelift: `ids` lookup;
+LLVM: a `drop_keys` set of `axion_drop_*` function names). No representation change.
+
+### The drop-placement fix (required for safety, was latent before)
+
+Monomorphized destructors free the (formerly leaked) polymorphic payload, which
+exposed **two** pre-existing hazards the generic destructor had masked by never
+touching that field:
+
+1. **Extracting a payload** (`case xs of Cons y ys -> … y …`, `y` escapes): a deep
+   drop of the scrutinee would double-free the escaped `y`. Fixed by making
+   `RecordInfo::field_is_poly` + `transfers_heap_field` treat a bare type-variable
+   field as possibly-heap, so extracting it forces a **shallow** scrutinee free —
+   exactly as a concrete heap field already did. (The tail then leaks, the
+   documented Phase-4/extracted-field gap; safe, not a double-free.)
+2. **Borrowing a payload** (`case xs of Cons y ys -> a y`, `y` borrowed, tail
+   unused → deep drop): the scrutinee drop was emitted at the arm HEAD, freeing `y`
+   before `a y` reads it — a use-after-free once the destructor actually frees `y`.
+   Fixed by `Elab::drop_at_exits`: a **deep** scrutinee drop is now placed at the
+   arm's tail exits (after the result value is computed), not at the head. The
+   shallow (transfers) drop stays at the head. This also closes the same latent UAF
+   for concrete borrowed heap fields, which no fixture had exercised.
+
+Both were the reason the earlier prototype "extracted-field" attempts kept tripping
+(docs/deep-recursion-plan.md §8b) — the drop path is genuinely coupled across three
+subsystems (`field_is_*`, scrutinee shallow/deep choice, drop placement).
+
+Validation: `poly_payload_drop.axi` (whole-drop, 6 allocs = 6 frees), the full test
+suite (interp / `--dev` / `--release` agree), `scripts/sanitize.sh` (ASan + LSan
+clean, incl. the new fixture in the leak-free gate), and the GHC differential oracle
+(unchanged verdicts).
