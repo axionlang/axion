@@ -190,6 +190,36 @@ non-tail recursion pay a heap push/pop per call (~2–4×; measured against `fib
   4. (Optional) Phase 2 fast-path (depth budget) to erase the common-case cost.
   5. (Optional) interp CEK loop.
 
+## 8b. Findings from prototyping (before building the pass)
+
+A hand-written abstract machine for `sumR` (`data Frame = FAdd Int; evalS`/`retS`
+over a frame stack) was used to validate the mechanism *before* writing the
+transform. Results:
+
+- **The core insight holds.** With a `List Frame` stack and the existing self-TCO,
+  `evalS`/`retS` each become loops; the native call stack stays **O(1)** while the
+  depth lives in the heap list. `sumM 10000000` returns the right result on
+  `--dev` and `--release` with **no** stack growth. → defunctionalization + TCO =
+  heap continuation stack, confirmed.
+- **The frame stack must NOT be a linear `List` — confirming §4b.** A non-linear
+  `List Frame` **leaks** (200k allocs, 0 frees — a borrowed parameter is never
+  freed). Making it `List Frame %1` (linear, so it is owned and freed as consumed)
+  instead **double-frees**: matching `Cons f rest` deep-drops the `Cons`, which
+  recursively frees `rest` — but `rest` is transferred to the recursive call. So the
+  stack must be the **flat, runtime-managed buffer** (`axion_frames_push/pop`, §4b),
+  which frees each frame shell explicitly on pop — never a recursive linear ADT.
+- **Latent Auto-Drop bug discovered (independent of this plan).** The double-free
+  above is *general*: any incrementally-consumed **linear recursive ADT**
+  (`data L = LN | LC Int L`, `sumL :: L %1 -> Int`, `case xs of LC y ys -> … sumL
+  ys`) double-frees natively — the interpreter gives the right answer (it is memory
+  agnostic), but the native deep-drop of the matched `LC` frees the transferred tail
+  `ys` too. The existing linear examples are flat `Buffer`s, so this pattern was
+  never exercised. The fix is in the Auto-Drop analysis: when a matched
+  constructor's heap field is **bound and used** (ownership transferred), the parent
+  must be freed **shallowly** (shell only), not deep-dropped. This should be fixed
+  independently — it is a real (if untested) memory-safety gap — and the frame-stack
+  design above sidesteps it regardless.
+
 ## 9. Bottom line
 A genuine, backend-uniform guarantee — *"an Axion program never stack-overflows"* —
 is achievable and safe, and Axion already ships the hard part (defunctionalized
