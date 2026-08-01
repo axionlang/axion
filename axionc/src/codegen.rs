@@ -1040,6 +1040,12 @@ impl Fx<'_, '_> {
                 Ok(ptr)
             }
             Op::MakeCon { con, args } => {
+                // unboxed enum constructor (all-nullary type): an immediate tag,
+                // no allocation.
+                if self.records.is_enum_con(con) {
+                    let idx = self.records.con_index(con);
+                    return Ok(self.builder.ins().iconst(types::I64, idx as i64));
+                }
                 // positional `data` value (with a tag if it is a sum type)
                 let slots = self
                     .records
@@ -1291,10 +1297,15 @@ impl Fx<'_, '_> {
                         self.emit_term(body)
                     }
                     Some(tag) => {
-                        let ktag = self
-                            .builder
-                            .ins()
-                            .load(types::I64, MemFlags::new(), sval, 0);
+                        // unboxed enum: the value IS the tag (immediate); boxed sum:
+                        // the tag lives at offset 0 of the heap object.
+                        let ktag = if self.records.is_enum_con(con) {
+                            sval
+                        } else {
+                            self.builder
+                                .ins()
+                                .load(types::I64, MemFlags::new(), sval, 0)
+                        };
                         let kt = self.builder.ins().iconst(types::I64, tag as i64);
                         let cond = self.builder.ins().icmp(IntCC::Equal, ktag, kt);
                         let then_b = self.builder.create_block();

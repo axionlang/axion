@@ -1959,6 +1959,24 @@ fn redundant_pattern_after_catch_all_warns_ax0203() {
 }
 
 #[test]
+fn nullary_enum_constructors_are_unboxed() {
+    // an all-nullary `data` (a C-like enum) is represented by immediate tags —
+    // no heap allocation. The result agrees across the three executors, and the
+    // Cranelift heap counters prove zero allocations.
+    agree_across_backends("enum_unboxed.axi", "1\n");
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("enum_unboxed.axi")])
+        .env("AXION_HEAP_STATS", "1")
+        .output()
+        .unwrap();
+    let stats = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stats.contains("0 allocs"),
+        "expected zero allocations for an enum program, got: {stats}"
+    );
+}
+
+#[test]
 fn string_and_list_concat_run_natively() {
     // `++` is type-directed: on String it resolves to native concatenation
     // (`strAppend`/axion_strcat), on lists it stays the prelude's `append`.

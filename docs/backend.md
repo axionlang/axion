@@ -58,6 +58,12 @@ happened in the AST→Core lowering, so codegen only walks the ANF.
   `Con { f = … }` / `(a, b)`, update `r { f = … }` (allocates and copies) and
   selectors `f r` (offset load); each field/component is an `i64`. Functions with
   `data`-typed params/return (pointer) compile. `record_run.axi` runs native (→ 99).
+- **Unboxed enums**: a `data` whose constructors are all nullary (a C-like enum,
+  e.g. `Color = Red | Green | Blue`) is *not* heap-allocated — its values are
+  immediate tags (the constructor index). `MakeCon` is an `iconst`, `case`
+  compares the value directly, and it is never `drop`ped (heap/drop decisions use
+  the `boxed` set, which excludes enums). Zero allocations (`AXION_HEAP_STATS`
+  proves it). Mixed types (`Nil | Cons`) still box for now.
 - **`case`**: an `if` chain over the scrutinee; `Int` patterns (compare),
   variable/`_` (catch-all), and tuple `(a, b)` (destructure by offset). Requires a
   catch-all at the end. `native_case.axi` runs native and equal to the interpreter.

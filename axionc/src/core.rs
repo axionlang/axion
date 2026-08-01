@@ -270,6 +270,35 @@ pub fn data_type_names(module: &ast::Module) -> HashSet<String> {
     module.datas.iter().map(|d| d.name.clone()).collect()
 }
 
+/// `true` if every constructor of `d` is nullary (a C-like enum). Such a type is
+/// **unboxed**: its values are immediate tags (the constructor index), never heap
+/// pointers — so they cost no allocation and are never `drop`ped.
+pub fn is_enum_data(d: &ast::DataDecl) -> bool {
+    d.cons.iter().all(|c| c.fields.is_empty())
+}
+
+/// Data types that are actually **heap-allocated** (at least one constructor with
+/// fields). Excludes unboxed enums — used for every heap/drop decision.
+pub fn boxed_data_names(module: &ast::Module) -> HashSet<String> {
+    module
+        .datas
+        .iter()
+        .filter(|d| !is_enum_data(d))
+        .map(|d| d.name.clone())
+        .collect()
+}
+
+/// Constructor names of unboxed enum types — their `MakeCon` is an immediate,
+/// not an allocation, so they must not be treated as droppable.
+pub fn enum_con_names(module: &ast::Module) -> HashSet<String> {
+    module
+        .datas
+        .iter()
+        .filter(|d| is_enum_data(d))
+        .flat_map(|d| d.cons.iter().map(|c| c.name.clone()))
+        .collect()
+}
+
 /// Layout of records/`data` values. A **single**-constructor type has no
 /// tag: `[field0][field1]…` (field i at i×8). A **sum** type (multi-constructor)
 /// carries a **tag** (the constructor index) at offset 0: `[tag][field0]…` (field
@@ -289,12 +318,20 @@ pub struct RecordInfo {
     con_drop_slots: HashMap<String, Vec<(i32, String)>>,
     /// types that own (somewhere) a `data`-typed field → need a destructor.
     needs_deep: HashSet<String>,
+    /// unboxed enum types (all constructors nullary): values are immediate tags.
+    enum_types: HashSet<String>,
 }
 
 impl RecordInfo {
     pub fn build(module: &ast::Module) -> RecordInfo {
         let mut r = RecordInfo::default();
-        let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
+        // heap fields exclude unboxed enums (immediate tags, not allocations).
+        let data_names = boxed_data_names(module);
+        for d in &module.datas {
+            if is_enum_data(d) {
+                r.enum_types.insert(d.name.clone());
+            }
+        }
         for d in &module.datas {
             for (idx, c) in d.cons.iter().enumerate() {
                 let fields: Vec<String> = c
@@ -373,6 +410,19 @@ impl RecordInfo {
     /// `true` if the constructor belongs to a single-constructor type (no tag).
     pub fn is_single_con(&self, con: &str) -> bool {
         self.single_con.contains(con)
+    }
+
+    /// `true` if the constructor's type is an unboxed enum (all nullary): its
+    /// values are immediate tags (the constructor index), not heap pointers.
+    pub fn is_enum_con(&self, con: &str) -> bool {
+        self.con_type
+            .get(con)
+            .is_some_and(|t| self.enum_types.contains(t))
+    }
+
+    /// The constructor index within its type (its immediate value when unboxed).
+    pub fn con_index(&self, con: &str) -> i32 {
+        self.con_tag.get(con).copied().unwrap_or(0)
     }
 
     /// The tag (index) of a constructor, if its type is a sum (>1 con).
@@ -2037,6 +2087,8 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     // identity — the interp already handles partial application, so it stays here.
     let module = &eta_expand(module);
     let data_types = data_type_names(module);
+    // heap/drop decisions exclude unboxed enums (immediate tags, not allocations).
+    let boxed = boxed_data_names(module);
     let globals = global_names(module);
     let mut fields = HashSet::new();
     for d in &module.datas {
@@ -2056,7 +2108,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .filter(|f| {
             f.sig
                 .as_ref()
-                .is_some_and(|s| heap_ty(result_type(s), &data_types))
+                .is_some_and(|s| heap_ty(result_type(s), &boxed))
         })
         .map(|f| f.name.clone())
         .collect();
@@ -2169,7 +2221,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             &lam_meta,
             inplace,
             &foreigns,
-            &data_types,
+            &boxed,
         );
         out.push(CoreFn {
             name: f.name.clone(),
@@ -2191,7 +2243,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
                 &lam_meta,
                 inplace,
                 &foreigns,
-                &data_types,
+                &boxed,
             );
             out.push(CoreFn {
                 name: locals[&w.name].clone(),
@@ -2255,18 +2307,19 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .filter_map(|f| {
             let rt = result_type(f.sig.as_ref()?);
             rt.head_con()
-                .filter(|h| data_types.contains(*h))
+                .filter(|h| boxed.contains(*h))
                 .map(|h| (f.name.clone(), h.to_string()))
         })
         .collect();
     let all_dty = build_all_drop_ty(&out, module, &recinfo, &fn_ret_ty);
     let empty = HashMap::new();
+    let enum_cons = enum_con_names(module);
 
     let mut result: Vec<CoreFn> = out
         .into_iter()
         .map(|f| {
             let dty = all_dty.get(&f.name).unwrap_or(&empty);
-            insert_drops(f, &heap_ret, &borrow_args, dty)
+            insert_drops(f, &heap_ret, &borrow_args, dty, &enum_cons)
         })
         .collect();
     // generated destructors: added AFTER drop insertion (they manage
@@ -2430,7 +2483,10 @@ fn collect_drop_types(
         Term::Let(x, rhs, body) => {
             if let Rhs::Op(op) = rhs {
                 let ty = match op {
-                    Op::MakeRecord { con, .. } | Op::MakeCon { con, .. } => {
+                    // unboxed enum values are immediates → never dropped.
+                    Op::MakeRecord { con, .. } | Op::MakeCon { con, .. }
+                        if !recinfo.is_enum_con(con) =>
+                    {
                         recinfo.con_type(con).map(str::to_string)
                     }
                     Op::CallDirect(g, _) => fn_ret_ty.get(g).cloned(),
@@ -2674,10 +2730,15 @@ fn fv_op_in(
 /// The droppable set of a function: objects it **owns** — allocated
 /// locally (`Make*`), results of calls that return heap (`heap_ret`),
 /// and its `%1` heap parameters — minus those that escape.
-fn droppable_vars(f: &CoreFn, heap_ret: &HashSet<String>, ba: &BorrowArgs) -> HashSet<String> {
+fn droppable_vars(
+    f: &CoreFn,
+    heap_ret: &HashSet<String>,
+    ba: &BorrowArgs,
+    enum_cons: &HashSet<String>,
+) -> HashSet<String> {
     let mut allocated: HashSet<String> = f.owned_params.iter().cloned().collect();
     let mut escaped = HashSet::new();
-    scan_body(&f.body, heap_ret, ba, &mut allocated, &mut escaped);
+    scan_body(&f.body, heap_ret, ba, enum_cons, &mut allocated, &mut escaped);
     allocated.difference(&escaped).cloned().collect()
 }
 
@@ -2685,39 +2746,39 @@ fn scan_body(
     t: &Term,
     heap_ret: &HashSet<String>,
     ba: &BorrowArgs,
+    enum_cons: &HashSet<String>,
     alloc: &mut HashSet<String>,
     esc: &mut HashSet<String>,
 ) {
+    let recur = |b, alloc: &mut HashSet<String>, esc: &mut HashSet<String>| {
+        scan_body(b, heap_ret, ba, enum_cons, alloc, esc);
+    };
     match t {
         Term::Let(x, rhs, body) => {
             match rhs {
                 Rhs::Op(op) => {
                     // local allocation, or result of a call that returns heap
-                    if is_heap_alloc(op) || returns_owned_heap(op, heap_ret) {
+                    if is_heap_alloc(op, enum_cons) || returns_owned_heap(op, heap_ret) {
                         alloc.insert(x.clone());
                     }
                     scan_op_escapes(op, ba, esc);
                 }
                 Rhs::If(_, t2, e2) => {
-                    scan_body(t2, heap_ret, ba, alloc, esc);
-                    scan_body(e2, heap_ret, ba, alloc, esc);
+                    recur(t2, alloc, esc);
+                    recur(e2, alloc, esc);
                 }
-                Rhs::Case(_, arms) => arms
-                    .iter()
-                    .for_each(|(_, b)| scan_body(b, heap_ret, ba, alloc, esc)),
+                Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| recur(b, alloc, esc)),
             }
-            scan_body(body, heap_ret, ba, alloc, esc);
+            recur(body, alloc, esc);
         }
-        Term::Drop(_, _, body) => scan_body(body, heap_ret, ba, alloc, esc),
+        Term::Drop(_, _, body) => recur(body, alloc, esc),
         Term::Ret(rhs) => match rhs {
             Rhs::Op(op) => scan_op_escapes_ret(op, ba, esc),
             Rhs::If(_, t2, e2) => {
-                scan_body(t2, heap_ret, ba, alloc, esc);
-                scan_body(e2, heap_ret, ba, alloc, esc);
+                recur(t2, alloc, esc);
+                recur(e2, alloc, esc);
             }
-            Rhs::Case(_, arms) => arms
-                .iter()
-                .for_each(|(_, b)| scan_body(b, heap_ret, ba, alloc, esc)),
+            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| recur(b, alloc, esc)),
         },
     }
 }
@@ -2727,15 +2788,16 @@ fn returns_owned_heap(op: &Op, heap_ret: &HashSet<String>) -> bool {
     matches!(op, Op::CallDirect(name, _) if heap_ret.contains(name))
 }
 
-fn is_heap_alloc(op: &Op) -> bool {
-    matches!(
-        op,
+fn is_heap_alloc(op: &Op, enum_cons: &HashSet<String>) -> bool {
+    match op {
+        // an unboxed enum constructor is an immediate, not an allocation.
+        Op::MakeCon { con, .. } => !enum_cons.contains(con),
         Op::MakeTuple(_)
-            | Op::MakeRecord { .. }
-            | Op::MakeCon { .. }
-            | Op::UpdateRecord { .. }
-            | Op::MakeClosure { .. }
-    )
+        | Op::MakeRecord { .. }
+        | Op::UpdateRecord { .. }
+        | Op::MakeClosure { .. } => true,
+        _ => false,
+    }
 }
 
 /// Names of variables that escape by appearing in an owner position
@@ -2799,8 +2861,9 @@ fn insert_drops(
     heap_ret: &HashSet<String>,
     ba: &BorrowArgs,
     drop_ty: &HashMap<String, Option<String>>,
+    enum_cons: &HashSet<String>,
 ) -> CoreFn {
-    let drp = droppable_vars(&f, heap_ret, ba);
+    let drp = droppable_vars(&f, heap_ret, ba, enum_cons);
     if drp.is_empty() {
         return f;
     }

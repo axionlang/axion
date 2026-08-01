@@ -611,7 +611,12 @@ impl Emit<'_> {
                         self.term(body)
                     }
                     Some(tag) => {
-                        let ktag = self.load(sval, 0);
+                        // unboxed enum: the value IS the tag; boxed sum: load offset 0.
+                        let ktag = if self.records.is_enum_con(con) {
+                            sval.to_string()
+                        } else {
+                            self.load(sval, 0)
+                        };
                         let c1 = self.val();
                         self.ins(&format!("{c1} = icmp eq i64 {ktag}, {tag}"));
                         let (lt, le, lm) =
@@ -798,6 +803,10 @@ impl Emit<'_> {
                 Ok(ptr)
             }
             Op::MakeCon { con, args } => {
+                // unboxed enum constructor (all-nullary type): an immediate tag.
+                if self.records.is_enum_con(con) {
+                    return Ok(self.records.con_index(con).to_string());
+                }
                 let slots = self
                     .records
                     .con_slots(con)
