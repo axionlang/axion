@@ -567,13 +567,17 @@ fn lower_classes(module: &mut ast::Module) {
         for m in &inst.methods {
             let mut impl_fn = m.clone();
             impl_fn.name = ast::method_impl_name(&m.name, &inst.ty_head);
-            // specialized signature: the class's, with the var replaced by the
-            // instance type (`eq :: a->a->Bool` @ Shape → `Shape->Shape->Bool`).
-            // Without this, the instance body (unsigned) would look polymorphic
-            // and its method uses would fire false "no constraint" errors.
+            // specialized signature: the class's, with the class var replaced by
+            // the FULL instance type (`eq :: a->a->Bool` @ `Maybe a` →
+            // `Maybe a -> Maybe a -> Bool`). Without this, the instance body
+            // (unsigned) would look polymorphic and its method uses would fire
+            // false "no constraint" errors.
             if let Some(tmpl) = sigs.get(&(inst.class_name.clone(), m.name.clone())) {
-                impl_fn.sig = Some(specialize(tmpl, &inst.ty_head));
+                impl_fn.sig = Some(specialize_with(tmpl, &inst.head_ty));
             }
+            // context constraints (`Eq a =>`) let the method body use methods over
+            // the parameter (`eq` on a field of type `a`) without AX0405.
+            impl_fn.constraints = inst.constraints.clone();
             impls.push(impl_fn);
         }
     }
@@ -599,22 +603,27 @@ fn subst_head(ty: &ast::Type, tyvar: &str) -> ast::Type {
     }
 }
 
-/// Swaps the `$cls` sentinel for the instance's concrete type head.
+/// Swaps the `$cls` sentinel for the instance's concrete type head (by name).
 fn specialize(ty: &ast::Type, ty_head: &str) -> ast::Type {
+    specialize_with(ty, &ast::Type::Con(ty_head.to_string()))
+}
+
+/// Swaps the `$cls` sentinel for the instance's full type (`Maybe a`, `Color`, …).
+fn specialize_with(ty: &ast::Type, repl: &ast::Type) -> ast::Type {
     match ty {
-        ast::Type::Var(v) if v == "$cls" => ast::Type::Con(ty_head.to_string()),
+        ast::Type::Var(v) if v == "$cls" => repl.clone(),
         ast::Type::Var(_) | ast::Type::Con(_) | ast::Type::Unit => ty.clone(),
         ast::Type::App(f, a) => ast::Type::App(
-            Box::new(specialize(f, ty_head)),
-            Box::new(specialize(a, ty_head)),
+            Box::new(specialize_with(f, repl)),
+            Box::new(specialize_with(a, repl)),
         ),
         ast::Type::Arrow { mult, from, to } => ast::Type::Arrow {
             mult: *mult,
-            from: Box::new(specialize(from, ty_head)),
-            to: Box::new(specialize(to, ty_head)),
+            from: Box::new(specialize_with(from, repl)),
+            to: Box::new(specialize_with(to, repl)),
         },
         ast::Type::Tuple(ts) => {
-            ast::Type::Tuple(ts.iter().map(|t| specialize(t, ty_head)).collect())
+            ast::Type::Tuple(ts.iter().map(|t| specialize_with(t, repl)).collect())
         }
     }
 }
@@ -637,23 +646,6 @@ fn derive_instances(module: &mut ast::Module, diags: &mut Diagnostics) {
         for class in &d.deriving {
             // a user-written instance wins over the derived one (no clash).
             if !existing.insert((class.clone(), d.name.clone())) {
-                continue;
-            }
-            if !d.params.is_empty() {
-                diags.push(
-                    Diagnostic::error(
-                        "AX0410",
-                        format!(
-                            "cannot derive `{class}` for the parametric type `{}` yet",
-                            d.name
-                        ),
-                    )
-                    .label(d.span.0, d.span.1, "parametric `data` declaration")
-                    .with_help(
-                        "deriving is currently supported for non-parametric types; \
-                         write the instance by hand for parametric types.",
-                    ),
-                );
                 continue;
             }
             match class.as_str() {
@@ -679,6 +671,41 @@ fn derive_instances(module: &mut ast::Module, diags: &mut Diagnostics) {
     let lt = layout::layout(&tokens, &lines);
     let parsed = parser::parse_module(&lt).expect("derive: parse");
     module.instances.extend(parsed.instances);
+}
+
+/// The instance type in a derived header: `Color`, or `(Maybe a)` for parametric.
+fn inst_head(d: &ast::DataDecl) -> String {
+    if d.params.is_empty() {
+        d.name.clone()
+    } else {
+        format!("({} {})", d.name, d.params.join(" "))
+    }
+}
+
+/// The context for a derived instance: `` for non-parametric, `C a => ` for one
+/// parameter, `(C a, C b) => ` for several (each parameter must also be `C`).
+fn deriving_context(class: &str, params: &[String]) -> String {
+    match params {
+        [] => String::new(),
+        [p] => format!("{class} {p} => "),
+        _ => format!(
+            "({}) => ",
+            params
+                .iter()
+                .map(|p| format!("{class} {p}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// The full `instance <context><Class> <head> where` line for a derived class.
+fn inst_header(class: &str, d: &ast::DataDecl) -> String {
+    format!(
+        "instance {}{class} {} where\n",
+        deriving_context(class, &d.params),
+        inst_head(d)
+    )
 }
 
 /// A constructor pattern `Con v0 v1 …` binding fresh vars with the given prefix,
@@ -710,7 +737,7 @@ fn wildcard_pattern(con: &ast::ConDecl) -> String {
 /// `if le a b then (if le b a then <rest> else True) else False` — equal keeps
 /// going, strictly-less is True, strictly-greater is False.
 fn derive_ord(d: &ast::DataDecl) -> String {
-    let mut s = format!("instance Ord {} where\n  le x y = case x of\n", d.name);
+    let mut s = format!("{}  le x y = case x of\n", inst_header("Ord", d));
     for (i, ci) in d.cons.iter().enumerate() {
         let (xpat, xs) = con_pattern(ci, "a");
         s.push_str(&format!("    {xpat} -> case y of\n"));
@@ -741,7 +768,7 @@ fn derive_ord(d: &ast::DataDecl) -> String {
 /// show f0 …`. Nullary constructors show as just the name; fields are separated by
 /// spaces and shown recursively (`show`, so field types must be `Show`).
 fn derive_show(d: &ast::DataDecl) -> String {
-    let mut s = format!("instance Show {} where\n  show x = case x of\n", d.name);
+    let mut s = format!("{}  show x = case x of\n", inst_header("Show", d));
     for c in &d.cons {
         let (pat, vars) = con_pattern(c, "a");
         // build the string: "Con" then, per field, " " ++ show field.
@@ -757,7 +784,7 @@ fn derive_show(d: &ast::DataDecl) -> String {
 /// `deriving Eq`: structural equality via nested `case` (outer on `x`, inner on
 /// `y`), field-by-field `eq` (conjunction as `if … then … else False`).
 fn derive_eq(d: &ast::DataDecl) -> String {
-    let mut s = format!("instance Eq {} where\n  eq x y = case x of\n", d.name);
+    let mut s = format!("{}  eq x y = case x of\n", inst_header("Eq", d));
     let multi = d.cons.len() > 1;
     for c in &d.cons {
         let (xpat, xs) = con_pattern(c, "a");

@@ -1977,18 +1977,13 @@ fn deriving_show_renders_constructors_and_fields() {
 }
 
 #[test]
-fn deriving_on_parametric_type_is_rejected_ax0410() {
-    // deriving is (for now) only for non-parametric types.
-    let out = axionc()
-        .args(["--check", &fixture("derive_parametric_err.axi")])
-        .output()
-        .unwrap();
-    assert!(!out.status.success(), "expected a deriving error");
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("AX0410"),
-        "expected AX0410, output: {text}"
-    );
+fn deriving_works_for_parametric_types() {
+    // `deriving` on a parametric type generates constrained instances
+    // (`instance Eq a => Eq (Maybe a)`); a use at a concrete element specializes
+    // the impl (`show$Maybe$Color`, inner `show` → `show$Color`) and runs
+    // natively, agreeing across the three executors — including nesting.
+    agree_across_backends("derive_parametric.axi", "Some Green\n");
+    agree_across_backends("derive_parametric_ord.axi", "true\n");
 }
 
 #[test]

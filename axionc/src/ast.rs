@@ -183,6 +183,10 @@ pub struct ClassDecl {
 pub struct InstanceDecl {
     pub class_name: String,
     pub ty_head: String,
+    /// the full instance type, e.g. `Maybe a` (`Con "Maybe"` for non-parametric).
+    pub head_ty: Type,
+    /// context constraints, e.g. `Eq a =>` in `instance Eq a => Eq (Maybe a)`.
+    pub constraints: Vec<(String, String)>,
     pub methods: Vec<Func>,
     pub span: Span,
 }

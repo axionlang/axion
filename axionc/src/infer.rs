@@ -54,8 +54,10 @@ struct Infer<'a> {
     case_uses: Vec<(Ty, Vec<Pat>, Span)>,
     /// uses of constrained functions, for monomorphization.
     spec_obligations: Vec<SpecObl>,
-    /// constrained function → (constraint var, dispatch param index).
-    constrained_meta: HashMap<String, (String, Option<usize>)>,
+    /// constrained function → (constraint var, dispatch). The dispatch is the
+    /// param index carrying the constraint var and whether the var is NESTED
+    /// (`Maybe a` → the element is the param's type argument) vs the param itself.
+    constrained_meta: HashMap<String, (String, Option<(usize, bool)>)>,
     /// functions that reference an unspecializable constrained function (constraint
     /// var not a direct parameter) — they cannot be specialized.
     refs_unspec: HashSet<String>,
@@ -268,9 +270,15 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     for f in &module.funcs {
         if let Some((_, cvar)) = f.constraints.first() {
             let idx = f.sig.as_ref().and_then(|s| {
-                s.param_types()
-                    .iter()
-                    .position(|p| matches!(p, Type::Var(v) if v == cvar))
+                s.param_types().iter().enumerate().find_map(|(i, p)| {
+                    if matches!(p, Type::Var(v) if v == cvar) {
+                        Some((i, false)) // the parameter IS the constraint var
+                    } else if type_contains_var(p, cvar) {
+                        Some((i, true)) // nested, e.g. `Maybe a` / `List a`
+                    } else {
+                        None
+                    }
+                })
             });
             inf.constrained_meta
                 .insert(f.name.clone(), (cvar.clone(), idx));
@@ -326,6 +334,19 @@ pub fn builtin_op_float(op: &str) -> &'static str {
         "<" => "<.",
         ">" => ">.",
         _ => unreachable!("not a built-in overloaded operator: {op}"),
+    }
+}
+
+/// Whether the type variable `var` occurs anywhere in the (surface) type `t`.
+fn type_contains_var(t: &Type, var: &str) -> bool {
+    match t {
+        Type::Var(v) => v == var,
+        Type::App(f, a) => type_contains_var(f, var) || type_contains_var(a, var),
+        Type::Arrow { from, to, .. } => {
+            type_contains_var(from, var) || type_contains_var(to, var)
+        }
+        Type::Tuple(ts) => ts.iter().any(|x| type_contains_var(x, var)),
+        _ => false,
     }
 }
 
@@ -860,8 +881,20 @@ impl<'a> Infer<'a> {
             .map(|i| (i.class_name.clone(), i.ty_head.clone()))
             .collect();
         let func_names: Set<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
+        // parametric instances (`instance Eq a => Eq (Maybe a)`): their impl is a
+        // constrained function that must be specialized on the element type.
+        let parametric_inst: Set<(String, String)> = module
+            .instances
+            .iter()
+            .filter(|i| !i.constraints.is_empty())
+            .map(|i| (i.class_name.clone(), i.ty_head.clone()))
+            .collect();
 
         let mut resolutions: Map<(String, Span), String> = Map::new();
+        // method uses that resolve to a parametric instance: (caller, span,
+        // impl_base, element_type). Appended to `seeds` so the specialized
+        // `impl$Elem` is materialized and the use rewritten to it.
+        let mut method_seeds: Vec<(String, Span, String, String)> = Vec::new();
         // per constrained function: polymorphic method uses (span → method) and
         // polymorphic calls to constrained functions (span → function, including
         // self-recursion) — the points specialization rewrites to `$T`.
@@ -880,11 +913,22 @@ impl<'a> Infer<'a> {
                 // built-in Num/Ord operator over Int → keep the operator (no rewrite).
                 Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Int" => {}
                 // concrete type WITH instance → resolves to the direct impl.
-                Ty::Con(name, _) if instances.contains(&(o.class.clone(), name.clone())) => {
-                    resolutions.insert(
-                        (o.func.clone(), o.span),
-                        crate::ast::method_impl_name(&o.method, &name),
-                    );
+                Ty::Con(name, args)
+                    if instances.contains(&(o.class.clone(), name.clone())) =>
+                {
+                    let base = crate::ast::method_impl_name(&o.method, &name);
+                    // parametric instance: resolve to the element-specialized impl
+                    // (`eq$Maybe` → `eq$Maybe$Int`) and seed that specialization.
+                    // The fallback resolution (base) keeps the interpreter working
+                    // even if the native spec turns out invalid.
+                    if parametric_inst.contains(&(o.class.clone(), name.clone())) {
+                        resolutions.insert((o.func.clone(), o.span), base.clone());
+                        if let Some(Ty::Con(elem, _)) = args.first().map(|a| self.resolve(a)) {
+                            method_seeds.push((o.func.clone(), o.span, base, elem));
+                        }
+                    } else {
+                        resolutions.insert((o.func.clone(), o.span), base);
+                    }
                 }
                 Ty::Con(name, _) => {
                     self.diags.push(
@@ -954,6 +998,8 @@ impl<'a> Infer<'a> {
                 _ => {}
             }
         }
+        // method uses over a parametric instance seed the impl's specialization.
+        seeds.extend(method_seeds);
 
         // expands the set of required specializations by worklist: a
         // `(f, T)` pulls `(g, T)` for each polymorphic constrained call in `f`
@@ -1418,13 +1464,25 @@ impl<'a> Infer<'a> {
                 }
                 // use of a constrained function: collects the specialization
                 // obligation over the type of the constraint var.
-                if let Some((_, idx)) = self.constrained_meta.get(n).cloned() {
-                    match idx {
-                        Some(i) => {
-                            if let Some(dispatch) = nth_param(&ty, i) {
+                if let Some((_, disp)) = self.constrained_meta.get(n).cloned() {
+                    match disp {
+                        Some((i, nested)) => {
+                            // the dispatch type is the param (`a`) or, when nested,
+                            // its type argument (`Maybe a` → `a`).
+                            let dispatch = nth_param(&ty, i).and_then(|p| {
+                                if nested {
+                                    match self.resolve(&p) {
+                                        Ty::Con(_, args) => args.into_iter().next(),
+                                        _ => None,
+                                    }
+                                } else {
+                                    Some(p)
+                                }
+                            });
+                            if let Some(d) = dispatch {
                                 self.spec_obligations.push(SpecObl {
                                     target: n.clone(),
-                                    ty: dispatch,
+                                    ty: d,
                                     span: *span,
                                     func: self.cur_fn.clone(),
                                 });

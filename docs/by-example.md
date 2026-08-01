@@ -313,8 +313,23 @@ compiles to native): `Eq` compares constructor-then-fields; `Ord` orders by
 constructor declaration order, then lexicographically by field; `Show` renders
 the constructor name and each field (`show (Rect 2 3)` → `"Rect 2 3"`). `Show` is
 a real class now (`show :: Show a => a -> String`) with base instances for
-`Int`/`Float`/`Bool`; native string building uses `strAppend`. Currently for
-non-parametric types (`AX0410` otherwise); a hand-written `instance` always wins.
+`Int`/`Float`/`Bool`; native string building uses `strAppend`. A hand-written
+`instance` always wins over a derived one.
+
+**Parametric types** derive too — `deriving` on `data Maybe a` generates the
+constrained instance `instance Eq a => Eq (Maybe a)`, and a use at a concrete
+element specializes the impl (`show$Maybe$Color`, with the inner `show` resolving
+to `show$Color`) so it compiles natively, nesting included:
+
+```haskell
+data Color = Red | Green | Blue deriving (Eq, Ord, Show)
+data Maybe a = None | Some a    deriving (Eq, Ord, Show)
+main :: IO ()
+main = putStrLn (show (Some Green))                -- → Some Green
+```
+Native specialization currently covers a **single** type parameter (`Maybe`,
+`List`, …); multi-parameter types (`Either a b`) derive and run in the
+interpreter, but do not yet compile natively.
 
 ---
 

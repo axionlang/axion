@@ -403,6 +403,15 @@ impl<'a> Parser<'a> {
     fn parse_instance(&mut self) -> PResult<InstanceDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'instance'
+        // optional context: `Eq a =>` (as in `instance Eq a => Eq (Maybe a)`).
+        let save = self.pos;
+        let ctx = self.parse_btype()?;
+        let constraints = if self.eat(&Tok::FatArrow) {
+            context_constraints(&ctx)
+        } else {
+            self.pos = save;
+            Vec::new()
+        };
         let class_name = self.con_name("class name in the instance")?;
         let head_ty = self.parse_atype()?;
         let ty_head = head_ty
@@ -415,6 +424,8 @@ impl<'a> Parser<'a> {
         Ok(InstanceDecl {
             class_name,
             ty_head,
+            head_ty,
+            constraints,
             methods,
             span: (s, end),
         })
