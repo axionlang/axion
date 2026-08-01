@@ -719,9 +719,16 @@ impl Lower<'_> {
                 } else if is_builtin_op(op) {
                     Op::Prim(op.clone(), a, b)
                 } else if op == "++" {
-                    // concatenation: lowers to the prelude's `append` (lists). The
-                    // strings are an interp-level effect (like show/IO).
+                    // list concatenation: lowers to the prelude's `append`. (A
+                    // `String` `++` is resolved to `++#str` by inference.)
                     self.call_named("append", vec![a, b])
+                } else if op == "++#str" {
+                    // native String concatenation (`strAppend` → axion_strcat).
+                    Op::RtCall {
+                        func: "axion_strcat".into(),
+                        args: vec![a, b],
+                        returns: true,
+                    }
                 } else {
                     // user infix operator: `x `f` y` ≡ `f x y`. Lowers to a call —
                     // so it works natively too (first-order).

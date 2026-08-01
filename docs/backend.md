@@ -46,8 +46,9 @@ happened in the AST→Core lowering, so codegen only walks the ANF.
 - `let v = <Int> in …`.
 - **Strings / IO** (via a minimal runtime): string literals (data objects,
   C-strings), the `Show` class (`showInt`/`showFloat` primitives →
-  `axion_show_int`/`axion_show_float`; `deriving Show` builds the string with
-  `strAppend` → `axion_strcat`), `putStrLn`/`putStr :: String -> IO ()`
+  `axion_show_int`/`axion_show_float`), `++` (type-directed: on `String` it
+  resolves to native concatenation `axion_strcat`, on lists to the prelude's
+  `append`), `putStrLn`/`putStr :: String -> IO ()`
   (`axion_puts`/`axion_put`), and do-block sequencing + `mapM_`. So
   `main :: IO ()` runs natively — including the **real examples**
   `examples/01_hello.axi` ("Hello, Axion!"), `examples/02_fib.axi` ("832040"), and
@@ -110,8 +111,7 @@ main = fib 20
 - Functions (and `case`) **without** a catch-all at the end (the exhaustion *trap*
   is missing).
 - Over-application (functions that return functions and are re-applied).
-- The polymorphic `++` on `String` (use `strAppend` for native concatenation;
-  `++` on strings is still interpreter-only).
+- `String` as a first-class value beyond building/printing (slicing, indexing, …).
 
 The transitive native-candidacy analysis excludes gracefully whatever doesn't
 compile; for those programs, use the interpreter (`axionc program.axi`, no

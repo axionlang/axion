@@ -1922,6 +1922,16 @@ fn deriving_eq_and_ord_generate_structural_instances() {
 }
 
 #[test]
+fn string_and_list_concat_run_natively() {
+    // `++` is type-directed: on String it resolves to native concatenation
+    // (`strAppend`/axion_strcat), on lists it stays the prelude's `append`.
+    // Both agree across interp/cranelift/llvm (String `++` used to SIGSEGV
+    // natively).
+    agree_across_backends("str_concat.axi", "n=42!\n");
+    agree_across_backends("list_concat.axi", "10\n");
+}
+
+#[test]
 fn deriving_show_renders_constructors_and_fields() {
     // `deriving (Show)` renders the constructor name then each field via `show`
     // (native string concat `strAppend`), agreeing across the three executors.

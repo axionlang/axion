@@ -43,6 +43,10 @@ struct Infer<'a> {
     method_meta: HashMap<String, (String, Option<usize>)>,
     /// instance obligations collected at method uses, discharged at the end.
     obligations: Vec<Obl>,
+    /// uses of the polymorphic `++`, with the operand type — resolved at the end:
+    /// a `String` use is rewritten to native `strAppend` (`++#str`), otherwise it
+    /// stays `++` (the prelude's list `append`).
+    concat_uses: Vec<(String, Span, Ty)>,
     /// uses of constrained functions, for monomorphization.
     spec_obligations: Vec<SpecObl>,
     /// constrained function → (constraint var, dispatch param index).
@@ -111,6 +115,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         records: HashMap::new(),
         method_meta: HashMap::new(),
         obligations: Vec::new(),
+        concat_uses: Vec::new(),
         spec_obligations: Vec::new(),
         constrained_meta: HashMap::new(),
         refs_unspec: HashSet::new(),
@@ -1031,6 +1036,16 @@ impl<'a> Infer<'a> {
             }
         }
 
+        // polymorphic `++`: a `String` operand → native `strAppend` (marker
+        // `++#str`, which `core`/`interp` lower to `axion_strcat`). Other operand
+        // types keep `++` (the prelude's list `append`).
+        let concat_uses = std::mem::take(&mut self.concat_uses);
+        for (func, span, ty) in concat_uses {
+            if matches!(self.resolve(&ty), Ty::Con(n, _) if n == "String") {
+                resolutions.insert((func, span), "++#str".into());
+            }
+        }
+
         Mono { resolutions, specs }
     }
 
@@ -1370,6 +1385,12 @@ impl<'a> Infer<'a> {
                     Box::new(Ty::Fun(Box::new(tr), Box::new(res.clone()))),
                 );
                 self.unify(&top, &want, *span);
+                // polymorphic `++`: record the operand type so a `String` use is
+                // later rewritten to native `strAppend` (see `discharge`).
+                if op == "++" {
+                    self.concat_uses
+                        .push((self.cur_fn.clone(), *span, res.clone()));
+                }
                 res
             }
             Expr::If(c, t, el, span) => {

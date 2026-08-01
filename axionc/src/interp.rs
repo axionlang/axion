@@ -270,7 +270,8 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             match op.as_str() {
                 // polymorphic `++`: strings concatenate; lists (or anything
                 // else) delegate to the prelude's `append` — a single definition.
-                "++" => match (a, b) {
+                // `++#str` is the String use resolved by inference (native path).
+                "++" | "++#str" => match (a, b) {
                     (Value::Str(x), Value::Str(y)) => Ok(Value::Str(x + &y)),
                     (a, b) => {
                         let f = resolve_var(prog, env, "append")?;
