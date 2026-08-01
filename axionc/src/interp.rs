@@ -435,6 +435,18 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "truncate",
             args: Vec::new(),
         }),
+        "sqrt" => Ok(Value::Builtin {
+            name: "sqrt",
+            args: Vec::new(),
+        }),
+        "floor" => Ok(Value::Builtin {
+            name: "floor",
+            args: Vec::new(),
+        }),
+        "abs" => Ok(Value::Builtin {
+            name: "abs",
+            args: Vec::new(),
+        }),
         "split" => Ok(Value::Builtin {
             name: "split",
             args: Vec::new(),
@@ -737,6 +749,10 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // conversions (§4): toFloat :: Int -> Float, truncate :: Float -> Int.
         ("toFloat", [Value::Int(n)]) => Ok(Value::Float(*n as f64)),
         ("truncate", [Value::Float(f)]) => Ok(Value::Int(*f as i64)),
+        // unary Float math (§4): sqrt / floor / abs :: Float -> Float.
+        ("sqrt", [Value::Float(f)]) => Ok(Value::Float(f.sqrt())),
+        ("floor", [Value::Float(f)]) => Ok(Value::Float(f.floor())),
+        ("abs", [Value::Float(f)]) => Ok(Value::Float(f.abs())),
         (name, _) => Err(format!("builtin '{name}' received invalid arguments")),
     }
 }

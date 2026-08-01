@@ -1902,6 +1902,16 @@ fn num_class_unifies_arithmetic_over_int_and_float() {
 }
 
 #[test]
+fn float_math_builtins_agree_across_backends() {
+    // sqrt/floor/abs (Float -> Float) via Cranelift IEEE instructions / LLVM
+    // intrinsics. The irrational `sqrt 2.0` also checks that --release prints the
+    // shortest round-tripping decimal (like interp/Cranelift), not lossy `%g`.
+    agree_across_backends("float_sqrt.axi", "1.4142135623730951\n");
+    // floor 3.7 + abs (0.0 - 5.5) = 3.0 + 5.5 = 8.5
+    agree_across_backends("float_floor_abs.axi", "8.5\n");
+}
+
+#[test]
 fn main_bool_prints_natively() {
     // `main :: Bool` prints `true`/`false` on all three executors (the native
     // backends print an i64 0/1 by selecting the two string constants), matching

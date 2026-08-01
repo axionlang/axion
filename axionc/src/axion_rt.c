@@ -28,6 +28,19 @@ long axion_show_int(long n) {
   return (long)buf;
 }
 
+/* Prints a `Float` (`main :: Float`) as its SHORTEST round-tripping decimal, so
+   --release matches the interpreter/Cranelift (Rust's `{}`), rather than the
+   lossy 6-digit `%g`. Grows the precision until the value parses back exactly. */
+void axion_print_float(double d) {
+  char buf[32];
+  for (int prec = 1; prec <= 17; prec++) {
+    snprintf(buf, sizeof buf, "%.*g", prec, d);
+    if (strtod(buf, NULL) == d)
+      break;
+  }
+  printf("%s\n", buf);
+}
+
 /* --- arenas (§3): bump-allocator over fixed chunks (stable pointers) --- */
 #define ARENA_CHUNK (64 * 1024)
 typedef struct Chunk {

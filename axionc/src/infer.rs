@@ -473,6 +473,10 @@ impl<'a> Infer<'a> {
             "truncate".into(),
             mono(Ty::Fun(Box::new(float()), Box::new(int()))),
         );
+        // unary Float math (§4): sqrt / floor / abs :: Float -> Float
+        for f in ["sqrt", "floor", "abs"] {
+            env.insert(f.into(), mono(Ty::Fun(Box::new(float()), Box::new(float()))));
+        }
         // ++ :: forall a. a -> a -> a  (polymorphic concatenation; without typeclasses
         // yet, the Semigroup-ish type only forces both sides to match —
         // lists and strings both pass, `"x" ++ [1]` does not).

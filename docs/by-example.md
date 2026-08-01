@@ -115,6 +115,11 @@ main :: Int
 main = truncate (toFloat 7 /. 2.0)                    -- → 3  (3.5 truncated)
 ```
 
+Unary math builtins `sqrt`, `floor`, `abs` (`:: Float -> Float`) lower to native
+Cranelift IEEE instructions / LLVM intrinsics (`sqrt 2.0` → `1.4142135623730951`
+on all three — `--release` prints the shortest round-tripping decimal, not lossy
+`%g`).
+
 Division `/.` stays Float-only (`Int` has no `/`); the dotted forms `+. <. …`
 remain valid (they are the internal rewrite targets). The class name `Ord` is
 distinct from a user's `Eq` (whose methods are identifiers like `eq`), so there

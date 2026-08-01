@@ -939,6 +939,18 @@ impl Fx<'_, '_> {
                 let f = self.builder.ins().bitcast(types::F64, MemFlags::new(), x);
                 Ok(self.builder.ins().fcvt_to_sint(types::I64, f))
             }
+            // unary Float math via native Cranelift IEEE instructions.
+            Op::FloatUnary(o, a) => {
+                let x = self.atom(a)?;
+                let f = self.builder.ins().bitcast(types::F64, MemFlags::new(), x);
+                let r = match o.as_str() {
+                    "sqrt" => self.builder.ins().sqrt(f),
+                    "floor" => self.builder.ins().floor(f),
+                    "abs" => self.builder.ins().fabs(f),
+                    other => return Err(format!("float builtin '{other}' does not compile natively")),
+                };
+                Ok(self.builder.ins().bitcast(types::I64, MemFlags::new(), r))
+            }
             Op::CallDirect(name, args) => {
                 let (id, arity) = *self
                     .ids

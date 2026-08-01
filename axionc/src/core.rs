@@ -49,6 +49,10 @@ pub enum Op {
     IntToFloat(Atom),
     /// `truncate :: Float -> Int` — f64 (bit pattern) → signed i64, truncating.
     FloatToInt(Atom),
+    /// unary Float math (`sqrt`/`floor`/`abs`) :: Float -> Float — the operand is
+    /// an f64 bit pattern in i64; the backend bitcasts to f64, applies the IEEE
+    /// operation (Cranelift instruction / LLVM intrinsic), and bitcasts back.
+    FloatUnary(String, Atom),
     /// direct call to a named function (top-level or `where` local, already mangled)
     CallDirect(String, Vec<Atom>),
     /// indirect call through a closure (the atom is the pointer)
@@ -245,6 +249,11 @@ pub fn is_builtin_op(op: &str) -> bool {
 /// (`<. >. ==.`) — all of which lower to `Op::PrimF`.
 pub fn is_float_op(op: &str) -> bool {
     is_float_arith(op) || is_float_cmp(op)
+}
+
+/// Unary Float math builtins (`Float -> Float`), lowered to `Op::FloatUnary`.
+pub fn is_float_unary(name: &str) -> bool {
+    matches!(name, "sqrt" | "floor" | "abs")
 }
 
 /// FLOAT arithmetic operators (result is `Float`).
@@ -611,6 +620,9 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "imperative",
         "toFloat",
         "truncate",
+        "sqrt",
+        "floor",
+        "abs",
     ] {
         g.insert(b.to_string());
     }
@@ -789,6 +801,9 @@ impl Lower<'_> {
         }
         if name == "truncate" && args.len() == 1 {
             return Op::FloatToInt(self.atom(args[0], buf));
+        }
+        if is_float_unary(name) && args.len() == 1 {
+            return Op::FloatUnary(name.clone(), self.atom(args[0], buf));
         }
         if self.fields.contains(name) && args.len() == 1 {
             let rec = self.atom(args[0], buf);
@@ -1111,7 +1126,9 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
             arity.insert(c.name.clone(), c.fields.len());
         }
     }
-    for b in ["putStrLn", "putStr", "show", "toFloat", "truncate"] {
+    for b in [
+        "putStrLn", "putStr", "show", "toFloat", "truncate", "sqrt", "floor", "abs",
+    ] {
         arity.entry(b.into()).or_insert(1);
     }
     let mut e = Eta { arity, counter: 0 };
@@ -2508,7 +2525,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::Promote(t, c) => atom_is(v, t) || atom_is(v, c),
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
         Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => atom_is(v, a),
-        Op::IntToFloat(a) | Op::FloatToInt(a) => atom_is(v, a),
+        Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => atom_is(v, a),
         // only in generated destructors (not analyzed) — a read, like `Field`
         Op::LoadRaw(..) => false,
         Op::Unsupported(_) => false,
@@ -3059,6 +3076,7 @@ fn dump_op(op: &Op) -> String {
         Op::ShowInt(a) => format!("show {}", atom(a)),
         Op::IntToFloat(a) => format!("toFloat {}", atom(a)),
         Op::FloatToInt(a) => format!("truncate {}", atom(a)),
+        Op::FloatUnary(o, a) => format!("{o} {}", atom(a)),
         Op::WithArena { parent: None, clos } => format!("withArena {}", atom(clos)),
         Op::WithArena {
             parent: Some(p),

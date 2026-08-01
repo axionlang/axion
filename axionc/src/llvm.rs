@@ -52,6 +52,10 @@ declare i64 @axion_sess_alloc(i64, i64)
 declare void @axion_sess_spawn(i64, i64, i64)
 declare i64 @axion_sess_run(i64, i64, i64)
 declare i32 @printf(ptr, ...)
+declare void @axion_print_float(double)
+declare double @llvm.sqrt.f64(double)
+declare double @llvm.floor.f64(double)
+declare double @llvm.fabs.f64(double)
 ";
 
 /// `true` if `main :: Int` (the driver prints); otherwise `:: IO ()` (already printed).
@@ -117,7 +121,6 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
         out.push_str(&format!("declare i64 @{name}({params})\n"));
     }
     out.push_str("@.fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\"\n");
-    out.push_str("@.ffmt = private unnamed_addr constant [4 x i8] c\"%g\\0A\\00\"\n");
     if main_bool {
         out.push_str("@.sfmt = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\"\n");
         out.push_str("@.true = private unnamed_addr constant [5 x i8] c\"true\\00\"\n");
@@ -145,9 +148,10 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
     if main_int {
         out.push_str("  call i32 (ptr, ...) @printf(ptr @.fmt, i64 %r)\n");
     } else if main_float {
-        // reinterpret the i64 ABI value as a double and print it (`%g`).
+        // reinterpret the i64 ABI value as a double; the runtime prints the
+        // shortest round-tripping decimal (matching interp/Cranelift).
         out.push_str("  %rf = bitcast i64 %r to double\n");
-        out.push_str("  call i32 (ptr, ...) @printf(ptr @.ffmt, double %rf)\n");
+        out.push_str("  call void @axion_print_float(double %rf)\n");
     } else if main_bool {
         // i64 0/1 → select "true"/"false" and print (like the interpreter).
         out.push_str("  %b = icmp ne i64 %r, 0\n");
@@ -267,7 +271,7 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
         Op::StoreRaw(p, _, v) => vec![p, v],
         Op::FuncAddr(_) => vec![],
         Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::Promote(a, b) => vec![a, b],
-        Op::IntToFloat(a) | Op::FloatToInt(a) => vec![a],
+        Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => vec![a],
         Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
             xs.iter().collect()
         }
@@ -713,6 +717,23 @@ impl Emit<'_> {
                 let (f, z) = (self.val(), self.val());
                 self.ins(&format!("{f} = bitcast i64 {x} to double"));
                 self.ins(&format!("{z} = fptosi double {f} to i64"));
+                Ok(z)
+            }
+            // unary Float math via LLVM intrinsics (`@llvm.sqrt.f64`, …).
+            Op::FloatUnary(o, a) => {
+                let intr = match o.as_str() {
+                    "sqrt" => "llvm.sqrt.f64",
+                    "floor" => "llvm.floor.f64",
+                    "abs" => "llvm.fabs.f64",
+                    other => {
+                        return Err(format!("float builtin '{other}' does not compile under --release"))
+                    }
+                };
+                let x = self.atom(a)?;
+                let (f, r, z) = (self.val(), self.val(), self.val());
+                self.ins(&format!("{f} = bitcast i64 {x} to double"));
+                self.ins(&format!("{r} = call double @{intr}(double {f})"));
+                self.ins(&format!("{z} = bitcast double {r} to i64"));
                 Ok(z)
             }
             Op::CallDirect(name, args) => {
