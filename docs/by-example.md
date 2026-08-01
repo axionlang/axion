@@ -242,8 +242,13 @@ The compiler rejects dangerous topologies *before* running:
 ```sh
 $AX --check axionc/tests/fixtures/bound_escape.axi     # AX0302: endpoint escapes the nursery
 $AX --check axionc/tests/fixtures/session_spawn_capture.axi  # AX0305: spawn would capture a cycle
+$AX --check axionc/tests/fixtures/exhaustive_missing.axi  # AX0202: `case` misses a constructor
 $AX --explain AX0302     # why: the topology must be a tree
 ```
+Pattern matching is checked for **exhaustiveness** (`AX0202`: a `case` must cover
+every constructor, or carry a `_`) — so adding a constructor to a `data` surfaces
+every `case` that forgot it — and for **redundancy** (`AX0203`, a warning: an arm
+after a catch-all is unreachable).
 
 ---
 

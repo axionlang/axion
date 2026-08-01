@@ -43,6 +43,16 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(code: &str, message: impl Into<String>) -> Self {
+        Diagnostic {
+            code: code.to_string(),
+            severity: Severity::Warning,
+            message: message.into(),
+            labels: Vec::new(),
+            help: None,
+        }
+    }
+
     pub fn label(mut self, start: usize, end: usize, message: impl Into<String>) -> Self {
         self.labels.push(Label {
             start,

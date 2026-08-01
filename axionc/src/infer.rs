@@ -47,6 +47,11 @@ struct Infer<'a> {
     /// a `String` use is rewritten to native `strAppend` (`++#str`), otherwise it
     /// stays `++` (the prelude's list `append`).
     concat_uses: Vec<(String, Span, Ty)>,
+    /// data type → its constructor names, for exhaustiveness checking.
+    data_cons: HashMap<String, Vec<String>>,
+    /// `case` sites (scrutinee type, patterns, span), checked for exhaustiveness
+    /// at the end (once the scrutinee type is fully resolved).
+    case_uses: Vec<(Ty, Vec<Pat>, Span)>,
     /// uses of constrained functions, for monomorphization.
     spec_obligations: Vec<SpecObl>,
     /// constrained function → (constraint var, dispatch param index).
@@ -116,6 +121,8 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         method_meta: HashMap::new(),
         obligations: Vec::new(),
         concat_uses: Vec::new(),
+        data_cons: HashMap::new(),
+        case_uses: Vec::new(),
         spec_obligations: Vec::new(),
         constrained_meta: HashMap::new(),
         refs_unspec: HashSet::new(),
@@ -123,6 +130,16 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         cur_fn: String::new(),
     };
     let mut env: Env = inf.base_env();
+
+    // constructor sets per data type (for exhaustiveness). `Bool` is built in.
+    for d in &module.datas {
+        inf.data_cons.insert(
+            d.name.clone(),
+            d.cons.iter().map(|c| c.name.clone()).collect(),
+        );
+    }
+    inf.data_cons
+        .insert("Bool".into(), vec!["True".into(), "False".into()]);
 
     // types of constructors and selectors from the `data` declarations. A
     // vars map SHARED per decl links the type parameters (`a` in
@@ -282,6 +299,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
             inf.unify(&inferred, d, f.span);
         }
     }
+    inf.check_exhaustiveness();
     let mono = inf.discharge_obligations(module);
     let _ = placeholders;
     mono
@@ -1049,6 +1067,81 @@ impl<'a> Infer<'a> {
         Mono { resolutions, specs }
     }
 
+    /// Exhaustiveness/redundancy for `case`, on the resolved scrutinee type:
+    /// a data/`Bool` scrutinee must cover every constructor (or have a
+    /// wildcard/variable); `Int`/`Float`/`String` need a wildcard. An arm after a
+    /// catch-all (or a repeated constructor) is redundant (warning).
+    fn check_exhaustiveness(&mut self) {
+        let cases = std::mem::take(&mut self.case_uses);
+        for (ts, pats, span) in cases {
+            let ty = self.apply(&ts);
+            let head = match &ty {
+                Ty::Con(n, _) => n.as_str(),
+                // a tuple has a single "constructor": a tuple pattern (or a
+                // wildcard) is exhaustive — nothing to check at the top level.
+                _ => continue,
+            };
+            let finite = self.data_cons.get(head).cloned();
+            let infinite = matches!(
+                head,
+                "Int" | "Float" | "String" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32"
+                    | "I64" | "Word" | "Byte" | "Char"
+            );
+            if finite.is_none() && !infinite {
+                continue; // not a matchable scrutinee we reason about (IO, Arena, …)
+            }
+
+            let mut covered: HashSet<String> = HashSet::new();
+            let mut catch_all = false;
+            for pat in &pats {
+                if catch_all {
+                    self.diags.push(
+                        Diagnostic::warning("AX0203", "unreachable pattern after a catch-all")
+                            .label(span.0, span.1, "this arm can never match")
+                            .with_help("remove the redundant arm, or the earlier wildcard."),
+                    );
+                    break;
+                }
+                match pat {
+                    Pat::Wild(_) | Pat::Var(_, _) | Pat::Tuple(_, _) => catch_all = true,
+                    Pat::Con(cn, _, _) => {
+                        covered.insert(cn.clone());
+                    }
+                    Pat::Int(_, _) => {}
+                }
+            }
+            if catch_all {
+                continue;
+            }
+            if let Some(all) = finite {
+                let missing: Vec<String> =
+                    all.iter().filter(|c| !covered.contains(*c)).cloned().collect();
+                if !missing.is_empty() {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "AX0202",
+                            format!("non-exhaustive patterns: {} not covered", missing.join(", ")),
+                        )
+                        .label(span.0, span.1, "this `case` does not cover every constructor")
+                        .with_help(
+                            "add the missing constructor arm(s), or a `_` wildcard catch-all.",
+                        ),
+                    );
+                }
+            } else {
+                // infinite type without a catch-all → cannot be exhaustive.
+                self.diags.push(
+                    Diagnostic::error(
+                        "AX0202",
+                        format!("non-exhaustive patterns: `{head}` needs a wildcard"),
+                    )
+                    .label(span.0, span.1, "this `case` has no catch-all")
+                    .with_help("add a `_` wildcard arm to cover the remaining values."),
+                );
+            }
+        }
+    }
+
     fn apply(&self, t: &Ty) -> Ty {
         match self.resolve(t) {
             Ty::Con(n, args) => Ty::Con(n, args.iter().map(|a| self.apply(a)).collect()),
@@ -1420,6 +1513,12 @@ impl<'a> Infer<'a> {
                         }
                     }
                 }
+                // deferred exhaustiveness check (needs the resolved scrutinee type).
+                self.case_uses.push((
+                    ts,
+                    arms.iter().map(|(p, _)| p.clone()).collect(),
+                    *span,
+                ));
                 rty.unwrap_or_else(|| self.fresh())
             }
             Expr::Tuple(es, _) => Ty::Tuple(es.iter().map(|e| self.infer_expr(env, e)).collect()),

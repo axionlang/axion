@@ -22,6 +22,8 @@ and are explainable via `axion --explain AXnnnn`.
 | `AX0101` | Names | Name not found (out of scope) | **enforced by `axionc`** (Phase 1) |
 | `AX0200` | Types | Type mismatch (unification failed) | **enforced by `axionc`** (Phase 1) |
 | `AX0201` | Types | Infinite type (occurs-check failed) | **enforced by `axionc`** (Phase 1) |
+| `AX0202` | Types | Non-exhaustive patterns: a `case` does not cover every constructor of the scrutinee's type (or lacks a wildcard for `Int`/`Float`/`String`) | **enforced by `axionc`** |
+| `AX0203` | Types | Redundant pattern: an arm after a catch-all is unreachable (*warning*) | **enforced by `axionc`** |
 | `AX0300` | Sessions | Channel operation does not follow the endpoint's session type (`send`/`recv`/`close` in the wrong state) | **enforced by `axionc`** (Phase 3) |
 | `AX0301` | Sessions | Incomplete session protocol: an endpoint is not carried to `close` | **enforced by `axionc`** (Phase 3) |
 | `AX0302` | Sessions | Endpoint escape: an endpoint created in a `bound` is returned from the nursery (breaks the acyclic topology → deadlock risk) | **enforced by `axionc`** (Phase 3) |
@@ -30,7 +32,7 @@ and are explainable via `axion --explain AXnnnn`.
 | `AX0305` | Sessions | `spawn` closure captures an endpoint from outside: would break the nursery's tree topology (§9) | **enforced by `axionc`** (Phase 3) |
 | `AX0400`–`AX0405` | Typeclasses | Class/instance coherence and use-site constraints (see the `AX04xx` band below) | **enforced by `axionc`** |
 
-Next free per band — language: `AX0007`; front-end: `AX0102`; types: `AX0202`;
+Next free per band — language: `AX0007`; front-end: `AX0102`; types: `AX0204`;
 channels/sessions: `AX0306`; typeclasses: `AX0406`.
 
 **`AX03xx` channels and session types (Phase 3).** The §17 band for the session

@@ -1922,6 +1922,43 @@ fn deriving_eq_and_ord_generate_structural_instances() {
 }
 
 #[test]
+fn non_exhaustive_case_is_rejected_ax0202() {
+    // a `case` on a data type must cover every constructor (or have a wildcard).
+    let out = axionc()
+        .args(["--check", &fixture("exhaustive_missing.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "expected AX0202");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("AX0202") && text.contains("Blue"),
+        "expected AX0202 naming Blue, output: {text}"
+    );
+    // the exhaustive version compiles.
+    let ok = axionc()
+        .args(["--check", &fixture("exhaustive_ok.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "exhaustive_ok should compile: {}",
+        String::from_utf8_lossy(&ok.stdout)
+    );
+}
+
+#[test]
+fn redundant_pattern_after_catch_all_warns_ax0203() {
+    // an arm after a wildcard is unreachable → AX0203 (a warning, still compiles).
+    let out = axionc()
+        .args(["--check", &fixture("exhaustive_redundant.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "AX0203 is a warning, should still compile");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0203"), "expected AX0203, output: {text}");
+}
+
+#[test]
 fn string_and_list_concat_run_natively() {
     // `++` is type-directed: on String it resolves to native concatenation
     // (`strAppend`/axion_strcat), on lists it stays the prelude's `append`.

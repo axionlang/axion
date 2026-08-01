@@ -108,8 +108,9 @@ main = fib 20
   work).
 - Constructor patterns in multi-clause function heads (`eq Red Red = …`) — write
   the instance with `case` for native.
-- Functions (and `case`) **without** a catch-all at the end (the exhaustion *trap*
-  is missing).
+- (Non-exhaustive `case`/clauses are now rejected at compile time — `AX0202` —
+  before reaching the backend; an exhaustive `case` compiles with its last arm as
+  the fallback, no explicit wildcard needed.)
 - Over-application (functions that return functions and are re-applied).
 - `String` as a first-class value beyond building/printing (slicing, indexing, …).
 
