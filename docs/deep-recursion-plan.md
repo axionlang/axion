@@ -219,13 +219,27 @@ transform. Results:
   dead/borrowed/wildcard stays owned and is still deep-dropped. Regression fixture
   `linear_recursive_adt.axi` (5 allocs / 5 frees), sanitizer clean.
 - **Remaining (a leak, not corruption): extracted heap fields that die locally.**
-  In a machine whose stack node carries an intermediate heap cell (e.g.
-  `data Frame = FAdd Int`, extracted as `f` and consumed by an inner `case`), that
-  cell is **not** freed — `droppable_vars` only tracks locally-`Make`d allocations
-  and owned params, not fields extracted from an owned structure. This is a leak
-  (safe), and the flat frame-buffer design (§4b) avoids it anyway, but it is a
-  follow-up worth doing: extend the drop analysis to treat a transferred-in heap
-  field binding as owned.
+  A heap field extracted from an owned structure and then dying locally (e.g. a
+  `data Frame = FAdd Int` node consumed by an inner `case`) is **not** freed —
+  `droppable_vars` only tracks locally-`Make`d allocations and owned params. This is
+  a leak (safe), and the flat frame-buffer design (§4b) avoids it. **Attempted, and
+  it is deeper than it looks — three interacting subsystems, deferred:**
+  1. *Arm-scoped ownership.* Adding pattern-bound fields to the droppable set makes
+     them owned, but they are scoped to their **arm**, not the function — so the
+     `Elab` **cross-arm balancing** (which assumes function-scoped droppables) then
+     tries to free them in a *sibling* arm where they are not in scope → "drop of
+     unbound variable". Cross-arm balancing must exclude arm-local bindings.
+  2. *Drop placement.* `Elab` inserts drops at **use** points, so a field bound but
+     **never used** has no drop point and must get an explicit one at the arm head.
+  3. *Polymorphic payloads.* The prelude `List a`'s element field is type `a`, which
+     the drop analysis conservatively treats as **non-heap** (`field_is_heap` only
+     sees concrete data types) — so `List Frame`'s payloads leak regardless (the
+     generic `axion_drop_List` doesn't free them either). This is the
+     data-monomorphization / type-passing gap, orthogonal to the case analysis.
+
+  The double-free **safety** fix above stands (monomorphic recursive ADTs are
+  correct — `linear_recursive_adt.axi`); this leak is a safe, separately-scoped
+  effort touching all three, best done with the sanitizer + oracle throughout.
 
 ## 9. Bottom line
 A genuine, backend-uniform guarantee — *"an Axion program never stack-overflows"* —
