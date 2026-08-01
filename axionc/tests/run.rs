@@ -1912,6 +1912,31 @@ fn float_math_builtins_agree_across_backends() {
 }
 
 #[test]
+fn deriving_eq_and_ord_generate_structural_instances() {
+    // `deriving (Eq)` / `deriving (Eq, Ord)` synthesize structural instances
+    // (nested `case`), agreeing across interp/cranelift/llvm.
+    // eq (Rect 2 3) (Rect 2 3) = True; eq (Circle 1) (Rect 0 0) = False → False.
+    agree_across_backends("derive_eq.axi", "false\n");
+    // le Red Blue = True; maxOr [..] = Blue; le Blue Blue = True → True.
+    agree_across_backends("derive_ord.axi", "true\n");
+}
+
+#[test]
+fn deriving_on_parametric_type_is_rejected_ax0410() {
+    // deriving is (for now) only for non-parametric types.
+    let out = axionc()
+        .args(["--check", &fixture("derive_parametric_err.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "expected a deriving error");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("AX0410"),
+        "expected AX0410, output: {text}"
+    );
+}
+
+#[test]
 fn main_bool_prints_natively() {
     // `main :: Bool` prints `true`/`false` on all three executors (the native
     // backends print an i64 0/1 by selecting the two string constants), matching

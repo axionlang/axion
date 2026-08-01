@@ -290,6 +290,24 @@ Rust** (measured: the `dispatch` benchmark ≈ C/Rust, [`docs/benchmarks.md`](be
 Coherence is checked statically: missing instance, extra method, use without an
 instance → `AX0400`–`AX0405`.
 
+### 16. `deriving (Eq, Ord)` — instances for free
+
+```haskell
+data Color = Red | Green | Blue
+  deriving (Eq, Ord)
+
+main :: Bool
+main = le Green (maxOr Red [Green, Blue, Red])    -- Green <= Blue → True
+```
+```sh
+$AX axionc/tests/fixtures/derive_ord.axi          # → true
+```
+The `deriving` clause synthesizes **structural** instances (as Axion source that
+is parsed like any other, so it goes through the same monomorphization and
+compiles to native): `Eq` compares constructor-then-fields; `Ord` orders by
+constructor declaration order, then lexicographically by field. Currently for
+non-parametric types (`AX0410` otherwise); a hand-written `instance` always wins.
+
 ---
 
 ## Where to go next

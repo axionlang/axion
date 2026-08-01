@@ -161,6 +161,9 @@ pub struct DataDecl {
     pub name: String,
     pub params: Vec<String>, // type parameters (e.g. `a` in `data List a`)
     pub cons: Vec<ConDecl>,
+    /// classes to auto-derive: `deriving (Eq, Ord, Show)`. Desugared into
+    /// synthesized `instance` declarations before class lowering (`main.rs`).
+    pub deriving: Vec<String>,
     pub span: Span,
 }
 

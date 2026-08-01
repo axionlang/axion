@@ -268,6 +268,7 @@ fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, ch
         }
     };
     inject_prelude(&mut module);
+    derive_instances(&mut module, diags);
     lower_classes(&mut module);
     let analysis = check::check(&module, diags);
     // Inference returns the monomorphic method resolutions (use span →
@@ -608,6 +609,148 @@ fn specialize(ty: &ast::Type, ty_head: &str) -> ast::Type {
             ast::Type::Tuple(ts.iter().map(|t| specialize(t, ty_head)).collect())
         }
     }
+}
+
+/// Desugars `deriving (Eq, Ord, …)` on `data` declarations into synthesized
+/// `instance` declarations. Each instance is generated as Axion SOURCE and
+/// parsed (like the prelude), so its internal method uses get real, distinct
+/// spans (the monomorphization keys on `(function, span)`) and reuse the whole
+/// pipeline. Runs after `inject_prelude` (so the prelude's `Eq`/`Ord`/`Show`
+/// classes exist) and before `lower_classes`.
+fn derive_instances(module: &mut ast::Module, diags: &mut Diagnostics) {
+    let mut existing: std::collections::HashSet<(String, String)> = module
+        .instances
+        .iter()
+        .map(|i| (i.class_name.clone(), i.ty_head.clone()))
+        .collect();
+    let datas = module.datas.clone();
+    let mut src = String::new();
+    for d in &datas {
+        for class in &d.deriving {
+            // a user-written instance wins over the derived one (no clash).
+            if !existing.insert((class.clone(), d.name.clone())) {
+                continue;
+            }
+            if !d.params.is_empty() {
+                diags.push(
+                    Diagnostic::error(
+                        "AX0410",
+                        format!(
+                            "cannot derive `{class}` for the parametric type `{}` yet",
+                            d.name
+                        ),
+                    )
+                    .label(d.span.0, d.span.1, "parametric `data` declaration")
+                    .with_help(
+                        "deriving is currently supported for non-parametric types; \
+                         write the instance by hand for parametric types.",
+                    ),
+                );
+                continue;
+            }
+            match class.as_str() {
+                "Eq" => src.push_str(&derive_eq(d)),
+                "Ord" => src.push_str(&derive_ord(d)),
+                other => diags.push(
+                    Diagnostic::error(
+                        "AX0411",
+                        format!("cannot derive `{other}` (unknown or unsupported class)"),
+                    )
+                    .label(d.span.0, d.span.1, "in this `deriving` clause")
+                    .with_help("derivable classes: Eq, Ord."),
+                ),
+            }
+        }
+    }
+    if src.is_empty() {
+        return;
+    }
+    let lines = LineMap::new(&src);
+    let tokens = lexer::lex(&src).expect("derive: lex");
+    let lt = layout::layout(&tokens, &lines);
+    let parsed = parser::parse_module(&lt).expect("derive: parse");
+    module.instances.extend(parsed.instances);
+}
+
+/// A constructor pattern `Con v0 v1 …` binding fresh vars with the given prefix,
+/// plus the list of bound var names.
+fn con_pattern(con: &ast::ConDecl, prefix: &str) -> (String, Vec<String>) {
+    let vars: Vec<String> = (0..con.fields.len())
+        .map(|i| format!("{prefix}{i}"))
+        .collect();
+    let mut pat = con.name.clone();
+    for v in &vars {
+        pat.push(' ');
+        pat.push_str(v);
+    }
+    (pat, vars)
+}
+
+/// A constructor pattern with wildcard fields (`Con _ _`).
+fn wildcard_pattern(con: &ast::ConDecl) -> String {
+    let mut pat = con.name.clone();
+    for _ in &con.fields {
+        pat.push_str(" _");
+    }
+    pat
+}
+
+/// `deriving Ord`: lexicographic `le` (≤) via nested `case`. Constructors compare
+/// by declaration order (earlier < later); within the same constructor, fields
+/// compare lexicographically. Uses only `le` (no `Eq` dependency): for a field,
+/// `if le a b then (if le b a then <rest> else True) else False` — equal keeps
+/// going, strictly-less is True, strictly-greater is False.
+fn derive_ord(d: &ast::DataDecl) -> String {
+    let mut s = format!("instance Ord {} where\n  le x y = case x of\n", d.name);
+    for (i, ci) in d.cons.iter().enumerate() {
+        let (xpat, xs) = con_pattern(ci, "a");
+        s.push_str(&format!("    {xpat} -> case y of\n"));
+        // y is an earlier constructor → y < x → `x <= y` is False.
+        for cj in d.cons.iter().take(i) {
+            s.push_str(&format!("      {} -> False\n", wildcard_pattern(cj)));
+        }
+        // same constructor → lexicographic compare of the fields.
+        let (ypat, ys) = con_pattern(ci, "b");
+        let n = xs.len();
+        let mut lexi = "True".to_string();
+        for k in (0..n).rev() {
+            let (a, b) = (&xs[k], &ys[k]);
+            lexi = if k == n - 1 {
+                format!("le {a} {b}")
+            } else {
+                format!("if le {a} {b} then (if le {b} {a} then {lexi} else True) else False")
+            };
+        }
+        s.push_str(&format!("      {ypat} -> {lexi}\n"));
+        // y is a later constructor → x < y → `x <= y` is True.
+        s.push_str("      _ -> True\n");
+    }
+    s
+}
+
+/// `deriving Eq`: structural equality via nested `case` (outer on `x`, inner on
+/// `y`), field-by-field `eq` (conjunction as `if … then … else False`).
+fn derive_eq(d: &ast::DataDecl) -> String {
+    let mut s = format!("instance Eq {} where\n  eq x y = case x of\n", d.name);
+    let multi = d.cons.len() > 1;
+    for c in &d.cons {
+        let (xpat, xs) = con_pattern(c, "a");
+        let (ypat, ys) = con_pattern(c, "b");
+        // conjunction of `eq ai bi` (right-folded), `True` when nullary.
+        let mut conj = "True".to_string();
+        for (a, b) in xs.iter().zip(&ys).rev() {
+            conj = if conj == "True" {
+                format!("eq {a} {b}")
+            } else {
+                format!("if eq {a} {b} then {conj} else False")
+            };
+        }
+        s.push_str(&format!("    {xpat} -> case y of\n      {ypat} -> {conj}\n"));
+        if multi {
+            s.push_str("      _ -> False\n");
+        }
+    }
+    s
 }
 
 fn inject_prelude(module: &mut ast::Module) {

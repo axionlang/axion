@@ -165,6 +165,12 @@ impl<'a> Parser<'a> {
         matches!(self.cur(), Some(x) if x == v)
     }
 
+    /// The current token is the contextual keyword `kw` (a lowercase identifier
+    /// that is not a real reserved token, e.g. `deriving`).
+    fn at_kw(&self, kw: &str) -> bool {
+        matches!(self.cur(), Some(LTok::Tok(Tok::VarId(k))) if k == kw)
+    }
+
     fn expect(&mut self, t: &Tok, what: &str) -> PResult<()> {
         if self.eat(t) {
             Ok(())
@@ -347,11 +353,25 @@ impl<'a> Parser<'a> {
         while self.eat(&Tok::Bar) {
             cons.push(self.parse_con()?);
         }
+        // optional `deriving (C1, C2, …)` clause.
+        let mut deriving = Vec::new();
+        if matches!(self.cur(), Some(LTok::Tok(Tok::VarId(k))) if k == "deriving") {
+            self.pos += 1;
+            self.expect(&Tok::LParen, "'(' after 'deriving'")?;
+            loop {
+                deriving.push(self.con_name("class name in 'deriving'")?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen, "')' to close 'deriving'")?;
+        }
         let end = self.span_here().0;
         Ok(DataDecl {
             name,
             params,
             cons,
+            deriving,
             span: (s, end),
         })
     }
@@ -414,9 +434,11 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::RBrace, "'}' in the record")?;
             Ok(ConDecl { name, fields })
         } else {
-            // positional constructor: Con atype*
+            // positional constructor: Con atype*. Stop at the contextual keyword
+            // `deriving` (a lowercase ident that would otherwise parse as a field
+            // type variable).
             let mut fields = Vec::new();
-            while self.starts_atype() {
+            while self.starts_atype() && !self.at_kw("deriving") {
                 let ty = self.parse_atype()?;
                 fields.push(Field {
                     name: String::new(),

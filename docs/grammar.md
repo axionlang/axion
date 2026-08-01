@@ -18,7 +18,8 @@ decl        = dataDecl
             | funDef ;
 
 (* --- Data type declarations (L0; linear fields in L1) --- *)
-dataDecl    = "data" conName { varName } "=" con { "|" con } ;
+dataDecl    = "data" conName { varName } "=" con { "|" con } [ deriving ] ;
+deriving    = "deriving" "(" conName { "," conName } ")" ; (* Eq, Ord (§tc) *)
 con         = conName ( recordBody | { atype } ) ; (* record or positional *)
 recordBody  = "{" fieldDecl { "," fieldDecl } "}" ;
 fieldDecl   = varName "::" btype [ mult ] ;        (* %1 field = linear     *)
