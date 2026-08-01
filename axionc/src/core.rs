@@ -251,6 +251,29 @@ pub fn is_float_op(op: &str) -> bool {
     is_float_arith(op) || is_float_cmp(op)
 }
 
+/// `true` if `f` calls **itself** in tail position (the last thing it does on some
+/// path). Such a function is compiled as a loop (TCO) — no call/return overhead
+/// per iteration, no stack growth — by the backends and the interpreter. Axion has
+/// no surface loops, so tail recursion → loop is a natural lowering, not an
+/// optimization pass.
+pub fn has_tail_self_call(f: &CoreFn) -> bool {
+    fn term(t: &Term, name: &str) -> bool {
+        match t {
+            Term::Let(_, _, body) | Term::Drop(_, _, body) => term(body, name),
+            Term::Ret(rhs) => rhs_tail(rhs, name),
+        }
+    }
+    fn rhs_tail(rhs: &Rhs, name: &str) -> bool {
+        match rhs {
+            Rhs::Op(Op::CallDirect(g, _)) => g == name,
+            Rhs::If(_, t, e) => term(t, name) || term(e, name),
+            Rhs::Case(_, arms) => arms.iter().any(|(_, b)| term(b, name)),
+            Rhs::Op(_) => false,
+        }
+    }
+    term(&f.body, &f.name)
+}
+
 /// Unary Float math builtins (`Float -> Float`), lowered to `Op::FloatUnary`.
 pub fn is_float_unary(name: &str) -> bool {
     matches!(name, "sqrt" | "floor" | "abs")

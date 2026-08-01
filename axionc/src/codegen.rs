@@ -17,8 +17,8 @@ use crate::core::{
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
 use cranelift::prelude::{
-    types, AbiParam, Configurable, EntityRef, FloatCC, FunctionBuilder, FunctionBuilderContext,
-    InstBuilder, IntCC, MemFlags, Value, Variable,
+    types, AbiParam, Block, Configurable, EntityRef, FloatCC, FunctionBuilder,
+    FunctionBuilderContext, InstBuilder, IntCC, MemFlags, Value, Variable,
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -679,6 +679,7 @@ impl Cg {
                 arena: self.arena,
                 rt_fns: &self.rt_fns,
                 records: &self.records,
+                tco: None,
             };
 
             if f.is_closure {
@@ -699,8 +700,21 @@ impl Cg {
                 }
             }
 
-            let ret = fx.emit_term(&f.body)?;
-            fx.builder.ins().return_(&[ret]);
+            // Tail-call optimization: a self-tail-recursive function loops instead
+            // of recursing. The params are already bound to (mutable) Variables; we
+            // jump into a header block and each tail self-call reassigns the params
+            // and jumps back — no call/return, no stack growth.
+            if core::has_tail_self_call(f) {
+                let header = fx.builder.create_block();
+                fx.builder.ins().jump(header, &[]);
+                fx.builder.switch_to_block(header);
+                fx.tco = Some((header, f.name.clone(), f.params.clone()));
+                fx.emit_term_tail(&f.body)?;
+                fx.builder.seal_block(header); // all back-edges emitted
+            } else {
+                let ret = fx.emit_term(&f.body)?;
+                fx.builder.ins().return_(&[ret]);
+            }
             fx.builder.finalize();
         }
         Ok(ctx)
@@ -724,6 +738,10 @@ struct Fx<'a, 'b> {
     arena: Arena,
     rt_fns: &'a HashMap<String, (FuncId, bool)>,
     records: &'a RecordInfo,
+    /// TCO: `(loop header block, this function's name, its parameter names)`. A
+    /// tail self-call reassigns the params and jumps to the header instead of
+    /// calling+returning. `None` for non-tail-recursive functions.
+    tco: Option<(Block, String, Vec<String>)>,
 }
 
 impl Fx<'_, '_> {
@@ -832,34 +850,89 @@ impl Fx<'_, '_> {
                 self.emit_term(body)
             }
             Term::Drop(name, ty, body) => {
-                // Auto-Drop: frees the heap object at its death point. If the
-                // type owns heap fields, calls the generated recursive destructor
-                // (deep-drop); otherwise, a flat `free`.
-                let v = self
-                    .vars
-                    .get(name)
-                    .copied()
-                    .ok_or_else(|| format!("drop of unbound variable '{name}'"))?;
-                let ptr = self.builder.use_var(v);
-                let deep = ty
-                    .as_deref()
-                    .filter(|t| self.records.needs_deep_drop(t))
-                    .map(|t| format!("axion_drop_{t}"));
-                match deep.and_then(|n| self.ids.get(&n).copied()) {
-                    Some((id, _)) => {
-                        let callee = self.module.declare_func_in_func(id, self.builder.func);
-                        self.builder.ins().call(callee, &[ptr]);
-                    }
-                    None => {
-                        let callee = self
-                            .module
-                            .declare_func_in_func(self.free_id, self.builder.func);
-                        self.builder.ins().call(callee, &[ptr]);
-                    }
-                }
+                self.emit_drop(name, ty.as_deref())?;
                 self.emit_term(body)
             }
             Term::Ret(rhs) => self.emit_rhs(rhs),
+        }
+    }
+
+    /// Auto-Drop: frees the heap object at its death point (deep-drop destructor
+    /// if the type owns heap fields, else a flat `free`).
+    fn emit_drop(&mut self, name: &str, ty: Option<&str>) -> Result<(), String> {
+        let v = self
+            .vars
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("drop of unbound variable '{name}'"))?;
+        let ptr = self.builder.use_var(v);
+        let deep = ty
+            .filter(|t| self.records.needs_deep_drop(t))
+            .map(|t| format!("axion_drop_{t}"));
+        let id = match deep.and_then(|n| self.ids.get(&n).copied()) {
+            Some((id, _)) => id,
+            None => self.free_id,
+        };
+        let callee = self.module.declare_func_in_func(id, self.builder.func);
+        self.builder.ins().call(callee, &[ptr]);
+        Ok(())
+    }
+
+    /// Tail-position emission (TCO): every path ends in a terminator — a `return`,
+    /// or a `jump` back to the loop header for a tail self-call. Never produces a
+    /// value (unlike `emit_term`), so no phi/merge is needed on tail branches.
+    fn emit_term_tail(&mut self, t: &Term) -> Result<(), String> {
+        match t {
+            Term::Let(name, rhs, body) => {
+                let v = self.emit_rhs(rhs)?;
+                self.bind_val(name, v);
+                self.emit_term_tail(body)
+            }
+            Term::Drop(name, ty, body) => {
+                self.emit_drop(name, ty.as_deref())?;
+                self.emit_term_tail(body)
+            }
+            Term::Ret(rhs) => self.emit_rhs_tail(rhs),
+        }
+    }
+
+    fn emit_rhs_tail(&mut self, rhs: &Rhs) -> Result<(), String> {
+        match rhs {
+            // tail self-call → reassign the params, jump to the header (the loop).
+            Rhs::Op(Op::CallDirect(g, args))
+                if self.tco.as_ref().is_some_and(|(_, name, _)| name == g) =>
+            {
+                let vals: Vec<Value> =
+                    args.iter().map(|a| self.atom(a)).collect::<Result<_, _>>()?;
+                let (header, _, params) = self.tco.clone().unwrap();
+                for (p, v) in params.iter().zip(vals) {
+                    let var = self.vars[p];
+                    self.builder.def_var(var, v);
+                }
+                self.builder.ins().jump(header, &[]);
+                Ok(())
+            }
+            Rhs::Op(op) => {
+                let v = self.emit_op(op)?;
+                self.builder.ins().return_(&[v]);
+                Ok(())
+            }
+            Rhs::If(cond, t, e) => {
+                let c = self.atom(cond)?;
+                let then_b = self.builder.create_block();
+                let else_b = self.builder.create_block();
+                self.builder.ins().brif(c, then_b, &[], else_b, &[]);
+                self.builder.switch_to_block(then_b);
+                self.builder.seal_block(then_b);
+                self.emit_term_tail(t)?;
+                self.builder.switch_to_block(else_b);
+                self.builder.seal_block(else_b);
+                self.emit_term_tail(e)
+            }
+            Rhs::Case(scrut, arms) => {
+                let s = self.atom(scrut)?;
+                self.emit_case_tail(s, arms, 0)
+            }
         }
     }
 
@@ -1273,6 +1346,95 @@ impl Fx<'_, '_> {
         self.builder.switch_to_block(merge);
         self.builder.seal_block(merge);
         self.builder.block_params(merge)[0]
+    }
+
+    /// Tail-position `case`: same tag dispatch as `emit_case`, but each arm body is
+    /// emitted in tail position (terminates directly) instead of producing a value
+    /// merged by a phi — so a tail self-call inside an arm becomes a loop jump.
+    fn emit_case_tail(
+        &mut self,
+        sval: Value,
+        arms: &[(CPat, Term)],
+        i: usize,
+    ) -> Result<(), String> {
+        let (pat, body) = &arms[i];
+        match pat {
+            CPat::Wild => self.emit_term_tail(body),
+            CPat::Var(n) => {
+                self.bind_val(n, sval);
+                self.emit_term_tail(body)
+            }
+            CPat::Tuple(ps) => {
+                for (j, p) in ps.iter().enumerate() {
+                    if let CPat::Var(n) = p {
+                        let v = self.builder.ins().load(
+                            types::I64,
+                            MemFlags::new(),
+                            sval,
+                            j as i32 * 8,
+                        );
+                        self.bind_val(n, v);
+                    } else if !matches!(p, CPat::Wild) {
+                        return Err("nested tuple pattern does not compile natively".into());
+                    }
+                }
+                self.emit_term_tail(body)
+            }
+            CPat::Int(lit) => {
+                if i + 1 >= arms.len() {
+                    return Err("case without catch-all does not compile natively (yet)".into());
+                }
+                let k = self.builder.ins().iconst(types::I64, *lit);
+                let cond = self.builder.ins().icmp(IntCC::Equal, sval, k);
+                self.branch_arm_tail(cond, |s| s.emit_term_tail(body), sval, arms, i)
+            }
+            CPat::Con(con, subpats) => match self.records.tag(con) {
+                None => {
+                    self.destructure_con(con, subpats, sval)?;
+                    self.emit_term_tail(body)
+                }
+                Some(_) if i + 1 >= arms.len() => {
+                    self.destructure_con(con, subpats, sval)?;
+                    self.emit_term_tail(body)
+                }
+                Some(tag) => {
+                    let ktag = self.case_eff_tag(sval, con);
+                    let kt = self.builder.ins().iconst(types::I64, tag as i64);
+                    let cond = self.builder.ins().icmp(IntCC::Equal, ktag, kt);
+                    self.branch_arm_tail(
+                        cond,
+                        |s| {
+                            s.destructure_con(con, subpats, sval)?;
+                            s.emit_term_tail(body)
+                        },
+                        sval,
+                        arms,
+                        i,
+                    )
+                }
+            },
+        }
+    }
+
+    /// A tail-position arm test: `then` (the matched arm) and `else` (the rest of
+    /// the chain) each terminate — no merge block.
+    fn branch_arm_tail(
+        &mut self,
+        cond: Value,
+        then: impl FnOnce(&mut Self) -> Result<(), String>,
+        sval: Value,
+        arms: &[(CPat, Term)],
+        i: usize,
+    ) -> Result<(), String> {
+        let then_b = self.builder.create_block();
+        let else_b = self.builder.create_block();
+        self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
+        self.builder.switch_to_block(then_b);
+        self.builder.seal_block(then_b);
+        then(self)?;
+        self.builder.switch_to_block(else_b);
+        self.builder.seal_block(else_b);
+        self.emit_case_tail(sval, arms, i + 1)
     }
 
     fn emit_case(&mut self, sval: Value, arms: &[(CPat, Term)], i: usize) -> Result<Value, String> {

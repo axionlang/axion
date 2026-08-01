@@ -43,13 +43,17 @@
 Times (ms, best of 3):
   kernel    Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
   --------  -------- -------- |   -----   ----- |  ------  ------
-  fib            700      257 |     568     253 |     819     304
-  loop          3179      544 |    2243     544 |    2444     544
-  alloc         1492       31 |     336     317 |    1103     510
-  simd          1908       34 |     339      32 |     731      32
-  dispatch      3385      565 |    2435     470 |    2495     565
-  sumtype       3752      564 |    2711     441 |    2750     568
+  fib            685      253 |     558     252 |     804     299
+  loop          2136      539 |    2201     543 |    2415     542
+  alloc         1431       31 |     333     310 |    1076     495
+  simd          1841       32 |     334      32 |     706      32
+  dispatch      2125      560 |    2409     466 |    2466     562
+  sumtype       2163      562 |    2657     432 |    2705     563
 ```
+
+(Ax `--dev` now compiles tail recursion to a **loop** — TCO, §backend — so on
+`loop`/`dispatch`/`sumtype` it is on par with, and here slightly ahead of, C/Rust
+at `-O0`, its comparable tier.)
 
 ## Reading
 
@@ -82,11 +86,17 @@ Times (ms, best of 3):
   constructors are immediate tags; `AXION_HEAP_STATS` reports `0 allocs`).
   Previously each `North`/`East`/… would have boxed 8 bytes. Mixed types
   (`None | Some a`) unbox the nullary side the same way (pointer-tagging).
-- **`--dev` is the fast-path, not the fast one.** Without optimizations or TCO, it
-  pays for the recursion in `loop` (3159 ms), the opaque runtime call in `alloc`
-  (1493 ms), and the **non-vectorized** `sumBuffer` of axionc's debug Rust runtime
-  in `simd` (1914 ms). Its role is to compile **instantly** for the edit-run cycle;
-  performance lives in `--release`.
+- **`--dev` — compares to `-O0`, and TCO closes the recursion gap.** Cranelift runs
+  with `opt_level = none` (it optimizes for **compile speed**, ~ms), so its fair
+  baseline is C/Rust `-O0`, not `-O2`. Axion has no surface loops, so tail
+  recursion is compiled to a **loop** (TCO — a lowering, not an optimization pass):
+  `loop`/`dispatch`/`sumtype` drop to ~2.1 s, **on par with or ahead of** C/Rust
+  `-O0` (2.2–2.7 s). What remains slower in `--dev` is *not* codegen quality but
+  **un-inlined runtime calls**: the arena bump-allocator (`alloc`) and the
+  `sumBytes` primitive (`simd`) are real calls in `--dev`, whereas `--release`'s
+  `-flto` inlines them. `fib` (not tail-recursive) is unchanged — TCO fires only on
+  self-tail-calls. Its role is still to compile **instantly**; peak performance
+  lives in `--release`.
 
 This confirms the premise of the **two backends** (§11/§18): Cranelift for the
 instant edit-run cycle, LLVM for performance competitive with C in release.

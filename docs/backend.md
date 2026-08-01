@@ -42,7 +42,13 @@ happened in the AST→Core lowering, so codegen only walks the ANF.
   resolution keys on the operator + operand type, so it never shadows a
   same-named user/prelude class's non-operator methods (e.g. the prelude's
   `Ord.le`).
-- Calls to other native functions, **including recursion**.
+- Calls to other native functions, **including recursion**. A **self-tail-call**
+  (`core::has_tail_self_call`) is compiled to a **loop** (TCO): the parameters are
+  reassigned and control jumps back to a header block instead of calling+returning
+  — no per-iteration call overhead, no stack growth. Axion has no surface loops, so
+  this is the natural lowering of tail recursion, not an optimization pass; it
+  applies in `--dev` (Cranelift; `--release`'s LLVM already does it) and makes deep
+  tail recursion safe.
 - `let v = <Int> in …`.
 - **Strings / IO** (via a minimal runtime): string literals (data objects,
   C-strings), the `Show` class (`showInt`/`showFloat` primitives →
