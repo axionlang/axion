@@ -511,6 +511,14 @@ class Eq a where
   eq :: a -> a -> Bool
 class Ord a where
   le :: a -> a -> Bool
+class Show a where
+  show :: a -> String
+instance Show Int where
+  show x = showInt x
+instance Show Float where
+  show x = showFloat x
+instance Show Bool where
+  show x = if x then \"true\" else \"false\"
 instance Eq Int where
   eq x y = x == y
 instance Ord Int where
@@ -651,13 +659,14 @@ fn derive_instances(module: &mut ast::Module, diags: &mut Diagnostics) {
             match class.as_str() {
                 "Eq" => src.push_str(&derive_eq(d)),
                 "Ord" => src.push_str(&derive_ord(d)),
+                "Show" => src.push_str(&derive_show(d)),
                 other => diags.push(
                     Diagnostic::error(
                         "AX0411",
                         format!("cannot derive `{other}` (unknown or unsupported class)"),
                     )
                     .label(d.span.0, d.span.1, "in this `deriving` clause")
-                    .with_help("derivable classes: Eq, Ord."),
+                    .with_help("derivable classes: Eq, Ord, Show."),
                 ),
             }
         }
@@ -724,6 +733,23 @@ fn derive_ord(d: &ast::DataDecl) -> String {
         s.push_str(&format!("      {ypat} -> {lexi}\n"));
         // y is a later constructor → x < y → `x <= y` is True.
         s.push_str("      _ -> True\n");
+    }
+    s
+}
+
+/// `deriving Show`: `show x = case x of Con … -> "Con" `strAppend` " " `strAppend`
+/// show f0 …`. Nullary constructors show as just the name; fields are separated by
+/// spaces and shown recursively (`show`, so field types must be `Show`).
+fn derive_show(d: &ast::DataDecl) -> String {
+    let mut s = format!("instance Show {} where\n  show x = case x of\n", d.name);
+    for c in &d.cons {
+        let (pat, vars) = con_pattern(c, "a");
+        // build the string: "Con" then, per field, " " ++ show field.
+        let mut expr = format!("\"{}\"", c.name);
+        for v in &vars {
+            expr = format!("strAppend (strAppend ({expr}) \" \") (show {v})");
+        }
+        s.push_str(&format!("    {pat} -> {expr}\n"));
     }
     s
 }

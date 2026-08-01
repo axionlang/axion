@@ -231,7 +231,7 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "join" => 2,
+        "join" | "strAppend" => 2,
         _ => 1,
     }
 }
@@ -423,8 +423,16 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "putStr",
             args: Vec::new(),
         }),
-        "show" => Ok(Value::Builtin {
-            name: "show",
+        "showInt" => Ok(Value::Builtin {
+            name: "showInt",
+            args: Vec::new(),
+        }),
+        "showFloat" => Ok(Value::Builtin {
+            name: "showFloat",
+            args: Vec::new(),
+        }),
+        "strAppend" => Ok(Value::Builtin {
+            name: "strAppend",
             args: Vec::new(),
         }),
         "toFloat" => Ok(Value::Builtin {
@@ -739,9 +747,9 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
     match (name, args.as_slice()) {
         ("putStrLn", [Value::Str(s)]) => Ok(Value::Io(format!("{s}\n"))),
         ("putStr", [Value::Str(s)]) => Ok(Value::Io(s.clone())),
-        ("show", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
-        ("show", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
-        ("show", [Value::Bool(b)]) => Ok(Value::Str(b.to_string())),
+        ("showInt", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
+        ("showFloat", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
+        ("strAppend", [Value::Str(x), Value::Str(y)]) => Ok(Value::Str(format!("{x}{y}"))),
         // split divides into a pair of shared-read halves (they share the
         // value); join recombines — trivial semantics in the interpreter.
         ("split", [v]) => Ok(Value::Tuple(vec![v.clone(), v.clone()])),

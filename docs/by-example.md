@@ -290,22 +290,25 @@ Rust** (measured: the `dispatch` benchmark ≈ C/Rust, [`docs/benchmarks.md`](be
 Coherence is checked statically: missing instance, extra method, use without an
 instance → `AX0400`–`AX0405`.
 
-### 16. `deriving (Eq, Ord)` — instances for free
+### 16. `deriving (Eq, Ord, Show)` — instances for free
 
 ```haskell
 data Color = Red | Green | Blue
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
-main :: Bool
-main = le Green (maxOr Red [Green, Blue, Red])    -- Green <= Blue → True
+main :: IO ()
+main = putStrLn (show Green)                       -- → Green
 ```
 ```sh
-$AX axionc/tests/fixtures/derive_ord.axi          # → true
+$AX axionc/tests/fixtures/derive_show_enum.axi     # → Green
 ```
 The `deriving` clause synthesizes **structural** instances (as Axion source that
 is parsed like any other, so it goes through the same monomorphization and
 compiles to native): `Eq` compares constructor-then-fields; `Ord` orders by
-constructor declaration order, then lexicographically by field. Currently for
+constructor declaration order, then lexicographically by field; `Show` renders
+the constructor name and each field (`show (Rect 2 3)` → `"Rect 2 3"`). `Show` is
+a real class now (`show :: Show a => a -> String`) with base instances for
+`Int`/`Float`/`Bool`; native string building uses `strAppend`. Currently for
 non-parametric types (`AX0410` otherwise); a hand-written `instance` always wins.
 
 ---

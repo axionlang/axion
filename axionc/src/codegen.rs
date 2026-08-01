@@ -64,6 +64,26 @@ extern "C" fn axion_show_int(n: i64) -> *const u8 {
     s.into_raw() as *const u8
 }
 
+/// `show :: Float -> String`: the shortest round-tripping decimal (matching Rust
+/// `{}`), as a C-string. The i64 argument is the f64 bit pattern.
+extern "C" fn axion_show_float(bits: i64) -> *const u8 {
+    let s = std::ffi::CString::new(f64::from_bits(bits as u64).to_string()).unwrap();
+    s.into_raw() as *const u8
+}
+
+/// String concatenation `a ++ b` into a fresh C-string. Backs `strAppend`.
+extern "C" fn axion_strcat(a: *const u8, b: *const u8) -> *const u8 {
+    let (x, y) = unsafe {
+        (
+            std::ffi::CStr::from_ptr(a as *const std::ffi::c_char),
+            std::ffi::CStr::from_ptr(b as *const std::ffi::c_char),
+        )
+    };
+    let mut s = x.to_bytes().to_vec();
+    s.extend_from_slice(y.to_bytes());
+    std::ffi::CString::new(s).unwrap().into_raw() as *const u8
+}
+
 // Heap counters (§13): how many allocations and frees occurred. With
 // `AXION_HEAP_STATS=1` the `run` prints them at the end — evidence that Auto-Drop
 // actually reclaims (not just static analysis).
@@ -506,6 +526,8 @@ impl Cg {
         builder.symbol("axion_puts", axion_puts as *const u8);
         builder.symbol("axion_put", axion_put as *const u8);
         builder.symbol("axion_show_int", axion_show_int as *const u8);
+        builder.symbol("axion_show_float", axion_show_float as *const u8);
+        builder.symbol("axion_strcat", axion_strcat as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
         builder.symbol("axion_free", axion_free as *const u8);
         builder.symbol("axion_arena_new", axion_arena_new as *const u8);
@@ -564,6 +586,9 @@ impl Cg {
             ("axion_buf_sum", 1, true),
             ("axion_buf_free", 1, false),
             ("axion_fold_bytes", 3, true),
+            // Show/String builtins (§tc): showFloat and strAppend
+            ("axion_show_float", 1, true),
+            ("axion_strcat", 2, true),
             // used by the generated destructors (deep-drop) via RtCall
             ("axion_free", 1, false),
             // cooperative session scheduler (§11)

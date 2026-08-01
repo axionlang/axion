@@ -1922,6 +1922,14 @@ fn deriving_eq_and_ord_generate_structural_instances() {
 }
 
 #[test]
+fn deriving_show_renders_constructors_and_fields() {
+    // `deriving (Show)` renders the constructor name then each field via `show`
+    // (native string concat `strAppend`), agreeing across the three executors.
+    agree_across_backends("derive_show_enum.axi", "Green\n");
+    agree_across_backends("derive_show.axi", "Rect 2 3\n");
+}
+
+#[test]
 fn deriving_on_parametric_type_is_rejected_ax0410() {
     // deriving is (for now) only for non-parametric types.
     let out = axionc()

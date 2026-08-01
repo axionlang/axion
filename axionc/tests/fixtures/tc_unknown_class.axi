@@ -1,6 +1,6 @@
 -- AX0400: instance of a class that was not declared.
-instance Show Int where
-  show x = "n"
+instance Bogus Int where
+  bogus x = 1
 
 main :: Int
 main = 1

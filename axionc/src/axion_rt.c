@@ -31,14 +31,38 @@ long axion_show_int(long n) {
 /* Prints a `Float` (`main :: Float`) as its SHORTEST round-tripping decimal, so
    --release matches the interpreter/Cranelift (Rust's `{}`), rather than the
    lossy 6-digit `%g`. Grows the precision until the value parses back exactly. */
-void axion_print_float(double d) {
-  char buf[32];
+static void float_shortest(double d, char *buf, long cap) {
   for (int prec = 1; prec <= 17; prec++) {
-    snprintf(buf, sizeof buf, "%.*g", prec, d);
+    snprintf(buf, cap, "%.*g", prec, d);
     if (strtod(buf, NULL) == d)
       break;
   }
+}
+void axion_print_float(double d) {
+  char buf[32];
+  float_shortest(d, buf, sizeof buf);
   printf("%s\n", buf);
+}
+
+/* `show :: Float -> String`: the shortest round-tripping decimal, as a heap
+   C-string (like axion_show_int). The i64 arg is the f64 bit pattern. */
+long axion_show_float(long bits) {
+  double d;
+  memcpy(&d, &bits, sizeof d);
+  char *buf = (char *)malloc(32);
+  float_shortest(d, buf, 32);
+  return (long)buf;
+}
+
+/* String concatenation `a ++ b` (both NUL-terminated C-strings) into a fresh
+   heap C-string. Backs the `strAppend` builtin. */
+long axion_strcat(long a, long b) {
+  const char *x = (const char *)a, *y = (const char *)b;
+  long la = (long)strlen(x), lb = (long)strlen(y);
+  char *buf = (char *)malloc(la + lb + 1);
+  memcpy(buf, x, la);
+  memcpy(buf + la, y, lb + 1); /* copies y's NUL too */
+  return (long)buf;
 }
 
 /* --- arenas (§3): bump-allocator over fixed chunks (stable pointers) --- */

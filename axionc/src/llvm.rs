@@ -29,6 +29,8 @@ const RT_DECLS: &str = "\
 declare void @axion_puts(i64)
 declare void @axion_put(i64)
 declare i64 @axion_show_int(i64)
+declare i64 @axion_show_float(i64)
+declare i64 @axion_strcat(i64, i64)
 declare i64 @axion_alloc(i64)
 declare void @axion_free(i64)
 declare i64 @axion_arena_new()

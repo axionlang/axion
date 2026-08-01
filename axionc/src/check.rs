@@ -1099,7 +1099,9 @@ fn builtins() -> HashSet<String> {
     [
         "putStrLn",
         "putStr",
-        "show",
+        "showInt",
+        "showFloat",
+        "strAppend",
         "otherwise",
         "True",
         "False",

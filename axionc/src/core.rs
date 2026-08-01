@@ -603,7 +603,9 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
     }
     for b in [
         "putStrLn",
-        "show",
+        "showInt",
+        "showFloat",
+        "strAppend",
         "print",
         "withArena",
         "withSubArena",
@@ -793,8 +795,14 @@ impl Lower<'_> {
         if name == "putStr" && args.len() == 1 {
             return Op::PutStr(self.atom(args[0], buf));
         }
-        if name == "show" && args.len() == 1 {
+        if name == "showInt" && args.len() == 1 {
             return Op::ShowInt(self.atom(args[0], buf));
+        }
+        if name == "showFloat" && args.len() == 1 {
+            return self.rtcall("axion_show_float", &args, true, buf);
+        }
+        if name == "strAppend" && args.len() == 2 {
+            return self.rtcall("axion_strcat", &args, true, buf);
         }
         if name == "toFloat" && args.len() == 1 {
             return Op::IntToFloat(self.atom(args[0], buf));
@@ -1127,10 +1135,12 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         }
     }
     for b in [
-        "putStrLn", "putStr", "show", "toFloat", "truncate", "sqrt", "floor", "abs",
+        "putStrLn", "putStr", "showInt", "showFloat", "toFloat", "truncate", "sqrt", "floor",
+        "abs",
     ] {
         arity.entry(b.into()).or_insert(1);
     }
+    arity.entry("strAppend".into()).or_insert(2);
     let mut e = Eta { arity, counter: 0 };
     let funcs = module.funcs.iter().map(|f| e.func(f)).collect();
     ast::Module {
@@ -3073,7 +3083,7 @@ fn dump_op(op: &Op) -> String {
         Op::LoadRaw(a, off) => format!("loadraw {}+{off}", atom(a)),
         Op::PutStrLn(a) => format!("putStrLn {}", atom(a)),
         Op::PutStr(a) => format!("putStr {}", atom(a)),
-        Op::ShowInt(a) => format!("show {}", atom(a)),
+        Op::ShowInt(a) => format!("showInt {}", atom(a)),
         Op::IntToFloat(a) => format!("toFloat {}", atom(a)),
         Op::FloatToInt(a) => format!("truncate {}", atom(a)),
         Op::FloatUnary(o, a) => format!("{o} {}", atom(a)),

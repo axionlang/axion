@@ -426,13 +426,26 @@ impl<'a> Infer<'a> {
             "putStr".into(),
             mono(Ty::Fun(Box::new(string()), Box::new(io_unit))),
         );
-        // show :: forall a. a -> String
+        // Show primitives (the `class Show` base instances live in the prelude):
+        // showInt :: Int -> String, showFloat :: Float -> String.
         env.insert(
-            "show".into(),
-            Scheme {
-                vars: vec![0],
-                ty: Ty::Fun(Box::new(Ty::Var(0)), Box::new(string())),
-            },
+            "showInt".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))),
+        );
+        env.insert(
+            "showFloat".into(),
+            mono(Ty::Fun(
+                Box::new(Ty::Con("Float".into(), vec![])),
+                Box::new(string()),
+            )),
+        );
+        // strAppend :: String -> String -> String (native string concatenation)
+        env.insert(
+            "strAppend".into(),
+            mono(Ty::Fun(
+                Box::new(string()),
+                Box::new(Ty::Fun(Box::new(string()), Box::new(string()))),
+            )),
         );
         env.insert("True".into(), mono(bool()));
         env.insert("False".into(), mono(bool()));
