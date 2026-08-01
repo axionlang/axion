@@ -57,14 +57,14 @@ bench_rust() {
   rustc -C opt-level=2 "bench/$k.rs" -o "$tmp/${k}_r2" 2>/dev/null && run "$k:r2" "$tmp/${k}_r2" || run "$k:r2" SKIP
 }
 
-KERNELS="fib loop alloc simd dispatch"
+KERNELS="fib loop alloc simd dispatch sumtype"
 for k in $KERNELS; do bench_kernel "$k"; bench_c "$k"; bench_rust "$k"; done
 
 echo
 echo "Times (ms, best of $RUNS) — the same clang (LLVM) for C and for Axion --release:"
 printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "kernel" "Ax --dev" "Ax --rel" "C -O0" "C -O2" "Rs -O0" "Rs -O2"
 printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "------" "--------" "--------" "-----" "-----" "------" "------"
-for k in fib loop alloc simd dispatch; do
+for k in fib loop alloc simd dispatch sumtype; do
   printf "  %-7s %8s %8s | %7s %7s | %7s %7s\n" "$k" \
     "${T[$k:dev]}" "${T[$k:rel]}" "${T[$k:c0]}" "${T[$k:c2]}" "${T[$k:r0]}" "${T[$k:r2]}"
 done
@@ -72,7 +72,7 @@ done
 echo
 # checks correctness: per kernel, all present results must match.
 ok=1
-for k in fib loop alloc simd dispatch; do
+for k in fib loop alloc simd dispatch sumtype; do
   ref=""
   for v in dev rel c0 c2 r0 r2; do
     r="${R[$k:$v]:-}"; [ -n "$r" ] || continue

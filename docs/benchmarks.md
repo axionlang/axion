@@ -6,7 +6,7 @@
 
 ## Methodology
 
-- Five kernels, the same algorithm in each language (`bench/<kernel>.{axi,c,rs}`):
+- Six kernels, the same algorithm in each language (`bench/<kernel>.{axi,c,rs}`):
   - **fib** — naive recursive `fib(40)` (compute / branches).
   - **loop** — 200 M arithmetic iterations with `mod` (not closable by `-O2`). In
     Axion it is recursion (no loops in the language); in C/Rust it is an idiomatic loop.
@@ -22,6 +22,10 @@
     generic via a *trait* (Rust monomorphizes by the same mechanism); in C it is the
     direct hand-written call. It measures **zero-cost abstraction** — does the
     generic pay the same as the hand-written one?
+  - **sumtype** — 200 M steps of `case` dispatch over an enum (`Dir`). In Axion
+    the enum is **unboxed** (immediate tags, zero allocation); in C it is an
+    `enum` + `switch`, in Rust an `enum` + `match`. It measures the cost of sum
+    types — is a `case` as cheap as a native `switch`, with no heap traffic?
 - Harness: [`scripts/bench.sh`](../scripts/bench.sh) — best of 3, `date +%s%N`, and
   it checks that, per kernel, every variant produces the same result.
 - **Comparable tier:** the **same `clang` (LLVM)** compiles the C and the Axion
@@ -39,11 +43,12 @@
 Times (ms, best of 3):
   kernel    Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
   --------  -------- -------- |   -----   ----- |  ------  ------
-  fib            666      252 |     590     252 |     840     323
-  loop          3159      542 |    2243     550 |    2440     545
-  alloc         1493       32 |     330     316 |    1085     495
-  simd          1914       33 |     338      32 |     710      31
-  dispatch      3488      563 |    2433     564 |    2485     561
+  fib            700      257 |     568     253 |     819     304
+  loop          3179      544 |    2243     544 |    2444     544
+  alloc         1492       31 |     336     317 |    1103     510
+  simd          1908       34 |     339      32 |     731      32
+  dispatch      3385      565 |    2435     470 |    2495     565
+  sumtype       3752      564 |    2711     441 |    2750     568
 ```
 
 ## Reading
@@ -70,6 +75,13 @@ Times (ms, best of 3):
   **pays nothing** for being generic: it is exactly the promise "elegance of
   Haskell, control of Rust". The specialization is the same mechanism as Rust
   (monomorphization), not dictionary passing with indirection.
+- **Sum types — unboxed, allocation-free, à la C `enum`.** On `sumtype`, 200 M
+  steps of `case` dispatch over a `Dir` enum (`turn`/`val`), Axion `--release`
+  costs **564 ms** — on par with Rust `-O2` `match` (**568 ms**) and within ~1.3×
+  of C `-O2`'s `switch` (**441 ms**), with **zero heap allocation** (nullary
+  constructors are immediate tags; `AXION_HEAP_STATS` reports `0 allocs`).
+  Previously each `North`/`East`/… would have boxed 8 bytes. Mixed types
+  (`None | Some a`) unbox the nullary side the same way (pointer-tagging).
 - **`--dev` is the fast-path, not the fast one.** Without optimizations or TCO, it
   pays for the recursion in `loop` (3159 ms), the opaque runtime call in `alloc`
   (1493 ms), and the **non-vectorized** `sumBuffer` of axionc's debug Rust runtime
