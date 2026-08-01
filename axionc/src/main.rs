@@ -235,7 +235,18 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    match interp::run(&module) {
+    // Run the interpreter on a large-stack thread (like the native backends) so
+    // deep recursion doesn't overflow the small default stack. The whole run
+    // happens inside the thread — its `Rc` values never cross the boundary.
+    let result = std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(codegen::EVAL_STACK_SIZE)
+            .spawn_scoped(s, || interp::run(&module))
+            .expect("spawn interp thread")
+            .join()
+            .expect("interp thread panicked")
+    });
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("runtime error: {e}");

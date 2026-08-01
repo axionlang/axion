@@ -48,7 +48,11 @@ happened in the AST→Core lowering, so codegen only walks the ANF.
   — no per-iteration call overhead, no stack growth. Axion has no surface loops, so
   this is the natural lowering of tail recursion, not an optimization pass; it
   applies in `--dev` (Cranelift; `--release`'s LLVM already does it) and makes deep
-  tail recursion safe.
+  tail recursion safe. **Non-tail** recursion still uses the call stack, but `main`
+  runs on a thread with a large, lazily-committed stack (`EVAL_STACK_SIZE`, 2 GiB —
+  a `std::thread` for `--dev`/interp, a `pthread` via `axion_run_main` for
+  `--release`), so deep recursion grows toward RAM (millions of native frames)
+  instead of overflowing the ~8 MB default; at worst it hits the clean OOM abort.
 - `let v = <Int> in …`.
 - **Strings / IO** (via a minimal runtime): string literals (data objects,
   C-strings), the `Show` class (`showInt`/`showFloat` primitives →

@@ -135,6 +135,11 @@ static CELL_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// Fixed size of a `Cell` (§3). Opaque to the program (`useCell` returns 0).
 const CELL_SIZE: i64 = 16;
 
+/// Stack size (bytes) for the thread that runs `main` — large so deep recursion
+/// does not overflow the small default stack. Lazily committed: reserving it
+/// costs no RAM until the recursion actually goes that deep.
+pub const EVAL_STACK_SIZE: usize = 2 << 30; // 2 GiB
+
 /// State of an arena: fixed *chunks* (don't move → stable pointers) with a
 /// bump-pointer. The reset drops all the chunks at once.
 struct ArenaState {
@@ -1601,7 +1606,17 @@ pub fn run(
 
     let code = cg.module.get_finalized_function(cg.ids[entry].0);
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
-    let val = f();
+    // Run on a thread with a large stack (lazily committed — only touched pages
+    // cost memory) so deep NON-tail recursion doesn't overflow the small default
+    // stack; it grows toward RAM and, at worst, hits the clean OOM abort.
+    let val = std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(EVAL_STACK_SIZE)
+            .spawn_scoped(s, || f())
+            .expect("spawn eval thread")
+            .join()
+            .expect("eval thread panicked")
+    });
 
     if std::env::var("AXION_HEAP_STATS").is_ok() {
         use std::sync::atomic::Ordering::Relaxed;

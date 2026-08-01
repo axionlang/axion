@@ -54,6 +54,7 @@ declare i64 @axion_sess_alloc(i64, i64)
 declare void @axion_sess_spawn(i64, i64, i64)
 declare i64 @axion_sess_run(i64, i64, i64)
 declare i32 @printf(ptr, ...)
+declare i64 @axion_run_main(i64)
 declare void @axion_print_float(double)
 declare double @llvm.sqrt.f64(double)
 declare double @llvm.floor.f64(double)
@@ -145,8 +146,11 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
         out.push('\n');
     }
 
-    // driver: calls `ax_main`; prints the Int, or nothing if it is IO ().
-    out.push_str("define i32 @main() {\nentry:\n  %r = call i64 @\"ax_main\"()\n");
+    // driver: runs `ax_main` on a large-stack thread (deep recursion safety),
+    // then prints the Int, or nothing if it is IO ().
+    out.push_str("define i32 @main() {\nentry:\n");
+    out.push_str("  %fp = ptrtoint ptr @\"ax_main\" to i64\n");
+    out.push_str("  %r = call i64 @axion_run_main(i64 %fp)\n");
     if main_int {
         out.push_str("  call i32 (ptr, ...) @printf(ptr @.fmt, i64 %r)\n");
     } else if main_float {

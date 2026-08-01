@@ -31,6 +31,37 @@ static void *axion_xrealloc(void *ptr, long size) {
   return q;
 }
 
+/* Runs `main` (an i64()-returning function pointer, passed as i64) on a thread
+ * with a large, lazily-committed stack (1 GiB), so deep non-tail recursion grows
+ * toward RAM instead of overflowing the small default stack — at worst hitting
+ * the clean OOM abort. Falls back to a direct call if the thread can't spawn. */
+#define AXION_STACK_SIZE (1L << 30) /* 1 GiB */
+struct axion_main_arg {
+  long (*fn)(void);
+  long ret;
+};
+static void *axion_main_trampoline(void *p) {
+  struct axion_main_arg *a = (struct axion_main_arg *)p;
+  a->ret = a->fn();
+  return NULL;
+}
+long axion_run_main(long fnptr) {
+  struct axion_main_arg a;
+  a.fn = (long (*)(void))fnptr;
+  a.ret = 0;
+  pthread_attr_t attr;
+  pthread_t t;
+  if (pthread_attr_init(&attr) != 0 ||
+      pthread_attr_setstacksize(&attr, AXION_STACK_SIZE) != 0 ||
+      pthread_create(&t, &attr, axion_main_trampoline, &a) != 0) {
+    a.ret = a.fn(); /* fallback: run on the current stack */
+  } else {
+    pthread_join(t, NULL);
+    pthread_attr_destroy(&attr);
+  }
+  return a.ret;
+}
+
 /* --- heap with a size header (Auto-Drop, §2) --- */
 long axion_alloc(long size) {
   long total = (size < 1 ? 1 : size) + 8;
