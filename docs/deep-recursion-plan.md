@@ -208,17 +208,24 @@ transform. Results:
   recursively frees `rest` — but `rest` is transferred to the recursive call. So the
   stack must be the **flat, runtime-managed buffer** (`axion_frames_push/pop`, §4b),
   which frees each frame shell explicitly on pop — never a recursive linear ADT.
-- **Latent Auto-Drop bug discovered (independent of this plan).** The double-free
-  above is *general*: any incrementally-consumed **linear recursive ADT**
-  (`data L = LN | LC Int L`, `sumL :: L %1 -> Int`, `case xs of LC y ys -> … sumL
-  ys`) double-frees natively — the interpreter gives the right answer (it is memory
-  agnostic), but the native deep-drop of the matched `LC` frees the transferred tail
-  `ys` too. The existing linear examples are flat `Buffer`s, so this pattern was
-  never exercised. The fix is in the Auto-Drop analysis: when a matched
-  constructor's heap field is **bound and used** (ownership transferred), the parent
-  must be freed **shallowly** (shell only), not deep-dropped. This should be fixed
-  independently — it is a real (if untested) memory-safety gap — and the frame-stack
-  design above sidesteps it regardless.
+- **Latent Auto-Drop double-free — found AND fixed (independent of this plan).**
+  The double-free above was *general*: any incrementally-consumed **linear recursive
+  ADT** (`data L = LN | LC Int L`, `sumL :: L %1`, `case xs of LC y ys -> … sumL
+  ys`) double-freed natively (the interpreter, memory-agnostic, was fine) — the deep
+  drop of the matched `LC` also freed the transferred tail `ys`. **Fixed:**
+  `core::transfers_heap_field` + `case_arms` — when an arm binds a heap field of the
+  scrutinee to a variable that **escapes** the arm (`occurs_nonborrow`), the
+  scrutinee is freed **shallowly** (shell only), not deep-dropped; a field that is
+  dead/borrowed/wildcard stays owned and is still deep-dropped. Regression fixture
+  `linear_recursive_adt.axi` (5 allocs / 5 frees), sanitizer clean.
+- **Remaining (a leak, not corruption): extracted heap fields that die locally.**
+  In a machine whose stack node carries an intermediate heap cell (e.g.
+  `data Frame = FAdd Int`, extracted as `f` and consumed by an inner `case`), that
+  cell is **not** freed — `droppable_vars` only tracks locally-`Make`d allocations
+  and owned params, not fields extracted from an owned structure. This is a leak
+  (safe), and the flat frame-buffer design (§4b) avoids it anyway, but it is a
+  follow-up worth doing: extend the drop analysis to treat a transferred-in heap
+  field binding as owned.
 
 ## 9. Bottom line
 A genuine, backend-uniform guarantee — *"an Axion program never stack-overflows"* —

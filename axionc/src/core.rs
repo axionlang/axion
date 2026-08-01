@@ -497,6 +497,13 @@ impl RecordInfo {
         (base + i) as i32 * 8
     }
 
+    /// `true` if field `i` of `con` is a separately-allocated heap object (a
+    /// `data`/tuple the value owns) — i.e. one the deep-drop destructor would free.
+    pub fn field_is_heap(&self, con: &str, i: usize) -> bool {
+        let off = self.field_offset(con, i);
+        self.drop_slots(con).iter().any(|(o, _)| *o == off)
+    }
+
     /// Offset (in bytes) of a named field, and the list of its record's fields.
     pub fn field(&self, name: &str) -> Option<(i32, &[String])> {
         let con = self.field_owner.get(name)?;
@@ -2367,7 +2374,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
         .into_iter()
         .map(|f| {
             let dty = all_dty.get(&f.name).unwrap_or(&empty);
-            insert_drops(f, &heap_ret, &borrow_args, dty, &enum_cons)
+            insert_drops(f, &heap_ret, &borrow_args, dty, &enum_cons, &recinfo)
         })
         .collect();
     // generated destructors: added AFTER drop insertion (they manage
@@ -2927,6 +2934,7 @@ fn insert_drops(
     ba: &BorrowArgs,
     drop_ty: &HashMap<String, Option<String>>,
     enum_cons: &HashSet<String>,
+    recinfo: &RecordInfo,
 ) -> CoreFn {
     let drp = droppable_vars(&f, heap_ret, ba, enum_cons);
     if drp.is_empty() {
@@ -2937,6 +2945,7 @@ fn insert_drops(
         tmp: 1_000_000,
         ba,
         drop_ty,
+        recinfo,
     };
     let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
     f.body = e.go(body, &HashSet::new());
@@ -2948,6 +2957,27 @@ struct Elab<'a> {
     tmp: u32,
     ba: &'a BorrowArgs,
     drop_ty: &'a HashMap<String, Option<String>>,
+    recinfo: &'a RecordInfo,
+}
+
+/// `true` if a `case` arm binds a **heap** field of the scrutinee to a variable
+/// that is **used** (live) in the arm — i.e. that field's ownership was transferred
+/// out. When so, the scrutinee must be freed SHALLOWLY (shell only), not
+/// deep-dropped, or the deep-drop would double-free the transferred field
+/// (`case xs of Cons y ys -> … ys …`). A field bound-but-unused (or a wildcard)
+/// stays owned by the scrutinee, so a deep drop still (correctly) frees it.
+fn transfers_heap_field(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
+    if let CPat::Con(con, subpats) = pat {
+        subpats.iter().enumerate().any(|(i, sp)| {
+            let CPat::Var(n) = sp else { return false };
+            // a heap field whose binding ESCAPES the arm (is consumed/moved out,
+            // not merely borrowed) had its ownership transferred → the scrutinee
+            // must be freed shallowly.
+            recinfo.field_is_heap(con, i) && occurs_nonborrow(n, body)
+        })
+    } else {
+        false
+    }
 }
 
 impl Elab<'_> {
@@ -3082,6 +3112,12 @@ impl Elab<'_> {
                 s
             })
             .collect();
+        // per arm: does it transfer a heap field of the scrutinee out (→ shallow
+        // free of the scrutinee)? Computed on the original body before elaboration.
+        let transfers: Vec<bool> = arms
+            .iter()
+            .map(|(pat, body)| transfers_heap_field(pat, body, self.recinfo))
+            .collect();
         let union: HashSet<String> = fvs.iter().flatten().cloned().collect();
 
         let scrut_drop = match scrut {
@@ -3098,9 +3134,14 @@ impl Elab<'_> {
                     b = Term::Drop(v.clone(), self.dty(v), Box::new(b));
                 }
             }
-            // frees the scrutinee at the head (after destructuring)
+            // frees the scrutinee at the head (after destructuring). If this arm
+            // destructured a HEAP field of the scrutinee into a binding, that
+            // field's ownership moved out — free the scrutinee SHALLOWLY (shell
+            // only, `ty = None`), not deep, or the deep-drop would double-free the
+            // extracted field (e.g. `case xs of Cons y ys -> … ys …`).
             if let Some(s) = &scrut_drop {
-                b = Term::Drop(s.clone(), self.dty(s), Box::new(b));
+                let ty = if transfers[i] { None } else { self.dty(s) };
+                b = Term::Drop(s.clone(), ty, Box::new(b));
             }
             out.push((pat, b));
         }

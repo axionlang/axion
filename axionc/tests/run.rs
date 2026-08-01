@@ -889,6 +889,10 @@ fn deep_drop_reclaims_nested_objects() {
         // `None` is an unboxed immediate (mixed type), so only `Some (P …)` and
         // the `P` record allocate — deep-drop still reclaims the nested `P`.
         ("sum_payload.axi", "15\n", "2 allocs, 2 frees"),
+        // a linear recursive ADT consumed incrementally: the scrutinee is freed
+        // shallowly (shell only) as the tail is transferred — 5 LC cells, 5 frees,
+        // no double-free, no leak.
+        ("linear_recursive_adt.axi", "15\n", "5 allocs, 5 frees"),
     ] {
         let out = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])
