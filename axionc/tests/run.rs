@@ -1902,6 +1902,15 @@ fn num_class_unifies_arithmetic_over_int_and_float() {
 }
 
 #[test]
+fn main_bool_prints_natively() {
+    // `main :: Bool` prints `true`/`false` on all three executors (the native
+    // backends print an i64 0/1 by selecting the two string constants), matching
+    // the interpreter — no `if … then 1 else 0` workaround needed.
+    agree_across_backends("bool_true.axi", "true\n");
+    agree_across_backends("bool_false.axi", "false\n");
+}
+
+#[test]
 fn ord_class_unifies_comparisons_over_int_and_float() {
     // built-in `Ord`: the plain comparisons `== < >` work on Float (no `<.`),
     // resolved by inference and rewritten to the dotted form for the backends.

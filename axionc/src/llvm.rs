@@ -13,7 +13,7 @@
 use crate::ast;
 use crate::ast::Span;
 use crate::core::{
-    self, is_float, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term,
+    self, is_bool, is_float, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term,
 };
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -77,12 +77,25 @@ fn main_returns_float(module: &ast::Module, entry: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `true` if `main :: Bool` — the driver prints `true`/`false` (like the
+/// interpreter) by selecting between two string constants.
+fn main_returns_bool(module: &ast::Module, entry: &str) -> bool {
+    module
+        .funcs
+        .iter()
+        .find(|f| f.name == entry)
+        .and_then(|f| f.sig.as_ref())
+        .map(|s| is_bool(result_type(s)))
+        .unwrap_or(false)
+}
+
 /// Emits the LLVM IR module (text) from the Core (`--emit llvm`).
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
     let fns = core::lower(module, inplace);
     let records = RecordInfo::build(module);
     let main_int = main_returns_int(module, "main");
     let main_float = main_returns_float(module, "main");
+    let main_bool = main_returns_bool(module, "main");
 
     // pre-pass: interns the string literals
     let mut strings: HashMap<String, usize> = HashMap::new();
@@ -105,6 +118,11 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
     }
     out.push_str("@.fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\"\n");
     out.push_str("@.ffmt = private unnamed_addr constant [4 x i8] c\"%g\\0A\\00\"\n");
+    if main_bool {
+        out.push_str("@.sfmt = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\"\n");
+        out.push_str("@.true = private unnamed_addr constant [5 x i8] c\"true\\00\"\n");
+        out.push_str("@.false = private unnamed_addr constant [6 x i8] c\"false\\00\"\n");
+    }
     // string globals
     let mut sorted: Vec<(&String, &usize)> = strings.iter().collect();
     sorted.sort_by_key(|(_, i)| **i);
@@ -130,6 +148,11 @@ pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, 
         // reinterpret the i64 ABI value as a double and print it (`%g`).
         out.push_str("  %rf = bitcast i64 %r to double\n");
         out.push_str("  call i32 (ptr, ...) @printf(ptr @.ffmt, double %rf)\n");
+    } else if main_bool {
+        // i64 0/1 → select "true"/"false" and print (like the interpreter).
+        out.push_str("  %b = icmp ne i64 %r, 0\n");
+        out.push_str("  %s = select i1 %b, ptr @.true, ptr @.false\n");
+        out.push_str("  call i32 (ptr, ...) @printf(ptr @.sfmt, ptr %s)\n");
     }
     out.push_str("  ret i32 0\n}\n");
     Ok(out)

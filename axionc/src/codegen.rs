@@ -12,7 +12,7 @@
 use crate::ast;
 use crate::ast::Span;
 use crate::core::{
-    self, is_float, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term,
+    self, is_bool, is_float, is_int, result_type, Atom, CPat, CoreFn, Op, RecordInfo, Rhs, Term,
 };
 use cranelift::codegen::ir::UserFuncName;
 use cranelift::codegen::Context;
@@ -1375,6 +1375,11 @@ pub fn run(
     // and print here (the caller only knows how to print an Int).
     if result.is_some_and(is_float) {
         println!("{}", f64::from_bits(val as u64));
+        return Ok(None);
+    }
+    // `main :: Bool` is an i64 0/1: print like the interpreter (`true`/`false`).
+    if result.is_some_and(is_bool) {
+        println!("{}", val != 0);
         return Ok(None);
     }
     let returns_int = result.map(is_int).unwrap_or(true);

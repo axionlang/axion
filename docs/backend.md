@@ -32,7 +32,8 @@ happened in the AST→Core lowering, so codegen only walks the ANF.
   does the FP op, and either bitcasts the result back (arithmetic) or zero-extends
   the `fcmp o*` bit (comparison → Bool) — in both Cranelift and LLVM.
   `main :: Float` is printed by reinterpreting the returned i64 as a double
-  (`%g`). Conversions `toFloat` (`Op::IntToFloat`, `sitofp`) and `truncate`
+  (`%g`), and `main :: Bool` prints `true`/`false` from the i64 0/1 (matching the
+  interpreter). Conversions `toFloat` (`Op::IntToFloat`, `sitofp`) and `truncate`
   (`Op::FloatToInt`, `fptosi`) bridge `Int` and `Float`. An unconstrained
   `Num`/`Ord` use defaults to `Int` (à la Haskell). The built-in resolution keys
   on the operator + operand type, so it never shadows a same-named user/prelude

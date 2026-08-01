@@ -230,6 +230,10 @@ pub fn is_float(t: &Type) -> bool {
     matches!(t.head_con(), Some("Float"))
 }
 
+pub fn is_bool(t: &Type) -> bool {
+    matches!(t.head_con(), Some("Bool"))
+}
+
 /// BUILT-IN infix operators (`Int` arithmetic/comparison), which lower to
 /// `Op::Prim`. The rest is a user infix operator — a named function
 /// applied to two arguments. Matches `interp::is_builtin_op`.
