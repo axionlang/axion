@@ -886,7 +886,9 @@ fn deep_drop_reclaims_nested_objects() {
     // inner object (flat free).
     for (fx, expected, allocs) in [
         ("nested_drop.axi", "12\n", "2 allocs, 2 frees"),
-        ("sum_payload.axi", "15\n", "3 allocs, 3 frees"),
+        // `None` is an unboxed immediate (mixed type), so only `Some (P …)` and
+        // the `P` record allocate — deep-drop still reclaims the nested `P`.
+        ("sum_payload.axi", "15\n", "2 allocs, 2 frees"),
     ] {
         let out = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])
@@ -1973,6 +1975,25 @@ fn nullary_enum_constructors_are_unboxed() {
     assert!(
         stats.contains("0 allocs"),
         "expected zero allocations for an enum program, got: {stats}"
+    );
+}
+
+#[test]
+fn nullary_constructors_of_mixed_types_are_unboxed() {
+    // in a mixed sum type (some nullary, some with fields), the nullary
+    // constructors are tagged immediates — no allocation — while the others stay
+    // heap pointers. `Nothing` here never allocates; the low-bit-guarded free /
+    // deep-drop keeps it memory-safe (see the sanitizer gate).
+    agree_across_backends("mixed_unboxed.axi", "5\n");
+    let out = axionc()
+        .args(["--backend", "cranelift", &fixture("mixed_unboxed.axi")])
+        .env("AXION_HEAP_STATS", "1")
+        .output()
+        .unwrap();
+    let stats = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stats.contains("0 allocs"),
+        "expected zero allocations (nullary immediates), got: {stats}"
     );
 }
 

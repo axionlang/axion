@@ -320,6 +320,9 @@ pub struct RecordInfo {
     needs_deep: HashSet<String>,
     /// unboxed enum types (all constructors nullary): values are immediate tags.
     enum_types: HashSet<String>,
+    /// mixed sum types (some nullary, some with fields): nullary constructors are
+    /// tagged immediates `(idx<<1)|1`, others are heap pointers (low bit 0).
+    mixed_types: HashSet<String>,
 }
 
 impl RecordInfo {
@@ -330,6 +333,9 @@ impl RecordInfo {
         for d in &module.datas {
             if is_enum_data(d) {
                 r.enum_types.insert(d.name.clone());
+            } else if d.cons.iter().any(|c| c.fields.is_empty()) {
+                // has both nullary and field-carrying constructors → mixed.
+                r.mixed_types.insert(d.name.clone());
             }
         }
         for d in &module.datas {
@@ -423,6 +429,25 @@ impl RecordInfo {
     /// The constructor index within its type (its immediate value when unboxed).
     pub fn con_index(&self, con: &str) -> i32 {
         self.con_tag.get(con).copied().unwrap_or(0)
+    }
+
+    /// `true` if the constructor's type is a **mixed** sum (some nullary, some
+    /// with fields): nullary values are tagged immediates, others are pointers.
+    pub fn is_mixed_con(&self, con: &str) -> bool {
+        self.con_type
+            .get(con)
+            .is_some_and(|t| self.mixed_types.contains(t))
+    }
+
+    /// `true` if `con` is a nullary constructor of a mixed type — its value is the
+    /// tagged immediate `(index<<1)|1` (distinguishable from a heap pointer).
+    pub fn is_tagged_nullary(&self, con: &str) -> bool {
+        self.is_mixed_con(con) && self.con_arity(con) == Some(0)
+    }
+
+    /// `true` if the type `ty` is a mixed sum (values may be immediate or pointer).
+    pub fn is_mixed_type(&self, ty: &str) -> bool {
+        self.mixed_types.contains(ty)
     }
 
     /// The tag (index) of a constructor, if its type is a sum (>1 con).
@@ -2378,6 +2403,23 @@ fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
                 Rhs::Op(Op::LoadRaw(Atom::Var(p.clone()), 0)),
                 Box::new(chain),
             )
+        };
+        // mixed type: a tagged-immediate (nullary) value has no fields and must
+        // NOT be dereferenced/freed — guard the whole destructor on the low bit.
+        let body = if recinfo.is_mixed_type(&ty) {
+            let bit = fresh_dd(&mut ctr);
+            let res = fresh_dd(&mut ctr);
+            Term::Let(
+                bit.clone(),
+                Rhs::Op(Op::Prim("band".into(), Atom::Var(p.clone()), Atom::Int(1))),
+                Box::new(Term::Let(
+                    res,
+                    Rhs::If(Atom::Var(bit), Box::new(unit0()), Box::new(body)),
+                    Box::new(unit0()),
+                )),
+            )
+        } else {
+            body
         };
         out.push(CoreFn {
             name: format!("axion_drop_{ty}"),

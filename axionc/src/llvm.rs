@@ -548,6 +548,37 @@ impl Emit<'_> {
     }
 
     /// `case` as an `if` chain (Int/var/`_`/tuple patterns; catch-all at the end).
+    /// The effective constructor tag of a scrutinee, by its type's category:
+    /// unboxed enum → the value; boxed sum → tag at offset 0; mixed →
+    /// `(v & 1) ? (v >> 1) : load[v]`.
+    fn case_eff_tag(&mut self, sval: &str, con: &str) -> String {
+        if self.records.is_enum_con(con) {
+            return sval.to_string();
+        }
+        if !self.records.is_mixed_con(con) {
+            return self.load(sval, 0);
+        }
+        let bit = self.val();
+        self.ins(&format!("{bit} = and i64 {sval}, 1"));
+        let c = self.val();
+        self.ins(&format!("{c} = icmp ne i64 {bit}, 0"));
+        let (li, lp, lm) = (self.label("imm"), self.label("ptr"), self.label("tmerge"));
+        self.ins(&format!("br i1 {c}, label %{li}, label %{lp}"));
+        self.block(&li);
+        let ei = self.val();
+        self.ins(&format!("{ei} = lshr i64 {sval}, 1"));
+        let ib = self.cur_block.clone();
+        self.ins(&format!("br label %{lm}"));
+        self.block(&lp);
+        let ep = self.load(sval, 0);
+        let pb = self.cur_block.clone();
+        self.ins(&format!("br label %{lm}"));
+        self.block(&lm);
+        let r = self.val();
+        self.ins(&format!("{r} = phi i64 [ {ei}, %{ib} ], [ {ep}, %{pb} ]"));
+        r
+    }
+
     fn case(&mut self, sval: &str, arms: &[(CPat, Term)], i: usize) -> Result<String, String> {
         let (pat, body) = &arms[i];
         match pat {
@@ -611,12 +642,7 @@ impl Emit<'_> {
                         self.term(body)
                     }
                     Some(tag) => {
-                        // unboxed enum: the value IS the tag; boxed sum: load offset 0.
-                        let ktag = if self.records.is_enum_con(con) {
-                            sval.to_string()
-                        } else {
-                            self.load(sval, 0)
-                        };
+                        let ktag = self.case_eff_tag(sval, con);
                         let c1 = self.val();
                         self.ins(&format!("{c1} = icmp eq i64 {ktag}, {tag}"));
                         let (lt, le, lm) =
@@ -806,6 +832,10 @@ impl Emit<'_> {
                 // unboxed enum constructor (all-nullary type): an immediate tag.
                 if self.records.is_enum_con(con) {
                     return Ok(self.records.con_index(con).to_string());
+                }
+                // nullary constructor of a mixed type: tagged immediate `(idx<<1)|1`.
+                if self.records.is_tagged_nullary(con) {
+                    return Ok((((self.records.con_index(con) as i64) << 1) | 1).to_string());
                 }
                 let slots = self
                     .records

@@ -17,7 +17,13 @@ long axion_alloc(long size) {
   *(long *)base = total;
   return (long)(base + 8);
 }
-void axion_free(long ptr) { free((char *)ptr - 8); }
+void axion_free(long ptr) {
+  /* a tagged immediate (low bit set: a nullary constructor of a mixed sum type)
+     is not a heap allocation — nothing to free. */
+  if (ptr & 1)
+    return;
+  free((char *)ptr - 8);
+}
 
 /* --- strings / IO --- */
 void axion_puts(long s) { puts((const char *)s); }

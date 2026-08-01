@@ -106,6 +106,11 @@ extern "C" fn axion_alloc(size: i64) -> *mut u8 {
 
 /// Frees an object allocated by `axion_alloc` (reads the size from the header).
 extern "C" fn axion_free(ptr: *mut u8) {
+    // a tagged immediate (low bit set — a nullary constructor of a mixed sum
+    // type) is not a heap allocation: nothing to free.
+    if (ptr as usize) & 1 != 0 {
+        return;
+    }
     unsafe {
         let base = ptr.sub(8);
         let total = *(base as *const u64) as usize;
@@ -1046,6 +1051,12 @@ impl Fx<'_, '_> {
                     let idx = self.records.con_index(con);
                     return Ok(self.builder.ins().iconst(types::I64, idx as i64));
                 }
+                // nullary constructor of a mixed type: tagged immediate
+                // `(index<<1)|1` — distinguishable from an (aligned) heap pointer.
+                if self.records.is_tagged_nullary(con) {
+                    let imm = ((self.records.con_index(con) as i64) << 1) | 1;
+                    return Ok(self.builder.ins().iconst(types::I64, imm));
+                }
                 // positional `data` value (with a tag if it is a sum type)
                 let slots = self
                     .records
@@ -1232,6 +1243,38 @@ impl Fx<'_, '_> {
     /// `case s of arms` — an `if` chain over the scrutinee. Patterns: `Int`
     /// (compare), variable/`_` (catch-all), tuple `(a, b)` (destructure by
     /// offset). Requires a catch-all at the end.
+    /// The effective constructor tag of a scrutinee, by its type's category:
+    /// unboxed enum → the value itself; boxed sum → the tag at offset 0; mixed →
+    /// `(v & 1) ? (v >> 1) : load[v]` (immediate nullary vs heap pointer).
+    fn case_eff_tag(&mut self, sval: Value, con: &str) -> Value {
+        if self.records.is_enum_con(con) {
+            return sval;
+        }
+        if !self.records.is_mixed_con(con) {
+            return self.builder.ins().load(types::I64, MemFlags::new(), sval, 0);
+        }
+        let bit = self.builder.ins().band_imm(sval, 1);
+        let imm_b = self.builder.create_block();
+        let ptr_b = self.builder.create_block();
+        let merge = self.builder.create_block();
+        self.builder.append_block_param(merge, types::I64);
+        self.builder.ins().brif(bit, imm_b, &[], ptr_b, &[]);
+
+        self.builder.switch_to_block(imm_b);
+        self.builder.seal_block(imm_b);
+        let ei = self.builder.ins().ushr_imm(sval, 1);
+        self.builder.ins().jump(merge, &[ei]);
+
+        self.builder.switch_to_block(ptr_b);
+        self.builder.seal_block(ptr_b);
+        let ep = self.builder.ins().load(types::I64, MemFlags::new(), sval, 0);
+        self.builder.ins().jump(merge, &[ep]);
+
+        self.builder.switch_to_block(merge);
+        self.builder.seal_block(merge);
+        self.builder.block_params(merge)[0]
+    }
+
     fn emit_case(&mut self, sval: Value, arms: &[(CPat, Term)], i: usize) -> Result<Value, String> {
         let (pat, body) = &arms[i];
         match pat {
@@ -1297,15 +1340,7 @@ impl Fx<'_, '_> {
                         self.emit_term(body)
                     }
                     Some(tag) => {
-                        // unboxed enum: the value IS the tag (immediate); boxed sum:
-                        // the tag lives at offset 0 of the heap object.
-                        let ktag = if self.records.is_enum_con(con) {
-                            sval
-                        } else {
-                            self.builder
-                                .ins()
-                                .load(types::I64, MemFlags::new(), sval, 0)
-                        };
+                        let ktag = self.case_eff_tag(sval, con);
                         let kt = self.builder.ins().iconst(types::I64, tag as i64);
                         let cond = self.builder.ins().icmp(IntCC::Equal, ktag, kt);
                         let then_b = self.builder.create_block();

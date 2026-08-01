@@ -58,12 +58,20 @@ happened in the AST→Core lowering, so codegen only walks the ANF.
   `Con { f = … }` / `(a, b)`, update `r { f = … }` (allocates and copies) and
   selectors `f r` (offset load); each field/component is an `i64`. Functions with
   `data`-typed params/return (pointer) compile. `record_run.axi` runs native (→ 99).
-- **Unboxed enums**: a `data` whose constructors are all nullary (a C-like enum,
-  e.g. `Color = Red | Green | Blue`) is *not* heap-allocated — its values are
-  immediate tags (the constructor index). `MakeCon` is an `iconst`, `case`
-  compares the value directly, and it is never `drop`ped (heap/drop decisions use
-  the `boxed` set, which excludes enums). Zero allocations (`AXION_HEAP_STATS`
-  proves it). Mixed types (`Nil | Cons`) still box for now.
+- **Unboxed sum types** (no allocation for nullary constructors):
+  - *all-nullary* (a C-like enum, `Color = Red | Green | Blue`): values are
+    immediate tags (the constructor index); `MakeCon` is an `iconst`, `case`
+    compares the value directly, never `drop`ped.
+  - *mixed* (some nullary, some with fields, `Nil | Cons`, `None | Some a`):
+    nullary constructors are **tagged immediates** `(idx<<1)|1` (low bit set),
+    field-carrying ones stay 8-aligned heap pointers (low bit 0). `case` reads
+    the effective tag as `(v & 1) ? (v >> 1) : load[v]`. Memory safety: `axion_free`
+    skips low-bit-set values, and a mixed type's deep-drop destructor guards on
+    the low bit before dereferencing — so freeing/dropping a nullary immediate is
+    a no-op (verified by the ASan/LSan gate).
+
+  Heap/drop decisions use the `boxed` set (data types with ≥1 field-carrying
+  constructor). `Nothing`/`Nil`/`None` cost zero allocation (`AXION_HEAP_STATS`).
 - **`case`**: an `if` chain over the scrutinee; `Int` patterns (compare),
   variable/`_` (catch-all), and tuple `(a, b)` (destructure by offset). Requires a
   catch-all at the end. `native_case.axi` runs native and equal to the interpreter.
