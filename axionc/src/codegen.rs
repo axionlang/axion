@@ -98,6 +98,12 @@ extern "C" fn axion_alloc(size: i64) -> *mut u8 {
     let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
     unsafe {
         let base = std::alloc::alloc(layout);
+        // out-of-memory → abort cleanly (the std OOM handler) instead of
+        // dereferencing NULL. Resource exhaustion, not a memory bug — but a clear
+        // failure, not a SIGSEGV.
+        if base.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
         *(base as *mut u64) = total as u64; // header: total size
         HEAP_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         base.add(8) // payload
@@ -221,8 +227,12 @@ fn buf_layout(n: usize) -> std::alloc::Layout {
 
 extern "C" fn axion_buf_new(n: i64) -> *mut u8 {
     let n = n.max(0) as usize;
+    let layout = buf_layout(n);
     unsafe {
-        let b = std::alloc::alloc_zeroed(buf_layout(n));
+        let b = std::alloc::alloc_zeroed(layout);
+        if b.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
         *(b as *mut i64) = n as i64;
         b
     }

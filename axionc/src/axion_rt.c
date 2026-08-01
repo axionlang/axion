@@ -10,10 +10,31 @@
 #include <string.h>
 #include <unistd.h>
 
+/* `malloc` that aborts cleanly on out-of-memory instead of returning NULL (which
+ * the callers would dereference → SIGSEGV). Resource exhaustion is not a memory
+ * bug, but the failure should be a clear message, not a crash. */
+static void *axion_xmalloc(long size) {
+  void *p = malloc((size_t)size);
+  if (!p) {
+    fprintf(stderr, "axion: out of memory (failed to allocate %ld bytes)\n", size);
+    abort();
+  }
+  return p;
+}
+
+static void *axion_xrealloc(void *ptr, long size) {
+  void *q = realloc(ptr, (size_t)size);
+  if (!q) {
+    fprintf(stderr, "axion: out of memory (failed to reallocate %ld bytes)\n", size);
+    abort();
+  }
+  return q;
+}
+
 /* --- heap with a size header (Auto-Drop, §2) --- */
 long axion_alloc(long size) {
   long total = (size < 1 ? 1 : size) + 8;
-  char *base = (char *)malloc(total);
+  char *base = (char *)axion_xmalloc(total);
   *(long *)base = total;
   return (long)(base + 8);
 }
@@ -29,7 +50,7 @@ void axion_free(long ptr) {
 void axion_puts(long s) { puts((const char *)s); }
 void axion_put(long s) { fputs((const char *)s, stdout); }
 long axion_show_int(long n) {
-  char *buf = (char *)malloc(24);
+  char *buf = (char *)axion_xmalloc(24);
   snprintf(buf, 24, "%ld", n);
   return (long)buf;
 }
@@ -55,7 +76,7 @@ void axion_print_float(double d) {
 long axion_show_float(long bits) {
   double d;
   memcpy(&d, &bits, sizeof d);
-  char *buf = (char *)malloc(32);
+  char *buf = (char *)axion_xmalloc(32);
   float_shortest(d, buf, 32);
   return (long)buf;
 }
@@ -65,7 +86,7 @@ long axion_show_float(long bits) {
 long axion_strcat(long a, long b) {
   const char *x = (const char *)a, *y = (const char *)b;
   long la = (long)strlen(x), lb = (long)strlen(y);
-  char *buf = (char *)malloc(la + lb + 1);
+  char *buf = (char *)axion_xmalloc(la + lb + 1);
   memcpy(buf, x, la);
   memcpy(buf + la, y, lb + 1); /* copies y's NUL too */
   return (long)buf;
@@ -88,7 +109,7 @@ typedef struct {
 } Mark;
 
 static Chunk *chunk_new(long cap, Chunk *prev) {
-  Chunk *c = (Chunk *)malloc(sizeof(Chunk) + cap);
+  Chunk *c = (Chunk *)axion_xmalloc(sizeof(Chunk) + cap);
   c->prev = prev;
   c->cap = cap;
   c->off = 0;
@@ -96,7 +117,7 @@ static Chunk *chunk_new(long cap, Chunk *prev) {
 }
 
 long axion_arena_new(void) {
-  Arena *a = (Arena *)malloc(sizeof(Arena));
+  Arena *a = (Arena *)axion_xmalloc(sizeof(Arena));
   a->cur = chunk_new(ARENA_CHUNK, NULL);
   return (long)a;
 }
@@ -130,7 +151,7 @@ void axion_arena_reset(long arena) {
 
 long axion_arena_mark(long arena) {
   Arena *a = (Arena *)arena;
-  Mark *m = (Mark *)malloc(sizeof(Mark));
+  Mark *m = (Mark *)axion_xmalloc(sizeof(Mark));
   m->arena = a;
   m->chunk = a->cur;
   m->off = a->cur->off;
@@ -160,7 +181,7 @@ long axion_arena_promote(long target, long cell, long size) {
  * (sum) and in-place ones (iota/xor) are loops that clang -O2 auto-vectorizes; with
  * -flto they inline into the caller. It is the imperative/vectorizable escape-hatch. */
 long axion_buf_new(long n) {
-  char *b = (char *)malloc(8 + (n < 0 ? 0 : n));
+  char *b = (char *)axion_xmalloc(8 + (n < 0 ? 0 : n));
   *(long *)b = n;
   memset(b + 8, 0, (size_t)(n < 0 ? 0 : n));
   return (long)b;
@@ -251,8 +272,8 @@ long axion_sess_new(void) {
 static int sess_new_ep(Sched *s) {
   if (s->neps + 1 > s->capeps) {
     s->capeps = s->capeps ? s->capeps * 2 : 8;
-    s->eps = (SessEp *)realloc(s->eps, (size_t)s->capeps * sizeof(SessEp));
-    s->peer = (int *)realloc(s->peer, (size_t)s->capeps * sizeof(int));
+    s->eps = (SessEp *)axion_xrealloc(s->eps, (size_t)s->capeps * sizeof(SessEp));
+    s->peer = (int *)axion_xrealloc(s->peer, (size_t)s->capeps * sizeof(int));
   }
   int id = s->neps++;
   s->eps[id].q = NULL;
@@ -267,7 +288,7 @@ static void ready_push(Sched *s, int i) {
       s->rhead = 0;
     } else {
       s->rcap = s->rcap ? s->rcap * 2 : 8;
-      s->ready = (int *)realloc(s->ready, (size_t)s->rcap * sizeof(int));
+      s->ready = (int *)axion_xrealloc(s->ready, (size_t)s->rcap * sizeof(int));
     }
   }
   s->ready[s->rhead + s->rlen] = i;
@@ -284,7 +305,7 @@ static int ready_pop(Sched *s) {
 static void blocked_push(Sched *s, int i) {
   if (s->nblocked + 1 > s->capblocked) {
     s->capblocked = s->capblocked ? s->capblocked * 2 : 8;
-    s->blocked = (int *)realloc(s->blocked, (size_t)s->capblocked * sizeof(int));
+    s->blocked = (int *)axion_xrealloc(s->blocked, (size_t)s->capblocked * sizeof(int));
   }
   s->blocked[s->nblocked++] = i;
 }
@@ -312,7 +333,7 @@ void axion_sess_send(long sched, long ep, long v) {
       e->head = 0;
     } else { /* grow */
       e->cap = e->cap ? e->cap * 2 : 8;
-      e->q = (long *)realloc(e->q, (size_t)e->cap * sizeof(long));
+      e->q = (long *)axion_xrealloc(e->q, (size_t)e->cap * sizeof(long));
     }
   }
   e->q[e->head + e->len] = v;
@@ -352,7 +373,7 @@ long axion_sess_alloc(long sched, long nbytes) {
   pthread_mutex_lock(&s->mtx);
   if (s->nallocs + 1 > s->capallocs) {
     s->capallocs = s->capallocs ? s->capallocs * 2 : 8;
-    s->allocs = (void **)realloc(s->allocs, (size_t)s->capallocs * sizeof(void *));
+    s->allocs = (void **)axion_xrealloc(s->allocs, (size_t)s->capallocs * sizeof(void *));
   }
   s->allocs[s->nallocs++] = p;
   pthread_mutex_unlock(&s->mtx);
@@ -364,7 +385,7 @@ void axion_sess_spawn(long sched, long step, long state) {
   pthread_mutex_lock(&s->mtx);
   if (s->ntasks + 1 > s->captasks) {
     s->captasks = s->captasks ? s->captasks * 2 : 8;
-    s->tasks = (SessTask *)realloc(s->tasks, (size_t)s->captasks * sizeof(SessTask));
+    s->tasks = (SessTask *)axion_xrealloc(s->tasks, (size_t)s->captasks * sizeof(SessTask));
   }
   int i = s->ntasks++;
   s->tasks[i].step = (SessStep)step;
@@ -444,7 +465,7 @@ long axion_sess_run(long sched, long step, long state) {
     long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
     nthreads = (int)(ncpu < 1 ? 1 : (ncpu > 8 ? 8 : ncpu));
   }
-  pthread_t *threads = (pthread_t *)malloc((size_t)nthreads * sizeof(pthread_t));
+  pthread_t *threads = (pthread_t *)axion_xmalloc((size_t)nthreads * sizeof(pthread_t));
   for (int t = 0; t < nthreads; t++) pthread_create(&threads[t], NULL, sess_worker, s);
   for (int t = 0; t < nthreads; t++) pthread_join(threads[t], NULL);
   free(threads);
