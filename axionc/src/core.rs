@@ -532,6 +532,23 @@ impl RecordInfo {
         let idx = fields.iter().position(|f| f == name)?;
         Some((self.field_offset(con, idx), fields))
     }
+
+    /// `true` if the named field `name` holds a separately-allocated heap object.
+    /// Used to tell a scalar field-read (`a q :: Int`, safe to free the owner
+    /// after) from a heap-pointer field-read (`inner q`, which aliases into the
+    /// owner and must NOT outlive a deep drop of it).
+    pub fn named_field_is_heap(&self, name: &str) -> bool {
+        let Some(con) = self.field_owner.get(name) else {
+            return false;
+        };
+        let Some(fields) = self.con_fields.get(con) else {
+            return false;
+        };
+        fields
+            .iter()
+            .position(|f| f == name)
+            .is_some_and(|i| self.field_is_heap(con, i))
+    }
 }
 
 /// Native candidate: all parameters and the return are `i64`-representable,
@@ -3219,6 +3236,7 @@ fn insert_drops(
         ba,
         drop_ty,
         recinfo,
+        heap_ret,
     };
     let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
     f.body = e.go(body, &HashSet::new());
@@ -3231,6 +3249,60 @@ struct Elab<'a> {
     ba: &'a BorrowArgs,
     drop_ty: &'a HashMap<String, Option<String>>,
     recinfo: &'a RecordInfo,
+    heap_ret: &'a HashSet<String>,
+}
+
+/// `true` if any tail exit of `t` yields a value that could be a HEAP pointer
+/// (as opposed to a proven scalar: Int/Bool/Float, an enum immediate, a
+/// unit-returning effect, or a read of a non-heap field). Conservative: anything
+/// not provably scalar counts as heap. Used to decide whether a deep drop of the
+/// scrutinee is safe — a heap result may ALIAS into the scrutinee's payload (e.g.
+/// `case xs of Cons y ys -> inner y`, returning a heap sub-object of the borrowed
+/// `y`), and deep-dropping the scrutinee would then free a value that escapes.
+fn result_may_be_heap(t: &Term, recinfo: &RecordInfo, heap_ret: &HashSet<String>) -> bool {
+    match t {
+        Term::Ret(rhs) => match rhs {
+            Rhs::Op(op) => op_result_may_be_heap(op, recinfo, heap_ret),
+            Rhs::If(_, th, el) => {
+                result_may_be_heap(th, recinfo, heap_ret)
+                    || result_may_be_heap(el, recinfo, heap_ret)
+            }
+            Rhs::Case(_, arms) => arms
+                .iter()
+                .any(|(_, b)| result_may_be_heap(b, recinfo, heap_ret)),
+        },
+        Term::Let(_, _, body) | Term::Drop(_, _, body) => {
+            result_may_be_heap(body, recinfo, heap_ret)
+        }
+    }
+}
+
+/// The scalar-proving half of `result_may_be_heap`: returns `false` only for ops
+/// whose result is definitely NOT a heap pointer. Default is `true` (heap).
+fn op_result_may_be_heap(op: &Op, recinfo: &RecordInfo, heap_ret: &HashSet<String>) -> bool {
+    match op {
+        // proven scalars (an i64 value, never a pointer into the scrutinee):
+        Op::Atom(Atom::Int(_))
+        | Op::Prim(..)
+        | Op::PrimF(..)
+        | Op::IntToFloat(_)
+        | Op::FloatToInt(_)
+        | Op::FloatUnary(..)
+        // effects returning unit; `StoreRaw` evaluates to the (i64) value stored.
+        | Op::PutStrLn(_)
+        | Op::PutStr(_)
+        | Op::StoreRaw(..) => false,
+        // a field read is scalar iff the field itself is not a heap object.
+        Op::Field { name, .. } => recinfo.named_field_is_heap(name),
+        // an enum immediate is a tagged i64; a boxed constructor is a pointer.
+        Op::MakeCon { con, .. } => !recinfo.is_enum_con(con),
+        // a call is scalar iff its result type is not heap (borrowed args do not
+        // retain, so a scalar result cannot alias the scrutinee).
+        Op::CallDirect(g, _) => heap_ret.contains(g),
+        // everything else (Atom(Var) of unknown origin, allocations, closures,
+        // raw loads, indirect/runtime/FFI calls, arenas) → conservatively heap.
+        _ => true,
+    }
 }
 
 /// `true` if a `case` arm binds a **heap** field of the scrutinee to a variable
@@ -3447,21 +3519,26 @@ impl Elab<'_> {
         let mut out = Vec::with_capacity(arms.len());
         for (i, (pat, body)) in arms.into_iter().enumerate() {
             let mut b = self.go(body, live_out);
-            // frees the scrutinee. Two cases:
-            //  · transfers=true — this arm moved a heap field of the scrutinee OUT
-            //    (e.g. `Cons y ys -> … ys …`). Free the shell only (`ty = None`),
-            //    at the head: a deep drop would double-free the transferred field.
-            //  · transfers=false — the scrutinee is still fully owned here, so
-            //    deep-drop it. But the body may BORROW a heap field (`Cons y ys ->
-            //    a y`); a deep drop frees that field, so it must run AFTER the body,
-            //    not at the head, or it is a use-after-free. Place it at the arm's
-            //    exits (after the result value is computed).
+            // frees the scrutinee. Deep-drop (frees the payloads too) only when it
+            // is provably safe; otherwise a shallow (shell-only) free — safe, but
+            // may leak the payloads (the deferred extracted-field gap). A deep drop
+            // is UNSAFE when:
+            //  · transfers=true — the arm moved a heap field of the scrutinee OUT
+            //    (`Cons y ys -> … ys …`); freeing it would double-free the movee;
+            //  · the arm returns a value that could ALIAS the scrutinee's payload
+            //    (`Cons y ys -> inner y`, a heap sub-object of the borrowed `y`);
+            //    the deep drop would free a value that escapes → double-free/UAF.
+            // When deep IS safe, place it at the arm's EXITS (after the result is
+            // computed), not the head, so a borrowed scalar field (`a y`) is read
+            // before its owner is freed.
             if let Some(s) = &scrut_drop {
-                if transfers[i] {
-                    b = Term::Drop(s.clone(), None, Box::new(b));
-                } else {
+                let deep_safe =
+                    !transfers[i] && !result_may_be_heap(&b, self.recinfo, self.heap_ret);
+                if deep_safe {
                     let ty = self.dty(s);
                     b = self.drop_at_exits(b, s, &ty);
+                } else {
+                    b = Term::Drop(s.clone(), None, Box::new(b));
                 }
             }
             // cross-arm balancing: droppable used in another arm but not this one

@@ -46,6 +46,7 @@ NATIVE=(
   axionc/tests/fixtures/nested_drop.axi
   axionc/tests/fixtures/sum_payload.axi
   axionc/tests/fixtures/poly_payload_drop.axi
+  axionc/tests/fixtures/poly_payload_borrow_return.axi
   axionc/tests/fixtures/session_run_pingpong.axi
   axionc/tests/fixtures/session_run_offer.axi
   axionc/tests/fixtures/session_run_cancel.axi

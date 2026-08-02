@@ -155,11 +155,35 @@ touching that field:
    shallow (transfers) drop stays at the head. This also closes the same latent UAF
    for concrete borrowed heap fields, which no fixture had exercised.
 
-Both were the reason the earlier prototype "extracted-field" attempts kept tripping
-(docs/deep-recursion-plan.md §8b) — the drop path is genuinely coupled across three
-subsystems (`field_is_*`, scrutinee shallow/deep choice, drop placement).
+3. **Returning a borrowed heap sub-object** (`case xs of Cons y ys -> inner y`,
+   where the payload `y` owns a heap `inner`): a deep drop of the scrutinee frees
+   `y` *and* its `inner`, but `inner y` is the returned value — double-free / UAF.
+   `occurs_nonborrow` sees `inner y` as a borrow of `y` (transfers=false), so the
+   `field_is_poly` guard above does NOT catch it. Fixed by `result_may_be_heap`:
+   the `transfers=false` deep drop only fires when the arm's result is provably a
+   **scalar** (Int/Bool/Float, an enum immediate, a unit effect, a non-heap field
+   read, or a scalar-returning call); any heap-typed or unprovable result falls
+   back to a **shallow** free (safe leak). A borrowed scalar field (`a y :: Int`)
+   still deep-drops (the `poly_payload_drop` win); a borrowed heap sub-object does
+   not. Regression fixture: `poly_payload_borrow_return.axi` (was a native
+   double-free; now interp/`--dev`/`--release` all return 3, ASan-clean).
 
-Validation: `poly_payload_drop.axi` (whole-drop, 6 allocs = 6 frees), the full test
+Both #1 and #3 were the reason the earlier prototype "extracted-field" attempts
+kept tripping (docs/deep-recursion-plan.md §8b) — the drop path is genuinely coupled
+across several subsystems (`field_is_*`, the scrutinee shallow/deep choice,
+`result_may_be_heap`, and drop placement).
+
+**Known limitation (TCO):** the `drop_at_exits` deep drop is placed after the arm's
+result is computed, so an arm that borrows a scalar field *and* tail-recurses
+(`loop xs = case xs of Cons y ys -> loop (build (a y - 1))`) is no longer in tail
+position — deep recursion in that (unusual) shape grows the native stack instead of
+looping. It is not memory-unsafe, only a stack-safety regression on a narrow
+pattern; the linear-consumption idiom (which *moves* the tail → transfers=true →
+shallow head drop) keeps its TCO. A TCO-compatible placement (drop after the last
+*use* of the scrutinee rather than at the exit) is deferred follow-up.
+
+Validation: `poly_payload_drop.axi` (whole-drop, 6 allocs = 6 frees),
+`poly_payload_borrow_return.axi` (no double-free, corruption gate), the full test
 suite (interp / `--dev` / `--release` agree), `scripts/sanitize.sh` (ASan + LSan
-clean, incl. the new fixture in the leak-free gate), and the GHC differential oracle
-(unchanged verdicts).
+clean, the leak-free ones in the gate), and the GHC differential oracle (unchanged
+verdicts).

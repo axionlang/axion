@@ -927,6 +927,43 @@ fn deep_drop_reclaims_nested_objects() {
 }
 
 #[test]
+fn deep_drop_of_owned_scrutinee_is_skipped_when_result_aliases_payload() {
+    // Regression: `case xs of Cons y ys -> inner y` returns a heap sub-object
+    // BORROWED out of the owned scrutinee's payload. A deep drop (axion_drop_List$P)
+    // would free that returned pointer → double-free. Auto-Drop must fall back to a
+    // SHALLOW scrutinee free, so all three executors agree (no native double-free).
+    let fx = "poly_payload_borrow_return.axi";
+    let interp = axionc().arg(fixture(fx)).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "3\n", "{fx} interp");
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let native = axionc()
+            .args(&args)
+            .arg(fixture(fx))
+            .output()
+            .unwrap();
+        assert!(
+            native.status.success(),
+            "{fx} {args:?} crashed (double-free regression): {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            "3\n",
+            "{fx} {args:?} diverges from interp (=3)"
+        );
+    }
+    // the scrutinee drops must be SHALLOW (`drop xs`, no deep `: List$P` key), or
+    // the native backend would deep-drop and double-free the returned sub-object.
+    let core = axionc().args(["--emit", "core", &fixture(fx)]).output().unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    assert!(
+        !core.contains("drop xs : List"),
+        "expected SHALLOW scrutinee drops (no deep `drop xs : List$P`), got:\n{core}"
+    );
+}
+
+#[test]
 fn arena_runs_natively_with_bulk_reset() {
     // Arena (§3): 'withArena' creates the root, allocN bump-allocates 100 cells,
     // and the arena is reclaimed with a SINGLE reset (not 100 frees). The interpreter
