@@ -2456,62 +2456,24 @@ fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
     for ty in recinfo.deep_drop_types() {
         let p = "_p".to_string();
         let mut ctr = 0u32;
-        let free_ret = free_then_ret(&p);
-        let cons: Vec<String> = recinfo.type_cons(&ty).unwrap_or(&[]).to_vec();
-        let body = if cons.len() <= 1 {
-            match cons.first() {
-                Some(con) => drop_con_fields(recinfo, con, &p, &mut ctr, free_ret),
-                None => free_ret,
-            }
-        } else {
-            // multi-con: loads the tag and one independent `if` per constructor with
-            // fields; only the matching tag fires at runtime.
-            let mut chain = free_ret;
-            for con in cons.iter().rev() {
-                if recinfo.drop_slots(con).is_empty() {
-                    continue;
-                }
+        // each constructor's tag and the (offset, way) of the heap fields it owns:
+        // a concrete `data` field with heap → its destructor, else a flat free.
+        let cons: Vec<(i64, Vec<(i32, DropWay)>)> = recinfo
+            .type_cons(&ty)
+            .unwrap_or(&[])
+            .iter()
+            .map(|con| {
                 let tag = recinfo.tag(con).unwrap_or(0) as i64;
-                let branch = drop_con_fields(recinfo, con, &p, &mut ctr, unit0());
-                let cmp = fresh_dd(&mut ctr);
-                let ifstep = Term::Let(
-                    fresh_dd(&mut ctr),
-                    Rhs::If(Atom::Var(cmp.clone()), Box::new(branch), Box::new(unit0())),
-                    Box::new(chain),
-                );
-                chain = Term::Let(
-                    cmp,
-                    Rhs::Op(Op::Prim(
-                        "==".into(),
-                        Atom::Var("_tag".into()),
-                        Atom::Int(tag),
-                    )),
-                    Box::new(ifstep),
-                );
-            }
-            Term::Let(
-                "_tag".into(),
-                Rhs::Op(Op::LoadRaw(Atom::Var(p.clone()), 0)),
-                Box::new(chain),
-            )
-        };
-        // mixed type: a tagged-immediate (nullary) value has no fields and must
-        // NOT be dereferenced/freed — guard the whole destructor on the low bit.
-        let body = if recinfo.is_mixed_type(&ty) {
-            let bit = fresh_dd(&mut ctr);
-            let res = fresh_dd(&mut ctr);
-            Term::Let(
-                bit.clone(),
-                Rhs::Op(Op::Prim("band".into(), Atom::Var(p.clone()), Atom::Int(1))),
-                Box::new(Term::Let(
-                    res,
-                    Rhs::If(Atom::Var(bit), Box::new(unit0()), Box::new(body)),
-                    Box::new(unit0()),
-                )),
-            )
-        } else {
-            body
-        };
+                let slots = recinfo
+                    .drop_slots(con)
+                    .iter()
+                    .map(|(off, f)| (*off, drop_way_named(f, recinfo)))
+                    .collect();
+                (tag, slots)
+            })
+            .collect();
+        let single = cons.len() <= 1;
+        let body = destructor_body(&cons, single, recinfo.is_mixed_type(&ty), &p, &mut ctr);
         out.push(CoreFn {
             name: format!("axion_drop_{ty}"),
             params: vec![p],
@@ -2522,6 +2484,108 @@ fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
         });
     }
     out
+}
+
+/// The drop way of a concrete `data`-typed field: its own destructor when the
+/// type owns heap fields, otherwise a flat `free`.
+fn drop_way_named(tyname: &str, recinfo: &RecordInfo) -> DropWay {
+    if recinfo.needs_deep_drop(tyname) {
+        DropWay::Deep(tyname.to_string())
+    } else {
+        DropWay::Flat
+    }
+}
+
+/// The shared destructor-body shape (generic `gen_destructors` and monomorphized
+/// `gen_mono_destructors` differ only in how they resolve each field's `DropWay`).
+/// `cons` lists each constructor's tag and its heap-field `(offset, way)` slots;
+/// `single` marks a tagless 1-constructor type; `mixed` marks a type whose nullary
+/// constructors are tagged immediates (guard the whole body on the low bit so a
+/// non-pointer is never dereferenced/freed). `p` is the block pointer parameter.
+fn destructor_body(
+    cons: &[(i64, Vec<(i32, DropWay)>)],
+    single: bool,
+    mixed: bool,
+    p: &str,
+    ctr: &mut u32,
+) -> Term {
+    let free_ret = free_then_ret(p);
+    let body = if single {
+        match cons.first() {
+            Some((_, slots)) => emit_field_drops(slots, p, ctr, free_ret),
+            None => free_ret,
+        }
+    } else {
+        // multi-con: load the tag and one independent `if` per constructor with
+        // fields; only the matching tag fires at runtime.
+        let mut chain = free_ret;
+        for (tag, slots) in cons.iter().rev() {
+            if slots.is_empty() {
+                continue;
+            }
+            let branch = emit_field_drops(slots, p, ctr, unit0());
+            let cmp = fresh_dd(ctr);
+            let ifstep = Term::Let(
+                fresh_dd(ctr),
+                Rhs::If(Atom::Var(cmp.clone()), Box::new(branch), Box::new(unit0())),
+                Box::new(chain),
+            );
+            chain = Term::Let(
+                cmp,
+                Rhs::Op(Op::Prim("==".into(), Atom::Var("_tag".into()), Atom::Int(*tag))),
+                Box::new(ifstep),
+            );
+        }
+        Term::Let(
+            "_tag".into(),
+            Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), 0)),
+            Box::new(chain),
+        )
+    };
+    if mixed {
+        let bit = fresh_dd(ctr);
+        let res = fresh_dd(ctr);
+        Term::Let(
+            bit.clone(),
+            Rhs::Op(Op::Prim("band".into(), Atom::Var(p.to_string()), Atom::Int(1))),
+            Box::new(Term::Let(
+                res,
+                Rhs::If(Atom::Var(bit), Box::new(unit0()), Box::new(body)),
+                Box::new(unit0()),
+            )),
+        )
+    } else {
+        body
+    }
+}
+
+/// Frees a constructor's owned heap fields (loaded by offset from `p`) before
+/// `cont`: each field's destructor (`Deep`) or a flat `free` (`Flat`); non-heap
+/// slots (`None`) are skipped. Folded in reverse so earlier fields free first.
+fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term) -> Term {
+    let mut term = cont;
+    for (off, way) in slots.iter().rev() {
+        let fp = fresh_dd(ctr);
+        let call = match way {
+            DropWay::Deep(name) => {
+                Op::CallDirect(format!("axion_drop_{name}"), vec![Atom::Var(fp.clone())])
+            }
+            DropWay::Flat => Op::RtCall {
+                func: "axion_free".into(),
+                args: vec![Atom::Var(fp.clone())],
+                returns: false,
+            },
+            // non-heap fields are filtered out before this point; skip defensively
+            // so a stray `None` never emits a wild `free`.
+            DropWay::None => continue,
+        };
+        term = Term::Let(
+            fp.clone(),
+            Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), *off)),
+            Box::new(Term::Let(fresh_dd(ctr), Rhs::Op(call), Box::new(term))),
+        );
+    }
+    term
 }
 
 fn fresh_dd(ctr: &mut u32) -> String {
@@ -2544,30 +2608,6 @@ fn free_then_ret(p: &str) -> Term {
         }),
         Box::new(unit0()),
     )
-}
-
-/// Frees the `data`-typed fields owned by `con` (loaded by offset one at
-/// partir de `p`), antes de `cont`.
-fn drop_con_fields(recinfo: &RecordInfo, con: &str, p: &str, ctr: &mut u32, cont: Term) -> Term {
-    let mut term = cont;
-    for (off, f) in recinfo.drop_slots(con).iter().rev() {
-        let fp = fresh_dd(ctr);
-        let dropcall = if recinfo.needs_deep_drop(f) {
-            Op::CallDirect(format!("axion_drop_{f}"), vec![Atom::Var(fp.clone())])
-        } else {
-            Op::RtCall {
-                func: "axion_free".into(),
-                args: vec![Atom::Var(fp.clone())],
-                returns: false,
-            }
-        };
-        term = Term::Let(
-            fp.clone(),
-            Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), *off)),
-            Box::new(Term::Let(fresh_dd(ctr), Rhs::Op(dropcall), Box::new(term))),
-        );
-    }
-    term
 }
 
 // --- monomorphized destructors (§ polymorphic-payload reclamation) ---
@@ -2711,82 +2751,18 @@ fn gen_mono_destructors(
                     .collect()
             })
             .collect();
-        let drop_fields = |slots: &[(i32, DropWay)], ctr: &mut u32, cont: Term| -> Term {
-            let mut term = cont;
-            for (off, way) in slots.iter().rev() {
-                let fp = fresh_dd(ctr);
-                let call = match way {
-                    DropWay::Deep(name) => {
-                        Op::CallDirect(format!("axion_drop_{name}"), vec![Atom::Var(fp.clone())])
-                    }
-                    DropWay::Flat => Op::RtCall {
-                        func: "axion_free".into(),
-                        args: vec![Atom::Var(fp.clone())],
-                        returns: false,
-                    },
-                    // non-heap fields are filtered out before this point; skip
-                    // defensively so a stray `None` never emits a wild `free`.
-                    DropWay::None => continue,
-                };
-                term = Term::Let(
-                    fp.clone(),
-                    Rhs::Op(Op::LoadRaw(Atom::Var("_p".to_string()), *off)),
-                    Box::new(Term::Let(fresh_dd(ctr), Rhs::Op(call), Box::new(term))),
-                );
-            }
-            term
-        };
-
+        // tag each constructor's (already substituted) slots and build the body
+        // with the shared destructor shape — identical to the generic destructor
+        // but for the concrete-under-substitution slots.
+        let cons: Vec<(i64, Vec<(i32, DropWay)>)> = d
+            .cons
+            .iter()
+            .zip(all_slots)
+            .map(|(c, slots)| (recinfo.tag(&c.name).unwrap_or(0) as i64, slots))
+            .collect();
         let p = "_p".to_string();
         let mut ctr = 0u32;
-        let free_ret = free_then_ret(&p);
-        let body = if d.cons.len() <= 1 {
-            match all_slots.first() {
-                Some(slots) => drop_fields(slots, &mut ctr, free_ret),
-                None => free_ret,
-            }
-        } else {
-            let mut chain = free_ret;
-            for (c, slots) in d.cons.iter().zip(all_slots.iter()).rev() {
-                if slots.is_empty() {
-                    continue;
-                }
-                let tag = recinfo.tag(&c.name).unwrap_or(0) as i64;
-                let branch = drop_fields(slots, &mut ctr, unit0());
-                let cmp = fresh_dd(&mut ctr);
-                let ifstep = Term::Let(
-                    fresh_dd(&mut ctr),
-                    Rhs::If(Atom::Var(cmp.clone()), Box::new(branch), Box::new(unit0())),
-                    Box::new(chain),
-                );
-                chain = Term::Let(
-                    cmp,
-                    Rhs::Op(Op::Prim("==".into(), Atom::Var("_tag".into()), Atom::Int(tag))),
-                    Box::new(ifstep),
-                );
-            }
-            Term::Let(
-                "_tag".into(),
-                Rhs::Op(Op::LoadRaw(Atom::Var(p.clone()), 0)),
-                Box::new(chain),
-            )
-        };
-        // mixed type (some nullary): guard the immediate (Nil) on the low bit.
-        let body = if recinfo.is_mixed_type(head) {
-            let bit = fresh_dd(&mut ctr);
-            let res = fresh_dd(&mut ctr);
-            Term::Let(
-                bit.clone(),
-                Rhs::Op(Op::Prim("band".into(), Atom::Var(p.clone()), Atom::Int(1))),
-                Box::new(Term::Let(
-                    res,
-                    Rhs::If(Atom::Var(bit), Box::new(unit0()), Box::new(body)),
-                    Box::new(unit0()),
-                )),
-            )
-        } else {
-            body
-        };
+        let body = destructor_body(&cons, d.cons.len() <= 1, recinfo.is_mixed_type(head), &p, &mut ctr);
         out.push(CoreFn {
             name: format!("axion_drop_{key}"),
             params: vec![p],
