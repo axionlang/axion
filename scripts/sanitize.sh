@@ -47,6 +47,8 @@ NATIVE=(
   axionc/tests/fixtures/sum_payload.axi
   axionc/tests/fixtures/poly_payload_drop.axi
   axionc/tests/fixtures/poly_payload_borrow_return.axi
+  axionc/tests/fixtures/poly_payload_tco.axi
+  axionc/tests/fixtures/poly_payload_borrow_alias.axi
   axionc/tests/fixtures/session_run_pingpong.axi
   axionc/tests/fixtures/session_run_offer.axi
   axionc/tests/fixtures/session_run_cancel.axi
@@ -68,7 +70,7 @@ NATIVE=(
 LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
-  nested_drop sum_payload poly_payload_drop
+  nested_drop sum_payload poly_payload_drop poly_payload_tco poly_payload_borrow_alias
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
 )

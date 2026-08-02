@@ -897,6 +897,13 @@ fn deep_drop_reclaims_nested_objects() {
         // monomorphized destructor `axion_drop_List$P` frees the 3 payloads too,
         // not just the spine — 3 Cons + 3 P = 6 allocs, 6 frees, no leak.
         ("poly_payload_drop.axi", "3\n", "6 allocs, 6 frees"),
+        // TCO-compatible deep drop: borrow a scalar field + tail-recurse; the whole
+        // list is reclaimed each step (12 objects over build 3/2/1), no leak, and
+        // (see the separate assertion below) the tail call stays in tail position.
+        ("poly_payload_tco.axi", "0\n", "12 allocs, 12 frees"),
+        // payload-alias tracking: a heap sub-object (`inner y`) passed to a tail
+        // call must be freed AFTER the call (bind-then-drop); whole list reclaimed.
+        ("poly_payload_borrow_alias.axi", "3\n", "9 allocs, 9 frees"),
     ] {
         let out = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])
@@ -960,6 +967,30 @@ fn deep_drop_of_owned_scrutinee_is_skipped_when_result_aliases_payload() {
     assert!(
         !core.contains("drop xs : List"),
         "expected SHALLOW scrutinee drops (no deep `drop xs : List$P`), got:\n{core}"
+    );
+}
+
+#[test]
+fn tco_preserved_when_deep_drop_precedes_a_tail_call() {
+    // `loop xs = case xs of Cons y ys -> loop (build (a y - 1))`: the deep drop of
+    // the owned scrutinee is placed AFTER the scalar borrow `a y` but BEFORE the
+    // tail call, so the call stays in tail position. Regression guard against the
+    // exit-placed drop that pushed the recursive call out of tail position.
+    let core = axionc()
+        .args(["--emit", "core", &fixture("poly_payload_tco.axi")])
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    // the recursive call must remain a bare tail `ret call loop …`, not bound to a
+    // temp before a trailing drop (`let _d = call loop …; drop xs; ret _d`).
+    assert!(
+        core.contains("drop xs : List$P")
+            && core.lines().any(|l| l.trim_start().starts_with("ret call loop")),
+        "expected the deep drop BEFORE a tail `ret call loop` (TCO preserved), got:\n{core}"
+    );
+    assert!(
+        !core.contains("= call loop"),
+        "the recursive call was bound to a temp (pushed out of tail position):\n{core}"
     );
 }
 

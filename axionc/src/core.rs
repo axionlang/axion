@@ -3277,6 +3277,64 @@ fn result_may_be_heap(t: &Term, recinfo: &RecordInfo, heap_ret: &HashSet<String>
     }
 }
 
+/// `true` if any variable in `set` appears as an operand of `op`. Exhaustive
+/// (no wildcard) so a newly-added `Op` variant forces a decision here rather than
+/// silently escaping the payload-alias analysis.
+fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
+    let hit = |at: &Atom| matches!(at, Atom::Var(v) if set.contains(v));
+    match op {
+        Op::Atom(x)
+        | Op::IntToFloat(x)
+        | Op::FloatToInt(x)
+        | Op::FloatUnary(_, x)
+        | Op::Field { rec: x, .. }
+        | Op::LoadRaw(x, _)
+        | Op::PutStrLn(x)
+        | Op::PutStr(x)
+        | Op::ShowInt(x)
+        | Op::ArenaAlloc(x)
+        | Op::ArenaMark(x)
+        | Op::ArenaRelease(x) => hit(x),
+        Op::Prim(_, x, y)
+        | Op::PrimF(_, x, y)
+        | Op::StoreRaw(x, _, y)
+        | Op::Promote(x, y) => hit(x) || hit(y),
+        Op::CallDirect(_, xs)
+        | Op::MakeTuple(xs)
+        | Op::MakeCon { args: xs, .. }
+        | Op::RtCall { args: xs, .. }
+        | Op::Ffi { args: xs, .. }
+        | Op::MakeClosure { captures: xs, .. } => xs.iter().any(hit),
+        Op::CallClosure(f, xs) => hit(f) || xs.iter().any(hit),
+        Op::MakeRecord { fields, .. } => fields.iter().any(|(_, x)| hit(x)),
+        Op::UpdateRecord { base, fields, .. } => hit(base) || fields.iter().any(|(_, x)| hit(x)),
+        Op::WithArena { parent, clos } => parent.as_ref().is_some_and(hit) || hit(clos),
+        Op::FuncAddr(_) | Op::Unsupported(_) => false,
+    }
+}
+
+/// `true` if any variable in `set` is referenced anywhere in `t`.
+fn term_mentions_any(t: &Term, set: &HashSet<String>) -> bool {
+    match t {
+        Term::Let(_, rhs, body) => rhs_mentions_any(rhs, set) || term_mentions_any(body, set),
+        Term::Drop(v, _, body) => set.contains(v) || term_mentions_any(body, set),
+        Term::Ret(rhs) => rhs_mentions_any(rhs, set),
+    }
+}
+
+fn rhs_mentions_any(rhs: &Rhs, set: &HashSet<String>) -> bool {
+    let atom_hit = |at: &Atom| matches!(at, Atom::Var(v) if set.contains(v));
+    match rhs {
+        Rhs::Op(op) => op_mentions_any(op, set),
+        Rhs::If(c, th, el) => {
+            atom_hit(c) || term_mentions_any(th, set) || term_mentions_any(el, set)
+        }
+        Rhs::Case(s, arms) => {
+            atom_hit(s) || arms.iter().any(|(_, b)| term_mentions_any(b, set))
+        }
+    }
+}
+
 /// The scalar-proving half of `result_may_be_heap`: returns `false` only for ops
 /// whose result is definitely NOT a heap pointer. Default is `true` (heap).
 fn op_result_may_be_heap(op: &Op, recinfo: &RecordInfo, heap_ret: &HashSet<String>) -> bool {
@@ -3339,36 +3397,45 @@ impl Elab<'_> {
         self.drop_ty.get(v).cloned().flatten()
     }
 
-    /// Inserts `drop s` at every tail EXIT of `t` (after the exit's result value
-    /// is computed), so a borrowed heap field of `s` outlives its last use before
-    /// `s` is deep-dropped. `let`/nested `if`/`case` that flow their value into a
-    /// binding are not exits — only the terminal `Ret`s of `t` are.
-    fn drop_at_exits(&mut self, t: Term, s: &str, ty: &Option<String>) -> Term {
+    /// Places the deep drop of the scrutinee `s` just before each tail `Ret`.
+    /// Every `let`/`drop` in the spine precedes the drop, so any borrowed field
+    /// read (`a y`) or payload-aliasing local (`inner y`) is used before `s` is
+    /// freed. Only the tail op itself can still read the payload — when it does
+    /// (`alias` contains one of its operands) the value is bound first, then `s`
+    /// is dropped, then returned; when it does NOT (`ret loop (build …)`), `s` is
+    /// dropped BEFORE the tail op, keeping a tail call in tail position (TCO).
+    fn place_deep_drop(&mut self, t: Term, s: &str, ty: &Option<String>, alias: &HashSet<String>) -> Term {
         match t {
             Term::Ret(rhs) => match rhs {
-                // exit value computed → bind it, drop `s`, then return it.
                 Rhs::Op(op) => {
-                    let tmp = self.fresh();
-                    Term::Let(
-                        tmp.clone(),
-                        Rhs::Op(op),
-                        Box::new(Term::Drop(
-                            s.to_string(),
-                            ty.clone(),
-                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))))),
-                        )),
-                    )
+                    if op_mentions_any(&op, alias) {
+                        // the tail op reads the payload → compute it, then drop.
+                        let tmp = self.fresh();
+                        Term::Let(
+                            tmp.clone(),
+                            Rhs::Op(op),
+                            Box::new(Term::Drop(
+                                s.to_string(),
+                                ty.clone(),
+                                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))))),
+                            )),
+                        )
+                    } else {
+                        // independent of the payload → drop first (preserves a
+                        // tail call: `drop s; ret f args`).
+                        Term::Drop(s.to_string(), ty.clone(), Box::new(Term::Ret(Rhs::Op(op))))
+                    }
                 }
                 // the exits live in the branches → recurse into each.
                 Rhs::If(c, th, el) => {
-                    let th = self.drop_at_exits(*th, s, ty);
-                    let el = self.drop_at_exits(*el, s, ty);
+                    let th = self.place_deep_drop(*th, s, ty, alias);
+                    let el = self.place_deep_drop(*el, s, ty, alias);
                     Term::Ret(Rhs::If(c, Box::new(th), Box::new(el)))
                 }
                 Rhs::Case(sc, arms) => {
                     let arms = arms
                         .into_iter()
-                        .map(|(p, b)| (p, self.drop_at_exits(b, s, ty)))
+                        .map(|(p, b)| (p, self.place_deep_drop(b, s, ty, alias)))
                         .collect();
                     Term::Ret(Rhs::Case(sc, arms))
                 }
@@ -3376,11 +3443,66 @@ impl Elab<'_> {
             // `let`/`drop` sequence a value into the continuation — not an exit;
             // recurse into the continuation only (the rhs flows into `x`/past it).
             Term::Let(x, rhs, body) => {
-                Term::Let(x, rhs, Box::new(self.drop_at_exits(*body, s, ty)))
+                Term::Let(x, rhs, Box::new(self.place_deep_drop(*body, s, ty, alias)))
             }
             Term::Drop(v, ty2, body) => {
-                Term::Drop(v, ty2, Box::new(self.drop_at_exits(*body, s, ty)))
+                Term::Drop(v, ty2, Box::new(self.place_deep_drop(*body, s, ty, alias)))
             }
+        }
+    }
+
+    /// The locals that ALIAS the scrutinee's payload: seeded with the scrutinee's
+    /// heap/poly field bindings, then closed forward over every `let x = op` whose
+    /// `op` may yield a heap pointer AND reads an already-aliasing var (`inner y`,
+    /// `getInner y`). A value NOT in this set is a fresh allocation or a scalar
+    /// copy, so it survives the deep drop of the scrutinee — the drop may precede
+    /// its use. A sound OVER-approximation: unclear ops are counted as aliasing.
+    fn collect_payload_aliases(&self, t: &Term, alias: &mut HashSet<String>) {
+        match t {
+            Term::Let(x, rhs, body) => {
+                let (heapish, mentions) = match rhs {
+                    Rhs::Op(op) => (
+                        op_result_may_be_heap(op, self.recinfo, self.heap_ret),
+                        op_mentions_any(op, alias),
+                    ),
+                    Rhs::If(_, th, el) => {
+                        self.collect_payload_aliases(th, alias);
+                        self.collect_payload_aliases(el, alias);
+                        (
+                            result_may_be_heap(th, self.recinfo, self.heap_ret)
+                                || result_may_be_heap(el, self.recinfo, self.heap_ret),
+                            term_mentions_any(th, alias) || term_mentions_any(el, alias),
+                        )
+                    }
+                    Rhs::Case(_, arms) => {
+                        for (_, b) in arms {
+                            self.collect_payload_aliases(b, alias);
+                        }
+                        (
+                            arms.iter()
+                                .any(|(_, b)| result_may_be_heap(b, self.recinfo, self.heap_ret)),
+                            arms.iter().any(|(_, b)| term_mentions_any(b, alias)),
+                        )
+                    }
+                };
+                if heapish && mentions {
+                    alias.insert(x.clone());
+                }
+                self.collect_payload_aliases(body, alias);
+            }
+            Term::Drop(_, _, body) => self.collect_payload_aliases(body, alias),
+            Term::Ret(rhs) => match rhs {
+                Rhs::Op(_) => {}
+                Rhs::If(_, th, el) => {
+                    self.collect_payload_aliases(th, alias);
+                    self.collect_payload_aliases(el, alias);
+                }
+                Rhs::Case(_, arms) => {
+                    for (_, b) in arms {
+                        self.collect_payload_aliases(b, alias);
+                    }
+                }
+            },
         }
     }
 
@@ -3536,7 +3658,22 @@ impl Elab<'_> {
                     !transfers[i] && !result_may_be_heap(&b, self.recinfo, self.heap_ret);
                 if deep_safe {
                     let ty = self.dty(s);
-                    b = self.drop_at_exits(b, s, &ty);
+                    // the payload-alias set: the scrutinee, its heap/poly field
+                    // bindings, and everything derived from them by a heap op.
+                    let mut alias = HashSet::from([s.clone()]);
+                    if let CPat::Con(con, subs) = &pat {
+                        for (fi, sp) in subs.iter().enumerate() {
+                            if let CPat::Var(n) = sp {
+                                if self.recinfo.field_is_heap(con, fi)
+                                    || self.recinfo.field_is_poly(con, fi)
+                                {
+                                    alias.insert(n.clone());
+                                }
+                            }
+                        }
+                    }
+                    self.collect_payload_aliases(&b, &mut alias);
+                    b = self.place_deep_drop(b, s, &ty, &alias);
                 } else {
                     b = Term::Drop(s.clone(), None, Box::new(b));
                 }

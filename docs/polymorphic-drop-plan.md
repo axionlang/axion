@@ -150,10 +150,10 @@ touching that field:
 2. **Borrowing a payload** (`case xs of Cons y ys -> a y`, `y` borrowed, tail
    unused → deep drop): the scrutinee drop was emitted at the arm HEAD, freeing `y`
    before `a y` reads it — a use-after-free once the destructor actually frees `y`.
-   Fixed by `Elab::drop_at_exits`: a **deep** scrutinee drop is now placed at the
-   arm's tail exits (after the result value is computed), not at the head. The
-   shallow (transfers) drop stays at the head. This also closes the same latent UAF
-   for concrete borrowed heap fields, which no fixture had exercised.
+   Fixed by `Elab::place_deep_drop`: a **deep** scrutinee drop is now placed near
+   the arm's tail (see "TCO-compatible placement" below), after the borrow, not at
+   the head. The shallow (transfers) drop stays at the head. This also closes the
+   same latent UAF for concrete borrowed heap fields, which no fixture had exercised.
 
 3. **Returning a borrowed heap sub-object** (`case xs of Cons y ys -> inner y`,
    where the payload `y` owns a heap `inner`): a deep drop of the scrutinee frees
@@ -173,14 +173,22 @@ kept tripping (docs/deep-recursion-plan.md §8b) — the drop path is genuinely 
 across several subsystems (`field_is_*`, the scrutinee shallow/deep choice,
 `result_may_be_heap`, and drop placement).
 
-**Known limitation (TCO):** the `drop_at_exits` deep drop is placed after the arm's
-result is computed, so an arm that borrows a scalar field *and* tail-recurses
-(`loop xs = case xs of Cons y ys -> loop (build (a y - 1))`) is no longer in tail
-position — deep recursion in that (unusual) shape grows the native stack instead of
-looping. It is not memory-unsafe, only a stack-safety regression on a narrow
-pattern; the linear-consumption idiom (which *moves* the tail → transfers=true →
-shallow head drop) keeps its TCO. A TCO-compatible placement (drop after the last
-*use* of the scrutinee rather than at the exit) is deferred follow-up.
+**TCO-compatible placement.** The deep scrutinee drop is placed by `place_deep_drop`
+just before each tail `Ret`, using a payload-alias analysis (`collect_payload_aliases`
++ `op_mentions_any`): the alias set is seeded with the scrutinee and its heap/poly
+field bindings and closed forward over every `let x = op` that may yield a heap
+pointer AND reads an aliasing var (`inner y`, `getInner y`). At the tail:
+- if the tail op reads no aliasing var (`ret loop (build (a y - 1))` — `a y` is a
+  scalar copy, `build …` is fresh), the drop is emitted **before** the op, so a
+  tail call stays in tail position (TCO preserved);
+- if it does (`ret useInner (inner y)`), the value is bound first, then dropped,
+  then returned (bind-then-drop), so the aliasing sub-object outlives the free.
+
+The alias set is a sound OVER-approximation (`op_mentions_any` is exhaustive over
+`Op`, and unclear cases widen the set), so a missed alias can only make the drop
+*later* (safe), never earlier (unsafe). Fixtures: `poly_payload_tco.axi` (drop
+before a tail call, 12==12, TCO asserted in Core) and `poly_payload_borrow_alias.axi`
+(heap alias into a tail call → bind-then-drop, 9==9), both ASan+LSan-gated.
 
 Validation: `poly_payload_drop.axi` (whole-drop, 6 allocs = 6 frees),
 `poly_payload_borrow_return.axi` (no double-free, corruption gate), the full test
