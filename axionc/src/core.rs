@@ -525,6 +525,15 @@ impl RecordInfo {
         self.con_poly_fields.get(con).is_some_and(|s| s.contains(&i))
     }
 
+    /// `true` if extracting field `i` of `con` out of a value transfers HEAP
+    /// ownership — a concrete heap field OR a polymorphic one (heap once
+    /// instantiated). The single predicate the ownership/aliasing decisions use,
+    /// so neither can silently forget the polymorphic case (which would
+    /// reintroduce the mono-destructor double-free — docs/polymorphic-drop-plan.md).
+    pub fn field_transfers_heap(&self, con: &str, i: usize) -> bool {
+        self.field_is_heap(con, i) || self.field_is_poly(con, i)
+    }
+
     /// Offset (in bytes) of a named field, and the list of its record's fields.
     pub fn field(&self, name: &str) -> Option<(i32, &[String])> {
         let con = self.field_owner.get(name)?;
@@ -2404,7 +2413,17 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
                 .map(|h| (f.name.clone(), h.to_string()))
         })
         .collect();
-    let (all_dty, mono_seeds) = build_all_drop_ty(&out, module, &recinfo, &fn_ret_ty);
+    // parametric data types (`data List a = …`): a dropped CONCRETE instantiation
+    // (`List P`) routes to a specialized destructor. Computed once, shared by the
+    // drop-type threading and the destructor generation.
+    let parametric_data: HashSet<String> = module
+        .datas
+        .iter()
+        .filter(|d| !d.params.is_empty())
+        .map(|d| d.name.clone())
+        .collect();
+    let (all_dty, mono_seeds) =
+        build_all_drop_ty(&out, module, &recinfo, &fn_ret_ty, &parametric_data);
     let empty = HashMap::new();
     let enum_cons = enum_con_names(module);
 
@@ -2421,7 +2440,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     // specialized destructors for concrete instantiations of parametric types
     // dropped as owned values (`List P` → `axion_drop_List$P`): they also free
     // the polymorphic payloads a generic destructor cannot see.
-    result.extend(gen_mono_destructors(module, &recinfo, mono_seeds));
+    result.extend(gen_mono_destructors(module, &recinfo, &parametric_data, mono_seeds));
     // native session state machines (§11): also hand-managed (task states live in
     // the scheduler's nursery arena), so they bypass the drop analysis too.
     result.extend(session);
@@ -2644,13 +2663,14 @@ fn drop_way(
 /// shape as `gen_destructors` (mixed low-bit guard + tag dispatch), but the drop
 /// slots are the con fields resolved under the instantiation's substitution — so
 /// the (formerly polymorphic) element field is now a concrete, freed slot.
-fn gen_mono_destructors(module: &ast::Module, recinfo: &RecordInfo, seeds: Vec<ast::Type>) -> Vec<CoreFn> {
-    let parametric_data: HashSet<String> = module
-        .datas
-        .iter()
-        .filter(|d| !d.params.is_empty())
-        .map(|d| d.name.clone())
-        .collect();
+fn gen_mono_destructors(
+    module: &ast::Module,
+    recinfo: &RecordInfo,
+    parametric_data: &HashSet<String>,
+    seeds: Vec<ast::Type>,
+) -> Vec<CoreFn> {
+    let datas: HashMap<&str, &ast::DataDecl> =
+        module.datas.iter().map(|d| (d.name.as_str(), d)).collect();
     let mut out = Vec::new();
     let mut done: HashSet<String> = HashSet::new();
     let mut work = seeds;
@@ -2661,7 +2681,7 @@ fn gen_mono_destructors(module: &ast::Module, recinfo: &RecordInfo, seeds: Vec<a
         }
         let (head, args) = ty_head_args(&t);
         let Some(head) = head else { continue };
-        let Some(d) = module.datas.iter().find(|d| d.name == head) else {
+        let Some(d) = datas.get(head).copied() else {
             continue;
         };
         let subst: HashMap<String, ast::Type> = d
@@ -2699,11 +2719,14 @@ fn gen_mono_destructors(module: &ast::Module, recinfo: &RecordInfo, seeds: Vec<a
                     DropWay::Deep(name) => {
                         Op::CallDirect(format!("axion_drop_{name}"), vec![Atom::Var(fp.clone())])
                     }
-                    _ => Op::RtCall {
+                    DropWay::Flat => Op::RtCall {
                         func: "axion_free".into(),
                         args: vec![Atom::Var(fp.clone())],
                         returns: false,
                     },
+                    // non-heap fields are filtered out before this point; skip
+                    // defensively so a stray `None` never emits a wild `free`.
+                    DropWay::None => continue,
                 };
                 term = Term::Let(
                     fp.clone(),
@@ -2783,15 +2806,8 @@ fn build_all_drop_ty(
     module: &ast::Module,
     recinfo: &RecordInfo,
     fn_ret_ty: &HashMap<String, String>,
+    parametric_data: &HashSet<String>,
 ) -> (HashMap<String, HashMap<String, Option<String>>>, Vec<ast::Type>) {
-    // parametric data types (`data List a = …`): an owned param of a CONCRETE
-    // instantiation (`List P`) is dropped via a specialized destructor.
-    let parametric_data: HashSet<String> = module
-        .datas
-        .iter()
-        .filter(|d| !d.params.is_empty())
-        .map(|d| d.name.clone())
-        .collect();
     let mut out = HashMap::new();
     let mut seeds: Vec<ast::Type> = Vec::new();
     for f in fns {
@@ -3376,8 +3392,7 @@ fn transfers_heap_field(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
             // a heap field whose binding ESCAPES the arm (is consumed/moved out,
             // not merely borrowed) had its ownership transferred → the scrutinee
             // must be freed shallowly.
-            (recinfo.field_is_heap(con, i) || recinfo.field_is_poly(con, i))
-                && occurs_nonborrow(n, body)
+            recinfo.field_transfers_heap(con, i) && occurs_nonborrow(n, body)
         })
     } else {
         false
@@ -3664,9 +3679,7 @@ impl Elab<'_> {
                     if let CPat::Con(con, subs) = &pat {
                         for (fi, sp) in subs.iter().enumerate() {
                             if let CPat::Var(n) = sp {
-                                if self.recinfo.field_is_heap(con, fi)
-                                    || self.recinfo.field_is_poly(con, fi)
-                                {
+                                if self.recinfo.field_transfers_heap(con, fi) {
                                     alias.insert(n.clone());
                                 }
                             }
