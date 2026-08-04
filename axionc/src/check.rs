@@ -73,6 +73,8 @@ pub struct Analysis {
     pub drops: Vec<DropPoint>,
     pub inplace: Vec<InPlace>,
     pub arenas: Vec<ArenaReset>,
+    /// Phase 4: constructor return types (span → concrete AST Type) for MakeCon
+    pub makecon_tys: HashMap<Span, Type>,
 }
 
 /// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.

@@ -72,6 +72,11 @@ struct Infer<'a> {
     cur_constraints: Vec<String>,
     /// name of the function being inferred (key of the resolutions, with the span).
     cur_fn: String,
+    /// Phase 4: constructor call-site return types (span → concrete Ty).
+    /// Recorded at `Expr::Con` / `Expr::App` with a constructor head / `Expr::RecordCon`
+    /// and threaded to the lowering so `MakeCon.ty` carries the mangled concrete key
+    /// (`List$P`) instead of just the type head (`List`).
+    con_ret_tys: HashMap<Span, Ty>,
 }
 
 /// An obligation `class C over type T`, collected at a method use and
@@ -119,6 +124,8 @@ struct OwnObl {
 pub struct Mono {
     pub resolutions: HashMap<(String, Span), String>,
     pub specs: Vec<SpecPlan>,
+    /// Phase 4: constructor call-site return types (span → concrete AST Type)
+    pub makecon_tys: HashMap<Span, Type>,
 }
 
 /// Instruction to clone `src` into a monomorphic function `name`, substituting
@@ -158,6 +165,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         own_obligations: Vec::new(),
         cur_constraints: Vec::new(),
         cur_fn: String::new(),
+        con_ret_tys: HashMap::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -375,6 +383,15 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     let owning = inf.discharge_owning();
     mono.resolutions.extend(owning.resolutions);
     mono.specs.extend(owning.specs);
+    // Phase 4: resolve + convert constructor return types before passing on
+    let con_tys = std::mem::take(&mut inf.con_ret_tys);
+    mono.makecon_tys = con_tys
+        .into_iter()
+        .filter_map(|(sp, ty)| {
+            let resolved = inf.apply(&ty);
+            ty_to_ast(&resolved).map(|ast| (sp, ast))
+        })
+        .collect();
     let _ = placeholders;
     mono
 }
@@ -1271,7 +1288,11 @@ impl<'a> Infer<'a> {
             }
         }
 
-        Mono { resolutions, specs }
+        Mono {
+            resolutions,
+            specs,
+            makecon_tys: HashMap::new(),
+        }
     }
 
     /// Phase B — closes the generic-owning corner. An UNCONSTRAINED generic
@@ -1400,7 +1421,11 @@ impl<'a> Infer<'a> {
             }
         }
 
-        Mono { resolutions, specs }
+        Mono {
+            resolutions,
+            specs,
+            makecon_tys: HashMap::new(),
+        }
     }
 
     /// Exhaustiveness/redundancy for `case`, on the resolved scrutinee type:
@@ -1824,8 +1849,18 @@ impl<'a> Infer<'a> {
                 }
                 ty
             }
-            Expr::Con(n, _) => match env.get(n) {
-                Some(s) => self.instantiate(s),
+            Expr::Con(n, s) => match env.get(n) {
+                Some(sch) => {
+                    let ty = self.instantiate(sch);
+                    // Phase 4: record the constructor's return type.
+                    // Walk the Fun chain to the final result type.
+                    let mut ret = ty.clone();
+                    while let Ty::Fun(_, body) = &ret {
+                        ret = body.as_ref().clone();
+                    }
+                    self.con_ret_tys.insert(*s, ret);
+                    ty
+                }
                 None => self.fresh(),
             },
             Expr::App(f, x, span) => {
@@ -1833,6 +1868,12 @@ impl<'a> Infer<'a> {
                 let tx = self.infer_expr(env, x);
                 let r = self.fresh();
                 self.unify(&tf, &Ty::Fun(Box::new(tx), Box::new(r.clone())), *span);
+                // Phase 4: record constructor return types for MakeCon lowering
+                if let Expr::Con(n, _s) = &**f {
+                    if self.cons.contains_key(n) {
+                        self.con_ret_tys.insert(*span, r.clone());
+                    }
+                }
                 r
             }
             Expr::BinOp(op, l, r, span) => {
@@ -1915,7 +1956,10 @@ impl<'a> Infer<'a> {
                         self.unify(&fe, ft, *span);
                     }
                 }
-                Ty::Con(tyname, vec![])
+                let ty = Ty::Con(tyname, vec![]);
+                // Phase 4: record record-constructor return type
+                self.con_ret_tys.insert(*span, ty.clone());
+                ty
             }
             Expr::RecordUpd(base, assigns, span) => {
                 let tb = self.infer_expr(env, base);

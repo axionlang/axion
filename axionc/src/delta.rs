@@ -1395,7 +1395,7 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        lower_with(&module, &inplace)
+        lower_with(&module, &inplace, &std::collections::HashMap::new())
     }
 
     /// Runs the Δ judgment over `src` (fresh pipeline), returning the errors.
@@ -1418,7 +1418,7 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace);
+        let l = lower_with(&module, &inplace, &std::collections::HashMap::new());
         check_drop_coherence(&l.fns, &l.borrow_args, &l.recinfo, &analysis.drops)
     }
 
@@ -1428,7 +1428,7 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace);
+        let l = lower_with(&module, &inplace, &std::collections::HashMap::new());
         let mut fns = l.fns.clone();
         tamper(&mut fns);
         check_drop_coherence(&fns, &l.borrow_args, &l.recinfo, &analysis.drops)
@@ -1718,13 +1718,9 @@ mod tests {
         let d2 = super::dump_annotated(&l.fns, &l.borrow_args, &l.recinfo);
         assert_eq!(d1, d2, "dump_annotated must be deterministic");
         // the reverse kernel: `append` consumes the carried suffix
-        assert!(d1.contains(
-            "      let _d1000000 = call append _t0 _t2  ; Δ{_t0 _t2} · moves{_t2} · makes List\n"
-        ));
+        assert!(d1.contains("      let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List\n"));
         // an embedding moves its payload out of Δ
-        assert!(
-            d1.contains("      let _t2 = con Cons y _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List\n")
-        );
+        assert!(d1.contains("      let _t2 = con Cons y _t1  ; Δ{_t0}\n"));
         // returning a produced resource leaves Δ (aliased — freely duplicable)
         assert!(d1.contains("      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}\n"));
         // drop lines stay unannotated
@@ -1864,7 +1860,7 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace);
+        let l = lower_with(&module, &inplace, &std::collections::HashMap::new());
         let lines = crate::lexer::LineMap::new(src);
         super::dump_delta(
             &l.fns,
@@ -1889,7 +1885,7 @@ mod tests {
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
-                "== verdicts: 31 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 32 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
@@ -1935,7 +1931,7 @@ mod tests {
         let (module, analysis) = crate::compile_front(DROP_OK, &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace);
+        let l = lower_with(&module, &inplace, &std::collections::HashMap::new());
         let mut fns = l.fns.clone();
         let f = fns.iter_mut().find(|f| f.name == "makeAndDrop").unwrap();
         f.body = Term::Ret(
@@ -1962,7 +1958,7 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 30 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 31 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(

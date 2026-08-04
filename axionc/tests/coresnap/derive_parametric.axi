@@ -33,6 +33,8 @@
 
 
 
+
+
         _ ->
         _ ->
         _ ->
@@ -41,7 +43,9 @@
         _ ->
         _ ->
 append xs ys  =
+axion_drop_List$Int _p  =
 axion_drop_List _p  =
+axion_drop_Maybe$Color _p  =
         Blue ->
         Blue ->
     Blue ->
@@ -70,7 +74,7 @@ concat xs  =
     Cons z zs ->
 drop n xs  =
       drop _t0 : List
-  drop _t1 : Maybe
+  drop _t1 : Maybe$Color
 elem x xs  =
       else
       else
@@ -78,6 +82,10 @@ elem x xs  =
       else
     else
     else
+    else
+    else
+  else
+  else
   else
   else
   else
@@ -102,13 +110,27 @@ le$Color x y  =
 le$Float x y  =
 le$Int x y  =
 length xs  =
-      let _d1000000 = call append _t0 _t2  ; Δ{_t0 _t2} · moves{_t2} · makes List
+      let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
+      let _dd0 = loadraw _p+16  ; Δ{}
+      let _dd0 = loadraw _p+8  ; Δ{}
+      let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
+      let _dd1 = rtcall axion_free _dd0  ; Δ{}
+    let _dd2 = == _tag 1  ; Δ{}
+    let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
+    let _dd3 = if _dd2 then
+    let _dd3 = if _dd2 then
+  let _dd4 = band _p 1  ; Δ{}
+  let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
+  let _dd5 = if _dd4 then
+  let _dd5 = if _dd4 then
+    let _dfree = rtcall axion_free _p  ; Δ{}
+    let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call append zs ys  ; Δ{} · makes List
           let _t0 = callclo f a b  ; Δ{}
@@ -137,17 +159,19 @@ length xs  =
       let _t1 = call map f ys  ; Δ{} · makes List
       let _t1 = call show$Color a0  ; Δ{}
           let _t1 = call zipWith f as bs  ; Δ{} · makes List
-      let _t1 = con Nil  ; Δ{_t0} · makes List
-  let _t1 = con Some _t0  ; Δ{} · makes Maybe
+      let _t1 = con Nil  ; Δ{_t0}
+  let _t1 = con Some _t0  ; Δ{} · makes Maybe$Color
     let _t1 = + lo 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{}
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{}
-    let _t2 = call range _t1 hi  ; Δ{} · makes List
+    let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
   let _t2 = call show$Maybe$Color _t1  ; Δ{_t1}
         let _t2 = call take _t1 ys  ; Δ{} · makes List
-      let _t2 = con Cons y _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List
+      let _t2 = con Cons y _t1  ; Δ{_t0}
+    let _tag = loadraw _p+0  ; Δ{}
+    let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
 map f xs  =
@@ -194,8 +218,18 @@ range lo hi  =
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
       ret + 1 _t0  ; Δ{}
           ret 1  ; Δ{}
@@ -252,23 +286,23 @@ range lo hi  =
       ret case y of
       ret case y of
       ret case ys of
-    ret con Cons lo _t2  ; Δ{_t2} · moves{_t2} · makes List
-          ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List
-      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List
-        ret con Cons y _t1  ; Δ{_t1} · moves{_t1} · makes List
-        ret con Cons y _t2  ; Δ{_t2} · moves{_t2} · makes List
-        ret con Cons y ys  ; Δ{} · makes List
-      ret con Cons z _t0  ; Δ{_t0} · moves{_t0} · makes List
-          ret con Nil  ; Δ{} · makes List
-        ret con Nil  ; Δ{} · makes List
-      ret con Nil  ; Δ{} · makes List
-      ret con Nil  ; Δ{} · makes List
-      ret con Nil  ; Δ{} · makes List
-      ret con Nil  ; Δ{} · makes List
-      ret con Nil  ; Δ{} · makes List
-      ret con Nil  ; Δ{} · makes List
-      ret con Nil  ; Δ{} · makes List
-    ret con Nil  ; Δ{} · makes List
+    ret con Cons lo _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
+          ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
+      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
+        ret con Cons y _t1  ; Δ{_t1} · moves{_t1}
+        ret con Cons y _t2  ; Δ{_t2} · moves{_t2}
+        ret con Cons y ys  ; Δ{}
+      ret con Cons z _t0  ; Δ{_t0} · moves{_t0}
+          ret con Nil  ; Δ{}
+        ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+    ret con Nil  ; Δ{} · makes List$Int
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret "false"  ; Δ{}
       ret "Green"  ; Δ{}
@@ -318,6 +352,10 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

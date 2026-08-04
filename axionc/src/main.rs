@@ -182,7 +182,7 @@ fn main() -> ExitCode {
     if check_delta {
         // Δ-1 (report-only): the linearity judgment over the annotated Core,
         // plus the Δ-3 coherence cross-check against the front-end DropPoints.
-        let lowered = core::lower_with(&module, &inplace);
+        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys);
         let mut errs = delta::check_all(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
         errs.extend(delta::check_drop_coherence(
             &lowered.fns,
@@ -214,7 +214,7 @@ fn main() -> ExitCode {
         // Δ-2: the annotated dump — `core::dump` plus the live-resource env
         // (Δ) on every `let`/`ret` (report-only; same output shape as `dump`
         // for unannotated lines).
-        let lowered = core::lower_with(&module, &inplace);
+        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys);
         print!(
             "{}",
             delta::dump_annotated(&lowered.fns, &lowered.borrow_args, &lowered.recinfo)
@@ -227,7 +227,7 @@ fn main() -> ExitCode {
         // facts the annotated dump cannot show (drops in the judged Core,
         // never-used `%1` params, coherence agreement). Report-only: the exit
         // code is unaffected — `--check-delta` is the verdict channel.
-        let lowered = core::lower_with(&module, &inplace);
+        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys);
         print!(
             "{}",
             delta::dump_delta(
@@ -347,7 +347,7 @@ pub(crate) fn compile_front(
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
-    let analysis = check::check(&module, diags);
+    let mut analysis = check::check(&module, diags);
     // Inference returns the monomorphic method resolutions (use span →
     // concrete instance implementation). We rewrite them as direct
     // calls (`eq 3 3` → `eq$Int 3 3`): monomorphization — the use
@@ -355,6 +355,7 @@ pub(crate) fn compile_front(
     let mono = infer::infer(&module, diags);
     resolve_methods(&mut module, &mono.resolutions);
     materialize_specs(&mut module, &mono.specs);
+    analysis.makecon_tys = mono.makecon_tys;
     (Some(module), analysis)
 }
 
