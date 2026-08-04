@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! Type inference — Hindley-Milner (Algorithm W) for the L0/L1 subset.
 //!
 //! Runs alongside the linearity analysis (`check.rs`): linearity handles

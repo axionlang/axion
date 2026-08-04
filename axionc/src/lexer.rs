@@ -1,3 +1,4 @@
+#![allow(clippy::string_slice)]
 //! Lexical analysis of `.axi` with `logos` (§18) + a line table for spans.
 //!
 //! The lexer ignores spaces, newlines and comments; the (line, column) position
@@ -210,7 +211,7 @@ pub fn lex(src: &str) -> Result<Vec<Spanned>, LexError> {
                 start: span.start,
                 end: span.end,
             }),
-            Err(_) => {
+            Err(()) => {
                 return Err(LexError {
                     start: span.start,
                     end: span.end,

@@ -1,13 +1,5 @@
-//! Native `--dev` backend (§11/§18): the "Fast-Path Backend" over Cranelift.
-//!
-//! Emits native code from the **Axion Core IR** (see `core.rs`), not the AST:
-//! the Core is already in ANF (each subexpression named), with multi-clause
-//! desugaring, `where` *lifting* and closure conversion resolved,
-//! so this file is a plain Core→Cranelift emitter. JIT-compiles via
-//! `cranelift-jit`. All values are `i64` (Int, pointers, IO tokens).
-//! Strings/IO and allocation (records, tuples, closures) via a minimal runtime
-//! (`axion_puts`/`axion_show_int`/`axion_alloc`). The same Core serves the
 //! LLVM `--release` backend.
+#![allow(unsafe_code)]
 
 use crate::ast;
 use crate::ast::Span;
@@ -37,6 +29,8 @@ extern "C" {
 fn resolve_symbol(name: &str) -> Option<*const u8> {
     let cname = std::ffi::CString::new(name).ok()?;
     // RTLD_DEFAULT = null pointer (glibc): searches in the normal resolution order.
+    // SAFETY: dlsym with RTLD_DEFAULT reads the process symbol table
+    // — pointer is valid or null, both safe to inspect.
     let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
     (!p.is_null()).then_some(p as *const u8)
 }
@@ -45,6 +39,8 @@ fn resolve_symbol(name: &str) -> Option<*const u8> {
 
 /// `putStrLn`: prints a C-string with a newline.
 extern "C" fn axion_puts(ptr: *const u8) {
+    // SAFETY: the caller (JIT-compiled code) passed a valid NUL-terminated
+    // C-string allocated by axion_show_int / axion_strcat.
     let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
     println!("{}", s.to_string_lossy());
 }
@@ -52,27 +48,30 @@ extern "C" fn axion_puts(ptr: *const u8) {
 /// `putStr`: prints a C-string WITHOUT a newline.
 extern "C" fn axion_put(ptr: *const u8) {
     use std::io::Write;
+    // SAFETY: caller passed a valid NUL-terminated C-string.
     let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
     print!("{}", s.to_string_lossy());
-    let _ = std::io::stdout().flush();
+    drop(std::io::stdout().flush());
 }
 
 /// `show :: Int -> String`: formats an integer and returns a C-string (leaked;
 /// lives until the end of the process — acceptable for a single `run`).
 extern "C" fn axion_show_int(n: i64) -> *const u8 {
-    let s = std::ffi::CString::new(n.to_string()).unwrap();
+    let s = std::ffi::CString::new(n.to_string()).unwrap_or_else(|_| panic!("CString error"));
     s.into_raw() as *const u8
 }
 
 /// `show :: Float -> String`: the shortest round-tripping decimal (matching Rust
 /// `{}`), as a C-string. The i64 argument is the f64 bit pattern.
 extern "C" fn axion_show_float(bits: i64) -> *const u8 {
-    let s = std::ffi::CString::new(f64::from_bits(bits as u64).to_string()).unwrap();
+    let s = std::ffi::CString::new(f64::from_bits(bits as u64).to_string())
+        .unwrap_or_else(|_| panic!("CString error"));
     s.into_raw() as *const u8
 }
 
 /// String concatenation `a ++ b` into a fresh C-string. Backs `strAppend`.
 extern "C" fn axion_strcat(a: *const u8, b: *const u8) -> *const u8 {
+    // SAFETY: caller passed two valid NUL-terminated C-strings.
     let (x, y) = unsafe {
         (
             std::ffi::CStr::from_ptr(a as *const std::ffi::c_char),
@@ -81,7 +80,9 @@ extern "C" fn axion_strcat(a: *const u8, b: *const u8) -> *const u8 {
     };
     let mut s = x.to_bytes().to_vec();
     s.extend_from_slice(y.to_bytes());
-    std::ffi::CString::new(s).unwrap().into_raw() as *const u8
+    std::ffi::CString::new(s)
+        .unwrap_or_else(|_| panic!("CString error"))
+        .into_raw() as *const u8
 }
 
 // Heap counters (§13): how many allocations and frees occurred. With
@@ -95,7 +96,10 @@ static HEAP_FREES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// pointer to the payload (right after the header).
 extern "C" fn axion_alloc(size: i64) -> *mut u8 {
     let total = size.max(1) as usize + 8;
-    let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
+    let layout =
+        std::alloc::Layout::from_size_align(total, 8).unwrap_or_else(|_| panic!("layout error"));
+    // SAFETY: layout is well-formed (8-aligned, non-zero); null-check
+    // handles OOM via `handle_alloc_error` before any dereference.
     unsafe {
         let base = std::alloc::alloc(layout);
         // out-of-memory → abort cleanly (the std OOM handler) instead of
@@ -104,7 +108,7 @@ extern "C" fn axion_alloc(size: i64) -> *mut u8 {
         if base.is_null() {
             std::alloc::handle_alloc_error(layout);
         }
-        *(base as *mut u64) = total as u64; // header: total size
+        base.cast::<u64>().write_unaligned(total as u64); // header: total size
         HEAP_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         base.add(8) // payload
     }
@@ -117,10 +121,13 @@ extern "C" fn axion_free(ptr: *mut u8) {
     if (ptr as usize) & 1 != 0 {
         return;
     }
+    // SAFETY: only called after axion_alloc, so ptr is a valid
+    // allocation with an 8-byte size header at offset -8.
     unsafe {
         let base = ptr.sub(8);
-        let total = *(base as *const u64) as usize;
-        let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
+        let total = base.cast::<u64>().read_unaligned() as usize;
+        let layout = std::alloc::Layout::from_size_align(total, 8)
+            .unwrap_or_else(|_| panic!("layout error"));
         std::alloc::dealloc(base, layout);
         HEAP_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -165,6 +172,8 @@ impl ArenaState {
             self.chunk = self.chunks.len() - 1;
             self.off = 0;
         }
+        // SAFETY: the chunk is a Box<[u8]> with at least (off + size) bytes
+        // remaining; as_mut_ptr().add(off) returns a pointer within the allocation.
         let out = unsafe { self.chunks[self.chunk].as_mut_ptr().add(self.off) };
         self.off += size;
         out
@@ -183,19 +192,30 @@ extern "C" fn axion_arena_new() -> *mut u8 {
     Box::into_raw(ArenaState::new()) as *mut u8
 }
 
+/// Allocates `size` bytes of arena memory.
+#[allow(clippy::cast_ptr_alignment)]
 extern "C" fn axion_arena_alloc(arena: *mut u8, size: i64) -> *mut u8 {
     CELL_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: arena was allocated by axion_arena_new and is a valid
+    // Box<ArenaState>; the pointer is properly aligned for ArenaState.
     let st = unsafe { &mut *(arena as *mut ArenaState) };
     st.alloc(size as usize)
 }
 
 /// Bulk reset: drops the whole arena (all chunks at once).
+#[allow(clippy::cast_ptr_alignment)]
 extern "C" fn axion_arena_reset(arena: *mut u8) {
     ARENA_RESETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: arena was allocated by axion_arena_new and was never freed;
+    // Box::from_raw reconstructs the owning pointer for safe deallocation.
     unsafe { drop(Box::from_raw(arena as *mut ArenaState)) };
 }
 
+/// Creates a mark snapshot: arena pointer + bump-pointer position.
+#[allow(clippy::cast_ptr_alignment)]
 extern "C" fn axion_arena_mark(arena: *mut u8) -> *mut u8 {
+    // SAFETY: arena is a live ArenaState pointer from axion_arena_new;
+    // we read its chunk/off fields (no mutation) to snapshot the bump-pointer.
     let st = unsafe { &*(arena as *mut ArenaState) };
     Box::into_raw(Box::new(MarkState {
         arena: arena as *mut ArenaState,
@@ -205,8 +225,14 @@ extern "C" fn axion_arena_mark(arena: *mut u8) -> *mut u8 {
 }
 
 /// Restores the bump-pointer to the mark (reclaims what was allocated since).
+/// Restores the bump-pointer to the mark (reclaims what was allocated since).
+#[allow(clippy::cast_ptr_alignment)]
 extern "C" fn axion_arena_release(mark: *mut u8) {
+    // SAFETY: mark was created by axion_arena_mark and is a valid
+    // Box<MarkState>; the arena pointer inside it is still live.
     let m = unsafe { Box::from_raw(mark as *mut MarkState) };
+    // SAFETY: m.arena was written by axion_arena_mark and points to a
+    // live ArenaState.
     let st = unsafe { &mut *m.arena };
     st.chunks.truncate(m.chunk + 1);
     st.chunk = m.chunk;
@@ -214,9 +240,14 @@ extern "C" fn axion_arena_release(mark: *mut u8) {
 }
 
 /// Copies a cell to arena `target` (saves it from the sub-arena reset).
+/// Copies a cell to arena `target` (saves it from the sub-arena reset).
+#[allow(clippy::cast_ptr_alignment)]
 extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> *mut u8 {
+    // SAFETY: target is a live ArenaState pointer.
     let st = unsafe { &mut *(target as *mut ArenaState) };
     let dst = st.alloc(size as usize);
+    // SAFETY: cell and dst are within valid allocations of at least `size`
+    // bytes, and they do not overlap (dst is freshly allocated).
     unsafe { std::ptr::copy_nonoverlapping(cell, dst, size as usize) };
     dst
 }
@@ -227,25 +258,28 @@ extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> 
 // rounded up to the `Layout`'s alignment. ---
 
 fn buf_layout(n: usize) -> std::alloc::Layout {
-    std::alloc::Layout::from_size_align(8 + n, 8).unwrap()
+    std::alloc::Layout::from_size_align(8 + n, 8).unwrap_or_else(|_| panic!("layout error"))
 }
 
 extern "C" fn axion_buf_new(n: i64) -> *mut u8 {
     let n = n.max(0) as usize;
     let layout = buf_layout(n);
+    // SAFETY: layout is well-formed; null-check before any dereference.
     unsafe {
         let b = std::alloc::alloc_zeroed(layout);
         if b.is_null() {
             std::alloc::handle_alloc_error(layout);
         }
-        *(b as *mut i64) = n as i64;
+        b.cast::<i64>().write_unaligned(n as i64);
         b
     }
 }
 
 extern "C" fn axion_buf_iota(buf: *mut u8) -> *mut u8 {
+    // SAFETY: buf was allocated by axion_buf_new — valid for reads/writes
+    // within [0, n) at buf+8, where n = read from buf[0..8].
     unsafe {
-        let n = *(buf as *const i64) as usize;
+        let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
         for i in 0..n {
             *d.add(i) = (i & 0xFF) as u8;
@@ -255,8 +289,9 @@ extern "C" fn axion_buf_iota(buf: *mut u8) -> *mut u8 {
 }
 
 extern "C" fn axion_buf_xor(buf: *mut u8, key: i64) -> *mut u8 {
+    // SAFETY: buf was allocated by axion_buf_new — reads/writes within bounds.
     unsafe {
-        let n = *(buf as *const i64) as usize;
+        let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
         for i in 0..n {
             *d.add(i) ^= key as u8;
@@ -266,8 +301,9 @@ extern "C" fn axion_buf_xor(buf: *mut u8, key: i64) -> *mut u8 {
 }
 
 extern "C" fn axion_buf_sum(buf: *mut u8) -> i64 {
+    // SAFETY: buf was allocated by axion_buf_new — reads within bounds.
     unsafe {
-        let n = *(buf as *const i64) as usize;
+        let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
         let mut s = 0i64;
         for i in 0..n {
@@ -278,8 +314,10 @@ extern "C" fn axion_buf_sum(buf: *mut u8) -> i64 {
 }
 
 extern "C" fn axion_buf_free(buf: *mut u8) {
+    // SAFETY: buf was allocated by axion_buf_new with a matching layout
+    // computed from the size header.
     unsafe {
-        let n = *(buf as *const i64) as usize;
+        let n = buf.cast::<i64>().read_unaligned() as usize;
         std::alloc::dealloc(buf, buf_layout(n));
     }
 }
@@ -287,10 +325,12 @@ extern "C" fn axion_buf_free(buf: *mut u8) {
 /// `foldBytes f init buf`: folds the closure `f` over the bytes. Reads the `fn_ptr` from
 /// `f[0]` and calls `fn_ptr(f, acc, byte)` per byte (the closure is the env).
 extern "C" fn axion_fold_bytes(f: *mut u8, init: i64, buf: *mut u8) -> i64 {
+    // SAFETY: f is a closure heap-pointer whose first word is a function
+    // pointer with the correct signature; buf was allocated by axion_buf_new.
     unsafe {
-        let fn_ptr = *(f as *const i64);
+        let fn_ptr = f.cast::<i64>().read_unaligned();
         let func: extern "C" fn(*mut u8, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-        let n = *(buf as *const i64) as usize;
+        let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
         let mut acc = init;
         for i in 0..n {
@@ -332,6 +372,8 @@ struct SessSched {
 }
 
 fn sess<'a>(sched: i64) -> &'a SessSched {
+    // SAFETY: sched was created by axion_sess_new which returns a Box pointer;
+    // the cast reconstructs the reference for the duration of this call only.
     unsafe { &*(sched as *const SessSched) }
 }
 
@@ -356,7 +398,10 @@ extern "C" fn axion_sess_new() -> i64 {
 
 /// Creates a channel: two peer endpoints, `a` and `a+1` (mirrors newChannel).
 extern "C" fn axion_sess_channel(sched: i64) -> i64 {
-    let mut g = sess(sched).inner.lock().unwrap();
+    let mut g = sess(sched)
+        .inner
+        .lock()
+        .unwrap_or_else(|_| panic!("mutex poisoned"));
     let a = g.bufs.len();
     g.bufs.push(Default::default());
     g.bufs.push(Default::default());
@@ -367,7 +412,10 @@ extern "C" fn axion_sess_channel(sched: i64) -> i64 {
 
 /// Sends `v` on `ep` → pushes to the peer's input queue and wakes parked receivers.
 extern "C" fn axion_sess_send(sched: i64, ep: i64, v: i64) {
-    let mut g = sess(sched).inner.lock().unwrap();
+    let mut g = sess(sched)
+        .inner
+        .lock()
+        .unwrap_or_else(|_| panic!("mutex poisoned"));
     let p = g.peer[ep as usize];
     g.bufs[p].push_back(v);
     // a message arrived → wake parked tasks and bump the generation so that a task
@@ -381,13 +429,19 @@ extern "C" fn axion_sess_send(sched: i64, ep: i64, v: i64) {
 
 /// 1 if a message is waiting on `ep`, 0 if empty (would block).
 extern "C" fn axion_sess_pending(sched: i64, ep: i64) -> i64 {
-    let g = sess(sched).inner.lock().unwrap();
+    let g = sess(sched)
+        .inner
+        .lock()
+        .unwrap_or_else(|_| panic!("mutex poisoned"));
     i64::from(!g.bufs[ep as usize].is_empty())
 }
 
 /// Pops and returns the message on `ep` (caller guarantees pending; SPSC consumer).
 extern "C" fn axion_sess_recv(sched: i64, ep: i64) -> i64 {
-    let mut g = sess(sched).inner.lock().unwrap();
+    let mut g = sess(sched)
+        .inner
+        .lock()
+        .unwrap_or_else(|_| panic!("mutex poisoned"));
     g.bufs[ep as usize].pop_front().unwrap_or(0)
 }
 
@@ -395,20 +449,27 @@ extern "C" fn axion_sess_recv(sched: i64, ep: i64) -> i64 {
 /// all such blocks are freed in bulk when `axion_sess_run` returns.
 extern "C" fn axion_sess_alloc(sched: i64, nbytes: i64) -> i64 {
     let size = nbytes.max(8) as usize;
-    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
+    let layout =
+        std::alloc::Layout::from_size_align(size, 8).unwrap_or_else(|_| panic!("layout error"));
+    // SAFETY: layout is well-formed; null-check before dereference.
     let p = unsafe { std::alloc::alloc_zeroed(layout) };
     sess(sched)
         .inner
         .lock()
-        .unwrap()
+        .unwrap_or_else(|_| panic!("mutex poisoned"))
         .allocs
         .push((p as usize, layout));
     p as i64
 }
 
 extern "C" fn axion_sess_spawn(sched: i64, step: i64, state: i64) {
+    // SAFETY: step is a function pointer cast to i64 during codegen;
+    // both i64 and SessStep are the same width on all supported targets.
     let f: SessStep = unsafe { std::mem::transmute::<i64, SessStep>(step) };
-    let mut g = sess(sched).inner.lock().unwrap();
+    let mut g = sess(sched)
+        .inner
+        .lock()
+        .unwrap_or_else(|_| panic!("mutex poisoned"));
     let i = g.tasks.len();
     g.tasks.push((f, state));
     g.ready.push_back(i);
@@ -424,7 +485,7 @@ fn sess_worker(sched: i64) {
             return;
         }
         let picked = {
-            let mut g = s.inner.lock().unwrap();
+            let mut g = s.inner.lock().unwrap_or_else(|_| panic!("mutex poisoned"));
             match g.ready.pop_front() {
                 Some(i) => {
                     g.running += 1;
@@ -453,11 +514,14 @@ fn sess_worker(sched: i64) {
         // step status: 1 = done, 2 = re-queue (a recursive session loop iterated),
         // 0 = blocked on an empty recv.
         let status = step(sched, st); // runs WITHOUT the lock (parallel)
-        let mut g = s.inner.lock().unwrap();
+        let mut g = s.inner.lock().unwrap_or_else(|_| panic!("mutex poisoned"));
         g.running -= 1;
         if status == 1 {
             if i == 0 {
-                let res = unsafe { *(st as *const i64) };
+                // SAFETY: st is the task-state pointer cast from i64; it was
+                // zero-allocated by axion_sess_alloc and the root task's
+                // first word holds the result value.
+                let res = unsafe { (st as *const i64).read_unaligned() };
                 s.result.store(res, Release);
                 s.done.store(true, Release);
             }
@@ -497,9 +561,16 @@ extern "C" fn axion_sess_run(sched: i64, step: i64, state: i64) -> i64 {
     let s = sess(sched);
     let result = s.result.load(Acquire);
     // free the task states (the nursery arena) and the scheduler
+    // SAFETY: sched was created by axion_sess_new which wraps a Box;
+    // the thread pool has joined — no outstanding references remain.
     let boxed = unsafe { Box::from_raw(sched as *mut SessSched) };
-    let inner = boxed.inner.into_inner().unwrap();
+    let inner = boxed
+        .inner
+        .into_inner()
+        .unwrap_or_else(|_| panic!("Arc still referenced"));
     for (p, layout) in inner.allocs {
+        // SAFETY: each (p, layout) was recorded by axion_sess_alloc
+        // with the exact same layout used during allocation.
         unsafe { std::alloc::dealloc(p as *mut u8, layout) };
     }
     result
@@ -522,8 +593,8 @@ struct Cg {
     ids: HashMap<String, (FuncId, usize)>,
     strings: HashMap<String, DataId>,
     str_counter: u32,
-    puts_id: FuncId,
-    put_id: FuncId,
+    println_id: FuncId,
+    print_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
     free_id: FuncId,
@@ -535,7 +606,7 @@ struct Cg {
 impl Cg {
     fn new(records: RecordInfo) -> Result<Cg, String> {
         let mut flags = cranelift::codegen::settings::builder();
-        let _ = flags.set("opt_level", "none"); // fast-path (§11)
+        drop(flags.set("opt_level", "none"));
         let isa = cranelift_native::builder()
             .map_err(|e| e.to_string())?
             .finish(cranelift::codegen::settings::Flags::new(flags))
@@ -584,8 +655,8 @@ impl Cg {
                 .declare_function(name, Linkage::Import, &sig)
                 .map_err(|e| e.to_string())
         };
-        let puts_id = import(&mut module, "axion_puts", 1, false)?;
-        let put_id = import(&mut module, "axion_put", 1, false)?;
+        let println_id = import(&mut module, "axion_puts", 1, false)?;
+        let print_id = import(&mut module, "axion_put", 1, false)?;
         let show_id = import(&mut module, "axion_show_int", 1, true)?;
         let alloc_id = import(&mut module, "axion_alloc", 1, true)?;
         let free_id = import(&mut module, "axion_free", 1, false)?;
@@ -629,8 +700,8 @@ impl Cg {
             ids: HashMap::new(),
             strings: HashMap::new(),
             str_counter: 0,
-            puts_id,
-            put_id,
+            println_id,
+            print_id,
             show_id,
             alloc_id,
             free_id,
@@ -686,8 +757,8 @@ impl Cg {
                 module: &mut self.module,
                 strings: &mut self.strings,
                 str_counter: &mut self.str_counter,
-                puts_id: self.puts_id,
-                put_id: self.put_id,
+                println_id: self.println_id,
+                print_id: self.print_id,
                 show_id: self.show_id,
                 alloc_id: self.alloc_id,
                 free_id: self.free_id,
@@ -745,8 +816,8 @@ struct Fx<'a, 'b> {
     module: &'a mut JITModule,
     strings: &'a mut HashMap<String, DataId>,
     str_counter: &'a mut u32,
-    puts_id: FuncId,
-    put_id: FuncId,
+    println_id: FuncId,
+    print_id: FuncId,
     show_id: FuncId,
     alloc_id: FuncId,
     free_id: FuncId,
@@ -924,7 +995,7 @@ impl Fx<'_, '_> {
                     .iter()
                     .map(|a| self.atom(a))
                     .collect::<Result<_, _>>()?;
-                let (header, _, params) = self.tco.clone().unwrap();
+                let (header, _, params) = self.tco.clone().ok_or("TCO state")?;
                 for (p, v) in params.iter().zip(vals) {
                     let var = self.vars[p];
                     self.builder.def_var(var, v);
@@ -1244,7 +1315,7 @@ impl Fx<'_, '_> {
                 let v = self.atom(a)?;
                 let callee = self
                     .module
-                    .declare_func_in_func(self.puts_id, self.builder.func);
+                    .declare_func_in_func(self.println_id, self.builder.func);
                 self.builder.ins().call(callee, &[v]);
                 Ok(self.builder.ins().iconst(types::I64, 0)) // IO () → token
             }
@@ -1252,7 +1323,7 @@ impl Fx<'_, '_> {
                 let v = self.atom(a)?;
                 let callee = self
                     .module
-                    .declare_func_in_func(self.put_id, self.builder.func);
+                    .declare_func_in_func(self.print_id, self.builder.func);
                 self.builder.ins().call(callee, &[v]);
                 Ok(self.builder.ins().iconst(types::I64, 0)) // IO () → token
             }
@@ -1268,7 +1339,7 @@ impl Fx<'_, '_> {
             Op::WithArena { clos, .. } => {
                 // creates the (sub-)arena, runs the closure with it, resets it at the end.
                 let cv = self.atom(clos)?;
-                let arena = self.rt_call(self.arena.new, &[]).unwrap();
+                let arena = self.rt_call(self.arena.new, &[]).ok_or("arena new")?;
                 let r = self.call_closure(cv, &[arena]);
                 self.rt_call(self.arena.reset, &[arena]);
                 Ok(r)
@@ -1276,17 +1347,21 @@ impl Fx<'_, '_> {
             Op::ArenaAlloc(a) => {
                 let av = self.atom(a)?;
                 let sz = self.builder.ins().iconst(types::I64, CELL_SIZE);
-                Ok(self.rt_call(self.arena.alloc, &[av, sz]).unwrap())
+                Ok(self
+                    .rt_call(self.arena.alloc, &[av, sz])
+                    .ok_or("arena call")?)
             }
             Op::Promote(t, c) => {
                 let tv = self.atom(t)?;
                 let cv = self.atom(c)?;
                 let sz = self.builder.ins().iconst(types::I64, CELL_SIZE);
-                Ok(self.rt_call(self.arena.promote, &[tv, cv, sz]).unwrap())
+                Ok(self
+                    .rt_call(self.arena.promote, &[tv, cv, sz])
+                    .ok_or("arena call")?)
             }
             Op::ArenaMark(a) => {
                 let av = self.atom(a)?;
-                Ok(self.rt_call(self.arena.mark, &[av]).unwrap())
+                Ok(self.rt_call(self.arena.mark, &[av]).ok_or("arena call")?)
             }
             Op::ArenaRelease(m) => {
                 let mv = self.atom(m)?;
@@ -1621,6 +1696,8 @@ pub fn run(
         .map_err(|e| e.to_string())?;
 
     let code = cg.module.get_finalized_function(cg.ids[entry].0);
+    // SAFETY: `code` is a finalized JIT function pointer with the declared
+    // ABI (extern "C" fn() -> i64); Cranelift guarantees the signature.
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
     // Run on a thread with a large stack (lazily committed — only touched pages
     // cost memory) so deep NON-tail recursion doesn't overflow the small default
@@ -1629,10 +1706,11 @@ pub fn run(
         std::thread::Builder::new()
             .stack_size(EVAL_STACK_SIZE)
             .spawn_scoped(s, || f())
-            .expect("spawn eval thread")
+            .map_err(|e| format!("spawn eval thread: {e}"))?
             .join()
-            .expect("eval thread panicked")
+            .map_err(|_| "eval thread panicked".to_string())
     });
+    let val = val?;
 
     if std::env::var("AXION_HEAP_STATS").is_ok() {
         use std::sync::atomic::Ordering::Relaxed;

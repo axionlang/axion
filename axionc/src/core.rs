@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! Axion Core IR (§11): the **strict/linear** intermediate representation from which
 //! the native backends lower (Cranelift `--dev` and LLVM `--release`),
 //! instead of lowering from the AST directly.
@@ -438,7 +439,7 @@ impl RecordInfo {
                         if data_names.contains(h) {
                             slots.push((r.field_offset(&c.name, i), h.to_string()));
                         }
-                    } else if matches!(f.ty, ast::Type::Var(_)) {
+                    } else if matches!(f.ty, Type::Var(_)) {
                         // a bare type variable: possibly-heap once instantiated.
                         poly.insert(i);
                     }
@@ -668,12 +669,12 @@ fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
 }
 
 /// True if the type contains a type variable anywhere.
-fn ty_has_var(t: &ast::Type) -> bool {
+fn ty_has_var(t: &Type) -> bool {
     match t {
-        ast::Type::Var(_) => true,
-        ast::Type::App(f, a) => ty_has_var(f) || ty_has_var(a),
-        ast::Type::Arrow { from, to, .. } => ty_has_var(from) || ty_has_var(to),
-        ast::Type::Tuple(ts) => ts.iter().any(ty_has_var),
+        Type::Var(_) => true,
+        Type::App(f, a) => ty_has_var(f) || ty_has_var(a),
+        Type::Arrow { from, to, .. } => ty_has_var(from) || ty_has_var(to),
+        Type::Tuple(ts) => ts.iter().any(ty_has_var),
         _ => false,
     }
 }
@@ -696,7 +697,7 @@ fn owning_generic_var(f: &ast::Func) -> Option<String> {
             continue;
         }
         // heap-shaped owned params only (bare vars/arrows are i64, not owned)
-        let heap_shape = matches!(p, ast::Type::Tuple(_)) || p.head_con().is_some();
+        let heap_shape = matches!(p, Type::Tuple(_)) || p.head_con().is_some();
         if heap_shape && ty_has_var(p) {
             return Some(f.name.clone());
         }
@@ -907,12 +908,12 @@ struct Lower<'a> {
     locals: HashMap<String, String>,
     tmp: u32,
     /// Phase 4: concrete constructor return types (span → AST type) from inference
-    makecon_tys: &'a HashMap<Span, ast::Type>,
+    makecon_tys: &'a HashMap<Span, Type>,
     /// data types with type parameters (need mono-key mangling for MakeCon)
     parametric_data: &'a HashSet<String>,
     /// Phase 4 mono-destructor seeds: concrete parametric types found at
     /// MakeCon sites that need specialized destructors.
-    mono_seeds: &'a mut Vec<ast::Type>,
+    mono_seeds: &'a mut Vec<Type>,
 }
 
 impl Lower<'_> {
@@ -991,6 +992,7 @@ impl Lower<'_> {
         }
     }
 
+    #[allow(clippy::many_single_char_names)]
     /// Lowers `e` to a leaf `Op` (the caller guarantees it is not if/case/let).
     fn op(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs, Span)>) -> Op {
         match e {
@@ -1292,7 +1294,11 @@ impl Lower<'_> {
         wrap_spanned(
             buf,
             Term::Ret(
-                Rhs::If(cond.unwrap(), Box::new(then_t), Box::new(else_t)),
+                Rhs::If(
+                    cond.unwrap_or_else(|| panic!("no condition")),
+                    Box::new(then_t),
+                    Box::new(else_t),
+                ),
                 NO_SPAN,
             ),
         )
@@ -1392,15 +1398,15 @@ fn lower_func(
     con_ty: &HashMap<String, Option<String>>,
     fn_ret_ty: &HashMap<String, String>,
     parametric_data: &HashSet<String>,
-    makecon_tys: &HashMap<Span, ast::Type>,
+    makecon_tys: &HashMap<Span, Type>,
 ) -> (
     Vec<String>,
     Term,
     Vec<String>,
     Vec<(String, Option<String>)>,
-    Vec<ast::Type>,
+    Vec<Type>,
 ) {
-    let mut mono_seeds: Vec<ast::Type> = Vec::new();
+    let mut mono_seeds: Vec<Type> = Vec::new();
     let mut lw = Lower {
         globals,
         fields,
@@ -1463,7 +1469,7 @@ fn lower_func(
             // seed its generation; otherwise the type head. A tuple whose
             // elements include heap-typed `data` also gets a mangled key and
             // a generated destructor — it is no longer a flat `free`.
-            let key = if matches!(t, ast::Type::Tuple(_)) {
+            let key = if matches!(t, Type::Tuple(_)) {
                 let k = mono_key(t);
                 if k.is_some() {
                     mono_seeds.push((**t).clone());
@@ -1548,8 +1554,8 @@ impl Eta {
             .map(|c| ast::Clause {
                 pats: c.pats.clone(),
                 body: match &c.body {
-                    ast::Body::Plain(e) => ast::Body::Plain(self.expr(e)),
-                    ast::Body::Guarded(arms) => ast::Body::Guarded(
+                    Body::Plain(e) => Body::Plain(self.expr(e)),
+                    Body::Guarded(arms) => Body::Guarded(
                         arms.iter()
                             .map(|(g, r)| (self.expr(g), self.expr(r)))
                             .collect(),
@@ -1605,7 +1611,6 @@ impl Eta {
                 };
                 let sp = head.span();
                 let applied = targs.into_iter().fold(head_e, |acc, a| {
-                    let a = a.clone();
                     let s2 = (sp.0, a.span().1);
                     Expr::App(Box::new(acc), Box::new(a), s2)
                 });
@@ -1909,7 +1914,7 @@ impl SessGen<'_> {
         }
         let mut binds = Vec::new();
         let result = match sess_spine(tail).0 {
-            Some("close") | Some("cancel") => Atom::Int(0), // effect as tail → unit
+            Some("close" | "cancel") => Atom::Int(0), // effect as tail → unit
             _ => self.val(tail, &mut binds),
         };
         binds.push((
@@ -2087,7 +2092,10 @@ impl SessGen<'_> {
 
     /// `c <- spawn f; rest` — fork a child task on a fresh channel.
     fn gen_spawn(&mut self, pat: &Pat, target_expr: &Expr, rest: &Expr) -> Term {
-        let target = sess_spine(target_expr).0.expect("spawn target").to_string();
+        let target = sess_spine(target_expr)
+            .0
+            .unwrap_or_else(|| panic!("spawn target"))
+            .to_string();
         let tl = &self.all[&target];
         let (size, pslot, step) = (tl.size, tl.param_slots.first().copied(), tl.step.clone());
         let mut binds = Vec::new();
@@ -2333,7 +2341,11 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
         let pats = &wf.clauses[0].pats;
         layouts.insert(
             wf.name.clone(),
-            sess_layout(pats, clause_body(wf).unwrap(), format!("{}$step", wf.name)),
+            sess_layout(
+                pats,
+                clause_body(wf).unwrap_or_else(|| panic!("where body")),
+                format!("{}$step", wf.name),
+            ),
         );
     }
 
@@ -2366,7 +2378,7 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
         out.push(step_of(
             &wf.name,
             &wf.clauses[0].pats,
-            clause_body(wf).unwrap(),
+            clause_body(wf).unwrap_or_else(|| panic!("where body")),
             &layouts,
         ));
     }
@@ -2538,7 +2550,7 @@ fn build_fused(
     // `callclo`.  Wrap it in a `MakeClosure` let-binding.
     let clo_name = format!("{step_name}_clo");
     let make_clo = Rhs::Op(Op::MakeClosure {
-        func: step_name.clone(),
+        func: step_name,
         captures: Vec::new(),
     });
     let fused = match prod {
@@ -2555,7 +2567,7 @@ fn build_fused(
             )
         }
         "map" | "filter" | "take" | "drop" if !prod_args.is_empty() => {
-            let input = prod_args.last().unwrap().clone();
+            let input = prod_args.last()?.clone();
             Term::Ret(
                 Rhs::Op(Op::CallDirect(
                     "foldr".into(),
@@ -2613,10 +2625,10 @@ fn lift_step(consume: &FuseConsumer, helpers: &mut Vec<CoreFn>) -> String {
     name
 }
 
-pub(crate) fn lower_with(
+pub fn lower_with(
     module: &ast::Module,
     inplace: &HashSet<Span>,
-    makecon_tys: &HashMap<Span, ast::Type>,
+    makecon_tys: &HashMap<Span, Type>,
     fuse: bool,
 ) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
@@ -2787,7 +2799,7 @@ pub(crate) fn lower_with(
     let mut out = Vec::new();
     // Phase A′: seeds for the specialized destructors of parametric instantiations
     // dropped as owned values — collected at lowering, where the keys are resolved.
-    let mut mono_seeds: Vec<ast::Type> = Vec::new();
+    let mut mono_seeds: Vec<Type> = Vec::new();
     for f in &module.funcs {
         let Some(&arity) = native_ok.get(&f.name) else {
             continue;
@@ -2943,7 +2955,7 @@ pub(crate) fn lower_with(
     let (data_seeds, tuple_seeds): (Vec<_>, Vec<_>) = mono_seeds
         .iter()
         .cloned()
-        .partition(|t| !matches!(t, ast::Type::Tuple(_)));
+        .partition(|t| !matches!(t, Type::Tuple(_)));
     result.extend(gen_mono_destructors(
         module,
         &recinfo,
@@ -3160,10 +3172,10 @@ fn free_then_ret(p: &str) -> Term {
 // element via `P`'s drop, recursing on the tail via `axion_drop_List$P`.
 
 /// The head constructor and applied arguments of a type: `List P` → ("List", [P]).
-fn ty_head_args(t: &ast::Type) -> (Option<&str>, Vec<&ast::Type>) {
+fn ty_head_args(t: &Type) -> (Option<&str>, Vec<&Type>) {
     let mut args = Vec::new();
     let mut cur = t;
-    while let ast::Type::App(f, a) = cur {
+    while let Type::App(f, a) = cur {
         args.push(a.as_ref());
         cur = f;
     }
@@ -3173,9 +3185,9 @@ fn ty_head_args(t: &ast::Type) -> (Option<&str>, Vec<&ast::Type>) {
 
 /// The monomorphic mangle key of a fully-concrete type: `List P` → `"List$P"`,
 /// `List (Maybe P)` → `"List$Maybe$P"`. `None` if any part is a type variable.
-fn mono_key(t: &ast::Type) -> Option<String> {
+fn mono_key(t: &Type) -> Option<String> {
     match t {
-        ast::Type::Tuple(ts) => {
+        Type::Tuple(ts) => {
             let parts: Vec<String> = ts.iter().map(mono_key).collect::<Option<Vec<_>>>()?;
             Some(format!("tuple${}", parts.join("$")))
         }
@@ -3192,19 +3204,17 @@ fn mono_key(t: &ast::Type) -> Option<String> {
 }
 
 /// Substitutes type parameters (by name) in a field type.
-fn subst_ty(t: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
+fn subst_ty(t: &Type, subst: &HashMap<String, Type>) -> Type {
     match t {
-        ast::Type::Var(v) => subst.get(v).cloned().unwrap_or_else(|| t.clone()),
-        ast::Type::Con(_) | ast::Type::Unit => t.clone(),
-        ast::Type::App(f, a) => {
-            ast::Type::App(Box::new(subst_ty(f, subst)), Box::new(subst_ty(a, subst)))
-        }
-        ast::Type::Arrow { mult, from, to } => ast::Type::Arrow {
+        Type::Var(v) => subst.get(v).cloned().unwrap_or_else(|| t.clone()),
+        Type::Con(_) | Type::Unit => t.clone(),
+        Type::App(f, a) => Type::App(Box::new(subst_ty(f, subst)), Box::new(subst_ty(a, subst))),
+        Type::Arrow { mult, from, to } => Type::Arrow {
             mult: *mult,
             from: Box::new(subst_ty(from, subst)),
             to: Box::new(subst_ty(to, subst)),
         },
-        ast::Type::Tuple(ts) => ast::Type::Tuple(ts.iter().map(|x| subst_ty(x, subst)).collect()),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|x| subst_ty(x, subst)).collect()),
     }
 }
 
@@ -3218,10 +3228,10 @@ enum DropWay {
 /// How to drop a (concrete) field type; pushes any parametric instantiation it
 /// references onto the worklist so its specialized destructor is generated too.
 fn drop_way(
-    t: &ast::Type,
+    t: &Type,
     recinfo: &RecordInfo,
     parametric_data: &HashSet<String>,
-    work: &mut Vec<ast::Type>,
+    work: &mut Vec<Type>,
 ) -> DropWay {
     let (head, args) = ty_head_args(t);
     let Some(head) = head else {
@@ -3255,7 +3265,7 @@ fn gen_mono_destructors(
     module: &ast::Module,
     recinfo: &RecordInfo,
     parametric_data: &HashSet<String>,
-    seeds: Vec<ast::Type>,
+    seeds: Vec<Type>,
 ) -> Vec<CoreFn> {
     let datas: HashMap<&str, &ast::DataDecl> =
         module.datas.iter().map(|d| (d.name.as_str(), d)).collect();
@@ -3272,7 +3282,7 @@ fn gen_mono_destructors(
         let Some(d) = datas.get(head).copied() else {
             continue;
         };
-        let subst: HashMap<String, ast::Type> = d
+        let subst: HashMap<String, Type> = d
             .params
             .iter()
             .cloned()
@@ -3334,7 +3344,7 @@ fn gen_mono_destructors(
 /// elements include heap-typed `data` objects.  The destructor deep-drops
 /// each `data`-typed element and flat-frees the rest, then frees the shell.
 /// Named `axion_drop_tuple$<mangle>` (matching the key from `mono_key`).
-fn gen_tuple_destructors(seeds: &[ast::Type], recinfo: &RecordInfo) -> Vec<CoreFn> {
+fn gen_tuple_destructors(seeds: &[Type], recinfo: &RecordInfo) -> Vec<CoreFn> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     for t in seeds {
@@ -3351,7 +3361,7 @@ fn gen_tuple_destructors(seeds: &[ast::Type], recinfo: &RecordInfo) -> Vec<CoreF
         // for each element: if it's a heap `data` type → deep-drop via its
         // destructor; otherwise flat-free.  Then free the tuple shell.
         let mut body = free_then_ret(&p);
-        if let ast::Type::Tuple(ts) = t {
+        if let Type::Tuple(ts) = t {
             for (i, el) in ts.iter().enumerate().rev() {
                 let off = i as i32 * 8;
                 let way = if let Some(h) = el.head_con() {
@@ -3561,7 +3571,7 @@ fn collect_rhs_drop_types(rhs: &Rhs, out: &mut HashMap<String, Option<String>>) 
 /// functions); and the multiplicity is only known for top-level functions with a signature.
 pub type BorrowArgs = HashMap<String, HashSet<usize>>;
 
-pub(crate) fn atom_is(v: &str, a: &Atom) -> bool {
+pub fn atom_is(v: &str, a: &Atom) -> bool {
     matches!(a, Atom::Var(n) if n == v)
 }
 
@@ -3649,7 +3659,7 @@ fn compute_borrow_args(
 /// `let` within the term being analyzed). Excluding the locally-bound ones is essential
 /// for branch balancing: a droppable bound inside a branch is local to
 /// that branch and cannot be freed in the sibling branch (where it doesn't exist).
-pub(crate) fn atom_use(
+pub fn atom_use(
     a: &Atom,
     drp: &HashSet<String>,
     bound: &HashSet<String>,
@@ -4364,9 +4374,10 @@ impl Elab<'_> {
                         };
                         let sp = term_span(&b);
                         let skip_vec: Vec<usize> = skip.iter().copied().collect();
-                        if !skip_vec.is_empty() && ty.is_some() {
-                            self.skip_seeds
-                                .push((ty.clone().unwrap(), skip_vec.clone()));
+                        if !skip_vec.is_empty() {
+                            if let Some(ty) = &ty {
+                                self.skip_seeds.push((ty.clone(), skip_vec.clone()));
+                            }
                         }
                         b = Term::Drop(s.clone(), ty, skip_vec, sp, Box::new(b));
                     }
@@ -4497,12 +4508,12 @@ enum ScrutDrop<'a> {
 }
 
 /// Classifies the scrutinee-drop method for an arm given its precomputed info.
-fn scrut_decision<'a>(deep_safe: bool, info: &'a ArmInfo) -> ScrutDrop<'a> {
+fn scrut_decision(deep_safe: bool, info: &ArmInfo) -> ScrutDrop<'_> {
     if deep_safe {
-        if !info.owned.is_empty() {
-            ScrutDrop::Remainder { skip: &info.owned }
-        } else {
+        if info.owned.is_empty() {
             ScrutDrop::Deep
+        } else {
+            ScrutDrop::Remainder { skip: &info.owned }
         }
     } else if info.non_owning {
         ScrutDrop::Inline {
@@ -4513,13 +4524,13 @@ fn scrut_decision<'a>(deep_safe: bool, info: &'a ArmInfo) -> ScrutDrop<'a> {
     }
 }
 
-pub(crate) fn indent(n: usize, s: &mut String) {
+pub fn indent(n: usize, s: &mut String) {
     for _ in 0..n {
         s.push_str("  ");
     }
 }
 
-pub(crate) fn dump_op(op: &Op) -> String {
+pub fn dump_op(op: &Op) -> String {
     match op {
         Op::Atom(a) => atom(a),
         Op::StoreRaw(p, off, val) => format!("store {}[{off}] = {}", atom(p), atom(val)),
@@ -4573,11 +4584,11 @@ pub(crate) fn dump_op(op: &Op) -> String {
     }
 }
 
-pub(crate) fn args(xs: &[Atom]) -> String {
+pub fn args(xs: &[Atom]) -> String {
     xs.iter().map(|a| format!(" {}", atom(a))).collect()
 }
 
-pub(crate) fn atom(a: &Atom) -> String {
+pub fn atom(a: &Atom) -> String {
     match a {
         Atom::Int(n) => n.to_string(),
         Atom::Float(f) => format!("{f}f"),
@@ -4586,7 +4597,7 @@ pub(crate) fn atom(a: &Atom) -> String {
     }
 }
 
-pub(crate) fn cpat(p: &CPat) -> String {
+pub fn cpat(p: &CPat) -> String {
     match p {
         CPat::Int(n) => n.to_string(),
         CPat::Var(n) => n.clone(),

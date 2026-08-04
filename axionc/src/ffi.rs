@@ -1,6 +1,8 @@
 //! Loading shared libraries for the FFI (§18).
 //!
 //! `foreign "lib.so" name :: …` loads `lib.so` with `RTLD_NOW | RTLD_GLOBAL`,
+#![allow(unsafe_code)]
+#![allow(clippy::undocumented_unsafe_blocks)]
 //! making its symbols visible to the `dlsym(RTLD_DEFAULT)` resolution the
 //! three executors use (interp, `--dev`/JIT, `--release`/clang). Without a
 //! string → only symbols **already** loaded resolve (libc + axionc runtime).

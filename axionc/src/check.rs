@@ -27,7 +27,7 @@
 //! `allocateCell sub` value that is returned escapes, unless `promote parent`
 //! moves it to the parent arena.
 
-use crate::ast::*;
+use crate::ast::{Body, Clause, Expr, Func, Module, Mult, Pat, Span, Type};
 use crate::diag::{Diagnostic, Diagnostics};
 use std::collections::{HashMap, HashSet};
 
@@ -229,7 +229,7 @@ enum Prod {
 fn as_bound(e: &Expr) -> Option<&Expr> {
     let (head, args) = app_spine(e);
     match head {
-        Some("bound") if !args.is_empty() => Some(*args.last().unwrap()),
+        Some("bound") if !args.is_empty() => args.last().copied(),
         _ => None,
     }
 }
@@ -279,7 +279,7 @@ fn find_bounds(e: &Expr, diags: &mut Diagnostics) {
         }
         Expr::Tuple(es, _) => es.iter().for_each(&mut go),
         Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
-            assigns.iter().for_each(|(_, e)| go(e))
+            assigns.iter().for_each(|(_, e)| go(e));
         }
         Expr::Lam(_, body, _) => go(body),
         Expr::Var(_, _)
@@ -437,7 +437,7 @@ fn producer(e: &Expr, eps: &HashSet<String>) -> Prod {
     match app_spine(e).0 {
         Some("newChannel") => Prod::Both,
         Some("recv") => Prod::Snd,
-        Some("send") | Some("spawn") => Prod::One,
+        Some("send" | "spawn") => Prod::One,
         Some(n) if eps.contains(n) => Prod::One,
         _ => Prod::No,
     }
@@ -471,7 +471,7 @@ fn tail_endpoint(e: &Expr, eps: &HashSet<String>) -> Option<Span> {
         Expr::Var(n, _) if eps.contains(n) => Some(e.span()),
         Expr::Tuple(es, _) => es.iter().find_map(|x| tail_endpoint(x, eps)),
         _ => match app_spine(e).0 {
-            Some("newChannel") | Some("spawn") | Some("send") | Some("recv") => Some(e.span()),
+            Some("newChannel" | "spawn" | "send" | "recv") => Some(e.span()),
             _ => None,
         },
     }
@@ -744,7 +744,7 @@ fn walk_sess(
                         .with_help("the endpoint passed to the recursive call must be at the \
                                     same session state as the function's parameter."),
                     );
-                    let _ = got;
+                    drop(got);
                     return;
                 }
             }
@@ -1728,7 +1728,7 @@ fn collect_last(e: &Expr, x: &str, best: &mut Option<Span>) {
         }
         Expr::Tuple(es, _) => es.iter().for_each(|e| collect_last(e, x, best)),
         Expr::RecordCon(_, assigns, _) => {
-            assigns.iter().for_each(|(_, e)| collect_last(e, x, best))
+            assigns.iter().for_each(|(_, e)| collect_last(e, x, best));
         }
         Expr::RecordUpd(base, assigns, _) => {
             collect_last(base, x, best);
@@ -2038,7 +2038,7 @@ fn check_arena_escapes(
         }
         Expr::Tuple(es, _) => es.iter().for_each(&mut go),
         Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
-            assigns.iter().for_each(|(_, e)| go(e))
+            assigns.iter().for_each(|(_, e)| go(e));
         }
         Expr::Lam(_, body, _) => go(body),
         Expr::Var(_, _)
@@ -2236,17 +2236,17 @@ enum MarkOp<'a> {
 
 fn classify_mark_op(e: &Expr) -> MarkOp<'_> {
     let (head, args) = spine(e);
-    let arg0 = args.first();
+    let first = args.first();
     match head {
-        Expr::Var(n, _) if n == "arena_mark" => match arg0 {
+        Expr::Var(n, _) if n == "arena_mark" => match first {
             Some(Expr::Var(a, _)) => MarkOp::OpenMark { arena: a },
             _ => MarkOp::Other,
         },
-        Expr::Var(n, _) if n == "allocateCell" => match arg0 {
+        Expr::Var(n, _) if n == "allocateCell" => match first {
             Some(Expr::Var(a, _)) => MarkOp::Alloc { arena: a },
             _ => MarkOp::Other,
         },
-        Expr::Var(n, _) if n == "arena_release" => match arg0 {
+        Expr::Var(n, _) if n == "arena_release" => match first {
             Some(Expr::Var(m, _)) => MarkOp::Release { mark: m },
             _ => MarkOp::Other,
         },
@@ -2381,7 +2381,7 @@ fn collect_var_refs(e: &Expr, f: &mut dyn FnMut(&str, Span)) {
         }
         Expr::Tuple(es, _) => es.iter().for_each(|e| collect_var_refs(e, f)),
         Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
-            assigns.iter().for_each(|(_, e)| collect_var_refs(e, f))
+            assigns.iter().for_each(|(_, e)| collect_var_refs(e, f));
         }
         Expr::Case(s, arms, _) => {
             collect_var_refs(s, f);
@@ -2547,7 +2547,7 @@ fn for_each_child(e: &Expr, f: &mut dyn FnMut(&Expr)) {
         }
         Expr::Tuple(es, _) => es.iter().for_each(&mut *f),
         Expr::RecordCon(_, assigns, _) | Expr::RecordUpd(_, assigns, _) => {
-            assigns.iter().for_each(|(_, e)| f(e))
+            assigns.iter().for_each(|(_, e)| f(e));
         }
         Expr::Lam(_, body, _) => f(body),
         Expr::Var(_, _)

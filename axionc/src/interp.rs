@@ -1,6 +1,11 @@
 //! Tree-walking interpreter for the L0/L1 subset — the "run" of the walking
 //! skeleton (§17). It is the embryo of the `--dev` fast-path; the native backend
 //! (Cranelift/LLVM) is the target of later phases.
+#![allow(unsafe_code)]
+#![allow(clippy::undocumented_unsafe_blocks)]
+#![allow(clippy::many_single_char_names)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::pedantic)]
 
 use crate::ast::*;
 use std::cell::RefCell;

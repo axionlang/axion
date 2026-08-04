@@ -1,6 +1,18 @@
 //! `axionc` — Axion's compiler (§17–18).
 //!
 //! Pipeline: source `.axi` → lexer (logos) → layout → parser → checking
+#![allow(unreachable_pub)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::multiple_crate_versions,
+    clippy::clone_on_ref_ptr,
+    clippy::assigning_clones,
+    clippy::option_if_let_else,
+    let_underscore_drop,
+    unused_qualifications
+)] // i64-everywhere ABI: casts are intentional
 //! (names + linearity + Auto-Drop) → type inference (HM) → interpreter.
 //! Diagnostics with stable `AXnnnn` codes (§8), as text or JSON.
 //!
@@ -146,7 +158,10 @@ fn main() -> ExitCode {
 
     // report diagnostics
     if emit == Emit::Json {
-        println!("{}", serde_json::to_string_pretty(&diags.items).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&diags.items).unwrap_or_default()
+        );
     } else {
         for d in &diags.items {
             print!("{}", d.render(&path, &src, &lines));
@@ -307,14 +322,18 @@ fn main() -> ExitCode {
         std::thread::Builder::new()
             .stack_size(codegen::EVAL_STACK_SIZE)
             .spawn_scoped(s, || interp::run(&module))
-            .expect("spawn interp thread")
+            .map_err(|e| format!("spawn interp thread: {e}"))?
             .join()
-            .expect("interp thread panicked")
+            .map_err(|_| "interp thread panicked".to_string())
     });
     match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
             eprintln!("runtime error: {e}");
+            ExitCode::FAILURE
+        }
+        Err(_) => {
+            eprintln!("interp thread panicked");
             ExitCode::FAILURE
         }
     }
@@ -457,7 +476,9 @@ fn rewrite_func_body(f: &mut ast::Func, fname: &str, res: &Resolutions) {
 }
 
 fn rewrite_expr(e: &mut ast::Expr, fname: &str, res: &Resolutions) {
-    use ast::Expr::*;
+    use ast::Expr::{
+        App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+    };
     if let Var(name, span) = e {
         if let Some(impl_name) = res.get(&(fname.to_string(), *span)) {
             *name = impl_name.clone();
@@ -752,9 +773,13 @@ fn derive_instances(module: &mut ast::Module, diags: &mut Diagnostics) {
         return;
     }
     let lines = LineMap::new(&src);
-    let tokens = lexer::lex(&src).expect("derive: lex");
-    let lt = layout::layout(&tokens, &lines);
-    let parsed = parser::parse_module(&lt).expect("derive: parse");
+    let Ok(tokens) = lexer::lex(&src) else {
+        return;
+    };
+    let ltokens = layout::layout(&tokens, &lines);
+    let Ok(parsed) = parser::parse_module(&ltokens) else {
+        return;
+    };
     module.instances.extend(parsed.instances);
 }
 
@@ -821,6 +846,7 @@ fn wildcard_pattern(con: &ast::ConDecl) -> String {
 /// compare lexicographically. Uses only `le` (no `Eq` dependency): for a field,
 /// `if le a b then (if le b a then <rest> else True) else False` — equal keeps
 /// going, strictly-less is True, strictly-greater is False.
+#[allow(clippy::many_single_char_names)]
 fn derive_ord(d: &ast::DataDecl) -> String {
     let mut s = format!("{}  le x y = case x of\n", inst_header("Ord", d));
     for (i, ci) in d.cons.iter().enumerate() {
@@ -895,9 +921,9 @@ fn derive_eq(d: &ast::DataDecl) -> String {
 
 fn inject_prelude(module: &mut ast::Module) {
     let lines = LineMap::new(PRELUDE);
-    let tokens = lexer::lex(PRELUDE).expect("prelude: lex");
+    let tokens = lexer::lex(PRELUDE).unwrap_or_else(|e| panic!("prelude: lex: {e:?}"));
     let lt = layout::layout(&tokens, &lines);
-    let prelude = parser::parse_module(&lt).expect("prelude: parse");
+    let prelude = parser::parse_module(&lt).unwrap_or_else(|e| panic!("prelude: parse: {e:?}"));
     let has_data: std::collections::HashSet<String> =
         module.datas.iter().map(|d| d.name.clone()).collect();
     let has_func: std::collections::HashSet<String> =

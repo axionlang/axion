@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! Recursive-descent parser for the L0/L1 subset (see `docs/grammar.md`).
 //!
 //! Consumes the already-laid-out tokens ([`crate::layout`]) and produces the AST.
@@ -5,7 +6,10 @@
 //! `AX0100` and analysis stops (the walking skeleton prioritizes running, not
 //! LSP resilience — that comes with the rowan CST in Phase 4).
 
-use crate::ast::*;
+use crate::ast::{
+    Body, ClassDecl, Clause, ConDecl, DataDecl, Expr, Field, Foreign, Func, InstanceDecl, Module,
+    Mult, Pat, Span, Type,
+};
 use crate::diag::Diagnostic;
 use crate::layout::{LSpanned, LTok};
 use crate::lexer::Tok;
@@ -558,9 +562,7 @@ impl<'a> Parser<'a> {
     fn starts_atype(&self) -> bool {
         matches!(
             self.cur(),
-            Some(LTok::Tok(Tok::ConId(_)))
-                | Some(LTok::Tok(Tok::VarId(_)))
-                | Some(LTok::Tok(Tok::LParen))
+            Some(LTok::Tok(Tok::ConId(_) | Tok::VarId(_) | Tok::LParen))
         )
     }
 
@@ -587,7 +589,7 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(&Tok::RParen, "')' in the type")?;
                 if ts.len() == 1 {
-                    Ok(ts.into_iter().next().unwrap())
+                    Ok(ts.into_iter().next().ok_or_else(|| self.syntax_err("empty"))?)
                 } else {
                     Ok(Type::Tuple(ts))
                 }
@@ -629,7 +631,7 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "')' in the pattern")?;
                 let end = self.span_here().0;
                 if ps.len() == 1 {
-                    Ok(ps.into_iter().next().unwrap())
+                    Ok(ps.into_iter().next().ok_or_else(|| self.syntax_err("empty"))?)
                 } else {
                     Ok(Pat::Tuple(ps, (s, end)))
                 }
@@ -647,10 +649,9 @@ impl<'a> Parser<'a> {
             let mut args = Vec::new();
             while matches!(
                 self.cur(),
-                Some(LTok::Tok(Tok::Int(_)))
-                    | Some(LTok::Tok(Tok::VarId(_)))
-                    | Some(LTok::Tok(Tok::ConId(_)))
-                    | Some(LTok::Tok(Tok::LParen))
+                Some(LTok::Tok(
+                    Tok::Int(_) | Tok::VarId(_) | Tok::ConId(_) | Tok::LParen
+                ))
             ) {
                 args.push(self.parse_apat()?);
             }
@@ -699,7 +700,7 @@ impl<'a> Parser<'a> {
             return Err(self.syntax_err("empty do block"));
         }
         let mut iter = stmts.into_iter().rev();
-        let mut acc = match iter.next().unwrap() {
+        let mut acc = match iter.next().ok_or_else(|| self.syntax_err("empty do block"))? {
             Stmt::Expr(e) => e,
             Stmt::Bind(..) => return Err(self.syntax_err("do block ending in <-")),
         };
@@ -903,13 +904,15 @@ impl<'a> Parser<'a> {
     fn starts_atom(&self) -> bool {
         matches!(
             self.cur(),
-            Some(LTok::Tok(Tok::Int(_)))
-                | Some(LTok::Tok(Tok::Float(_)))
-                | Some(LTok::Tok(Tok::Str(_)))
-                | Some(LTok::Tok(Tok::VarId(_)))
-                | Some(LTok::Tok(Tok::ConId(_)))
-                | Some(LTok::Tok(Tok::LParen))
-                | Some(LTok::Tok(Tok::LBracket))
+            Some(LTok::Tok(
+                Tok::Int(_)
+                    | Tok::Float(_)
+                    | Tok::Str(_)
+                    | Tok::VarId(_)
+                    | Tok::ConId(_)
+                    | Tok::LParen
+                    | Tok::LBracket
+            ))
         )
     }
 
@@ -1027,7 +1030,7 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "')' in the expression")?;
                 let end = self.span_here().0;
                 if es.len() == 1 {
-                    Ok(es.into_iter().next().unwrap())
+                    Ok(es.into_iter().next().ok_or_else(|| self.syntax_err("empty"))?)
                 } else {
                     Ok(Expr::Tuple(es, (s, end)))
                 }

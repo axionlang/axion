@@ -9,6 +9,8 @@
 //! (recursion), `let`, **records/tuples** on the heap, **strings/IO**, **`case`**,
 //! **closures** (env + indirect call), **arenas** (§3) and the Auto-Drop
 //! `drop`s. All values are `i64` (Int, pointers, tokens).
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::many_single_char_names)]
 
 use crate::ast;
 use crate::ast::Span;
@@ -222,9 +224,9 @@ pub fn build_and_run(
         return Err("clang failed to compile the LLVM IR".into());
     }
     let run = std::process::Command::new(&exe).status();
-    let _ = std::fs::remove_file(&ll);
-    let _ = std::fs::remove_file(&rt);
-    let _ = std::fs::remove_file(&exe);
+    drop(std::fs::remove_file(&ll));
+    drop(std::fs::remove_file(&rt));
+    drop(std::fs::remove_file(&exe));
     match run {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(format!("the --release binary exited with {s}")),

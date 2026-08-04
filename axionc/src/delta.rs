@@ -1,3 +1,4 @@
+#![allow(clippy::pedantic)]
 //! Δ — the single linearity judgment over the ANF Core (§ docs/delta-design.md).
 //!
 //! Phase Δ-1: the checker runs on the annotated Core produced by `insert_drops`
@@ -37,13 +38,13 @@ pub struct DeltaErr {
 /// `None` = flat free only), and — for a pattern-bound payload — the scrutinee
 /// resource it belongs to.
 #[derive(Clone, Debug)]
-pub(crate) struct Res {
-    pub(crate) key: Option<String>,
-    pub(crate) parent: Option<String>,
+pub struct Res {
+    pub key: Option<String>,
+    pub parent: Option<String>,
     /// the constructor slot of the parent the payload came from (per-field
     /// ownership, F-1): lets the `(Drop·skip)` rule prove a remainder drop
     /// skips exactly the transferred slots. `None` = the shell itself.
-    pub(crate) slot: Option<usize>,
+    pub slot: Option<usize>,
 }
 
 /// Δ-3, move 1 (docs §6): the **single multiplicity authority**. Every op's
@@ -1124,7 +1125,9 @@ impl Ck<'_> {
                 if self.recinfo.field_is_owned(&con, idx)
                     && self.recinfo.field_transfers_heap(&con, idx)
                 {
-                    let promoted = if !s.res.contains_key(rn) {
+                    let promoted = if s.res.contains_key(rn) {
+                        true
+                    } else {
                         s.owned.remove(rn).is_some_and(|k| {
                             s.res.insert(
                                 rn.clone(),
@@ -1136,8 +1139,6 @@ impl Ck<'_> {
                             );
                             true
                         })
-                    } else {
-                        true
                     };
                     if promoted {
                         s.split.entry(rn.clone()).or_default().insert(idx);
@@ -1199,6 +1200,7 @@ impl Ck<'_> {
     /// it, the resources moved out, and the produced value. The judgment state
     /// transitions exactly as in `term`/`case`/`op` (report-only; no errors are
     /// collected — `--check-delta` remains the verdict channel).
+    #[allow(clippy::many_single_char_names)]
     fn dump_term(
         &mut self,
         t: &Term,
