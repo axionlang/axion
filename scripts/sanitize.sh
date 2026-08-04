@@ -49,6 +49,11 @@ NATIVE=(
   axionc/tests/fixtures/poly_payload_borrow_return.axi
   axionc/tests/fixtures/poly_payload_tco.axi
   axionc/tests/fixtures/poly_payload_borrow_alias.axi
+  axionc/tests/fixtures/land_call_boxed.axi
+  axionc/tests/fixtures/land_enum_call.axi
+  axionc/tests/fixtures/land_deepdrop_safety.axi
+  axionc/tests/fixtures/land_tuple_upd.axi
+  axionc/tests/fixtures/land_owned_poly.axi
   axionc/tests/fixtures/session_run_pingpong.axi
   axionc/tests/fixtures/session_run_offer.axi
   axionc/tests/fixtures/session_run_cancel.axi
@@ -71,6 +76,7 @@ LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
   nested_drop sum_payload poly_payload_drop poly_payload_tco poly_payload_borrow_alias
+  land_call_boxed land_enum_call land_deepdrop_safety land_tuple_upd land_owned_poly
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
 )

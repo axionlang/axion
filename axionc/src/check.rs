@@ -280,7 +280,11 @@ fn find_bounds(e: &Expr, diags: &mut Diagnostics) {
             assigns.iter().for_each(|(_, e)| go(e))
         }
         Expr::Lam(_, body, _) => go(body),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _)
+        | Expr::Con(_, _) => {}
     }
 }
 
@@ -1962,7 +1966,11 @@ fn scan_lets<'a>(
             }
         }
         Expr::Lam(_, body, _) => scan_lets(body, lin, ctx, lets, inplace, func),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _)
+        | Expr::Con(_, _) => {}
     }
 }
 
@@ -2031,7 +2039,11 @@ fn check_arena_escapes(
             assigns.iter().for_each(|(_, e)| go(e))
         }
         Expr::Lam(_, body, _) => go(body),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _)
+        | Expr::Con(_, _) => {}
     }
 }
 
@@ -2536,6 +2548,10 @@ fn for_each_child(e: &Expr, f: &mut dyn FnMut(&Expr)) {
             assigns.iter().for_each(|(_, e)| f(e))
         }
         Expr::Lam(_, body, _) => f(body),
-        Expr::Var(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::Var(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _)
+        | Expr::Con(_, _) => {}
     }
 }

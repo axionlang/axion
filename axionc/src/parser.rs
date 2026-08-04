@@ -403,7 +403,7 @@ impl<'a> Parser<'a> {
     fn parse_instance(&mut self) -> PResult<InstanceDecl> {
         let (s, _) = self.span_here();
         self.bump(); // 'instance'
-        // optional context: `Eq a =>` (as in `instance Eq a => Eq (Maybe a)`).
+                     // optional context: `Eq a =>` (as in `instance Eq a => Eq (Maybe a)`).
         let save = self.pos;
         let ctx = self.parse_btype()?;
         let constraints = if self.eat(&Tok::FatArrow) {

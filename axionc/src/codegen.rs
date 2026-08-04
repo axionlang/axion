@@ -859,16 +859,16 @@ impl Fx<'_, '_> {
 
     fn emit_term(&mut self, t: &Term) -> Result<Value, String> {
         match t {
-            Term::Let(name, rhs, body) => {
+            Term::Let(name, rhs, _, body) => {
                 let v = self.emit_rhs(rhs)?;
                 self.bind_val(name, v);
                 self.emit_term(body)
             }
-            Term::Drop(name, ty, body) => {
+            Term::Drop(name, ty, _, body) => {
                 self.emit_drop(name, ty.as_deref())?;
                 self.emit_term(body)
             }
-            Term::Ret(rhs) => self.emit_rhs(rhs),
+            Term::Ret(rhs, _) => self.emit_rhs(rhs),
         }
     }
 
@@ -899,27 +899,29 @@ impl Fx<'_, '_> {
     /// value (unlike `emit_term`), so no phi/merge is needed on tail branches.
     fn emit_term_tail(&mut self, t: &Term) -> Result<(), String> {
         match t {
-            Term::Let(name, rhs, body) => {
+            Term::Let(name, rhs, _, body) => {
                 let v = self.emit_rhs(rhs)?;
                 self.bind_val(name, v);
                 self.emit_term_tail(body)
             }
-            Term::Drop(name, ty, body) => {
+            Term::Drop(name, ty, _, body) => {
                 self.emit_drop(name, ty.as_deref())?;
                 self.emit_term_tail(body)
             }
-            Term::Ret(rhs) => self.emit_rhs_tail(rhs),
+            Term::Ret(rhs, _) => self.emit_rhs_tail(rhs),
         }
     }
 
     fn emit_rhs_tail(&mut self, rhs: &Rhs) -> Result<(), String> {
         match rhs {
             // tail self-call → reassign the params, jump to the header (the loop).
-            Rhs::Op(Op::CallDirect(g, args))
+            Rhs::Op(Op::CallDirect(g, args, _))
                 if self.tco.as_ref().is_some_and(|(_, name, _)| name == g) =>
             {
-                let vals: Vec<Value> =
-                    args.iter().map(|a| self.atom(a)).collect::<Result<_, _>>()?;
+                let vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.atom(a))
+                    .collect::<Result<_, _>>()?;
                 let (header, _, params) = self.tco.clone().unwrap();
                 for (p, v) in params.iter().zip(vals) {
                     let var = self.vars[p];
@@ -1042,7 +1044,9 @@ impl Fx<'_, '_> {
                     "<." => fcmp(self, FloatCC::LessThan),
                     ">." => fcmp(self, FloatCC::GreaterThan),
                     other => {
-                        return Err(format!("float operator '{other}' does not compile natively"))
+                        return Err(format!(
+                            "float operator '{other}' does not compile natively"
+                        ))
                     }
                 })
             }
@@ -1066,11 +1070,13 @@ impl Fx<'_, '_> {
                     "sqrt" => self.builder.ins().sqrt(f),
                     "floor" => self.builder.ins().floor(f),
                     "abs" => self.builder.ins().fabs(f),
-                    other => return Err(format!("float builtin '{other}' does not compile natively")),
+                    other => {
+                        return Err(format!("float builtin '{other}' does not compile natively"))
+                    }
                 };
                 Ok(self.builder.ins().bitcast(types::I64, MemFlags::new(), r))
             }
-            Op::CallDirect(name, args) => {
+            Op::CallDirect(name, args, _) => {
                 let (id, arity) = *self
                     .ids
                     .get(name)
@@ -1115,7 +1121,7 @@ impl Fx<'_, '_> {
                 }
                 Ok(ptr)
             }
-            Op::MakeRecord { con, fields } => {
+            Op::MakeRecord { con, fields, .. } => {
                 let slots = self
                     .records
                     .con_slots(con)
@@ -1133,7 +1139,7 @@ impl Fx<'_, '_> {
                 }
                 Ok(ptr)
             }
-            Op::MakeCon { con, args } => {
+            Op::MakeCon { con, args, .. } => {
                 // unboxed enum constructor (all-nullary type): an immediate tag,
                 // no allocation.
                 if self.records.is_enum_con(con) {
@@ -1340,7 +1346,10 @@ impl Fx<'_, '_> {
             return sval;
         }
         if !self.records.is_mixed_con(con) {
-            return self.builder.ins().load(types::I64, MemFlags::new(), sval, 0);
+            return self
+                .builder
+                .ins()
+                .load(types::I64, MemFlags::new(), sval, 0);
         }
         let bit = self.builder.ins().band_imm(sval, 1);
         let imm_b = self.builder.create_block();
@@ -1356,7 +1365,10 @@ impl Fx<'_, '_> {
 
         self.builder.switch_to_block(ptr_b);
         self.builder.seal_block(ptr_b);
-        let ep = self.builder.ins().load(types::I64, MemFlags::new(), sval, 0);
+        let ep = self
+            .builder
+            .ins()
+            .load(types::I64, MemFlags::new(), sval, 0);
         self.builder.ins().jump(merge, &[ep]);
 
         self.builder.switch_to_block(merge);

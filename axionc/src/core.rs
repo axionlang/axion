@@ -54,7 +54,9 @@ pub enum Op {
     /// operation (Cranelift instruction / LLVM intrinsic), and bitcasts back.
     FloatUnary(String, Atom),
     /// direct call to a named function (top-level or `where` local, already mangled)
-    CallDirect(String, Vec<Atom>),
+    /// `ty` (Phase A′): the `data`-type name of the result for deep-drop routing,
+    /// read off the callee's signature at lowering (None when unknown/non-boxed).
+    CallDirect(String, Vec<Atom>, Option<String>),
     /// indirect call through a closure (the atom is the pointer)
     CallClosure(Atom, Vec<Atom>),
     /// build a closure: lifted function + captured values
@@ -68,12 +70,18 @@ pub enum Op {
     MakeRecord {
         con: String,
         fields: Vec<(String, Atom)>,
+        /// Phase A′: the `data`-type name of the value (deep-drop routing), read
+        /// off the constructor's declaration at lowering.
+        ty: Option<String>,
     },
     /// build a positional `data` value `Con a b …` (sum types included —
     /// carries the tag if the type has >1 constructor).
     MakeCon {
         con: String,
         args: Vec<Atom>,
+        /// Phase A′: the `data`-type name of the value (deep-drop routing), read
+        /// off the constructor's declaration at lowering.
+        ty: Option<String>,
     },
     /// update a record `base { field = atom, … }`. `inplace` (Linear Elision,
     /// §2): the base is linear and dies here → the existing block is mutated instead of
@@ -144,17 +152,34 @@ pub enum Rhs {
     Case(Atom, Vec<(CPat, Term)>),
 }
 
+/// The marker for Core nodes with no source location (generated code: the
+/// destructors, the session state machines, the `Elab` temporaries).
+pub const NO_SPAN: Span = (0, 0);
+
+/// The span of a Core node — `NO_SPAN` for generated code.
+pub fn term_span(t: &Term) -> Span {
+    match t {
+        Term::Let(_, _, sp, _) | Term::Drop(_, _, sp, _) | Term::Ret(_, sp) => *sp,
+    }
+}
+
 /// A sequence of `let`s ending in a result.
+///
+/// Every node carries the source `Span` of the AST expression it was lowered
+/// from (Δ-5): `NO_SPAN` for generated code. A `Drop` inserted by the
+/// reclamation analysis inherits the span of the node it precedes — the
+/// position-level coherence cross-check (Δ-3, move 2 + Δ-5) matches those
+/// anchors against the front-end's `DropPoint` spans.
 #[derive(Debug, Clone)]
 pub enum Term {
-    Let(String, Rhs, Box<Term>),
+    Let(String, Rhs, Span, Box<Term>),
     /// `drop x; …` — frees the heap object `x` at its death point
     /// (Auto-Drop, §2; inserted by the reclamation analysis, not the lowering).
     /// The `Option<String>` is the `data` type name of `x` (when known): if the
     /// type owns heap fields, the backend calls the recursive destructor
     /// `axion_drop_<T>` (deep-drop); otherwise, a flat `free`.
-    Drop(String, Option<String>, Box<Term>),
-    Ret(Rhs),
+    Drop(String, Option<String>, Span, Box<Term>),
+    Ret(Rhs, Span),
 }
 
 /// `case` patterns supported natively.
@@ -180,6 +205,10 @@ pub struct CoreFn {
     /// `%1` heap-typed parameters: the callee **owns them** and frees them at their
     /// death point (cross-function reclamation — Auto-Drop, §2)
     pub owned_params: Vec<String>,
+    /// Phase A′: drop-type key of each owned `%1` param (mangled destructor key,
+    /// `List$P`), resolved at lowering — the drop-type walk reads it instead of
+    /// re-reading the signature. `None` = unknown → flat `free` (conservative).
+    pub owned_drop_ty: Vec<(String, Option<String>)>,
     pub body: Term,
 }
 
@@ -259,13 +288,13 @@ pub fn is_float_op(op: &str) -> bool {
 pub fn has_tail_self_call(f: &CoreFn) -> bool {
     fn term(t: &Term, name: &str) -> bool {
         match t {
-            Term::Let(_, _, body) | Term::Drop(_, _, body) => term(body, name),
-            Term::Ret(rhs) => rhs_tail(rhs, name),
+            Term::Let(_, _, _, body) | Term::Drop(_, _, _, body) => term(body, name),
+            Term::Ret(rhs, _) => rhs_tail(rhs, name),
         }
     }
     fn rhs_tail(rhs: &Rhs, name: &str) -> bool {
         match rhs {
-            Rhs::Op(Op::CallDirect(g, _)) => g == name,
+            Rhs::Op(Op::CallDirect(g, _, _)) => g == name,
             Rhs::If(_, t, e) => term(t, name) || term(e, name),
             Rhs::Case(_, arms) => arms.iter().any(|(_, b)| term(b, name)),
             Rhs::Op(_) => false,
@@ -308,17 +337,6 @@ pub fn boxed_data_names(module: &ast::Module) -> HashSet<String> {
         .iter()
         .filter(|d| !is_enum_data(d))
         .map(|d| d.name.clone())
-        .collect()
-}
-
-/// Constructor names of unboxed enum types — their `MakeCon` is an immediate,
-/// not an allocation, so they must not be treated as droppable.
-pub fn enum_con_names(module: &ast::Module) -> HashSet<String> {
-    module
-        .datas
-        .iter()
-        .filter(|d| is_enum_data(d))
-        .flat_map(|d| d.cons.iter().map(|c| c.name.clone()))
         .collect()
 }
 
@@ -427,11 +445,6 @@ impl RecordInfo {
         self.needs_deep.contains(ty)
     }
 
-    /// Name of a constructor's type.
-    pub fn con_type(&self, con: &str) -> Option<&str> {
-        self.con_type.get(con).map(String::as_str)
-    }
-
     /// Constructors of a type, in tag order.
     pub fn type_cons(&self, ty: &str) -> Option<&[String]> {
         self.type_cons.get(ty).map(Vec::as_slice)
@@ -522,7 +535,9 @@ impl RecordInfo {
     /// destructor frees, so — like a concrete heap field — extracting it out of
     /// the scrutinee transfers ownership and forces a shallow scrutinee free.
     pub fn field_is_poly(&self, con: &str, i: usize) -> bool {
-        self.con_poly_fields.get(con).is_some_and(|s| s.contains(&i))
+        self.con_poly_fields
+            .get(con)
+            .is_some_and(|s| s.contains(&i))
     }
 
     /// `true` if extracting field `i` of `con` out of a value transfers HEAP
@@ -797,6 +812,12 @@ struct Lower<'a> {
     inplace: &'a HashSet<Span>,
     /// names of the FFI imports (§18) — called via `Op::Ffi`
     foreigns: &'a HashSet<String>,
+    /// Phase A′: constructor → `data`-type name of its value (None for unboxed
+    /// enum constructors — immediate tags, never dropped). Attached to `Make*`.
+    con_ty: &'a HashMap<String, Option<String>>,
+    /// Phase A′: function → `data`-type name of its result (boxed only). Attached
+    /// to `CallDirect`.
+    fn_ret_ty: &'a HashMap<String, String>,
     locals: HashMap<String, String>,
     tmp: u32,
 }
@@ -809,7 +830,7 @@ impl Lower<'_> {
     }
 
     /// Lowers `e` to an atom, pushing intermediate `let`s onto `buf`.
-    fn atom(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Atom {
+    fn atom(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs, Span)>) -> Atom {
         match e {
             Expr::Int(n, _) => Atom::Int(*n),
             Expr::Float(f, _) => Atom::Float(*f),
@@ -818,14 +839,14 @@ impl Lower<'_> {
             _ => {
                 let rhs = self.rhs(e, buf);
                 let name = self.fresh();
-                buf.push((name.clone(), rhs));
+                buf.push((name.clone(), rhs, e.span()));
                 Atom::Var(name)
             }
         }
     }
 
     /// Baixa `e` a um `Rhs` (folha ou controlo), empilhando `let`s em `buf`.
-    fn rhs(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Rhs {
+    fn rhs(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs, Span)>) -> Rhs {
         match e {
             Expr::If(c, t, el, _) => {
                 let ca = self.atom(c, buf);
@@ -840,16 +861,19 @@ impl Lower<'_> {
                 Rhs::Case(sa, carms)
             }
             Expr::Let(binds, body, _) => {
-                // drags the trivial binds into `buf` and continues in the body
+                // drags the trivial binds into `buf` and continues in the body.
+                // Each bind's `let` carries the span of its own binding expr
+                // (Δ-5): the position-level coherence check reads per-statement
+                // anchors (a whole-chain span would contain every death point).
                 for f in binds {
-                    let rhs = match f.clauses.as_slice() {
+                    let (sp, rhs) = match f.clauses.as_slice() {
                         [c] if c.pats.is_empty() => match &c.body {
-                            Body::Plain(e) => self.rhs(e, buf),
-                            _ => Rhs::Op(Op::Unsupported("let with guards".into())),
+                            Body::Plain(e) => (e.span(), self.rhs(e, buf)),
+                            _ => (NO_SPAN, Rhs::Op(Op::Unsupported("let with guards".into()))),
                         },
-                        _ => Rhs::Op(Op::Unsupported("non-trivial let".into())),
+                        _ => (NO_SPAN, Rhs::Op(Op::Unsupported("non-trivial let".into()))),
                     };
-                    buf.push((f.name.clone(), rhs));
+                    buf.push((f.name.clone(), rhs, sp));
                 }
                 self.rhs(body, buf)
             }
@@ -858,7 +882,7 @@ impl Lower<'_> {
     }
 
     /// Lowers `e` to a leaf `Op` (the caller guarantees it is not if/case/let).
-    fn op(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Op {
+    fn op(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs, Span)>) -> Op {
         match e {
             Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Var(_, _) => {
                 Op::Atom(self.atom(e, buf))
@@ -894,6 +918,7 @@ impl Lower<'_> {
                     .iter()
                     .map(|(f, x)| (f.clone(), self.atom(x, buf)))
                     .collect(),
+                ty: self.con_ty.get(con).and_then(|t| t.clone()),
             },
             Expr::RecordUpd(base, assigns, span) => {
                 let b = self.atom(base, buf);
@@ -921,6 +946,7 @@ impl Lower<'_> {
                 _ => Op::MakeCon {
                     con: name.clone(),
                     args: Vec::new(),
+                    ty: self.con_ty.get(name).and_then(|t| t.clone()),
                 },
             },
             Expr::If(_, _, _, _) | Expr::Case(_, _, _) | Expr::Let(_, _, _) => {
@@ -932,7 +958,7 @@ impl Lower<'_> {
 
     /// Lowers an application, classifying the head (builtin / selector / call
     /// direct / indirect call to a closure).
-    fn app(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs)>) -> Op {
+    fn app(&mut self, e: &Expr, buf: &mut Vec<(String, Rhs, Span)>) -> Op {
         let (head, args) = spine(e);
         // applied constructor `Con a b …` → positional `data` value
         if let Expr::Con(cname, _) = head {
@@ -940,6 +966,7 @@ impl Lower<'_> {
             return Op::MakeCon {
                 con: cname.clone(),
                 args: vals,
+                ty: self.con_ty.get(cname).and_then(|t| t.clone()),
             };
         }
         let Expr::Var(name, _) = head else {
@@ -1022,6 +1049,7 @@ impl Lower<'_> {
                         args: vec![n],
                         returns: true,
                     }),
+                    NO_SPAN,
                 ));
                 return Op::CallClosure(clos, vec![Atom::Var(b)]);
             }
@@ -1049,7 +1077,7 @@ impl Lower<'_> {
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| name.to_string());
-            Op::CallDirect(target, vals)
+            Op::CallDirect(target.clone(), vals, self.fn_ret_ty.get(&target).cloned())
         } else {
             // local variable of function type → indirect call
             Op::CallClosure(Atom::Var(name.to_string()), vals)
@@ -1062,7 +1090,7 @@ impl Lower<'_> {
         func: &str,
         args: &[&Expr],
         returns: bool,
-        buf: &mut Vec<(String, Rhs)>,
+        buf: &mut Vec<(String, Rhs, Span)>,
     ) -> Op {
         Op::RtCall {
             func: func.to_string(),
@@ -1071,11 +1099,14 @@ impl Lower<'_> {
         }
     }
 
-    /// Lowers `e` to a `Term` (sequence of `let`s + result).
+    /// Lowers `e` to a `Term` (sequence of `let`s + result). Every node carries
+    /// its own source span (Δ-5): the tail `Ret` carries the whole expression's
+    /// span, each `let` the span of its binding expr. Drop-insertion anchors
+    /// and the position-level coherence cross-check read them.
     fn term(&mut self, e: &Expr) -> Term {
         let mut buf = Vec::new();
         let rhs = self.rhs(e, &mut buf);
-        wrap(buf, Term::Ret(rhs))
+        wrap_spanned(buf, Term::Ret(rhs, e.span()))
     }
 
     /// Desugars multi-clause into an `if` chain (requires a catch-all at the end).
@@ -1095,10 +1126,11 @@ impl Lower<'_> {
         let body_term = |me: &mut Self| -> Term {
             let mut inner = me.clause_body(clause);
             for (j, p) in clause.pats.iter().enumerate() {
-                if let Pat::Var(n, _) = p {
+                if let Pat::Var(n, sp) = p {
                     inner = Term::Let(
                         n.clone(),
                         Rhs::Op(Op::Atom(Atom::Var(params[j].clone()))),
+                        *sp,
                         Box::new(inner),
                     );
                 }
@@ -1110,13 +1142,16 @@ impl Lower<'_> {
             return body_term(self);
         }
         if i + 1 >= clauses.len() {
-            return Term::Ret(Rhs::Op(Op::Unsupported(
-                "function without a catch-all clause".into(),
-            )));
+            return Term::Ret(
+                Rhs::Op(Op::Unsupported(
+                    "function without a catch-all clause".into(),
+                )),
+                NO_SPAN,
+            );
         }
 
         // cond = band(param_j == lit, …)
-        let mut buf: Vec<(String, Rhs)> = Vec::new();
+        let mut buf: Vec<(String, Rhs, Span)> = Vec::new();
         let mut cond: Option<Atom> = None;
         for (j, lit) in &lits {
             let c = self.fresh();
@@ -1127,6 +1162,7 @@ impl Lower<'_> {
                     Atom::Var(params[*j].clone()),
                     Atom::Int(*lit),
                 )),
+                NO_SPAN,
             ));
             cond = Some(match cond {
                 None => Atom::Var(c),
@@ -1135,6 +1171,7 @@ impl Lower<'_> {
                     buf.push((
                         a.clone(),
                         Rhs::Op(Op::Prim("band".into(), prev, Atom::Var(c))),
+                        NO_SPAN,
                     ));
                     Atom::Var(a)
                 }
@@ -1142,9 +1179,12 @@ impl Lower<'_> {
         }
         let then_t = body_term(self);
         let else_t = self.clauses(clauses, params, i + 1);
-        wrap(
+        wrap_spanned(
             buf,
-            Term::Ret(Rhs::If(cond.unwrap(), Box::new(then_t), Box::new(else_t))),
+            Term::Ret(
+                Rhs::If(cond.unwrap(), Box::new(then_t), Box::new(else_t)),
+                NO_SPAN,
+            ),
         )
     }
 
@@ -1159,7 +1199,10 @@ impl Lower<'_> {
     /// `if g0 then r0 else if g1 then r1 else rn`. `otherwise`/`True` are
     /// unconditional; if no guard covers, it is exhaustion (unsupported).
     fn guarded(&mut self, arms: &[(Expr, Expr)]) -> Term {
-        let mut acc = Term::Ret(Rhs::Op(Op::Unsupported("non-exhaustive guards".into())));
+        let mut acc = Term::Ret(
+            Rhs::Op(Op::Unsupported("non-exhaustive guards".into())),
+            NO_SPAN,
+        );
         for (g, r) in arms.iter().rev() {
             let uncond = matches!(g, Expr::Var(n, _) if n == "otherwise")
                 || matches!(g, Expr::Con(n, _) if n == "True");
@@ -1169,7 +1212,10 @@ impl Lower<'_> {
             } else {
                 let mut buf = Vec::new();
                 let ga = self.atom(g, &mut buf);
-                acc = wrap(buf, Term::Ret(Rhs::If(ga, Box::new(rterm), Box::new(acc))));
+                acc = wrap_spanned(
+                    buf,
+                    Term::Ret(Rhs::If(ga, Box::new(rterm), Box::new(acc)), NO_SPAN),
+                );
             }
         }
         acc
@@ -1186,11 +1232,23 @@ fn lower_pat(p: &Pat) -> CPat {
     }
 }
 
-/// Wraps the `let`s of `buf` (in order) around `tail`.
-fn wrap(buf: Vec<(String, Rhs)>, tail: Term) -> Term {
+/// Wraps the `let`s of `buf` (in order) around `tail`. Every wrapper carries
+/// its own source span (Δ-5): the span of the expression its binding was
+/// lowered from, or `NO_SPAN` for generated chains. The tail keeps its own.
+fn wrap_spanned(buf: Vec<(String, Rhs, Span)>, tail: Term) -> Term {
+    let mut term = tail;
+    for (name, rhs, sp) in buf.into_iter().rev() {
+        term = Term::Let(name, rhs, sp, Box::new(term));
+    }
+    term
+}
+
+/// Wraps the `let`s of `buf` (in order) around `tail` — every wrapper carries
+/// the shared `span` (generated code: the session state machines).
+fn wrap(buf: Vec<(String, Rhs)>, tail: Term, span: Span) -> Term {
     let mut term = tail;
     for (name, rhs) in buf.into_iter().rev() {
-        term = Term::Let(name, rhs, Box::new(term));
+        term = Term::Let(name, rhs, span, Box::new(term));
     }
     term
 }
@@ -1210,7 +1268,7 @@ fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
 /// owned-params)`. Single-clause functions with only variable/`_` patterns
 /// name the parameters directly (without the redundant alias `let n = _p0`),
 /// which gives a more readable Core and clean names for param reclamation.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn lower_func(
     f: &ast::Func,
     arity: usize,
@@ -1221,13 +1279,24 @@ fn lower_func(
     inplace: &HashSet<Span>,
     foreigns: &HashSet<String>,
     data_types: &HashSet<String>,
-) -> (Vec<String>, Term, Vec<String>) {
+    con_ty: &HashMap<String, Option<String>>,
+    fn_ret_ty: &HashMap<String, String>,
+    parametric_data: &HashSet<String>,
+) -> (
+    Vec<String>,
+    Term,
+    Vec<String>,
+    Vec<(String, Option<String>)>,
+    Vec<ast::Type>,
+) {
     let mut lw = Lower {
         globals,
         fields,
         lam_meta,
         inplace,
         foreigns,
+        con_ty,
+        fn_ret_ty,
         locals: locals.clone(),
         tmp: 0,
     };
@@ -1256,22 +1325,40 @@ fn lower_func(
         let body = lw.clauses(&f.clauses, &params, 0);
         (params, body)
     };
-    // `%1` heap-typed parameters → the callee owns them and frees them
-    let owned: Vec<String> = match &f.sig {
-        Some(sig) => {
-            let mults = sig.param_mults();
-            let ptypes = sig.param_types();
-            (0..params.len())
-                .filter(|&i| {
-                    mults.get(i) == Some(&ast::Mult::One)
-                        && ptypes.get(i).is_some_and(|t| heap_ty(t, data_types))
-                })
-                .map(|i| params[i].clone())
-                .collect()
+    // `%1` heap-typed parameters → the callee owns them and frees them.
+    // Phase A′: the drop-type key of each is resolved HERE, at lowering, and
+    // carried on the function — the drop-type walk reads it instead of
+    // re-reading the signature (the last source-reconstruction in the path).
+    let mut owned: Vec<String> = Vec::new();
+    let mut owned_drop_ty: Vec<(String, Option<String>)> = Vec::new();
+    let mut mono_seeds: Vec<ast::Type> = Vec::new();
+    if let Some(sig) = &f.sig {
+        let mults = sig.param_mults();
+        let ptypes = sig.param_types();
+        for (i, p) in params.iter().enumerate() {
+            if mults.get(i) != Some(&ast::Mult::One) {
+                continue;
+            }
+            let Some(t) = ptypes.get(i) else { continue };
+            if !heap_ty(t, data_types) {
+                continue;
+            }
+            owned.push(p.clone());
+            // a concrete instantiation of a parametric type (`List P`, fully
+            // monomorphic) → the mangled key of its specialized destructor, and
+            // seed its generation; otherwise the type head. Non-`data` heads
+            // (tuple) → `None` → flat `free`.
+            let key = t.head_con().and_then(|h| {
+                if parametric_data.contains(h) {
+                    mono_key(t).inspect(|_| mono_seeds.push((*t).clone()))
+                } else {
+                    Some(h.to_string())
+                }
+            });
+            owned_drop_ty.push((params[i].clone(), key));
         }
-        None => Vec::new(),
-    };
-    (params, body, owned)
+    }
+    (params, body, owned, owned_drop_ty, mono_seeds)
 }
 
 /// Lowers the module to the Core: candidate top-level functions, their `where`
@@ -1294,7 +1381,14 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         }
     }
     for b in [
-        "putStrLn", "putStr", "showInt", "showFloat", "toFloat", "truncate", "sqrt", "floor",
+        "putStrLn",
+        "putStr",
+        "showInt",
+        "showFloat",
+        "toFloat",
+        "truncate",
+        "sqrt",
+        "floor",
         "abs",
     ] {
         arity.entry(b.into()).or_insert(1);
@@ -1387,9 +1481,11 @@ impl Eta {
                     _ => self.expr(head),
                 };
                 let sp = head.span();
-                let applied = targs
-                    .into_iter()
-                    .fold(head_e, |acc, a| Expr::App(Box::new(acc), Box::new(a), sp));
+                let applied = targs.into_iter().fold(head_e, |acc, a| {
+                    let a = a.clone();
+                    let s2 = (sp.0, a.span().1);
+                    Expr::App(Box::new(acc), Box::new(a), s2)
+                });
                 match self.name_arity(head) {
                     // PARTIAL application → completed with a lambda.
                     Some(k) if n < k => self.wrap(applied, k - n),
@@ -1638,7 +1734,7 @@ impl SessGen<'_> {
                             atoms.push(self.val(a, binds));
                         }
                         let t = self.fresh();
-                        binds.push((t.clone(), Rhs::Op(Op::CallDirect(name, atoms))));
+                        binds.push((t.clone(), Rhs::Op(Op::CallDirect(name, atoms, None))));
                         Atom::Var(t)
                     }
                     None => self.unsupported(binds),
@@ -1681,7 +1777,11 @@ impl SessGen<'_> {
                     self.fresh(),
                     Rhs::Op(Op::StoreRaw(Self::state_atom(), 8, Atom::Int(0))),
                 ));
-                return wrap(binds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(2)))));
+                return wrap(
+                    binds,
+                    Term::Ret(Rhs::Op(Op::Atom(Atom::Int(2))), NO_SPAN),
+                    NO_SPAN,
+                );
             }
         }
         let mut binds = Vec::new();
@@ -1693,7 +1793,11 @@ impl SessGen<'_> {
             self.fresh(),
             Rhs::Op(Op::StoreRaw(Self::state_atom(), 0, result)),
         ));
-        wrap(binds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1)))))
+        wrap(
+            binds,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1))), NO_SPAN),
+            NO_SPAN,
+        )
     }
 
     /// `store x = <val>` as an anonymous binding.
@@ -1715,7 +1819,11 @@ impl SessGen<'_> {
         }
         let r = self.store(8, Atom::Int((idx + 1) as i64));
         binds.push(r);
-        wrap(binds, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))))
+        wrap(
+            binds,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+            NO_SPAN,
+        )
     }
 
     /// Lowers one session continuation expression (a `Case` chain or a tail).
@@ -1768,11 +1876,15 @@ impl SessGen<'_> {
         if let Some(v1) = pv.get(1) {
             cbinds.push((v1.clone(), Rhs::Op(Op::Atom(ep))));
         }
-        let cont = wrap(cbinds, self.gen_cont(rest));
+        let cont = wrap(cbinds, self.gen_cont(rest), NO_SPAN);
         let blocked = self.block(idx);
         wrap(
             binds,
-            Term::Ret(Rhs::If(Atom::Var(pend), Box::new(cont), Box::new(blocked))),
+            Term::Ret(
+                Rhs::If(Atom::Var(pend), Box::new(cont), Box::new(blocked)),
+                NO_SPAN,
+            ),
+            NO_SPAN,
         )
     }
 
@@ -1814,14 +1926,14 @@ impl SessGen<'_> {
                     ab.push((d.clone(), Rhs::Op(Op::Atom(ep.clone()))));
                 }
             }
-            let t = wrap(ab, self.gen_cont(body));
+            let t = wrap(ab, self.gen_cont(body), NO_SPAN);
             arm_terms.push((tag, t));
         }
         // fold into nested ifs; the last arm is the (exhaustive) else
         let mut dispatch = arm_terms
             .pop()
             .map(|(_, t)| t)
-            .unwrap_or_else(|| Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
+            .unwrap_or_else(|| Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
         for (tag, t) in arm_terms.into_iter().rev() {
             let eq = self.fresh();
             dispatch = Term::Let(
@@ -1831,22 +1943,22 @@ impl SessGen<'_> {
                     Atom::Var(label.clone()),
                     Atom::Int(tag.unwrap_or(0)),
                 )),
-                Box::new(Term::Ret(Rhs::If(
-                    Atom::Var(eq),
-                    Box::new(t),
-                    Box::new(dispatch),
-                ))),
+                NO_SPAN,
+                Box::new(Term::Ret(
+                    Rhs::If(Atom::Var(eq), Box::new(t), Box::new(dispatch)),
+                    NO_SPAN,
+                )),
             );
         }
-        let success = wrap(vec![recv_bind], dispatch);
+        let success = wrap(vec![recv_bind], dispatch, NO_SPAN);
         let blocked = self.block(idx);
         wrap(
             binds,
-            Term::Ret(Rhs::If(
-                Atom::Var(pend),
-                Box::new(success),
-                Box::new(blocked),
-            )),
+            Term::Ret(
+                Rhs::If(Atom::Var(pend), Box::new(success), Box::new(blocked)),
+                NO_SPAN,
+            ),
+            NO_SPAN,
         )
     }
 
@@ -1897,7 +2009,7 @@ impl SessGen<'_> {
         if let Some(c) = pv.first() {
             binds.push((c.clone(), Rhs::Op(Op::Atom(Atom::Var(a)))));
         }
-        wrap(binds, self.gen_cont(rest))
+        wrap(binds, self.gen_cont(rest), NO_SPAN)
     }
 
     /// `c <- send ep v; rest`.
@@ -1918,7 +2030,7 @@ impl SessGen<'_> {
         if let Some(c) = pv.first() {
             binds.push((c.clone(), Rhs::Op(Op::Atom(ep))));
         }
-        wrap(binds, self.gen_cont(rest))
+        wrap(binds, self.gen_cont(rest), NO_SPAN)
     }
 
     /// `c <- select Label ep; rest` — send the label's tag (internal choice, ⊕).
@@ -1942,7 +2054,7 @@ impl SessGen<'_> {
         if let Some(c) = pv.first() {
             binds.push((c.clone(), Rhs::Op(Op::Atom(ep))));
         }
-        wrap(binds, self.gen_cont(rest))
+        wrap(binds, self.gen_cont(rest), NO_SPAN)
     }
 
     /// `cancel ep; rest` — send the peer the `Closed` label (§7/T5), then continue.
@@ -1958,7 +2070,7 @@ impl SessGen<'_> {
                 false,
             ),
         ));
-        wrap(binds, self.gen_cont(rest))
+        wrap(binds, self.gen_cont(rest), NO_SPAN)
     }
 
     /// `_ <- close ep; rest` — a no-op in the cooperative model (consumes ep).
@@ -1969,7 +2081,7 @@ impl SessGen<'_> {
         if let Some(x) = pv.first() {
             binds.push((x.clone(), Rhs::Op(Op::Atom(Atom::Int(0)))));
         }
-        wrap(binds, self.gen_cont(rest))
+        wrap(binds, self.gen_cont(rest), NO_SPAN)
     }
 
     /// Builds the full step function body: resume dispatch → regions, with the
@@ -2002,16 +2114,17 @@ impl SessGen<'_> {
                     Atom::Var("sess$resume".into()),
                     Atom::Int(rv as i64),
                 )),
-                Box::new(Term::Ret(Rhs::If(
-                    Atom::Var(eq),
-                    Box::new(then_t),
-                    Box::new(chain),
-                ))),
+                NO_SPAN,
+                Box::new(Term::Ret(
+                    Rhs::If(Atom::Var(eq), Box::new(then_t), Box::new(chain)),
+                    NO_SPAN,
+                )),
             );
         }
         let dispatch = Term::Let(
             "sess$resume".into(),
             Rhs::Op(Op::LoadRaw(Self::state_atom(), 8)),
+            NO_SPAN,
             Box::new(chain),
         );
         // load the task's parameters from the state block (the spawner stored them)
@@ -2026,7 +2139,7 @@ impl SessGen<'_> {
                 Rhs::Op(Op::LoadRaw(Self::state_atom(), self.lay.slot[&v])),
             ));
         }
-        wrap(param_loads, dispatch)
+        wrap(param_loads, dispatch, NO_SPAN)
     }
 
     /// The region for a resume value: `0` = fresh entry at the body root;
@@ -2045,7 +2158,7 @@ impl SessGen<'_> {
                 Rhs::Op(Op::LoadRaw(Self::state_atom(), self.lay.slot[v])),
             ));
         }
-        wrap(binds, self.gen_cont(case_e))
+        wrap(binds, self.gen_cont(case_e), NO_SPAN)
     }
 }
 
@@ -2121,6 +2234,7 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
             captures: Vec::new(),
             is_closure: false,
             owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
             body: g.build_step(pats, body),
         }
     };
@@ -2138,6 +2252,7 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
     let driver = Term::Let(
         "sess$sched".into(),
         SessGen::rt("axion_sess_new", vec![], true),
+        NO_SPAN,
         Box::new(Term::Let(
             "sess$root".into(),
             SessGen::rt(
@@ -2145,6 +2260,7 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
                 vec![Atom::Var("sess$sched".into()), Atom::Int(size as i64)],
                 true,
             ),
+            NO_SPAN,
             Box::new(Term::Let(
                 "sess$res".into(),
                 Rhs::Op(Op::RtCall {
@@ -2156,7 +2272,11 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
                     ],
                     returns: true,
                 }),
-                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var("sess$res".into()))))),
+                NO_SPAN,
+                Box::new(Term::Ret(
+                    Rhs::Op(Op::Atom(Atom::Var("sess$res".into()))),
+                    NO_SPAN,
+                )),
             )),
         )),
     );
@@ -2164,6 +2284,7 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
     let driver = Term::Let(
         "sess$fa".into(),
         Rhs::Op(Op::FuncAddr("main$step".into())),
+        NO_SPAN,
         Box::new(driver),
     );
     out.push(CoreFn {
@@ -2172,12 +2293,25 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
         captures: Vec::new(),
         is_closure: false,
         owned_params: Vec::new(),
+        owned_drop_ty: Vec::new(),
         body: driver,
     });
     out
 }
 
 pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
+    lower_with(module, inplace).fns
+}
+
+/// The lowering plus the analysis inputs the Δ checker reads (Δ-1):
+/// `borrow_args` (pure-borrow call positions) and `recinfo` (field ownership).
+pub struct Lowered {
+    pub fns: Vec<CoreFn>,
+    pub borrow_args: BorrowArgs,
+    pub recinfo: RecordInfo,
+}
+
+pub(crate) fn lower_with(module: &ast::Module, inplace: &HashSet<Span>) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
     // which would wrap a bare `spawn worker` target into a lambda). It needs the
     // set of native functions (to resolve value-position calls), so it runs after
@@ -2202,19 +2336,45 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             }
         }
     }
-    // functions whose return is a heap object → the call result becomes
-    // the caller's property (reclaimable when it dies and doesn't escape)
-    let heap_ret: HashSet<String> = module
+    let foreigns: HashSet<String> = module.foreigns.iter().map(|f| f.name.clone()).collect();
+    // Phase A′: constructor → `data`-type name of its value (None for unboxed enum
+    // constructors — immediate tags, never dropped). Attached to `MakeCon`/`MakeRecord`
+    // at lowering so the drop machinery reads the type off the node instead of
+    // reconstructing it.
+    let con_ty: HashMap<String, Option<String>> = module
+        .datas
+        .iter()
+        .flat_map(|d| {
+            let ty = if is_enum_data(d) {
+                None
+            } else {
+                Some(d.name.clone())
+            };
+            d.cons.iter().map(move |c| (c.name.clone(), ty.clone()))
+        })
+        .collect();
+    // Phase A′: function → `data`-type name of its (boxed) result, from the
+    // signature. Attached to `CallDirect` at lowering. (Used to live only in the
+    // drop-type walk; now the node itself carries it.)
+    let fn_ret_ty: HashMap<String, String> = module
         .funcs
         .iter()
-        .filter(|f| {
-            f.sig
-                .as_ref()
-                .is_some_and(|s| heap_ty(result_type(s), &boxed))
+        .filter_map(|f| {
+            let rt = result_type(f.sig.as_ref()?);
+            rt.head_con()
+                .filter(|h| boxed.contains(*h))
+                .map(|h| (f.name.clone(), h.to_string()))
         })
-        .map(|f| f.name.clone())
         .collect();
-    let foreigns: HashSet<String> = module.foreigns.iter().map(|f| f.name.clone()).collect();
+    // parametric data types (`data List a = …`): a dropped CONCRETE instantiation
+    // (`List P`) routes to a specialized destructor. Shared by the lowering
+    // (owned `%1` param keys) and the destructor generation.
+    let parametric_data: HashSet<String> = module
+        .datas
+        .iter()
+        .filter(|d| !d.params.is_empty())
+        .map(|d| d.name.clone())
+        .collect();
     // typeclass method names (interp-only): exclude the function from native
     let methods: HashSet<String> = module
         .classes
@@ -2304,6 +2464,9 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     }
 
     let mut out = Vec::new();
+    // Phase A′: seeds for the specialized destructors of parametric instantiations
+    // dropped as owned values — collected at lowering, where the keys are resolved.
+    let mut mono_seeds: Vec<ast::Type> = Vec::new();
     for f in &module.funcs {
         let Some(&arity) = native_ok.get(&f.name) else {
             continue;
@@ -2314,7 +2477,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             locals.insert(w.name.clone(), format!("{}${}", f.name, w.name));
         }
 
-        let (params, body, owned) = lower_func(
+        let (params, body, owned, owned_drop_ty, seeds) = lower_func(
             f,
             arity,
             &locals,
@@ -2324,19 +2487,24 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             inplace,
             &foreigns,
             &boxed,
+            &con_ty,
+            &fn_ret_ty,
+            &parametric_data,
         );
+        mono_seeds.extend(seeds);
         out.push(CoreFn {
             name: f.name.clone(),
             params,
             captures: Vec::new(),
             is_closure: false,
             owned_params: owned,
+            owned_drop_ty,
             body,
         });
 
         for w in &wheres {
             let warity = w.clauses.first().map(|c| c.pats.len()).unwrap_or(0);
-            let (wp, wb, wo) = lower_func(
+            let (wp, wb, wo, wot, wseeds) = lower_func(
                 w,
                 warity,
                 &locals,
@@ -2346,13 +2514,18 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
                 inplace,
                 &foreigns,
                 &boxed,
+                &con_ty,
+                &fn_ret_ty,
+                &parametric_data,
             );
+            mono_seeds.extend(wseeds);
             out.push(CoreFn {
                 name: locals[&w.name].clone(),
                 params: wp,
                 captures: Vec::new(),
                 is_closure: false,
                 owned_params: wo,
+                owned_drop_ty: wot,
                 body: wb,
             });
         }
@@ -2378,6 +2551,8 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             lam_meta: &lam_meta,
             inplace,
             foreigns: &foreigns,
+            con_ty: &con_ty,
+            fn_ret_ty: &fn_ret_ty,
             locals,
             tmp: 0,
         };
@@ -2387,6 +2562,7 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
             captures,
             is_closure: true,
             owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
             body: lw.term(body),
         });
     }
@@ -2403,35 +2579,14 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     // deep-drop (§2): `data` type of each droppable, so the backend reclaims
     // nested fields via a recursive destructor instead of a flat `free`.
     let recinfo = RecordInfo::build(module);
-    let fn_ret_ty: HashMap<String, String> = module
-        .funcs
-        .iter()
-        .filter_map(|f| {
-            let rt = result_type(f.sig.as_ref()?);
-            rt.head_con()
-                .filter(|h| boxed.contains(*h))
-                .map(|h| (f.name.clone(), h.to_string()))
-        })
-        .collect();
-    // parametric data types (`data List a = …`): a dropped CONCRETE instantiation
-    // (`List P`) routes to a specialized destructor. Computed once, shared by the
-    // drop-type threading and the destructor generation.
-    let parametric_data: HashSet<String> = module
-        .datas
-        .iter()
-        .filter(|d| !d.params.is_empty())
-        .map(|d| d.name.clone())
-        .collect();
-    let (all_dty, mono_seeds) =
-        build_all_drop_ty(&out, module, &recinfo, &fn_ret_ty, &parametric_data);
+    let all_dty = build_all_drop_ty(&out);
     let empty = HashMap::new();
-    let enum_cons = enum_con_names(module);
 
     let mut result: Vec<CoreFn> = out
         .into_iter()
         .map(|f| {
             let dty = all_dty.get(&f.name).unwrap_or(&empty);
-            insert_drops(f, &heap_ret, &borrow_args, dty, &enum_cons, &recinfo)
+            insert_drops(f, &borrow_args, dty, &recinfo)
         })
         .collect();
     // generated destructors: added AFTER drop insertion (they manage
@@ -2440,11 +2595,20 @@ pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
     // specialized destructors for concrete instantiations of parametric types
     // dropped as owned values (`List P` → `axion_drop_List$P`): they also free
     // the polymorphic payloads a generic destructor cannot see.
-    result.extend(gen_mono_destructors(module, &recinfo, &parametric_data, mono_seeds));
+    result.extend(gen_mono_destructors(
+        module,
+        &recinfo,
+        &parametric_data,
+        mono_seeds,
+    ));
     // native session state machines (§11): also hand-managed (task states live in
     // the scheduler's nursery arena), so they bypass the drop analysis too.
     result.extend(session);
-    result
+    Lowered {
+        fns: result,
+        borrow_args,
+        recinfo,
+    }
 }
 
 /// Generates the recursive destructors `axion_drop_<T>` for each type with
@@ -2480,6 +2644,7 @@ fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
             captures: Vec::new(),
             is_closure: false,
             owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
             body,
         });
     }
@@ -2528,17 +2693,24 @@ fn destructor_body(
             let ifstep = Term::Let(
                 fresh_dd(ctr),
                 Rhs::If(Atom::Var(cmp.clone()), Box::new(branch), Box::new(unit0())),
+                NO_SPAN,
                 Box::new(chain),
             );
             chain = Term::Let(
                 cmp,
-                Rhs::Op(Op::Prim("==".into(), Atom::Var("_tag".into()), Atom::Int(*tag))),
+                Rhs::Op(Op::Prim(
+                    "==".into(),
+                    Atom::Var("_tag".into()),
+                    Atom::Int(*tag),
+                )),
+                NO_SPAN,
                 Box::new(ifstep),
             );
         }
         Term::Let(
             "_tag".into(),
             Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), 0)),
+            NO_SPAN,
             Box::new(chain),
         )
     };
@@ -2547,10 +2719,16 @@ fn destructor_body(
         let res = fresh_dd(ctr);
         Term::Let(
             bit.clone(),
-            Rhs::Op(Op::Prim("band".into(), Atom::Var(p.to_string()), Atom::Int(1))),
+            Rhs::Op(Op::Prim(
+                "band".into(),
+                Atom::Var(p.to_string()),
+                Atom::Int(1),
+            )),
+            NO_SPAN,
             Box::new(Term::Let(
                 res,
                 Rhs::If(Atom::Var(bit), Box::new(unit0()), Box::new(body)),
+                NO_SPAN,
                 Box::new(unit0()),
             )),
         )
@@ -2567,9 +2745,11 @@ fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term
     for (off, way) in slots.iter().rev() {
         let fp = fresh_dd(ctr);
         let call = match way {
-            DropWay::Deep(name) => {
-                Op::CallDirect(format!("axion_drop_{name}"), vec![Atom::Var(fp.clone())])
-            }
+            DropWay::Deep(name) => Op::CallDirect(
+                format!("axion_drop_{name}"),
+                vec![Atom::Var(fp.clone())],
+                None,
+            ),
             DropWay::Flat => Op::RtCall {
                 func: "axion_free".into(),
                 args: vec![Atom::Var(fp.clone())],
@@ -2582,7 +2762,13 @@ fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term
         term = Term::Let(
             fp.clone(),
             Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), *off)),
-            Box::new(Term::Let(fresh_dd(ctr), Rhs::Op(call), Box::new(term))),
+            NO_SPAN,
+            Box::new(Term::Let(
+                fresh_dd(ctr),
+                Rhs::Op(call),
+                NO_SPAN,
+                Box::new(term),
+            )),
         );
     }
     term
@@ -2595,7 +2781,7 @@ fn fresh_dd(ctr: &mut u32) -> String {
 }
 
 fn unit0() -> Term {
-    Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))))
+    Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)
 }
 
 fn free_then_ret(p: &str) -> Term {
@@ -2606,6 +2792,7 @@ fn free_then_ret(p: &str) -> Term {
             args: vec![Atom::Var(p.to_string())],
             returns: false,
         }),
+        NO_SPAN,
         Box::new(unit0()),
     )
 }
@@ -2647,10 +2834,9 @@ fn subst_ty(t: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
     match t {
         ast::Type::Var(v) => subst.get(v).cloned().unwrap_or_else(|| t.clone()),
         ast::Type::Con(_) | ast::Type::Unit => t.clone(),
-        ast::Type::App(f, a) => ast::Type::App(
-            Box::new(subst_ty(f, subst)),
-            Box::new(subst_ty(a, subst)),
-        ),
+        ast::Type::App(f, a) => {
+            ast::Type::App(Box::new(subst_ty(f, subst)), Box::new(subst_ty(a, subst)))
+        }
         ast::Type::Arrow { mult, from, to } => ast::Type::Arrow {
             mult: *mult,
             from: Box::new(subst_ty(from, subst)),
@@ -2662,9 +2848,9 @@ fn subst_ty(t: &ast::Type, subst: &HashMap<String, ast::Type>) -> ast::Type {
 
 /// How to free a value of a (concrete) field type.
 enum DropWay {
-    Flat,          // heap object with no owned heap fields → a flat `free`
-    Deep(String),  // needs the destructor `axion_drop_<key>`
-    None,          // not a heap object (Int/String/function/tuple) → nothing to do
+    Flat,         // heap object with no owned heap fields → a flat `free`
+    Deep(String), // needs the destructor `axion_drop_<key>`
+    None,         // not a heap object (Int/String/function/tuple) → nothing to do
 }
 
 /// How to drop a (concrete) field type; pushes any parametric instantiation it
@@ -2743,7 +2929,7 @@ fn gen_mono_destructors(
                     .enumerate()
                     .filter_map(|(i, f)| {
                         let rty = subst_ty(&f.ty, &subst);
-                        match drop_way(&rty, recinfo, &parametric_data, &mut work) {
+                        match drop_way(&rty, recinfo, parametric_data, &mut work) {
                             DropWay::None => None,
                             way => Some((recinfo.field_offset(&con.name, i), way)),
                         }
@@ -2762,13 +2948,20 @@ fn gen_mono_destructors(
             .collect();
         let p = "_p".to_string();
         let mut ctr = 0u32;
-        let body = destructor_body(&cons, d.cons.len() <= 1, recinfo.is_mixed_type(head), &p, &mut ctr);
+        let body = destructor_body(
+            &cons,
+            d.cons.len() <= 1,
+            recinfo.is_mixed_type(head),
+            &p,
+            &mut ctr,
+        );
         out.push(CoreFn {
             name: format!("axion_drop_{key}"),
             params: vec![p],
             captures: Vec::new(),
             is_closure: false,
             owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
             body,
         });
     }
@@ -2777,102 +2970,65 @@ fn gen_mono_destructors(
 
 /// For each function, the `data` type of each droppable (owned `%1` parameters +
 /// results of `Make*`/calls that return heap). Feeds the deep-drop.
-fn build_all_drop_ty(
-    fns: &[CoreFn],
-    module: &ast::Module,
-    recinfo: &RecordInfo,
-    fn_ret_ty: &HashMap<String, String>,
-    parametric_data: &HashSet<String>,
-) -> (HashMap<String, HashMap<String, Option<String>>>, Vec<ast::Type>) {
+/// The `data`-type name a value carries for deep-drop routing: the Phase A′
+/// annotation attached to the node that creates the value (`Make*`/call result)
+/// or, for owned `%1` parameters, resolved on the function at lowering.
+/// `None` = unknown/non-boxed → the backend emits a flat `free` (conservative).
+fn build_all_drop_ty(fns: &[CoreFn]) -> HashMap<String, HashMap<String, Option<String>>> {
     let mut out = HashMap::new();
-    let mut seeds: Vec<ast::Type> = Vec::new();
     for f in fns {
-        let mut dty: HashMap<String, Option<String>> = HashMap::new();
-        // owned `%1` parameters → type from the top-level function signature
-        if let Some(mf) = module.funcs.iter().find(|m| m.name == f.name) {
-            if let Some(sig) = &mf.sig {
-                let ptys = sig.param_types();
-                for owned in &f.owned_params {
-                    let idx = f.params.iter().position(|p| p == owned);
-                    let Some(t) = idx.and_then(|i| ptys.get(i)).copied() else {
-                        continue;
-                    };
-                    let Some(h) = t.head_con().filter(|h| recinfo.type_cons(h).is_some()) else {
-                        continue;
-                    };
-                    // a concrete instantiation of a parametric type (`List P`,
-                    // fully monomorphic) → the mangled key of its specialized
-                    // destructor, and seed its generation. Otherwise the type head.
-                    let key = if parametric_data.contains(h) {
-                        match mono_key(t) {
-                            Some(k) => {
-                                seeds.push((*t).clone());
-                                k
-                            }
-                            None => h.to_string(),
-                        }
-                    } else {
-                        h.to_string()
-                    };
-                    dty.insert(owned.clone(), Some(key));
-                }
-            }
-        }
-        collect_drop_types(&f.body, recinfo, fn_ret_ty, &mut dty);
+        let mut dty: HashMap<String, Option<String>> = f.owned_drop_ty.iter().cloned().collect();
+        collect_drop_types(&f.body, &mut dty);
         out.insert(f.name.clone(), dty);
     }
-    (out, seeds)
+    out
 }
 
-/// Records the `data` type of variables bound to `Make*`/heap-calls in `t`.
+/// The Phase A′ drop-type annotation of a value-producing `Op`: the `data`-type
+/// name attached at lowering (`MakeCon`/`MakeRecord` from the constructor's
+/// declaration, `CallDirect` from the callee's signature). `None` = unknown or
+/// non-boxed → the backend emits a flat `free` (conservative).
+impl Op {
+    fn drop_ty(&self) -> Option<String> {
+        match self {
+            Op::MakeRecord { ty, .. } | Op::MakeCon { ty, .. } => ty.clone(),
+            Op::CallDirect(_, _, ty) => ty.clone(),
+            _ => None,
+        }
+    }
+}
+
+/// Records the `data` type of variables bound to `Make*`/heap-calls in `t` —
+/// now a plain READ of the Phase A′ annotation on each node (no reconstruction).
 /// (Results of `if`/`case` bound to `let` are not typed — they get a flat
 /// `free`; conservative, safe — see docs/backend.md.)
-fn collect_drop_types(
-    t: &Term,
-    recinfo: &RecordInfo,
-    fn_ret_ty: &HashMap<String, String>,
-    out: &mut HashMap<String, Option<String>>,
-) {
+fn collect_drop_types(t: &Term, out: &mut HashMap<String, Option<String>>) {
     match t {
-        Term::Let(x, rhs, body) => {
+        Term::Let(x, rhs, _, body) => {
             if let Rhs::Op(op) = rhs {
-                let ty = match op {
-                    // unboxed enum values are immediates → never dropped.
-                    Op::MakeRecord { con, .. } | Op::MakeCon { con, .. }
-                        if !recinfo.is_enum_con(con) =>
-                    {
-                        recinfo.con_type(con).map(str::to_string)
-                    }
-                    Op::CallDirect(g, _) => fn_ret_ty.get(g).cloned(),
-                    _ => None,
-                };
+                let ty = op.drop_ty();
                 if ty.is_some() {
                     out.insert(x.clone(), ty);
                 }
             }
-            collect_rhs_drop_types(rhs, recinfo, fn_ret_ty, out);
-            collect_drop_types(body, recinfo, fn_ret_ty, out);
+            collect_rhs_drop_types(rhs, out);
+            collect_drop_types(body, out);
         }
-        Term::Drop(_, _, body) => collect_drop_types(body, recinfo, fn_ret_ty, out),
-        Term::Ret(rhs) => collect_rhs_drop_types(rhs, recinfo, fn_ret_ty, out),
+        Term::Drop(_, _, _, body) => collect_drop_types(body, out),
+        Term::Ret(rhs, _) => collect_rhs_drop_types(rhs, out),
     }
 }
 
-fn collect_rhs_drop_types(
-    rhs: &Rhs,
-    recinfo: &RecordInfo,
-    fn_ret_ty: &HashMap<String, String>,
-    out: &mut HashMap<String, Option<String>>,
-) {
+fn collect_rhs_drop_types(rhs: &Rhs, out: &mut HashMap<String, Option<String>>) {
     match rhs {
         Rhs::Op(_) => {}
         Rhs::If(_, th, el) => {
-            collect_drop_types(th, recinfo, fn_ret_ty, out);
-            collect_drop_types(el, recinfo, fn_ret_ty, out);
+            collect_drop_types(th, out);
+            collect_drop_types(el, out);
         }
         Rhs::Case(_, arms) => {
             for (_, b) in arms {
-                collect_drop_types(b, recinfo, fn_ret_ty, out);
+                collect_drop_types(b, out);
             }
         }
     }
@@ -2899,9 +3055,9 @@ fn collect_rhs_drop_types(
 /// of giving it up as lost. Conservative: a parameter passed to *any* call
 /// (even if that one also borrows it) counts as an escape (no fixpoint between
 /// functions); and the multiplicity is only known for top-level functions with a signature.
-type BorrowArgs = HashMap<String, HashSet<usize>>;
+pub type BorrowArgs = HashMap<String, HashSet<usize>>;
 
-fn atom_is(v: &str, a: &Atom) -> bool {
+pub(crate) fn atom_is(v: &str, a: &Atom) -> bool {
     matches!(a, Atom::Var(n) if n == v)
 }
 
@@ -2910,9 +3066,9 @@ fn atom_is(v: &str, a: &Atom) -> bool {
 /// a call). A `Many` parameter for which this is `false` is a pure borrow.
 fn occurs_nonborrow(v: &str, t: &Term) -> bool {
     match t {
-        Term::Let(_, rhs, body) => rhs_nonborrow(v, rhs) || occurs_nonborrow(v, body),
-        Term::Drop(_, _, body) => occurs_nonborrow(v, body),
-        Term::Ret(rhs) => rhs_nonborrow(v, rhs),
+        Term::Let(_, rhs, _, body) => rhs_nonborrow(v, rhs) || occurs_nonborrow(v, body),
+        Term::Drop(_, _, _, body) => occurs_nonborrow(v, body),
+        Term::Ret(rhs, _) => rhs_nonborrow(v, rhs),
     }
 }
 
@@ -2932,7 +3088,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::FuncAddr(_) => false,
         Op::StoreRaw(ptr, _, val) => atom_is(v, ptr) || atom_is(v, val),
         Op::Prim(_, a, b) | Op::PrimF(_, a, b) => atom_is(v, a) || atom_is(v, b),
-        Op::CallDirect(_, xs) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
+        Op::CallDirect(_, xs, _) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(v, a)),
         Op::UpdateRecord {
@@ -2989,7 +3145,12 @@ fn compute_borrow_args(
 /// `let` within the term being analyzed). Excluding the locally-bound ones is essential
 /// for branch balancing: a droppable bound inside a branch is local to
 /// that branch and cannot be freed in the sibling branch (where it doesn't exist).
-fn atom_use(a: &Atom, drp: &HashSet<String>, bound: &HashSet<String>, out: &mut HashSet<String>) {
+pub(crate) fn atom_use(
+    a: &Atom,
+    drp: &HashSet<String>,
+    bound: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
     if let Atom::Var(n) = a {
         if drp.contains(n) && !bound.contains(n) {
             out.insert(n.clone());
@@ -3015,7 +3176,7 @@ fn fv_drop_in(
     out: &mut HashSet<String>,
 ) {
     match t {
-        Term::Let(x, rhs, body) => {
+        Term::Let(x, rhs, _, body) => {
             fv_rhs_in(rhs, drp, ba, bound, out);
             // `x` is bound in the body — its mentions there are not free
             let fresh = bound.insert(x.clone());
@@ -3024,8 +3185,8 @@ fn fv_drop_in(
                 bound.remove(x);
             }
         }
-        Term::Drop(_, _, body) => fv_drop_in(body, drp, ba, bound, out),
-        Term::Ret(rhs) => fv_rhs_in(rhs, drp, ba, bound, out),
+        Term::Drop(_, _, _, body) => fv_drop_in(body, drp, ba, bound, out),
+        Term::Ret(rhs, _) => fv_rhs_in(rhs, drp, ba, bound, out),
     }
 }
 
@@ -3059,60 +3220,38 @@ fn fv_op_in(
     bound: &HashSet<String>,
     out: &mut HashSet<String>,
 ) {
-    // `Field` reads a droppable (the record). A direct call to a function with
-    // pure-borrow parameters **also** counts as a use of the argument (it's
-    // freed after the call, not before). The remaining args escape (they move
-    // to the callee) → the droppable doesn't appear there. Prim operates on Ints.
-    match op {
-        Op::Field { rec, .. } => atom_use(rec, drp, bound, out),
-        // the closure passed to `withArena` is used during the call and dies
-        // follow → counts as a use so the drop falls AFTER (like a borrowed arg)
-        Op::WithArena { clos, .. } => atom_use(clos, drp, bound, out),
-        Op::CallDirect(g, xs) => {
-            if let Some(bs) = ba.get(g) {
-                for (i, a) in xs.iter().enumerate() {
-                    if bs.contains(&i) {
-                        atom_use(a, drp, bound, out);
-                    }
-                }
-            }
-        }
-        _ => {}
+    // the BORROW positions of the single authority: `Field` reads a droppable
+    // (the record), the closure passed to `withArena` is used during the call
+    // and dies after, and a direct call's pure-borrow parameters are freed by
+    // the caller after the call — each counts as a use, so the drop falls
+    // AFTER. The remaining positions move (escape) → the droppable doesn't
+    // appear there. Prim operates on Ints.
+    let e = crate::delta::op_delta_effect(op, ba);
+    for a in &e.borrows {
+        atom_use(a, drp, bound, out);
     }
 }
 
 /// The droppable set of a function: objects it **owns** — allocated
-/// locally (`Make*`), results of calls that return heap (`heap_ret`),
+/// locally (the Phase A′ annotation on `Make*`/heap-returning calls),
 /// and its `%1` heap parameters — minus those that escape.
-fn droppable_vars(
-    f: &CoreFn,
-    heap_ret: &HashSet<String>,
-    ba: &BorrowArgs,
-    enum_cons: &HashSet<String>,
-) -> HashSet<String> {
+fn droppable_vars(f: &CoreFn, ba: &BorrowArgs) -> HashSet<String> {
     let mut allocated: HashSet<String> = f.owned_params.iter().cloned().collect();
     let mut escaped = HashSet::new();
-    scan_body(&f.body, heap_ret, ba, enum_cons, &mut allocated, &mut escaped);
+    scan_body(&f.body, ba, &mut allocated, &mut escaped);
     allocated.difference(&escaped).cloned().collect()
 }
 
-fn scan_body(
-    t: &Term,
-    heap_ret: &HashSet<String>,
-    ba: &BorrowArgs,
-    enum_cons: &HashSet<String>,
-    alloc: &mut HashSet<String>,
-    esc: &mut HashSet<String>,
-) {
+fn scan_body(t: &Term, ba: &BorrowArgs, alloc: &mut HashSet<String>, esc: &mut HashSet<String>) {
     let recur = |b, alloc: &mut HashSet<String>, esc: &mut HashSet<String>| {
-        scan_body(b, heap_ret, ba, enum_cons, alloc, esc);
+        scan_body(b, ba, alloc, esc);
     };
     match t {
-        Term::Let(x, rhs, body) => {
+        Term::Let(x, rhs, _, body) => {
             match rhs {
                 Rhs::Op(op) => {
-                    // local allocation, or result of a call that returns heap
-                    if is_heap_alloc(op, enum_cons) || returns_owned_heap(op, heap_ret) {
+                    // local allocation (Phase A′ annotation, or an always-heap op)
+                    if op_produces_heap(op) {
                         alloc.insert(x.clone());
                     }
                     scan_op_escapes(op, ba, esc);
@@ -3125,9 +3264,9 @@ fn scan_body(
             }
             recur(body, alloc, esc);
         }
-        Term::Drop(_, _, body) => recur(body, alloc, esc),
-        Term::Ret(rhs) => match rhs {
-            Rhs::Op(op) => scan_op_escapes_ret(op, ba, esc),
+        Term::Drop(_, _, _, body) => recur(body, alloc, esc),
+        Term::Ret(rhs, _) => match rhs {
+            Rhs::Op(op) => scan_op_escapes(op, ba, esc),
             Rhs::If(_, t2, e2) => {
                 recur(t2, alloc, esc);
                 recur(e2, alloc, esc);
@@ -3137,74 +3276,49 @@ fn scan_body(
     }
 }
 
-/// A direct call to a function that returns heap → the result is the caller's.
-fn returns_owned_heap(op: &Op, heap_ret: &HashSet<String>) -> bool {
-    matches!(op, Op::CallDirect(name, _) if heap_ret.contains(name))
-}
-
-fn is_heap_alloc(op: &Op, enum_cons: &HashSet<String>) -> bool {
-    match op {
-        // an unboxed enum constructor is an immediate, not an allocation.
-        Op::MakeCon { con, .. } => !enum_cons.contains(con),
-        Op::MakeTuple(_)
-        | Op::MakeRecord { .. }
-        | Op::UpdateRecord { .. }
-        | Op::MakeClosure { .. } => true,
-        _ => false,
-    }
+/// `true` if the op's result is a heap object the caller owns. The Phase A′
+/// annotation (`MakeCon`/`MakeRecord`/`CallDirect`) carries the allocation
+/// decision from lowering; the un-annotated always-heap ops are the rest.
+/// Δ-3: reads the single authority (`delta::op_delta_effect.produces`).
+fn op_produces_heap(op: &Op) -> bool {
+    crate::delta::op_delta_effect(op, &BorrowArgs::new())
+        .produces
+        .is_some()
 }
 
 /// Names of variables that escape by appearing in an owner position
 /// (argumento de chamada, embebimento noutro objecto, alias directo).
+/// Δ-3: the move/alias positions come from the single authority
+/// (`delta::op_delta_effect`); the arena operands are a reclamation-side
+/// caveat — arena-managed objects are freed by the arena reset, not by
+/// Auto-Drop (the Δ judgment borrows them; only `sess$*` code has them, and
+/// Δ skips those by name).
 fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     let mut mark = |a: &Atom| {
         if let Atom::Var(n) = a {
             esc.insert(n.clone());
         }
     };
+    let e = crate::delta::op_delta_effect(op, ba);
+    for a in &e.moves {
+        mark(a);
+    }
+    if let Some(a) = e.alias {
+        mark(a); // alias directo `let y = x`
+    }
+    if let Some(a) = e.nonstrict {
+        mark(a); // the receiving closure of an indirect call changes hands
+    }
     match op {
-        Op::Atom(a) => mark(a), // alias directo `let y = x`
-        // a direct call moves the arguments into the callee — except those that
-        // it only borrows (pure borrow), which the caller retains and frees
-        Op::CallDirect(g, xs) => {
-            let borrow = ba.get(g);
-            for (i, a) in xs.iter().enumerate() {
-                if borrow.is_none_or(|bs| !bs.contains(&i)) {
-                    mark(a);
-                }
-            }
-        }
-        Op::CallClosure(_, xs) => xs.iter().for_each(&mut mark),
-        Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().for_each(&mut mark),
-        Op::MakeRecord { fields, .. } | Op::UpdateRecord { fields, .. } => {
-            fields.iter().for_each(|(_, a)| mark(a))
-        }
-        Op::MakeClosure { captures, .. } => captures.iter().for_each(&mut mark),
-        // arenas: their objects (arena/cell/closure) are managed by the arena
-        // reset, not by Auto-Drop — they are marked as escape to ignore them.
-        // the arena/parent are managed by the reset; the closure, however, is a heap
-        // normal heap that `withArena` only *borrows* (calls it and returns) —
-        // doesn't escape, is reclaimable after the call (see `fv_op`).
+        // arenas: arena/cell/closure objects are managed by the arena reset —
+        // they are marked as escape to ignore them (see the Δ-3 note above)
         Op::WithArena { parent, .. } => parent.iter().for_each(&mut mark),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => mark(a),
         Op::Promote(t, c) => {
             mark(t);
             mark(c);
         }
-        Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().for_each(&mut mark),
         _ => {}
-    }
-    // the receiving closure of an indirect call also changes hands
-    if let Op::CallClosure(c, _) = op {
-        mark(c);
-    }
-}
-
-fn scan_op_escapes_ret(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
-    scan_op_escapes(op, ba, esc);
-    // the returned value escapes
-    if let Op::Atom(Atom::Var(n)) = op {
-        esc.insert(n.clone());
     }
 }
 
@@ -3212,13 +3326,11 @@ fn scan_op_escapes_ret(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
 /// `drop_ty` maps each droppable to its `data`-type name (for the deep-drop).
 fn insert_drops(
     mut f: CoreFn,
-    heap_ret: &HashSet<String>,
     ba: &BorrowArgs,
     drop_ty: &HashMap<String, Option<String>>,
-    enum_cons: &HashSet<String>,
     recinfo: &RecordInfo,
 ) -> CoreFn {
-    let drp = droppable_vars(&f, heap_ret, ba, enum_cons);
+    let drp = droppable_vars(&f, ba);
     if drp.is_empty() {
         return f;
     }
@@ -3228,9 +3340,11 @@ fn insert_drops(
         ba,
         drop_ty,
         recinfo,
-        heap_ret,
     };
-    let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0)))));
+    let body = std::mem::replace(
+        &mut f.body,
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+    );
     f.body = e.go(body, &HashSet::new());
     f
 }
@@ -3241,7 +3355,6 @@ struct Elab<'a> {
     ba: &'a BorrowArgs,
     drop_ty: &'a HashMap<String, Option<String>>,
     recinfo: &'a RecordInfo,
-    heap_ret: &'a HashSet<String>,
 }
 
 /// `true` if any tail exit of `t` yields a value that could be a HEAP pointer
@@ -3251,21 +3364,16 @@ struct Elab<'a> {
 /// scrutinee is safe — a heap result may ALIAS into the scrutinee's payload (e.g.
 /// `case xs of Cons y ys -> inner y`, returning a heap sub-object of the borrowed
 /// `y`), and deep-dropping the scrutinee would then free a value that escapes.
-fn result_may_be_heap(t: &Term, recinfo: &RecordInfo, heap_ret: &HashSet<String>) -> bool {
+fn result_may_be_heap(t: &Term, recinfo: &RecordInfo) -> bool {
     match t {
-        Term::Ret(rhs) => match rhs {
-            Rhs::Op(op) => op_result_may_be_heap(op, recinfo, heap_ret),
+        Term::Ret(rhs, _) => match rhs {
+            Rhs::Op(op) => op_result_may_be_heap(op, recinfo),
             Rhs::If(_, th, el) => {
-                result_may_be_heap(th, recinfo, heap_ret)
-                    || result_may_be_heap(el, recinfo, heap_ret)
+                result_may_be_heap(th, recinfo) || result_may_be_heap(el, recinfo)
             }
-            Rhs::Case(_, arms) => arms
-                .iter()
-                .any(|(_, b)| result_may_be_heap(b, recinfo, heap_ret)),
+            Rhs::Case(_, arms) => arms.iter().any(|(_, b)| result_may_be_heap(b, recinfo)),
         },
-        Term::Let(_, _, body) | Term::Drop(_, _, body) => {
-            result_may_be_heap(body, recinfo, heap_ret)
-        }
+        Term::Let(_, _, _, body) | Term::Drop(_, _, _, body) => result_may_be_heap(body, recinfo),
     }
 }
 
@@ -3287,11 +3395,10 @@ fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
         | Op::ArenaAlloc(x)
         | Op::ArenaMark(x)
         | Op::ArenaRelease(x) => hit(x),
-        Op::Prim(_, x, y)
-        | Op::PrimF(_, x, y)
-        | Op::StoreRaw(x, _, y)
-        | Op::Promote(x, y) => hit(x) || hit(y),
-        Op::CallDirect(_, xs)
+        Op::Prim(_, x, y) | Op::PrimF(_, x, y) | Op::StoreRaw(x, _, y) | Op::Promote(x, y) => {
+            hit(x) || hit(y)
+        }
+        Op::CallDirect(_, xs, _)
         | Op::MakeTuple(xs)
         | Op::MakeCon { args: xs, .. }
         | Op::RtCall { args: xs, .. }
@@ -3308,9 +3415,9 @@ fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
 /// `true` if any variable in `set` is referenced anywhere in `t`.
 fn term_mentions_any(t: &Term, set: &HashSet<String>) -> bool {
     match t {
-        Term::Let(_, rhs, body) => rhs_mentions_any(rhs, set) || term_mentions_any(body, set),
-        Term::Drop(v, _, body) => set.contains(v) || term_mentions_any(body, set),
-        Term::Ret(rhs) => rhs_mentions_any(rhs, set),
+        Term::Let(_, rhs, _, body) => rhs_mentions_any(rhs, set) || term_mentions_any(body, set),
+        Term::Drop(v, _, _, body) => set.contains(v) || term_mentions_any(body, set),
+        Term::Ret(rhs, _) => rhs_mentions_any(rhs, set),
     }
 }
 
@@ -3321,15 +3428,13 @@ fn rhs_mentions_any(rhs: &Rhs, set: &HashSet<String>) -> bool {
         Rhs::If(c, th, el) => {
             atom_hit(c) || term_mentions_any(th, set) || term_mentions_any(el, set)
         }
-        Rhs::Case(s, arms) => {
-            atom_hit(s) || arms.iter().any(|(_, b)| term_mentions_any(b, set))
-        }
+        Rhs::Case(s, arms) => atom_hit(s) || arms.iter().any(|(_, b)| term_mentions_any(b, set)),
     }
 }
 
 /// The scalar-proving half of `result_may_be_heap`: returns `false` only for ops
 /// whose result is definitely NOT a heap pointer. Default is `true` (heap).
-fn op_result_may_be_heap(op: &Op, recinfo: &RecordInfo, heap_ret: &HashSet<String>) -> bool {
+fn op_result_may_be_heap(op: &Op, recinfo: &RecordInfo) -> bool {
     match op {
         // proven scalars (an i64 value, never a pointer into the scrutinee):
         Op::Atom(Atom::Int(_))
@@ -3344,11 +3449,13 @@ fn op_result_may_be_heap(op: &Op, recinfo: &RecordInfo, heap_ret: &HashSet<Strin
         | Op::StoreRaw(..) => false,
         // a field read is scalar iff the field itself is not a heap object.
         Op::Field { name, .. } => recinfo.named_field_is_heap(name),
-        // an enum immediate is a tagged i64; a boxed constructor is a pointer.
-        Op::MakeCon { con, .. } => !recinfo.is_enum_con(con),
-        // a call is scalar iff its result type is not heap (borrowed args do not
-        // retain, so a scalar result cannot alias the scrutinee).
-        Op::CallDirect(g, _) => heap_ret.contains(g),
+        // Phase A′: the lowering annotation decides — `Some` = a boxed `data`
+        // value (a pointer); `None` = an unboxed enum immediate (a tagged i64).
+        Op::MakeCon { ty, .. } => ty.is_some(),
+        // Phase A′: a call is scalar iff the callee's result was not annotated
+        // as heap at lowering (borrowed args do not retain, so a scalar result
+        // cannot alias the scrutinee).
+        Op::CallDirect(_, _, ty) => ty.is_some(),
         // everything else (Atom(Var) of unknown origin, allocations, closures,
         // raw loads, indirect/runtime/FFI calls, arenas) → conservatively heap.
         _ => true,
@@ -3395,9 +3502,19 @@ impl Elab<'_> {
     /// (`alias` contains one of its operands) the value is bound first, then `s`
     /// is dropped, then returned; when it does NOT (`ret loop (build …)`), `s` is
     /// dropped BEFORE the tail op, keeping a tail call in tail position (TCO).
-    fn place_deep_drop(&mut self, t: Term, s: &str, ty: &Option<String>, alias: &HashSet<String>) -> Term {
+    fn place_deep_drop(
+        &mut self,
+        t: Term,
+        s: &str,
+        ty: &Option<String>,
+        alias: &HashSet<String>,
+    ) -> Term {
+        // the drop anchors at the node it precedes (Δ-5): the position-level
+        // coherence cross-check reads the anchor against the front-end's
+        // `DropPoint` span (NO_SPAN anchors are unverifiable).
+        let sp = term_span(&t);
         match t {
-            Term::Ret(rhs) => match rhs {
+            Term::Ret(rhs, _) => match rhs {
                 Rhs::Op(op) => {
                     if op_mentions_any(&op, alias) {
                         // the tail op reads the payload → compute it, then drop.
@@ -3405,40 +3522,53 @@ impl Elab<'_> {
                         Term::Let(
                             tmp.clone(),
                             Rhs::Op(op),
+                            sp,
                             Box::new(Term::Drop(
                                 s.to_string(),
                                 ty.clone(),
-                                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))))),
+                                sp,
+                                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))), sp)),
                             )),
                         )
                     } else {
                         // independent of the payload → drop first (preserves a
                         // tail call: `drop s; ret f args`).
-                        Term::Drop(s.to_string(), ty.clone(), Box::new(Term::Ret(Rhs::Op(op))))
+                        Term::Drop(
+                            s.to_string(),
+                            ty.clone(),
+                            sp,
+                            Box::new(Term::Ret(Rhs::Op(op), sp)),
+                        )
                     }
                 }
                 // the exits live in the branches → recurse into each.
                 Rhs::If(c, th, el) => {
                     let th = self.place_deep_drop(*th, s, ty, alias);
                     let el = self.place_deep_drop(*el, s, ty, alias);
-                    Term::Ret(Rhs::If(c, Box::new(th), Box::new(el)))
+                    Term::Ret(Rhs::If(c, Box::new(th), Box::new(el)), sp)
                 }
                 Rhs::Case(sc, arms) => {
                     let arms = arms
                         .into_iter()
                         .map(|(p, b)| (p, self.place_deep_drop(b, s, ty, alias)))
                         .collect();
-                    Term::Ret(Rhs::Case(sc, arms))
+                    Term::Ret(Rhs::Case(sc, arms), sp)
                 }
             },
             // `let`/`drop` sequence a value into the continuation — not an exit;
             // recurse into the continuation only (the rhs flows into `x`/past it).
-            Term::Let(x, rhs, body) => {
-                Term::Let(x, rhs, Box::new(self.place_deep_drop(*body, s, ty, alias)))
-            }
-            Term::Drop(v, ty2, body) => {
-                Term::Drop(v, ty2, Box::new(self.place_deep_drop(*body, s, ty, alias)))
-            }
+            Term::Let(x, rhs, _, body) => Term::Let(
+                x,
+                rhs,
+                sp,
+                Box::new(self.place_deep_drop(*body, s, ty, alias)),
+            ),
+            Term::Drop(v, ty2, _, body) => Term::Drop(
+                v,
+                ty2,
+                sp,
+                Box::new(self.place_deep_drop(*body, s, ty, alias)),
+            ),
         }
     }
 
@@ -3450,18 +3580,18 @@ impl Elab<'_> {
     /// its use. A sound OVER-approximation: unclear ops are counted as aliasing.
     fn collect_payload_aliases(&self, t: &Term, alias: &mut HashSet<String>) {
         match t {
-            Term::Let(x, rhs, body) => {
+            Term::Let(x, rhs, _, body) => {
                 let (heapish, mentions) = match rhs {
                     Rhs::Op(op) => (
-                        op_result_may_be_heap(op, self.recinfo, self.heap_ret),
+                        op_result_may_be_heap(op, self.recinfo),
                         op_mentions_any(op, alias),
                     ),
                     Rhs::If(_, th, el) => {
                         self.collect_payload_aliases(th, alias);
                         self.collect_payload_aliases(el, alias);
                         (
-                            result_may_be_heap(th, self.recinfo, self.heap_ret)
-                                || result_may_be_heap(el, self.recinfo, self.heap_ret),
+                            result_may_be_heap(th, self.recinfo)
+                                || result_may_be_heap(el, self.recinfo),
                             term_mentions_any(th, alias) || term_mentions_any(el, alias),
                         )
                     }
@@ -3471,7 +3601,7 @@ impl Elab<'_> {
                         }
                         (
                             arms.iter()
-                                .any(|(_, b)| result_may_be_heap(b, self.recinfo, self.heap_ret)),
+                                .any(|(_, b)| result_may_be_heap(b, self.recinfo)),
                             arms.iter().any(|(_, b)| term_mentions_any(b, alias)),
                         )
                     }
@@ -3481,8 +3611,8 @@ impl Elab<'_> {
                 }
                 self.collect_payload_aliases(body, alias);
             }
-            Term::Drop(_, _, body) => self.collect_payload_aliases(body, alias),
-            Term::Ret(rhs) => match rhs {
+            Term::Drop(_, _, _, body) => self.collect_payload_aliases(body, alias),
+            Term::Ret(rhs, _) => match rhs {
                 Rhs::Op(_) => {}
                 Rhs::If(_, th, el) => {
                     self.collect_payload_aliases(th, alias);
@@ -3501,39 +3631,40 @@ impl Elab<'_> {
     /// `live_out` = droppables live *after* `t` (to be freed by the context
     /// enclosing), which `t` must not free.
     fn go(&mut self, t: Term, live_out: &HashSet<String>) -> Term {
+        let sp = term_span(&t);
         match t {
-            Term::Drop(v, ty, body) => {
+            Term::Drop(v, ty, _, body) => {
                 let b = self.go(*body, live_out);
-                Term::Drop(v, ty, Box::new(b))
+                Term::Drop(v, ty, sp, Box::new(b))
             }
-            Term::Ret(rhs) => match rhs {
+            Term::Ret(rhs, _) => match rhs {
                 Rhs::Op(op) => {
                     let mut u = HashSet::new();
                     fv_op(&op, &self.drp, self.ba, &mut u);
                     let dying: Vec<String> =
                         u.into_iter().filter(|v| !live_out.contains(v)).collect();
                     if dying.is_empty() {
-                        return Term::Ret(Rhs::Op(op));
+                        return Term::Ret(Rhs::Op(op), sp);
                     }
                     // introduces a temporary, frees the dying ones, returns it
                     let tmp = self.fresh();
-                    let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))));
+                    let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))), sp);
                     for v in dying {
                         let ty = self.dty(&v);
-                        inner = Term::Drop(v, ty, Box::new(inner));
+                        inner = Term::Drop(v, ty, term_span(&inner), Box::new(inner));
                     }
-                    Term::Let(tmp, Rhs::Op(op), Box::new(inner))
+                    Term::Let(tmp, Rhs::Op(op), sp, Box::new(inner))
                 }
                 Rhs::If(c, th, el) => {
                     let (th2, el2) = self.branches2(*th, *el, live_out);
-                    Term::Ret(Rhs::If(c, Box::new(th2), Box::new(el2)))
+                    Term::Ret(Rhs::If(c, Box::new(th2), Box::new(el2)), sp)
                 }
                 Rhs::Case(s, arms) => {
                     let arms2 = self.case_arms(&s, arms, live_out);
-                    Term::Ret(Rhs::Case(s, arms2))
+                    Term::Ret(Rhs::Case(s, arms2), sp)
                 }
             },
-            Term::Let(x, rhs, body) => match rhs {
+            Term::Let(x, rhs, _, body) => match rhs {
                 Rhs::Op(op) => {
                     let mut fvb = HashSet::new();
                     fv_drop(&body, &self.drp, self.ba, &mut fvb);
@@ -3551,9 +3682,9 @@ impl Elab<'_> {
                     let mut inner = body2;
                     for v in dying {
                         let ty = self.dty(&v);
-                        inner = Term::Drop(v, ty, Box::new(inner));
+                        inner = Term::Drop(v, ty, term_span(&inner), Box::new(inner));
                     }
-                    Term::Let(x, Rhs::Op(op), Box::new(inner))
+                    Term::Let(x, Rhs::Op(op), sp, Box::new(inner))
                 }
                 Rhs::If(c, th, el) => {
                     let mut fvb = HashSet::new();
@@ -3562,7 +3693,12 @@ impl Elab<'_> {
                     let mut lo = live_out.clone();
                     lo.extend(fvb);
                     let (th2, el2) = self.branches2(*th, *el, &lo);
-                    Term::Let(x, Rhs::If(c, Box::new(th2), Box::new(el2)), Box::new(body2))
+                    Term::Let(
+                        x,
+                        Rhs::If(c, Box::new(th2), Box::new(el2)),
+                        sp,
+                        Box::new(body2),
+                    )
                 }
                 Rhs::Case(s, arms) => {
                     let mut fvb = HashSet::new();
@@ -3571,7 +3707,7 @@ impl Elab<'_> {
                     let mut lo = live_out.clone();
                     lo.extend(fvb);
                     let arms2 = self.case_arms(&s, arms, &lo);
-                    Term::Let(x, Rhs::Case(s, arms2), Box::new(body2))
+                    Term::Let(x, Rhs::Case(s, arms2), sp, Box::new(body2))
                 }
             },
         }
@@ -3588,12 +3724,14 @@ impl Elab<'_> {
         let mut el2 = self.go(el, live_out);
         for v in fth.difference(&fel) {
             if !live_out.contains(v) {
-                el2 = Term::Drop(v.clone(), self.dty(v), Box::new(el2));
+                let sp = term_span(&el2);
+                el2 = Term::Drop(v.clone(), self.dty(v), sp, Box::new(el2));
             }
         }
         for v in fel.difference(&fth) {
             if !live_out.contains(v) {
-                th2 = Term::Drop(v.clone(), self.dty(v), Box::new(th2));
+                let sp = term_span(&th2);
+                th2 = Term::Drop(v.clone(), self.dty(v), sp, Box::new(th2));
             }
         }
         (th2, el2)
@@ -3645,8 +3783,7 @@ impl Elab<'_> {
             // computed), not the head, so a borrowed scalar field (`a y`) is read
             // before its owner is freed.
             if let Some(s) = &scrut_drop {
-                let deep_safe =
-                    !transfers[i] && !result_may_be_heap(&b, self.recinfo, self.heap_ret);
+                let deep_safe = !transfers[i] && !result_may_be_heap(&b, self.recinfo);
                 if deep_safe {
                     let ty = self.dty(s);
                     // the payload-alias set: the scrutinee, its heap/poly field
@@ -3664,13 +3801,14 @@ impl Elab<'_> {
                     self.collect_payload_aliases(&b, &mut alias);
                     b = self.place_deep_drop(b, s, &ty, &alias);
                 } else {
-                    b = Term::Drop(s.clone(), None, Box::new(b));
+                    b = Term::Drop(s.clone(), None, term_span(&b), Box::new(b));
                 }
             }
             // cross-arm balancing: droppable used in another arm but not this one
             for v in union.difference(&fvs[i]) {
                 if !live_out.contains(v) {
-                    b = Term::Drop(v.clone(), self.dty(v), Box::new(b));
+                    let sp = term_span(&b);
+                    b = Term::Drop(v.clone(), self.dty(v), sp, Box::new(b));
                 }
             }
             out.push((pat, b));
@@ -3679,92 +3817,23 @@ impl Elab<'_> {
     }
 }
 
-// --- Core printing (`--emit core`) ---
-
-pub fn dump(fns: &[CoreFn]) -> String {
-    let mut s = String::new();
-    for f in fns {
-        let hdr = if f.is_closure {
-            format!("[env {}]", f.captures.join(" "))
-        } else {
-            String::new()
-        };
-        s.push_str(&format!(
-            "{} {}{} =\n",
-            f.name,
-            hdr,
-            f.params.iter().map(|p| format!("{p} ")).collect::<String>()
-        ));
-        dump_term(&f.body, 1, &mut s);
-        s.push('\n');
-    }
-    s
-}
-
-fn indent(n: usize, s: &mut String) {
+pub(crate) fn indent(n: usize, s: &mut String) {
     for _ in 0..n {
         s.push_str("  ");
     }
 }
 
-fn dump_term(t: &Term, n: usize, s: &mut String) {
-    match t {
-        Term::Let(name, rhs, body) => {
-            indent(n, s);
-            s.push_str(&format!("let {name} = "));
-            dump_rhs(rhs, n, s);
-            s.push('\n');
-            dump_term(body, n, s);
-        }
-        Term::Drop(v, ty, body) => {
-            indent(n, s);
-            match ty {
-                Some(t) => s.push_str(&format!("drop {v} : {t}\n")),
-                None => s.push_str(&format!("drop {v}\n")),
-            }
-            dump_term(body, n, s);
-        }
-        Term::Ret(rhs) => {
-            indent(n, s);
-            s.push_str("ret ");
-            dump_rhs(rhs, n, s);
-            s.push('\n');
-        }
-    }
-}
-
-fn dump_rhs(rhs: &Rhs, n: usize, s: &mut String) {
-    match rhs {
-        Rhs::Op(op) => s.push_str(&dump_op(op)),
-        Rhs::If(c, t, e) => {
-            s.push_str(&format!("if {} then\n", atom(c)));
-            dump_term(t, n + 1, s);
-            indent(n, s);
-            s.push_str("else\n");
-            dump_term(e, n + 1, s);
-        }
-        Rhs::Case(sc, arms) => {
-            s.push_str(&format!("case {} of\n", atom(sc)));
-            for (p, body) in arms {
-                indent(n + 1, s);
-                s.push_str(&format!("{} ->\n", cpat(p)));
-                dump_term(body, n + 2, s);
-            }
-        }
-    }
-}
-
-fn dump_op(op: &Op) -> String {
+pub(crate) fn dump_op(op: &Op) -> String {
     match op {
         Op::Atom(a) => atom(a),
         Op::StoreRaw(p, off, val) => format!("store {}[{off}] = {}", atom(p), atom(val)),
         Op::FuncAddr(n) => format!("&{n}"),
         Op::Prim(o, a, b) | Op::PrimF(o, a, b) => format!("{o} {} {}", atom(a), atom(b)),
-        Op::CallDirect(f, xs) => format!("call {f}{}", args(xs)),
+        Op::CallDirect(f, xs, _) => format!("call {f}{}", args(xs)),
         Op::CallClosure(c, xs) => format!("callclo {}{}", atom(c), args(xs)),
         Op::MakeClosure { func, captures } => format!("closure {func}{}", args(captures)),
         Op::MakeTuple(xs) => format!("tuple{}", args(xs)),
-        Op::MakeRecord { con, fields } => format!(
+        Op::MakeRecord { con, fields, .. } => format!(
             "record {con} {{{}}}",
             fields
                 .iter()
@@ -3784,7 +3853,7 @@ fn dump_op(op: &Op) -> String {
                 .map(|(f, a)| format!(" {f} = {}", atom(a)))
                 .collect::<String>()
         ),
-        Op::MakeCon { con, args } => format!("con {con}{}", self::args(args)),
+        Op::MakeCon { con, args, .. } => format!("con {con}{}", self::args(args)),
         Op::Field { name, rec } => format!("field {name} {}", atom(rec)),
         Op::LoadRaw(a, off) => format!("loadraw {}+{off}", atom(a)),
         Op::PutStrLn(a) => format!("putStrLn {}", atom(a)),
@@ -3808,11 +3877,11 @@ fn dump_op(op: &Op) -> String {
     }
 }
 
-fn args(xs: &[Atom]) -> String {
+pub(crate) fn args(xs: &[Atom]) -> String {
     xs.iter().map(|a| format!(" {}", atom(a))).collect()
 }
 
-fn atom(a: &Atom) -> String {
+pub(crate) fn atom(a: &Atom) -> String {
     match a {
         Atom::Int(n) => n.to_string(),
         Atom::Float(f) => format!("{f}f"),
@@ -3821,7 +3890,7 @@ fn atom(a: &Atom) -> String {
     }
 }
 
-fn cpat(p: &CPat) -> String {
+pub(crate) fn cpat(p: &CPat) -> String {
     match p {
         CPat::Int(n) => n.to_string(),
         CPat::Var(n) => n.clone(),

@@ -71,6 +71,33 @@ jobs:
       - name: axionc vs the GHC oracle
         run: ./scripts/differential.sh
 
+  # Δ (docs/delta-design.md §8): the linearity-judgment gates. Per the §7
+  # contract the checker runs after every Core pass that exists; today the
+  # descent is a single pass, so the gates are: the snapshot oracle (every
+  # fixture's annotated `--emit core` dump byte-matches the stored snapshot)
+  # and the checker gate (Δ accepts every fixture that reaches the Core; the
+  # front-end rejections never reach it). The unit suite in the `axionc` job
+  # additionally locks the dump format (annotated_dump_locks_format) and the
+  # judgment's behavior (delta::tests, incl. the Δ-3 coherence cross-check).
+  # bench runs the same kernels on both Axion backends vs C/Rust and requires
+  # the results to agree — a runtime correctness gate, not a timing assertion.
+  delta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Snapshot oracle (132 fixtures, --emit core)
+        run: ./scripts/dump-oracle.sh
+
+      - name: Δ checker gate (103 accepted; coherence active)
+        run: ./scripts/check-delta.sh
+
+      - name: Bench — Axion dev/rel vs C/Rust agree on every kernel
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang
+          ./scripts/bench.sh
+
   # Sanitizers (§2/§11): GC-free memory safety has to actually be safe. The native
   # runtime (--release LLVM IR + C runtime) runs under AddressSanitizer (zero
   # use-after-free/double-free across all fixtures) and LeakSanitizer (allocs==frees

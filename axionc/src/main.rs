@@ -17,6 +17,7 @@ mod ast;
 mod check;
 mod codegen;
 mod core;
+mod delta;
 #[allow(dead_code)]
 mod diag;
 mod ffi;
@@ -44,6 +45,7 @@ enum Emit {
     InPlace,
     Arenas,
     Core,
+    Delta,
     Clif,
     Llvm,
 }
@@ -58,6 +60,7 @@ enum Backend {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut check_only = false;
+    let mut check_delta = false;
     let mut backend = Backend::Interp;
     let mut emit = Emit::Text;
     let mut path: Option<String> = None;
@@ -66,6 +69,7 @@ fn main() -> ExitCode {
     while i < args.len() {
         match args[i].as_str() {
             "--check" => check_only = true,
+            "--check-delta" => check_delta = true,
             "--release" => backend = Backend::Llvm,
             "--backend" => {
                 i += 1;
@@ -87,11 +91,12 @@ fn main() -> ExitCode {
                     Some("inplace") => emit = Emit::InPlace,
                     Some("arenas") => emit = Emit::Arenas,
                     Some("core") => emit = Emit::Core,
+                    Some("delta") => emit = Emit::Delta,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
                         eprintln!(
-                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'clif' or 'llvm'"
+                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'delta', 'clif' or 'llvm'"
                         );
                         return ExitCode::from(2);
                     }
@@ -174,8 +179,66 @@ fn main() -> ExitCode {
         analysis.inplace.iter().map(|ip| ip.span).collect();
 
     // --- Axion Core IR: dump da baixada ANF (partilhada pelos backends) ---
+    if check_delta {
+        // Δ-1 (report-only): the linearity judgment over the annotated Core,
+        // plus the Δ-3 coherence cross-check against the front-end DropPoints.
+        let lowered = core::lower_with(&module, &inplace);
+        let mut errs = delta::check_all(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
+        errs.extend(delta::check_drop_coherence(
+            &lowered.fns,
+            &lowered.borrow_args,
+            &lowered.recinfo,
+            &analysis.drops,
+        ));
+        if errs.is_empty() {
+            println!("Δ ok: the Core satisfies the linearity judgment.");
+            return ExitCode::SUCCESS;
+        }
+        for e in &errs {
+            // Δ-5: span-ful diagnostics — the violation's anchor rendered
+            // `path:line:col` plus the source line, like the front-end diags.
+            match e.span {
+                Some(sp) if sp != core::NO_SPAN => {
+                    let (l, c) = lines.pos(sp.0);
+                    let line = src.lines().nth(l.saturating_sub(1)).unwrap_or("");
+                    eprintln!("Δ {}: {}  @ {path}:{l}:{c}: {line}", e.func, e.msg);
+                }
+                _ => eprintln!("Δ {}: {}", e.func, e.msg),
+            }
+        }
+        eprintln!("Δ FAILED: {} violation(s).", errs.len());
+        return ExitCode::FAILURE;
+    }
+
     if emit == Emit::Core {
-        print!("{}", core::dump(&core::lower(&module, &inplace)));
+        // Δ-2: the annotated dump — `core::dump` plus the live-resource env
+        // (Δ) on every `let`/`ret` (report-only; same output shape as `dump`
+        // for unannotated lines).
+        let lowered = core::lower_with(&module, &inplace);
+        print!(
+            "{}",
+            delta::dump_annotated(&lowered.fns, &lowered.borrow_args, &lowered.recinfo)
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    if emit == Emit::Delta {
+        // Δ-4: the judgment's per-function verdicts plus the resource-life
+        // facts the annotated dump cannot show (drops in the judged Core,
+        // never-used `%1` params, coherence agreement). Report-only: the exit
+        // code is unaffected — `--check-delta` is the verdict channel.
+        let lowered = core::lower_with(&module, &inplace);
+        print!(
+            "{}",
+            delta::dump_delta(
+                &lowered.fns,
+                &lowered.borrow_args,
+                &lowered.recinfo,
+                &analysis.drops,
+                &lines,
+                &src,
+            )
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -257,7 +320,10 @@ fn main() -> ExitCode {
 
 /// Runs the front-end (lex → layout → parse → check → infer), accumulating
 /// diagnostics and returning the `free`s inserted by Auto-Drop.
-fn compile_front(src: &str, diags: &mut Diagnostics) -> (Option<ast::Module>, check::Analysis) {
+pub(crate) fn compile_front(
+    src: &str,
+    diags: &mut Diagnostics,
+) -> (Option<ast::Module>, check::Analysis) {
     let tokens = match lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {
@@ -809,7 +875,9 @@ fn derive_eq(d: &ast::DataDecl) -> String {
                 format!("if eq {a} {b} then {conj} else False")
             };
         }
-        s.push_str(&format!("    {xpat} -> case y of\n      {ypat} -> {conj}\n"));
+        s.push_str(&format!(
+            "    {xpat} -> case y of\n      {ypat} -> {conj}\n"
+        ));
         if multi {
             s.push_str("      _ -> False\n");
         }

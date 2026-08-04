@@ -941,14 +941,14 @@ fn deep_drop_of_owned_scrutinee_is_skipped_when_result_aliases_payload() {
     // SHALLOW scrutinee free, so all three executors agree (no native double-free).
     let fx = "poly_payload_borrow_return.axi";
     let interp = axionc().arg(fixture(fx)).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&interp.stdout), "3\n", "{fx} interp");
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        "3\n",
+        "{fx} interp"
+    );
     for backend in [["--backend", "cranelift"], ["--release", ""]] {
         let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
-        let native = axionc()
-            .args(&args)
-            .arg(fixture(fx))
-            .output()
-            .unwrap();
+        let native = axionc().args(&args).arg(fixture(fx)).output().unwrap();
         assert!(
             native.status.success(),
             "{fx} {args:?} crashed (double-free regression): {}",
@@ -962,7 +962,10 @@ fn deep_drop_of_owned_scrutinee_is_skipped_when_result_aliases_payload() {
     }
     // the scrutinee drops must be SHALLOW (`drop xs`, no deep `: List$P` key), or
     // the native backend would deep-drop and double-free the returned sub-object.
-    let core = axionc().args(["--emit", "core", &fixture(fx)]).output().unwrap();
+    let core = axionc()
+        .args(["--emit", "core", &fixture(fx)])
+        .output()
+        .unwrap();
     let core = String::from_utf8_lossy(&core.stdout);
     assert!(
         !core.contains("drop xs : List"),
@@ -985,7 +988,9 @@ fn tco_preserved_when_deep_drop_precedes_a_tail_call() {
     // temp before a trailing drop (`let _d = call loop …; drop xs; ret _d`).
     assert!(
         core.contains("drop xs : List$P")
-            && core.lines().any(|l| l.trim_start().starts_with("ret call loop")),
+            && core
+                .lines()
+                .any(|l| l.trim_start().starts_with("ret call loop")),
         "expected the deep drop BEFORE a tail `ret call loop` (TCO preserved), got:\n{core}"
     );
     assert!(
@@ -1897,7 +1902,11 @@ fn float_arithmetic_agrees_across_backends() {
             "{fx} interp: {}",
             String::from_utf8_lossy(&interp.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&interp.stdout), expected, "{fx} interp");
+        assert_eq!(
+            String::from_utf8_lossy(&interp.stdout),
+            expected,
+            "{fx} interp"
+        );
 
         let cranelift = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])
@@ -1949,7 +1958,11 @@ fn agree_across_backends(fx: &str, expected: &str) {
         "{fx} interp: {}",
         String::from_utf8_lossy(&interp.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&interp.stdout), expected, "{fx} interp");
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        expected,
+        "{fx} interp"
+    );
     let cl = axionc()
         .args(["--backend", "cranelift", &fixture(fx)])
         .output()
@@ -1959,7 +1972,11 @@ fn agree_across_backends(fx: &str, expected: &str) {
         "{fx} cranelift: {}",
         String::from_utf8_lossy(&cl.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&cl.stdout), expected, "{fx} cranelift");
+    assert_eq!(
+        String::from_utf8_lossy(&cl.stdout),
+        expected,
+        "{fx} cranelift"
+    );
     let llvm = axionc().args(["--release", &fixture(fx)]).output().unwrap();
     assert!(
         llvm.status.success(),
@@ -2031,7 +2048,10 @@ fn redundant_pattern_after_catch_all_warns_ax0203() {
         .args(["--check", &fixture("exhaustive_redundant.axi")])
         .output()
         .unwrap();
-    assert!(out.status.success(), "AX0203 is a warning, should still compile");
+    assert!(
+        out.status.success(),
+        "AX0203 is a warning, should still compile"
+    );
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("AX0203"), "expected AX0203, output: {text}");
 }

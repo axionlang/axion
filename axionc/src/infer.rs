@@ -342,9 +342,7 @@ fn type_contains_var(t: &Type, var: &str) -> bool {
     match t {
         Type::Var(v) => v == var,
         Type::App(f, a) => type_contains_var(f, var) || type_contains_var(a, var),
-        Type::Arrow { from, to, .. } => {
-            type_contains_var(from, var) || type_contains_var(to, var)
-        }
+        Type::Arrow { from, to, .. } => type_contains_var(from, var) || type_contains_var(to, var),
         Type::Tuple(ts) => ts.iter().any(|x| type_contains_var(x, var)),
         _ => false,
     }
@@ -532,7 +530,10 @@ impl<'a> Infer<'a> {
         );
         // unary Float math (§4): sqrt / floor / abs :: Float -> Float
         for f in ["sqrt", "floor", "abs"] {
-            env.insert(f.into(), mono(Ty::Fun(Box::new(float()), Box::new(float()))));
+            env.insert(
+                f.into(),
+                mono(Ty::Fun(Box::new(float()), Box::new(float()))),
+            );
         }
         // ++ :: forall a. a -> a -> a  (polymorphic concatenation; without typeclasses
         // yet, the Semigroup-ish type only forces both sides to match —
@@ -913,9 +914,7 @@ impl<'a> Infer<'a> {
                 // built-in Num/Ord operator over Int → keep the operator (no rewrite).
                 Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Int" => {}
                 // concrete type WITH instance → resolves to the direct impl.
-                Ty::Con(name, args)
-                    if instances.contains(&(o.class.clone(), name.clone())) =>
-                {
+                Ty::Con(name, args) if instances.contains(&(o.class.clone(), name.clone())) => {
                     let base = crate::ast::method_impl_name(&o.method, &name);
                     // parametric instance: resolve to the element-specialized impl
                     // (`eq$Maybe` → `eq$Maybe$Int`) and seed that specialization.
@@ -1130,8 +1129,20 @@ impl<'a> Infer<'a> {
             let finite = self.data_cons.get(head).cloned();
             let infinite = matches!(
                 head,
-                "Int" | "Float" | "String" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32"
-                    | "I64" | "Word" | "Byte" | "Char"
+                "Int"
+                    | "Float"
+                    | "String"
+                    | "U8"
+                    | "U16"
+                    | "U32"
+                    | "U64"
+                    | "I8"
+                    | "I16"
+                    | "I32"
+                    | "I64"
+                    | "Word"
+                    | "Byte"
+                    | "Char"
             );
             if finite.is_none() && !infinite {
                 continue; // not a matchable scrutinee we reason about (IO, Arena, …)
@@ -1160,15 +1171,25 @@ impl<'a> Infer<'a> {
                 continue;
             }
             if let Some(all) = finite {
-                let missing: Vec<String> =
-                    all.iter().filter(|c| !covered.contains(*c)).cloned().collect();
+                let missing: Vec<String> = all
+                    .iter()
+                    .filter(|c| !covered.contains(*c))
+                    .cloned()
+                    .collect();
                 if !missing.is_empty() {
                     self.diags.push(
                         Diagnostic::error(
                             "AX0202",
-                            format!("non-exhaustive patterns: {} not covered", missing.join(", ")),
+                            format!(
+                                "non-exhaustive patterns: {} not covered",
+                                missing.join(", ")
+                            ),
                         )
-                        .label(span.0, span.1, "this `case` does not cover every constructor")
+                        .label(
+                            span.0,
+                            span.1,
+                            "this `case` does not cover every constructor",
+                        )
                         .with_help(
                             "add the missing constructor arm(s), or a `_` wildcard catch-all.",
                         ),
@@ -1572,11 +1593,8 @@ impl<'a> Infer<'a> {
                     }
                 }
                 // deferred exhaustiveness check (needs the resolved scrutinee type).
-                self.case_uses.push((
-                    ts,
-                    arms.iter().map(|(p, _)| p.clone()).collect(),
-                    *span,
-                ));
+                self.case_uses
+                    .push((ts, arms.iter().map(|(p, _)| p.clone()).collect(), *span));
                 rty.unwrap_or_else(|| self.fresh())
             }
             Expr::Tuple(es, _) => Ty::Tuple(es.iter().map(|e| self.infer_expr(env, e)).collect()),

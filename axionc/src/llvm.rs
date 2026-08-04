@@ -241,12 +241,12 @@ fn collect_strings(t: &Term, out: &mut HashMap<String, usize>) {
         }
     };
     match t {
-        Term::Let(_, rhs, body) => {
+        Term::Let(_, rhs, _, body) => {
             collect_rhs(rhs, out, &mut atom);
             collect_strings(body, out);
         }
-        Term::Drop(_, _, body) => collect_strings(body, out),
-        Term::Ret(rhs) => collect_rhs(rhs, out, &mut atom),
+        Term::Drop(_, _, _, body) => collect_strings(body, out),
+        Term::Ret(rhs, _) => collect_rhs(rhs, out, &mut atom),
     }
 }
 
@@ -284,7 +284,7 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
         Op::FuncAddr(_) => vec![],
         Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::Promote(a, b) => vec![a, b],
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => vec![a],
-        Op::CallDirect(_, xs) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
+        Op::CallDirect(_, xs, _) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
             xs.iter().collect()
         }
         Op::CallClosure(c, xs) => std::iter::once(c).chain(xs).collect(),
@@ -316,12 +316,12 @@ fn collect_ffi(t: &Term, out: &mut HashMap<String, usize>) {
         }
     }
     match t {
-        Term::Let(_, r, b) => {
+        Term::Let(_, r, _, b) => {
             rhs(r, out);
             collect_ffi(b, out);
         }
-        Term::Drop(_, _, b) => collect_ffi(b, out),
-        Term::Ret(r) => rhs(r, out),
+        Term::Drop(_, _, _, b) => collect_ffi(b, out),
+        Term::Ret(r, _) => rhs(r, out),
     }
 }
 
@@ -504,12 +504,12 @@ impl Emit<'_> {
 
     fn term(&mut self, t: &Term) -> Result<String, String> {
         match t {
-            Term::Let(x, rhs, body) => {
+            Term::Let(x, rhs, _, body) => {
                 let v = self.rhs(rhs)?;
                 self.scope.insert(x.clone(), v);
                 self.term(body)
             }
-            Term::Drop(x, ty, body) => {
+            Term::Drop(x, ty, _, body) => {
                 // deep-drop: recursive destructor if the type has heap fields;
                 // otherwise, flat `free`.
                 let v = self.atom(&Atom::Var(x.clone()))?;
@@ -524,7 +524,7 @@ impl Emit<'_> {
                 }
                 self.term(body)
             }
-            Term::Ret(rhs) => self.rhs(rhs),
+            Term::Ret(rhs, _) => self.rhs(rhs),
         }
     }
 
@@ -741,7 +741,9 @@ impl Emit<'_> {
                     "*." => "fmul",
                     "/." => "fdiv",
                     other => {
-                        return Err(format!("float operator '{other}' does not compile under --release"))
+                        return Err(format!(
+                            "float operator '{other}' does not compile under --release"
+                        ))
                     }
                 };
                 let (rf, z) = (self.val(), self.val());
@@ -772,7 +774,9 @@ impl Emit<'_> {
                     "floor" => "llvm.floor.f64",
                     "abs" => "llvm.fabs.f64",
                     other => {
-                        return Err(format!("float builtin '{other}' does not compile under --release"))
+                        return Err(format!(
+                            "float builtin '{other}' does not compile under --release"
+                        ))
                     }
                 };
                 let x = self.atom(a)?;
@@ -782,7 +786,7 @@ impl Emit<'_> {
                 self.ins(&format!("{z} = bitcast double {r} to i64"));
                 Ok(z)
             }
-            Op::CallDirect(name, args) => {
+            Op::CallDirect(name, args, _) => {
                 let a = self
                     .atoms(args)?
                     .iter()
@@ -823,7 +827,7 @@ impl Emit<'_> {
                 }
                 Ok(ptr)
             }
-            Op::MakeRecord { con, fields } => {
+            Op::MakeRecord { con, fields, .. } => {
                 let slots = self
                     .records
                     .con_slots(con)
@@ -841,7 +845,7 @@ impl Emit<'_> {
                 }
                 Ok(ptr)
             }
-            Op::MakeCon { con, args } => {
+            Op::MakeCon { con, args, .. } => {
                 // unboxed enum constructor (all-nullary type): an immediate tag.
                 if self.records.is_enum_con(con) {
                     return Ok(self.records.con_index(con).to_string());
