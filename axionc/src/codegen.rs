@@ -225,7 +225,6 @@ extern "C" fn axion_arena_mark(arena: *mut u8) -> *mut u8 {
 }
 
 /// Restores the bump-pointer to the mark (reclaims what was allocated since).
-/// Restores the bump-pointer to the mark (reclaims what was allocated since).
 #[allow(clippy::cast_ptr_alignment)]
 extern "C" fn axion_arena_release(mark: *mut u8) {
     // SAFETY: mark was created by axion_arena_mark and is a valid
@@ -239,7 +238,6 @@ extern "C" fn axion_arena_release(mark: *mut u8) {
     st.off = m.off;
 }
 
-/// Copies a cell to arena `target` (saves it from the sub-arena reset).
 /// Copies a cell to arena `target` (saves it from the sub-arena reset).
 #[allow(clippy::cast_ptr_alignment)]
 extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> *mut u8 {
