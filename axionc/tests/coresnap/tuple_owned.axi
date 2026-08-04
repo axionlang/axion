@@ -32,6 +32,7 @@
 
 
 
+
         _ ->
     (a, b) ->
 append xs ys  =
@@ -70,6 +71,7 @@ elem x xs  =
     else
     else
     else
+  else
   else
   else
   else
@@ -124,6 +126,7 @@ length xs  =
   let _t0 = closure lam$0  ; Δ{} · makes heap
       let _t0 = field v a  ; Δ{t}
   let _t0 = > lo hi  ; Δ{}
+  let _t0 = > lo hi  ; Δ{}
       let _t0 = < n 1  ; Δ{}
       let _t0 = < n 1  ; Δ{}
   let _t0 = record Box { v = 1}  ; Δ{} · makes Box
@@ -136,11 +139,13 @@ length xs  =
       let _t1 = con Nil  ; Δ{_t0}
       let _t1 = field v b  ; Δ{t}
     let _t1 = + lo 1  ; Δ{}
+    let _t1 = + lo 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
   let _t1 = record Box { v = 3}  ; Δ{_t0} · makes Box
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{}
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{}
+    let _t2 = call rangeFused _t1 hi c n  ; Δ{}
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
@@ -170,6 +175,7 @@ mapM_ f xs  =
     Nil ->
     Nil ->
 null xs  =
+rangeFused lo hi c n  =
 range lo hi  =
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -194,6 +200,7 @@ range lo hi  =
     ret 1  ; Δ{}
     ret 1  ; Δ{}
       ret call append y _t0  ; Δ{_t0} · moves{_t0} · makes List
+    ret callclo c lo _t2  ; Δ{}
   ret callclo f _t0  ; Δ{}
       ret callclo f y _t0  ; Δ{}
         ret call drop _t1 ys  ; Δ{} · makes List
@@ -250,9 +257,11 @@ range lo hi  =
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
+  ret if _t0 then
   ret if x then
   ret if x then
     ret if y then
+    ret n  ; Δ{}
       ret putStr ""  ; Δ{}
   ret rtcall axion_show_float x  ; Δ{}
           ret rtcall axion_strcat s _t1  ; Δ{}
@@ -284,6 +293,7 @@ unwords xs  =
 useTuple t  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

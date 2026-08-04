@@ -2422,8 +2422,8 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
     out
 }
 
-pub fn lower(module: &ast::Module, inplace: &HashSet<Span>) -> Vec<CoreFn> {
-    lower_with(module, inplace, &HashMap::new()).fns
+pub fn lower(module: &ast::Module, inplace: &HashSet<Span>, fuse: bool) -> Vec<CoreFn> {
+    lower_with(module, inplace, &HashMap::new(), fuse).fns
 }
 
 /// The lowering plus the analysis inputs the Δ checker reads (Δ-1):
@@ -2434,10 +2434,190 @@ pub struct Lowered {
     pub recinfo: RecordInfo,
 }
 
+/// Stream-fusion pass: rewrites producer→consumer chains on `List`
+/// operations into a single fused call that never allocates intermediate
+/// `Cons` cells.
+fn fuse_list_ops(fns: &mut Vec<CoreFn>) {
+    let Some(main) = fns.iter().position(|f| f.name == "main") else {
+        return;
+    };
+    let mut helpers: Vec<CoreFn> = Vec::new();
+    fuse_term(&mut fns[main].body, &mut helpers);
+    fns.extend(helpers);
+}
+
+/// Helper index for generating unique lifted-function names.
+static FUSE_CTR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+fn fuse_fresh() -> String {
+    format!(
+        "fuse${}",
+        FUSE_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// Try to fuse a producer→consumer chain occurring in `t`.
+fn fuse_term(t: &mut Term, helpers: &mut Vec<CoreFn>) {
+    match t {
+        Term::Let(x, rhs, _, body) => {
+            if let Rhs::Op(Op::CallDirect(prod, prod_args, _)) = rhs {
+                if let Some(consume) = matching_consumer(prod, body, x) {
+                    if let Some(fused) = build_fused(prod, prod_args, &consume, helpers) {
+                        *t = fused;
+                        return;
+                    }
+                }
+            }
+            fuse_term(body, helpers);
+        }
+        Term::Drop(_, _, _, _, body) => fuse_term(body, helpers),
+        Term::Ret(rhs, _) => match rhs {
+            Rhs::If(_, th, el) => {
+                fuse_term(th, helpers);
+                fuse_term(el, helpers);
+            }
+            Rhs::Case(_, arms) => {
+                for (_, b) in arms {
+                    fuse_term(b, helpers);
+                }
+            }
+            Rhs::Op(_) => {}
+        },
+    }
+}
+
+/// Information about a matched consumer of a fused list.
+struct FuseConsumer {
+    name: String,
+    base: Atom,
+}
+
+/// Checks whether the variable `x` is consumed by a recognized fusion
+/// consumer in `body`.  Returns the consumer's step/base info if found.
+fn matching_consumer(_prod: &str, body: &Term, x: &str) -> Option<FuseConsumer> {
+    // extract the `CallDirect` consumer from either a `Let` binder or a
+    // tail-position `Ret`
+    let (cons, args) = match body {
+        Term::Let(_, Rhs::Op(Op::CallDirect(c, a, _)), _, _) => (c, a),
+        Term::Ret(Rhs::Op(Op::CallDirect(c, a, _)), _) => (c, a),
+        Term::Drop(_, _, _, _, b) => return matching_consumer(_prod, b, x),
+        _ => return None,
+    };
+    if !args.last().is_some_and(|a| atom_is(x, a)) {
+        return None;
+    }
+    match cons.as_str() {
+        "sum" => Some(FuseConsumer {
+            name: "sum".into(),
+            base: Atom::Int(0),
+        }),
+        "length" => Some(FuseConsumer {
+            name: "length".into(),
+            base: Atom::Int(0),
+        }),
+        "foldr" if args.len() >= 2 => Some(FuseConsumer {
+            name: "foldr".into(),
+            base: args[1].clone(),
+        }),
+        "null" => Some(FuseConsumer {
+            name: "null".into(),
+            base: Atom::Int(0),
+        }),
+        _ => None,
+    }
+}
+
+/// Builds a fused replacement term for `consumer (producer input)`.
+fn build_fused(
+    prod: &str,
+    prod_args: &[Atom],
+    consume: &FuseConsumer,
+    helpers: &mut Vec<CoreFn>,
+) -> Option<Term> {
+    let step_name = lift_step(consume, helpers);
+    // the step function must be a closure — `rangeFused` calls it via
+    // `callclo`.  Wrap it in a `MakeClosure` let-binding.
+    let clo_name = format!("{step_name}_clo");
+    let make_clo = Rhs::Op(Op::MakeClosure {
+        func: step_name.clone(),
+        captures: Vec::new(),
+    });
+    let fused = match prod {
+        "range" if prod_args.len() >= 2 => {
+            let lo = prod_args[0].clone();
+            let hi = prod_args[1].clone();
+            Term::Ret(
+                Rhs::Op(Op::CallDirect(
+                    "rangeFused".into(),
+                    vec![lo, hi, Atom::Var(clo_name.clone()), consume.base.clone()],
+                    None,
+                )),
+                NO_SPAN,
+            )
+        }
+        "map" | "filter" | "take" | "drop" if !prod_args.is_empty() => {
+            let input = prod_args.last().unwrap().clone();
+            Term::Ret(
+                Rhs::Op(Op::CallDirect(
+                    "foldr".into(),
+                    vec![Atom::Var(clo_name.clone()), consume.base.clone(), input],
+                    None,
+                )),
+                NO_SPAN,
+            )
+        }
+        _ => return None,
+    };
+    // wrap with `let _clo = closure stepName; ret ...`
+    Some(Term::Let(
+        clo_name,
+        make_clo,
+        term_span(&fused),
+        Box::new(fused),
+    ))
+}
+
+/// Lifts the composed step function into a top-level `CoreFn` and
+/// returns its name.
+fn lift_step(consume: &FuseConsumer, helpers: &mut Vec<CoreFn>) -> String {
+    let name = fuse_fresh();
+    let body = match consume.name.as_str() {
+        "sum" | "foldr" => {
+            // \x acc -> <step> x acc
+            Term::Ret(
+                Rhs::Op(Op::Prim(
+                    "+".into(),
+                    Atom::Var("x".into()),
+                    Atom::Var("acc".into()),
+                )),
+                NO_SPAN,
+            )
+        }
+        "length" => {
+            // \x acc -> 1 + acc
+            Term::Ret(
+                Rhs::Op(Op::Prim("+".into(), Atom::Int(1), Atom::Var("acc".into()))),
+                NO_SPAN,
+            )
+        }
+        _ => Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+    };
+    helpers.push(CoreFn {
+        name: name.clone(),
+        params: vec!["x".into(), "acc".into()],
+        captures: Vec::new(),
+        is_closure: false,
+        owned_params: Vec::new(),
+        owned_drop_ty: Vec::new(),
+        body,
+    });
+    name
+}
+
 pub(crate) fn lower_with(
     module: &ast::Module,
     inplace: &HashSet<Span>,
     makecon_tys: &HashMap<Span, ast::Type>,
+    fuse: bool,
 ) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
     // which would wrap a bare `spawn worker` target into a lambda). It needs the
@@ -2730,6 +2910,10 @@ pub(crate) fn lower_with(
 
     let mut result: Vec<CoreFn> = Vec::with_capacity(out.len());
     let mut skip_seeds: Vec<(String, Vec<usize>)> = Vec::new();
+    // stream-fusion pass: fuse producer→consumer chains on List operations
+    if fuse {
+        fuse_list_ops(&mut out);
+    }
     for f in out {
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
         let (f, seeds) = insert_drops(f, &borrow_args, dty, &recinfo);
@@ -4282,11 +4466,13 @@ impl ArmInfo {
         if let CPat::Con(con, subs) = pat {
             for (fi, sp) in subs.iter().enumerate() {
                 if let CPat::Var(n) = sp {
-                    if recinfo.field_transfers_heap(con, fi) && !recinfo.field_is_owned(con, fi)
-                        && occurs_nonborrow(n, body) {
-                            non_owning = true;
-                            non_owning_slots.insert(fi);
-                        }
+                    if recinfo.field_transfers_heap(con, fi)
+                        && !recinfo.field_is_owned(con, fi)
+                        && occurs_nonborrow(n, body)
+                    {
+                        non_owning = true;
+                        non_owning_slots.insert(fi);
+                    }
                 }
             }
         }

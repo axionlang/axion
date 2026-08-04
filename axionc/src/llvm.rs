@@ -98,7 +98,7 @@ fn main_returns_bool(module: &ast::Module, entry: &str) -> bool {
 
 /// Emits the LLVM IR module (text) from the Core (`--emit llvm`).
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
-    let fns = core::lower(module, inplace);
+    let fns = core::lower(module, inplace, false);
     let records = RecordInfo::build(module);
     // type keys with a generated destructor `axion_drop_<key>` — includes the
     // monomorphized ones (`List$P`), whose key is not a `needs_deep_drop` type.
@@ -179,8 +179,9 @@ pub fn build_and_run(
     module: &ast::Module,
     entry: &str,
     inplace: &HashSet<Span>,
+    fuse: bool,
 ) -> Result<(), String> {
-    let fns = core::lower(module, inplace);
+    let fns = core::lower(module, inplace, fuse);
     if !fns.iter().any(|f| f.name == entry && f.params.is_empty()) {
         return Err(format!(
             "'{entry}' must be a native function with no parameters"

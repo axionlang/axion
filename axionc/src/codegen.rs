@@ -1588,8 +1588,9 @@ pub fn run(
     module: &ast::Module,
     entry: &str,
     inplace: &HashSet<Span>,
+    fuse: bool,
 ) -> Result<Option<i64>, String> {
-    let fns = core::lower(module, inplace);
+    let fns = core::lower(module, inplace, fuse);
     let entry_ok = fns
         .iter()
         .find(|f| f.name == entry)
@@ -1673,7 +1674,7 @@ pub fn run(
 
 /// Emits the Cranelift IR (text) of the Core functions, without JIT (`--emit clif`).
 pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
-    let fns = core::lower(module, inplace);
+    let fns = core::lower(module, inplace, false);
     if fns.is_empty() {
         return Ok("; no natively compilable function (Int core).\n".into());
     }

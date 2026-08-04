@@ -64,12 +64,14 @@ fn main() -> ExitCode {
     let mut backend = Backend::Interp;
     let mut emit = Emit::Text;
     let mut path: Option<String> = None;
+    let mut fuse = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--check" => check_only = true,
             "--check-delta" => check_delta = true,
+            "--fuse" => fuse = true,
             "--release" => backend = Backend::Llvm,
             "--backend" => {
                 i += 1;
@@ -182,7 +184,7 @@ fn main() -> ExitCode {
     if check_delta {
         // Δ-1 (report-only): the linearity judgment over the annotated Core,
         // plus the Δ-3 coherence cross-check against the front-end DropPoints.
-        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys);
+        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys, fuse);
         let mut errs = delta::check_all(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
         errs.extend(delta::check_drop_coherence(
             &lowered.fns,
@@ -214,7 +216,7 @@ fn main() -> ExitCode {
         // Δ-2: the annotated dump — `core::dump` plus the live-resource env
         // (Δ) on every `let`/`ret` (report-only; same output shape as `dump`
         // for unannotated lines).
-        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys);
+        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys, fuse);
         print!(
             "{}",
             delta::dump_annotated(&lowered.fns, &lowered.borrow_args, &lowered.recinfo)
@@ -227,7 +229,7 @@ fn main() -> ExitCode {
         // facts the annotated dump cannot show (drops in the judged Core,
         // never-used `%1` params, coherence agreement). Report-only: the exit
         // code is unaffected — `--check-delta` is the verdict channel.
-        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys);
+        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys, fuse);
         print!(
             "{}",
             delta::dump_delta(
@@ -269,7 +271,7 @@ fn main() -> ExitCode {
         }
     }
     if backend == Backend::Cranelift {
-        return match codegen::run(&module, "main", &inplace) {
+        return match codegen::run(&module, "main", &inplace, fuse) {
             Ok(Some(n)) => {
                 println!("{n}");
                 ExitCode::SUCCESS
@@ -282,7 +284,7 @@ fn main() -> ExitCode {
         };
     }
     if backend == Backend::Llvm {
-        return match llvm::build_and_run(&module, "main", &inplace) {
+        return match llvm::build_and_run(&module, "main", &inplace, fuse) {
             Ok(()) => ExitCode::SUCCESS, // the binary already printed the result
             Err(e) => {
                 eprintln!("llvm backend (--release): {e}");
@@ -628,6 +630,12 @@ mapM_ f xs = case xs of
   Nil -> putStr \"\"
   Cons y ys -> case f y of
     _ -> mapM_ f ys
+-- stream-fusion variant (§0): `rangeFused` takes the consumer's
+-- step-function `c` (:: Int -> b -> b) and nil `n` (:: b) and applies
+-- them directly — no intermediate Cons cells.  The --fuse pass rewrites
+-- `consume (range lo hi)` → `rangeFused lo hi step base`.
+rangeFused :: Int -> Int -> (Int -> b -> b) -> b -> b
+rangeFused lo hi c n = if lo > hi then n else c lo (rangeFused (lo + 1) hi c n)
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`
