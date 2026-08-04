@@ -6,6 +6,20 @@
 # Axion N/A — §4 to be built). Uses the SAME clang (LLVM) for C and for
 # Axion --release, so the tier is comparable. Needs clang (AXION_CLANG
 # or on PATH; e.g. `nix shell nixpkgs#llvmPackages_18.clang`).
+#
+# Measured (2026-08) and verified at the LLVM-IR/assembly level: the C-vs-Axion
+# gap on `dispatch` (~20%) and `sumtype` (~28%) is NOT an Axion codegen miss —
+# Axion matches Rust exactly on both (565/565, 564/568). LLVM's shape-dependent
+# optimizations fire for C only: its loop x-phi enters with a constant range
+# (modulo-by-1000000 lowers to the unsigned magic-multiply, ~7 instrs) while the
+# equivalent Axion recursion enters from a function argument, range-opaque to
+# the analysis (signed sequence + sign fixup, ~10 instrs); on `sumtype` LLVM
+# algebraically reduces C's cyclic val/turn sum. Closing the gap needs `nsw`
+# (poison on overflow — a semantics change) or loop-shape rewrites (overfitting)
+# — both rejected. `-O3` is byte-identical to `-O2` on all six kernels (measured
+# symmetrically on C and Axion); TCO already fires (self-tail-calls are loops in
+# the emitted IR). Benchmarks therefore compare like-for-like; expect the two
+# gaps to persist.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

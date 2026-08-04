@@ -380,10 +380,14 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
         let mut clone = src.clone();
         clone.name = plan.name.clone();
         clone.constraints = Vec::new();
-        // specialized signature: constraint var → concrete type
+        // specialized signature: each type var → concrete type, in order
         if let Some(sig) = &clone.sig {
-            let templ = subst_head(sig, &plan.tyvar);
-            clone.sig = Some(specialize(&templ, &plan.ty_head));
+            let mut sig = sig.clone();
+            for (var, repl) in &plan.subs {
+                let templ = subst_head(&sig, var);
+                sig = specialize_with(&templ, repl);
+            }
+            clone.sig = Some(sig);
         }
         // rewrites the internal uses (span → direct name) in the clone's body
         let mut res: Resolutions = std::collections::HashMap::new();
@@ -678,11 +682,6 @@ fn subst_head(ty: &ast::Type, tyvar: &str) -> ast::Type {
         },
         ast::Type::Tuple(ts) => ast::Type::Tuple(ts.iter().map(|t| subst_head(t, tyvar)).collect()),
     }
-}
-
-/// Swaps the `$cls` sentinel for the instance's concrete type head (by name).
-fn specialize(ty: &ast::Type, ty_head: &str) -> ast::Type {
-    specialize_with(ty, &ast::Type::Con(ty_head.to_string()))
 }
 
 /// Swaps the `$cls` sentinel for the instance's full type (`Maybe a`, `Color`, …).

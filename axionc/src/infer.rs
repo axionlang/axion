@@ -61,6 +61,13 @@ struct Infer<'a> {
     /// functions that reference an unspecializable constrained function (constraint
     /// var not a direct parameter) — they cannot be specialized.
     refs_unspec: HashSet<String>,
+    /// generic-owning function → its owned `%1` params (Phase B): (param index,
+    /// type var name, positional path of the var inside the param type). Only
+    /// UNCONSTRAINED functions (the constrained ones are already specialized
+    /// by the typeclass pipeline).
+    owned_meta: HashMap<String, OwnedParamMeta>,
+    /// uses of generic-owning functions, for monomorphization.
+    own_obligations: Vec<OwnObl>,
     /// classes with a declared constraint in the scope of the function being inferred.
     cur_constraints: Vec<String>,
     /// name of the function being inferred (key of the resolutions, with the span).
@@ -91,6 +98,22 @@ struct SpecObl {
     func: String, // function where the use occurs (caller)
 }
 
+/// A use of a GENERIC-OWNING function (`f :: … List a %1 …`, UNCONSTRAINED) —
+/// collected for Phase B monomorphization (the generic-owning corner): if the
+/// owned parameter's type var resolves to a concrete type at the call-site, `f`
+/// is specialized to that type, so the parameter's drop-type key resolves and
+/// Per-parameter type-variable info: `(param_index, [(var_name, path)])`.
+type OwnedParamMeta = Vec<(usize, Vec<(String, Vec<usize>)>)>;
+
+/// the body deep-drops through the monomorphized destructor.
+struct OwnObl {
+    target: String,                  // the generic-owning function called
+    vars: Vec<(String, Vec<usize>)>, // (var_name, path) for each type var
+    param_ty: Ty,                    // the inferred type of the owned `%1` parameter at this use
+    span: Span,
+    func: String, // function where the use occurs (caller)
+}
+
 /// The inference result for monomorphization: the direct rewrites
 /// (`(function, span) → name`) and the plan of specialized functions to materialize.
 pub struct Mono {
@@ -98,14 +121,17 @@ pub struct Mono {
     pub specs: Vec<SpecPlan>,
 }
 
-/// Instruction to clone `src` into a monomorphic function `name`, substituting the
-/// the constraint var `tyvar` by the type `ty_head` in the signature, and rewriting the
-/// internal uses (span → direct name: methods→`m$T`, self-recursion→`name`).
+/// Instruction to clone `src` into a monomorphic function `name`, substituting
+/// the type variable `tyvar` by the concrete type `repl` in the signature, and
+/// rewriting the internal uses (span → direct name: methods→`m$T`,
+/// self-recursion→`name`, owning-generic calls→`g$T`). Used by the typeclass
+/// pipeline (where `repl` is the class type, e.g. `Eq a` resolved to `Int`)
+/// and by Phase B's owning-generic pipeline (where `subs` maps each type var to
+/// its concrete replacement type, e.g. `[(a, P), (b, Q)]` for multi-var).
 pub struct SpecPlan {
     pub src: String,
     pub name: String,
-    pub tyvar: String,
-    pub ty_head: String,
+    pub subs: Vec<(String, Type)>,
     pub rewrites: HashMap<Span, String>,
 }
 
@@ -128,6 +154,8 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         spec_obligations: Vec::new(),
         constrained_meta: HashMap::new(),
         refs_unspec: HashSet::new(),
+        owned_meta: HashMap::new(),
+        own_obligations: Vec::new(),
         cur_constraints: Vec::new(),
         cur_fn: String::new(),
     };
@@ -285,6 +313,39 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         }
     }
 
+    // metadata of the GENERIC-OWNING functions (Phase B): an unconstrained
+    // function with an owned `%1` parameter whose type carries exactly ONE type
+    // variable (`dropList :: List a %1 -> Int`). The param's drop-type key is
+    // unresolvable at lowering (the element is a var), so the function is
+    // monomorphized per concrete call-site type (`dropList$P`). Multi-var
+    // params and constrained functions are excluded (see `owned_meta`).
+    for f in &module.funcs {
+        if !f.constraints.is_empty() {
+            continue;
+        }
+        let Some(sig) = &f.sig else { continue };
+        let mults = sig.param_mults();
+        let ptypes = sig.param_types();
+        let mut owned = Vec::new();
+        for (i, p) in ptypes.iter().enumerate() {
+            if mults.get(i) != Some(&Mult::One) {
+                continue;
+            }
+            // a bare var param is not heap (i64 ABI) — no key to resolve;
+            // only heap-shaped (`App`/`Tuple`) owned params can leak payloads.
+            if matches!(p, Type::Var(_)) {
+                continue;
+            }
+            let vars = var_paths(p);
+            if !vars.is_empty() {
+                owned.push((i, vars));
+            }
+        }
+        if !owned.is_empty() {
+            inf.owned_meta.insert(f.name.clone(), owned);
+        }
+    }
+
     // checks each function against its type (in checking mode when there is a
     // signature: parameters inherit the declared types before the body)
     for f in &module.funcs {
@@ -308,7 +369,12 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         }
     }
     inf.check_exhaustiveness();
-    let mono = inf.discharge_obligations(module);
+    let mut mono = inf.discharge_obligations(module);
+    // Phase B (generic-owning corner): the owning-generic specializations
+    // (`dropList$P`), merged with the typeclass ones.
+    let owning = inf.discharge_owning();
+    mono.resolutions.extend(owning.resolutions);
+    mono.specs.extend(owning.specs);
     let _ = placeholders;
     mono
 }
@@ -345,6 +411,103 @@ fn type_contains_var(t: &Type, var: &str) -> bool {
         Type::Arrow { from, to, .. } => type_contains_var(from, var) || type_contains_var(to, var),
         Type::Tuple(ts) => ts.iter().any(|x| type_contains_var(x, var)),
         _ => false,
+    }
+}
+
+/// The type variables (by name) occurring in the surface type `t`.
+fn type_vars(t: &Type, out: &mut HashSet<String>) {
+    match t {
+        Type::Var(v) => {
+            out.insert(v.clone());
+        }
+        Type::App(f, a) => {
+            type_vars(f, out);
+            type_vars(a, out);
+        }
+        Type::Arrow { from, to, .. } => {
+            type_vars(from, out);
+            type_vars(to, out);
+        }
+        Type::Tuple(ts) => ts.iter().for_each(|x| type_vars(x, out)),
+        _ => {}
+    }
+}
+
+/// All type-variable occurrences in `t`, each with its positional path.
+/// Multi-var owning params (e.g. `Tree a b`) return both vars' paths.
+fn var_paths(t: &Type) -> Vec<(String, Vec<usize>)> {
+    fn walk(t: &Type, var: &str, acc: &mut Vec<usize>) -> Option<Vec<usize>> {
+        match t {
+            Type::Var(v) if v == var => Some(acc.clone()),
+            Type::App(f, a) => {
+                // search the argument (as before — it matches the `Ty::Con`
+                // argument list), and then the head for nested vars.
+                acc.push(0);
+                if let Some(r) = walk(a, var, acc) {
+                    acc.pop();
+                    return Some(r);
+                }
+                acc.pop();
+                walk(f, var, acc)
+            }
+            Type::Tuple(ts) => {
+                for (i, x) in ts.iter().enumerate() {
+                    acc.push(i);
+                    if let Some(r) = walk(x, var, acc) {
+                        return Some(r);
+                    }
+                    acc.pop();
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    let mut vars = HashSet::new();
+    type_vars(t, &mut vars);
+    let mut out = Vec::new();
+    for var in &vars {
+        if let Some(path) = walk(t, var, &mut Vec::new()) {
+            out.push((var.clone(), path));
+        }
+    }
+    // stable order so mangle is deterministic
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// The AST form of a fully-concrete inferred type (the Phase B signature
+/// substitution): `Ty::Con("P", [])` → `P`, `Ty::Con("Maybe", [P])` →
+/// `Maybe P`. None if any part is unresolved (a var or a function) — the seed
+/// then stays generic.
+fn ty_to_ast(t: &Ty) -> Option<Type> {
+    match t {
+        Ty::Con(n, args) => {
+            let mut x = Type::Con(n.clone());
+            for a in args {
+                x = Type::App(Box::new(x), Box::new(ty_to_ast(a)?));
+            }
+            Some(x)
+        }
+        Ty::Tuple(ts) => Some(Type::Tuple(
+            ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
+        )),
+        Ty::Var(_) | Ty::Fun(..) => None,
+    }
+}
+
+/// The spec-name mangle of a substitution type: `P` → `P`, `Maybe P` →
+/// `Maybe$P`. Matches the destructor-key mangling (`mono_key`, core.rs) so the
+/// names stay readable (`dropList$Maybe$P` ↔ `axion_drop_List$Maybe$P`).
+fn ty_mangle(t: &Type) -> String {
+    match t {
+        Type::Con(n) => n.clone(),
+        Type::App(f, a) => format!("{}${}", ty_mangle(f), ty_mangle(a)),
+        Type::Tuple(ts) => format!(
+            "({})",
+            ts.iter().map(ty_mangle).collect::<Vec<_>>().join(",")
+        ),
+        _ => String::new(),
     }
 }
 
@@ -1086,8 +1249,7 @@ impl<'a> Infer<'a> {
             specs.push(SpecPlan {
                 src: f.clone(),
                 name,
-                tyvar,
-                ty_head: t.clone(),
+                subs: vec![(tyvar, Type::Con(t.clone()))],
                 rewrites,
             });
         }
@@ -1106,6 +1268,135 @@ impl<'a> Infer<'a> {
         for (func, span, ty) in concat_uses {
             if matches!(self.resolve(&ty), Ty::Con(n, _) if n == "String") {
                 resolutions.insert((func, span), "++#str".into());
+            }
+        }
+
+        Mono { resolutions, specs }
+    }
+
+    /// Phase B — closes the generic-owning corner. An UNCONSTRAINED generic
+    /// function with an owned `%1` parameter whose type carries a type variable
+    /// (`dropList :: List a %1 -> Int`) cannot deep-drop that parameter: its
+    /// drop-type key is unresolvable at lowering (the element is a var), so the
+    /// parameter is flat-freed and the payloads leak. Fix: monomorphize the
+    /// function per concrete call-site type (Rust-style, mirroring the
+    /// constrained-function pipeline): `dropList$P` has the concrete parameter
+    /// `List P %1`, whose key resolves to the specialized destructor
+    /// `axion_drop_List$P`.
+    fn discharge_owning(&mut self) -> Mono {
+        use std::collections::{HashMap as Map, HashSet as Set};
+        // per caller: polymorphic owning calls (span → target) — rewritten to
+        // `$T` when the caller is specialized.
+        let mut poly_owns: Map<String, Vec<(Span, String)>> = Map::new();
+        // seeds: (caller, span, fn, replacement types) — one seed per concrete
+        // call site.  The combined mangle of all repl types is the spec name.
+        let mut seeds: Vec<(String, Span, String, Vec<Type>)> = Vec::new();
+        let obls = std::mem::take(&mut self.own_obligations);
+        for o in obls {
+            // resolve each type var along its positional path → concrete Ty
+            let mut concrete = true;
+            let mut repls: Vec<Type> = Vec::new();
+            let mut mangle_parts: Vec<String> = Vec::new();
+            for (_var, path) in &o.vars {
+                let mut sub: Option<Ty> = Some(self.resolve(&o.param_ty));
+                for idx in path {
+                    sub = match sub {
+                        Some(Ty::Con(_, args)) => args.get(*idx).cloned(),
+                        Some(Ty::Tuple(ts)) => ts.get(*idx).cloned(),
+                        _ => None,
+                    };
+                }
+                let Some(sub) = sub else {
+                    concrete = false;
+                    break;
+                };
+                match self.resolve(&sub) {
+                    Ty::Con(..) => {
+                        if let Some(ast) = ty_to_ast(&self.resolve(&sub)) {
+                            mangle_parts.push(ty_mangle(&ast));
+                            repls.push(ast);
+                        } else {
+                            concrete = false;
+                            break;
+                        }
+                    }
+                    Ty::Var(_) => {
+                        concrete = false;
+                        break;
+                    }
+                    _ => {
+                        concrete = false;
+                        break;
+                    }
+                }
+            }
+            if concrete && !repls.is_empty() {
+                seeds.push((o.func.clone(), o.span, o.target.clone(), repls));
+            } else {
+                poly_owns
+                    .entry(o.func.clone())
+                    .or_default()
+                    .push((o.span, o.target.clone()));
+            }
+        }
+
+        // combined mangle for a Vec of replacement types
+        let mangled = |repls: &[Type]| -> String {
+            repls.iter().map(ty_mangle).collect::<Vec<_>>().join("$")
+        };
+
+        // expands the set of required specializations by worklist: a `(f, [T₀,T₁])`
+        // pulls `(g, [T₀,T₁])` for each polymorphic owning call in `f`.
+        let mut cands: Set<(String, String)> = Set::new();
+        let mut all_repls: Map<String, Vec<Type>> = Map::new();
+        let mut queue: Vec<(String, Vec<Type>)> = Vec::new();
+        for (_, _, f, repls) in &seeds {
+            let m = mangled(repls);
+            if cands.insert((f.clone(), m.clone())) {
+                all_repls.insert(m, repls.clone());
+                queue.push((f.clone(), repls.clone()));
+            }
+        }
+        while let Some((f, repls)) = queue.pop() {
+            for (_, g) in poly_owns.get(&f).into_iter().flatten() {
+                let m = mangled(&repls);
+                if cands.insert((g.clone(), m.clone())) {
+                    all_repls.insert(m, repls.clone());
+                    queue.push((g.clone(), repls.clone()));
+                }
+            }
+        }
+
+        // materializes each specialization.
+        let mut resolutions: Map<(String, Span), String> = Map::new();
+        let mut specs: Vec<SpecPlan> = Vec::new();
+        for (f, m) in &cands {
+            let mut rewrites: Map<Span, String> = Map::new();
+            for (sp, g) in poly_owns.get(f).into_iter().flatten() {
+                rewrites.insert(*sp, format!("{g}${m}"));
+            }
+            let subs = self
+                .owned_meta
+                .get(f)
+                .and_then(|v| v.first())
+                .map(|(_, vars)| vars.as_slice())
+                .unwrap_or(&[]) // line 1375 area, will be fixed
+                .iter()
+                .zip(all_repls.get(m).into_iter().flat_map(|r| r.iter()))
+                .map(|((var, _), repl)| (var.clone(), repl.clone()))
+                .collect();
+            specs.push(SpecPlan {
+                src: f.clone(),
+                name: format!("{f}${m}"),
+                subs,
+                rewrites,
+            });
+        }
+        // rewrites the seed call-sites whose specializations exist.
+        for (caller, span, f, repls) in seeds {
+            let m = mangled(&repls);
+            if cands.contains(&(f.clone(), m.clone())) {
+                resolutions.insert((caller, span), format!("{f}${m}"));
             }
         }
 
@@ -1513,6 +1804,21 @@ impl<'a> Infer<'a> {
                         // the function that uses it cannot be specialized.
                         None => {
                             self.refs_unspec.insert(self.cur_fn.clone());
+                        }
+                    }
+                }
+                // use of a GENERIC-OWNING function (Phase B): collect the owning
+                // specialization obligation over its owned `%1` parameter type.
+                if let Some(owned) = self.owned_meta.get(n).cloned() {
+                    for (i, vars) in owned {
+                        if let Some(pt) = nth_param(&ty, i) {
+                            self.own_obligations.push(OwnObl {
+                                target: n.clone(),
+                                vars,
+                                param_ty: pt,
+                                span: *span,
+                                func: self.cur_fn.clone(),
+                            });
                         }
                     }
                 }

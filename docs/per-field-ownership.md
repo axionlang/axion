@@ -1,8 +1,6 @@
 # Design plan — per-field ownership (`%1` fields with their own Δ)
 
-**Status:** DESIGN ONLY (the "Future" row of docs/delta-design.md §8). No code
-changed by this document. Implements the paper's **constructor component
-typing**: each `%1`-annotated constructor field owns its own linear resource.
+**Status:** F-1..F-3 IMPLEMENTED. F-1 judgment-first (checker-only, `(Field·owned)` + `(Drop·skip)` rules, `--emit delta` facts, 5 unit tests). F-2 lowering (remainder drops, `transferred_slots` replaces `transfers_heap_field`, parser fix for positional `%1` fields, 2 fixtures `land_field_split_owned` + `land_field_mixed`). F-3 codegen (skip-variant destructors `axion_drop_T_skip_0` seeded from lowering, `Term::Drop` skip-set routing in both backends). F-4 docs (this section — done).
 
 **Goal:** close the Field-split gap — today a linear scrutinee whose heap field
 is extracted and moved out (`case p of P a b -> use a`, `%1`-field reads) can
@@ -49,6 +47,10 @@ shell minus slot *i*".
 memory-model-options.md — the deep bridge) stay out; `%1` fields remain
 independent of type indices. Non-`%1` fields are untouched (they may alias —
 borrow semantics as today). Buffer/IO "fields" are not constructors — unaffected.
+The polymorphic-payload variant of the extracted-field leak (a generic-owning
+consumer whose arm transfers the tail of a `List a` — shallow scrutinee free
+leaks the `P` payloads) is tracked here too (see `polymorphic-drop-plan.md` §8,
+Phase B residuals): the same remainder-drop mechanism closes it once F-2 lands.
 
 ## 3. The mechanism — remainder drops
 
@@ -106,11 +108,12 @@ Same discipline as Δ-1..Δ-5: behavior-identical where possible; every step
 green on oracle / check-delta / sanitize / differential / bench / clippy / fmt.
 
 | Phase | Content | Deliverable / gate |
-|---|---|---|
-| **F-1** | Judgment first: `%1`-field extraction rules + skip-set draining in `delta.rs`, `--emit delta` facts; **no codegen change** — checker-only on today's Core (skip sets always empty). | checker accepts 103/103; new unit tests (extraction enters Δ, skip-drain classification, tamper negatives); oracle 132/132. |
-| **F-2** | Lowering: `Term::Drop` skip set; elaboration emits remainder drops on moved-out `%1` fields; `transfers_heap_field` deleted; Field-split replaced. | `land_field_split_owned.axi` lands: `allocs == frees` (sanitize, 33/27+); `land_deepdrop_safety` re-anchored with rationale; snapshot regenerated (intended); oracle 132/132, check-delta 103/103, differential 3/3, bench. |
-| **F-3** | Codegen: skip-variant destructors (`axion_drop_T_skip_i`) seeded from lowering; skip-set annotated dump. | mono-destructor interaction fixture; oracle 132/132, check-delta 103/103, sanitize 33/27, differential 3/3, bench, clippy/fmt clean. |
-| F-4 | Docs + open-decision audit (delta-design.md §9: Field-split bullet strikes through; §10 anchors note the component typing). | review-only. |
+|---|---|---|---|
+| **F-1** | Judgment first: `%1`-field extraction rules + skip-set draining in `delta.rs`, `--emit delta` facts; **no codegen change** — checker-only on today's Core (skip sets always empty). | ✅ 5 new unit tests (extraction enters Δ, remainder-dose accept/reject, scalar-no-false-positive, delta-view facts). Gates: 153 cargo tests, oracle 135/135, check-delta 106/106. |
+| **F-2** | Lowering: `Term::Drop` skip set; elaboration emits remainder drops on moved-out `%1` fields; `transferred_slots` replaces `transfers_heap_field` for the `%1` path; parser fix for positional `%1` fields. | ✅ `land_field_split_owned.axi` (3==3), `land_field_mixed.axi` (3==3). Gates: 153 tests, check-delta 108/108, oracle 137/137, sanitize 38/32, bench unchanged, clippy/fmt clean. |
+| **F-3** | Codegen: skip-variant destructors (`axion_drop_T_skip_0`) seeded from lowering; `Term::Drop` skip-set routing in Cranelift + LLVM; `gen_skip_destructors` generation. | ✅ skip-variant exercised by `land_field_mixed.axi` (mixed transfers). Gates: 153 tests, check-delta 108/108, oracle 137/137, sanitize 38/32, bench unchanged, clippy/fmt clean. |
+| **F-4** | Docs + open-decision audit (delta-design.md Future row → done; this status update). | done. |
+
 
 ## 6. Residual risks
 

@@ -245,7 +245,7 @@ fn collect_strings(t: &Term, out: &mut HashMap<String, usize>) {
             collect_rhs(rhs, out, &mut atom);
             collect_strings(body, out);
         }
-        Term::Drop(_, _, _, body) => collect_strings(body, out),
+        Term::Drop(_, _, _, _, body) => collect_strings(body, out),
         Term::Ret(rhs, _) => collect_rhs(rhs, out, &mut atom),
     }
 }
@@ -320,7 +320,7 @@ fn collect_ffi(t: &Term, out: &mut HashMap<String, usize>) {
             rhs(r, out);
             collect_ffi(b, out);
         }
-        Term::Drop(_, _, _, b) => collect_ffi(b, out),
+        Term::Drop(_, _, _, _, b) => collect_ffi(b, out),
         Term::Ret(r, _) => rhs(r, out),
     }
 }
@@ -509,14 +509,20 @@ impl Emit<'_> {
                 self.scope.insert(x.clone(), v);
                 self.term(body)
             }
-            Term::Drop(x, ty, _, body) => {
-                // deep-drop: recursive destructor if the type has heap fields;
-                // otherwise, flat `free`.
+            Term::Drop(x, ty, skip, _, body) => {
                 let v = self.atom(&Atom::Var(x.clone()))?;
-                match ty.as_deref().filter(|t| self.drop_keys.contains(*t)) {
-                    Some(t) => {
+                let key = ty.as_deref().map(|t| {
+                    if skip.is_empty() {
+                        t.to_string()
+                    } else {
+                        let sn: Vec<String> = skip.iter().map(|i| i.to_string()).collect();
+                        format!("{t}_skip_{}", sn.join("_"))
+                    }
+                });
+                match key.as_deref().filter(|k| self.drop_keys.contains(*k)) {
+                    Some(k) => {
                         let r = self.val();
-                        self.ins(&format!("{r} = call i64 @\"ax_axion_drop_{t}\"(i64 {v})"));
+                        self.ins(&format!("{r} = call i64 @\"ax_axion_drop_{k}\"(i64 {v})"));
                     }
                     None => {
                         self.rt("axion_free", false, &[v]);

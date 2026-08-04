@@ -864,8 +864,8 @@ impl Fx<'_, '_> {
                 self.bind_val(name, v);
                 self.emit_term(body)
             }
-            Term::Drop(name, ty, _, body) => {
-                self.emit_drop(name, ty.as_deref())?;
+            Term::Drop(name, ty, skip, _, body) => {
+                self.emit_drop(name, ty.as_deref(), skip)?;
                 self.emit_term(body)
             }
             Term::Ret(rhs, _) => self.emit_rhs(rhs),
@@ -874,17 +874,19 @@ impl Fx<'_, '_> {
 
     /// Auto-Drop: frees the heap object at its death point (deep-drop destructor
     /// if the type owns heap fields, else a flat `free`).
-    fn emit_drop(&mut self, name: &str, ty: Option<&str>) -> Result<(), String> {
+    fn emit_drop(&mut self, name: &str, ty: Option<&str>, skip: &[usize]) -> Result<(), String> {
         let v = self
             .vars
             .get(name)
             .copied()
             .ok_or_else(|| format!("drop of unbound variable '{name}'"))?;
         let ptr = self.builder.use_var(v);
-        // deep-drop if a destructor exists for this type key. The key may be a
-        // plain type name (`List`) or a monomorphized mangle (`List$P`) — the
-        // latter is not a `needs_deep_drop` type, so route by symbol presence.
-        let deep = ty.map(|t| format!("axion_drop_{t}"));
+        let deep = if skip.is_empty() {
+            ty.map(|t| format!("axion_drop_{t}"))
+        } else {
+            let skip_name: Vec<String> = skip.iter().map(|i| i.to_string()).collect();
+            ty.map(|t| format!("axion_drop_{t}_skip_{}", skip_name.join("_")))
+        };
         let id = match deep.and_then(|n| self.ids.get(&n).copied()) {
             Some((id, _)) => id,
             None => self.free_id,
@@ -904,8 +906,8 @@ impl Fx<'_, '_> {
                 self.bind_val(name, v);
                 self.emit_term_tail(body)
             }
-            Term::Drop(name, ty, _, body) => {
-                self.emit_drop(name, ty.as_deref())?;
+            Term::Drop(name, ty, skip, _, body) => {
+                self.emit_drop(name, ty.as_deref(), skip)?;
                 self.emit_term_tail(body)
             }
             Term::Ret(rhs, _) => self.emit_rhs_tail(rhs),

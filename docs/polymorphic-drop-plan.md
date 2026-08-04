@@ -1,9 +1,10 @@
 # Design plan — reclaiming polymorphic container payloads
 
 **Status:** Phase 1–2 IMPLEMENTED (owned `%1` params of a concrete parametric
-type, transitively closed over nested/multi-parameter instantiations). See the
-"Implementation" section at the bottom. Phase 4 (`Make`-bound locals) and Phase 5
-(generic owning functions) remain deferred.
+type, transitively closed over nested/multi-parameter instantiations) and
+**Phase 5 IMPLEMENTED** (generic owning functions — Phase B monomorphization,
+`infer.rs::discharge_owning`; see §8). Phase 4 (`Make`-bound locals) remains
+deferred.
 
 **Goal:** close a real, latent leak — a generic container of
 heap elements (`List String`, `List (Maybe a)`, `List P`, a tree of records, …)
@@ -102,7 +103,9 @@ instantiation.
   3. Recurse for nested (`List (Maybe P)`) and multi-parameter (`Either a b`).
   4. `Make`-bound locals: thread element types from inference (closes the common
      non-`%1` case, e.g. the confirmed `List P` test).
-  5. (Large, deferred) generic owning functions → needs function monomorphization.
+  5. Generic owning functions (done — Phase B, §8 below): unconstrained functions
+     with an owned `%1` param of a var-carrying parametric type are monomorphized
+     per concrete call site; the template is interp-only.
 
 ## 7. Bottom line
 The leak is real and general (any generic container of heap elements), rooted in the
@@ -195,3 +198,43 @@ Validation: `poly_payload_drop.axi` (whole-drop, 6 allocs = 6 frees),
 suite (interp / `--dev` / `--release` agree), `scripts/sanitize.sh` (ASan + LSan
 clean, the leak-free ones in the gate), and the GHC differential oracle (unchanged
 verdicts).
+
+## Phase 5 — generic owning functions (done, "Phase B")
+
+A generic function that OWNS its `%1` parameter — `dropList :: List a %1 -> Int`,
+`head1 :: List a %1 -> Int` — cannot deep-drop it: the drop-type key of `List a`
+is unresolvable at lowering (`mono_key` fails on the var), so the param used to be
+flat-freed and the payloads leaked. Phase B monomorphizes the function per
+concrete call site, mirroring the typeclass pipeline end-to-end:
+
+- **`infer.rs`** — `owned_meta` precomputes, per unconstrained function, its
+  owned `%1` params that carry exactly one type var (with the var's positional
+  path). Uses of such functions push `OwnObl`s; `discharge_owning` resolves each
+  obligation's var along the path (concrete element → seed `(f, T)`; still a var
+  → poly-own call, rewritten when the caller specializes), closes TRANSITIVE
+  specialization by worklist (`wipe$P` pulls `probe$P`), and emits `SpecPlan`s.
+- **`main.rs`** — `SpecPlan` carries the full substitution type (`repl`), so the
+  spec's signature substitutes `a` ← `Maybe P` (full type, not just a head);
+  `materialize_specs` uses it for the typeclass plans too (identical behavior:
+  `repl = Con(ty_head)`).
+- **`core.rs`** — the generic-owning TEMPLATE is excluded from native candidacy
+  (interp-only, like methods): only the specialized clones are natively
+  compilable, and their concrete `List P %1` param keys resolve to the existing
+  `axion_drop_List$P` machinery — no lowering/backend change.
+
+Naming: `f` + `$` + the element mangle (`dropList$P`, `head1$Maybe$P`), matching
+the destructor-key mangling. Constrained owning generics (`Eq a => List a %1`)
+were already specialized by the typeclass pipeline and need nothing new.
+
+**Residuals (documented):** multi-var owning params (`Tree a b %1`) stay
+interp-only (single-var scope); recursive consumption of an owned list whose arm
+transfers the tail still hits the extracted-field gap — the arm's shell-only
+scrutinee free leaks the payloads (safe, deferred to `per-field-ownership.md`
+F-1); `where`-bound generic owning functions are not specialized (top-level
+scope).
+
+**Fixtures** (`tests/fixtures/`, all in the sanitize leak-free gate):
+`poly_payload_generic_drop.axi` (6 == 6), `poly_payload_generic_nested.axi`
+(`List (Maybe P)`, 9 == 9), `poly_payload_generic_compose.axi` (transitive
+`wipe$P`/`probe$P`, 6 == 6) — interp/`--dev`/`--release` agree; the Core-dump
+oracle snapshots them.

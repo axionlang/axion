@@ -40,6 +40,10 @@ pub struct DeltaErr {
 pub(crate) struct Res {
     pub(crate) key: Option<String>,
     pub(crate) parent: Option<String>,
+    /// the constructor slot of the parent the payload came from (per-field
+    /// ownership, F-1): lets the `(Drop·skip)` rule prove a remainder drop
+    /// skips exactly the transferred slots. `None` = the shell itself.
+    pub(crate) slot: Option<usize>,
 }
 
 /// Δ-3, move 1 (docs §6): the **single multiplicity authority**. Every op's
@@ -96,6 +100,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.produces = ty.clone().map(|k| Res {
                 key: Some(k),
                 parent: None,
+                slot: None,
             });
         }
         Op::CallClosure(f, args) => {
@@ -107,6 +112,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.produces = Some(Res {
                 key: None,
                 parent: None,
+                slot: None,
             });
         }
         Op::MakeTuple(args) => {
@@ -114,6 +120,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.produces = Some(Res {
                 key: None,
                 parent: None,
+                slot: None,
             });
         }
         Op::MakeCon { args, ty, .. } => {
@@ -121,6 +128,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.produces = ty.clone().map(|k| Res {
                 key: Some(k),
                 parent: None,
+                slot: None,
             });
         }
         Op::MakeRecord { fields, ty, .. } => {
@@ -128,6 +136,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.produces = ty.clone().map(|k| Res {
                 key: Some(k),
                 parent: None,
+                slot: None,
             });
         }
         Op::UpdateRecord { base, fields, .. } => {
@@ -138,6 +147,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.produces = Some(Res {
                 key: None,
                 parent: None,
+                slot: None,
             });
         }
         Op::Field { rec, .. } => e.borrows.push(rec),
@@ -182,8 +192,11 @@ struct Scope {
     /// then caught as "not a live resource")
     owned: HashMap<String, Option<String>>,
     /// resources whose payload was moved out / separately freed: a later deep
-    /// drop of them would double-free the escaped payload
-    split: HashSet<String>,
+    /// drop of them would double-free the escaped payload. Per-field ownership
+    /// (F-1): the value is the set of SLOTS of the parent that were transferred
+    /// out — the `(Drop·skip)` rule accepts a remainder drop iff its skip set
+    /// equals this set exactly.
+    split: HashMap<String, HashSet<usize>>,
 }
 
 pub fn check_all(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &RecordInfo) -> Vec<DeltaErr> {
@@ -198,6 +211,7 @@ pub fn check_all(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &RecordInfo)
             borrow_args,
             recinfo,
             errs: Vec::new(),
+            transfers: HashSet::new(),
         };
         ck.check_fn(f);
         out.extend(ck.errs.into_iter().map(|(msg, span)| DeltaErr {
@@ -269,7 +283,7 @@ fn drop_death_spans(drops: &[crate::check::DropPoint], fname: &str) -> HashMap<S
 /// the drop precedes (Δ-5 — `NO_SPAN` for generated code).
 fn collect_drop_anchors(t: &Term, out: &mut Vec<(String, Span)>) {
     match t {
-        Term::Drop(v, _, sp, body) => {
+        Term::Drop(v, _, _, sp, body) => {
             out.push((v.clone(), *sp));
             collect_drop_anchors(body, out);
         }
@@ -390,6 +404,7 @@ pub fn check_drop_coherence(
             borrow_args,
             recinfo,
             errs: Vec::new(),
+            transfers: HashSet::new(),
         };
         let fin = ck.check_fn(f);
         out.extend(
@@ -449,6 +464,7 @@ pub fn dump_annotated(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &Record
             borrow_args,
             recinfo,
             errs: Vec::new(),
+            transfers: HashSet::new(),
         };
         let mut s = Scope::default();
         for p in &f.params {
@@ -468,7 +484,7 @@ pub fn dump_annotated(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &Record
 /// walk, arms in source order, then sorted for the summary line).
 fn collect_drops(t: &Term, out: &mut Vec<String>) {
     match t {
-        Term::Drop(v, _, _, body) => {
+        Term::Drop(v, _, _, _, body) => {
             out.push(v.clone());
             collect_drops(body, out);
         }
@@ -539,6 +555,7 @@ pub fn dump_delta(
             borrow_args,
             recinfo,
             errs: Vec::new(),
+            transfers: HashSet::new(),
         };
         let fin = ck.check_fn(f);
         // the coherence cross-check totals (Δ-3, move 2 + Δ-5 position rule —
@@ -590,6 +607,11 @@ pub fn dump_delta(
         if !never_used.is_empty() {
             facts.push(format!("never-used %1: {}", never_used.join(" ")));
         }
+        if !ck.transfers.is_empty() {
+            let mut t: Vec<String> = ck.transfers.iter().cloned().collect();
+            t.sort();
+            facts.push(format!("transferred %1-heap: {}", t.join(" ")));
+        }
         if !facts.is_empty() {
             line.push_str(" — ");
             line.push_str(&facts.join(" · "));
@@ -628,21 +650,47 @@ struct Ck<'a> {
     borrow_args: &'a BorrowArgs,
     recinfo: &'a RecordInfo,
     errs: Vec<(String, Option<Span>)>,
+    /// the `%1`-heap fields the current function extracted (per-field
+    /// ownership, F-1) — surfaced as a `--emit delta` fact. Cleared per
+    /// function by `check_fn`.
+    transfers: HashSet<String>,
+}
+
+/// A case-binding's payload classification (per-field ownership, F-1):
+/// `Some` = the binding owns a heap object of the scrutinee; `key` is its drop
+/// key (`Some` for a `%1` field of a concrete `data` type — deep-dropable on
+/// its own; `None` for the ordinary conservative payloads), `slot` is the
+/// constructor slot it came from.
+struct Payload {
+    key: Option<String>,
+    slot: usize,
 }
 
 impl Ck<'_> {
-    /// A pattern's bindings: `(name, is_payload)`. A binding is a *payload* of
+    /// A pattern's bindings: `(name, payload)`. A binding is a *payload* of
     /// the scrutinee (owned heap object, freed by its deep-drop destructor)
-    /// when the constructor field transfers heap ownership.
-    fn pat_binds(&self, pat: &CPat, out: &mut Vec<(String, bool)>) {
+    /// when the constructor field transfers heap ownership; a `%1` field of a
+    /// `data` type additionally carries the slot's drop key (it owns its own
+    /// linear resource — `(Drop·skip)` can reclaim the remainder without it).
+    fn pat_binds(&self, pat: &CPat, out: &mut Vec<(String, Option<Payload>)>) {
         match pat {
-            CPat::Var(n) => out.push((n.clone(), false)),
+            CPat::Var(n) => out.push((n.clone(), None)),
             CPat::Int(_) | CPat::Wild => {}
             CPat::Tuple(ps) => ps.iter().for_each(|p| self.pat_binds(p, out)),
             CPat::Con(con, ps) => {
                 for (i, p) in ps.iter().enumerate() {
                     if let CPat::Var(n) = p {
-                        out.push((n.clone(), self.recinfo.field_transfers_heap(con, i)));
+                        let payload = if self.recinfo.field_transfers_heap(con, i) {
+                            let key = if self.recinfo.field_is_owned(con, i) {
+                                self.recinfo.field_drop_slot(con, i).map(|t| t.to_string())
+                            } else {
+                                None
+                            };
+                            Some(Payload { key, slot: i })
+                        } else {
+                            None
+                        };
+                        out.push((n.clone(), payload));
                     } else {
                         self.pat_binds(p, out);
                     }
@@ -652,6 +700,7 @@ impl Ck<'_> {
     }
 
     fn check_fn(&mut self, f: &CoreFn) -> Scope {
+        self.transfers.clear();
         let mut s = Scope::default();
         for p in &f.params {
             s.bound.insert(p.clone());
@@ -720,8 +769,15 @@ impl Ck<'_> {
         if let Some(r) = s.res.remove(n) {
             if let Some(p) = r.parent {
                 // a payload left the scope (moved out or dropped separately):
-                // the scrutinee it belongs to must not be deep-dropped later.
-                s.split.insert(p);
+                // the scrutinee it belongs to must not be deep-dropped later —
+                // the slot that left is recorded (per-field ownership, F-1):
+                // a `(Drop·skip)` remainder drop may free the rest of the shell
+                // without it. `usize::MAX` = unknown slot (conservative: no
+                // skip set can prove the exclusion).
+                s.split
+                    .entry(p)
+                    .or_default()
+                    .insert(r.slot.unwrap_or(usize::MAX));
             }
         } else if s.owned.remove(n).is_some() {
             // first moving use of a `%1` parameter: it enters Δ and dies here
@@ -735,9 +791,24 @@ impl Ck<'_> {
 
     /// A `Drop` node: `v` must be a live resource; a deep drop additionally
     /// requires no payload of `v` to have escaped, and kills the payloads that
-    /// remain (the destructor frees them). `sp` = the drop's anchor (the span
-    /// of the node it precedes — Δ-5) for the span-ful diagnostics.
-    fn do_drop(&mut self, v: &str, ty: &Option<String>, sp: Option<Span>, s: &mut Scope) {
+    /// remain (the destructor frees them). `skip` is the **remainder skip set**
+    /// (F-1, always empty in lowering today): a remainder drop
+    /// `drop v : T skip {…}` frees the shell and every drop slot EXCEPT the
+    /// listed ones — which must be EXACTLY the slots that were transferred out
+    /// of `v` (`(Drop·skip)`: a skipped slot that did not leave would be freed
+    /// by the destructor while its binder still aliases it — UAF; a transferred
+    /// slot not skipped would be freed twice — double free). The skipped slots'
+    /// bindings survive the drop as independent resources (their parent died).
+    /// `sp` = the drop's anchor (the span of the node it precedes — Δ-5) for
+    /// the span-ful diagnostics.
+    fn do_drop(
+        &mut self,
+        v: &str,
+        ty: &Option<String>,
+        skip: &[usize],
+        sp: Option<Span>,
+        s: &mut Scope,
+    ) {
         // a `%1` parameter dropped before any other use enters `res` here
         if !s.res.contains_key(v) {
             if let Some(k) = s.owned.remove(v) {
@@ -746,22 +817,29 @@ impl Ck<'_> {
                     Res {
                         key: k,
                         parent: None,
+                        slot: None,
                     },
                 );
             }
         }
-        let Some(r) = s.res.get(v) else {
-            self.err_at(
-                &format!(
-                    "drop of `{v}` which is not a live resource (double free or free of a non-owned value)"
-                ),
-                sp,
-            );
-            return;
+        let (is_flat_payload, parent, r_key, r_slot) = {
+            let Some(r) = s.res.get(v) else {
+                self.err_at(
+                    &format!(
+                        "drop of `{v}` which is not a live resource (double free or free of a non-owned value)"
+                    ),
+                    sp,
+                );
+                return;
+            };
+            (
+                ty.is_none() && r.parent.is_some(),
+                r.parent.clone(),
+                r.key.clone(),
+                r.slot,
+            )
         };
-        let is_flat_payload = ty.is_none() && r.parent.is_some();
-        let parent = r.parent.clone();
-        if let (Some(k), Some(k2)) = (ty, &r.key) {
+        if let (Some(k), Some(k2)) = (ty, &r_key) {
             if k != k2 {
                 self.err_at(
                     &format!(
@@ -771,25 +849,69 @@ impl Ck<'_> {
                 );
             }
         }
-        if ty.is_some() && s.split.contains(v) {
-            self.err_at(
-                &format!(
-                    "deep drop of `{v}` after one of its payloads was moved out / freed separately (double free)"
-                ),
-                sp,
-            );
+        let transferred = s.split.get(v).cloned().unwrap_or_default();
+        if ty.is_some() {
+            let skip_set: HashSet<usize> = skip.iter().copied().collect();
+            if skip_set.is_empty() {
+                // a full deep drop: nothing may have been transferred out
+                if !transferred.is_empty() {
+                    self.err_at(
+                        &format!(
+                            "deep drop of `{v}` after one of its payloads was moved out / freed separately (double free)"
+                        ),
+                        sp,
+                    );
+                }
+            } else if transferred != skip_set {
+                let mut skipped: Vec<String> = skip_set.iter().map(|i| i.to_string()).collect();
+                skipped.sort();
+                let mut moved: Vec<String> = transferred.iter().map(|i| i.to_string()).collect();
+                moved.sort();
+                self.err_at(
+                    &format!(
+                        "remainder drop of `{v}` skips {{{}}} but the transferred slots are {{{}}} (the skip set must equal the moved-out slots)",
+                        skipped.join(" "),
+                        moved.join(" "),
+                    ),
+                    sp,
+                );
+                return;
+            }
         }
         s.res.remove(v);
         if ty.is_some() {
-            // the destructor frees the remaining payloads with the shell
-            s.res
-                .retain(|_, q| q.parent.as_ref().is_none_or(|p| p != v));
+            let skip_set: HashSet<usize> = skip.iter().copied().collect();
+            // the destructor frees the shell and every non-skipped slot: the
+            // payload bindings of those slots die with it; the skipped slots'
+            // bindings survive — they own the moved-out values, now detached
+            // from the (dead) parent.
+            let mut kept: HashMap<String, Res> = HashMap::with_capacity(s.res.len());
+            for (n, q) in s.res.drain() {
+                if q.parent.as_ref().is_some_and(|p| p == v) {
+                    if q.slot.is_some_and(|i| skip_set.contains(&i)) {
+                        kept.insert(
+                            n,
+                            Res {
+                                key: q.key,
+                                parent: None,
+                                slot: q.slot,
+                            },
+                        );
+                    }
+                } else {
+                    kept.insert(n, q);
+                }
+            }
+            s.res = kept;
             s.split.remove(v);
         } else if is_flat_payload {
             // flat drop of a payload: it is freed separately from the shell —
             // a deep drop of the shell afterwards would free it twice.
             if let Some(p) = parent {
-                s.split.insert(p);
+                s.split
+                    .entry(p)
+                    .or_default()
+                    .insert(r_slot.unwrap_or(usize::MAX));
             }
         }
     }
@@ -833,9 +955,9 @@ impl Ck<'_> {
                 s1.bound.insert(x.clone());
                 self.term(body, &s1)
             }
-            Term::Drop(v, ty, sp, body) => {
+            Term::Drop(v, ty, skip, sp, body) => {
                 let mut s1 = s.clone();
-                self.do_drop(v, ty, Some(*sp), &mut s1);
+                self.do_drop(v, ty, skip, Some(*sp), &mut s1);
                 self.term(body, &s1)
             }
             Term::Ret(rhs, _) => {
@@ -908,6 +1030,7 @@ impl Ck<'_> {
                         Res {
                             key: k,
                             parent: None,
+                            slot: None,
                         },
                     );
                 }
@@ -922,14 +1045,21 @@ impl Ck<'_> {
                 self.pat_binds(pat, &mut binds);
                 for (n, payload) in binds {
                     sa.bound.insert(n.clone());
-                    if payload && scrut_res.is_some() {
-                        sa.res.insert(
-                            n.clone(),
-                            Res {
-                                key: None,
-                                parent: sv.clone(),
-                            },
-                        );
+                    if let Some(pl) = payload {
+                        if scrut_res.is_some() {
+                            let owned = pl.key.is_some();
+                            sa.res.insert(
+                                n.clone(),
+                                Res {
+                                    key: pl.key,
+                                    parent: sv.clone(),
+                                    slot: Some(pl.slot),
+                                },
+                            );
+                            if owned {
+                                self.transfers.insert(n.clone());
+                            }
+                        }
                     }
                 }
                 self.term(body, &sa).0
@@ -974,6 +1104,57 @@ impl Ck<'_> {
             // session/runtime entry — not a variable): read non-strictly
             self.use_atom_in(f, true, false, s);
         }
+        // (Field·owned) — per-field ownership, F-1: a selector read of a `%1`
+        // HEAP field of a live record transfers that slot's ownership. The
+        // binder owns the moved-out value (a payload of the record, with the
+        // slot's drop key — deep-dropable on its own), and the record is split
+        // at that slot: a later full deep drop would double-free it, so the
+        // pipeline must free the remainder via `(Drop·skip)` (F-2) instead.
+        // Borrowed (non-resource) records and non-`%1`/scalar fields are
+        // unchanged — the ordinary borrow read.
+        if let Op::Field {
+            name,
+            rec: Atom::Var(rn),
+        } = op
+        {
+            // the record must be a live resource (%1 owned or entered)
+            // for the (Field·owned) rule to fire — promotion is only
+            // needed when it fires, not for every field read
+            if let Some((con, idx)) = self.recinfo.named_field_slot(name) {
+                if self.recinfo.field_is_owned(&con, idx)
+                    && self.recinfo.field_transfers_heap(&con, idx)
+                {
+                    let promoted = if !s.res.contains_key(rn) {
+                        s.owned.remove(rn).is_some_and(|k| {
+                            s.res.insert(
+                                rn.clone(),
+                                Res {
+                                    key: k,
+                                    parent: None,
+                                    slot: None,
+                                },
+                            );
+                            true
+                        })
+                    } else {
+                        true
+                    };
+                    if promoted {
+                        s.split.entry(rn.clone()).or_default().insert(idx);
+                        self.transfers.insert(name.clone());
+                        let key = self
+                            .recinfo
+                            .field_drop_slot(&con, idx)
+                            .map(|t| t.to_string());
+                        return Some(Res {
+                            key,
+                            parent: Some(rn.clone()),
+                            slot: Some(idx),
+                        });
+                    }
+                }
+            }
+        }
         e.produces
     }
 
@@ -998,9 +1179,17 @@ impl Ck<'_> {
             out.push_str(&format!(" · moves{{{}}}", Self::sorted(moved.iter())));
         }
         if let Some(r) = produced {
-            match &r.key {
-                Some(k) => out.push_str(&format!(" · makes {k}")),
-                None => out.push_str(" · makes heap"),
+            let key = r.key.as_deref().unwrap_or("heap");
+            if let Some(p) = &r.parent {
+                out.push_str(&format!(
+                    " · makes {key} ^{p}[{}]",
+                    r.slot.map_or("-".to_string(), |i| i.to_string())
+                ));
+            } else {
+                match &r.key {
+                    Some(k) => out.push_str(&format!(" · makes {k}")),
+                    None => out.push_str(" · makes heap"),
+                }
             }
         }
     }
@@ -1064,10 +1253,17 @@ impl Ck<'_> {
                     self.dump_term(body, &s1, n, out)
                 }
             },
-            Term::Drop(v, ty, sp, body) => {
-                self.do_drop(v, ty, Some(*sp), &mut s1);
+            Term::Drop(v, ty, skip, sp, body) => {
+                self.do_drop(v, ty, skip, Some(*sp), &mut s1);
                 crate::core::indent(n, out);
                 match ty {
+                    Some(t) if !skip.is_empty() => out.push_str(&format!(
+                        "drop {v} : {t} skip{{{}}}\n",
+                        skip.iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )),
                     Some(t) => out.push_str(&format!("drop {v} : {t}\n")),
                     None => out.push_str(&format!("drop {v}\n")),
                 }
@@ -1138,6 +1334,7 @@ impl Ck<'_> {
                         Res {
                             key: k,
                             parent: None,
+                            slot: None,
                         },
                     );
                 }
@@ -1152,14 +1349,21 @@ impl Ck<'_> {
                 self.pat_binds(pat, &mut binds);
                 for (n, payload) in binds {
                     sa.bound.insert(n.clone());
-                    if payload && scrut_res.is_some() {
-                        sa.res.insert(
-                            n.clone(),
-                            Res {
-                                key: None,
-                                parent: sv.clone(),
-                            },
-                        );
+                    if let Some(pl) = payload {
+                        if scrut_res.is_some() {
+                            let owned = pl.key.is_some();
+                            sa.res.insert(
+                                n.clone(),
+                                Res {
+                                    key: pl.key,
+                                    parent: sv.clone(),
+                                    slot: Some(pl.slot),
+                                },
+                            );
+                            if owned {
+                                self.transfers.insert(n.clone());
+                            }
+                        }
                     }
                 }
                 crate::core::indent(n, out);
@@ -1240,7 +1444,7 @@ mod tests {
     /// `If`/`Case` branches of every `Rhs`), then `f` on each term.
     fn map_term(t: &mut Term, f: &mut impl FnMut(&mut Term)) {
         match t {
-            Term::Let(_, _, _, b) | Term::Drop(_, _, _, b) => map_term(b, f),
+            Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => map_term(b, f),
             Term::Ret(rhs, _) => match rhs {
                 Rhs::Op(_) => {}
                 Rhs::If(_, th, el) => {
@@ -1255,6 +1459,27 @@ mod tests {
             },
         }
         f(t);
+    }
+
+    /// Immutable walk over every `Term` — collect information without
+    /// mutating.  Calls `f` on each term.
+    fn for_each_term(t: &Term, f: &mut impl FnMut(&Term)) {
+        f(t);
+        match t {
+            Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => for_each_term(b, f),
+            Term::Ret(rhs, _) => match rhs {
+                Rhs::Op(_) => {}
+                Rhs::If(_, th, el) => {
+                    for_each_term(th, f);
+                    for_each_term(el, f);
+                }
+                Rhs::Case(_, arms) => {
+                    for (_, b) in arms {
+                        for_each_term(b, f);
+                    }
+                }
+            },
+        }
     }
 
     const OWNED_POLY: &str = include_str!("../tests/fixtures/land_owned_poly.axi");
@@ -1302,7 +1527,7 @@ mod tests {
         let errs = check_tampered(OWNED_POLY, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, ty, _, body) = t {
+                if let Term::Drop(v, ty, _, _, body) = t {
                     let inner = std::mem::replace(
                         body,
                         Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
@@ -1310,8 +1535,15 @@ mod tests {
                     *t = Term::Drop(
                         v.clone(),
                         ty.clone(),
+                        Vec::new(),
                         NO_SPAN,
-                        Box::new(Term::Drop(v.clone(), ty.clone(), NO_SPAN, inner)),
+                        Box::new(Term::Drop(
+                            v.clone(),
+                            ty.clone(),
+                            Vec::new(),
+                            NO_SPAN,
+                            inner,
+                        )),
                     );
                 }
             });
@@ -1329,12 +1561,12 @@ mod tests {
         let errs = check_tampered(OWNED_POLY, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(_v, ty, _, body) = t {
+                if let Term::Drop(_v, ty, _, _, body) = t {
                     let body = std::mem::replace(
                         body,
                         Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
                     );
-                    *t = Term::Drop("alien".into(), ty.clone(), NO_SPAN, body);
+                    *t = Term::Drop("alien".into(), ty.clone(), Vec::new(), NO_SPAN, body);
                 }
             });
         });
@@ -1353,7 +1585,7 @@ mod tests {
         let errs = check_tampered(OWNED_POLY, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, None, _, body) = t {
+                if let Term::Drop(v, None, _, _, body) = t {
                     if let Term::Let(x, rhs, _, rest) = body.as_mut() {
                         let (x2, rhs2) = (x.clone(), rhs.clone());
                         let rest2 = std::mem::replace(
@@ -1367,6 +1599,7 @@ mod tests {
                             Box::new(Term::Drop(
                                 v.clone(),
                                 Some("List$Int".into()),
+                                Vec::new(),
                                 NO_SPAN,
                                 rest2,
                             )),
@@ -1389,7 +1622,7 @@ mod tests {
         let errs = check_tampered(OWNED_POLY, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(_, Some(_), _, body) = t {
+                if let Term::Drop(_, Some(_), _, _, body) = t {
                     let body = std::mem::replace(
                         body,
                         Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
@@ -1413,7 +1646,7 @@ mod tests {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             let mut seen = false;
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(_, Some(_), _, body) = t {
+                if let Term::Drop(_, Some(_), _, _, body) = t {
                     if !seen {
                         seen = true;
                         let body = std::mem::replace(
@@ -1438,12 +1671,12 @@ mod tests {
         let errs = check_tampered(OWNED_POLY, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, Some(_), _, body) = t {
+                if let Term::Drop(v, Some(_), _, _, body) = t {
                     let body = std::mem::replace(
                         body,
                         Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
                     );
-                    *t = Term::Drop(v.clone(), Some("Wrong".into()), NO_SPAN, body);
+                    *t = Term::Drop(v.clone(), Some("Wrong".into()), Vec::new(), NO_SPAN, body);
                 }
             });
         });
@@ -1558,7 +1791,7 @@ mod tests {
         let errs = coherence_tampered(src, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "takeF").unwrap();
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(_, _, _, body) = t {
+                if let Term::Drop(_, _, _, _, body) = t {
                     let body = std::mem::replace(
                         body,
                         Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
@@ -1601,7 +1834,7 @@ mod tests {
         let errs = coherence_tampered(LINEAR_MOVE, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "take").unwrap();
             map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, _, sp, _) = t {
+                if let Term::Drop(v, _, _, sp, _) = t {
                     if v == "b" && *sp != NO_SPAN {
                         *sp = (sp.0, sp.0 + 1);
                     }
@@ -1736,5 +1969,115 @@ mod tests {
             v.contains("== coherence (Δ-3, move 2): 0/1 `%1` params agree"),
             "got:\n{v}"
         );
+    }
+
+    // --- F-1: per-field ownership (judgment-first) ---
+
+    const OWNED_HEAP_FIELD: &str = "\
+data Box = Box { v :: Int }
+data P = P { a :: Box %1, b :: Box %1 }
+takeA :: P %1 -> Int
+takeA p = v (a p)
+main :: Int
+main = takeA (P { a = Box { v = 1 }, b = Box { v = 2 } })
+";
+
+    const OWNED_SCALAR_FIELD: &str = "\
+data Q = Q { f :: Int %1 }
+takeF :: Q %1 -> Int
+takeF q = f q
+main :: Int
+main = takeF (Q { f = 1 })
+";
+
+    #[test]
+    fn owned_heap_field_read_rejects_unsafe_deep_drop() {
+        // `takeA p = v (a p)`: reads a `%1` heap field, then the pipeline
+        // deep-drops `p` — the destructor would free the already-escaped
+        // `a` (UAF).  The (Field·owned) rule classifies the read as a
+        // transfer that splits `p`, so the subsequent deep drop is rejected.
+        let m = msgs(&check_src(OWNED_HEAP_FIELD));
+        assert!(
+            m.iter()
+                .any(|s| s.contains("deep drop of `p` after one of its payloads was moved out")),
+            "got: {m:?}"
+        );
+    }
+
+    #[test]
+    fn remainder_drop_accepts_correct_skip() {
+        // tamper the deep drop of `p` into a remainder drop `skip{0}`
+        // (skips the extracted slot `a`) — the (Drop·skip) rule accepts it
+        // because skip==transferred.  The extracted `Box` binder becomes an
+        // independent resource after detach; add a flat drop before return.
+        let errs = check_tampered(OWNED_HEAP_FIELD, |fns| {
+            let f = fns.iter_mut().find(|f| f.name == "takeA").unwrap();
+            let mut binder = None;
+            // find the binder of `field a p`
+            for_each_term(&f.body, &mut |t| {
+                if let Term::Let(x, Rhs::Op(Op::Field { name, .. }), _, _) = t {
+                    if name == "a" {
+                        binder = Some(x.clone());
+                    }
+                }
+            });
+            let binder = binder.expect("takeA must have 'let <x> = field a p'");
+            map_term(&mut f.body, &mut |t| {
+                if let Term::Drop(v, ty, _, _, _body) = t {
+                    if v == "p" && ty.is_some() {
+                        let old = std::mem::replace(
+                            _body,
+                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                        );
+                        *t = Term::Drop(
+                            v.clone(),
+                            ty.clone(),
+                            vec![0],
+                            NO_SPAN,
+                            Box::new(Term::Drop(binder.clone(), None, Vec::new(), NO_SPAN, old)),
+                        );
+                    }
+                }
+            });
+        });
+        assert!(msgs(&errs).is_empty(), "got: {:?}", msgs(&errs));
+    }
+
+    #[test]
+    fn remainder_drop_rejects_wrong_skip() {
+        // tamper skip{1} (slot b — NOT transferred) — the (Drop·skip)
+        // rule requires skip to equal transferred {0}, so it errors.
+        let errs = check_tampered(OWNED_HEAP_FIELD, |fns| {
+            let f = fns.iter_mut().find(|f| f.name == "takeA").unwrap();
+            map_term(&mut f.body, &mut |t| {
+                if let Term::Drop(v, ty, _, _, body) = t {
+                    if v == "p" && ty.is_some() {
+                        let body = std::mem::replace(
+                            body,
+                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                        );
+                        *t = Term::Drop(v.clone(), ty.clone(), vec![1], NO_SPAN, body);
+                    }
+                }
+            });
+        });
+        let m = msgs(&errs);
+        assert!(m.iter().any(|s| s.contains("remainder drop")), "got: {m:?}");
+    }
+
+    #[test]
+    fn scalar_owned_field_no_false_positive() {
+        // `takeF q = f q` with `f :: Int %1`: a scalar `%1` field read is
+        // not a transfer (the destructor doesn't touch scalar slots), so the
+        // deep drop of `q` is still valid.  (Field·owned) must NOT fire.
+        assert_eq!(msgs(&check_src(OWNED_SCALAR_FIELD)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn owned_field_read_delta_view_facts() {
+        // the `--emit delta` view prints a `transferred %1-heap: …` fact
+        // for the function that reads a `%1` heap field via selector.
+        let v = delta_view(OWNED_HEAP_FIELD);
+        assert!(v.contains("transferred %1-heap: a\n"), "got:\n{v}");
     }
 }

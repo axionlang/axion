@@ -159,7 +159,7 @@ pub const NO_SPAN: Span = (0, 0);
 /// The span of a Core node — `NO_SPAN` for generated code.
 pub fn term_span(t: &Term) -> Span {
     match t {
-        Term::Let(_, _, sp, _) | Term::Drop(_, _, sp, _) | Term::Ret(_, sp) => *sp,
+        Term::Let(_, _, sp, _) | Term::Drop(_, _, _, sp, _) | Term::Ret(_, sp) => *sp,
     }
 }
 
@@ -178,7 +178,14 @@ pub enum Term {
     /// The `Option<String>` is the `data` type name of `x` (when known): if the
     /// type owns heap fields, the backend calls the recursive destructor
     /// `axion_drop_<T>` (deep-drop); otherwise, a flat `free`.
-    Drop(String, Option<String>, Span, Box<Term>),
+    /// The `Vec<usize>` is the **remainder skip set** (per-field ownership,
+    /// docs/per-field-ownership.md §3): a `deep` drop whose destructor PROVABLY
+    /// does not free the listed slot indices — the `%1` fields that were moved
+    /// out of `x` before the drop (`drop x : T skip {0}` frees the shell and
+    /// every heap slot except slot 0, which left). `F-1` (checker-only) leaves
+    /// lowering always emitting the empty set — the `(Drop·skip)` judgment rule
+    /// is added first and unit-tested; lowering fills it in `F-2`.
+    Drop(String, Option<String>, Vec<usize>, Span, Box<Term>),
     Ret(Rhs, Span),
 }
 
@@ -288,7 +295,7 @@ pub fn is_float_op(op: &str) -> bool {
 pub fn has_tail_self_call(f: &CoreFn) -> bool {
     fn term(t: &Term, name: &str) -> bool {
         match t {
-            Term::Let(_, _, _, body) | Term::Drop(_, _, _, body) => term(body, name),
+            Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => term(body, name),
             Term::Ret(rhs, _) => rhs_tail(rhs, name),
         }
     }
@@ -370,6 +377,10 @@ pub struct RecordInfo {
     /// EXTRACTED and escapes, the scrutinee must be freed shallowly (as with a
     /// concrete heap field) to avoid double-freeing the escaped payload.
     con_poly_fields: HashMap<String, HashSet<usize>>,
+    /// constructor → field indices declared `%1` (linear — per-field ownership,
+    /// docs/per-field-ownership.md): each such slot owns its own linear resource,
+    /// so a remainder drop may skip the moved-out ones (`Term::Drop` skip set).
+    con_owned_fields: HashMap<String, HashSet<usize>>,
 }
 
 impl RecordInfo {
@@ -414,6 +425,7 @@ impl RecordInfo {
             for c in &d.cons {
                 let mut slots = Vec::new();
                 let mut poly = HashSet::new();
+                let mut owned = HashSet::new();
                 for (i, f) in c.fields.iter().enumerate() {
                     // a `data`-typed field is a heap allocation owned by the
                     // record → must be reclaimed when the parent dies. Tuples and
@@ -426,6 +438,9 @@ impl RecordInfo {
                         // a bare type variable: possibly-heap once instantiated.
                         poly.insert(i);
                     }
+                    if f.mult == ast::Mult::One {
+                        owned.insert(i);
+                    }
                 }
                 if !slots.is_empty() {
                     r.needs_deep.insert(d.name.clone());
@@ -433,6 +448,9 @@ impl RecordInfo {
                 r.con_drop_slots.insert(c.name.clone(), slots);
                 if !poly.is_empty() {
                     r.con_poly_fields.insert(c.name.clone(), poly);
+                }
+                if !owned.is_empty() {
+                    r.con_owned_fields.insert(c.name.clone(), owned);
                 }
             }
         }
@@ -549,6 +567,33 @@ impl RecordInfo {
         self.field_is_heap(con, i) || self.field_is_poly(con, i)
     }
 
+    /// `true` if field `i` of `con` is declared `%1` — a linear field with its
+    /// own resource (per-field ownership, docs/per-field-ownership.md F-1).
+    pub fn field_is_owned(&self, con: &str, i: usize) -> bool {
+        self.con_owned_fields
+            .get(con)
+            .is_some_and(|s| s.contains(&i))
+    }
+
+    /// The drop slot of field `i` of `con`, if it is a `data`-typed heap field:
+    /// `Some((type name))` — the key the deep-drop destructor uses for it.
+    pub fn field_drop_slot(&self, con: &str, i: usize) -> Option<&str> {
+        let off = self.field_offset(con, i);
+        self.drop_slots(con)
+            .iter()
+            .find(|(o, _)| *o == off)
+            .map(|(_, t)| t.as_str())
+    }
+
+    /// `Some((con, idx))` for the named field `name` (its owning constructor),
+    /// or the field's index — used to resolve an `Op::Field` read to its slot.
+    pub fn named_field_slot(&self, name: &str) -> Option<(String, usize)> {
+        let con = self.field_owner.get(name)?;
+        let fields = self.con_fields.get(con)?;
+        let idx = fields.iter().position(|f| f == name)?;
+        Some((con.clone(), idx))
+    }
+
     /// Offset (in bytes) of a named field, and the list of its record's fields.
     pub fn field(&self, name: &str) -> Option<(i32, &[String])> {
         let con = self.field_owner.get(name)?;
@@ -616,6 +661,43 @@ fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
         }
     }
     fv.iter().any(|n| methods.contains(n))
+}
+
+/// True if the type contains a type variable anywhere.
+fn ty_has_var(t: &ast::Type) -> bool {
+    match t {
+        ast::Type::Var(_) => true,
+        ast::Type::App(f, a) => ty_has_var(f) || ty_has_var(a),
+        ast::Type::Arrow { from, to, .. } => ty_has_var(from) || ty_has_var(to),
+        ast::Type::Tuple(ts) => ts.iter().any(ty_has_var),
+        _ => false,
+    }
+}
+
+/// The name of a Phase B generic-owning TEMPLATE, if `f` is one: an
+/// unconstrained function with an owned `%1` parameter of a var-carrying
+/// heap-shaped (parametric `data` or tuple) type (`dropList :: List a %1 ->
+/// Int`). Such functions cannot compile natively (their param's drop-type key
+/// is unresolvable — the lowering flat-frees and leaks payloads); only the
+/// monomorphized specializations (`dropList$P`) are natively compilable.
+/// Mirrors the owning-generic detection in `infer` (`owned_meta`).
+fn owning_generic_var(f: &ast::Func) -> Option<String> {
+    if !f.constraints.is_empty() {
+        return None;
+    }
+    let sig = f.sig.as_ref()?;
+    let mults = sig.param_mults();
+    for (i, p) in sig.param_types().iter().enumerate() {
+        if mults.get(i) != Some(&ast::Mult::One) {
+            continue;
+        }
+        // heap-shaped owned params only (bare vars/arrows are i64, not owned)
+        let heap_shape = matches!(p, ast::Type::Tuple(_)) || p.head_con().is_some();
+        if heap_shape && ty_has_var(p) {
+            return Some(f.name.clone());
+        }
+    }
+    None
 }
 
 /// All names referenced in `f`'s bodies (clauses, guards, `where`),
@@ -2381,6 +2463,14 @@ pub(crate) fn lower_with(module: &ast::Module, inplace: &HashSet<Span>) -> Lower
         .iter()
         .flat_map(|c| c.methods.iter().map(|(m, _)| m.clone()))
         .collect();
+    // Phase B generic-owning TEMPLATES (interp-only): an unconstrained generic
+    // function with an owned `%1` parameter of a var-carrying parametric type
+    // (`dropList :: List a %1 -> Int`). Its param's drop-type key is
+    // unresolvable (flat free → payload leak), so it must not compile natively
+    // — only the monomorphized specializations (`dropList$P`, materialized
+    // before lowering) have concrete parameters and deep-drop.
+    let owning_generics: HashSet<String> =
+        module.funcs.iter().filter_map(owning_generic_var).collect();
 
     // TRANSITIVE native candidacy: a function is only compilable if, besides passing
     // `top_candidate`, all top-level functions it calls also are (fixpoint). Closes
@@ -2392,7 +2482,12 @@ pub(crate) fn lower_with(module: &ast::Module, inplace: &HashSet<Span>) -> Lower
     let mut native_ok: HashMap<String, usize> = module
         .funcs
         .iter()
-        .filter_map(|f| top_candidate(f, &data_types, &methods).map(|a| (f.name.clone(), a)))
+        .filter_map(|f| {
+            if owning_generics.contains(&f.name) {
+                return None;
+            }
+            top_candidate(f, &data_types, &methods).map(|a| (f.name.clone(), a))
+        })
         .collect();
     loop {
         let mut remove = None;
@@ -2582,13 +2677,14 @@ pub(crate) fn lower_with(module: &ast::Module, inplace: &HashSet<Span>) -> Lower
     let all_dty = build_all_drop_ty(&out);
     let empty = HashMap::new();
 
-    let mut result: Vec<CoreFn> = out
-        .into_iter()
-        .map(|f| {
-            let dty = all_dty.get(&f.name).unwrap_or(&empty);
-            insert_drops(f, &borrow_args, dty, &recinfo)
-        })
-        .collect();
+    let mut result: Vec<CoreFn> = Vec::with_capacity(out.len());
+    let mut skip_seeds: Vec<(String, Vec<usize>)> = Vec::new();
+    for f in out {
+        let dty = all_dty.get(&f.name).unwrap_or(&empty);
+        let (f, seeds) = insert_drops(f, &borrow_args, dty, &recinfo);
+        result.push(f);
+        skip_seeds.extend(seeds);
+    }
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
     result.extend(gen_destructors(&recinfo));
@@ -2601,6 +2697,9 @@ pub(crate) fn lower_with(module: &ast::Module, inplace: &HashSet<Span>) -> Lower
         &parametric_data,
         mono_seeds,
     ));
+    // F-3 skip-variant destructors: `axion_drop_T_skip_0` — reclaim all slots
+    // except the listed ones (transferred `%1` fields).
+    result.extend(gen_skip_destructors(&skip_seeds, &recinfo));
     // native session state machines (§11): also hand-managed (task states live in
     // the scheduler's nursery arena), so they bypass the drop analysis too.
     result.extend(session);
@@ -2968,6 +3067,71 @@ fn gen_mono_destructors(
     out
 }
 
+/// F-3 per-field ownership: skip-variant destructors `axion_drop_T_skip_0`.
+/// Each `(type_name, skip_set)` seed produces one destructor that reclaims
+/// every heap field of the type EXCEPT the listed slots (the transferred
+/// `%1` fields).  Skips are per-constructor: the destructor dispatches on
+/// the tag (same body shape as `gen_destructors`) but fires only the
+/// non-skipped field drops.  A seed whose skip covers all heap slots is
+/// dropped — the remaining work is just a shell free (flat).
+fn gen_skip_destructors(seeds: &[(String, Vec<usize>)], recinfo: &RecordInfo) -> Vec<CoreFn> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<(String, Vec<usize>)> = HashSet::new();
+    for (ty, skip) in seeds {
+        let mut sorted_skip = skip.clone();
+        sorted_skip.sort();
+        sorted_skip.dedup();
+        if sorted_skip.is_empty() || !seen.insert((ty.clone(), sorted_skip.clone())) {
+            continue;
+        }
+        // collect skipped field OFFSETS per constructor
+        let cons: Vec<(i64, Vec<(i32, DropWay)>)> = recinfo
+            .type_cons(ty)
+            .unwrap_or(&[])
+            .iter()
+            .map(|con| {
+                let tag = recinfo.tag(con).unwrap_or(0) as i64;
+                let skip_offs: HashSet<i32> = sorted_skip
+                    .iter()
+                    .map(|&i| recinfo.field_offset(con, i))
+                    .collect();
+                let remaining: Vec<(i32, DropWay)> = recinfo
+                    .drop_slots(con)
+                    .iter()
+                    .filter(|(off, _)| !skip_offs.contains(off))
+                    .map(|(off, f)| (*off, drop_way_named(f, recinfo)))
+                    .collect();
+                (tag, remaining)
+            })
+            .collect();
+        // if every constructor has zero remaining slots → pure shell free,
+        // same as flat `drop` — skip the destructor
+        if cons.iter().all(|(_, s)| s.is_empty()) {
+            continue;
+        }
+        let skip_name: String = sorted_skip
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("_");
+        let name = format!("axion_drop_{ty}_skip_{skip_name}");
+        let p = "_p".to_string();
+        let mut ctr = 0u32;
+        let single = cons.len() <= 1;
+        let body = destructor_body(&cons, single, recinfo.is_mixed_type(ty), &p, &mut ctr);
+        out.push(CoreFn {
+            name,
+            params: vec![p],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
+            body,
+        });
+    }
+    out
+}
+
 /// For each function, the `data` type of each droppable (owned `%1` parameters +
 /// results of `Make*`/calls that return heap). Feeds the deep-drop.
 /// The `data`-type name a value carries for deep-drop routing: the Phase A′
@@ -3014,7 +3178,7 @@ fn collect_drop_types(t: &Term, out: &mut HashMap<String, Option<String>>) {
             collect_rhs_drop_types(rhs, out);
             collect_drop_types(body, out);
         }
-        Term::Drop(_, _, _, body) => collect_drop_types(body, out),
+        Term::Drop(_, _, _, _, body) => collect_drop_types(body, out),
         Term::Ret(rhs, _) => collect_rhs_drop_types(rhs, out),
     }
 }
@@ -3067,7 +3231,7 @@ pub(crate) fn atom_is(v: &str, a: &Atom) -> bool {
 fn occurs_nonborrow(v: &str, t: &Term) -> bool {
     match t {
         Term::Let(_, rhs, _, body) => rhs_nonborrow(v, rhs) || occurs_nonborrow(v, body),
-        Term::Drop(_, _, _, body) => occurs_nonborrow(v, body),
+        Term::Drop(_, _, _, _, body) => occurs_nonborrow(v, body),
         Term::Ret(rhs, _) => rhs_nonborrow(v, rhs),
     }
 }
@@ -3185,7 +3349,7 @@ fn fv_drop_in(
                 bound.remove(x);
             }
         }
-        Term::Drop(_, _, _, body) => fv_drop_in(body, drp, ba, bound, out),
+        Term::Drop(_, _, _, _, body) => fv_drop_in(body, drp, ba, bound, out),
         Term::Ret(rhs, _) => fv_rhs_in(rhs, drp, ba, bound, out),
     }
 }
@@ -3264,7 +3428,7 @@ fn scan_body(t: &Term, ba: &BorrowArgs, alloc: &mut HashSet<String>, esc: &mut H
             }
             recur(body, alloc, esc);
         }
-        Term::Drop(_, _, _, body) => recur(body, alloc, esc),
+        Term::Drop(_, _, _, _, body) => recur(body, alloc, esc),
         Term::Ret(rhs, _) => match rhs {
             Rhs::Op(op) => scan_op_escapes(op, ba, esc),
             Rhs::If(_, t2, e2) => {
@@ -3329,10 +3493,10 @@ fn insert_drops(
     ba: &BorrowArgs,
     drop_ty: &HashMap<String, Option<String>>,
     recinfo: &RecordInfo,
-) -> CoreFn {
+) -> (CoreFn, Vec<(String, Vec<usize>)>) {
     let drp = droppable_vars(&f, ba);
     if drp.is_empty() {
-        return f;
+        return (f, Vec::new());
     }
     let mut e = Elab {
         drp,
@@ -3340,13 +3504,14 @@ fn insert_drops(
         ba,
         drop_ty,
         recinfo,
+        skip_seeds: Vec::new(),
     };
     let body = std::mem::replace(
         &mut f.body,
         Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
     );
     f.body = e.go(body, &HashSet::new());
-    f
+    (f, e.skip_seeds)
 }
 
 struct Elab<'a> {
@@ -3355,6 +3520,9 @@ struct Elab<'a> {
     ba: &'a BorrowArgs,
     drop_ty: &'a HashMap<String, Option<String>>,
     recinfo: &'a RecordInfo,
+    /// F-3 skip-variant destructors to generate: `(type_key, skip_slots)`.
+    /// Populated by `case_arms` for each remainder drop.
+    skip_seeds: Vec<(String, Vec<usize>)>,
 }
 
 /// `true` if any tail exit of `t` yields a value that could be a HEAP pointer
@@ -3373,7 +3541,9 @@ fn result_may_be_heap(t: &Term, recinfo: &RecordInfo) -> bool {
             }
             Rhs::Case(_, arms) => arms.iter().any(|(_, b)| result_may_be_heap(b, recinfo)),
         },
-        Term::Let(_, _, _, body) | Term::Drop(_, _, _, body) => result_may_be_heap(body, recinfo),
+        Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => {
+            result_may_be_heap(body, recinfo)
+        }
     }
 }
 
@@ -3416,7 +3586,7 @@ fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
 fn term_mentions_any(t: &Term, set: &HashSet<String>) -> bool {
     match t {
         Term::Let(_, rhs, _, body) => rhs_mentions_any(rhs, set) || term_mentions_any(body, set),
-        Term::Drop(v, _, _, body) => set.contains(v) || term_mentions_any(body, set),
+        Term::Drop(v, _, _, _, body) => set.contains(v) || term_mentions_any(body, set),
         Term::Ret(rhs, _) => rhs_mentions_any(rhs, set),
     }
 }
@@ -3468,6 +3638,9 @@ fn op_result_may_be_heap(op: &Op, recinfo: &RecordInfo) -> bool {
 /// deep-dropped, or the deep-drop would double-free the transferred field
 /// (`case xs of Cons y ys -> … ys …`). A field bound-but-unused (or a wildcard)
 /// stays owned by the scrutinee, so a deep drop still (correctly) frees it.
+/// Replaced by the per-slot `transferred_slots` (F-2 per-field ownership) —
+/// kept for the non-`%1`-field residual (polymorphic-drop-plan.md §8).
+#[allow(dead_code)]
 fn transfers_heap_field(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
     if let CPat::Con(con, subpats) = pat {
         subpats.iter().enumerate().any(|(i, sp)| {
@@ -3476,6 +3649,45 @@ fn transfers_heap_field(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
             // not merely borrowed) had its ownership transferred → the scrutinee
             // must be freed shallowly.
             recinfo.field_transfers_heap(con, i) && occurs_nonborrow(n, body)
+        })
+    } else {
+        false
+    }
+}
+
+/// F-2 (per-field ownership): the `%1`-heap fields whose extraction from a
+/// linear scrutinee transferred ownership — their slot left the record.
+/// The transfer happens at BINDING time (the extraction itself moves the
+/// slot), so ALL `%1`-heap Var binders are transferred.  The binder's
+/// reclamation is handled by Auto-Drop (the binder enters `drp`); the
+/// remainder only reclaims non-`%1` fields and the shell.
+fn transferred_slots(pat: &CPat, recinfo: &RecordInfo) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    if let CPat::Con(con, subpats) = pat {
+        for (i, sp) in subpats.iter().enumerate() {
+            if let CPat::Var(_) = sp {
+                if recinfo.field_is_owned(con, i) && recinfo.field_transfers_heap(con, i) {
+                    out.insert(i);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `true` if a non-`%1` heap (or poly) field binding ESCAPES the arm —
+/// ownership transferred the old way (used in a non-borrowing position).
+/// When the transferred slots are `%1` (handled by `transferred_slots`),
+/// this predicate returns `false` — they are kept separate.
+fn has_non_owning_transfer(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
+    if let CPat::Con(con, subpats) = pat {
+        subpats.iter().enumerate().any(|(i, sp)| {
+            let CPat::Var(n) = sp else { return false };
+            // non-`%1` transfer: the field could be heap/poly but NOT `%1`-heap,
+            // AND the binding escapes (non-borrow use).
+            recinfo.field_transfers_heap(con, i)
+                && !recinfo.field_is_owned(con, i)
+                && occurs_nonborrow(n, body)
         })
     } else {
         false
@@ -3526,6 +3738,7 @@ impl Elab<'_> {
                             Box::new(Term::Drop(
                                 s.to_string(),
                                 ty.clone(),
+                                Vec::new(),
                                 sp,
                                 Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))), sp)),
                             )),
@@ -3536,6 +3749,7 @@ impl Elab<'_> {
                         Term::Drop(
                             s.to_string(),
                             ty.clone(),
+                            Vec::new(),
                             sp,
                             Box::new(Term::Ret(Rhs::Op(op), sp)),
                         )
@@ -3563,9 +3777,10 @@ impl Elab<'_> {
                 sp,
                 Box::new(self.place_deep_drop(*body, s, ty, alias)),
             ),
-            Term::Drop(v, ty2, _, body) => Term::Drop(
+            Term::Drop(v, ty2, _, _, body) => Term::Drop(
                 v,
                 ty2,
+                Vec::new(),
                 sp,
                 Box::new(self.place_deep_drop(*body, s, ty, alias)),
             ),
@@ -3611,7 +3826,7 @@ impl Elab<'_> {
                 }
                 self.collect_payload_aliases(body, alias);
             }
-            Term::Drop(_, _, _, body) => self.collect_payload_aliases(body, alias),
+            Term::Drop(_, _, _, _, body) => self.collect_payload_aliases(body, alias),
             Term::Ret(rhs, _) => match rhs {
                 Rhs::Op(_) => {}
                 Rhs::If(_, th, el) => {
@@ -3633,9 +3848,9 @@ impl Elab<'_> {
     fn go(&mut self, t: Term, live_out: &HashSet<String>) -> Term {
         let sp = term_span(&t);
         match t {
-            Term::Drop(v, ty, _, body) => {
+            Term::Drop(v, ty, _, _, body) => {
                 let b = self.go(*body, live_out);
-                Term::Drop(v, ty, sp, Box::new(b))
+                Term::Drop(v, ty, Vec::new(), sp, Box::new(b))
             }
             Term::Ret(rhs, _) => match rhs {
                 Rhs::Op(op) => {
@@ -3651,7 +3866,7 @@ impl Elab<'_> {
                     let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))), sp);
                     for v in dying {
                         let ty = self.dty(&v);
-                        inner = Term::Drop(v, ty, term_span(&inner), Box::new(inner));
+                        inner = Term::Drop(v, ty, Vec::new(), term_span(&inner), Box::new(inner));
                     }
                     Term::Let(tmp, Rhs::Op(op), sp, Box::new(inner))
                 }
@@ -3682,7 +3897,7 @@ impl Elab<'_> {
                     let mut inner = body2;
                     for v in dying {
                         let ty = self.dty(&v);
-                        inner = Term::Drop(v, ty, term_span(&inner), Box::new(inner));
+                        inner = Term::Drop(v, ty, Vec::new(), term_span(&inner), Box::new(inner));
                     }
                     Term::Let(x, Rhs::Op(op), sp, Box::new(inner))
                 }
@@ -3725,26 +3940,74 @@ impl Elab<'_> {
         for v in fth.difference(&fel) {
             if !live_out.contains(v) {
                 let sp = term_span(&el2);
-                el2 = Term::Drop(v.clone(), self.dty(v), sp, Box::new(el2));
+                el2 = Term::Drop(v.clone(), self.dty(v), Vec::new(), sp, Box::new(el2));
             }
         }
         for v in fel.difference(&fth) {
             if !live_out.contains(v) {
                 let sp = term_span(&th2);
-                th2 = Term::Drop(v.clone(), self.dty(v), sp, Box::new(th2));
+                th2 = Term::Drop(v.clone(), self.dty(v), Vec::new(), sp, Box::new(th2));
             }
         }
         (th2, el2)
     }
 
     /// Elaborates the arms of a `case`, balancing across arms and freeing the
-    /// scrutinee (if droppable and dying) at the head of each arm.
+    /// scrutinee (if droppable and dying) at the head of each arm.  F-2/per-field
+    /// ownership: `%1`-heap fields extracted from a linear scrutinee are
+    /// transferred at binding time — the remainder of the scrutinee is freed by
+    /// a per-field drop of each non-transferred heap slot followed by a flat
+    /// free of the shell; non-`%1` transfers stay shallow-free as before.
     fn case_arms(
         &mut self,
         scrut: &Atom,
         arms: Vec<(CPat, Term)>,
         live_out: &HashSet<String>,
     ) -> Vec<(CPat, Term)> {
+        // F-2: per-slot transferred (%1-heap) and the residual non-owning path
+        let transferred_slots: Vec<HashSet<usize>> = arms
+            .iter()
+            .map(|(pat, _)| transferred_slots(pat, self.recinfo))
+            .collect();
+        let has_owned_fields: Vec<bool> = arms
+            .iter()
+            .map(|(pat, _)| {
+                if let CPat::Con(con, subs) = pat {
+                    subs.iter().enumerate().any(|(fi, sp)| {
+                        let CPat::Var(_) = sp else { return false };
+                        self.recinfo.field_is_owned(con, fi)
+                            && self.recinfo.field_transfers_heap(con, fi)
+                    })
+                } else {
+                    false
+                }
+            })
+            .collect();
+        let non_owning_transfer: Vec<bool> = arms
+            .iter()
+            .map(|(pat, body)| has_non_owning_transfer(pat, body, self.recinfo))
+            .collect();
+        // per-arm indices of non-`%1` heap/poly fields that escaped
+        // (occur_nonborrow) — needed AFTER the body is consumed by go().
+        let non_owning_slots: Vec<HashSet<usize>> = arms
+            .iter()
+            .map(|(pat, body)| {
+                let mut out = HashSet::new();
+                if let CPat::Con(con, subs) = pat {
+                    for (fi, sp) in subs.iter().enumerate() {
+                        if let CPat::Var(n) = sp {
+                            if self.recinfo.field_transfers_heap(con, fi)
+                                && !self.recinfo.field_is_owned(con, fi)
+                                && occurs_nonborrow(n, body)
+                            {
+                                out.insert(fi);
+                            }
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
         // free variables of each arm
         let fvs: Vec<HashSet<String>> = arms
             .iter()
@@ -3753,12 +4016,6 @@ impl Elab<'_> {
                 fv_drop(b, &self.drp, self.ba, &mut s);
                 s
             })
-            .collect();
-        // per arm: does it transfer a heap field of the scrutinee out (→ shallow
-        // free of the scrutinee)? Computed on the original body before elaboration.
-        let transfers: Vec<bool> = arms
-            .iter()
-            .map(|(pat, body)| transfers_heap_field(pat, body, self.recinfo))
             .collect();
         let union: HashSet<String> = fvs.iter().flatten().cloned().collect();
 
@@ -3769,46 +4026,115 @@ impl Elab<'_> {
 
         let mut out = Vec::with_capacity(arms.len());
         for (i, (pat, body)) in arms.into_iter().enumerate() {
-            let mut b = self.go(body, live_out);
-            // frees the scrutinee. Deep-drop (frees the payloads too) only when it
-            // is provably safe; otherwise a shallow (shell-only) free — safe, but
-            // may leak the payloads (the deferred extracted-field gap). A deep drop
-            // is UNSAFE when:
-            //  · transfers=true — the arm moved a heap field of the scrutinee OUT
-            //    (`Cons y ys -> … ys …`); freeing it would double-free the movee;
-            //  · the arm returns a value that could ALIAS the scrutinee's payload
-            //    (`Cons y ys -> inner y`, a heap sub-object of the borrowed `y`);
-            //    the deep drop would free a value that escapes → double-free/UAF.
-            // When deep IS safe, place it at the arm's EXITS (after the result is
-            // computed), not the head, so a borrowed scalar field (`a y`) is read
-            // before its owner is freed.
-            if let Some(s) = &scrut_drop {
-                let deep_safe = !transfers[i] && !result_may_be_heap(&b, self.recinfo);
-                if deep_safe {
-                    let ty = self.dty(s);
-                    // the payload-alias set: the scrutinee, its heap/poly field
-                    // bindings, and everything derived from them by a heap op.
-                    let mut alias = HashSet::from([s.clone()]);
-                    if let CPat::Con(con, subs) = &pat {
-                        for (fi, sp) in subs.iter().enumerate() {
-                            if let CPat::Var(n) = sp {
-                                if self.recinfo.field_transfers_heap(con, fi) {
-                                    alias.insert(n.clone());
-                                }
+            // make all `%1`-heap field binders droppable, and pre-drop the
+            // unused ones at the arm head (they own their slot's value but are
+            // never touched — Auto-Drop has no entry path for case binders).
+            let mut unused_binders: Vec<(String, Option<String>)> = Vec::new();
+            if let CPat::Con(con, subs) = &pat {
+                for (fi, sp) in subs.iter().enumerate() {
+                    if let CPat::Var(n) = sp {
+                        if self.recinfo.field_is_owned(con, fi)
+                            && self.recinfo.field_transfers_heap(con, fi)
+                        {
+                            self.drp.insert(n.clone());
+                            if !term_mentions_any(&body, &[n.clone()].into_iter().collect()) {
+                                let key =
+                                    self.recinfo.field_drop_slot(con, fi).map(|t| t.to_string());
+                                unused_binders.push((n.clone(), key));
                             }
                         }
                     }
-                    self.collect_payload_aliases(&b, &mut alias);
-                    b = self.place_deep_drop(b, s, &ty, &alias);
+                }
+            }
+            let result_heap = result_may_be_heap(&body, self.recinfo);
+            let mut b = self.go(body, live_out);
+            for (n, key) in unused_binders {
+                b = Term::Drop(n, key, Vec::new(), term_span(&b), Box::new(b));
+            }
+            if let Some(s) = &scrut_drop {
+                let skip = &transferred_slots[i];
+                let deep_safe = !non_owning_transfer[i] && !result_heap;
+                if deep_safe {
+                    if has_owned_fields[i] {
+                        // F-3 remainder drop — `drop s : T skip{…}`.
+                        let ty = if let CPat::Con(con, _) = &pat {
+                            Some(con.clone())
+                        } else {
+                            self.dty(s)
+                        };
+                        let sp = term_span(&b);
+                        let skip_vec: Vec<usize> = skip.iter().copied().collect();
+                        if !skip_vec.is_empty() && ty.is_some() {
+                            self.skip_seeds
+                                .push((ty.clone().unwrap(), skip_vec.clone()));
+                        }
+                        b = Term::Drop(s.clone(), ty, skip_vec, sp, Box::new(b));
+                    } else {
+                        // full deep drop — the old path, for patterns with no
+                        // `%1`-heap fields
+                        let ty = self.dty(s);
+                        let mut alias = HashSet::from([s.clone()]);
+                        if let CPat::Con(con, subs) = &pat {
+                            for (fi, sp) in subs.iter().enumerate() {
+                                if let CPat::Var(n) = sp {
+                                    if self.recinfo.field_transfers_heap(con, fi) {
+                                        alias.insert(n.clone());
+                                    }
+                                }
+                            }
+                        }
+                        self.collect_payload_aliases(&b, &mut alias);
+                        b = self.place_deep_drop(b, s, &ty, &alias);
+                    }
+                } else if non_owning_transfer[i] {
+                    // inline remainder for non-`%1` transfers: per-field drops
+                    // of the non-escaped heap slots, then flat free of the shell.
+                    let non_own = &non_owning_slots[i];
+                    if let CPat::Con(con, subs) = &pat {
+                        let arity = self.recinfo.con_arity(con).unwrap_or(0);
+                        for fi in 0..arity {
+                            if self.recinfo.field_transfers_heap(con, fi) && !non_own.contains(&fi)
+                            {
+                                let key =
+                                    self.recinfo.field_drop_slot(con, fi).map(|t| t.to_string());
+                                let off = self.recinfo.field_offset(con, fi);
+                                if let Some(n) = subs.get(fi).and_then(|sp| {
+                                    if let CPat::Var(n) = sp {
+                                        Some(n.clone())
+                                    } else {
+                                        None
+                                    }
+                                }) {
+                                    b = Term::Drop(n, key, Vec::new(), term_span(&b), Box::new(b));
+                                } else {
+                                    let tmp = self.fresh();
+                                    b = Term::Drop(
+                                        tmp.clone(),
+                                        key,
+                                        Vec::new(),
+                                        term_span(&b),
+                                        Box::new(b),
+                                    );
+                                    b = Term::Let(
+                                        tmp,
+                                        Rhs::Op(Op::LoadRaw(Atom::Var(s.clone()), off)),
+                                        term_span(&b),
+                                        Box::new(b),
+                                    );
+                                }
+                            }
+                        }
+                        b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
+                    }
                 } else {
-                    b = Term::Drop(s.clone(), None, term_span(&b), Box::new(b));
+                    b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                 }
             }
             // cross-arm balancing: droppable used in another arm but not this one
             for v in union.difference(&fvs[i]) {
                 if !live_out.contains(v) {
                     let sp = term_span(&b);
-                    b = Term::Drop(v.clone(), self.dty(v), sp, Box::new(b));
+                    b = Term::Drop(v.clone(), self.dty(v), Vec::new(), sp, Box::new(b));
                 }
             }
             out.push((pat, b));

@@ -904,6 +904,40 @@ fn deep_drop_reclaims_nested_objects() {
         // payload-alias tracking: a heap sub-object (`inner y`) passed to a tail
         // call must be freed AFTER the call (bind-then-drop); whole list reclaimed.
         ("poly_payload_borrow_alias.axi", "3\n", "9 allocs, 9 frees"),
+        // Phase B (generic-owning corner): a GENERIC function owns its `%1`
+        // param (`head1 :: List a %1 -> Int`). The template cannot deep-drop
+        // (its param's drop-type key is unresolvable), so it is monomorphized
+        // per call site: `head1$P` drops `List P %1` via `axion_drop_List$P` —
+        // 3 Cons + 3 P = 6 allocs, all freed.
+        ("poly_payload_generic_drop.axi", "1\n", "6 allocs, 6 frees"),
+        // Phase B, nested element type: `List (Maybe P)` → the spec
+        // `head1$Maybe$P` and the doubly-specialized destructor
+        // `axion_drop_List$Maybe$P` — 3 Cons + 3 Some + 3 P = 9 allocs, freed.
+        (
+            "poly_payload_generic_nested.axi",
+            "1\n",
+            "9 allocs, 9 frees",
+        ),
+        // Phase B, transitive: `wipe` calls the owning-generic `probe` over the
+        // same var — the worklist pulls `probe$P` when `wipe$P` is materialized.
+        (
+            "poly_payload_generic_compose.axi",
+            "1\n",
+            "6 allocs, 6 frees",
+        ),
+        // F-2, per-field ownership: a `%1`-heap field extracted from a linear
+        // record — the remainder reclaims the shell and non-extracted fields;
+        // the extracted binder's Auto-Drop frees the moved-out payload.
+        ("land_field_split_owned.axi", "3\n", "3 allocs, 3 frees"),
+        // F-3, mixed transfers: `a :: Box %1` is extracted, `b :: Box` stays
+        // with the record — the skip-variant destructor reclaims `b` + shell.
+        ("land_field_mixed.axi", "3\n", "3 allocs, 3 frees"),
+        // Non-`%1` poly-payload gap: inline remainder reclaims the non-escaped
+        // head payload when the tail of a polymorphic list is transferred.
+        ("poly_payload_gap.axi", "0\n", "6 allocs, 6 frees"),
+        // Multi-var owning params: `Tree a b %1` with two type vars specialized
+        // to `Int` — the spec name uses a combined mangle `sumTree$Int$Int`.
+        ("land_owned_multi.axi", "0\n", "3 allocs, 3 frees"),
     ] {
         let out = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])
@@ -930,6 +964,51 @@ fn deep_drop_reclaims_nested_objects() {
     assert!(
         String::from_utf8_lossy(&core.stdout).contains("axion_drop_Box"),
         "expected the generated destructor 'axion_drop_Box' in Core"
+    );
+    // Phase B: the monomorphized owning-generic spec and its specialized
+    // destructor appear in Core; the generic template does not compile natively.
+    let core = axionc()
+        .args(["--emit", "core", &fixture("poly_payload_generic_drop.axi")])
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    assert!(
+        core.contains("head1$P") && core.contains("axion_drop_List$P"),
+        "expected the owning-generic spec 'head1$P' and 'axion_drop_List$P' in Core"
+    );
+    assert!(
+        !core
+            .lines()
+            .any(|l| l.starts_with("head1 ") || l.starts_with("head1  =")),
+        "the generic-owning template 'head1' must not be compiled natively"
+    );
+    // nested instantiation: `List (Maybe P)` → `head1$Maybe$P` + `List$Maybe$P`
+    let core = axionc()
+        .args([
+            "--emit",
+            "core",
+            &fixture("poly_payload_generic_nested.axi"),
+        ])
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    assert!(
+        core.contains("head1$Maybe$P") && core.contains("axion_drop_List$Maybe$P"),
+        "expected 'head1$Maybe$P' and 'axion_drop_List$Maybe$P' in Core"
+    );
+    // transitive: `wipe` pulls `probe$P`; the compose spec calls it directly.
+    let core = axionc()
+        .args([
+            "--emit",
+            "core",
+            &fixture("poly_payload_generic_compose.axi"),
+        ])
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    assert!(
+        core.contains("wipe$P") && core.contains("probe$P"),
+        "expected the transitive specs 'wipe$P' and 'probe$P' in Core"
     );
 }
 

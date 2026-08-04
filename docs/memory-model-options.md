@@ -325,14 +325,23 @@ witness B is the escape hatch when mono's cost shows up on a specific target.
    and `scripts/dump-oracle.sh` (line-sorted `--emit core` snapshot) — the drop
    path is the most memory-safety-critical code in the compiler.
 
-3. **Phase B — close the generic-owning corner.** Once the typed IR exists, the
-   choice is cheap to try in *either* direction:
-   - monomorphize the owning generic function (consistent with destructor /
-     typeclass monomorphization), **or**
-   - witness-pass the destructor pointer (Phase B-fallback) the moment a
-     code-bloat spike matters.
-   The small number of owning-generics (most generics borrow and thus never drop)
-   keeps both options cheap; the decision can be made on measured data.
+3. **Phase B — close the generic-owning corner.** ✅ **done (monomorphization)** —
+   an unconstrained generic function with an owned `%1` parameter of a
+   var-carrying parametric type (`dropList :: List a %1 -> Int`) has an
+   unresolvable drop-type key at lowering (flat free → payload leak). Phase B
+   monomorphizes it per concrete call site, mirroring the typeclass pipeline
+   (`infer.rs::discharge_owning`): obligations collected at each use, a worklist
+   closes transitive specialization (`wipe$P` pulls `probe$P`), the spec's
+   signature is substituted by the concrete element type (`a` ← `Maybe P`,
+   full-type, via `SpecPlan.repl`), and the owning-generic TEMPLATE is excluded
+   from native candidacy (interp-only, like methods). The spec drops through the
+   existing monomorphized destructors (`axion_drop_List$P`). Witness-passing
+   stays the documented fallback if a code-bloat spike is ever measured.
+   Constrained owning generics (`Eq a => List a %1 -> …`) were already covered
+   by the typeclass pipeline. Known residuals: multi-var owning params
+   (`Tree a b %1`) stay interp-only (single-var scope), and recursive
+   consumption of an owned list with a heap payload still hits the deferred
+   extracted-field gap (`per-field-ownership.md` F-1).
 4. **Future bridge to the paper's dependent sorts.** The same annotated-type
    infrastructure that powers drop is what a *classical/linear (parameter/resource)
    sort* and indexed types will later consume.

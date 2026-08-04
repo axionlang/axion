@@ -445,16 +445,39 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::RBrace, "'}' in the record")?;
             Ok(ConDecl { name, fields })
         } else {
-            // positional constructor: Con atype*. Stop at the contextual keyword
-            // `deriving` (a lowercase ident that would otherwise parse as a field
-            // type variable).
+            // positional constructor: Con atype*.  A positional field
+            // wrapped in parens `(Box %1)` has the `%1` consumed inside
+            // `parse_type` (the LParen branch of `parse_atype`) — walk
+            // the parens manually so the multiplicities are visible.
             let mut fields = Vec::new();
             while self.starts_atype() && !self.at_kw("deriving") {
-                let ty = self.parse_atype()?;
+                let (ty, mult) = if self.at(&Tok::LParen) {
+                    self.bump(); // (
+                    let t = self.parse_btype()?;
+                    let m = if let Some(LTok::Tok(Tok::Mult(mul))) = self.cur() {
+                        let m = parse_mult(mul);
+                        self.pos += 1;
+                        m
+                    } else {
+                        Mult::Many
+                    };
+                    self.expect(&Tok::RParen, "')' in the field type")?;
+                    (t, m)
+                } else {
+                    let t = self.parse_atype()?;
+                    let m = if let Some(LTok::Tok(Tok::Mult(mul))) = self.cur() {
+                        let m = parse_mult(mul);
+                        self.pos += 1;
+                        m
+                    } else {
+                        Mult::Many
+                    };
+                    (t, m)
+                };
                 fields.push(Field {
                     name: String::new(),
                     ty,
-                    mult: Mult::Many,
+                    mult,
                 });
             }
             Ok(ConDecl { name, fields })
