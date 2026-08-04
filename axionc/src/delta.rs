@@ -1059,6 +1059,12 @@ impl Ck<'_> {
                             );
                             if owned {
                                 self.transfers.insert(n.clone());
+                                if let Some(ref sv) = sv {
+                                    sa.split
+                                        .entry(sv.clone())
+                                        .or_default()
+                                        .insert(pl.slot);
+                                }
                             }
                         }
                     }
@@ -1364,6 +1370,12 @@ impl Ck<'_> {
                             );
                             if owned {
                                 self.transfers.insert(n.clone());
+                                if let Some(ref sv) = sv {
+                                    sa.split
+                                        .entry(sv.clone())
+                                        .or_default()
+                                        .insert(pl.slot);
+                                }
                             }
                         }
                     }

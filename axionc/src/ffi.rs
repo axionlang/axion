@@ -2,7 +2,6 @@
 //!
 //! `foreign "lib.so" name :: …` loads `lib.so` with `RTLD_NOW | RTLD_GLOBAL`,
 #![allow(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
 //! making its symbols visible to the `dlsym(RTLD_DEFAULT)` resolution the
 //! three executors use (interp, `--dev`/JIT, `--release`/clang). Without a
 //! string → only symbols **already** loaded resolve (libc + axionc runtime).
@@ -25,8 +24,12 @@ pub fn load_libs(libs: &[String]) -> Result<(), String> {
     for lib in libs {
         let c =
             CString::new(lib.as_str()).map_err(|_| format!("invalid FFI library path: '{lib}'"))?;
+        // SAFETY: `dlopen` loads a shared library; `c` is a valid
+        // NUL-terminated C string, and the flags are POSIX-conforming.
         let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
         if h.is_null() {
+            // SAFETY: `dlerror` returns a static error string; the null
+            // check guards against the rare case where it returns NULL.
             let err = unsafe {
                 let e = dlerror();
                 if e.is_null() {

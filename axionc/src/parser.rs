@@ -1,4 +1,3 @@
-#![allow(clippy::pedantic)]
 //! Recursive-descent parser for the L0/L1 subset (see `docs/grammar.md`).
 //!
 //! Consumes the already-laid-out tokens ([`crate::layout`]) and produces the AST.

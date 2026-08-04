@@ -1,4 +1,3 @@
-#![allow(clippy::string_slice)]
 //! Lexical analysis of `.axi` with `logos` (§18) + a line table for spans.
 //!
 //! The lexer ignores spaces, newlines and comments; the (line, column) position
@@ -123,7 +122,7 @@ pub enum Tok {
     #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().ok())]
     Float(f64),
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
-    #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(&lex.slice()[2..], 16).ok())]
+    #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(lex.slice().strip_prefix("0x").unwrap_or(""), 16).ok())]
     Int(i64),
     #[regex(r#""([^"\\]|\\.)*""#, |lex| unquote(lex.slice()))]
     Str(String),
@@ -137,7 +136,10 @@ pub enum Tok {
 
 fn unquote(s: &str) -> String {
     // strip quotes and resolve simple escapes
-    let inner = &s[1..s.len() - 1];
+    let inner = s
+        .strip_prefix('"')
+        .and_then(|t| t.strip_suffix('"'))
+        .unwrap_or(s);
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {

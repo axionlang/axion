@@ -2,7 +2,6 @@
 //! skeleton (§17). It is the embryo of the `--dev` fast-path; the native backend
 //! (Cranelift/LLVM) is the target of later phases.
 #![allow(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
 #![allow(clippy::many_single_char_names)]
 #![allow(clippy::items_after_statements)]
 #![allow(clippy::pedantic)]
@@ -591,6 +590,8 @@ extern "C" {
 
 fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
     let cname = std::ffi::CString::new(name).map_err(|_| "invalid FFI name".to_string())?;
+    // SAFETY: `dlsym` with RTLD_DEFAULT searches the process symbol table;
+    // the result is either a valid function pointer or NULL.
     let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
     if p.is_null() {
         return Err(format!("FFI symbol not found: '{name}'"));
@@ -608,6 +609,9 @@ fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
         };
     }
     type P = *mut std::ffi::c_void;
+    // SAFETY: `p` is a valid function pointer returned by `dlsym`; the
+    // transmute selects the correct ABI arity (0–3) based on the argument
+    // count, which matches the user-declared foreign signature.
     let r = unsafe {
         match args.len() {
             0 => std::mem::transmute::<P, extern "C" fn() -> i64>(p)(),

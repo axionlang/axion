@@ -92,7 +92,7 @@ le$Float x y  =
 le$Int x y  =
 length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
-      let _d1000000 = field v a  ; Δ{a b p}
+      let _d1000000 = field v a  ; Δ{a}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
@@ -254,7 +254,7 @@ range lo hi  =
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
     ret con Nil  ; Δ{} · makes List$Int
-      ret _d1000000  ; Δ{b p}
+      ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret "false"  ; Δ{}
       ret if _t0 then
