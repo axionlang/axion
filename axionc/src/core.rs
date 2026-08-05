@@ -1149,7 +1149,7 @@ impl Lower<'_> {
             ("bufIota", 1) => return self.rtcall("axion_buf_iota", &args, true, buf),
             ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
             ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
-            ("free", 1) => return self.rtcall("axion_buf_free", &args, false, buf),
+            ("free", 1) => return self.rtcall("axion_buf_free", &args, true, buf),
             ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
             // `imperative e` = e (the imperative block is identity; §5)
             ("imperative", 1) => return self.op(args[0], buf),

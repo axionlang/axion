@@ -549,6 +549,10 @@ foreign ax_net_send :: Int -> String -> Int
 foreign ax_net_recv :: Int -> String
 foreign ax_net_close :: Int -> Int
 
+-- dense Buffer FFI: List ↔ Buffer conversion (Buffer ops via imperative blocks)
+foreign axion_list_to_buf :: List Int -> Int
+foreign axion_buf_to_list :: Int -> List Int
+
 compose :: (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
 range :: Int -> Int -> List Int
@@ -608,9 +612,9 @@ concat xs = case xs of
 zipWith :: (a -> b -> c) -> List a -> List b -> List c
 zipWith f xs ys = case xs of
   Nil -> Nil
-  Cons a as -> case ys of
+  Cons a as_ -> case ys of
     Nil -> Nil
-    Cons b bs -> Cons (f a b) (zipWith f as bs)
+    Cons b bs -> Cons (f a b) (zipWith f as_ bs)
 zip :: List a -> List b -> List (a, b)
 zip xs ys = zipWith (\\a b -> (a, b)) xs ys
 unlines :: List String -> String
@@ -1096,17 +1100,44 @@ fn resolve_imports(module: &mut ast::Module, path: &str, diags: &mut Diagnostics
         };
         resolve_imports(&mut imported, file.to_str().unwrap_or(""), diags);
         // prepend imported definitions, skipping those already defined locally.
-        // qualified imports are not resolved yet (would need namespace mangling).
-        if import.qualified {
-            continue;
-        }
+        // qualified imports: prefix names with the alias (or last module component).
+        let prefix = if import.qualified {
+            import
+                .alias
+                .clone()
+                .or_else(|| import.module.last().cloned())
+                .map(|a| format!("{a}_"))
+        } else {
+            None
+        };
         for d in imported.datas.into_iter().rev() {
-            if !has_data.contains(&d.name) {
+            let name = if let Some(ref p) = prefix {
+                p.clone() + &d.name
+            } else {
+                d.name.clone()
+            };
+            if !has_data.contains(&name) {
+                let mut d = d;
+                d.name = name;
                 module.datas.insert(0, d);
             }
         }
-        for f in imported.funcs.into_iter().rev() {
-            if !has_func.contains(&f.name) {
+        for mut f in imported.funcs.into_iter().rev() {
+            let name = if let Some(ref p) = prefix {
+                p.clone() + &f.name
+            } else {
+                f.name.clone()
+            };
+            if !has_func.contains(&name) {
+                f.name = name;
+                // rename self-references in where-bindings too
+                for w in &mut f.clauses {
+                    for wf in &mut w.wher {
+                        if let Some(ref p) = prefix {
+                            wf.name = p.clone() + &wf.name;
+                        }
+                    }
+                }
                 module.funcs.insert(0, f);
             }
         }

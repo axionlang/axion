@@ -577,6 +577,155 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
     }
 }
 
+/// Networking FFI fallback — uses POSIX socket APIs directly (the interpreter
+/// binary links against libc). These replicate `axion_rt.c` networking functions.
+#[allow(unsafe_code)]
+#[allow(clashing_extern_declarations)]
+fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
+    use std::os::raw::c_char;
+    fn get_str(v: &Value) -> Option<&str> {
+        match v {
+            Value::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn get_int(v: &Value) -> Option<i64> {
+        match v {
+            Value::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
+    // SAFETY: POSIX socket API calls — well-known functions with stable ABIs.
+    unsafe {
+        match name {
+            "ax_net_connect" => {
+                let host = get_str(&args[0])?;
+                let port = get_int(&args[1])?;
+                let cstr = std::ffi::CString::new(host).ok()?;
+                extern "C" {
+                    fn getaddrinfo(
+                        node: *const c_char,
+                        service: *const c_char,
+                        hints: *const u8,
+                        res: *mut *mut u8,
+                    ) -> i32;
+                    fn freeaddrinfo(res: *mut u8);
+                    fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+                    fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
+                    fn close(fd: i32) -> i32;
+                    fn memcpy(d: *mut u8, s: *const u8, n: usize);
+                }
+                let mut hints = [0u8; 48];
+                hints[4] = 2;
+                hints[8] = 1; // AF_INET, SOCK_STREAM at addrinfo offsets
+                let mut res: *mut u8 = std::ptr::null_mut();
+                if getaddrinfo(cstr.as_ptr(), std::ptr::null(), hints.as_ptr(), &mut res) != 0
+                    || res.is_null()
+                {
+                    return Some(Value::Int(-1));
+                }
+                let mut fd = -1i32;
+                let mut rp = res;
+                while !rp.is_null() {
+                    let family = *(rp.add(4) as *const i32); // ai_family at offset 4
+                    fd = socket(family, 1, 0);
+                    if fd >= 0 {
+                        let addr_ptr = *(rp.add(24) as *const *const u8);
+                        let mut sa = [0u8; 16];
+                        memcpy(sa.as_mut_ptr(), addr_ptr, 16);
+                        sa[2] = ((port as u16) >> 8) as u8;
+                        sa[3] = port as u8;
+                        if connect(fd, sa.as_ptr(), 16) == 0 {
+                            break;
+                        }
+                        close(fd);
+                        fd = -1;
+                    }
+                    rp = *(rp.add(40) as *const *mut u8);
+                }
+                freeaddrinfo(res);
+                Some(Value::Int(fd as i64))
+            }
+            "ax_net_listen" => {
+                let port = get_int(&args[0])?;
+                extern "C" {
+                    fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+                    fn setsockopt(fd: i32, level: i32, opt: i32, val: *const i32, len: u32) -> i32;
+                    fn bind(fd: i32, addr: *const u8, len: u32) -> i32;
+                    fn listen(fd: i32, backlog: i32) -> i32;
+                    fn close(fd: i32) -> i32;
+                }
+                let fd = socket(2, 1, 0);
+                if fd < 0 {
+                    return Some(Value::Int(-1));
+                }
+                let opt: i32 = 1;
+                setsockopt(fd, 1, 2, &opt, 4);
+                let mut addr = [0u8; 16];
+                addr[0] = 2;
+                addr[2] = ((port as u16) >> 8) as u8;
+                addr[3] = port as u8;
+                if bind(fd, addr.as_ptr(), 16) < 0 {
+                    close(fd);
+                    return Some(Value::Int(-1));
+                }
+                if listen(fd, 128) < 0 {
+                    close(fd);
+                    return Some(Value::Int(-1));
+                }
+                Some(Value::Int(fd as i64))
+            }
+            "ax_net_accept" => {
+                let fd = get_int(&args[0])? as i32;
+                extern "C" {
+                    fn accept(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
+                }
+                Some(Value::Int(
+                    accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) as i64,
+                ))
+            }
+            "ax_net_send" => {
+                let fd = get_int(&args[0])? as i32;
+                let data = get_str(&args[1])?;
+                let cstr = std::ffi::CString::new(data).ok()?;
+                extern "C" {
+                    fn send(fd: i32, buf: *const c_char, len: usize, flags: i32) -> isize;
+                }
+                let n = send(fd, cstr.as_ptr() as *const c_char, data.len(), 0x4000);
+                Some(Value::Int(n as i64))
+            }
+            "ax_net_recv" => {
+                let fd = get_int(&args[0])? as i32;
+                extern "C" {
+                    fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
+                }
+                let mut buf = [0u8; 4096];
+                let n = recv(fd, buf.as_mut_ptr(), buf.len() - 1, 0);
+                if n <= 0 {
+                    return Some(Value::Str(String::new()));
+                }
+                let mut s = String::with_capacity(n as usize);
+                for i in 0..n as usize {
+                    let c = buf[i] as char;
+                    if c != '\r' {
+                        s.push(c);
+                    }
+                }
+                Some(Value::Str(s))
+            }
+            "ax_net_close" => {
+                let fd = get_int(&args[0])? as i32;
+                extern "C" {
+                    fn close(fd: i32) -> i32;
+                }
+                close(fd);
+                Some(Value::Int(0))
+            }
+            _ => None,
+        }
+    }
+}
+
 // FFI (§18): resolves the C symbol via dlsym and calls it with the Int ABI (i64).
 extern "C" {
     fn dlsym(
@@ -592,6 +741,11 @@ fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
     // the result is either a valid function pointer or NULL.
     let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
     if p.is_null() {
+        // fallback: networking functions (in axion_rt.c) are not linked into the
+        // axionc binary; use local implementations that call libc sockets directly.
+        if let Some(val) = net_call_foreign(name, args) {
+            return Ok(val);
+        }
         return Err(format!("FFI symbol not found: '{name}'"));
     }
     let mut a = [0i64; 3];

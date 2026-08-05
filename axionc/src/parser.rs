@@ -369,10 +369,24 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        let alias = if self.eat(&Tok::As) {
+            let name = match self.cur() {
+                Some(LTok::Tok(Tok::ConId(n) | Tok::VarId(n))) => {
+                    let n = n.clone();
+                    self.bump();
+                    n
+                }
+                _ => return Err(self.syntax_err("alias name")),
+            };
+            Some(name)
+        } else {
+            None
+        };
         let end = self.span_here().0;
         Ok(ImportDecl {
             module,
             qualified,
+            alias,
             span: (0, end),
         })
     }

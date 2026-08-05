@@ -213,6 +213,7 @@ pub struct Module {
 pub struct ImportDecl {
     pub module: Vec<String>,
     pub qualified: bool,
+    pub alias: Option<String>,
     pub span: Span,
 }
 

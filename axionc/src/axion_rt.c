@@ -242,7 +242,45 @@ long axion_buf_sum(long buf) { /* vectorizable reduction (borrows) */
   for (long i = 0; i < n; i++) s += d[i];
   return s;
 }
-void axion_buf_free(long buf) { free((void *)buf); }
+long axion_buf_free(long buf) { free((void *)buf); return 0; }
+
+/* axion_list_to_buf(list: List Int) → Buffer: packs the list into a dense byte
+ * buffer [len][byte0][byte1]… (each element truncated to u8). */
+long axion_list_to_buf(long list) {
+  long len = 0;
+  for (long p = list; p && !(p & 1); ) {
+    len++;
+    long tag = *(long *)p;
+    p = tag == 1 ? *(long *)(p + 16) : 0;  /* Cons: tag=1, elem@+8, tail@+16 */
+  }
+  long buf = axion_buf_new(len);
+  unsigned char *d = (unsigned char *)(buf + 8);
+  long i = 0;
+  for (long p = list; p && !(p & 1); ) {
+    long tag = *(long *)p;
+    if (tag == 1) {
+      d[i++] = (unsigned char)(*(long *)(p + 8) & 0xFF);
+      p = *(long *)(p + 16);
+    } else break;
+  }
+  return buf;
+}
+
+/* axion_buf_to_list(buf: Buffer) → List Int: unpacks a dense byte buffer into
+ * a Cons-chain (each byte → Int). The caller must free the buffer separately. */
+long axion_buf_to_list(long buf) {
+  long n = *(long *)buf;
+  unsigned char *d = (unsigned char *)(buf + 8);
+  long list = 1; /* tagged Nil */
+  for (long i = n - 1; i >= 0; i--) {
+    long cell = axion_alloc(24);  /* tag(8) + elem(8) + tail(8) */
+    *(long *)cell = 1;            /* Cons tag */
+    *(long *)(cell + 8) = (long)d[i];
+    *(long *)(cell + 16) = list;
+    list = cell;
+  }
+  return list; /* already 1 for empty list */
+}
 
 /* foldBytes f init buf: folds `f` over the bytes. `f` is an Axion closure
  * {fn_ptr, captures…}; call `fn_ptr(f, acc, byte)` (the closure is the env of the
@@ -589,7 +627,7 @@ long ax_net_send(long fd, long data_ptr) {
 long ax_net_recv(long fd) {
   char buf[4096];
   ssize_t n = recv((int)fd, buf, sizeof(buf) - 1, 0);
-  if (n <= 0) return 0;
+  if (n <= 0) { long p = axion_alloc(1); *(char *)p = 0; return p; }
   buf[n] = '\0';
   long p = axion_alloc(n + 1);
   memcpy((char *)p, buf, (size_t)n + 1);

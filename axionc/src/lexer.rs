@@ -44,6 +44,8 @@ pub enum Tok {
     Import,
     #[token("qualified")]
     Qualified,
+    #[token("as")]
+    As,
 
     // --- punctuation and symbols ---
     #[token("::")]

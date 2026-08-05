@@ -62,7 +62,7 @@ axion_drop_List _p  =
 catMaybes xs  =
 compose f g x  =
 concat xs  =
-    Cons a as ->
+    Cons a as_ ->
         Cons b bs ->
     Cons s ss ->
     Cons s ss ->
@@ -225,7 +225,7 @@ length xs  =
     let _t2 = call rangeFused _t1 hi c n  ; Δ{}
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
         let _t2 = call take _t1 ys  ; Δ{} · makes List
-          let _t2 = call zipWith _t1 as bs  ; Δ{_t1} · makes List
+          let _t2 = call zipWith _t1 as_ bs  ; Δ{_t1} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
       let _t2 = if _t0 then
           let _t3 = callclo p y  ; Δ{}

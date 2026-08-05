@@ -58,7 +58,7 @@ catMaybes xs  =
     Circle a0 ->
 compose f g x  =
 concat xs  =
-    Cons a as ->
+    Cons a as_ ->
         Cons b bs ->
     Cons s ss ->
     Cons s ss ->
@@ -191,7 +191,7 @@ length xs  =
       let _t1 = call map f ys  ; Δ{} · makes List
       let _t1 = call show$Int a0  ; Δ{}
   let _t1 = call show$Shape _t0  ; Δ{_t0}
-          let _t1 = call zipWith f as bs  ; Δ{} · makes List
+          let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
       let _t1 = con Nil  ; Δ{}
       let _t1 = con Nil  ; Δ{_t0}
     let _t1 = + lo 1  ; Δ{}
