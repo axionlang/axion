@@ -43,12 +43,12 @@
 Times (ms, best of 3):
   kernel    Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
   --------  -------- -------- |   -----   ----- |  ------  ------
-  fib            685      253 |     558     252 |     804     299
-  loop          2136      539 |    2201     543 |    2415     542
-  alloc         1431       31 |     333     310 |    1076     495
-  simd          1841       32 |     334      32 |     706      32
-  dispatch      2125      560 |    2409     466 |    2466     562
-  sumtype       2163      562 |    2657     432 |    2705     563
+  fib            648      274 |     570     257 |     822     302
+  loop          2169      544 |    2239     544 |    2451     545
+  alloc         1423       26 |     332     321 |    1113     504
+  simd          1897       34 |     339      32 |     716      32
+  dispatch      2149      470 |    2439     470 |    2497     564
+  sumtype       2276      455 |    2718     448 |    2754     569
 ```
 
 (Ax `--dev` now compiles tail recursion to a **loop** — TCO, §backend — so on
@@ -73,16 +73,16 @@ at `-O0`, its comparable tier.)
   functional language exposes SIMD — via vectorizable bulk-data primitives (the
   "imperative escape-hatch" of §4), not via user loops.
 - **Typeclasses — zero-cost abstraction, à la Rust.** On `dispatch`, the class
-  method in the hot loop, monomorphized and inlined by LLVM, costs **563 ms** — on
-  par with C `-O2` calling the function by hand (**564 ms**) and with Rust `-O2`
-  generic via *trait* (**561 ms**), within **3 ms** of each other. The generic
-  **pays nothing** for being generic: it is exactly the promise "elegance of
-  Haskell, control of Rust". The specialization is the same mechanism as Rust
+  method in the hot loop, monomorphized and inlined by LLVM, costs **470 ms** — on
+  par with C `-O2` calling the function by hand (**470 ms**) and faster than Rust
+  `-O2` generic via *trait* (**564 ms**), within measurement noise of C. The
+  generic **pays nothing** for being generic: it is exactly the promise "elegance
+  of Haskell, control of Rust". The specialization is the same mechanism as Rust
   (monomorphization), not dictionary passing with indirection.
 - **Sum types — unboxed, allocation-free, à la C `enum`.** On `sumtype`, 200 M
   steps of `case` dispatch over a `Dir` enum (`turn`/`val`), Axion `--release`
-  costs **564 ms** — on par with Rust `-O2` `match` (**568 ms**) and within ~1.3×
-  of C `-O2`'s `switch` (**441 ms**), with **zero heap allocation** (nullary
+  costs **455 ms** — on par with Rust `-O2` `match` (**569 ms**) and within 1.6%
+  of C `-O2`'s `switch` (**448 ms**), with **zero heap allocation** (nullary
   constructors are immediate tags; `AXION_HEAP_STATS` reports `0 allocs`).
   Previously each `North`/`East`/… would have boxed 8 bytes. Mixed types
   (`None | Some a`) unbox the nullary side the same way (pointer-tagging).

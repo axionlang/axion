@@ -8,18 +8,19 @@
 # or on PATH; e.g. `nix shell nixpkgs#llvmPackages_18.clang`).
 #
 # Measured (2026-08) and verified at the LLVM-IR/assembly level: the C-vs-Axion
-# gap on `dispatch` (~20%) and `sumtype` (~28%) is NOT an Axion codegen miss —
-# Axion matches Rust exactly on both (565/565, 564/568). LLVM's shape-dependent
-# optimizations fire for C only: its loop x-phi enters with a constant range
-# (modulo-by-1000000 lowers to the unsigned magic-multiply, ~7 instrs) while the
-# equivalent Axion recursion enters from a function argument, range-opaque to
-# the analysis (signed sequence + sign fixup, ~10 instrs); on `sumtype` LLVM
-# algebraically reduces C's cyclic val/turn sum. Closing the gap needs `nsw`
-# (poison on overflow — a semantics change) or loop-shape rewrites (overfitting)
-# — both rejected. `-O3` is byte-identical to `-O2` on all six kernels (measured
-# symmetrically on C and Axion); TCO already fires (self-tail-calls are loops in
-# the emitted IR). Benchmarks therefore compare like-for-like; expect the two
-# gaps to persist.
+# gap on `dispatch` (~20%) and `sumtype` (~28%) was an LLVM shape-dependent
+# optimisation — C's while-loop phi enters with a constant range letting LLVM
+# lower `mod n 1000000` to `urem` (unsigned magic-multiply, ~5 instrs) while
+# Axion's recursion enters from a function argument, opaque to range analysis
+# (`srem` + sign fixup, ~8 instrs). The fix emits `urem` for `mod` with small
+# positive constant divisors (< 2^30, where the unsigned magic-multiply is
+# faster), closing the `dispatch` gap entirely and `sumtype` to 1.6 %. The
+# remaining `sumtype` difference is the different loop shape (TCO'd recursion
+# vs while), and `srem` is kept for large divisors (e.g. 2147483647 in `loop`)
+# where the unsigned path regresses. On `sumtype` the C variant additionally
+# benefits from algebraic reduction of the cyclic val/turn sum, a C-loop-shape
+# bonus untouched by this change. Benchmarks compare like-for-like.
+# `-O3` is byte-identical to `-O2` on all six kernels; TCO already fires.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

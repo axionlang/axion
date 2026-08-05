@@ -707,7 +707,15 @@ impl Emit<'_> {
                     "+" => (format!("add i64 {x}, {y}"), false),
                     "-" => (format!("sub i64 {x}, {y}"), false),
                     "*" => (format!("mul i64 {x}, {y}"), false),
-                    "mod" => (format!("srem i64 {x}, {y}"), false),
+                    "mod" => {
+                        let op = if matches!(b, Atom::Int(d) if *d > 0 && *d < 0x4000_0000)
+                        {
+                            "urem"
+                        } else {
+                            "srem"
+                        };
+                        (format!("{op} i64 {x}, {y}"), false)
+                    },
                     "band" => (format!("and i64 {x}, {y}"), false),
                     "==" => (format!("icmp eq i64 {x}, {y}"), true),
                     "<" => (format!("icmp slt i64 {x}, {y}"), true),
