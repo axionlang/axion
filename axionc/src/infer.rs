@@ -981,6 +981,52 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // linear dense Array (§A): all ops on raw i64 Array pointers.
+        let arra_ty = || Ty::Con("Array".into(), vec![Ty::Var(0)]);
+        // newArray :: Int -> Int -> Array a
+        env.insert(
+            "newArray".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(arra_ty()))),
+                ),
+            },
+        );
+        // getArray :: Array a -> Int -> Int
+        env.insert(
+            "getArray".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(arra_ty()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                ),
+            },
+        );
+        // setArray :: Array a -> Int -> Int -> Array a
+        env.insert(
+            "setArray".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(arra_ty()),
+                    Box::new(Ty::Fun(
+                        Box::new(int()),
+                        Box::new(Ty::Fun(Box::new(int()), Box::new(arra_ty()))),
+                    )),
+                ),
+            },
+        );
+        // lenArray :: Array a -> Int
+        env.insert(
+            "lenArray".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(arra_ty()), Box::new(int())),
+            },
+        );
         // imperative :: forall a. a -> a — the imperative block (§5) is identity.
         env.insert(
             "imperative".into(),

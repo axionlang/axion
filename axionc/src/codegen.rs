@@ -505,19 +505,76 @@ extern "C" fn axion_buf_free(buf: *mut u8) {
 /// `foldBytes f init buf`: folds the closure `f` over the bytes. Reads the `fn_ptr` from
 /// `f[0]` and calls `fn_ptr(f, acc, byte)` per byte (the closure is the env).
 extern "C" fn axion_fold_bytes(f: *mut u8, init: i64, buf: *mut u8) -> i64 {
-    // SAFETY: f is a closure heap-pointer whose first word is a function
-    // pointer with the correct signature; buf was allocated by axion_buf_new.
+    // SAFETY: the closure fn_ptr and buf were allocated by Axion — valid reads.
     // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
-        let fn_ptr = f.cast::<i64>().read_unaligned();
-        let func: extern "C" fn(*mut u8, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
         let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
+        let fn_ptr: extern "C" fn(*mut u8, i64, u8) -> i64 =
+            std::mem::transmute(f.cast::<i64>().read_unaligned() as *const ());
         let mut acc = init;
         for i in 0..n {
-            acc = func(f, acc, *d.add(i) as i64);
+            acc = fn_ptr(f, acc, *d.add(i));
         }
         acc
+    }
+}
+
+/* --- linear dense Array: [len(i64)][elem_0(i64)]… --- */
+
+extern "C" fn axion_array_new(len: i64, init: i64) -> i64 {
+    let n = len.max(0) as usize;
+    let layout = std::alloc::Layout::from_size_align(8 + n * 8, 8)
+        .unwrap_or_else(|_| panic!("layout error"));
+    // SAFETY: layout is well-formed; the memset fills all n elements.
+    unsafe {
+        let b = std::alloc::alloc_zeroed(layout);
+        if b.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        b.cast::<i64>().write_unaligned(n as i64);
+        let d = b.add(8) as *mut i64;
+        for i in 0..n {
+            *d.add(i) = init;
+        }
+        b as i64
+    }
+}
+
+extern "C" fn axion_array_get(arr: i64, idx: i64) -> i64 {
+    // SAFETY: arr is a valid Array allocation — reads within bounds or returns 0.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        if idx < 0 || idx >= n {
+            return 0;
+        }
+        (arr as *const i64).add(idx as usize + 1).read_unaligned()
+    }
+}
+
+extern "C" fn axion_array_set(arr: i64, idx: i64, val: i64) -> i64 {
+    // SAFETY: arr is a valid Array allocation — write within bounds or no-op.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        if idx >= 0 && idx < n {
+            (arr as *mut i64).add(idx as usize + 1).write_unaligned(val);
+        }
+        arr
+    }
+}
+
+extern "C" fn axion_array_len(arr: i64) -> i64 {
+    // SAFETY: arr is a valid Array allocation — reads the length header.
+    unsafe { (arr as *const i64).read_unaligned() }
+}
+
+extern "C" fn axion_array_free(arr: i64) {
+    // SAFETY: arr was allocated by axion_array_new with a matching layout.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned() as usize;
+        let layout = std::alloc::Layout::from_size_align(8 + n * 8, 8)
+        .unwrap_or_else(|_| panic!("layout error"));
+        std::alloc::dealloc(arr as *mut u8, layout);
     }
 }
 
@@ -816,6 +873,12 @@ impl Cg {
         builder.symbol("axion_buf_sum", axion_buf_sum as *const u8);
         builder.symbol("axion_buf_free", axion_buf_free as *const u8);
         builder.symbol("axion_fold_bytes", axion_fold_bytes as *const u8);
+        // Array
+        builder.symbol("axion_array_new", axion_array_new as *const u8);
+        builder.symbol("axion_array_get", axion_array_get as *const u8);
+        builder.symbol("axion_array_set", axion_array_set as *const u8);
+        builder.symbol("axion_array_len", axion_array_len as *const u8);
+        builder.symbol("axion_array_free", axion_array_free as *const u8);
         builder.symbol("axion_sess_new", axion_sess_new as *const u8);
         builder.symbol("axion_sess_channel", axion_sess_channel as *const u8);
         builder.symbol("axion_sess_send", axion_sess_send as *const u8);
@@ -867,6 +930,11 @@ impl Cg {
             ("axion_buf_sum", 1, true),
             ("axion_buf_free", 1, false),
             ("axion_fold_bytes", 3, true),
+            ("axion_array_new", 2, true),
+            ("axion_array_get", 2, true),
+            ("axion_array_set", 3, true),
+            ("axion_array_len", 1, true),
+            ("axion_array_free", 1, false),
             // Show/String builtins (§tc): showFloat and strAppend
             ("axion_show_float", 1, true),
             ("axion_strcat", 2, true),

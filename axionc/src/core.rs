@@ -878,6 +878,10 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "sumBytes",
         "free",
         "imperative",
+        "newArray",
+        "getArray",
+        "setArray",
+        "lenArray",
         "toFloat",
         "truncate",
         "sqrt",
@@ -1151,6 +1155,11 @@ impl Lower<'_> {
             ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
             ("free", 1) => return self.rtcall("axion_buf_free", &args, true, buf),
             ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
+            // linear dense Array: imperative operations
+            ("newArray", 2) => return self.rtcall("axion_array_new", &args, true, buf),
+            ("getArray", 2) => return self.rtcall("axion_array_get", &args, true, buf),
+            ("setArray", 3) => return self.rtcall("axion_array_set", &args, true, buf),
+            ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
             // `imperative e` = e (the imperative block is identity; §5)
             ("imperative", 1) => return self.op(args[0], buf),
             // withBuffer n f = f (newBuffer n): allocates and passes to the closure (which consumes)

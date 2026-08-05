@@ -1128,6 +1128,21 @@ fn buffer_sum_runs_natively() {
 }
 
 #[test]
+fn array_sum_runs_natively() {
+    // dense Array: newArray/setArray/getArray. [10,20,30,40,50] sum = 150.
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("array_sum.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "150\n");
+}
+
+#[test]
 fn linear_buffer_inplace_runs_natively() {
     // %1 Buffer + in-place XOR (§5): the linear thread runs; encrypt consumes+returns.
     let out = axionc()

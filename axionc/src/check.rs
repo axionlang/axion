@@ -1133,6 +1133,11 @@ fn builtins() -> HashSet<String> {
         "free",
         "foldBytes",
         "imperative",
+        // linear dense Array
+        "newArray",
+        "getArray",
+        "setArray",
+        "lenArray",
         // fractional permissions (§2)
         "split",
         "join",
@@ -1485,6 +1490,14 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("sumBytes".to_string(), vec![Mult::Many]);
     consumers.insert("newBuffer".to_string(), vec![Mult::Many]);
     consumers.insert("withBuffer".to_string(), vec![Mult::Many, Mult::Many]);
+    // Array (§A): borrow semantics — all ops read the array without consuming.
+    consumers.insert("newArray".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("getArray".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert(
+        "setArray".to_string(),
+        vec![Mult::Many, Mult::Many, Mult::Many],
+    );
+    consumers.insert("lenArray".to_string(), vec![Mult::Many]);
     // foldBytes (f init buf) borrows the buffer (reads without consuming) — Listing 2.2.
     consumers.insert(
         "foldBytes".to_string(),

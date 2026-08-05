@@ -244,6 +244,40 @@ long axion_buf_sum(long buf) { /* vectorizable reduction (borrows) */
 }
 long axion_buf_free(long buf) { free((void *)buf); return 0; }
 
+/* --- linear dense Array (§A): [len(i64)][elem_0(i64)][elem_1(i64)]… --- */
+
+/* axion_array_new(len, init) → ptr to array of len elements, each = init */
+long axion_array_new(long len, long init) {
+  long n = len < 0 ? 0 : len;
+  long total = 8 + n * 8;
+  char *b = (char *)axion_xmalloc(total);
+  *(long *)b = n;
+  long *d = (long *)(b + 8);
+  for (long i = 0; i < n; i++) d[i] = init;
+  return (long)b;
+}
+
+/* axion_array_get(arr, idx) → elem at idx (bounds-checked, returns 0 on OOB) */
+long axion_array_get(long arr, long idx) {
+  long n = *(long *)arr;
+  if (idx < 0 || idx >= n) return 0;
+  return ((long *)(arr + 8))[idx];
+}
+
+/* axion_array_set(arr, idx, val) → new length (in-place, returns arr) */
+long axion_array_set(long arr, long idx, long val) {
+  long n = *(long *)arr;
+  if (idx >= 0 && idx < n) ((long *)(arr + 8))[idx] = val;
+  return arr;
+}
+
+/* axion_array_len(arr) → number of elements */
+long axion_array_len(long arr) {
+  return *(long *)arr;
+}
+
+void axion_array_free(long arr) { free((void *)arr); }
+
 /* axion_list_to_buf(list: List Int) → Buffer: packs the list into a dense byte
  * buffer [len][byte0][byte1]… (each element truncated to u8). */
 long axion_list_to_buf(long list) {

@@ -37,6 +37,7 @@ NATIVE=(
   axionc/tests/fixtures/arena_run.axi
   axionc/tests/fixtures/record_run.axi
   axionc/tests/fixtures/buffer_sum.axi
+  axionc/tests/fixtures/array_sum.axi
   axionc/tests/fixtures/buffer_linear.axi
   axionc/tests/fixtures/inplace_update.axi
   axionc/tests/fixtures/native_case.axi
