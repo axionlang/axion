@@ -1398,7 +1398,7 @@ mod tests {
     /// Front-end (lex → layout → parse → check → infer) + Core lowering.
     pub(super) fn pipeline(src: &str) -> crate::core::Lowered {
         let mut diags = Diagnostics::default();
-        let (module, analysis) = crate::compile_front(src, &mut diags);
+        let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
         lower_with(&module, &inplace, &std::collections::HashMap::new(), false)
@@ -1421,7 +1421,7 @@ mod tests {
     /// Δ-3 coherence cross-check with the front-end's DropPoints (`src` fresh).
     fn coherence_src(src: &str) -> Vec<DeltaErr> {
         let mut diags = Diagnostics::default();
-        let (module, analysis) = crate::compile_front(src, &mut diags);
+        let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
         let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);
@@ -1431,7 +1431,7 @@ mod tests {
     /// Coherence over a tampered Core (the DropPoints stay the front-end's).
     fn coherence_tampered(src: &str, tamper: impl FnOnce(&mut Vec<CoreFn>)) -> Vec<DeltaErr> {
         let mut diags = Diagnostics::default();
-        let (module, analysis) = crate::compile_front(src, &mut diags);
+        let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
         let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);
@@ -1863,7 +1863,7 @@ mod tests {
     /// The `--emit delta` view over `src` (fresh pipeline + DropPoints).
     fn delta_view(src: &str) -> String {
         let mut diags = Diagnostics::default();
-        let (module, analysis) = crate::compile_front(src, &mut diags);
+        let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
         let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);
@@ -1934,7 +1934,7 @@ mod tests {
         // must surface the disagreement as a violation of that function, in
         // sync with the `--check-delta` verdict
         let mut diags = Diagnostics::default();
-        let (module, analysis) = crate::compile_front(DROP_OK, &mut diags);
+        let (module, analysis) = crate::compile_front(DROP_OK, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
         let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);

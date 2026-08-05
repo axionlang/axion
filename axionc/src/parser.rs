@@ -6,8 +6,8 @@
 //! LSP resilience — that comes with the rowan CST in Phase 4).
 
 use crate::ast::{
-    Body, ClassDecl, Clause, ConDecl, DataDecl, Expr, Field, Foreign, Func, InstanceDecl, Module,
-    Mult, Pat, Span, Type,
+    Body, ClassDecl, Clause, ConDecl, DataDecl, Expr, Field, Foreign, Func, ImportDecl,
+    InstanceDecl, Module, Mult, Pat, Span, Type,
 };
 use crate::diag::Diagnostic;
 use crate::layout::{LSpanned, LTok};
@@ -23,8 +23,20 @@ type PResult<T> = Result<T, Diagnostic>;
 pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
     let mut p = Parser { toks, pos: 0 };
     let items = p.block(Parser::top_item)?;
-    let asm = assemble(items);
+    let mut mod_name = None;
+    let mut imports = Vec::new();
+    let mut decls = Vec::with_capacity(items.len());
+    for it in items {
+        match it {
+            TopItem::ModuleName(n) => mod_name = Some(n),
+            TopItem::Import(i) => imports.push(i),
+            other => decls.push(other),
+        }
+    }
+    let asm = assemble(decls);
     Ok(Module {
+        name: mod_name,
+        imports,
         funcs: asm.funcs,
         datas: asm.datas,
         foreigns: asm.foreigns,
@@ -34,6 +46,8 @@ pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
 }
 
 enum TopItem {
+    ModuleName(Vec<String>),
+    Import(ImportDecl),
     Sig(String, Vec<(String, String)>, Type),
     Clause(String, Clause),
     Data(DataDecl),
@@ -58,6 +72,7 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for it in items {
         match it {
+            TopItem::ModuleName(_) | TopItem::Import(_) => {} // collected in parse_module
             TopItem::Foreign(f) => asm.foreigns.push(f),
             TopItem::Data(d) => asm.datas.push(d),
             TopItem::Class(c) => asm.classes.push(c),
@@ -240,6 +255,12 @@ impl<'a> Parser<'a> {
 
     // --- top-level declarations (signature or clause) ---
     fn top_item(&mut self) -> PResult<TopItem> {
+        if self.at(&Tok::Module) {
+            return Ok(TopItem::ModuleName(self.parse_module_name()?));
+        }
+        if self.at(&Tok::Import) {
+            return Ok(TopItem::Import(self.parse_import()?));
+        }
         if self.at(&Tok::Data) {
             return Ok(TopItem::Data(self.parse_data()?));
         }
@@ -299,6 +320,61 @@ impl<'a> Parser<'a> {
                 },
             ))
         }
+    }
+
+    fn parse_module_name(&mut self) -> PResult<Vec<String>> {
+        self.bump(); // module
+        let mut path = Vec::new();
+        loop {
+            let name = match self.cur() {
+                Some(LTok::Tok(Tok::ConId(n) | Tok::VarId(n))) => {
+                    let n = n.clone();
+                    self.bump();
+                    n
+                }
+                _ => {
+                    return Err(self.syntax_err("module name"));
+                }
+            };
+            path.push(name);
+            if !self.eat(&Tok::Dot) {
+                break;
+            }
+        }
+        self.expect(&Tok::Where, "'where' after module declaration")?;
+        // consume the nested VLBrace that the layout rule inserts for the
+        // module body (a `where` block); the outer `block()` loop will then
+        // see the first real item as expected.
+        self.eat_v(&LTok::VLBrace);
+        Ok(path)
+    }
+
+    fn parse_import(&mut self) -> PResult<ImportDecl> {
+        self.bump(); // import
+        let qualified = self.eat(&Tok::Qualified);
+        let mut module = Vec::new();
+        loop {
+            let name = match self.cur() {
+                Some(LTok::Tok(Tok::ConId(n) | Tok::VarId(n))) => {
+                    let n = n.clone();
+                    self.bump();
+                    n
+                }
+                _ => {
+                    return Err(self.syntax_err("module name in import"));
+                }
+            };
+            module.push(name);
+            if !self.eat(&Tok::Dot) {
+                break;
+            }
+        }
+        let end = self.span_here().0;
+        Ok(ImportDecl {
+            module,
+            qualified,
+            span: (0, end),
+        })
     }
 
     fn parse_rhs(&mut self) -> PResult<Body> {

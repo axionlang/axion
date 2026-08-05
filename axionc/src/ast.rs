@@ -200,11 +200,20 @@ pub fn method_impl_name(method: &str, ty_head: &str) -> String {
 
 #[derive(Debug, Clone)]
 pub struct Module {
+    pub name: Option<Vec<String>>,
+    pub imports: Vec<ImportDecl>,
     pub funcs: Vec<Func>,
     pub datas: Vec<DataDecl>,
     pub foreigns: Vec<Foreign>,
     pub classes: Vec<ClassDecl>,
     pub instances: Vec<InstanceDecl>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportDecl {
+    pub module: Vec<String>,
+    pub qualified: bool,
+    pub span: Span,
 }
 
 impl Module {

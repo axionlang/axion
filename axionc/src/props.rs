@@ -159,6 +159,8 @@ fn expected_rt(ty: GTy) -> RtType {
 /// Wraps an expression in a top-level definition `test :: T`.
 fn wrap(ty: GTy, e: Expr) -> Module {
     Module {
+        name: None,
+        imports: vec![],
         funcs: vec![Func {
             name: "test".to_string(),
             sig: Some(ty_to_ast(ty)),

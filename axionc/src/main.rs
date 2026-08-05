@@ -154,7 +154,7 @@ fn main() -> ExitCode {
 
     let lines = LineMap::new(&src);
     let mut diags = Diagnostics::new();
-    let (module, analysis) = compile_front(&src, &mut diags);
+    let (module, analysis) = compile_front(&src, &path, &mut diags);
 
     // report diagnostics
     if emit == Emit::Json {
@@ -343,6 +343,7 @@ fn main() -> ExitCode {
 /// diagnostics and returning the `free`s inserted by Auto-Drop.
 pub(crate) fn compile_front(
     src: &str,
+    path: &str,
     diags: &mut Diagnostics,
 ) -> (Option<ast::Module>, check::Analysis) {
     let tokens = match lexer::lex(src) {
@@ -365,6 +366,7 @@ pub(crate) fn compile_front(
             return (None, check::Analysis::default());
         }
     };
+    resolve_imports(&mut module, path, diags);
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
@@ -1016,6 +1018,104 @@ fn derive_eq(d: &ast::DataDecl) -> String {
         }
     }
     s
+}
+
+fn resolve_imports(module: &mut ast::Module, path: &str, diags: &mut Diagnostics) {
+    if module.imports.is_empty() {
+        return;
+    }
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+
+    let has_data: std::collections::HashSet<String> =
+        module.datas.iter().map(|d| d.name.clone()).collect();
+    let has_func: std::collections::HashSet<String> =
+        module.funcs.iter().map(|f| f.name.clone()).collect();
+    let has_class: std::collections::HashSet<String> =
+        module.classes.iter().map(|c| c.name.clone()).collect();
+    let has_inst: std::collections::HashSet<(String, String)> = module
+        .instances
+        .iter()
+        .map(|i| (i.class_name.clone(), i.ty_head.clone()))
+        .collect();
+
+    let mut seen: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
+    for import in std::mem::take(&mut module.imports) {
+        let key = import.module.clone();
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let mod_path = import
+            .module
+            .iter()
+            .fold(std::path::PathBuf::new(), |p, seg| p.join(seg))
+            .with_extension("axi");
+        let file = dir.join(&mod_path);
+        let src = match std::fs::read_to_string(&file) {
+            Ok(s) => s,
+            Err(e) => {
+                diags.push(
+                    crate::diag::Diagnostic::error("AX0900", "could not import module").label(
+                        import.span.0,
+                        import.span.1,
+                        format!("{e}"),
+                    ),
+                );
+                continue;
+            }
+        };
+        let tokens =
+            match crate::lexer::lex(&src) {
+                Ok(t) => t,
+                Err(e) => {
+                    diags.push(
+                        crate::diag::Diagnostic::error("AX0901", "lex error in imported module")
+                            .label(import.span.0, import.span.1, format!("lex: {e:?}")),
+                    );
+                    continue;
+                }
+            };
+        let lines = crate::lexer::LineMap::new(&src);
+        let lt = crate::layout::layout(&tokens, &lines);
+        let mut imported = match crate::parser::parse_module(&lt) {
+            Ok(m) => m,
+            Err(e) => {
+                diags.push(e);
+                continue;
+            }
+        };
+        resolve_imports(&mut imported, file.to_str().unwrap_or(""), diags);
+        // prepend imported definitions, skipping those already defined locally.
+        // qualified imports are not resolved yet (would need namespace mangling).
+        if import.qualified {
+            continue;
+        }
+        for d in imported.datas.into_iter().rev() {
+            if !has_data.contains(&d.name) {
+                module.datas.insert(0, d);
+            }
+        }
+        for f in imported.funcs.into_iter().rev() {
+            if !has_func.contains(&f.name) {
+                module.funcs.insert(0, f);
+            }
+        }
+        for c in imported.classes.into_iter().rev() {
+            if !has_class.contains(&c.name) {
+                module.classes.insert(0, c);
+            }
+        }
+        for i in imported.instances.into_iter().rev() {
+            let key = (i.class_name.clone(), i.ty_head.clone());
+            if !has_inst.contains(&key) {
+                module.instances.insert(0, i);
+            }
+        }
+        for f in imported.foreigns.into_iter().rev() {
+            module.foreigns.insert(0, f);
+        }
+    }
 }
 
 fn inject_prelude(module: &mut ast::Module) {

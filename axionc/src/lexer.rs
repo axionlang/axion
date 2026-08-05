@@ -38,6 +38,12 @@ pub enum Tok {
     Class,
     #[token("instance")]
     Instance,
+    #[token("module")]
+    Module,
+    #[token("import")]
+    Import,
+    #[token("qualified")]
+    Qualified,
 
     // --- punctuation and symbols ---
     #[token("::")]

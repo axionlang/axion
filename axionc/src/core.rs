@@ -1530,6 +1530,8 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
     let mut e = Eta { arity, counter: 0 };
     let funcs = module.funcs.iter().map(|f| e.func(f)).collect();
     ast::Module {
+        name: module.name.clone(),
+        imports: module.imports.clone(),
         funcs,
         datas: module.datas.clone(),
         foreigns: module.foreigns.clone(),
