@@ -47,6 +47,8 @@
 
 
 
+
+
         _ ->
                         a ->
                     a ->
@@ -57,6 +59,7 @@
 all p xs  =
 any p xs  =
 append xs ys  =
+axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List _p  =
 catMaybes xs  =
@@ -89,6 +92,7 @@ concat xs  =
     Cons z zs ->
 drop n xs  =
   drop _t0
+                          drop _t0 : Array
       drop _t0 : List
   drop _t0 : List
 either f g e  =
@@ -105,6 +109,7 @@ elem x xs  =
     else
     else
     else
+  else
   else
   else
   else
@@ -182,16 +187,17 @@ length xs  =
       let _t0 = con Nil  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
+  let _t0 = > lo hi  ; Δ{}
       let _t0 = < n 1  ; Δ{}
       let _t0 = < n 1  ; Δ{}
-  let _t0 = rtcall axion_array_new 5 0  ; Δ{}
+  let _t0 = newArray 5 0  ; Δ{} · makes Array
       let _t0 = == x y  ; Δ{}
   let _t0 = < x y  ; Δ{}
   let _t0 = <. x y  ; Δ{}
-                          let _t10 = + _t8 _t9  ; Δ{}
-                          let _t11 = rtcall axion_array_get a 3  ; Δ{}
-                          let _t12 = + _t10 _t11  ; Δ{}
-                          let _t13 = rtcall axion_array_get a 4  ; Δ{}
+                          let _t10 = + _t8 _t9  ; Δ{_t0}
+                          let _t11 = rtcall axion_array_get a 3  ; Δ{_t0}
+                          let _t12 = + _t10 _t11  ; Δ{_t0}
+                          let _t13 = rtcall axion_array_get a 4  ; Δ{_t0}
   let _t14 = case _t0 of
         let _t1 = call filter p ys  ; Δ{} · makes List
         let _t1 = call intersperse sep ys  ; Δ{} · makes List
@@ -201,28 +207,30 @@ length xs  =
       let _t1 = con Nil  ; Δ{_t0}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
+    let _t1 = + lo 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
-      let _t1 = rtcall axion_array_set a 0 10  ; Δ{}
+      let _t1 = rtcall axion_array_set a 0 10  ; Δ{_t0}
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{}
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{}
+    let _t2 = + acc lo  ; Δ{}
+    let _t2 = callclo c lo n  ; Δ{}
       let _t2 = call partition p ys  ; Δ{}
-    let _t2 = call rangeFused _t1 hi c n  ; Δ{}
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
       let _t2 = if _t0 then
-          let _t2 = rtcall axion_array_set a 1 20  ; Δ{}
+          let _t2 = rtcall axion_array_set a 1 20  ; Δ{_t0}
           let _t3 = callclo p y  ; Δ{}
-              let _t3 = rtcall axion_array_set a 2 30  ; Δ{}
+              let _t3 = rtcall axion_array_set a 2 30  ; Δ{_t0}
             let _t4 = con Cons y l  ; Δ{}
-                  let _t4 = rtcall axion_array_set a 3 40  ; Δ{}
+                  let _t4 = rtcall axion_array_set a 3 40  ; Δ{_t0}
             let _t5 = con Cons y r  ; Δ{}
-                      let _t5 = rtcall axion_array_set a 4 50  ; Δ{}
-                          let _t6 = rtcall axion_array_get a 0  ; Δ{}
-                          let _t7 = rtcall axion_array_get a 1  ; Δ{}
-                          let _t8 = + _t6 _t7  ; Δ{}
-                          let _t9 = rtcall axion_array_get a 2  ; Δ{}
+                      let _t5 = rtcall axion_array_set a 4 50  ; Δ{_t0}
+                          let _t6 = rtcall axion_array_get a 0  ; Δ{_t0}
+                          let _t7 = rtcall axion_array_get a 1  ; Δ{_t0}
+                          let _t8 = + _t6 _t7  ; Δ{_t0}
+                          let _t9 = rtcall axion_array_get a 2  ; Δ{_t0}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
         (l, r) ->
@@ -263,6 +271,7 @@ not b  =
 null xs  =
 partition p xs  =
 rangeFused lo hi c n  =
+rangeFusedSum lo hi acc  =
 range lo hi  =
         ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -299,11 +308,11 @@ range lo hi  =
     ret 1  ; Δ{}
     ret 1  ; Δ{}
     ret 1  ; Δ{}
+    ret acc  ; Δ{}
         ret call all p ys  ; Δ{}
         ret call any p ys  ; Δ{}
       ret call append y _t0  ; Δ{_t0} · moves{_t0} · makes List
           ret call catMaybes ys  ; Δ{} · makes List
-    ret callclo c lo _t2  ; Δ{}
   ret callclo f _t0  ; Δ{}
       ret callclo f x  ; Δ{}
       ret callclo f x  ; Δ{}
@@ -315,6 +324,8 @@ range lo hi  =
         ret call find p ys  ; Δ{} · makes Maybe
       ret call foldl f _t0 ys  ; Δ{}
           ret call mapM_ f ys  ; Δ{}
+    ret call rangeFusedSum _t1 hi _t2  ; Δ{}
+    ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
@@ -396,12 +407,14 @@ range lo hi  =
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
+  ret if _t0 then
           ret if _t3 then
   ret if x then
   ret if x then
     ret if y then
     ret n  ; Δ{}
       ret putStr ""  ; Δ{}
+  ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_show_float x  ; Δ{}
           ret rtcall axion_strcat s _t1  ; Δ{}
       ret rtcall axion_strcat s _t1  ; Δ{}
@@ -496,8 +509,9 @@ zip xs ys  =
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  ; Δ{}
-  ; Δ{}
-  ; Δ{}
-  ; Δ{}
-  ; Δ{}
+  ; Δ{_t0}
+  ; Δ{_t0}
+  ; Δ{_t0}
+  ; Δ{_t0}
+  ; Δ{_t0}
+  ; Δ{_t0}

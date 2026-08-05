@@ -78,6 +78,9 @@ struct Infer<'a> {
     /// and threaded to the lowering so `MakeCon.ty` carries the mangled concrete key
     /// (`List$P`) instead of just the type head (`List`).
     con_ret_tys: HashMap<Span, Ty>,
+    /// `newArray` call span → the inferred element type (for monomorphized
+    /// array destructor generation, analog to `con_ret_tys`).
+    array_ret_tys: HashMap<Span, Ty>,
 }
 
 /// An obligation `class C over type T`, collected at a method use and
@@ -127,6 +130,8 @@ pub struct Mono {
     pub specs: Vec<SpecPlan>,
     /// Phase 4: constructor call-site return types (span → concrete AST Type)
     pub makecon_tys: HashMap<Span, Type>,
+    /// Phase 2c: `newArray` call-site return types (span → Array element type)
+    pub array_tys: HashMap<Span, Type>,
 }
 
 /// Instruction to clone `src` into a monomorphic function `name`, substituting
@@ -167,6 +172,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         cur_constraints: Vec::new(),
         cur_fn: String::new(),
         con_ret_tys: HashMap::new(),
+        array_ret_tys: HashMap::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -387,6 +393,16 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
     // Phase 4: resolve + convert constructor return types before passing on
     let con_tys = std::mem::take(&mut inf.con_ret_tys);
     mono.makecon_tys = con_tys
+        .into_iter()
+        .filter_map(|(sp, ty)| {
+            let resolved = inf.apply(&ty);
+            ty_to_ast(&resolved).map(|ast| (sp, ast))
+        })
+        .collect();
+    // Phase 2c array: resolve + convert `newArray` return types for mono
+    // destructor generation (Array$List$P, etc.)
+    let array_tys = std::mem::take(&mut inf.array_ret_tys);
+    mono.array_tys = array_tys
         .into_iter()
         .filter_map(|(sp, ty)| {
             let resolved = inf.apply(&ty);
@@ -1339,6 +1355,7 @@ impl<'a> Infer<'a> {
             resolutions,
             specs,
             makecon_tys: HashMap::new(),
+            array_tys: HashMap::new(),
         }
     }
 
@@ -1472,6 +1489,7 @@ impl<'a> Infer<'a> {
             resolutions,
             specs,
             makecon_tys: HashMap::new(),
+            array_tys: HashMap::new(),
         }
     }
 
@@ -1919,6 +1937,13 @@ impl<'a> Infer<'a> {
                 if let Expr::Con(n, _s) = &**f {
                     if self.cons.contains_key(n) {
                         self.con_ret_tys.insert(*span, r.clone());
+                    }
+                }
+                // Phase 2c array: record `newArray` return types for mono
+                // destructor generation (Array$List$P, etc.)
+                if let Expr::Var(n, _) = &**f {
+                    if n == "newArray" {
+                        self.array_ret_tys.insert(*span, r.clone());
                     }
                 }
                 r

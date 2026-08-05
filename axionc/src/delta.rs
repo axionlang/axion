@@ -170,11 +170,34 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.borrows.push(target);
             e.borrows.push(cell);
         }
-        Op::RtCall { args, .. } | Op::Ffi { args, .. } => {
+        Op::RtCall { func, args, .. }
+        | Op::Ffi {
+            name: func, args, ..
+        } => {
             // runtime/FFI calls own their arguments: the reclamation analysis
             // marks them as escaped, so the caller never frees them — a
             // resource passed here dies here (`axion_free` is the runtime free)
             e.moves.extend(args.iter());
+            // axion_array_new produces an Array resource that needs auto-drop
+            if func == "axion_array_new" {
+                e.produces = Some(Res {
+                    key: Some("Array".into()),
+                    parent: None,
+                    slot: None,
+                });
+            }
+        }
+        Op::ArrayNew { len, init, elem_ty } => {
+            e.moves.push(len);
+            e.moves.push(init);
+            e.produces = Some(Res {
+                key: elem_ty
+                    .clone()
+                    .map(|et| format!("Array${et}"))
+                    .or_else(|| Some("Array".into())),
+                parent: None,
+                slot: None,
+            });
         }
         Op::Unsupported(_) => {}
     }
@@ -1401,7 +1424,13 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        lower_with(&module, &inplace, &std::collections::HashMap::new(), false)
+        lower_with(
+            &module,
+            &inplace,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            false,
+        )
     }
 
     /// Runs the Δ judgment over `src` (fresh pipeline), returning the errors.
@@ -1424,7 +1453,13 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);
+        let l = lower_with(
+            &module,
+            &inplace,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            false,
+        );
         check_drop_coherence(&l.fns, &l.borrow_args, &l.recinfo, &analysis.drops)
     }
 
@@ -1434,7 +1469,13 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);
+        let l = lower_with(
+            &module,
+            &inplace,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            false,
+        );
         let mut fns = l.fns.clone();
         tamper(&mut fns);
         check_drop_coherence(&fns, &l.borrow_args, &l.recinfo, &analysis.drops)
@@ -1866,7 +1907,13 @@ mod tests {
         let (module, analysis) = crate::compile_front(src, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);
+        let l = lower_with(
+            &module,
+            &inplace,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            false,
+        );
         let lines = crate::lexer::LineMap::new(src);
         super::dump_delta(
             &l.fns,
@@ -1891,7 +1938,7 @@ mod tests {
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
-                "== verdicts: 49 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 51 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
@@ -1937,7 +1984,13 @@ mod tests {
         let (module, analysis) = crate::compile_front(DROP_OK, ".", &mut diags);
         let module = module.expect("front-end must compile");
         let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
-        let l = lower_with(&module, &inplace, &std::collections::HashMap::new(), false);
+        let l = lower_with(
+            &module,
+            &inplace,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            false,
+        );
         let mut fns = l.fns.clone();
         let f = fns.iter_mut().find(|f| f.name == "makeAndDrop").unwrap();
         f.body = Term::Ret(
@@ -1964,7 +2017,7 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 48 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 50 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(

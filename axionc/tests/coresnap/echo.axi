@@ -49,7 +49,9 @@
 
 
 
-
+                        _ ->
+                    _ ->
+                _ ->
         _ ->
 all p xs  =
 any p xs  =
@@ -58,7 +60,7 @@ axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List _p  =
 catMaybes xs  =
-    Circle a0 ->
+        client ->
 compose f g x  =
 concat xs  =
     Cons a as_ ->
@@ -90,7 +92,6 @@ drop n xs  =
   drop _t0
       drop _t0 : List
   drop _t0 : List
-  drop _t0 : Shape
 either f g e  =
 elem x xs  =
           else
@@ -181,24 +182,22 @@ length xs  =
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = closure lam$1  ; Δ{} · makes heap
       let _t0 = con Nil  ; Δ{}
-  let _t0 = con Rect 2 3  ; Δ{} · makes Shape
+  let _t0 = ffi ax_net_listen 8080  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
       let _t0 = < n 1  ; Δ{}
       let _t0 = < n 1  ; Δ{}
-      let _t0 = rtcall axion_strcat "Circle" " "  ; Δ{}
       let _t0 = == x y  ; Δ{}
   let _t0 = < x y  ; Δ{}
   let _t0 = <. x y  ; Δ{}
         let _t1 = call filter p ys  ; Δ{} · makes List
         let _t1 = call intersperse sep ys  ; Δ{} · makes List
       let _t1 = call map f ys  ; Δ{} · makes List
-      let _t1 = call show$Int a0  ; Δ{}
-  let _t1 = call show$Shape _t0  ; Δ{_t0}
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
       let _t1 = con Nil  ; Δ{}
       let _t1 = con Nil  ; Δ{_t0}
+      let _t1 = ffi ax_net_accept sock  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
@@ -212,15 +211,14 @@ length xs  =
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
+          let _t2 = ffi ax_net_recv client  ; Δ{}
       let _t2 = if _t0 then
-      let _t2 = rtcall axion_strcat "Rect" " "  ; Δ{}
           let _t3 = callclo p y  ; Δ{}
-      let _t3 = call show$Int a0  ; Δ{}
+              let _t3 = ffi ax_net_send client msg  ; Δ{}
             let _t4 = con Cons y l  ; Δ{}
-      let _t4 = rtcall axion_strcat _t2 _t3  ; Δ{}
+                  let _t4 = ffi ax_net_close client  ; Δ{}
             let _t5 = con Cons y r  ; Δ{}
-      let _t5 = rtcall axion_strcat _t4 " "  ; Δ{}
-      let _t6 = call show$Int a1  ; Δ{}
+                      let _t5 = ffi ax_net_close sock  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
         (l, r) ->
@@ -228,6 +226,7 @@ main  =
 map f xs  =
 mapM_ f xs  =
 maybe d f m  =
+            msg ->
         Nil ->
         Nil ->
     Nil ->
@@ -263,7 +262,6 @@ partition p xs  =
 rangeFused lo hi c n  =
 rangeFusedSum lo hi acc  =
 range lo hi  =
-    Rect a0 a1 ->
         ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -326,8 +324,13 @@ range lo hi  =
   ret case m of
       ret case ss of
       ret case _t0 of
+  ret case _t0 of
+      ret case _t1 of
+          ret case _t2 of
       ret case _t2 of
-  ret case x of
+              ret case _t3 of
+                  ret case _t4 of
+                      ret case _t5 of
   ret case xs of
   ret case xs of
   ret case xs of
@@ -400,14 +403,12 @@ range lo hi  =
   ret if x then
     ret if y then
     ret n  ; Δ{}
-  ret putStrLn _t1  ; Δ{}
+                          ret putStrLn "echoed and closed"  ; Δ{}
       ret putStr ""  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_show_float x  ; Δ{}
           ret rtcall axion_strcat s _t1  ; Δ{}
       ret rtcall axion_strcat s _t1  ; Δ{}
-      ret rtcall axion_strcat _t0 _t1  ; Δ{}
-      ret rtcall axion_strcat _t5 _t6  ; Δ{}
   ret showInt x  ; Δ{}
           ret s  ; Δ{}
     ret "true"  ; Δ{}
@@ -435,13 +436,18 @@ reverse xs  =
 show$Bool x  =
 show$Float x  =
 show$Int x  =
-show$Shape x  =
+    sock ->
 sum xs  =
 take n xs  =
 unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

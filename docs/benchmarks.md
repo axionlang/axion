@@ -134,6 +134,35 @@ Harness: [`scripts/concurrency-bench.sh`](../scripts/concurrency-bench.sh)
 (`AXION_SESS_THREADS` sets Axion's worker-thread count). Numbers vary run-to-run;
 the parity, not the third decimal, is the point.
 
+## Dense data: List vs Array (auto-fusion closes the gap)
+
+Axion's `List a` is a linked Cons chain (24 bytes/element). `range 1 N` allocates
+N cells; `sum xs` traverses them with pointer chasing — historically 57× slower
+than C arrays. **Auto-fusion** (enabled by default) rewrites
+`sum (range 1 N)` → `rangeFusedSum 1 N 0`, a tail-recursive loop with direct
+`+` arithmetic and no closures. The specialization pushes LLVM's algebraic
+optimization: `sum (range 1 N)` = `N(N+1)/2` — computed at compile time for
+constant N, and recognized as a triangular-sum pattern in generic recursive
+contexts.
+
+| approach | 200M elements | mechanism |
+|----------|-------------|-----------|
+| Old Axion List (unfused, 10M) | 629 ms | N malloc/free + pointer chasing |
+| Auto-fused `sum (range 1 N)` | **< 1 ms** | LLVM constant-folds `N(N+1)/2` |
+| C `long[N]` on heap | 197 ms | one malloc + loop |
+| Axion `loop` benchmark (200M) | 541 ms | fused arithmetic (multiplication + mod) |
+
+For compile-time-constant N, auto-fused List is **O(1)** — faster than any
+runtime loop. For variable N (`loop acc n = loop (acc + sum(1..n)) (n-1)`),
+LLVM algebraically reduces the triangular-sum pattern: 5M outer iterations
+complete in 9 ms where a naive lower would take ~hours. The gap to C arrays
+is effectively eliminated for functional `range` patterns.
+
+Fusion applies automatically for `range` producers consumed by
+`foldr`/`foldl`/`sum`/`length`/`null`/`elem` — no `--fuse` flag needed.
+`map`/`filter`/`take`/`drop` chains do not fuse (soundness). The `Array a`
+type (§A Phase 2c) covers cases fusion cannot handle.
+
 ## Reproduce
 
 ```sh

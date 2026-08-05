@@ -143,6 +143,14 @@ pub enum Op {
     },
     /// AST shape outside the native subset — codegen rejects with this text
     Unsupported(String),
+    /// Allocate a packed array of n elements, each initialised to init.
+    /// `elem_ty` is the mangled monomorphic element-type key for deep-drop
+    /// routing (`None` = primitive/unknown → generic destructor).
+    ArrayNew {
+        len: Atom,
+        init: Atom,
+        elem_ty: Option<String>,
+    },
 }
 
 /// Lado direito de um `let` (ou o resultado): folha ou controlo.
@@ -922,6 +930,8 @@ struct Lower<'a> {
     /// Phase 4 mono-destructor seeds: concrete parametric types found at
     /// MakeCon sites that need specialized destructors.
     mono_seeds: &'a mut Vec<Type>,
+    /// Phase 2c: `newArray` call-site types (span → Array element type)
+    array_tys: &'a HashMap<Span, Type>,
 }
 
 impl Lower<'_> {
@@ -1156,7 +1166,23 @@ impl Lower<'_> {
             ("free", 1) => return self.rtcall("axion_buf_free", &args, true, buf),
             ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
             // linear dense Array: imperative operations
-            ("newArray", 2) => return self.rtcall("axion_array_new", &args, true, buf),
+            ("newArray", 2) => {
+                let len = self.atom(args[0], buf);
+                let init = self.atom(args[1], buf);
+                let elem_ty = self
+                    .array_tys
+                    .get(&e.span())
+                    .and_then(|t| {
+                        let (head, a) = ty_head_args(t);
+                        if head == Some("Array") {
+                            a.first().copied()
+                        } else {
+                            None
+                        }
+                    })
+                    .and_then(mono_key);
+                return Op::ArrayNew { len, init, elem_ty };
+            }
             ("getArray", 2) => return self.rtcall("axion_array_get", &args, true, buf),
             ("setArray", 3) => return self.rtcall("axion_array_set", &args, true, buf),
             ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
@@ -1412,6 +1438,7 @@ fn lower_func(
     fn_ret_ty: &HashMap<String, String>,
     parametric_data: &HashSet<String>,
     makecon_tys: &HashMap<Span, Type>,
+    array_tys: &HashMap<Span, Type>,
 ) -> (
     Vec<String>,
     Term,
@@ -1431,6 +1458,7 @@ fn lower_func(
         locals: locals.clone(),
         tmp: 0,
         makecon_tys,
+        array_tys,
         parametric_data,
         mono_seeds: &mut mono_seeds,
     };
@@ -2461,11 +2489,10 @@ pub struct Lowered {
 /// operations into a single fused call that never allocates intermediate
 /// `Cons` cells.
 fn fuse_list_ops(fns: &mut Vec<CoreFn>) {
-    let Some(main) = fns.iter().position(|f| f.name == "main") else {
-        return;
-    };
     let mut helpers: Vec<CoreFn> = Vec::new();
-    fuse_term(&mut fns[main].body, &mut helpers);
+    for f in fns.iter_mut() {
+        fuse_term(&mut f.body, &mut helpers);
+    }
     fns.extend(helpers);
 }
 
@@ -2598,6 +2625,25 @@ fn build_fused(
     if prod != "range" || prod_args.len() < 2 {
         return None;
     }
+    // specialized sum: direct arithmetic, no closure overhead
+    if consume.name == "sum" && consume.step.is_none() {
+        let fused_rhs = Rhs::Op(Op::CallDirect(
+            "rangeFusedSum".into(),
+            vec![
+                prod_args[0].clone(),
+                prod_args[1].clone(),
+                consume.base.clone(),
+            ],
+            None,
+        ));
+        let fused = match &consume.rest {
+            Some((binder, cont)) => {
+                Term::Let(binder.clone(), fused_rhs, NO_SPAN, Box::new(cont.clone()))
+            }
+            None => Term::Ret(fused_rhs, NO_SPAN),
+        };
+        return Some(fused);
+    }
     // the step closure: `foldr`'s own closure passes through; the others get
     // a synthesized helper wrapped in a `MakeClosure` let-binding.
     let step_name = lift_step(consume, helpers);
@@ -2686,7 +2732,8 @@ pub fn lower_with(
     module: &ast::Module,
     inplace: &HashSet<Span>,
     makecon_tys: &HashMap<Span, Type>,
-    fuse: bool,
+    array_tys: &HashMap<Span, Type>,
+    _fuse: bool, // kept for API compatibility, auto-fusion always runs now
 ) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
     // which would wrap a bare `spawn worker` target into a lambda). It needs the
@@ -2881,6 +2928,7 @@ pub fn lower_with(
             &fn_ret_ty,
             &parametric_data,
             makecon_tys,
+            array_tys,
         );
         mono_seeds.extend(seeds);
         out.push(CoreFn {
@@ -2909,6 +2957,7 @@ pub fn lower_with(
                 &fn_ret_ty,
                 &parametric_data,
                 makecon_tys,
+                array_tys,
             );
             mono_seeds.extend(wseeds);
             out.push(CoreFn {
@@ -2948,6 +2997,7 @@ pub fn lower_with(
             locals,
             tmp: 0,
             makecon_tys,
+            array_tys,
             parametric_data: &parametric_data,
             mono_seeds: &mut Vec::new(),
         };
@@ -2980,9 +3030,7 @@ pub fn lower_with(
     let mut result: Vec<CoreFn> = Vec::with_capacity(out.len());
     let mut skip_seeds: Vec<(String, Vec<usize>)> = Vec::new();
     // stream-fusion pass: fuse producer→consumer chains on List operations
-    if fuse {
-        fuse_list_ops(&mut out);
-    }
+    fuse_list_ops(&mut out);
     for f in out {
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
         let (f, seeds) = insert_drops(f, &borrow_args, dty, &recinfo);
@@ -2992,6 +3040,23 @@ pub fn lower_with(
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
     result.extend(gen_destructors(&recinfo));
+    // Phase 2a array destructor: calls axion_array_free (generic, no per-element deep drop)
+    result.push(CoreFn {
+        name: "axion_drop_Array".into(),
+        params: vec!["_p".into()],
+        captures: Vec::new(),
+        is_closure: false,
+        owned_params: Vec::new(),
+        owned_drop_ty: Vec::new(),
+        body: Term::Ret(
+            Rhs::Op(Op::RtCall {
+                func: "axion_array_free".into(),
+                args: vec![Atom::Var("_p".into())],
+                returns: false,
+            }),
+            NO_SPAN,
+        ),
+    });
     // Phase 4: push seeds for any function whose return type is a concrete
     // parametric instantiation (e.g. `build :: Int -> List P`).
     for f in &module.funcs {
@@ -3021,6 +3086,16 @@ pub fn lower_with(
     ));
     // tuple-owned %1: destructors for tuple types that contain heap elements
     result.extend(gen_tuple_destructors(&tuple_seeds, &recinfo));
+    // Phase 2c array mono destructors: scan for parametric ArrayNew ops and
+    // generate per-element deep-drop destructors (axion_drop_Array$List$P, etc.)
+    {
+        let array_seeds = collect_array_seeds(&result);
+        result.extend(gen_mono_array_destructors(
+            &array_seeds,
+            &recinfo,
+            &parametric_data,
+        ));
+    }
     // F-3 skip-variant destructors: `axion_drop_T_skip_0` — reclaim all slots
     // except the listed ones (transferred `%1` fields).
     result.extend(gen_skip_destructors(&skip_seeds, &recinfo));
@@ -3401,6 +3476,165 @@ fn gen_mono_destructors(
     out
 }
 
+/// Scans the Core IR for `ArrayNew` ops whose `elem_ty` is set, returning
+/// the element types as synthetic `Array (<elem>)` seeds.
+fn collect_array_seeds(fns: &[CoreFn]) -> Vec<Type> {
+    let mut seeds = Vec::new();
+    for f in fns {
+        scan_body_array_seeds(&f.body, &mut seeds);
+    }
+    seeds
+}
+
+fn scan_body_array_seeds(t: &Term, out: &mut Vec<Type>) {
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            if let Rhs::Op(Op::ArrayNew { elem_ty, .. }) = rhs {
+                if let Some(et) = elem_ty {
+                    out.push(Type::App(
+                        Box::new(Type::Con("Array".into())),
+                        Box::new(Type::Con(et.clone())),
+                    ));
+                }
+            }
+            scan_body_array_seeds(body, out);
+        }
+        Term::Drop(_, _, _, _, body) => scan_body_array_seeds(body, out),
+        Term::Ret(rhs, _) => {
+            if let Rhs::If(_, t, e) = rhs {
+                scan_body_array_seeds(t, out);
+                scan_body_array_seeds(e, out);
+            }
+            if let Rhs::Case(_, arms) = rhs {
+                for (_, b) in arms {
+                    scan_body_array_seeds(b, out);
+                }
+            }
+        }
+    }
+}
+
+/// Generates monomorphized array destructors: for each concrete element type
+/// (`List$P`), emits `axion_drop_Array$List$P` that deep-drops each element
+/// and then frees the array shell.
+fn gen_mono_array_destructors(
+    seeds: &[Type],
+    recinfo: &RecordInfo,
+    parametric_data: &HashSet<String>,
+) -> Vec<CoreFn> {
+    let mut out = Vec::new();
+    let mut done: HashSet<String> = HashSet::new();
+    for t in seeds {
+        let (head, args) = ty_head_args(t);
+        if head != Some("Array") || args.is_empty() {
+            continue;
+        }
+        let elem_t = args[0];
+        let Some(elem_key) = mono_key(elem_t) else {
+            continue;
+        };
+        let key = format!("Array${elem_key}");
+        if !done.insert(key.clone()) {
+            continue;
+        }
+        let dw = drop_way(elem_t, recinfo, parametric_data, &mut Vec::new());
+        let body = match dw {
+            DropWay::Deep(dk) => {
+                let p = "_p".to_string();
+                let mut ctr = 0u32;
+                array_deep_drop_body(&p, &format!("axion_drop_{dk}"), &mut ctr)
+            }
+            _ => Term::Ret(
+                Rhs::Op(Op::RtCall {
+                    func: "axion_array_free".into(),
+                    args: vec![Atom::Var("_p".into())],
+                    returns: false,
+                }),
+                NO_SPAN,
+            ),
+        };
+        out.push(CoreFn {
+            name: format!("axion_drop_{key}"),
+            params: vec!["_p".into()],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
+            body,
+        });
+    }
+    out
+}
+
+/// Loop body for array deep-drop: for i = n-1 down to 0, load elem[i],
+/// drop it via `elem_dtor`, then free the array shell.
+fn array_deep_drop_body(ptr: &str, elem_dtor: &str, ctr: &mut u32) -> Term {
+    let fresh = |ctr: &mut u32| -> String {
+        let n = *ctr;
+        *ctr += 1;
+        format!("_ad{n}")
+    };
+    let n = fresh(ctr);
+    let i = fresh(ctr);
+    let cond = fresh(ctr);
+    let elem = fresh(ctr);
+    let free_shell = || {
+        Term::Ret(
+            Rhs::Op(Op::RtCall {
+                func: "axion_array_free".into(),
+                args: vec![Atom::Var(ptr.into())],
+                returns: false,
+            }),
+            NO_SPAN,
+        )
+    };
+    let loop_body = Term::Let(
+        elem.clone(),
+        Rhs::Op(Op::RtCall {
+            func: "axion_array_get".into(),
+            args: vec![Atom::Var(ptr.into()), Atom::Var(i.clone())],
+            returns: true,
+        }),
+        NO_SPAN,
+        Box::new(Term::Drop(
+            elem,
+            Some(elem_dtor.to_string()),
+            Vec::new(),
+            NO_SPAN,
+            Box::new(Term::Let(
+                i.clone(),
+                Rhs::Op(Op::Prim("-".into(), Atom::Var(i.clone()), Atom::Int(1))),
+                NO_SPAN,
+                Box::new(free_shell()),
+            )),
+        )),
+    );
+    let loop_check = Term::Let(
+        cond.clone(),
+        Rhs::Op(Op::Prim(">=".into(), Atom::Var(i.clone()), Atom::Int(0))),
+        NO_SPAN,
+        Box::new(Term::Ret(
+            Rhs::If(Atom::Var(cond), Box::new(loop_body), Box::new(free_shell())),
+            NO_SPAN,
+        )),
+    );
+    Term::Let(
+        n.clone(),
+        Rhs::Op(Op::RtCall {
+            func: "axion_array_len".into(),
+            args: vec![Atom::Var(ptr.into())],
+            returns: true,
+        }),
+        NO_SPAN,
+        Box::new(Term::Let(
+            i,
+            Rhs::Op(Op::Prim("-".into(), Atom::Var(n), Atom::Int(1))),
+            NO_SPAN,
+            Box::new(loop_check),
+        )),
+    )
+}
+
 /// Tuple-owned %1: generates a destructor for a concrete tuple type whose
 /// elements include heap-typed `data` objects.  The destructor deep-drops
 /// each `data`-typed element and flat-frees the rest, then frees the shell.
@@ -3568,6 +3802,11 @@ impl Op {
         match self {
             Op::MakeRecord { ty, .. } | Op::MakeCon { ty, .. } => ty.clone(),
             Op::CallDirect(_, _, ty) => ty.clone(),
+            Op::RtCall { func, .. } if func == "axion_array_new" => Some("Array".into()),
+            Op::ArrayNew { elem_ty, .. } => elem_ty
+                .clone()
+                .map(|et| format!("Array${et}"))
+                .or_else(|| Some("Array".into())),
             _ => None,
         }
     }
@@ -3686,6 +3925,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => atom_is(v, a),
         // only in generated destructors (not analyzed) — a read, like `Field`
         Op::LoadRaw(..) => false,
+        Op::ArrayNew { .. } => false,
         Op::Unsupported(_) => false,
     }
 }
@@ -4004,6 +4244,7 @@ fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
         Op::MakeRecord { fields, .. } => fields.iter().any(|(_, x)| hit(x)),
         Op::UpdateRecord { base, fields, .. } => hit(base) || fields.iter().any(|(_, x)| hit(x)),
         Op::WithArena { parent, clos } => parent.as_ref().is_some_and(hit) || hit(clos),
+        Op::ArrayNew { len, init, .. } => hit(len) || hit(init),
         Op::FuncAddr(_) | Op::Unsupported(_) => false,
     }
 }
@@ -4656,6 +4897,9 @@ pub fn dump_op(op: &Op) -> String {
         Op::ArenaRelease(a) => format!("arena_release {}", atom(a)),
         Op::RtCall { func, args, .. } => format!("rtcall {func}{}", self::args(args)),
         Op::Ffi { name, args } => format!("ffi {name}{}", self::args(args)),
+        Op::ArrayNew { len, init, .. } => {
+            format!("newArray {} {}", atom(len), atom(init))
+        }
         Op::Unsupported(m) => format!("<unsupported: {m}>"),
     }
 }

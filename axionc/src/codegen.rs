@@ -573,7 +573,7 @@ extern "C" fn axion_array_free(arr: i64) {
     unsafe {
         let n = (arr as *const i64).read_unaligned() as usize;
         let layout = std::alloc::Layout::from_size_align(8 + n * 8, 8)
-        .unwrap_or_else(|_| panic!("layout error"));
+            .unwrap_or_else(|_| panic!("layout error"));
         std::alloc::dealloc(arr as *mut u8, layout);
     }
 }
@@ -1659,6 +1659,15 @@ impl Fx<'_, '_> {
                 let call = self.builder.ins().call(callee, &vals);
                 Ok(self.builder.inst_results(call)[0])
             }
+            Op::ArrayNew { len, init, .. } => {
+                let vals = self.atoms(&[len.clone(), init.clone()])?;
+                let (id, _) = *self
+                    .rt_fns
+                    .get("axion_array_new")
+                    .ok_or_else(|| "unknown runtime builtin 'axion_array_new'".to_string())?;
+                let r = self.rt_call(id, &vals);
+                Ok(r.unwrap_or_else(|| self.builder.ins().iconst(types::I64, 0)))
+            }
             Op::Unsupported(m) => Err(format!("{m} does not compile natively (yet)")),
         }
     }
@@ -1924,7 +1933,7 @@ pub fn run(
     fuse: bool,
     makecon_tys: &HashMap<Span, ast::Type>,
 ) -> Result<Option<i64>, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, fuse).fns;
+    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), fuse).fns;
     let entry_ok = fns
         .iter()
         .find(|f| f.name == entry)
@@ -2018,7 +2027,7 @@ pub fn emit_ir(
     fuse: bool,
     makecon_tys: &HashMap<Span, ast::Type>,
 ) -> Result<String, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, fuse).fns;
+    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), fuse).fns;
     if fns.is_empty() {
         return Ok("; no natively compilable function (Int core).\n".into());
     }

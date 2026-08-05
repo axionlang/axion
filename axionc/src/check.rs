@@ -75,6 +75,8 @@ pub struct Analysis {
     pub arenas: Vec<ArenaReset>,
     /// Phase 4: constructor return types (span → concrete AST Type) for MakeCon
     pub makecon_tys: HashMap<Span, Type>,
+    /// Phase 2c: `newArray` call-site types for mono array destructors
+    pub array_tys: HashMap<Span, Type>,
 }
 
 /// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.
@@ -1490,12 +1492,12 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("sumBytes".to_string(), vec![Mult::Many]);
     consumers.insert("newBuffer".to_string(), vec![Mult::Many]);
     consumers.insert("withBuffer".to_string(), vec![Mult::Many, Mult::Many]);
-    // Array (§A): borrow semantics — all ops read the array without consuming.
+    // Array (§A Phase 2): setArray consumes the array (in-place), others borrow.
     consumers.insert("newArray".to_string(), vec![Mult::Many, Mult::Many]);
     consumers.insert("getArray".to_string(), vec![Mult::Many, Mult::Many]);
     consumers.insert(
         "setArray".to_string(),
-        vec![Mult::Many, Mult::Many, Mult::Many],
+        vec![Mult::One, Mult::Many, Mult::Many],
     );
     consumers.insert("lenArray".to_string(), vec![Mult::Many]);
     // foldBytes (f init buf) borrows the buffer (reads without consuming) — Listing 2.2.

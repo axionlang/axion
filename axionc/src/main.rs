@@ -199,7 +199,13 @@ fn main() -> ExitCode {
     if check_delta {
         // Δ-1 (report-only): the linearity judgment over the annotated Core,
         // plus the Δ-3 coherence cross-check against the front-end DropPoints.
-        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys, fuse);
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            fuse,
+        );
         let mut errs = delta::check_all(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
         errs.extend(delta::check_drop_coherence(
             &lowered.fns,
@@ -231,7 +237,13 @@ fn main() -> ExitCode {
         // Δ-2: the annotated dump — `core::dump` plus the live-resource env
         // (Δ) on every `let`/`ret` (report-only; same output shape as `dump`
         // for unannotated lines).
-        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys, fuse);
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            fuse,
+        );
         print!(
             "{}",
             delta::dump_annotated(&lowered.fns, &lowered.borrow_args, &lowered.recinfo)
@@ -244,7 +256,13 @@ fn main() -> ExitCode {
         // facts the annotated dump cannot show (drops in the judged Core,
         // never-used `%1` params, coherence agreement). Report-only: the exit
         // code is unaffected — `--check-delta` is the verdict channel.
-        let lowered = core::lower_with(&module, &inplace, &analysis.makecon_tys, fuse);
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            fuse,
+        );
         print!(
             "{}",
             delta::dump_delta(
@@ -379,6 +397,7 @@ pub(crate) fn compile_front(
     resolve_methods(&mut module, &mono.resolutions);
     materialize_specs(&mut module, &mono.specs);
     analysis.makecon_tys = mono.makecon_tys;
+    analysis.array_tys = mono.array_tys;
     (Some(module), analysis)
 }
 
@@ -671,7 +690,13 @@ mapM_ f xs = case xs of
 -- them directly — no intermediate Cons cells.  The --fuse pass rewrites
 -- `consume (range lo hi)` → `rangeFused lo hi step base`.
 rangeFused :: Int -> Int -> (Int -> b -> b) -> b -> b
-rangeFused lo hi c n = if lo > hi then n else c lo (rangeFused (lo + 1) hi c n)
+rangeFused lo hi c n = if lo > hi then n else rangeFused (lo + 1) hi c (c lo n)
+-- specialized variant for `sum` (foldr (+) 0): no closure, direct arithmetic.
+-- Eliminates the indirect-call overhead from the generic rangeFused.
+-- `sum (range lo hi)` → `rangeFusedSum lo hi 0`.
+rangeFusedSum :: Int -> Int -> Int -> Int
+rangeFusedSum lo hi acc = if lo > hi then acc
+    else rangeFusedSum (lo + 1) hi (acc + lo)
 
 -- standard library v1 -----------------------------------------------------
 

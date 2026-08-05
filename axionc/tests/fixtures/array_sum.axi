@@ -1,6 +1,7 @@
--- dense Array: packed, mutable i64 arrays with O(1) random access.
--- Builds a 5-element array [10,20,30,40,50], reads each element, sums them.
--- Expected: 150.  0 allocs (raw i64 buffer, not Cons cells).
+-- dense Array (§A Phase 2): linear ownership + auto-drop.
+-- newArray produces a linear resource; setArray consumes it (in-place
+-- mutation) and returns a new handle. The array is automatically freed
+-- at the end of its scope via axion_array_free. Expected: 150.
 main :: Int
 main = imperative $ do
   a <- newArray 5 0

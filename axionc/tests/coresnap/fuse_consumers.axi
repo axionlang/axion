@@ -48,10 +48,17 @@
 
 
 
+
+
+
+
+
+
         _ ->
 all p xs  =
 any p xs  =
 append xs ys  =
+axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List _p  =
 catMaybes xs  =
@@ -86,11 +93,6 @@ drop n xs  =
   drop _t0
       drop _t0 : List
   drop _t0 : List
-  drop _t0 : List$Int
-  drop _t1 : List$Int
-  drop _t3 : List$Int
-  drop _t4 : List$Int
-  drop _t6 : List$Int
 either f g e  =
 elem x xs  =
           else
@@ -116,6 +118,7 @@ elem x xs  =
   else
   else
   else
+  else
 eq$Bool x y  =
 eq$Float x y  =
 eq$Int x y  =
@@ -124,6 +127,10 @@ find p xs  =
 foldl f z xs  =
 foldr f z xs  =
 fromMaybe d m  =
+fuse$0 [env ]x acc  =
+fuse$1 [env ]x acc  =
+fuse$2 [env ]x acc  =
+fuse$3 [env ]x acc  =
 intercalate sep xss  =
 intersperse sep xs  =
 isJust m  =
@@ -143,8 +150,8 @@ le$Int x y  =
     Left _ ->
     Left x ->
 length xs  =
-  let a = call sum _t0  ; Δ{_t0}
-  let c = call length _t1  ; Δ{_t1}
+  let a = call rangeFusedSum 1 11 0  ; Δ{}
+  let c = call rangeFused 1 11 fuse$0_clo 0  ; Δ{fuse$0_clo} · moves{fuse$0_clo}
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
@@ -162,7 +169,10 @@ length xs  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-  let g = call foldr _t2 1 _t3  ; Δ{_t2 _t3} · moves{_t2}
+  let fuse$0_clo = closure fuse$0  ; Δ{} · makes heap
+  let fuse$2_clo = closure fuse$2  ; Δ{} · makes heap
+  let fuse$3_clo = closure fuse$3  ; Δ{} · makes heap
+  let g = call rangeFused 1 6 _t2 1  ; Δ{_t2} · moves{_t2}
   let h = if _t5 then
   let i = if _t7 then
       let _t0 = call append zs ys  ; Δ{} · makes List
@@ -181,7 +191,6 @@ length xs  =
   let _t0 = call intersperse sep xss  ; Δ{} · makes List
       let _t0 = call length ys  ; Δ{}
       let _t0 = call null ys  ; Δ{}
-  let _t0 = call range 1 11  ; Δ{} · makes List$Int
       let _t0 = call reverse ys  ; Δ{} · makes List
       let _t0 = call sum ys  ; Δ{}
       let _t0 = call unlines ss  ; Δ{}
@@ -189,6 +198,7 @@ length xs  =
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = closure lam$1  ; Δ{} · makes heap
       let _t0 = con Nil  ; Δ{}
+  let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
       let _t0 = < n 1  ; Δ{}
@@ -200,31 +210,29 @@ length xs  =
         let _t1 = call filter p ys  ; Δ{} · makes List
         let _t1 = call intersperse sep ys  ; Δ{} · makes List
       let _t1 = call map f ys  ; Δ{} · makes List
-  let _t1 = call range 1 11  ; Δ{} · makes List$Int
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
       let _t1 = con Nil  ; Δ{}
       let _t1 = con Nil  ; Δ{_t0}
+    let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{}
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{}
+    let _t2 = + acc lo  ; Δ{}
+    let _t2 = callclo c lo n  ; Δ{}
       let _t2 = call partition p ys  ; Δ{}
-    let _t2 = call rangeFused _t1 hi c n  ; Δ{}
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
         let _t2 = call take _t1 ys  ; Δ{} · makes List
   let _t2 = closure lam$2  ; Δ{} · makes heap
       let _t2 = con Cons y _t1  ; Δ{_t0}
       let _t2 = if _t0 then
           let _t3 = callclo p y  ; Δ{}
-  let _t3 = call range 1 6  ; Δ{_t2} · makes List$Int
-  let _t4 = call range 1 0  ; Δ{} · makes List$Int
             let _t4 = con Cons y l  ; Δ{}
-  let _t5 = call null _t4  ; Δ{_t4}
+  let _t5 = call rangeFused 1 0 fuse$2_clo 1  ; Δ{fuse$2_clo} · moves{fuse$2_clo}
             let _t5 = con Cons y r  ; Δ{}
-  let _t6 = call range 1 1  ; Δ{} · makes List$Int
-  let _t7 = call null _t6  ; Δ{_t6}
+  let _t7 = call rangeFused 1 1 fuse$3_clo 1  ; Δ{fuse$3_clo} · moves{fuse$3_clo}
   let _t8 = + a c  ; Δ{}
   let _t9 = + _t8 g  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -267,6 +275,7 @@ not b  =
 null xs  =
 partition p xs  =
 rangeFused lo hi c n  =
+rangeFusedSum lo hi acc  =
 range lo hi  =
         ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -292,6 +301,10 @@ range lo hi  =
     ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret + 1 acc  ; Δ{}
       ret + 1 _t0  ; Δ{}
         ret 1  ; Δ{}
         ret 1  ; Δ{}
@@ -307,11 +320,11 @@ range lo hi  =
     ret 1  ; Δ{}
     ret 7  ; Δ{}
     ret 7  ; Δ{}
+    ret acc  ; Δ{}
         ret call all p ys  ; Δ{}
         ret call any p ys  ; Δ{}
       ret call append y _t0  ; Δ{_t0} · moves{_t0} · makes List
           ret call catMaybes ys  ; Δ{} · makes List
-    ret callclo c lo _t2  ; Δ{}
   ret callclo f _t0  ; Δ{}
       ret callclo f x  ; Δ{}
       ret callclo f x  ; Δ{}
@@ -323,6 +336,8 @@ range lo hi  =
         ret call find p ys  ; Δ{} · makes Maybe
       ret call foldl f _t0 ys  ; Δ{}
           ret call mapM_ f ys  ; Δ{}
+    ret call rangeFusedSum _t1 hi _t2  ; Δ{}
+    ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
@@ -399,12 +414,14 @@ range lo hi  =
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
+  ret if _t0 then
           ret if _t3 then
   ret if x then
   ret if x then
     ret if y then
     ret n  ; Δ{}
       ret putStr ""  ; Δ{}
+  ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_show_float x  ; Δ{}
           ret rtcall axion_strcat s _t1  ; Δ{}
       ret rtcall axion_strcat s _t1  ; Δ{}
@@ -443,6 +460,7 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

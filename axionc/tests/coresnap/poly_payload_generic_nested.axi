@@ -51,10 +51,13 @@
 
 
 
+
+
         _ ->
 all p xs  =
 any p xs  =
 append xs ys  =
+axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$Maybe$P _p  =
 axion_drop_List _p  =
@@ -111,6 +114,7 @@ elem x xs  =
     else
     else
     else
+  else
   else
   else
   else
@@ -209,6 +213,7 @@ length xs  =
       let _t0 = con Nil  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
+  let _t0 = > lo hi  ; Δ{}
   let _t0 = == n 0  ; Δ{}
       let _t0 = < n 1  ; Δ{}
       let _t0 = < n 1  ; Δ{}
@@ -223,13 +228,15 @@ length xs  =
       let _t1 = con Nil  ; Δ{_t0}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
+    let _t1 = + lo 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
     let _t1 = record P { a = n}  ; Δ{} · makes P
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{}
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{}
+    let _t2 = + acc lo  ; Δ{}
+    let _t2 = callclo c lo n  ; Δ{}
       let _t2 = call partition p ys  ; Δ{}
-    let _t2 = call rangeFused _t1 hi c n  ; Δ{}
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
@@ -283,6 +290,7 @@ not b  =
 null xs  =
 partition p xs  =
 rangeFused lo hi c n  =
+rangeFusedSum lo hi acc  =
 range lo hi  =
         ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -331,11 +339,11 @@ range lo hi  =
     ret 1  ; Δ{}
     ret 1  ; Δ{}
     ret 1  ; Δ{}
+    ret acc  ; Δ{}
         ret call all p ys  ; Δ{}
         ret call any p ys  ; Δ{}
       ret call append y _t0  ; Δ{_t0} · moves{_t0} · makes List
           ret call catMaybes ys  ; Δ{} · makes List
-    ret callclo c lo _t2  ; Δ{}
   ret callclo f _t0  ; Δ{}
       ret callclo f x  ; Δ{}
       ret callclo f x  ; Δ{}
@@ -348,6 +356,8 @@ range lo hi  =
       ret call foldl f _t0 ys  ; Δ{}
   ret call head1$Maybe$P _t0  ; Δ{_t0} · moves{_t0}
           ret call mapM_ f ys  ; Δ{}
+    ret call rangeFusedSum _t1 hi _t2  ; Δ{}
+    ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
@@ -428,12 +438,14 @@ range lo hi  =
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
+  ret if _t0 then
           ret if _t3 then
   ret if x then
   ret if x then
     ret if y then
     ret n  ; Δ{}
       ret putStr ""  ; Δ{}
+  ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_show_float x  ; Δ{}
           ret rtcall axion_strcat s _t1  ; Δ{}
       ret rtcall axion_strcat s _t1  ; Δ{}
@@ -470,6 +482,7 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
