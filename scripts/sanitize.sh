@@ -61,6 +61,7 @@ NATIVE=(
   axionc/tests/fixtures/land_field_mixed.axi
   axionc/tests/fixtures/land_owned_multi.axi
   axionc/tests/fixtures/make_bound_drop.axi
+  axionc/tests/fixtures/make_bound_drop_local.axi
   axionc/tests/fixtures/tuple_owned.axi
   axionc/tests/fixtures/land_tuple_upd.axi
   axionc/tests/fixtures/land_owned_poly.axi
@@ -89,7 +90,7 @@ LEAKFREE=(
   buffer_sum buffer_linear inplace_update native_case native_fib
   nested_drop sum_payload poly_payload_drop poly_payload_tco poly_payload_borrow_alias
   poly_payload_generic_drop poly_payload_generic_nested poly_payload_generic_compose poly_payload_gap
-  land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop tuple_owned land_tuple_upd land_owned_poly
+  land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned land_tuple_upd land_owned_poly
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
 )

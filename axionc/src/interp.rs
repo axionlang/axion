@@ -1,9 +1,6 @@
 //! Tree-walking interpreter for the L0/L1 subset — the "run" of the walking
 //! skeleton (§17). It is the embryo of the `--dev` fast-path; the native backend
 //! (Cranelift/LLVM) is the target of later phases.
-#![allow(unsafe_code)]
-#![allow(clippy::many_single_char_names)]
-#![allow(clippy::items_after_statements)]
 #![allow(clippy::pedantic)]
 
 use crate::ast::*;
@@ -588,6 +585,7 @@ extern "C" {
     ) -> *mut std::ffi::c_void;
 }
 
+#[allow(unsafe_code)]
 fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
     let cname = std::ffi::CString::new(name).map_err(|_| "invalid FFI name".to_string())?;
     // SAFETY: `dlsym` with RTLD_DEFAULT searches the process symbol table;

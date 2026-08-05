@@ -942,6 +942,9 @@ fn deep_drop_reclaims_nested_objects() {
         // lowered MakeCon carries the mangled mono-key `List$P` from inference,
         // routing Auto-Drop to the monomorphized destructor.
         ("make_bound_drop.axi", "3\n", "6 allocs, 6 frees"),
+        // Phase 4, Make-bound local drop: a `List P` built in a `let` that does
+        // NOT escape the function — Auto-Drop alone must reclaim it.
+        ("make_bound_drop_local.axi", "5\n", "4 allocs, 4 frees"),
         // Tuple-owned %1: a `%1` tuple param with heap elements — the generated
         // `axion_drop_tuple$Box$Box` destructor reclaims them.
         ("tuple_owned.axi", "4\n", "3 allocs, 3 frees"),

@@ -9,7 +9,6 @@
 //! (recursion), `let`, **records/tuples** on the heap, **strings/IO**, **`case`**,
 //! **closures** (env + indirect call), **arenas** (§3) and the Auto-Drop
 //! `drop`s. All values are `i64` (Int, pointers, tokens).
-#![allow(clippy::many_single_char_names)]
 
 use crate::ast;
 use crate::ast::Span;
