@@ -98,6 +98,22 @@ and uses raw `extern "C"` declarations for POSIX socket functions.
 | `ax_net_recv`         | `Int -> String`       | Receive string data (blocks)   |
 | `ax_net_close`        | `Int -> Int`          | Close socket                   |
 
+## ⚠️ Safety boundary
+
+`foreign` declarations call C functions directly via `dlsym`. These functions are
+**outside Axion's safety guarantees** — the C code can corrupt memory, double-free,
+or return garbage. Every `foreign` import is the Axion equivalent of Rust's
+`unsafe { }` block.
+
+The prelude's networking functions (`ax_net_*`) and runtime functions
+(`axion_array_*`, `axion_buf_*`) are **trusted wrappers**: they are audited and
+covered by the `sanitize.sh` gate (AddressSanitizer + LeakSanitizer).
+
+When declaring your own `foreign` imports:
+1. Audit the C code — assume it can corrupt anything.
+2. Keep FFI wrappers small and well-tested.
+3. Run `scripts/sanitize.sh` against any program using custom FFI.
+
 ## Limitations
 
 - **Blocking only.** `accept` and `recv` block the calling thread. There is no
