@@ -1060,10 +1060,7 @@ impl Ck<'_> {
                             if owned {
                                 self.transfers.insert(n.clone());
                                 if let Some(ref sv) = sv {
-                                    sa.split
-                                        .entry(sv.clone())
-                                        .or_default()
-                                        .insert(pl.slot);
+                                    sa.split.entry(sv.clone()).or_default().insert(pl.slot);
                                 }
                             }
                         }
@@ -1265,13 +1262,11 @@ impl Ck<'_> {
                 self.do_drop(v, ty, skip, Some(*sp), &mut s1);
                 crate::core::indent(n, out);
                 match ty {
-                    Some(t) if !skip.is_empty() => out.push_str(&format!(
-                        "drop {v} : {t} skip{{{}}}\n",
-                        skip.iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    )),
+                    Some(t) if !skip.is_empty() => {
+                        let mut s: Vec<String> = skip.iter().map(|i| i.to_string()).collect();
+                        s.sort();
+                        out.push_str(&format!("drop {v} : {t} skip{{{}}}\n", s.join(" ")))
+                    }
                     Some(t) => out.push_str(&format!("drop {v} : {t}\n")),
                     None => out.push_str(&format!("drop {v}\n")),
                 }
@@ -1371,10 +1366,7 @@ impl Ck<'_> {
                             if owned {
                                 self.transfers.insert(n.clone());
                                 if let Some(ref sv) = sv {
-                                    sa.split
-                                        .entry(sv.clone())
-                                        .or_default()
-                                        .insert(pl.slot);
+                                    sa.split.entry(sv.clone()).or_default().insert(pl.slot);
                                 }
                             }
                         }

@@ -96,7 +96,9 @@ Facts that make the judgment decidable:
   Δ-variables in the paper's sense.
 - **Multiplicity is explicit and precomputed.** `ast::Field.mult` (`%1`) for
   record fields (ast.rs:139); `compute_borrow_args` (`core.rs:2989`) for call
-  positions (borrowed = non-`%1` position read only locally); `owned_params` /
+  positions (borrowed = non-`%1` position read only locally — except view
+  positions like `drop`'s list, `core.rs::view_params`, whose result shares
+  the argument's cells and is therefore moved, §9-7); `owned_params` /
   `owned_drop_ty` for function parameters (core.rs:190/194). The judgment reads
   *exactly this* — no re-derivation.
 - **Drop-type keys are annotated** (Phase A′): `CallDirect(.., Option<String>)`,
@@ -319,7 +321,7 @@ bench no regression.
 | **Δ-3** | Collapse: `op_delta_effect` becomes the single authority; `insert_drops` consumes `check.rs` DropPoints; delete re-derived heuristics. | **move 1 done**: `delta.rs::op_delta_effect(op, ba) -> (moves, borrows, alias, produces)` is the one multiplicity table; the Δ judgment (`Ck::op`), `op_produces_heap`, `scan_op_escapes` and the read positions of `fv_op_in` all consume it (`scan_op_escapes_ret` deleted). Arena operands (`WithArena.parent`, `ArenaAlloc/Mark/Release`, `Promote`) stay a documented reclamation-side caveat. The collapse surfaced a latent bug: the old escape analysis forgot the `UpdateRecord` **base**, so `land_tuple_upd.axi` emitted `drop r : Rec` *before* `update r` (a use-after-free in the emitted Core, masked because the fixture is sanitize-skipped); the base now escapes — ownership transfers at the update, matching the `UpdateRecord` axiom. **move 2 done (coherence, not literal consumption — §6)**: `check_drop_coherence` cross-checks the judgment's param classification against the front-end DropPoints; 4 new unit tests (2 positive, 2 drift-tamper negatives). Snapshot regenerated (intended change): oracle 132/132, check-delta 103/103, 33/27 sanitize, 3/3 differential, bench, 141 cargo tests. |
 | **Δ-4** | Wire the checker into CI after every Core pass (the §7 contract); add `--emit delta` debug view. | **done**: the `delta` job of `.github/workflows/ci.yml` runs `dump-oracle.sh` + `check-delta.sh` + `bench.sh` on every push/PR (the §7 contract — snapshot oracle + checker gate + runtime agreement); `--emit delta` prints the judgment's per-function verdicts with the facts the annotated dump cannot show (drops in the judged Core, never-used `%1` params, the coherence agreement totals). The coherence per-function logic is shared with `--check-delta` (`drop_sets`, `coherence_violations`). 4 new unit tests (facts + format lock + determinism, borrowed-param classification, tampered view surfaces the coherence violation). Gates: 145 cargo tests, oracle 132/132, check-delta 103/103, 33/27 sanitize, 3/3 differential, bench, clippy/fmt clean. |
 | **Δ-5** | The position dimension of the coherence check (§6): per-statement drop anchors vs the front-end death spans. | **done**: every drop anchor is the anchored node's per-statement span; a `%1` drain drop must sit strictly after the death span (`anchor.1 > death.0`), `NO_SPAN` skipped. Landed with the `core.rs::expr` app-span fix (rebuilds extend to the last argument; head-only spans had ended every anchored statement before its own arguments — `linear_move.axi` `take b = val b` failed). 3 new unit tests (accept the take case, reject a span-collapsed anchor, the strict rule). Gates: 148 cargo tests, oracle 132/132, check-delta 103/103, 33/27 sanitize, 3/3 differential, bench, clippy/fmt clean. |
-| F-1..F-4 | Per-field ownership (`%1` fields with own Δ — the strict-ANF form of the paper's constructor component typing); revisit `Field`-ret as owned (kills the Field-split rule); bridge to dependent sorts (§7-4 of memory-model-options.md). | **done** (F-1..F-3): docs/per-field-ownership.md. The Δ judgment tracks per-slot transfers (`Res.slot`, `Scope.split` slot-sets), `(Field·owned)` on selector reads, `(Drop·skip)` remainder-drop rule (`skip == transferred`), Detach skipped-slot binders, `Term::Drop` skip-field annotated dump. Lowering emits remainder drops (`case_arms`), skip-variant destructors (`axion_drop_T_skip_0`) generated + routed through backends. `transfers_heap_field` retired for the `%1` path (non-`%1` residual kept). |
+| F-1..F-4 | Per-field ownership (`%1` fields with own Δ — the strict-ANF form of the paper's constructor component typing); revisit `Field`-ret as owned (kills the Field-split rule); bridge to dependent sorts (§7-4 of memory-model-options.md). | **done** (F-1..F-4): docs/per-field-ownership.md. The Δ judgment tracks per-slot transfers (`Res.slot`, `Scope.split` slot-sets), `(Field·owned)` on selector reads, `(Drop·skip)` remainder-drop rule (`skip == transferred`), Detach skipped-slot binders, `Term::Drop` skip-field annotated dump. Lowering emits remainder drops (`case_arms`), skip-variant destructors (`axion_drop_T_skip_0`) generated + routed through backends. `transfers_heap_field` retired for the `%1` path (non-`%1` residual kept). Δ checker bug fixed: case-arm owned binders now populate `Scope.split` on the scrutinee, so `(Drop·skip)` remainder drops verify (112/112 check-delta). |
 
 **Overfitting guard:** the Δ-1 checker must accept *exactly* the 132 fixtures —
 rejecting any current valid program is a checker bug (the oracle is the test);
@@ -353,12 +355,30 @@ The checker is *not* tuned per-fixture.
    recursive payload drops are ordinary calls. Session state machines and their
    `$step` entries remain **trusted by construction** (scheduler nursery arena),
    skipped by name (`sess$*` / `*$step`).
-5. **`(Field-split)` permanence** — it mirrors today's conservative shallow
-   free; the clean long-term rule is per-field ownership (§8 future), which
-   eliminates the rule and the `land_deepdrop_safety` shallow-free case.
+5. ~~**`(Field-split)` permanence**~~ — **resolved by F-1..F-4 (per-field
+   ownership, `docs/per-field-ownership.md`)**: `%1`-field extractions are now
+   judged by `(Field·owned)` + `(Drop·skip)` remainder drops with per-slot
+   `split` sets, and the `(Field-split)` rule is gone from `delta.rs`. The
+   `land_deepdrop_safety` fixture deep-drops the `Tree` scrutinee in the `Leaf`
+   arm; the non-`%1` residual (`transfers_heap_field` in `core.rs`) keeps the
+   conservative shallow free for non-`%1` heap/poly payload aliases.
 6. **Rejection fixtures** — the checker must not run on them in a way that
    changes exit codes (`set +o pipefail` semantics of dump-oracle must be
    preserved: content comparison, not exit-code comparison).
+7. **View parameters are never pure borrows** — `drop n xs` returns cells
+   shared with `xs` (the `n < 1` arm returns `Cons y ys`, reusing the input),
+   so freeing the input at the call site double-frees the shared suffix with
+   the result's destructor. The fix: `core.rs::view_params` forces such
+   positions to be **moved** at the call (the caller relinquishes the value —
+   the reclamation side then never frees it), leaving the checker's Δ
+   unchanged in spirit (`moves` for non-`%1` args is not linearity-tracked;
+   later reads of the arg are still accepted). The result's destructor
+   reclaims the shared suffix; cells the result never reaches (the dropped
+   prefix) leak conservatively. `append`'s second list behaves the same way
+   today — its `ys` param reaches a recursive call, so `occurs_nonborrow`
+   already moves it; `take`/`map`/`filter`/`reverse` rebuild their cells and
+   stay pure borrows. Regression: `drop_view.axi` (180), oracle 143/143,
+   check-delta 114/114, sanitize 43 without corruption / 36 leak-free.
 
 ## 10. Relation to the Phase A′ anchors
 

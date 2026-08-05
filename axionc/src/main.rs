@@ -261,7 +261,7 @@ fn main() -> ExitCode {
 
     // --- native --dev backend (Cranelift): IR dump or JIT+run main::Int ---
     if emit == Emit::Clif {
-        match codegen::emit_ir(&module, &inplace) {
+        match codegen::emit_ir(&module, &inplace, fuse) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -274,7 +274,7 @@ fn main() -> ExitCode {
     }
     // --- backend --release (LLVM): dump do IR ou compilar+correr ---
     if emit == Emit::Llvm {
-        match llvm::emit_ir(&module, &inplace) {
+        match llvm::emit_ir(&module, &inplace, fuse) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;

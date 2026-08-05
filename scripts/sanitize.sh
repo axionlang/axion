@@ -41,6 +41,7 @@ NATIVE=(
   axionc/tests/fixtures/inplace_update.axi
   axionc/tests/fixtures/native_case.axi
   axionc/tests/fixtures/native_closure.axi
+  axionc/tests/fixtures/drop_view.axi
   axionc/tests/fixtures/native_fib.axi
   axionc/tests/fixtures/lambda_hof.axi
   axionc/tests/fixtures/nested_drop.axi
@@ -81,6 +82,8 @@ NATIVE=(
 #     indistinguishable at drop): record_run, 01_hello, 02_fib.
 #   · closure returned by a function → may be a borrowed param, not fresh;
 #     reclaiming it would be unsound: native_closure, lambda_hof.
+#   · `drop n xs` is a view — the caller relinquishes `xs` at the call (the
+#     result shares its tail), so the dropped prefix leaks: drop_view.
 LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib

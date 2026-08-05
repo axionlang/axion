@@ -97,9 +97,15 @@ fn main_returns_bool(module: &ast::Module, entry: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Emits the LLVM IR module (text) from the Core (`--emit llvm`).
-pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
-    let fns = core::lower(module, inplace, false);
+/// Emits the LLVM IR module (text) from the Core (`--emit llvm`). The
+/// stream-fusion pass runs inside `core::lower`; `build_and_run` passes its
+/// `--fuse` flag through, so the emitted IR matches what the JIT runs.
+pub fn emit_ir(
+    module: &ast::Module,
+    inplace: &HashSet<Span>,
+    fuse: bool,
+) -> Result<String, String> {
+    let fns = core::lower(module, inplace, fuse);
     let records = RecordInfo::build(module);
     // type keys with a generated destructor `axion_drop_<key>` — includes the
     // monomorphized ones (`List$P`), whose key is not a `needs_deep_drop` type.
@@ -188,7 +194,7 @@ pub fn build_and_run(
             "'{entry}' must be a native function with no parameters"
         ));
     }
-    let ir = emit_ir(module, inplace)?;
+    let ir = emit_ir(module, inplace, fuse)?;
 
     let dir = std::env::temp_dir();
     let pid = std::process::id();

@@ -2073,6 +2073,91 @@ fn agree_across_backends(fx: &str, expected: &str) {
 }
 
 #[test]
+fn stream_fusion_agrees_across_backends() {
+    // `--fuse` rewrites `consume (range lo hi)` → `rangeFused lo hi step base`.
+    // Regression: (a) the lifted step is a closure (env-first ABI) — without
+    // this the Cranelift JIT reads the env as the first arg and returns
+    // garbage; (b) the consumer's binder and continuation survive (the fused
+    // call must not clobber the rest of the program); (c) `foldr` passes the
+    // user's closure through instead of synthesizing `+`; (d) `null`'s nil
+    // base is `True`, so an empty range reads `True`. All backends must agree
+    // with the unfused result (804) under `--fuse`.
+    let fx = fixture("fuse_consumers.axi");
+    let variants: [(&str, &[&str]); 3] = [
+        ("interp", &[]),
+        ("cranelift", &["--backend", "cranelift"]),
+        ("llvm", &["--release"]),
+    ];
+    for (label, extra) in variants {
+        let out = axionc()
+            .arg("--fuse")
+            .args(extra)
+            .arg(&fx)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "--fuse {label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "804\n",
+            "--fuse {label}"
+        );
+    }
+    // the Δ checker must accept the fused Core (the §7 contract — a pass that
+    // rewrites the Core re-validates it under the judgment).
+    let out = axionc()
+        .args(["--fuse", "--check-delta", &fixture("fuse_consumers.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--fuse --check-delta: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn drop_view_agrees_across_backends() {
+    // Regression for the `drop` view aliasing: `drop n xs` returns cells
+    // shared with `xs` (the `n < 1` arm returns `Cons y ys`, reusing the
+    // input), but the caller used to free the input — `xs` is only case-read
+    // in the lowered Core, so it was classified as a pure borrow — and the
+    // result's destructor double-freed the shared suffix. The fix moves the
+    // view argument at the call (like `append`'s second list, whose `ys`
+    // param reaches a recursive call): the caller relinquishes the input,
+    // the result's destructor reclaims the shared suffix, and the dropped
+    // prefix leaks conservatively. All backends must agree on 180
+    // (51 + 63 + 66); the Δ checker must accept the moved argument.
+    let fx = fixture("drop_view.axi");
+    let variants: [(&str, &[&str]); 3] = [
+        ("interp", &[]),
+        ("cranelift", &["--backend", "cranelift"]),
+        ("llvm", &["--release"]),
+    ];
+    for (label, extra) in variants {
+        let out = axionc().args(extra).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "180\n", "{label}");
+    }
+    let out = axionc()
+        .args(["--check-delta", &fixture("drop_view.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--check-delta: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn num_class_unifies_arithmetic_over_int_and_float() {
     // built-in `Num`: the plain operators `+ - *` work on Float (no `+.`),
     // resolved by inference and rewritten to the dotted form for the backends.

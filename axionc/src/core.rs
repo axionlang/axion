@@ -2475,6 +2475,20 @@ fn fuse_term(t: &mut Term, helpers: &mut Vec<CoreFn>) {
                 if let Some(consume) = matching_consumer(prod, body, x) {
                     if let Some(fused) = build_fused(prod, prod_args, &consume, helpers) {
                         *t = fused;
+                        // the fused term preserves the consumer's binder and
+                        // continuation — keep fusing the rest of the chain.
+                        // Shape: `let <clo?>; let <binder> = fused; REST`.
+                        if let Term::Let(_, clo_rhs, _, b1) = t {
+                            if matches!(clo_rhs, Rhs::Op(Op::MakeClosure { .. })) {
+                                if let Term::Let(_, _, _, b2) = b1.as_mut() {
+                                    fuse_term(b2, helpers);
+                                }
+                            } else {
+                                // foldr passes its own closure through — b1
+                                // is the binder-let and its body is REST
+                                fuse_term(b1, helpers);
+                            }
+                        }
                         return;
                     }
                 }
@@ -2501,6 +2515,12 @@ fn fuse_term(t: &mut Term, helpers: &mut Vec<CoreFn>) {
 struct FuseConsumer {
     name: String,
     base: Atom,
+    /// The user's step closure for `foldr` — passed through to the fused
+    /// call; `None` for consumers whose step is synthesized.
+    step: Option<Atom>,
+    /// The binder holding the consumer's result and the continuation after
+    /// the consumer (`None` when the consumer is the function's tail call).
+    rest: Option<(String, Term)>,
 }
 
 /// Checks whether the variable `x` is consumed by a recognized fusion
@@ -2508,9 +2528,11 @@ struct FuseConsumer {
 fn matching_consumer(_prod: &str, body: &Term, x: &str) -> Option<FuseConsumer> {
     // extract the `CallDirect` consumer from either a `Let` binder or a
     // tail-position `Ret`
-    let (cons, args) = match body {
-        Term::Let(_, Rhs::Op(Op::CallDirect(c, a, _)), _, _) => (c, a),
-        Term::Ret(Rhs::Op(Op::CallDirect(c, a, _)), _) => (c, a),
+    let (cons, args, rest) = match body {
+        Term::Let(b, Rhs::Op(Op::CallDirect(c, a, _)), _, cont) => {
+            (c, a, Some((b.clone(), (**cont).clone())))
+        }
+        Term::Ret(Rhs::Op(Op::CallDirect(c, a, _)), _) => (c, a, None),
         Term::Drop(_, _, _, _, b) => return matching_consumer(_prod, b, x),
         _ => return None,
     };
@@ -2521,80 +2543,102 @@ fn matching_consumer(_prod: &str, body: &Term, x: &str) -> Option<FuseConsumer> 
         "sum" => Some(FuseConsumer {
             name: "sum".into(),
             base: Atom::Int(0),
+            step: None,
+            rest,
         }),
         "length" => Some(FuseConsumer {
             name: "length".into(),
             base: Atom::Int(0),
+            step: None,
+            rest,
         }),
+        // `foldr` is its own step: the fused call reuses the user's closure
+        // and nil, so the result is exactly `foldr step base (range lo hi)`.
         "foldr" if args.len() >= 2 => Some(FuseConsumer {
             name: "foldr".into(),
             base: args[1].clone(),
+            step: Some(args[0].clone()),
+            rest,
         }),
+        // `null (range lo hi)` = empty list = `lo > hi` → the nil base must
+        // be `True`; the step (applied to any non-empty range) returns `False`.
         "null" => Some(FuseConsumer {
             name: "null".into(),
-            base: Atom::Int(0),
+            base: Atom::Int(1),
+            step: None,
+            rest,
         }),
         _ => None,
     }
 }
 
-/// Builds a fused replacement term for `consumer (producer input)`.
+/// Builds a fused replacement term for `consumer (range lo hi)`.
 fn build_fused(
     prod: &str,
     prod_args: &[Atom],
     consume: &FuseConsumer,
     helpers: &mut Vec<CoreFn>,
 ) -> Option<Term> {
+    // only `range` producers fuse soundly: `consume (range lo hi)` becomes
+    // `rangeFused lo hi step base`, which never allocates the list.  The
+    // other producers (`map`/`filter`/`take`/`drop`) would need their
+    // transformation composed into the step (stateful for `take`/`drop`) —
+    // a plain `foldr` over the input would silently drop it.
+    if prod != "range" || prod_args.len() < 2 {
+        return None;
+    }
+    // the step closure: `foldr`'s own closure passes through; the others get
+    // a synthesized helper wrapped in a `MakeClosure` let-binding.
     let step_name = lift_step(consume, helpers);
-    // the step function must be a closure — `rangeFused` calls it via
-    // `callclo`.  Wrap it in a `MakeClosure` let-binding.
     let clo_name = format!("{step_name}_clo");
-    let make_clo = Rhs::Op(Op::MakeClosure {
-        func: step_name,
-        captures: Vec::new(),
-    });
-    let fused = match prod {
-        "range" if prod_args.len() >= 2 => {
-            let lo = prod_args[0].clone();
-            let hi = prod_args[1].clone();
-            Term::Ret(
-                Rhs::Op(Op::CallDirect(
-                    "rangeFused".into(),
-                    vec![lo, hi, Atom::Var(clo_name.clone()), consume.base.clone()],
-                    None,
-                )),
-                NO_SPAN,
-            )
-        }
-        "map" | "filter" | "take" | "drop" if !prod_args.is_empty() => {
-            let input = prod_args.last()?.clone();
-            Term::Ret(
-                Rhs::Op(Op::CallDirect(
-                    "foldr".into(),
-                    vec![Atom::Var(clo_name.clone()), consume.base.clone(), input],
-                    None,
-                )),
-                NO_SPAN,
-            )
-        }
-        _ => return None,
+    let (closure_arg, clo_bind) = match &consume.step {
+        Some(step) => (step.clone(), None),
+        None => (
+            Atom::Var(clo_name.clone()),
+            Some((
+                clo_name,
+                Rhs::Op(Op::MakeClosure {
+                    func: step_name,
+                    captures: Vec::new(),
+                }),
+            )),
+        ),
     };
-    // wrap with `let _clo = closure stepName; ret ...`
-    Some(Term::Let(
-        clo_name,
-        make_clo,
-        term_span(&fused),
-        Box::new(fused),
-    ))
+    let fused_rhs = Rhs::Op(Op::CallDirect(
+        "rangeFused".into(),
+        vec![
+            prod_args[0].clone(),
+            prod_args[1].clone(),
+            closure_arg,
+            consume.base.clone(),
+        ],
+        None,
+    ));
+    // the fused call replaces the consumer in its original position: bound to
+    // the consumer's binder with the rest of the function as the body, or as
+    // the tail call when the consumer was one.
+    let fused = match &consume.rest {
+        Some((binder, cont)) => {
+            Term::Let(binder.clone(), fused_rhs, NO_SPAN, Box::new(cont.clone()))
+        }
+        None => Term::Ret(fused_rhs, NO_SPAN),
+    };
+    // wrap with `let _clo = closure stepName; <fused>`
+    match clo_bind {
+        Some((clo, make_clo)) => Some(Term::Let(clo, make_clo, term_span(&fused), Box::new(fused))),
+        None => Some(fused),
+    }
 }
 
-/// Lifts the composed step function into a top-level `CoreFn` and
-/// returns its name.
+/// Lifts the synthesized step function into a top-level `CoreFn` and
+/// returns its name.  Called only for consumers without a user closure
+/// (`foldr` passes its own through); `null`'s step returns `False` — the
+/// nil base `True` covers the empty-range case.
 fn lift_step(consume: &FuseConsumer, helpers: &mut Vec<CoreFn>) -> String {
     let name = fuse_fresh();
     let body = match consume.name.as_str() {
-        "sum" | "foldr" => {
-            // \x acc -> <step> x acc
+        "sum" => {
+            // \x acc -> x + acc
             Term::Ret(
                 Rhs::Op(Op::Prim(
                     "+".into(),
@@ -2617,7 +2661,9 @@ fn lift_step(consume: &FuseConsumer, helpers: &mut Vec<CoreFn>) -> String {
         name: name.clone(),
         params: vec!["x".into(), "acc".into()],
         captures: Vec::new(),
-        is_closure: false,
+        // the step is reached through `MakeClosure` + `CallClosure`, whose ABI
+        // passes the env pointer as the 1st argument — it must be a closure.
+        is_closure: true,
         owned_params: Vec::new(),
         owned_drop_ty: Vec::new(),
         body,
@@ -3629,6 +3675,21 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
     }
 }
 
+/// Parameter indices of a prelude function whose RESULT shares cells with the
+/// parameter (a "view" — `drop n xs` returns the input's tail from the
+/// `n < 1` arm). A view parameter is never a pure borrow: the call moves it
+/// (the caller relinquishes the value, so the reclamation side never frees
+/// it) and the RESULT's destructor reclaims the shared suffix, while cells
+/// the result never reaches (the dropped prefix) leak conservatively. This
+/// mirrors how `append`'s second list already behaves — its `ys` param
+/// appears in the recursive call, so `occurs_nonborrow` already moves it.
+fn view_params(name: &str) -> &'static [usize] {
+    match name {
+        "drop" => &[1],
+        _ => &[],
+    }
+}
+
 /// Computes the pure borrows of each top-level function (those with a signature,
 /// logo multiplicidade conhecida). Ver [`BorrowArgs`].
 fn compute_borrow_args(
@@ -3644,7 +3705,7 @@ fn compute_borrow_args(
         for (i, pname) in f.params.iter().enumerate() {
             // borrowed (not `%1` → the caller retains ownership) and only read locally
             let borrowed = mults.get(i) != Some(&ast::Mult::One);
-            if borrowed && !occurs_nonborrow(pname, &f.body) {
+            if borrowed && !occurs_nonborrow(pname, &f.body) && !view_params(&f.name).contains(&i) {
                 set.insert(i);
             }
         }

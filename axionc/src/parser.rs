@@ -588,7 +588,10 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(&Tok::RParen, "')' in the type")?;
                 if ts.len() == 1 {
-                    Ok(ts.into_iter().next().ok_or_else(|| self.syntax_err("empty"))?)
+                    Ok(ts
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| self.syntax_err("empty"))?)
                 } else {
                     Ok(Type::Tuple(ts))
                 }
@@ -630,7 +633,10 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "')' in the pattern")?;
                 let end = self.span_here().0;
                 if ps.len() == 1 {
-                    Ok(ps.into_iter().next().ok_or_else(|| self.syntax_err("empty"))?)
+                    Ok(ps
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| self.syntax_err("empty"))?)
                 } else {
                     Ok(Pat::Tuple(ps, (s, end)))
                 }
@@ -699,7 +705,10 @@ impl<'a> Parser<'a> {
             return Err(self.syntax_err("empty do block"));
         }
         let mut iter = stmts.into_iter().rev();
-        let mut acc = match iter.next().ok_or_else(|| self.syntax_err("empty do block"))? {
+        let mut acc = match iter
+            .next()
+            .ok_or_else(|| self.syntax_err("empty do block"))?
+        {
             Stmt::Expr(e) => e,
             Stmt::Bind(..) => return Err(self.syntax_err("do block ending in <-")),
         };
@@ -1029,7 +1038,10 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen, "')' in the expression")?;
                 let end = self.span_here().0;
                 if es.len() == 1 {
-                    Ok(es.into_iter().next().ok_or_else(|| self.syntax_err("empty"))?)
+                    Ok(es
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| self.syntax_err("empty"))?)
                 } else {
                     Ok(Expr::Tuple(es, (s, end)))
                 }

@@ -1748,9 +1748,15 @@ pub fn run(
     Ok(returns_int.then_some(val))
 }
 
-/// Emits the Cranelift IR (text) of the Core functions, without JIT (`--emit clif`).
-pub fn emit_ir(module: &ast::Module, inplace: &HashSet<Span>) -> Result<String, String> {
-    let fns = core::lower(module, inplace, false);
+/// Emits the Cranelift IR (text) of the Core functions, without JIT
+/// (`--emit clif`). The stream-fusion pass runs inside `core::lower`; the
+/// `--fuse` flag is threaded through so the dump matches the JIT's code.
+pub fn emit_ir(
+    module: &ast::Module,
+    inplace: &HashSet<Span>,
+    fuse: bool,
+) -> Result<String, String> {
+    let fns = core::lower(module, inplace, fuse);
     if fns.is_empty() {
         return Ok("; no natively compilable function (Int core).\n".into());
     }
