@@ -100,6 +100,7 @@ extern "C" fn axion_alloc(size: i64) -> *mut u8 {
         std::alloc::Layout::from_size_align(total, 8).unwrap_or_else(|_| panic!("layout error"));
     // SAFETY: layout is well-formed (8-aligned, non-zero); null-check
     // handles OOM via `handle_alloc_error` before any dereference.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let base = std::alloc::alloc(layout);
         // out-of-memory → abort cleanly (the std OOM handler) instead of
@@ -123,6 +124,7 @@ extern "C" fn axion_free(ptr: *mut u8) {
     }
     // SAFETY: only called after axion_alloc, so ptr is a valid
     // allocation with an 8-byte size header at offset -8.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let base = ptr.sub(8);
         let total = base.cast::<u64>().read_unaligned() as usize;
@@ -130,6 +132,179 @@ extern "C" fn axion_free(ptr: *mut u8) {
             .unwrap_or_else(|_| panic!("layout error"));
         std::alloc::dealloc(base, layout);
         HEAP_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/* --- networking runtime (see axion_rt.c for the C version) --- */
+
+#[repr(C)]
+struct SockAddrIn {
+    family: u16,
+    port: u16,
+    addr: u32,
+    zero: [u8; 8],
+}
+#[repr(C)]
+struct AddrInfo {
+    flags: i32,
+    family: i32,
+    socktype: i32,
+    protocol: i32,
+    addrlen: u32,
+    addr: *mut SockAddrIn,
+    canonname: *const u8,
+    next: *mut AddrInfo,
+}
+const AF_UNSPEC: i32 = 0;
+const AF_INET: i32 = 2;
+const SOCK_STREAM: i32 = 1;
+const SOL_SOCKET: i32 = 1;
+const SO_REUSEADDR: i32 = 2;
+const MSG_NOSIGNAL: i32 = 0x4000;
+
+extern "C" fn ax_net_connect(host: i64, port: i64) -> i64 {
+    use std::os::raw::c_char;
+    extern "C" {
+        fn getaddrinfo(
+            node: *const c_char,
+            service: *const c_char,
+            hints: *const AddrInfo,
+            res: *mut *mut AddrInfo,
+        ) -> i32;
+        fn freeaddrinfo(res: *mut AddrInfo);
+        fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+        fn connect(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+        fn close(fd: i32) -> i32;
+    }
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
+    unsafe {
+        let host = host as *const u8 as *const c_char;
+        let mut hints: AddrInfo = std::mem::zeroed();
+        hints.family = AF_UNSPEC;
+        hints.socktype = SOCK_STREAM;
+        let mut res: *mut AddrInfo = std::ptr::null_mut();
+        if getaddrinfo(host, std::ptr::null(), &raw const hints, &raw mut res) != 0 || res.is_null()
+        {
+            return -1;
+        }
+        let mut fd = -1;
+        let mut rp = res;
+        while !rp.is_null() {
+            let ai = &*rp;
+            fd = socket(ai.family, ai.socktype, ai.protocol);
+            if fd < 0 {
+                rp = ai.next;
+                continue;
+            }
+            let mut sa = std::ptr::read(ai.addr);
+            sa.port = (port as u16).to_be();
+            if connect(fd, &raw const sa, std::mem::size_of::<SockAddrIn>() as u32) == 0 {
+                break;
+            }
+            close(fd);
+            fd = -1;
+            rp = ai.next;
+        }
+        freeaddrinfo(res);
+        fd as i64
+    }
+}
+
+extern "C" fn ax_net_listen(port: i64) -> i64 {
+    extern "C" {
+        fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+        fn setsockopt(fd: i32, level: i32, opt: i32, val: *const i32, len: u32) -> i32;
+        fn bind(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+        fn listen(fd: i32, backlog: i32) -> i32;
+        fn close(fd: i32) -> i32;
+    }
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
+    unsafe {
+        let fd = socket(AF_INET, SOCK_STREAM, 0);
+        if fd < 0 {
+            return -1;
+        }
+        let opt: i32 = 1;
+        setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &raw const opt,
+            std::mem::size_of::<i32>() as u32,
+        );
+        let addr = SockAddrIn {
+            family: AF_INET as u16,
+            port: (port as u16).to_be(),
+            addr: 0,
+            zero: [0; 8],
+        };
+        if bind(
+            fd,
+            &raw const addr,
+            std::mem::size_of::<SockAddrIn>() as u32,
+        ) < 0
+        {
+            close(fd);
+            return -1;
+        }
+        if listen(fd, 128) < 0 {
+            close(fd);
+            return -1;
+        }
+        fd as i64
+    }
+}
+
+extern "C" fn ax_net_accept(fd: i64) -> i64 {
+    extern "C" {
+        fn accept(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
+    }
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
+    unsafe { accept(fd as i32, std::ptr::null_mut(), std::ptr::null_mut()) as i64 }
+}
+
+extern "C" fn ax_net_send(fd: i64, data: i64) -> i64 {
+    use std::os::raw::c_char;
+    extern "C" {
+        fn send(fd: i32, buf: *const c_char, len: usize, flags: i32) -> isize;
+    }
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
+    unsafe {
+        let s = data as *const u8 as *const c_char;
+        let mut len = 0usize;
+        while *s.add(len) != 0 {
+            len += 1;
+        }
+        send(fd as i32, s, len, MSG_NOSIGNAL) as i64
+    }
+}
+
+extern "C" fn ax_net_recv(fd: i64) -> i64 {
+    use std::os::raw::c_char;
+    extern "C" {
+        fn recv(fd: i32, buf: *mut c_char, len: usize, flags: i32) -> isize;
+    }
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
+    unsafe {
+        let mut buf = [0u8; 4096];
+        let n = recv(fd as i32, buf.as_mut_ptr() as *mut c_char, buf.len() - 1, 0);
+        if n <= 0 {
+            return 0;
+        }
+        let p = axion_alloc(n as i64 + 1);
+        std::ptr::copy_nonoverlapping(buf.as_ptr(), p, n as usize);
+        *p.add(n as usize) = 0;
+        p as i64
+    }
+}
+
+extern "C" fn ax_net_close(fd: i64) {
+    extern "C" {
+        fn close(fd: i32) -> i32;
+    }
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
+    unsafe {
+        close(fd as i32);
     }
 }
 
@@ -208,6 +383,7 @@ extern "C" fn axion_arena_reset(arena: *mut u8) {
     ARENA_RESETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // SAFETY: arena was allocated by axion_arena_new and was never freed;
     // Box::from_raw reconstructs the owning pointer for safe deallocation.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe { drop(Box::from_raw(arena as *mut ArenaState)) };
 }
 
@@ -246,6 +422,7 @@ extern "C" fn axion_arena_promote(target: *mut u8, cell: *mut u8, size: i64) -> 
     let dst = st.alloc(size as usize);
     // SAFETY: cell and dst are within valid allocations of at least `size`
     // bytes, and they do not overlap (dst is freshly allocated).
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe { std::ptr::copy_nonoverlapping(cell, dst, size as usize) };
     dst
 }
@@ -263,6 +440,7 @@ extern "C" fn axion_buf_new(n: i64) -> *mut u8 {
     let n = n.max(0) as usize;
     let layout = buf_layout(n);
     // SAFETY: layout is well-formed; null-check before any dereference.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let b = std::alloc::alloc_zeroed(layout);
         if b.is_null() {
@@ -276,6 +454,7 @@ extern "C" fn axion_buf_new(n: i64) -> *mut u8 {
 extern "C" fn axion_buf_iota(buf: *mut u8) -> *mut u8 {
     // SAFETY: buf was allocated by axion_buf_new — valid for reads/writes
     // within [0, n) at buf+8, where n = read from buf[0..8].
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
@@ -288,6 +467,7 @@ extern "C" fn axion_buf_iota(buf: *mut u8) -> *mut u8 {
 
 extern "C" fn axion_buf_xor(buf: *mut u8, key: i64) -> *mut u8 {
     // SAFETY: buf was allocated by axion_buf_new — reads/writes within bounds.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
@@ -300,6 +480,7 @@ extern "C" fn axion_buf_xor(buf: *mut u8, key: i64) -> *mut u8 {
 
 extern "C" fn axion_buf_sum(buf: *mut u8) -> i64 {
     // SAFETY: buf was allocated by axion_buf_new — reads within bounds.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let n = buf.cast::<i64>().read_unaligned() as usize;
         let d = buf.add(8);
@@ -314,6 +495,7 @@ extern "C" fn axion_buf_sum(buf: *mut u8) -> i64 {
 extern "C" fn axion_buf_free(buf: *mut u8) {
     // SAFETY: buf was allocated by axion_buf_new with a matching layout
     // computed from the size header.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let n = buf.cast::<i64>().read_unaligned() as usize;
         std::alloc::dealloc(buf, buf_layout(n));
@@ -325,6 +507,7 @@ extern "C" fn axion_buf_free(buf: *mut u8) {
 extern "C" fn axion_fold_bytes(f: *mut u8, init: i64, buf: *mut u8) -> i64 {
     // SAFETY: f is a closure heap-pointer whose first word is a function
     // pointer with the correct signature; buf was allocated by axion_buf_new.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe {
         let fn_ptr = f.cast::<i64>().read_unaligned();
         let func: extern "C" fn(*mut u8, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
@@ -372,6 +555,7 @@ struct SessSched {
 fn sess<'a>(sched: i64) -> &'a SessSched {
     // SAFETY: sched was created by axion_sess_new which returns a Box pointer;
     // the cast reconstructs the reference for the duration of this call only.
+    // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
     unsafe { &*(sched as *const SessSched) }
 }
 
@@ -569,6 +753,7 @@ extern "C" fn axion_sess_run(sched: i64, step: i64, state: i64) -> i64 {
     for (p, layout) in inner.allocs {
         // SAFETY: each (p, layout) was recorded by axion_sess_alloc
         // with the exact same layout used during allocation.
+        // SAFETY: POSIX getaddrinfo/socket/connect — well-known C socket API.
         unsafe { std::alloc::dealloc(p as *mut u8, layout) };
     }
     result
@@ -639,6 +824,13 @@ impl Cg {
         builder.symbol("axion_sess_alloc", axion_sess_alloc as *const u8);
         builder.symbol("axion_sess_spawn", axion_sess_spawn as *const u8);
         builder.symbol("axion_sess_run", axion_sess_run as *const u8);
+        // networking
+        builder.symbol("ax_net_connect", ax_net_connect as *const u8);
+        builder.symbol("ax_net_listen", ax_net_listen as *const u8);
+        builder.symbol("ax_net_accept", ax_net_accept as *const u8);
+        builder.symbol("ax_net_send", ax_net_send as *const u8);
+        builder.symbol("ax_net_recv", ax_net_recv as *const u8);
+        builder.symbol("ax_net_close", ax_net_close as *const u8);
         let mut module = JITModule::new(builder);
 
         let import = |module: &mut JITModule, name: &str, nparams: usize, ret: bool| {

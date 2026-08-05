@@ -595,12 +595,20 @@ fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
         return Err(format!("FFI symbol not found: '{name}'"));
     }
     let mut a = [0i64; 3];
+    let mut _strings: Vec<std::ffi::CString> = Vec::new();
     for (i, v) in args.iter().enumerate() {
         a[i] = match v {
             Value::Int(n) => *n,
+            Value::Str(s) => {
+                let cs = std::ffi::CString::new(s.clone())
+                    .map_err(|_| format!("FFI '{name}': string argument contains null byte"))?;
+                let ptr = cs.as_ptr() as i64;
+                _strings.push(cs);
+                ptr
+            }
             other => {
                 return Err(format!(
-                    "FFI '{name}': non-Int argument ({})",
+                    "FFI '{name}': non-Int/String argument ({})",
                     type_name(other)
                 ))
             }

@@ -152,6 +152,7 @@ fn unquote(s: &str) -> String {
         if c == '\\' {
             match chars.next() {
                 Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
                 Some('t') => out.push('\t'),
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),

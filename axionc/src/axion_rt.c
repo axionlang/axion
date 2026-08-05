@@ -10,6 +10,13 @@
 #include <string.h>
 #include <unistd.h>
 
+/* --- networking (§FFI): socket operations for TCP clients and servers --- */
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <errno.h>
+
 /* `malloc` that aborts cleanly on out-of-memory instead of returning NULL (which
  * the callers would dereference → SIGSEGV). Resource exhaustion is not a memory
  * bug, but the failure should be a clear message, not a crash. */
@@ -513,3 +520,81 @@ long axion_sess_run(long sched, long step, long state) {
   free(s);
   return result;
 }
+
+/* --- networking primitives (§FFI) ----------------------------------------- */
+
+/* ax_net_connect(hostname, port) → fd (≥0 on success, -errno on failure). */
+long ax_net_connect(long host_ptr, long port) {
+  const char *host = (const char *)host_ptr;
+  struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM};
+  struct addrinfo *res = NULL;
+  int r = getaddrinfo(host, NULL, &hints, &res);
+  if (r != 0 || !res) return -(r ? r : EAI_FAIL);
+  int fd = -1;
+  for (struct addrinfo *rp = res; rp; rp = rp->ai_next) {
+    fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    if (fd < 0) continue;
+    if (rp->ai_family == AF_INET) {
+      ((struct sockaddr_in *)rp->ai_addr)->sin_port = htons((uint16_t)port);
+    } else {
+      ((struct sockaddr_in6 *)rp->ai_addr)->sin6_port = htons((uint16_t)port);
+    }
+    if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+    close(fd);
+    fd = -1;
+  }
+  freeaddrinfo(res);
+  return fd >= 0 ? fd : -errno;
+}
+
+/* ax_net_listen(port) → fd (listening socket, ≥0 on success). */
+long ax_net_listen(long port) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return -errno;
+  int opt = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  struct sockaddr_in addr = {.sin_family = AF_INET,
+                              .sin_addr.s_addr = INADDR_ANY,
+                              .sin_port = htons((uint16_t)port)};
+  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    int e = errno;
+    close(fd);
+    return -e;
+  }
+  if (listen(fd, 128) < 0) {
+    int e = errno;
+    close(fd);
+    return -e;
+  }
+  return fd;
+}
+
+/* ax_net_accept(listen_fd) → client_fd (≥0 on success, blocks). */
+long ax_net_accept(long listen_fd) {
+  int fd = (int)listen_fd;
+  int c = accept(fd, NULL, NULL);
+  return c >= 0 ? c : -errno;
+}
+
+/* ax_net_send(fd, data_ptr) → bytes sent (or -errno). Uses strlen(data). */
+long ax_net_send(long fd, long data_ptr) {
+  const char *s = (const char *)data_ptr;
+  size_t len = strlen(s);
+  ssize_t n = send((int)fd, s, len, MSG_NOSIGNAL);
+  return n >= 0 ? (long)n : -errno;
+}
+
+/* ax_net_recv(fd) → heap-allocated null-terminated string (or 0 on close/error).
+   The returned pointer is compatible with axion_free(). */
+long ax_net_recv(long fd) {
+  char buf[4096];
+  ssize_t n = recv((int)fd, buf, sizeof(buf) - 1, 0);
+  if (n <= 0) return 0;
+  buf[n] = '\0';
+  long p = axion_alloc(n + 1);
+  memcpy((char *)p, buf, (size_t)n + 1);
+  return p;
+}
+
+/* ax_net_close(fd) — closes the socket. */
+void ax_net_close(long fd) { close((int)fd); }

@@ -540,6 +540,15 @@ fn rewrite_expr(e: &mut ast::Expr, fname: &str, res: &Resolutions) {
 /// they work without import. `mapM_` is a prelude function too.
 const PRELUDE: &str = "\
 data List a = Nil | Cons a (List a)
+
+-- networking FFI: TCP socket operations (axion_rt.c)
+foreign ax_net_connect :: String -> Int -> Int
+foreign ax_net_listen :: Int -> Int
+foreign ax_net_accept :: Int -> Int
+foreign ax_net_send :: Int -> String -> Int
+foreign ax_net_recv :: Int -> String
+foreign ax_net_close :: Int -> Int
+
 compose :: (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
 range :: Int -> Int -> List Int
@@ -1157,6 +1166,11 @@ fn inject_prelude(module: &mut ast::Module) {
     for i in prelude.instances.into_iter().rev() {
         if !has_inst.contains(&(i.class_name.clone(), i.ty_head.clone())) {
             module.instances.insert(0, i);
+        }
+    }
+    for f in prelude.foreigns.into_iter().rev() {
+        if !module.foreigns.iter().any(|u| u.name == f.name) {
+            module.foreigns.insert(0, f);
         }
     }
 }
