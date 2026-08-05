@@ -257,17 +257,26 @@ long axion_array_new(long len, long init) {
   return (long)b;
 }
 
-/* axion_array_get(arr, idx) → elem at idx (bounds-checked, returns 0 on OOB) */
+/* axion_array_get(arr, idx) → elem at idx; aborts on out-of-bounds */
 long axion_array_get(long arr, long idx) {
   long n = *(long *)arr;
-  if (idx < 0 || idx >= n) return 0;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: array bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
   return ((long *)(arr + 8))[idx];
 }
 
-/* axion_array_set(arr, idx, val) → new length (in-place, returns arr) */
+/* axion_array_set(arr, idx, val) → arr (in-place); aborts on out-of-bounds */
 long axion_array_set(long arr, long idx, long val) {
   long n = *(long *)arr;
-  if (idx >= 0 && idx < n) ((long *)(arr + 8))[idx] = val;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: array bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
+  ((long *)(arr + 8))[idx] = val;
   return arr;
 }
 

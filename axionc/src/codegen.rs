@@ -542,23 +542,24 @@ extern "C" fn axion_array_new(len: i64, init: i64) -> i64 {
 }
 
 extern "C" fn axion_array_get(arr: i64, idx: i64) -> i64 {
-    // SAFETY: arr is a valid Array allocation — reads within bounds or returns 0.
+    // SAFETY: arr is a valid Array allocation — reads within bounds or aborts.
     unsafe {
         let n = (arr as *const i64).read_unaligned();
         if idx < 0 || idx >= n {
-            return 0;
+            std::process::abort();
         }
         (arr as *const i64).add(idx as usize + 1).read_unaligned()
     }
 }
 
 extern "C" fn axion_array_set(arr: i64, idx: i64, val: i64) -> i64 {
-    // SAFETY: arr is a valid Array allocation — write within bounds or no-op.
+    // SAFETY: arr is a valid Array allocation — writes within bounds or aborts.
     unsafe {
         let n = (arr as *const i64).read_unaligned();
-        if idx >= 0 && idx < n {
-            (arr as *mut i64).add(idx as usize + 1).write_unaligned(val);
+        if idx < 0 || idx >= n {
+            std::process::abort();
         }
+        (arr as *mut i64).add(idx as usize + 1).write_unaligned(val);
         arr
     }
 }
@@ -928,7 +929,7 @@ impl Cg {
             ("axion_buf_iota", 1, true),
             ("axion_buf_xor", 2, true),
             ("axion_buf_sum", 1, true),
-            ("axion_buf_free", 1, false),
+            ("axion_buf_free", 1, true),
             ("axion_fold_bytes", 3, true),
             ("axion_array_new", 2, true),
             ("axion_array_get", 2, true),

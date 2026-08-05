@@ -4720,6 +4720,35 @@ impl Elab<'_> {
                         }
                     }
                     ScrutDrop::Shallow => {
+                        // Build the alias set (same as `Deep` path): field bindings
+                        // whose heap/poly payload may alias into the arm result.
+                        // Skip those from deep-drop; reclaim all other heap fields.
+                        let mut alias = HashSet::from([s.clone()]);
+                        if let CPat::Con(con, subs) = &pat {
+                            for (fi, sp) in subs.iter().enumerate() {
+                                if let CPat::Var(n) = sp {
+                                    if self.recinfo.field_transfers_heap(con, fi) {
+                                        alias.insert(n.clone());
+                                    }
+                                }
+                            }
+                            self.collect_payload_aliases(&b, &mut alias);
+                            // compute the skip set: field indices whose binding
+                            // name appears in the alias set (the result may
+                            // reference them — must NOT deep-drop).
+                            let skip: HashSet<usize> = subs
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(fi, sp)| {
+                                    if let CPat::Var(n) = sp {
+                                        alias.contains(n).then_some(fi)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
+                        }
                         b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                     }
                 }
@@ -4737,7 +4766,8 @@ impl Elab<'_> {
     }
 
     /// Emits inline per-field deep drops for non-skipped heap slots of `pat`.
-    /// Used for the non-`%1` transfer path (polymorphic-payload gap).
+    /// Used for the non-`%1` transfer path (`Inline`) and the now-leak-free
+    /// `Shallow` path (empty skip set — all heap fields reclaimed).
     fn emit_per_field_drops(
         mut b: Term,
         con: &str,
@@ -4818,9 +4848,13 @@ enum ScrutDrop<'a> {
     Deep,
     /// F-3 remainder drop via skip-variant destructor (`Term::Drop` with skip)
     Remainder { skip: &'a HashSet<usize> },
-    /// Inline per-field drops + shell free (non-`%1` transfer fallback)
+    /// Inline per-field drops + shell free (non-`%1` transfer fallback).
+    /// The non-`%1` fields in `non_own` are excluded (transferred out);
+    /// all other heap fields are deep-dropped inline before the shell free.
     Inline { non_own: &'a HashSet<usize> },
-    /// Flat/shallow free (no reclaim of payloads)
+    /// Inline per-field drops + shell free with empty skip set — same as
+    /// `Inline` but nothing was extracted, so all heap fields are reclaimed.
+    /// Formerly a flat/shallow free (shell only, payloads leaked).
     Shallow,
 }
 
