@@ -11,11 +11,19 @@ File extension: `.axi`. Notation: EBNF; `{ x }` = zero-or-more, `[ x ]` = option
 `|` = alternative.
 
 ```ebnf
-module      = { decl } ;
+module      = [ "module" modName "where" ] { importDecl | decl } ;
+
+importDecl  = "import" [ "qualified" ] modName [ "as" conName ] ;
+modName     = conName { "." conName } ;
 
 decl        = dataDecl
+            | foreignDecl
             | typeSig
             | funDef ;
+
+(* --- FFI import (§18) --- *)
+foreignDecl = "foreign" strLit varName "::" type ;     (* foreign "lib.so" func :: Int -> Int *)
+            | "foreign" varName "::" type ;            (* foreign func :: Int -> Int       *)
 
 (* --- Data type declarations (L0; linear fields in L1) --- *)
 dataDecl    = "data" conName { varName } "=" con { "|" con } [ deriving ] ;

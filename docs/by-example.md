@@ -335,7 +335,9 @@ interpreter, but do not yet compile natively.
 
 ## Where to go next
 
-- The full specification: [`spec/Axion-V0.2.pdf`](../spec/Axion-V0.2.pdf).
+- **Networking**: [`docs/networking.md`](networking.md) — TCP sockets via FFI.
+- **Arrays**: [`docs/array.md`](array.md) — packed mutable arrays with linear ownership.
+- **Stream fusion**: [`docs/fusion.md`](fusion.md) — automatic list elimination.
 - How the compiler works: [`docs/backend.md`](backend.md).
 - The session calculus formalized: [`docs/phase-3-calculus.md`](phase-3-calculus.md).
 - All error codes: [`docs/error-codes.md`](error-codes.md) (or `$AX --explain AXnnnn`).
