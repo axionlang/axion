@@ -99,6 +99,7 @@ drop n xs  =
   drop _t1 : Inner
       drop xs
       drop xs
+      drop ys : List
 either f g e  =
 elem x xs  =
           else
@@ -415,7 +416,7 @@ range lo hi  =
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}
-      ret field inner y  ; Δ{y ys}
+      ret field inner y  ; Δ{y}
   ret if b then
       ret if _t0 then
       ret if _t0 then

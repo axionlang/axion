@@ -4674,6 +4674,22 @@ impl Elab<'_> {
             }
 
             let result_heap = result_may_be_heap(&body, self.recinfo);
+            // the set of non-`%1` heap field bindings that are actually USED
+            // (mentioned) in the arm body.  Only these need alias protection;
+            // unused bindings can be safely deep-dropped.
+            let mut mentioned_heap: HashSet<String> = HashSet::new();
+            if let CPat::Con(con, subs) = &pat {
+                for (fi, sp) in subs.iter().enumerate() {
+                    if let CPat::Var(n) = sp {
+                        if self.recinfo.field_transfers_heap(con, fi)
+                            && !self.recinfo.field_is_owned(con, fi)
+                            && term_mentions_any(&body, &HashSet::from([n.clone()]))
+                        {
+                            mentioned_heap.insert(n.clone());
+                        }
+                    }
+                }
+            }
             let mut b = self.go(body, live_out);
             for (n, key) in unused {
                 b = Term::Drop(n, key, Vec::new(), term_span(&b), Box::new(b));
@@ -4701,15 +4717,9 @@ impl Elab<'_> {
                     ScrutDrop::Deep => {
                         let ty = self.dty(s);
                         let mut alias = HashSet::from([s.clone()]);
-                        if let CPat::Con(con, subs) = &pat {
-                            for (fi, sp) in subs.iter().enumerate() {
-                                if let CPat::Var(n) = sp {
-                                    if self.recinfo.field_transfers_heap(con, fi) {
-                                        alias.insert(n.clone());
-                                    }
-                                }
-                            }
-                        }
+                        // only USED heap field bindings start in the alias set;
+                        // unused ones are dead and safe to deep-drop.
+                        alias.extend(mentioned_heap.iter().cloned());
                         self.collect_payload_aliases(&b, &mut alias);
                         b = self.place_deep_drop(b, s, &ty, &alias);
                     }
@@ -4724,14 +4734,10 @@ impl Elab<'_> {
                         // whose heap/poly payload may alias into the arm result.
                         // Skip those from deep-drop; reclaim all other heap fields.
                         let mut alias = HashSet::from([s.clone()]);
+                        // only USED heap field bindings start in the alias set;
+                        // unused ones are dead and safe to deep-drop.
+                        alias.extend(mentioned_heap.iter().cloned());
                         if let CPat::Con(con, subs) = &pat {
-                            for (fi, sp) in subs.iter().enumerate() {
-                                if let CPat::Var(n) = sp {
-                                    if self.recinfo.field_transfers_heap(con, fi) {
-                                        alias.insert(n.clone());
-                                    }
-                                }
-                            }
                             self.collect_payload_aliases(&b, &mut alias);
                             // compute the skip set: field indices whose binding
                             // name appears in the alias set (the result may
