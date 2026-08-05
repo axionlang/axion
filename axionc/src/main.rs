@@ -657,6 +657,105 @@ mapM_ f xs = case xs of
 -- `consume (range lo hi)` → `rangeFused lo hi step base`.
 rangeFused :: Int -> Int -> (Int -> b -> b) -> b -> b
 rangeFused lo hi c n = if lo > hi then n else c lo (rangeFused (lo + 1) hi c n)
+
+-- standard library v1 -----------------------------------------------------
+
+data Maybe a = Nothing | Just a
+
+data Either a b = Left a | Right b
+
+data Ordering = LT | EQ | GT
+
+not :: Bool -> Bool
+not b = if b then False else True
+
+-- Maybe --------------------------------------------------------------------
+
+maybe :: b -> (a -> b) -> Maybe a -> b
+maybe d f m = case m of
+  Nothing -> d
+  Just x -> f x
+
+fromMaybe :: a -> Maybe a -> a
+fromMaybe d m = maybe d (\\x -> x) m
+
+isJust :: Maybe a -> Bool
+isJust m = case m of
+  Nothing -> False
+  Just _ -> True
+
+isNothing :: Maybe a -> Bool
+isNothing m = case m of
+  Nothing -> True
+  Just _ -> False
+
+catMaybes :: List (Maybe a) -> List a
+catMaybes xs = case xs of
+  Nil -> Nil
+  Cons y ys -> case y of
+      Nothing -> catMaybes ys
+      Just z -> Cons z (catMaybes ys)
+
+-- Either -------------------------------------------------------------------
+
+either :: (a -> c) -> (b -> c) -> Either a b -> c
+either f g e = case e of
+  Left x -> f x
+  Right y -> g y
+
+isLeft :: Either a b -> Bool
+isLeft e = case e of
+  Left _ -> True
+  Right _ -> False
+
+isRight :: Either a b -> Bool
+isRight e = case e of
+  Left _ -> False
+  Right _ -> True
+
+-- List extensions ----------------------------------------------------------
+
+elemBy :: Eq a => a -> List a -> Bool
+elemBy x xs = case xs of
+  Nil -> False
+  Cons y ys -> if eq x y then True else elemBy x ys
+
+any :: (a -> Bool) -> List a -> Bool
+any p xs = case xs of
+  Nil -> False
+  Cons y ys -> if p y then True else any p ys
+
+all :: (a -> Bool) -> List a -> Bool
+all p xs = case xs of
+  Nil -> True
+  Cons y ys -> if p y then all p ys else False
+
+find :: (a -> Bool) -> List a -> Maybe a
+find p xs = case xs of
+  Nil -> Nothing
+  Cons y ys -> if p y then Just y else find p ys
+
+partition :: (a -> Bool) -> List a -> (List a, List a)
+partition p xs = case xs of
+  Nil -> (Nil, Nil)
+  Cons y ys -> case partition p ys of
+    (l, r) -> if p y then (Cons y l, r) else (l, Cons y r)
+
+sort :: Ord a => List a -> List a
+sort xs = case xs of
+  Nil -> Nil
+  Cons y ys ->
+    let less = filter (\\z -> le z y) ys in
+    let greq = filter (\\z -> not (le z y)) ys in
+    append (sort less) (Cons y (sort greq))
+
+intersperse :: a -> List a -> List a
+intersperse sep xs = case xs of
+  Nil -> Nil
+  Cons y ys -> Cons y (if null ys then ys else Cons sep (intersperse sep ys))
+
+intercalate :: List a -> List (List a) -> List a
+intercalate sep xss = concat (intersperse sep xss)
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`

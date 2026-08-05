@@ -1,13 +1,6 @@
 -- PARAMETRIC sum types (L0): constructors and selectors generalize over the
--- type parameters (`Some :: forall a. a -> Maybe a`). fromMaybe 0 (Some 42) +
--- fromMaybe 7 None = 42 + 7 = 49.
-data Maybe a = None | Some a
-data Either a b = Left a | Right b
-
-fromMaybe :: Int -> Maybe Int -> Int
-fromMaybe d m = case m of
-  None -> d
-  Some x -> x
-
+-- type parameters (`Just :: forall a. a -> Maybe a`). Uses the prelude's
+-- `Maybe`, `Either`, and `fromMaybe`.  fromMaybe 0 (Just 42) + fromMaybe 7
+-- Nothing = 42 + 7 = 49.
 main :: Int
-main = fromMaybe 0 (Some 42) + fromMaybe 7 None
+main = fromMaybe 0 (Just 42) + fromMaybe 7 Nothing
