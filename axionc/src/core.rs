@@ -498,6 +498,10 @@ impl RecordInfo {
             .is_some_and(|t| self.enum_types.contains(t))
     }
 
+    pub fn is_enum_type(&self, ty: &str) -> bool {
+        self.enum_types.contains(ty)
+    }
+
     /// The constructor index within its type (its immediate value when unboxed).
     pub fn con_index(&self, con: &str) -> i32 {
         self.con_tag.get(con).copied().unwrap_or(0)
@@ -2434,10 +2438,6 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
     out
 }
 
-pub fn lower(module: &ast::Module, inplace: &HashSet<Span>, fuse: bool) -> Vec<CoreFn> {
-    lower_with(module, inplace, &HashMap::new(), fuse).fns
-}
-
 /// The lowering plus the analysis inputs the Δ checker reads (Δ-1):
 /// `borrow_args` (pure-borrow call positions) and `recinfo` (field ownership).
 pub struct Lowered {
@@ -3295,6 +3295,10 @@ fn drop_way(
         }
     }
     // monomorphic data type: its generic destructor, or a flat free.
+    // Unboxed enums (all constructors nullary) hold immediate tags — skip.
+    if recinfo.is_enum_type(head) {
+        return DropWay::None;
+    }
     if recinfo.needs_deep_drop(head) {
         DropWay::Deep(head.to_string())
     } else {

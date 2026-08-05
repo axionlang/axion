@@ -104,8 +104,9 @@ pub fn emit_ir(
     module: &ast::Module,
     inplace: &HashSet<Span>,
     fuse: bool,
+    makecon_tys: &HashMap<Span, ast::Type>,
 ) -> Result<String, String> {
-    let fns = core::lower(module, inplace, fuse);
+    let fns = core::lower_with(module, inplace, makecon_tys, fuse).fns;
     let records = RecordInfo::build(module);
     // type keys with a generated destructor `axion_drop_<key>` — includes the
     // monomorphized ones (`List$P`), whose key is not a `needs_deep_drop` type.
@@ -187,14 +188,15 @@ pub fn build_and_run(
     entry: &str,
     inplace: &HashSet<Span>,
     fuse: bool,
+    makecon_tys: &HashMap<Span, ast::Type>,
 ) -> Result<(), String> {
-    let fns = core::lower(module, inplace, fuse);
+    let fns = core::lower_with(module, inplace, makecon_tys, fuse).fns;
     if !fns.iter().any(|f| f.name == entry && f.params.is_empty()) {
         return Err(format!(
             "'{entry}' must be a native function with no parameters"
         ));
     }
-    let ir = emit_ir(module, inplace, fuse)?;
+    let ir = emit_ir(module, inplace, fuse, makecon_tys)?;
 
     let dir = std::env::temp_dir();
     let pid = std::process::id();
@@ -708,14 +710,13 @@ impl Emit<'_> {
                     "-" => (format!("sub i64 {x}, {y}"), false),
                     "*" => (format!("mul i64 {x}, {y}"), false),
                     "mod" => {
-                        let op = if matches!(b, Atom::Int(d) if *d > 0 && *d < 0x4000_0000)
-                        {
+                        let op = if matches!(b, Atom::Int(d) if *d > 0 && *d < 0x4000_0000) {
                             "urem"
                         } else {
                             "srem"
                         };
                         (format!("{op} i64 {x}, {y}"), false)
-                    },
+                    }
                     "band" => (format!("and i64 {x}, {y}"), false),
                     "==" => (format!("icmp eq i64 {x}, {y}"), true),
                     "<" => (format!("icmp slt i64 {x}, {y}"), true),

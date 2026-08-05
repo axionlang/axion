@@ -261,7 +261,7 @@ fn main() -> ExitCode {
 
     // --- native --dev backend (Cranelift): IR dump or JIT+run main::Int ---
     if emit == Emit::Clif {
-        match codegen::emit_ir(&module, &inplace, fuse) {
+        match codegen::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -274,7 +274,7 @@ fn main() -> ExitCode {
     }
     // --- backend --release (LLVM): dump do IR ou compilar+correr ---
     if emit == Emit::Llvm {
-        match llvm::emit_ir(&module, &inplace, fuse) {
+        match llvm::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -286,7 +286,7 @@ fn main() -> ExitCode {
         }
     }
     if backend == Backend::Cranelift {
-        return match codegen::run(&module, "main", &inplace, fuse) {
+        return match codegen::run(&module, "main", &inplace, fuse, &analysis.makecon_tys) {
             Ok(Some(n)) => {
                 println!("{n}");
                 ExitCode::SUCCESS
@@ -299,7 +299,7 @@ fn main() -> ExitCode {
         };
     }
     if backend == Backend::Llvm {
-        return match llvm::build_and_run(&module, "main", &inplace, fuse) {
+        return match llvm::build_and_run(&module, "main", &inplace, fuse, &analysis.makecon_tys) {
             Ok(()) => ExitCode::SUCCESS, // the binary already printed the result
             Err(e) => {
                 eprintln!("llvm backend (--release): {e}");

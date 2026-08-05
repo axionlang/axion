@@ -84,7 +84,6 @@ elem x xs  =
     else
     else
     else
-    else
   else
   else
   else
@@ -113,22 +112,18 @@ le$Float x y  =
 le$Int x y  =
 length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
+  let _dd0 = band _p 1  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
-      let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
-      let _dd1 = rtcall axion_free _dd0  ; Δ{}
-    let _dd2 = == _tag 1  ; Δ{}
+  let _dd1 = if _dd0 then
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
-    let _dd3 = if _dd2 then
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
-  let _dd4 = band _p 1  ; Δ{}
-  let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
@@ -217,8 +212,6 @@ range lo hi  =
           ret 0  ; Δ{}
           ret 0  ; Δ{}
           ret 0  ; Δ{}
-      ret 0  ; Δ{}
-      ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -361,7 +354,6 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
-  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
