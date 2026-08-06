@@ -161,6 +161,70 @@ fn parmap_runs_natively_in_parallel() {
 }
 
 #[test]
+fn parmap_over_range_and_reduce_run() {
+    // §9: parMap over a COMPUTED list of DISTINCT inputs (`range 15 22`), and an
+    // inline `foldr` reduce over the replies (so `parMapReduce` needs no prelude
+    // entry). Both run native (cranelift) in agreement with the interpreter.
+    for (fx, expected) in [
+        ("session_run_parmap_range.axi", "45381\n"),  // sum of fib 15..22
+        ("session_run_parmap_reduce.axi", "17711\n"), // max of fib 15..22 = fib 22
+    ] {
+        let native = axionc()
+            .args(["--backend", "cranelift", &fixture(fx)])
+            .output()
+            .unwrap();
+        assert!(
+            native.status.success(),
+            "{fx} should run: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), expected, "{fx}");
+        let interp = axionc().arg(fixture(fx)).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&interp.stdout),
+            expected,
+            "{fx}: interpreter diverges"
+        );
+    }
+}
+
+#[test]
+fn parmap_heap_reply_computes_correctly() {
+    // §9 LIMITATION (documented): a worker returning a heap payload (`List Int`)
+    // computes the correct VALUE on every executor (45), but the inner reply lists
+    // leak — parMap keys its result as the flat `axion_drop_List`. This test pins
+    // the correctness; the leak is documented in the fixture header + docs §11b.
+    for backend in [vec!["--backend", "cranelift"], vec!["--backend", "interp"]] {
+        let mut args = backend.clone();
+        let fx = fixture("session_run_parmap_heap.axi");
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "heap-reply parMap should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "45\n", "{backend:?}");
+    }
+}
+
+#[test]
+fn stateful_server_loop_rejected_ax0301() {
+    // §6 LIMITATION (documented): a recursive `offer` server that threads an
+    // accumulator across the loop (`server (acc + n) d3`) is rejected — the
+    // recursive-tail recognizer only accepts the endpoint as the sole argument, so
+    // the endpoint is reported as never reaching `close`. Pins the current behaviour
+    // until the recognizer is generalized (see the fixture header).
+    let out = axionc()
+        .args(["--check", &fixture("session_stateful_server_rejected.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "stateful server loop should be rejected");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0301"), "expected AX0301, output: {text}");
+}
+
+#[test]
 fn session_pingpong_runs_natively() {
     // §11, Layer 2 (native sessions): the ping-pong compiles to a cooperative
     // state machine (`main$step`/`worker$step` over the `axion_sess_*` runtime) and
