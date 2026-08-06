@@ -188,6 +188,16 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                     parent: None,
                     slot: None,
                 });
+            } else if func == "axion_par_map" {
+                // §9 parMap returns an owned `List` of the workers' replies; the
+                // consumer reclaims it via the generic `axion_drop_List` (flat
+                // cons-cell free). The input list is moved in (above) and freed by
+                // the runtime driver, so it is reclaimed exactly once here too.
+                e.produces = Some(Res {
+                    key: Some("List".into()),
+                    parent: None,
+                    slot: None,
+                });
             }
         }
         Op::ArrayNew { len, init, elem_ty } => {
@@ -1941,7 +1951,7 @@ mod tests {
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
-                "== verdicts: 51 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 52 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
@@ -2020,7 +2030,7 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 50 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 51 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(

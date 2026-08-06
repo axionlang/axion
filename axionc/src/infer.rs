@@ -856,6 +856,23 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // parMap :: forall a b c d. (Ep a -> b) -> List c -> List d
+        // structured fork-join (§9): spawns one worker per input, sends inputs[i]
+        // to worker i, recvs result[i], returns the results as a List — its own
+        // self-contained nursery (no `bound` needed). HM is permissive like
+        // `spawn`: the payloads are erased at the endpoint, so inputs/outputs are
+        // not tied to the worker's protocol here (that is `check_sessions`'s job).
+        let list = |v: u32| Ty::Con("List".into(), vec![Ty::Var(v)]);
+        env.insert(
+            "parMap".into(),
+            Scheme {
+                vars: vec![0, 1, 2, 3],
+                ty: Ty::Fun(
+                    Box::new(Ty::Fun(Box::new(ep(0)), Box::new(Ty::Var(1)))),
+                    Box::new(Ty::Fun(Box::new(list(2)), Box::new(list(3)))),
+                ),
+            },
+        );
         // session choice (§6/§9): `select L c` chooses the label `L` (⊕) and
         // advances; `offer c` receives the choice (&) and consumes the endpoint. Permissive
         // types — fidelity/exhaustiveness is `check_sessions`'s job.

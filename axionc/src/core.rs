@@ -849,6 +849,50 @@ fn find_lams<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
+/// Worker names used as a `parMap <worker> <xs>` target anywhere in `e` (the
+/// worker must be a bare name — a top-level session function). Mirrors the
+/// `find_lams` traversal.
+fn parmap_targets(e: &Expr, out: &mut Vec<String>) {
+    if let (Some("parMap"), args) = sess_spine(e) {
+        if let Some(Expr::Var(n, _)) = args.first().copied() {
+            out.push(n.clone());
+        }
+    }
+    match e {
+        Expr::App(f, a, _) | Expr::BinOp(_, f, a, _) => {
+            parmap_targets(f, out);
+            parmap_targets(a, out);
+        }
+        Expr::If(c, t, el, _) => {
+            parmap_targets(c, out);
+            parmap_targets(t, out);
+            parmap_targets(el, out);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|x| parmap_targets(x, out)),
+        Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| parmap_targets(x, out)),
+        Expr::RecordUpd(b, fs, _) => {
+            parmap_targets(b, out);
+            fs.iter().for_each(|(_, x)| parmap_targets(x, out));
+        }
+        Expr::Case(s, arms, _) => {
+            parmap_targets(s, out);
+            arms.iter().for_each(|(_, body)| parmap_targets(body, out));
+        }
+        Expr::Let(binds, body, _) => {
+            for f in binds {
+                for c in &f.clauses {
+                    if let Body::Plain(e) = &c.body {
+                        parmap_targets(e, out);
+                    }
+                }
+            }
+            parmap_targets(body, out);
+        }
+        Expr::Lam(_, body, _) => parmap_targets(body, out),
+        _ => {}
+    }
+}
+
 /// Names resolved as globals (not captured nor called by pointer):
 /// top-level functions, `where` locals, constructors, selectors and builtins.
 fn global_names(module: &ast::Module) -> HashSet<String> {
@@ -936,6 +980,10 @@ struct Lower<'a> {
     mono_seeds: &'a mut Vec<Type>,
     /// Phase 2c: `newArray` call-site types (span → Array element type)
     array_tys: &'a HashMap<Span, Type>,
+    /// §9 structured fork-join: worker name → (step-fn name, state size, endpoint
+    /// param slot) for every `parMap` target, so a `parMap` call lowers to the
+    /// `axion_par_map` runtime driver.
+    parmap_workers: &'a HashMap<String, (String, i32, i32)>,
 }
 
 impl Lower<'_> {
@@ -1208,6 +1256,33 @@ impl Lower<'_> {
                 ));
                 return Op::CallClosure(clos, vec![Atom::Var(b)]);
             }
+            // §9 structured fork-join: `parMap worker xs` → the `axion_par_map`
+            // runtime driver. The worker's state machine (`worker$step`) and its
+            // layout (state size, endpoint slot) were resolved pre-eta; here we
+            // materialize the step address and pass the input list. The N endpoints
+            // live inside the driver's own scheduler, never in the linear world.
+            ("parMap", 2) => {
+                if let Expr::Var(wname, _) = args[0] {
+                    if let Some((step, size, ep_slot)) = self.parmap_workers.get(wname).cloned() {
+                        let xs = self.atom(args[1], buf);
+                        let fa = self.fresh();
+                        buf.push((fa.clone(), Rhs::Op(Op::FuncAddr(step)), NO_SPAN));
+                        return Op::RtCall {
+                            func: "axion_par_map".into(),
+                            args: vec![
+                                Atom::Var(fa),
+                                Atom::Int(size as i64),
+                                Atom::Int(ep_slot as i64),
+                                xs,
+                            ],
+                            returns: true,
+                        };
+                    }
+                }
+                return Op::Unsupported(
+                    "parMap: the worker must be a named top-level session function".into(),
+                );
+            }
             _ => {}
         }
         let vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
@@ -1443,6 +1518,7 @@ fn lower_func(
     parametric_data: &HashSet<String>,
     makecon_tys: &HashMap<Span, Type>,
     array_tys: &HashMap<Span, Type>,
+    parmap_workers: &HashMap<String, (String, i32, i32)>,
 ) -> (
     Vec<String>,
     Term,
@@ -1465,6 +1541,7 @@ fn lower_func(
         array_tys,
         parametric_data,
         mono_seeds: &mut mono_seeds,
+        parmap_workers,
     };
     let single_var = f.clauses.len() == 1
         && f.clauses[0]
@@ -1649,7 +1726,22 @@ impl Eta {
             },
             Expr::App(_, _, _) => {
                 let (head, args) = spine(e);
-                let targs: Vec<Expr> = args.iter().map(|a| self.expr(a)).collect();
+                // `parMap worker xs`: keep the worker argument as a bare name (do NOT
+                // eta-wrap it into `\v -> worker v`), so the native lowering can
+                // resolve it to the worker's state machine — mirrors why session
+                // lowering runs pre-eta.
+                let is_parmap = matches!(head, Expr::Var(n, _) if n == "parMap");
+                let targs: Vec<Expr> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| {
+                        if is_parmap && i == 0 {
+                            (*a).clone()
+                        } else {
+                            self.expr(a)
+                        }
+                    })
+                    .collect();
                 let n = targs.len();
                 // the head: if it is a name/constructor it stays; otherwise recurse.
                 let head_e = match head {
@@ -2481,6 +2573,92 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
     out
 }
 
+/// §9 structured fork-join: generates the worker state machine (`<worker>$step`)
+/// for every `parMap <worker> <xs>` in the module, reusing the same defunctionalized
+/// `SessGen` as `spawn` targets. Returns the step `CoreFn`s plus a map
+/// `worker → (step name, state size, endpoint-param slot)` the lowering reads to
+/// emit `axion_par_map`. Runs on the ORIGINAL (pre-eta) AST so the worker is a bare
+/// name. Empty if the module uses no `parMap`.
+/// `parMap` worker name → (step-fn name, state size, endpoint-param byte offset).
+type ParmapWorkers = HashMap<String, (String, i32, i32)>;
+
+fn parmap_worker_steps(
+    module: &ast::Module,
+    native_fns: &HashSet<String>,
+) -> (Vec<CoreFn>, ParmapWorkers) {
+    let clause_body = sess_clause_body;
+    // collect worker names from every function body (incl. `where` clauses)
+    let mut names = Vec::new();
+    for f in &module.funcs {
+        for c in &f.clauses {
+            if let Body::Plain(e) = &c.body {
+                parmap_targets(e, &mut names);
+            }
+            for w in &c.wher {
+                for wc in &w.clauses {
+                    if let Body::Plain(e) = &wc.body {
+                        parmap_targets(e, &mut names);
+                    }
+                }
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    let workers: Vec<&ast::Func> = names
+        .into_iter()
+        .filter(|n| seen.insert(n.clone()))
+        .filter_map(|n| module.funcs.iter().find(|f| f.name == n))
+        .collect();
+    if workers.is_empty() {
+        return (Vec::new(), HashMap::new());
+    }
+    // choice labels → tags (parity with `session_fns`; a worker may use offer/select)
+    let mut tags: HashMap<String, i64> = HashMap::new();
+    for d in &module.datas {
+        for (i, c) in d.cons.iter().enumerate() {
+            tags.insert(c.name.clone(), i as i64);
+        }
+    }
+    let mut layouts: HashMap<String, SessLayout> = HashMap::new();
+    for wf in &workers {
+        let pats = &wf.clauses[0].pats;
+        let body = clause_body(wf).unwrap_or_else(|| panic!("parMap worker body"));
+        layouts.insert(
+            wf.name.clone(),
+            sess_layout(pats, body, format!("{}$step", wf.name)),
+        );
+    }
+    let mut fns = Vec::new();
+    let mut map = HashMap::new();
+    for wf in &workers {
+        let lay = &layouts[&wf.name];
+        let mut g = SessGen {
+            name: wf.name.as_str(),
+            lay,
+            all: &layouts,
+            tags: &tags,
+            fns: native_fns,
+            susp: HashMap::new(),
+            susp_live: Vec::new(),
+            tmp: 0,
+        };
+        let body = clause_body(wf).unwrap_or_else(|| panic!("parMap worker body"));
+        let step_body = g.build_step(&wf.clauses[0].pats, body);
+        fns.push(CoreFn {
+            name: lay.step.clone(),
+            params: vec![SESS_SCHED.into(), SESS_STATE.into()],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
+            body: step_body,
+        });
+        let ep_slot = lay.param_slots.first().copied().unwrap_or(16);
+        map.insert(wf.name.clone(), (lay.step.clone(), lay.size, ep_slot));
+    }
+    (fns, map)
+}
+
 /// The lowering plus the analysis inputs the Δ checker reads (Δ-1):
 /// `borrow_args` (pure-borrow call positions) and `recinfo` (field ownership).
 pub struct Lowered {
@@ -2843,6 +3021,27 @@ pub fn lower_with(
             top_candidate(f, &data_types, &methods).map(|a| (f.name.clone(), a))
         })
         .collect();
+    // §9: `parMap` worker names are compiled to their own state machines
+    // (`<worker>$step`), not as normal native functions — so a reference to one does
+    // NOT disqualify the referring function from native candidacy.
+    let parmap_worker_names: HashSet<String> = {
+        let mut v = Vec::new();
+        for f in &module.funcs {
+            for c in &f.clauses {
+                if let Body::Plain(e) = &c.body {
+                    parmap_targets(e, &mut v);
+                }
+                for w in &c.wher {
+                    for wc in &w.clauses {
+                        if let Body::Plain(e) = &wc.body {
+                            parmap_targets(e, &mut v);
+                        }
+                    }
+                }
+            }
+        }
+        v.into_iter().collect()
+    };
     loop {
         let mut remove = None;
         for f in &module.funcs {
@@ -2851,10 +3050,11 @@ pub fn lower_with(
             }
             let mut refs = HashSet::new();
             body_refs(f, &mut refs);
-            if refs
-                .iter()
-                .any(|g| func_set.contains(g.as_str()) && !native_ok.contains_key(g))
-            {
+            if refs.iter().any(|g| {
+                func_set.contains(g.as_str())
+                    && !native_ok.contains_key(g)
+                    && !parmap_worker_names.contains(g)
+            }) {
                 remove = Some(f.name.clone());
                 break;
             }
@@ -2871,6 +3071,9 @@ pub fn lower_with(
     // native (callable in value position from a worker's compute).
     let native_fn_names: HashSet<String> = native_ok.keys().cloned().collect();
     let session = session_fns(orig_module, &native_fn_names);
+    // §9 structured fork-join: worker state machines for every `parMap` target,
+    // plus the map the lowering uses to emit `axion_par_map`. Runs pre-eta.
+    let (parmap_steps, parmap_map) = parmap_worker_steps(orig_module, &native_fn_names);
 
     // pre-pass: names + computes captures of all lambdas (by span)
     let mut lam_meta: LamMeta = HashMap::new();
@@ -2941,6 +3144,7 @@ pub fn lower_with(
             &parametric_data,
             makecon_tys,
             array_tys,
+            &parmap_map,
         );
         mono_seeds.extend(seeds);
         out.push(CoreFn {
@@ -2970,6 +3174,7 @@ pub fn lower_with(
                 &parametric_data,
                 makecon_tys,
                 array_tys,
+                &parmap_map,
             );
             mono_seeds.extend(wseeds);
             out.push(CoreFn {
@@ -3012,6 +3217,7 @@ pub fn lower_with(
             array_tys,
             parametric_data: &parametric_data,
             mono_seeds: &mut Vec::new(),
+            parmap_workers: &parmap_map,
         };
         out.push(CoreFn {
             name,
@@ -3137,6 +3343,9 @@ pub fn lower_with(
     // native session state machines (§11): also hand-managed (task states live in
     // the scheduler's nursery arena), so they bypass the drop analysis too.
     result.extend(session);
+    // §9 structured fork-join worker state machines (same hand-managed nursery
+    // arena as the session steps — they bypass the drop analysis too).
+    result.extend(parmap_steps);
     Lowered {
         fns: result,
         borrow_args,
@@ -3839,6 +4048,10 @@ impl Op {
             Op::MakeRecord { ty, .. } | Op::MakeCon { ty, .. } => ty.clone(),
             Op::CallDirect(_, _, ty) => ty.clone(),
             Op::RtCall { func, .. } if func == "axion_array_new" => Some("Array".into()),
+            // §9 parMap returns an owned `List` of the workers' replies — reclaimed by
+            // the generic `axion_drop_List` (flat cons-cell free), like `replicate`'s
+            // polymorphic-List result. Deep-drop of heap element payloads is a later slice.
+            Op::RtCall { func, .. } if func == "axion_par_map" => Some("List".into()),
             Op::ArrayNew { elem_ty, .. } => elem_ty
                 .clone()
                 .map(|et| format!("Array${et}"))

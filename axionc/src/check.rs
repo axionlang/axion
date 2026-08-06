@@ -1154,6 +1154,7 @@ fn builtins() -> HashSet<String> {
         // structured-concurrency nursery (§9)
         "bound",
         "spawn",
+        "parMap",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -1519,6 +1520,11 @@ fn build_ctx(module: &Module) -> Ctx {
     // nursery (§9): the `bound`'s body is borrowed; `spawn` receives the child closure.
     consumers.insert("bound".to_string(), vec![Mult::Many]);
     consumers.insert("spawn".to_string(), vec![Mult::Many]);
+    // structured fork-join (§9): `parMap w xs` borrows the worker closure and the
+    // input list. The N endpoints live inside the primitive's own nursery — they
+    // never enter the caller's linear environment — so the result `List` is a plain
+    // value with no must-use obligations.
+    consumers.insert("parMap".to_string(), vec![Mult::Many, Mult::Many]);
     // FFI imports: the arguments (Int) are borrowed.
     for fo in &module.foreigns {
         let arity = fo.sig.param_mults().len();

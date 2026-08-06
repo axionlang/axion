@@ -583,6 +583,8 @@ compose :: (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
 range :: Int -> Int -> List Int
 range lo hi = if lo > hi then Nil else Cons lo (range (lo + 1) hi)
+replicate :: Int -> a -> List a
+replicate n x = if n < 1 then Nil else Cons x (replicate (n - 1) x)
 map :: (a -> b) -> List a -> List b
 map f xs = case xs of
   Nil -> Nil

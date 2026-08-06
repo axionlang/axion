@@ -107,6 +107,60 @@ fn session_program_runs_concurrently() {
 }
 
 #[test]
+fn parmap_matches_hand_unrolled_forkjoin() {
+    // §9: `parMap worker (replicate 4 25)` is the structured-concurrency combinator
+    // form of the hand-unrolled four-worker fork-join in `session_run_parfib.axi`.
+    // Both compute 4 × fib 25 = 300100 on the cooperative interpreter.
+    let parmap = axionc()
+        .arg(fixture("session_run_parmap.axi"))
+        .output()
+        .unwrap();
+    assert!(
+        parmap.status.success(),
+        "parMap should run: {}",
+        String::from_utf8_lossy(&parmap.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&parmap.stdout), "300100\n");
+    // it agrees with the repetitive version it replaces.
+    let unrolled = axionc()
+        .arg(fixture("session_run_parfib.axi"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&parmap.stdout),
+        String::from_utf8_lossy(&unrolled.stdout),
+        "parMap diverges from the hand-unrolled fork-join"
+    );
+}
+
+#[test]
+fn parmap_runs_natively_in_parallel() {
+    // §9, native M:N: `parMap` lowers each worker to a defunctionalized state machine
+    // (`worker$step`) driven by `axion_par_map`, which forks the workers onto the
+    // thread pool. Under `--backend cranelift` it agrees with the interpreter (300100)
+    // and the hand-unrolled `bound` fork-join — now the workers run on real threads.
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("session_run_parmap.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "parMap should run natively: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "300100\n");
+    let interp = axionc()
+        .arg(fixture("session_run_parmap.axi"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&interp.stdout),
+        "parMap: native and interpreter diverge"
+    );
+}
+
+#[test]
 fn session_pingpong_runs_natively() {
     // §11, Layer 2 (native sessions): the ping-pong compiles to a cooperative
     // state machine (`main$step`/`worker$step` over the `axion_sess_*` runtime) and

@@ -378,6 +378,8 @@ typedef struct {
   pthread_mutex_t mtx;
   int done;
   long result;
+  int par;        /* §9 parMap: finish when ALL tasks are done (no single root) */
+  int ncompleted; /* §9 parMap: tasks completed so far */
 } Sched;
 
 long axion_sess_new(void) {
@@ -554,7 +556,10 @@ static void *sess_worker(void *arg) {
     pthread_mutex_lock(&s->mtx);
     s->running--;
     if (fin == 1) {
-      if (i == 0) {
+      if (s->par) {
+        /* §9 parMap: no distinguished root — finish once every worker is done. */
+        if (++s->ncompleted == s->ntasks) s->done = 1;
+      } else if (i == 0) {
         s->result = *(long *)st;
         s->done = 1;
       }
@@ -600,6 +605,67 @@ long axion_sess_run(long sched, long step, long state) {
   pthread_mutex_destroy(&s->mtx);
   free(s);
   return result;
+}
+
+/* §9 structured fork-join (parMap): spawn one worker per input, preload each input,
+ * run all workers to completion on the thread pool, then collect the replies into a
+ * List (Cons/Nil, in input order). The N endpoints live inside this scheduler only.
+ * `step` = worker step fn; `state_size` = its state-block size; `ep_slot` = the byte
+ * offset of the worker's endpoint parameter. Mirror of the --dev Rust axion_par_map. */
+long axion_par_map(long step, long state_size, long ep_slot, long inputs) {
+  Sched *s = (Sched *)axion_sess_new();
+  s->par = 1;
+  long n = 0;
+  for (long p = inputs; p && !(p & 1); p = *(long *)(p + 16)) n++;
+  long *pep = (long *)axion_xmalloc((size_t)(n > 0 ? n : 1) * sizeof(long));
+  long k = 0;
+  for (long p = inputs; p && !(p & 1);) {
+    long v = *(long *)(p + 8);
+    long next = *(long *)(p + 16);
+    long a = axion_sess_channel((long)s); /* a = parent end, a+1 = child end */
+    long st = axion_sess_alloc((long)s, state_size);
+    *(long *)(st + ep_slot) = a + 1;      /* the worker's endpoint parameter */
+    axion_sess_send((long)s, a, v);       /* preload the input → worker's first recv */
+    axion_sess_spawn((long)s, step, st);
+    pep[k++] = a;
+    axion_free(p); /* parMap owns the input list — free each cons cell */
+    p = next;
+  }
+  if (n > 0) {
+    int nthreads;
+    const char *env = getenv("AXION_SESS_THREADS");
+    if (env && atoi(env) > 0) {
+      nthreads = atoi(env);
+    } else {
+      long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+      nthreads = (int)(ncpu < 1 ? 1 : (ncpu > 8 ? 8 : ncpu));
+    }
+    pthread_t *threads = (pthread_t *)axion_xmalloc((size_t)nthreads * sizeof(pthread_t));
+    for (int t = 0; t < nthreads; t++) pthread_create(&threads[t], NULL, sess_worker, s);
+    for (int t = 0; t < nthreads; t++) pthread_join(threads[t], NULL);
+    free(threads);
+  }
+  long list = 1; /* Nil */
+  for (long j = n - 1; j >= 0; j--) {
+    long r = axion_sess_recv((long)s, pep[j]);
+    long cell = axion_alloc(24);
+    *(long *)cell = 1;           /* Cons tag */
+    *(long *)(cell + 8) = r;     /* head */
+    *(long *)(cell + 16) = list; /* tail */
+    list = cell;
+  }
+  free(pep);
+  for (int i = 0; i < s->neps; i++) free(s->eps[i].q);
+  for (int i = 0; i < s->nallocs; i++) free(s->allocs[i]);
+  free(s->allocs);
+  free(s->eps);
+  free(s->peer);
+  free(s->tasks);
+  free(s->ready);
+  free(s->blocked);
+  pthread_mutex_destroy(&s->mtx);
+  free(s);
+  return list;
 }
 
 /* --- networking primitives (§FFI) ----------------------------------------- */

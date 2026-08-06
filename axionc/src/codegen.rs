@@ -603,6 +603,8 @@ struct SessInner {
     running: usize,                             // tasks currently being stepped
     allocs: Vec<(usize, std::alloc::Layout)>,   // task states (freed at run end)
     gen: u64,                                   // bumped on every `send` (wakeups)
+    par: bool,                                  // §9 parMap: finish when ALL tasks done
+    ncompleted: usize,                          // §9 parMap: tasks completed so far
 }
 
 struct SessSched {
@@ -631,6 +633,8 @@ extern "C" fn axion_sess_new() -> i64 {
             running: 0,
             allocs: Vec::new(),
             gen: 0,
+            par: false,
+            ncompleted: 0,
         }),
         done: AtomicBool::new(false),
         result: AtomicI64::new(0),
@@ -759,7 +763,13 @@ fn sess_worker(sched: i64) {
         let mut g = s.inner.lock().unwrap_or_else(|_| panic!("mutex poisoned"));
         g.running -= 1;
         if status == 1 {
-            if i == 0 {
+            if g.par {
+                // §9 parMap: no distinguished root — finish once every worker is done.
+                g.ncompleted += 1;
+                if g.ncompleted == g.tasks.len() {
+                    s.done.store(true, Release);
+                }
+            } else if i == 0 {
                 // SAFETY: st is the task-state pointer cast from i64; it was
                 // zero-allocated by axion_sess_alloc and the root task's
                 // first word holds the result value.
@@ -817,6 +827,84 @@ extern "C" fn axion_sess_run(sched: i64, step: i64, state: i64) -> i64 {
         unsafe { std::alloc::dealloc(p as *mut u8, layout) };
     }
     result
+}
+
+/// §9 structured fork-join (`parMap`): spawns one worker per input-list element,
+/// preloads each input, runs every worker to completion on the thread pool, and
+/// collects the replies into a `List` (Cons/Nil, in input order). The N endpoints
+/// live entirely inside this scheduler — they never enter the linear world.
+/// `step` = the worker's state-machine step fn; `state_size` = its state-block size;
+/// `ep_slot` = the byte offset of its endpoint parameter within that block.
+extern "C" fn axion_par_map(step: i64, state_size: i64, ep_slot: i64, inputs: i64) -> i64 {
+    let sched = axion_sess_new();
+    // spawn a worker per input, preloading the input into the child's queue
+    let mut peps: Vec<i64> = Vec::new();
+    let mut p = inputs;
+    while p != 0 && (p & 1) == 0 {
+        // SAFETY: `p` is a Cons cell (tag@0, head@+8, tail@+16) from axion_alloc.
+        let v = unsafe { ((p + 8) as *const i64).read_unaligned() };
+        // SAFETY: tail pointer at offset 16.
+        let next = unsafe { ((p + 16) as *const i64).read_unaligned() };
+        let a = axion_sess_channel(sched);
+        let st = axion_sess_alloc(sched, state_size);
+        // SAFETY: `st` is a zeroed block of `state_size` bytes; `ep_slot` is in range.
+        unsafe { ((st + ep_slot) as *mut i64).write_unaligned(a + 1) };
+        axion_sess_send(sched, a, v); // preload input → the worker's first `recv`
+        axion_sess_spawn(sched, step, st);
+        peps.push(a);
+        // parMap owns the input list (moved in) — free each cons cell now that its
+        // element has been handed to the worker.
+        axion_free(p as *mut u8);
+        p = next;
+    }
+    if !peps.is_empty() {
+        sess(sched)
+            .inner
+            .lock()
+            .unwrap_or_else(|_| panic!("mutex poisoned"))
+            .par = true;
+        let nthreads = std::env::var("AXION_SESS_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1)
+                    .clamp(1, 8)
+            });
+        let sp = sched;
+        std::thread::scope(|scope| {
+            for _ in 0..nthreads {
+                scope.spawn(move || sess_worker(sp));
+            }
+        });
+    }
+    // drain each worker's reply (sent back on the parent end) into a List, in order
+    let mut list: i64 = 1; // Nil (tagged)
+    for &a in peps.iter().rev() {
+        let r = axion_sess_recv(sched, a);
+        let cell = axion_alloc(24) as i64;
+        // SAFETY: axion_alloc(24) returns a 24-byte payload — laid out as a Cons cell.
+        unsafe {
+            (cell as *mut i64).write_unaligned(1); // Cons tag
+            ((cell + 8) as *mut i64).write_unaligned(r); // head
+            ((cell + 16) as *mut i64).write_unaligned(list); // tail
+        }
+        list = cell;
+    }
+    // free the scheduler (task states + the box); the thread pool has joined.
+    // SAFETY: sched came from axion_sess_new (a Box); no references remain.
+    let boxed = unsafe { Box::from_raw(sched as *mut SessSched) };
+    let inner = boxed
+        .inner
+        .into_inner()
+        .unwrap_or_else(|_| panic!("mutex poisoned"));
+    for (pp, layout) in inner.allocs {
+        // SAFETY: each (pp, layout) was recorded by axion_sess_alloc with that layout.
+        unsafe { std::alloc::dealloc(pp as *mut u8, layout) };
+    }
+    list
 }
 
 /// The arena runtime's `FuncId`s (§3).
@@ -890,6 +978,7 @@ impl Cg {
         builder.symbol("axion_sess_alloc", axion_sess_alloc as *const u8);
         builder.symbol("axion_sess_spawn", axion_sess_spawn as *const u8);
         builder.symbol("axion_sess_run", axion_sess_run as *const u8);
+        builder.symbol("axion_par_map", axion_par_map as *const u8);
         // networking
         builder.symbol("ax_net_connect", ax_net_connect as *const u8);
         builder.symbol("ax_net_listen", ax_net_listen as *const u8);
@@ -952,6 +1041,7 @@ impl Cg {
             ("axion_sess_alloc", 2, true),
             ("axion_sess_spawn", 3, false),
             ("axion_sess_run", 3, true),
+            ("axion_par_map", 4, true),
         ] {
             rt_fns.insert(name.into(), (import(&mut module, name, nparams, ret)?, ret));
         }

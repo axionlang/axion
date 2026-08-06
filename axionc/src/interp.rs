@@ -261,6 +261,13 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
                     return run_session(prog, body, env);
                 }
             }
+            // `parMap w xs` (§9): structured fork-join with its own nursery. Runs the
+            // scheduler over one worker task per input and drains the replies into a list.
+            if let (Some("parMap"), args) = app_head(e) {
+                if args.len() == 2 {
+                    return run_par_map(prog, env, args[0], args[1]);
+                }
+            }
             let callee = eval(prog, env, f)?;
             let arg = eval(prog, env, x)?;
             apply(prog, callee, arg)
@@ -1294,6 +1301,138 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
         if !progressed {
             return Err(
                 "deadlock in the scheduler (should not happen — types guarantee it)".into(),
+            );
+        }
+    }
+}
+
+/// Unfolds a `List` value (`Nil`/`Cons`) into a vector of its elements.
+fn list_to_vec(v: &Value) -> Result<Vec<Value>, RunError> {
+    let mut out = Vec::new();
+    let mut cur = v.clone();
+    loop {
+        match cur {
+            Value::Record { con, fields } if con == "Nil" && fields.is_empty() => return Ok(out),
+            Value::Record { con, fields } if con == "Cons" && fields.len() == 2 => {
+                // fields are the positional [head ("_0"), tail ("_1")].
+                let mut vals = fields.into_iter().map(|(_, v)| v);
+                match (vals.next(), vals.next()) {
+                    (Some(head), Some(tail)) => {
+                        out.push(head);
+                        cur = tail;
+                    }
+                    _ => return Err("parMap: malformed Cons cell".into()),
+                }
+            }
+            other => {
+                return Err(format!(
+                    "parMap: expected a List, got {}",
+                    type_name(&other)
+                ))
+            }
+        }
+    }
+}
+
+/// Folds a vector of values back into a `List` value (`Cons`-chain ending in `Nil`).
+fn vec_to_list(xs: Vec<Value>) -> Value {
+    let mut acc = Value::Record {
+        con: "Nil".to_string(),
+        fields: Vec::new(),
+    };
+    for x in xs.into_iter().rev() {
+        acc = Value::Record {
+            con: "Cons".to_string(),
+            fields: vec![("_0".to_string(), x), ("_1".to_string(), acc)],
+        };
+    }
+    acc
+}
+
+/// `parMap w xs` (§9): a self-contained nursery. For each input it opens a channel,
+/// forks the worker on the child end, and preloads the input into the child's queue;
+/// then runs every worker to completion and drains each reply (sent back on the
+/// parent end) into the result list, in input order. No `bound` is required — the
+/// endpoints never leave this scheduler.
+fn run_par_map(
+    prog: &Program,
+    env: &Env,
+    worker_expr: &Expr,
+    xs_expr: &Expr,
+) -> Result<Value, RunError> {
+    let worker = eval(prog, env, worker_expr)?;
+    let inputs = list_to_vec(&eval(prog, env, xs_expr)?)?;
+    let mut sched = Sched {
+        bufs: Vec::new(),
+        peer: Vec::new(),
+    };
+    let mut tasks: Vec<Option<Task>> = Vec::new();
+    let mut parent_eps = Vec::with_capacity(inputs.len());
+    for inp in inputs {
+        let (parent, child) = sched.new_channel();
+        // `send parent` pushes to the peer (child) queue — the worker's first `recv`.
+        sched.send(parent, inp);
+        tasks.push(Some(fork_child(worker.clone(), Value::Endpoint(child))?));
+        parent_eps.push(parent);
+    }
+    run_tasks_to_completion(prog, &mut sched, &mut tasks)?;
+    let mut results = Vec::with_capacity(parent_eps.len());
+    for ep in parent_eps {
+        match sched.recv(ep) {
+            Some(v) => results.push(v),
+            None => return Err("parMap: a worker finished without sending a result".into()),
+        }
+    }
+    Ok(vec_to_list(results))
+}
+
+/// Cooperative scheduler variant for `parMap`: runs *all* sibling tasks (there is no
+/// distinguished root) until each has finished. Mirrors `run_session`'s round-robin.
+fn run_tasks_to_completion(
+    prog: &Program,
+    sched: &mut Sched,
+    tasks: &mut Vec<Option<Task>>,
+) -> Result<(), RunError> {
+    let mut budget: u64 = 5_000_000;
+    loop {
+        let mut progressed = false;
+        let mut live = false;
+        let n = tasks.len();
+        for i in 0..n {
+            loop {
+                budget -= 1;
+                if budget == 0 {
+                    return Err("parMap scheduler: no progress (limit)".into());
+                }
+                let Some(task) = tasks[i].take() else { break };
+                let mut spawned = Vec::new();
+                let out = step(prog, sched, task, &mut spawned);
+                for t in spawned {
+                    tasks.push(Some(t));
+                }
+                match out? {
+                    StepOut::Went(t) => {
+                        tasks[i] = Some(t);
+                        progressed = true;
+                    }
+                    StepOut::Blocked(t) => {
+                        tasks[i] = Some(t);
+                        live = true;
+                        break;
+                    }
+                    StepOut::Done(_) => {
+                        progressed = true;
+                        break; // finished → drop the task (its reply sits in the queue)
+                    }
+                }
+            }
+        }
+        if !live {
+            return Ok(());
+        }
+        if !progressed {
+            return Err(
+                "deadlock in the parMap scheduler (should not happen — types guarantee it)".into(),
             );
         }
     }
