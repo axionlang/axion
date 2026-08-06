@@ -62,6 +62,15 @@ fi
 "$CLANG" -O2 -flto -w -pthread "$WORK/a.ll" axionc/src/axion_rt.c -o "$WORK/ax"
 row "Axion --release" env AXION_SESS_THREADS=1 "$WORK/ax" :: env AXION_SESS_THREADS=4 "$WORK/ax"
 
+# Axion --release, `parMap` form (§9): the same workload written with the fork-join
+# combinator (bench/conc_parmap.axi) instead of hand-unrolled spawn/send/recv/close.
+# Same worker state machine on the same M:N scheduler ⇒ the two rows should track.
+"$AXIONC" --emit llvm bench/conc_parmap.axi >"$WORK/ap.ll" 2>/dev/null
+"$CLANG" -O2 -flto -w -pthread "$WORK/ap.ll" axionc/src/axion_rt.c -o "$WORK/axp"
+row "Axion (parMap)" env AXION_SESS_THREADS=1 "$WORK/axp" :: env AXION_SESS_THREADS=4 "$WORK/axp"
+
 echo
 echo "→ C/Rust use raw OS threads; Axion adds linear channels + the M:N scheduler"
 echo "  (safety by types). Coarse compute ⇒ the fib dominates and the gap is small."
+echo "  'Axion --release' (hand-unrolled) and 'Axion (parMap)' compile to the same"
+echo "  worker state machine on the same scheduler — the combinator is free."

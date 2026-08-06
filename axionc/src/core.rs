@@ -4050,7 +4050,11 @@ impl Op {
             Op::RtCall { func, .. } if func == "axion_array_new" => Some("Array".into()),
             // §9 parMap returns an owned `List` of the workers' replies — reclaimed by
             // the generic `axion_drop_List` (flat cons-cell free), like `replicate`'s
-            // polymorphic-List result. Deep-drop of heap element payloads is a later slice.
+            // polymorphic-List result. LIMITATION: scalar replies (Int/Float) reclaim
+            // exactly, but heap reply payloads (List/record) leak — same as any
+            // polymorphic `List`. Fix when needed: thread the inferred reply type here
+            // and key `List$<elem>` so the existing `axion_drop_List$T` mono-destructor
+            // deep-drops the elements. See docs/by-example.md §11b.
             Op::RtCall { func, .. } if func == "axion_par_map" => Some("List".into()),
             Op::ArrayNew { elem_ty, .. } => elem_ty
                 .clone()
