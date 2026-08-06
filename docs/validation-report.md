@@ -103,15 +103,40 @@ still cannot run natively.
    `imperative do` → nested-`case` form, where the case-var alias also drops the
    moved-in scrutinee). Verified under ASan/LSan.
 
-Applying only layers 1–2 makes `array_loop` compile but **leak/UAF** — worse than
-"won't compile" — so those changes were **reverted**; the compiler stays sound
-(Array is inline-only). The real fix is a **fixpoint borrow analysis**: a param is a
-pure borrow if all its uses are borrows *assuming* the function's own recursive-call
-positions are borrows (a greatest fixpoint over `compute_borrow_args`), plus threading
-`Array` through `native_ty`/`fn_ret_ty` and propagating case-var-alias escape. That is
-memory-safety-critical (a wrong "borrowed" verdict is a double-free), so it needs its
-own design + full ASan/LSan/differential validation and Array threading fixtures — a
-scoped follow-up, not a one-liner.
+**Prototype (attempted, reverted, validated).** A full prototype was built and
+measured against the gates:
+- layer 1 (`native_ty += Array`), layer 2 (`fn_ret_ty += Array`),
+- an array read-op **borrow spec** in `op_delta_effect` (`axion_array_get`/`_len`
+  borrow the array; `axion_array_set` consumes it and *produces* the returned handle),
+- a **greatest-fixpoint** `compute_borrow_args` (start every `%1`-free param borrowed,
+  remove any with a move/alias use under the current assumptions, via a `ba`-aware
+  `body_moves` reading `op_delta_effect` — so a self-recursive borrow converges).
+
+With this, a **distinct-name** program (`let a0 = newArray …; let a1 = fill a0 …;
+sumArr a1 …`) is fully correct: the array is dropped exactly once after `sumArr`,
+**ASan/LSan clean**, `array_loop` (50 M) returns `1249999975000000`. So the borrow
+model is right.
+
+But it **regressed two existing gates** and was reverted:
+- **`array_sum` corrupts** — the *inline* idiom `a <- setArray a …` **shadows** `a`;
+  the string-keyed droppable analysis conflates the successive `a` bindings, and
+  `setArray`-produces then double-frees.
+- **`update_borrow` leaks** — the broader (cross-function, greatest-fixpoint) borrow
+  classification changed an existing verdict.
+
+**Real prerequisite found: variable-shadowing.** The blocker is not only the fixpoint
+— it is that Core violates the unique-binding invariant (`let a …; let a …` and the
+`imperative do` `a <- …; a <- …` desugaring both keep the name `a`), and the
+string-keyed `droppable_vars`/escape analysis conflates them. The correct sequencing is:
+1. a **uniquify pass** right after lowering (alpha-rename every binding to a fresh name
+   so Core is unique) — a general correctness fix, not Array-specific;
+2. **then** the borrow-spec + fixpoint (re-validated so `update_borrow`/`array_sum`
+   stay green), and Array-threading fixtures added to the gate.
+
+This is memory-safety-critical (a wrong "borrowed" verdict is a double-free; a wrong
+uniquify is a miscompile), so it is a **dedicated, staged effort** — uniquify first,
+each stage gated by the full ASan/LSan/differential suite. The compiler currently
+stays sound (Array inline-only).
 
 ### F-4 — Executor coverage (by design, worth stating)
 `Array` / `Buffer` / `imperative` and bench-scale fused loops **do not run in the
