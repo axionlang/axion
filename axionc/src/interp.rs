@@ -1216,9 +1216,15 @@ fn step(
         let av = eval(prog, &task.env, arg)?;
         if matches!(av, Value::Endpoint(_)) {
             let fv = eval(prog, &task.env, f)?;
-            if matches!(&fv, Value::Closure { args, .. } if args.is_empty()) {
-                let child = fork_child(fv, av)?;
-                return Ok(StepOut::Went(child));
+            // the endpoint is the last argument; the callee may already carry
+            // accumulator args (`server (acc + n) d`) — accept any closure that the
+            // endpoint completes to full arity.
+            if let Value::Closure { def, args, .. } = &fv {
+                let arity = def.clauses.first().map_or(0, |c| c.pats.len());
+                if args.len() + 1 == arity {
+                    let child = fork_child(fv, av)?;
+                    return Ok(StepOut::Went(child));
+                }
             }
         }
     }
@@ -1227,14 +1233,25 @@ fn step(
 }
 
 /// Builds the child task for `spawn f`: applies the closure `f` to the endpoint,
-/// but instead of running it to the end, returns its body as a continuation.
+/// but instead of running it to the end, returns its body as a continuation. The
+/// endpoint is the FINAL argument; a worker spawned as `spawn (f a…)` (a stateful
+/// server loop) arrives here partially applied, so its already-bound leading args
+/// (accumulator state) are bound to the leading patterns and the endpoint to the last.
 fn fork_child(f: Value, arg: Value) -> Result<Task, RunError> {
     match f {
-        Value::Closure { def, env, args } if args.is_empty() => {
+        Value::Closure { def, env, mut args } => {
             let clause = def.clauses.first().ok_or("spawn: closure with no clause")?;
+            args.push(arg); // the endpoint completes the worker's argument list
+            if args.len() != clause.pats.len() {
+                return Err(format!(
+                    "spawn: worker takes {} argument(s), got {}",
+                    clause.pats.len(),
+                    args.len()
+                ));
+            }
             let child = child_env(&env);
-            if let Some(p) = clause.pats.first() {
-                match_pat(p, &arg, &child);
+            for (p, a) in clause.pats.iter().zip(args.iter()) {
+                match_pat(p, a, &child);
             }
             match &clause.body {
                 Body::Plain(b) => Ok(Task {

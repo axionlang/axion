@@ -3,12 +3,12 @@
 -- sum, `Closed` cancels). The accumulator is threaded through the recursive tail
 -- `server (acc + n) d3`.
 --
--- STATUS: TYPE-CHECKS (`--check` clean). `sess_tail_call` (check.rs) now recognizes
--- the endpoint as the LAST argument, so the accumulator-carrying tail is accepted as
--- continuing the protocol (previously AX0301). It does NOT RUN yet: `spawn (server 0)`
--- passes a partially-applied worker, and the recursive tail must store the extra
--- accumulator params before looping — the interp step + native `gen_tail` (core.rs)
--- don't handle either yet. Once they do, `main` drives Add 10, Add 20, Total → 30.
+-- Runs on all three executors → 30 (Add 10, Add 20, Total). The accumulator is
+-- threaded across the recursive loop: `sess_tail_call` (check.rs) accepts the
+-- endpoint as the LAST argument; `spawn (server 0)` seeds the accumulator param and
+-- the recursive tail `server (acc + n) d3` updates it — handled by the interp
+-- (`fork_child` + the recursive-tail step) and the native lowering (`gen_spawn`
+-- seeds leading param slots, `gen_tail` stores every param before looping).
 data Cmd = Add (Ep (Recv Int Loop)) | Total (Ep (Send Int End)) | Closed (Ep End)
 
 server :: Int -> Ep (Rec (Offer (Add (Recv Int Loop)) (Total (Send Int End)) (Closed End))) %1 -> IO ()

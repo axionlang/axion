@@ -2028,28 +2028,36 @@ impl SessGen<'_> {
 
     /// Generates the tail (block value): stores it into `result` and returns done.
     fn gen_tail(&mut self, tail: &Expr) -> Term {
-        // self-recursive session tail call `f d` (§6, server loop): store the new
-        // endpoint into the parameter slot, reset the resume tag to the loop head,
-        // and return status 2 (re-queue) so the scheduler re-dispatches the task.
+        // self-recursive session tail call `f a… d` (§6, server loop): store each
+        // new argument into its parameter slot — the endpoint AND any accumulator
+        // state threaded across the loop (`server (acc + n) d`) — reset the resume
+        // tag to the loop head, and return status 2 (re-queue) so the scheduler
+        // re-dispatches the task.
         let (head, args) = sess_spine(tail);
-        if head == Some(self.name) && args.len() == 1 {
-            if let Some(&pslot) = self.lay.param_slots.first() {
-                let mut binds = Vec::new();
-                let ep = self.val(args[0], &mut binds);
-                binds.push((
-                    self.fresh(),
-                    Rhs::Op(Op::StoreRaw(Self::state_atom(), pslot, ep)),
-                ));
-                binds.push((
-                    self.fresh(),
-                    Rhs::Op(Op::StoreRaw(Self::state_atom(), 8, Atom::Int(0))),
-                ));
-                return wrap(
-                    binds,
-                    Term::Ret(Rhs::Op(Op::Atom(Atom::Int(2))), NO_SPAN),
-                    NO_SPAN,
-                );
+        let slots: Vec<i32> = self.lay.param_slots.clone();
+        if head == Some(self.name) && !slots.is_empty() && args.len() == slots.len() {
+            let mut binds = Vec::new();
+            // compute all new values first (they read the current locals), then write
+            // each into its slot, so an accumulator's update can't clobber a later read.
+            let mut vals = Vec::with_capacity(args.len());
+            for a in &args {
+                vals.push(self.val(a, &mut binds));
             }
+            for (slot, v) in slots.iter().zip(vals) {
+                binds.push((
+                    self.fresh(),
+                    Rhs::Op(Op::StoreRaw(Self::state_atom(), *slot, v)),
+                ));
+            }
+            binds.push((
+                self.fresh(),
+                Rhs::Op(Op::StoreRaw(Self::state_atom(), 8, Atom::Int(0))),
+            ));
+            return wrap(
+                binds,
+                Term::Ret(Rhs::Op(Op::Atom(Atom::Int(2))), NO_SPAN),
+                NO_SPAN,
+            );
         }
         let mut binds = Vec::new();
         let result = match sess_spine(tail).0 {
@@ -2229,14 +2237,16 @@ impl SessGen<'_> {
         )
     }
 
-    /// `c <- spawn f; rest` — fork a child task on a fresh channel.
+    /// `c <- spawn f; rest` — fork a child task on a fresh channel. `f` may be a
+    /// partially-applied worker (`spawn (server 0)`): the leading args are the child's
+    /// accumulator state, and its endpoint parameter is the peer endpoint (always last).
     fn gen_spawn(&mut self, pat: &Pat, target_expr: &Expr, rest: &Expr) -> Term {
-        let target = sess_spine(target_expr)
-            .0
-            .unwrap_or_else(|| panic!("spawn target"))
-            .to_string();
-        let tl = &self.all[&target];
-        let (size, pslot, step) = (tl.size, tl.param_slots.first().copied(), tl.step.clone());
+        let (head, target_args) = sess_spine(target_expr);
+        let target = head.unwrap_or_else(|| panic!("spawn target")).to_string();
+        let (size, step, slots) = {
+            let tl = &self.all[&target];
+            (tl.size, tl.step.clone(), tl.param_slots.clone())
+        };
         let mut binds = Vec::new();
         let a = self.fresh();
         binds.push((
@@ -2252,16 +2262,24 @@ impl SessGen<'_> {
                 true,
             ),
         ));
-        // the child's first parameter is the peer endpoint (a + 1)
+        // the child's endpoint parameter (the LAST param) is the peer endpoint (a + 1)
         let ap1 = self.fresh();
         binds.push((
             ap1.clone(),
             Rhs::Op(Op::Prim("+".into(), Atom::Var(a.clone()), Atom::Int(1))),
         ));
-        if let Some(pslot) = pslot {
+        if let Some(&ep_slot) = slots.last() {
             binds.push((
                 self.fresh(),
-                Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), pslot, Atom::Var(ap1))),
+                Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), ep_slot, Atom::Var(ap1))),
+            ));
+        }
+        // already-applied leading args → the accumulator param slots (in order)
+        for (slot, arg) in slots.iter().zip(target_args.iter()) {
+            let v = self.val(arg, &mut binds);
+            binds.push((
+                self.fresh(),
+                Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
             ));
         }
         let fa = self.fresh();

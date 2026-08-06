@@ -209,21 +209,29 @@ fn parmap_heap_reply_computes_correctly() {
 }
 
 #[test]
-fn stateful_server_loop_typechecks() {
+fn stateful_server_loop_runs() {
     // §6: a recursive `offer` server that threads accumulator state across the loop
-    // (`server (acc + n) d3`) now TYPE-CHECKS — `sess_tail_call` recognizes the
-    // endpoint as the last argument, so the accumulator-carrying tail is accepted as
-    // continuing the protocol (previously rejected AX0301). Running it is a follow-up
-    // (the interp step + native `gen_tail` must thread the extra params); this test
-    // pins that the check passes.
-    let out = axionc()
-        .args(["--check", &fixture("session_stateful_server.axi")])
+    // (`server (acc + n) d3`) type-checks AND runs. `spawn (server 0)` seeds the
+    // accumulator, each `Add` folds a value into it, `Total` returns the running sum
+    // (10 + 20 = 30). Native (cranelift) agrees with the interpreter.
+    let native = axionc()
+        .args(["--backend", "cranelift", &fixture("session_stateful_server.axi")])
         .output()
         .unwrap();
     assert!(
-        out.status.success(),
-        "stateful server loop should type-check: {}",
-        String::from_utf8_lossy(&out.stderr)
+        native.status.success(),
+        "stateful server loop should run: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "30\n");
+    let interp = axionc()
+        .arg(fixture("session_stateful_server.axi"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        "30\n",
+        "interpreter diverges from native on the stateful server loop"
     );
 }
 
