@@ -12,7 +12,14 @@
     clippy::option_if_let_else,
     let_underscore_drop,
     unused_qualifications
-)] // i64-everywhere ABI: casts are intentional
+)]
+// i64-everywhere ABI: casts are intentional
+// `#[cfg(test)]` unit modules use `unwrap`/`expect` (a failing assert IS the test
+// result); relax only under the test profile so production code stays strict.
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::redundant_pub_crate)
+)]
 //! (names + linearity + Auto-Drop) → type inference (HM) → interpreter.
 //! Diagnostics with stable `AXnnnn` codes (§8), as text or JSON.
 //!

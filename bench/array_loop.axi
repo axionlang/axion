@@ -1,11 +1,11 @@
 -- Array sequential benchmark: 50M elements, fill via loop then sum.
 -- All operations are direct calls (no imperative block needed).
 
-fill :: Int -> Int -> Int -> Int
+fill :: Array Int -> Int -> Int -> Array Int
 fill a i n = if i == n then a
   else let a2 = setArray a i i in fill a2 (i + 1) n
 
-sumArr :: Int -> Int -> Int -> Int -> Int
+sumArr :: Array Int -> Int -> Int -> Int -> Int
 sumArr a i n acc = if i == n then acc
   else sumArr a (i + 1) n (acc + getArray a i)
 

@@ -1,5 +1,16 @@
 //! Integration tests for the walking skeleton: parse → typecheck → run,
 //! and the rejection of use-after-consume (the Phase 1 goal, §17).
+//!
+//! Test code deliberately uses `unwrap`/`expect` (a failure IS the test failure)
+//! and drops process handles with `let _`; the crate-wide restriction lints
+//! (`Cargo.toml [lints]`) do not fit integration tests, so relax them here.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::string_slice,
+    unused_qualifications,
+    let_underscore_drop
+)]
 
 use std::process::Command;
 

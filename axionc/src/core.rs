@@ -3489,13 +3489,14 @@ fn collect_array_seeds(fns: &[CoreFn]) -> Vec<Type> {
 fn scan_body_array_seeds(t: &Term, out: &mut Vec<Type>) {
     match t {
         Term::Let(_, rhs, _, body) => {
-            if let Rhs::Op(Op::ArrayNew { elem_ty, .. }) = rhs {
-                if let Some(et) = elem_ty {
-                    out.push(Type::App(
-                        Box::new(Type::Con("Array".into())),
-                        Box::new(Type::Con(et.clone())),
-                    ));
-                }
+            if let Rhs::Op(Op::ArrayNew {
+                elem_ty: Some(et), ..
+            }) = rhs
+            {
+                out.push(Type::App(
+                    Box::new(Type::Con("Array".into())),
+                    Box::new(Type::Con(et.clone())),
+                ));
             }
             scan_body_array_seeds(body, out);
         }

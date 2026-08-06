@@ -25,6 +25,10 @@ implementations of the same idea**:
 3. Phase A′ annotations (`Op::ty`, `CoreFn::owned_drop_ty`) — the *data* the walk
    reads, now fully resolved at lowering.
 
+> **Current ground truth (2026-08-06, [`validation-report.md`](validation-report.md)):**
+> dump-oracle 147/147, check-delta 118/29, sanitize 45/37, tsan 8/8, differential 3/3,
+> `cargo test` 156. The per-phase counts in this doc are historical snapshots, kept as a log.
+
 The gates (dump-oracle 132/132, sanitize 33/27, differential 3/3) hold these
 together *dynamically*. The Δ judgment replaces this with a **static proof**:
 

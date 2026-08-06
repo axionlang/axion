@@ -705,8 +705,8 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
                     return Some(Value::Str(String::new()));
                 }
                 let mut s = String::with_capacity(n as usize);
-                for i in 0..n as usize {
-                    let c = buf[i] as char;
+                for &byte in &buf[..n as usize] {
+                    let c = byte as char;
                     if c != '\r' {
                         s.push(c);
                     }

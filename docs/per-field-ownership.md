@@ -1,5 +1,9 @@
 # Design plan — per-field ownership (`%1` fields with their own Δ)
 
+> **Gate counts below are historical per-phase snapshots.** Current ground truth
+> (2026-08-06): `cargo test` 156, check-delta 118/29, oracle 147/147, sanitize 45/37,
+> tsan 8/8 — see [`validation-report.md`](validation-report.md).
+
 **Status:** F-1..F-3 IMPLEMENTED. F-1 judgment-first (checker-only, `(Field·owned)` + `(Drop·skip)` rules, `--emit delta` facts, 5 unit tests). F-2 lowering (remainder drops, `transferred_slots` replaces `transfers_heap_field`, parser fix for positional `%1` fields, 2 fixtures `land_field_split_owned` + `land_field_mixed`). F-3 codegen (skip-variant destructors `axion_drop_T_skip_0` seeded from lowering, `Term::Drop` skip-set routing in both backends). F-4 docs (this section — done).
 
 **Goal:** close the Field-split gap — today a linear scrutinee whose heap field

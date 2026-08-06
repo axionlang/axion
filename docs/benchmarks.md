@@ -1,5 +1,10 @@
 # Benchmarks (§13) — Axion vs C vs Rust
 
+> **Reproduced 2026-08-06** (i5-9300HF, clang 21.1.8): parity with C confirmed —
+> `--release` within ~6% of C `-O2` on fib/loop/dispatch/sumtype, parity on simd, ~12×
+> on alloc (arena); concurrency 3.63× vs C 3.93×. See
+> [`validation-report.md`](validation-report.md).
+
 > The spec is explicit: the performance guarantees are **design, not measurement**
 > — they stay "under benchmark" (§13, §0). We measure **both** Axion backends:
 > `--dev` (Cranelift, fast-path §11) and `--release` (LLVM `-O2 -flto`, §18).

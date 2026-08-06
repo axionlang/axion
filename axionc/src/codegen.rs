@@ -533,7 +533,9 @@ extern "C" fn axion_array_new(len: i64, init: i64) -> i64 {
             std::alloc::handle_alloc_error(layout);
         }
         b.cast::<i64>().write_unaligned(n as i64);
-        let d = b.add(8) as *mut i64;
+        // `b` is 8-aligned (layout align 8), so `b + 8` is a valid `*mut i64`.
+        #[allow(clippy::cast_ptr_alignment)]
+        let d = b.add(8).cast::<i64>();
         for i in 0..n {
             *d.add(i) = init;
         }

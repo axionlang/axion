@@ -36,22 +36,23 @@ main = imperative $ do
   getArray a 0             -- returns 10
 ```
 
-## Phase 2c: Deep-drop for parametric elements
+## Phase 2c: Deep-drop for parametric elements — NOT YET REACHABLE
 
-When the element type is a concrete heap type (`List P`, `Maybe P`), the
-compiler threads the element type through inference → lowering → destructor
-generation:
+> **Status (2026-08, see `validation-report.md` F-2): aspirational / dead code.**
+> The API is `Int`-valued only — `newArray :: Int -> Int -> Array a`, `getArray ::
+> Array a -> Int -> Int`, `setArray :: Array a -> Int -> Int -> Array a` — so the
+> element type `a` is **phantom**: no operation moves a value of type `a` into or out
+> of an array. Consequently `Op::ArrayNew.elem_ty` never resolves to a concrete heap
+> type in a well-typed program (nothing constrains it, and `array_ret_tys` is stored
+> un-zonked), the `axion_drop_Array$List$P` generator is **never triggered**, and every
+> array is freed by the flat `axion_drop_Array` (`axion_array_free`). Verified via
+> `--emit core`. Making this real needs `newArray`/`setArray` to accept element-typed
+> values and the element type to be threaded (zonked) to the call site.
 
-```haskell
--- 'elem_ty' resolved to 'List$P' at the call site:
-a <- newArray 100 (Nil :: List P)
--- Generates: axion_drop_Array$List$P
--- Which loops i = n-1..0: loads elem[i], calls axion_drop_List$P, frees shell
-```
-
-No user annotation needed — the type inference records the element type
-at each `newArray` call site, and the lowering pass populates
-`Op::ArrayNew.elem_ty` from `analysis.array_tys`.
+The *intended* design (once elements can be heap): when the element type is a concrete
+heap type (`List P`, `Maybe P`), the compiler threads it through inference → lowering →
+destructor generation, emitting `axion_drop_Array$List$P` that loops `i = n-1..0`,
+loads `elem[i]`, calls `axion_drop_List$P`, and frees the shell.
 
 ## Imperative block
 
@@ -96,10 +97,19 @@ limitation shared with `Buffer` operations.
 ## Limitations
 
 - **No loop support in the imperative block.** Each operation is a fixed point
-  in the state machine — there is no `while` or `for`. Large arrays must be
-  filled and read element-by-element via recursive helper functions (which
-  require monomorphic type signatures for native compilation).
-- **No bounds checking.** `getArray` returns 0 for out-of-bounds; `setArray`
-  is a no-op for OOB.
+  in the state machine — there is no `while` or `for`. Large arrays are meant to be
+  filled/read via recursive helper functions, but **this does not compile natively
+  today**: a helper typed `Array Int -> … -> Array Int` makes `main` non-native on
+  both backends ("`main` must be a native function"). So arrays are currently limited
+  to small, inline-only use in a single `imperative` block (see
+  `validation-report.md` F-3).
+- **Bounds are checked at runtime → abort.** `getArray`/`setArray` validate the index
+  and **`abort()`** with `array bounds — index N out of range [0, len)` on OOB
+  (`axion_rt.c`) — a clean abort, not memory corruption or a silent 0/no-op. No
+  *static* bounds checking.
+- **Interpreter unsupported.** `newArray`/`imperative` are native-only (shared with
+  `Buffer`); Array programs run under `--dev`/`--release`, not the interpreter.
 - **No bulk operations.** No `fill`, `copy`, or `iota` — each element must be
   individually set/read.
+- **`Int` elements only in practice.** The element type is phantom (see Phase 2c) —
+  arrays hold `i64` values; heap-typed elements are not yet reachable.

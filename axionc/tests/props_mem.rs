@@ -14,6 +14,17 @@
 //! `if`/`case` balancing, cross-function reclamation). The fragment deliberately
 //! avoids what still leaks by conservative choice (nested records, `show`,
 //! returned closures) — see docs/backend.md.
+//!
+//! Test code uses `unwrap`/`expect` and `let _` on process handles; relax the
+//! crate-wide restriction lints (`Cargo.toml [lints]`) that don't fit tests.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    unused_qualifications,
+    let_underscore_drop
+)]
 
 use std::process::Command;
 
