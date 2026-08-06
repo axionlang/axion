@@ -50,12 +50,12 @@
 
 
         _ ->
-                        a ->
-                    a ->
-                a ->
-            a ->
-        a ->
     a ->
+        a$1 ->
+            a$2 ->
+                a$3 ->
+                    a$4 ->
+                        a$5 ->
 all p xs  =
 any p xs  =
 append xs ys  =
@@ -195,9 +195,9 @@ length xs  =
   let _t0 = < x y  ; Δ{}
   let _t0 = <. x y  ; Δ{}
                           let _t10 = + _t8 _t9  ; Δ{_t0}
-                          let _t11 = rtcall axion_array_get a 3  ; Δ{_t0}
+                          let _t11 = rtcall axion_array_get a$5 3  ; Δ{_t0}
                           let _t12 = + _t10 _t11  ; Δ{_t0}
-                          let _t13 = rtcall axion_array_get a 4  ; Δ{_t0}
+                          let _t13 = rtcall axion_array_get a$5 4  ; Δ{_t0}
   let _t14 = case _t0 of
         let _t1 = call filter p ys  ; Δ{} · makes List
         let _t1 = call intersperse sep ys  ; Δ{} · makes List
@@ -220,17 +220,17 @@ length xs  =
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
       let _t2 = if _t0 then
-          let _t2 = rtcall axion_array_set a 1 20  ; Δ{_t0}
+          let _t2 = rtcall axion_array_set a$1 1 20  ; Δ{_t0}
           let _t3 = callclo p y  ; Δ{}
-              let _t3 = rtcall axion_array_set a 2 30  ; Δ{_t0}
+              let _t3 = rtcall axion_array_set a$2 2 30  ; Δ{_t0}
             let _t4 = con Cons y l  ; Δ{}
-                  let _t4 = rtcall axion_array_set a 3 40  ; Δ{_t0}
+                  let _t4 = rtcall axion_array_set a$3 3 40  ; Δ{_t0}
             let _t5 = con Cons y r  ; Δ{}
-                      let _t5 = rtcall axion_array_set a 4 50  ; Δ{_t0}
-                          let _t6 = rtcall axion_array_get a 0  ; Δ{_t0}
-                          let _t7 = rtcall axion_array_get a 1  ; Δ{_t0}
+                      let _t5 = rtcall axion_array_set a$4 4 50  ; Δ{_t0}
+                          let _t6 = rtcall axion_array_get a$5 0  ; Δ{_t0}
+                          let _t7 = rtcall axion_array_get a$5 1  ; Δ{_t0}
                           let _t8 = + _t6 _t7  ; Δ{_t0}
-                          let _t9 = rtcall axion_array_get a 2  ; Δ{_t0}
+                          let _t9 = rtcall axion_array_get a$5 2  ; Δ{_t0}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
         (l, r) ->

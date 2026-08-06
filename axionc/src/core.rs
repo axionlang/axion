@@ -3017,6 +3017,16 @@ pub fn lower_with(
         });
     }
 
+    // Uniquify: alpha-rename shadowed local bindings so every binding in a
+    // function has a distinct name. The reclamation analyses (`droppable_vars`,
+    // escape, `compute_borrow_args`) are string-keyed, so a shadowed name
+    // (`let a = …; let a = …`, or the `imperative do` `a <- …; a <- …`
+    // desugaring) would otherwise conflate two distinct bindings and free the
+    // wrong one. See docs/validation-report.md F-3.
+    for f in &mut out {
+        uniquify_fn(f);
+    }
+
     // parameter multiplicities of top-level functions with a signature, for
     // borrowed-argument reclamation
     let param_mults: HashMap<String, Vec<ast::Mult>> = module
@@ -3948,6 +3958,147 @@ fn view_params(name: &str) -> &'static [usize] {
     match name {
         "drop" => &[1],
         _ => &[],
+    }
+}
+
+// --- uniquify: alpha-rename shadowed local bindings (unique-binding invariant) ---
+//
+// Runs right after lowering, before every reclamation analysis. Shadow-only: a
+// binding keeps its readable source name unless it shadows one already in scope,
+// in which case it gets a fresh `name$N` (the lexer forbids `$`, so no collision).
+// Uses are substituted consistently; `if`/`case` branches get their own scope
+// (a cloned env), so a binding in one arm never leaks to a sibling.
+
+fn uniquify_fn(f: &mut CoreFn) {
+    // params and closure captures are the function's interface — kept as-is and
+    // seeded so a local that shadows a param is renamed.
+    let mut env: HashMap<String, String> =
+        f.params.iter().map(|p| (p.clone(), p.clone())).collect();
+    for c in &f.captures {
+        env.insert(c.clone(), c.clone());
+    }
+    let mut ctr = 0u32;
+    uq_term(&mut f.body, &mut env, &mut ctr);
+}
+
+/// Renames the binder `x` (in place) to a fresh `x$N` iff it shadows a name
+/// already in scope, and records the mapping so later uses resolve to it.
+fn uq_bind(x: &mut String, env: &mut HashMap<String, String>, ctr: &mut u32) {
+    let x2 = if env.contains_key(x.as_str()) {
+        *ctr += 1;
+        format!("{x}${ctr}")
+    } else {
+        x.clone()
+    };
+    env.insert(x.clone(), x2.clone());
+    *x = x2;
+}
+
+fn uq_atom(a: &mut Atom, env: &HashMap<String, String>) {
+    if let Atom::Var(v) = a {
+        if let Some(n) = env.get(v) {
+            v.clone_from(n);
+        }
+    }
+}
+
+fn uq_term(t: &mut Term, env: &mut HashMap<String, String>, ctr: &mut u32) {
+    match t {
+        Term::Let(x, rhs, _, body) => {
+            // the rhs is evaluated BEFORE `x` is bound (ANF), so rename its uses
+            // under the outer scope, then bind `x`, then descend into the body.
+            uq_rhs(rhs, env, ctr);
+            uq_bind(x, env, ctr);
+            uq_term(body, env, ctr);
+        }
+        Term::Drop(v, _, _, _, body) => {
+            // no Drop nodes exist yet at uniquify time, but handle them for safety.
+            if let Some(n) = env.get(v) {
+                v.clone_from(n);
+            }
+            uq_term(body, env, ctr);
+        }
+        Term::Ret(rhs, _) => uq_rhs(rhs, env, ctr),
+    }
+}
+
+fn uq_rhs(rhs: &mut Rhs, env: &mut HashMap<String, String>, ctr: &mut u32) {
+    match rhs {
+        Rhs::Op(op) => uq_op(op, env),
+        Rhs::If(c, t, e) => {
+            uq_atom(c, env);
+            let mut te = env.clone();
+            uq_term(t, &mut te, ctr);
+            let mut ee = env.clone();
+            uq_term(e, &mut ee, ctr);
+        }
+        Rhs::Case(s, arms) => {
+            uq_atom(s, env);
+            for (pat, body) in arms.iter_mut() {
+                let mut ae = env.clone();
+                uq_pat(pat, &mut ae, ctr);
+                uq_term(body, &mut ae, ctr);
+            }
+        }
+    }
+}
+
+fn uq_pat(pat: &mut CPat, env: &mut HashMap<String, String>, ctr: &mut u32) {
+    match pat {
+        CPat::Var(x) => uq_bind(x, env, ctr),
+        CPat::Con(_, subs) | CPat::Tuple(subs) => {
+            subs.iter_mut().for_each(|p| uq_pat(p, env, ctr));
+        }
+        CPat::Int(_) | CPat::Wild => {}
+    }
+}
+
+/// Renames every variable OPERAND of `op` (exhaustive, so a new `Op` variant
+/// forces a decision here rather than silently escaping the renaming).
+fn uq_op(op: &mut Op, env: &HashMap<String, String>) {
+    match op {
+        Op::Atom(a)
+        | Op::IntToFloat(a)
+        | Op::FloatToInt(a)
+        | Op::FloatUnary(_, a)
+        | Op::Field { rec: a, .. }
+        | Op::LoadRaw(a, _)
+        | Op::PutStrLn(a)
+        | Op::PutStr(a)
+        | Op::ShowInt(a)
+        | Op::ArenaAlloc(a)
+        | Op::ArenaMark(a)
+        | Op::ArenaRelease(a) => uq_atom(a, env),
+        Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::StoreRaw(a, _, b) | Op::Promote(a, b) => {
+            uq_atom(a, env);
+            uq_atom(b, env);
+        }
+        Op::CallDirect(_, xs, _)
+        | Op::MakeTuple(xs)
+        | Op::MakeCon { args: xs, .. }
+        | Op::RtCall { args: xs, .. }
+        | Op::Ffi { args: xs, .. }
+        | Op::MakeClosure { captures: xs, .. } => xs.iter_mut().for_each(|a| uq_atom(a, env)),
+        Op::CallClosure(f, xs) => {
+            uq_atom(f, env);
+            xs.iter_mut().for_each(|a| uq_atom(a, env));
+        }
+        Op::MakeRecord { fields, .. } => fields.iter_mut().for_each(|(_, a)| uq_atom(a, env)),
+        Op::UpdateRecord { base, fields, .. } => {
+            uq_atom(base, env);
+            fields.iter_mut().for_each(|(_, a)| uq_atom(a, env));
+        }
+        Op::WithArena { parent, clos } => {
+            if let Some(p) = parent {
+                uq_atom(p, env);
+            }
+            uq_atom(clos, env);
+        }
+        Op::ArrayNew { len, init, .. } => {
+            uq_atom(len, env);
+            uq_atom(init, env);
+        }
+        Op::FuncAddr(_) | Op::Unsupported(_) => {}
     }
 }
 
