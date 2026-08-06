@@ -247,7 +247,12 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
     }
     match t.head_con() {
         // Int/Float/String/IO; arena (Arena/Cell/Mark); Buffer (§4); unit-token;
-        // fixed-width integers (§4) — i64 in the ABI (Float as its f64 bit pattern)
+        // fixed-width integers (§4) — i64 in the ABI (Float as its f64 bit pattern).
+        // NOTE: `Array` is deliberately NOT native here — an Array threaded through a
+        // helper needs a fixpoint borrow analysis to reclaim it (a read-only recursive
+        // traversal borrows it, but the self-recursive pass looks like a move). Until
+        // that lands, Array-in-signatures stays interp/inline-only (see
+        // validation-report.md F-3); making it native leaks/UAFs.
         Some(
             "Int" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer"
             | "()" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte",

@@ -80,15 +80,38 @@ type `a` is **phantom** (no operation moves a value of type `a` in or out). So:
 aborts, Array is memory-safe (Int-only, bounds-checked, flat free; `array_sum.axi`
 ASan-clean). The gap is accuracy + dead code, not a hole.
 
-### F-3 — Array can't express large arrays natively (feature gap)
+### F-3 — Array can't express large arrays natively (feature gap; root cause found)
 `imperative do` has no loops, and a recursive helper over `Array Int` (e.g. `fill ::
-Array Int -> Int -> Int -> Array Int`) makes `main` **non-native** ("`main` must be a
-native function") on both backends — even with monomorphic signatures the docs say
-suffice. So Array is limited to small, inline-only arrays in a single `imperative`
-block; the "dense data / Array benchmark" story is not yet backed by a runnable
-native Array loop. `bench/array_loop.axi` had wrong `Int` signatures (didn't
-type-check) and is orphaned from `bench.sh`; its signatures are corrected to `Array
-Int` here (now type-checks) but it still cannot run natively.
+Array Int -> Int -> Int -> Array Int`) makes `main` **non-native** on both backends.
+`bench/array_loop.axi` had wrong `Int` signatures (didn't type-check) and is orphaned
+from `bench.sh`; signatures corrected to `Array Int` here (now type-checks) but it
+still cannot run natively.
+
+**Root cause (diagnosed, three layers):**
+1. `native_ty` (core.rs) omitted `Array` from the native head-constructor whitelist,
+   so any signature mentioning `Array` fails `top_candidate` → interp-only → `main`
+   non-native. (One-liner.)
+2. `fn_ret_ty`/`op_delta_effect.produces` only tracks `boxed` (user `data`) results,
+   so an `Array`-returning function isn't recognized as producing an owned array →
+   the returned array is never reclaimed. (Small addition.)
+3. **The blocker:** `compute_borrow_args` classifies a param as a pure borrow only if
+   it never occurs in a non-borrow position, but a read-only recursive traversal
+   (`sumArr a … sumArr a …`) passes the array to its **own recursive call**, which
+   `occurs_nonborrow` counts as a move (it cannot yet know the recursive param is
+   itself a borrow). So the array is neither borrowed-and-dropped-by-caller nor
+   owned-and-dropped-by-callee → **it leaks** (`let` form) or **double-frees** (the
+   `imperative do` → nested-`case` form, where the case-var alias also drops the
+   moved-in scrutinee). Verified under ASan/LSan.
+
+Applying only layers 1–2 makes `array_loop` compile but **leak/UAF** — worse than
+"won't compile" — so those changes were **reverted**; the compiler stays sound
+(Array is inline-only). The real fix is a **fixpoint borrow analysis**: a param is a
+pure borrow if all its uses are borrows *assuming* the function's own recursive-call
+positions are borrows (a greatest fixpoint over `compute_borrow_args`), plus threading
+`Array` through `native_ty`/`fn_ret_ty` and propagating case-var-alias escape. That is
+memory-safety-critical (a wrong "borrowed" verdict is a double-free), so it needs its
+own design + full ASan/LSan/differential validation and Array threading fixtures — a
+scoped follow-up, not a one-liner.
 
 ### F-4 — Executor coverage (by design, worth stating)
 `Array` / `Buffer` / `imperative` and bench-scale fused loops **do not run in the
