@@ -209,19 +209,22 @@ fn parmap_heap_reply_computes_correctly() {
 }
 
 #[test]
-fn stateful_server_loop_rejected_ax0301() {
-    // §6 LIMITATION (documented): a recursive `offer` server that threads an
-    // accumulator across the loop (`server (acc + n) d3`) is rejected — the
-    // recursive-tail recognizer only accepts the endpoint as the sole argument, so
-    // the endpoint is reported as never reaching `close`. Pins the current behaviour
-    // until the recognizer is generalized (see the fixture header).
+fn stateful_server_loop_typechecks() {
+    // §6: a recursive `offer` server that threads accumulator state across the loop
+    // (`server (acc + n) d3`) now TYPE-CHECKS — `sess_tail_call` recognizes the
+    // endpoint as the last argument, so the accumulator-carrying tail is accepted as
+    // continuing the protocol (previously rejected AX0301). Running it is a follow-up
+    // (the interp step + native `gen_tail` must thread the extra params); this test
+    // pins that the check passes.
     let out = axionc()
-        .args(["--check", &fixture("session_stateful_server_rejected.axi")])
+        .args(["--check", &fixture("session_stateful_server.axi")])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "stateful server loop should be rejected");
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0301"), "expected AX0301, output: {text}");
+    assert!(
+        out.status.success(),
+        "stateful server loop should type-check: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

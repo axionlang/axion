@@ -755,12 +755,17 @@ fn walk_sess(
     }
 }
 
-/// If `e` is a call `f d` whose single argument is a plain endpoint variable,
-/// returns `(f, d)` — a candidate recursive session tail call.
+/// If `e` is a call `f a… d` whose LAST argument is a plain endpoint variable,
+/// returns `(f, d)` — a candidate recursive session tail call. The endpoint is
+/// always the last parameter (a session worker is spawned as `spawn (f a…)`, which
+/// partial-applies the leading args and leaves the endpoint for `spawn`), so any
+/// preceding args are accumulator state threaded across the loop (`server (acc+n) d`).
+/// Whether it truly continues the protocol is decided by the caller (`f` must be a
+/// session fn and `d`'s session state must match `f`'s endpoint param).
 fn sess_tail_call(e: &Expr) -> Option<(String, String)> {
     let (head, args) = app_spine(e);
-    match (head, args.as_slice()) {
-        (Some(f), [Expr::Var(d, _)]) => Some((f.to_string(), d.clone())),
+    match (head, args.split_last()) {
+        (Some(f), Some((Expr::Var(d, _), _rest))) => Some((f.to_string(), d.clone())),
         _ => None,
     }
 }
