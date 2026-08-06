@@ -246,16 +246,15 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         return true;
     }
     match t.head_con() {
-        // Int/Float/String/IO; arena (Arena/Cell/Mark); Buffer (§4); unit-token;
-        // fixed-width integers (§4) — i64 in the ABI (Float as its f64 bit pattern).
-        // NOTE: `Array` is deliberately NOT native here — an Array threaded through a
-        // helper needs a fixpoint borrow analysis to reclaim it (a read-only recursive
-        // traversal borrows it, but the self-recursive pass looks like a move). Until
-        // that lands, Array-in-signatures stays interp/inline-only (see
-        // validation-report.md F-3); making it native leaks/UAFs.
+        // Int/Float/String/IO; arena (Arena/Cell/Mark); Buffer (§4); Array (§A);
+        // unit-token; fixed-width integers (§4) — i64 in the ABI (Float as its f64
+        // bit pattern; Buffer/Array/arena as heap pointers). `Array` threaded through
+        // helpers is reclaimed by the uniquify pass + the fixpoint borrow analysis
+        // (`compute_borrow_args`) + the array read-op borrow spec (`body_moves`).
         Some(
             "Int" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer"
-            | "()" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte",
+            | "Array" | "()" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word"
+            | "Byte",
         ) => true,
         Some(h) => data_types.contains(h),
         None => false,
@@ -2789,10 +2788,18 @@ pub fn lower_with(
         .iter()
         .filter_map(|f| {
             let rt = result_type(f.sig.as_ref()?);
-            rt.head_con().filter(|h| boxed.contains(*h)).map(|h| {
+            let h = rt.head_con()?;
+            // `Array` is a native heap resource freed by the flat `axion_drop_Array`
+            // (element type phantom), so a function returning it produces an owned
+            // array the caller reclaims — keyed flat, like `ArrayNew`.
+            if h == "Array" {
+                Some((f.name.clone(), "Array".to_string()))
+            } else if boxed.contains(h) {
                 let key = mono_key(rt).unwrap_or_else(|| h.to_string());
-                (f.name.clone(), key)
-            })
+                Some((f.name.clone(), key))
+            } else {
+                None
+            }
         })
         .collect();
     // parametric data types (`data List a = …`): a dropped CONCRETE instantiation
@@ -3025,6 +3032,19 @@ pub fn lower_with(
     // wrong one. See docs/validation-report.md F-3.
     for f in &mut out {
         uniquify_fn(f);
+    }
+
+    // Collapse trivial single-var `case` bindings (`case s of a -> body`, from the
+    // `imperative do` `a <- …` desugaring) into a substitution `a := s`. The
+    // scrutinee is an already-forced value, so this is a pure rebinding; keeping
+    // the `case` makes the reclamation analysis mishandle the scrutinee (the arm
+    // var aliases it), double-freeing a threaded resource. See validation-report.md.
+    for f in &mut out {
+        let body = std::mem::replace(
+            &mut f.body,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+        );
+        f.body = collapse_var_cases(body);
     }
 
     // parameter multiplicities of top-level functions with a signature, for
@@ -4102,30 +4122,246 @@ fn uq_op(op: &mut Op, env: &HashMap<String, String>) {
     }
 }
 
+// --- collapse trivial single-var `case` bindings into substitutions ---
+
+/// `case (Var s) of a -> body` → `body` with every use of `a` renamed to `s`.
+/// Recurses so nested binds collapse too. Only a single Var-pattern arm over a
+/// variable scrutinee qualifies (an already-forced value that the arm merely
+/// re-binds); everything else is traversed unchanged.
+fn collapse_var_cases(t: Term) -> Term {
+    match t {
+        Term::Let(x, Rhs::Case(Atom::Var(s), arms), sp, body)
+            if matches!(arms.as_slice(), [(CPat::Var(_), _)]) =>
+        {
+            let (a, inner) = single_var_arm(arms);
+            let inner = renamed(inner, &a, &s);
+            splice_value(collapse_var_cases(inner), x, sp, collapse_var_cases(*body))
+        }
+        Term::Ret(Rhs::Case(Atom::Var(s), arms), _)
+            if matches!(arms.as_slice(), [(CPat::Var(_), _)]) =>
+        {
+            let (a, inner) = single_var_arm(arms);
+            collapse_var_cases(renamed(inner, &a, &s))
+        }
+        Term::Let(x, rhs, sp, body) => Term::Let(
+            x,
+            collapse_rhs(rhs),
+            sp,
+            Box::new(collapse_var_cases(*body)),
+        ),
+        Term::Drop(v, ty, a, sp, body) => {
+            Term::Drop(v, ty, a, sp, Box::new(collapse_var_cases(*body)))
+        }
+        Term::Ret(rhs, sp) => Term::Ret(collapse_rhs(rhs), sp),
+    }
+}
+
+fn collapse_rhs(rhs: Rhs) -> Rhs {
+    match rhs {
+        Rhs::Op(op) => Rhs::Op(op),
+        Rhs::If(c, t, e) => Rhs::If(
+            c,
+            Box::new(collapse_var_cases(*t)),
+            Box::new(collapse_var_cases(*e)),
+        ),
+        Rhs::Case(s, arms) => Rhs::Case(
+            s,
+            arms.into_iter()
+                .map(|(p, b)| (p, collapse_var_cases(b)))
+                .collect(),
+        ),
+    }
+}
+
+/// The (var name, arm body) of a `[(CPat::Var(a), body)]` arm list.
+fn single_var_arm(arms: Vec<(CPat, Term)>) -> (String, Term) {
+    match arms.into_iter().next() {
+        Some((CPat::Var(a), body)) => (a, body),
+        _ => unreachable!("caller guards a single CPat::Var arm"),
+    }
+}
+
+/// Renames every USE of `from` to `to` in `t` (bindings are untouched — after
+/// uniquify names are distinct, so `from` is never re-bound inside `t`).
+fn renamed(mut t: Term, from: &str, to: &str) -> Term {
+    let env: HashMap<String, String> =
+        std::iter::once((from.to_string(), to.to_string())).collect();
+    rename_term(&mut t, &env);
+    t
+}
+
+fn rename_term(t: &mut Term, env: &HashMap<String, String>) {
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            rename_rhs(rhs, env);
+            rename_term(body, env);
+        }
+        Term::Drop(v, _, _, _, body) => {
+            if let Some(n) = env.get(v) {
+                v.clone_from(n);
+            }
+            rename_term(body, env);
+        }
+        Term::Ret(rhs, _) => rename_rhs(rhs, env),
+    }
+}
+
+fn rename_rhs(rhs: &mut Rhs, env: &HashMap<String, String>) {
+    match rhs {
+        Rhs::Op(op) => uq_op(op, env),
+        Rhs::If(c, t, e) => {
+            uq_atom(c, env);
+            rename_term(t, env);
+            rename_term(e, env);
+        }
+        Rhs::Case(s, arms) => {
+            uq_atom(s, env);
+            for (_, b) in arms.iter_mut() {
+                rename_term(b, env);
+            }
+        }
+    }
+}
+
+/// Splices `inner` (a Term producing a value) so its result is bound to `x`,
+/// followed by `cont`: each tail `Ret(rhs)` becomes `Let(x, rhs, cont)`.
+fn splice_value(inner: Term, x: String, sp: Span, cont: Term) -> Term {
+    match inner {
+        Term::Ret(rhs, _) => Term::Let(x, rhs, sp, Box::new(cont)),
+        Term::Let(y, rhs, s, body) => {
+            Term::Let(y, rhs, s, Box::new(splice_value(*body, x, sp, cont)))
+        }
+        Term::Drop(v, ty, a, s, body) => {
+            Term::Drop(v, ty, a, s, Box::new(splice_value(*body, x, sp, cont)))
+        }
+    }
+}
+
 /// Computes the pure borrows of each top-level function (those with a signature,
 /// logo multiplicidade conhecida). Ver [`BorrowArgs`].
+///
+/// GREATEST FIXPOINT. Whether a use `g a` moves `a` depends on whether `g`'s
+/// parameter is itself a borrow — a chicken-and-egg for (mutual) recursion. So
+/// start by assuming EVERY `%1`-free param is borrowed, then drop any param with a
+/// genuine move/alias use under the current assumptions, until stable. A read-only
+/// recursive traversal (`sumArr a … sumArr a …`) converges to borrowed, so its
+/// caller keeps ownership and frees it exactly once.
 fn compute_borrow_args(
     fns: &[CoreFn],
     param_mults: &HashMap<String, Vec<ast::Mult>>,
 ) -> BorrowArgs {
-    let mut out = HashMap::new();
+    let mut ba: BorrowArgs = HashMap::new();
     for f in fns {
         let Some(mults) = param_mults.get(&f.name) else {
             continue;
         };
-        let mut set = HashSet::new();
-        for (i, pname) in f.params.iter().enumerate() {
-            // borrowed (not `%1` → the caller retains ownership) and only read locally
-            let borrowed = mults.get(i) != Some(&ast::Mult::One);
-            if borrowed && !occurs_nonborrow(pname, &f.body) && !view_params(&f.name).contains(&i) {
-                set.insert(i);
-            }
-        }
+        let set: HashSet<usize> = (0..f.params.len())
+            .filter(|&i| {
+                mults.get(i) != Some(&ast::Mult::One) && !view_params(&f.name).contains(&i)
+            })
+            .collect();
         if !set.is_empty() {
-            out.insert(f.name.clone(), set);
+            ba.insert(f.name.clone(), set);
         }
     }
-    out
+    loop {
+        let mut changed = false;
+        for f in fns {
+            let Some(idxs) = ba.get(&f.name).cloned() else {
+                continue;
+            };
+            let keep: HashSet<usize> = idxs
+                .iter()
+                .copied()
+                .filter(|&i| !body_moves(&f.params[i], &f.body, &ba))
+                .collect();
+            if keep.len() != idxs.len() {
+                changed = true;
+                if keep.is_empty() {
+                    ba.remove(&f.name);
+                } else {
+                    ba.insert(f.name.clone(), keep);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    ba
+}
+
+/// `true` if `v` appears in a MOVE or ALIAS position anywhere in `t`, under the
+/// current borrow assumptions `ba`. Mirrors [`occurs_nonborrow`] (so it inherits
+/// the copy-vs-inplace `UpdateRecord` distinction, etc.) but with two refinements
+/// the fixpoint needs: a `CallDirect` arg at a currently-borrowed position is a
+/// READ, not a move (lets a self-recursive borrow converge); and `axion_array_get`
+/// /`_len` BORROW their array (arg 0) — a read-only traversal does not consume it.
+fn body_moves(v: &str, t: &Term, ba: &BorrowArgs) -> bool {
+    match t {
+        Term::Let(_, rhs, _, body) => rhs_moves(v, rhs, ba) || body_moves(v, body, ba),
+        Term::Drop(_, _, _, _, body) => body_moves(v, body, ba),
+        Term::Ret(rhs, _) => rhs_moves(v, rhs, ba),
+    }
+}
+
+fn rhs_moves(v: &str, rhs: &Rhs, ba: &BorrowArgs) -> bool {
+    match rhs {
+        Rhs::Op(op) => op_moves(v, op, ba),
+        // `if`/`case` heads are local reads (borrows) → only the branches move.
+        Rhs::If(_, t, e) => body_moves(v, t, ba) || body_moves(v, e, ba),
+        Rhs::Case(_, arms) => arms.iter().any(|(_, b)| body_moves(v, b, ba)),
+    }
+}
+
+fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
+    match op {
+        // ba-aware: an arg at a borrowed position is a read, not a move.
+        Op::CallDirect(g, xs, _) => {
+            let bs = ba.get(g);
+            xs.iter()
+                .enumerate()
+                .any(|(i, a)| !bs.is_some_and(|s| s.contains(&i)) && atom_is(v, a))
+        }
+        // read-only array access borrows the array (arg 0); the rest are inert Ints.
+        Op::RtCall { func, args, .. } if func == "axion_array_get" || func == "axion_array_len" => {
+            args.iter()
+                .enumerate()
+                .any(|(i, a)| i != 0 && atom_is(v, a))
+        }
+        // --- the rest mirrors `occurs_nonborrow`'s `op_nonborrow` exactly ---
+        Op::Field { .. }
+        | Op::FuncAddr(_)
+        | Op::LoadRaw(..)
+        | Op::ArrayNew { .. }
+        | Op::Unsupported(_) => false,
+        Op::Atom(a)
+        | Op::IntToFloat(a)
+        | Op::FloatToInt(a)
+        | Op::FloatUnary(_, a)
+        | Op::PutStrLn(a)
+        | Op::PutStr(a)
+        | Op::ShowInt(a)
+        | Op::ArenaAlloc(a)
+        | Op::ArenaMark(a)
+        | Op::ArenaRelease(a) => atom_is(v, a),
+        Op::StoreRaw(a, _, b) | Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::Promote(a, b) => {
+            atom_is(v, a) || atom_is(v, b)
+        }
+        Op::CallClosure(_, xs)
+        | Op::MakeTuple(xs)
+        | Op::MakeCon { args: xs, .. }
+        | Op::RtCall { args: xs, .. }
+        | Op::Ffi { args: xs, .. }
+        | Op::MakeClosure { captures: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
+        Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(v, a)),
+        Op::UpdateRecord {
+            base,
+            fields,
+            inplace,
+        } => (*inplace && atom_is(v, base)) || fields.iter().any(|(_, a)| atom_is(v, a)),
+        Op::WithArena { parent, clos } => parent.iter().any(|a| atom_is(v, a)) || atom_is(v, clos),
+    }
 }
 
 /// Use of an atom, if it is a **free** droppable variable (not bound by a

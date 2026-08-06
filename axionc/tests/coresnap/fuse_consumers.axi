@@ -89,10 +89,15 @@ concat xs  =
     Cons y ys ->
     Cons y ys ->
     Cons z zs ->
+  drop fuse$0_clo
+  drop fuse$2_clo
+  drop fuse$3_clo
 drop n xs  =
+  drop _t0
   drop _t0
       drop _t0 : List
   drop _t0 : List
+  drop _t2
 either f g e  =
 elem x xs  =
           else
@@ -151,10 +156,11 @@ le$Int x y  =
     Left x ->
 length xs  =
   let a = call rangeFusedSum 1 11 0  ; Δ{}
-  let c = call rangeFused 1 11 fuse$0_clo 0  ; Δ{fuse$0_clo} · moves{fuse$0_clo}
+  let c = call rangeFused 1 11 fuse$0_clo 0  ; Δ{fuse$0_clo}
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
+  let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
@@ -172,7 +178,7 @@ length xs  =
   let fuse$0_clo = closure fuse$0  ; Δ{} · makes heap
   let fuse$2_clo = closure fuse$2  ; Δ{} · makes heap
   let fuse$3_clo = closure fuse$3  ; Δ{} · makes heap
-  let g = call rangeFused 1 6 _t2 1  ; Δ{_t2} · moves{_t2}
+  let g = call rangeFused 1 6 _t2 1  ; Δ{_t2}
   let h = if _t5 then
   let i = if _t7 then
       let _t0 = call append zs ys  ; Δ{} · makes List
@@ -230,9 +236,9 @@ length xs  =
       let _t2 = if _t0 then
           let _t3 = callclo p y  ; Δ{}
             let _t4 = con Cons y l  ; Δ{}
-  let _t5 = call rangeFused 1 0 fuse$2_clo 1  ; Δ{fuse$2_clo} · moves{fuse$2_clo}
+  let _t5 = call rangeFused 1 0 fuse$2_clo 1  ; Δ{fuse$2_clo}
             let _t5 = con Cons y r  ; Δ{}
-  let _t7 = call rangeFused 1 1 fuse$3_clo 1  ; Δ{fuse$3_clo} · moves{fuse$3_clo}
+  let _t7 = call rangeFused 1 1 fuse$3_clo 1  ; Δ{fuse$3_clo}
   let _t8 = + a c  ; Δ{}
   let _t9 = + _t8 g  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -338,7 +344,6 @@ range lo hi  =
           ret call mapM_ f ys  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
-  ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
   ret case e of
@@ -399,6 +404,7 @@ range lo hi  =
       ret con Nothing  ; Δ{}
   ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}

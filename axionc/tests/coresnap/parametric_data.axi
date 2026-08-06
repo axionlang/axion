@@ -88,8 +88,11 @@ concat xs  =
     Cons z zs ->
 drop n xs  =
   drop _t0
+  drop _t0
       drop _t0 : List
   drop _t0 : List
+  drop _t0 : Maybe$Int
+  drop _t2 : Maybe$Int
 either f g e  =
 elem x xs  =
           else
@@ -144,6 +147,7 @@ length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
+  let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
   let _dd0 = band _p 1  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -194,7 +198,7 @@ length xs  =
   let _t0 = < x y  ; Δ{}
   let _t0 = <. x y  ; Δ{}
         let _t1 = call filter p ys  ; Δ{} · makes List
-  let _t1 = call fromMaybe 0 _t0  ; Δ{_t0} · moves{_t0}
+  let _t1 = call fromMaybe 0 _t0  ; Δ{_t0}
         let _t1 = call intersperse sep ys  ; Δ{} · makes List
       let _t1 = call map f ys  ; Δ{} · makes List
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
@@ -216,7 +220,7 @@ length xs  =
   let _t2 = con Nothing  ; Δ{} · makes Maybe$Int
       let _t2 = if _t0 then
           let _t3 = callclo p y  ; Δ{}
-  let _t3 = call fromMaybe 7 _t2  ; Δ{_t2} · moves{_t2}
+  let _t3 = call fromMaybe 7 _t2  ; Δ{_t2}
             let _t4 = con Cons y l  ; Δ{}
             let _t5 = con Cons y r  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -318,7 +322,6 @@ range lo hi  =
           ret call mapM_ f ys  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
-  ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
   ret case e of
@@ -379,6 +382,7 @@ range lo hi  =
       ret con Nothing  ; Δ{}
   ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}

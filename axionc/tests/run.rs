@@ -1154,6 +1154,32 @@ fn array_sum_runs_natively() {
 }
 
 #[test]
+fn array_threaded_through_helpers_reclaims_once() {
+    // An Array threaded through helper functions: `fill` owns+returns it, `sumArr`
+    // BORROWS it (recursive read-only getArray loop). The fixpoint borrow analysis
+    // + uniquify (let-shadowing) + single-var-case collapse (imperative-do) make it
+    // reclaim exactly once — no double-free, no leak (ASan/LSan-gated separately).
+    // Both the `let`-shadowing and `imperative do` forms must give 4950 on both
+    // native backends.
+    for fx in ["array_thread_let.axi", "array_thread_do.axi"] {
+        for backend in [["--backend", "cranelift"], ["--release", ""]] {
+            let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+            let out = axionc().args(&args).arg(fixture(fx)).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{fx} {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "4950\n",
+                "{fx} {args:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn linear_buffer_inplace_runs_natively() {
     // %1 Buffer + in-place XOR (§5): the linear thread runs; encrypt consumes+returns.
     let out = axionc()

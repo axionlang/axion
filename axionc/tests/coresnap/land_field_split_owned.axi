@@ -92,6 +92,7 @@ concat xs  =
 drop n xs  =
       drop p : P skip{0 1}
   drop _t0
+  drop _t0
       drop _t0 : List
   drop _t0 : List
 either f g e  =
@@ -147,6 +148,7 @@ length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
+  let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _d1000000 = field v a  ; Δ{a}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -322,7 +324,6 @@ range lo hi  =
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret call sumA _t2  ; Δ{_t2} · moves{_t2}
-  ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
   ret case e of
@@ -385,6 +386,7 @@ range lo hi  =
       ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}

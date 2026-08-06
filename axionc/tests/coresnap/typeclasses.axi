@@ -92,9 +92,12 @@ concat xs  =
 count$Int x xs  =
 drop n xs  =
   drop _t0
+  drop _t0
       drop _t0 : List
   drop _t0 : List
   drop _t10 : Shape
+  drop _t13 : Shape
+  drop _t14 : Shape
   drop _t5 : List$Int
   drop _t7 : Shape
 either f g e  =
@@ -153,6 +156,7 @@ length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
+  let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
@@ -206,7 +210,7 @@ length xs  =
   let _t12 = + _t9 _t11  ; Δ{}
   let _t13 = con Circle 12  ; Δ{} · makes Shape
   let _t14 = con Rect 3 4  ; Δ{_t13} · makes Shape
-  let _t15 = call eq$Shape _t13 _t14  ; Δ{_t13 _t14} · moves{_t13 _t14}
+  let _t15 = call eq$Shape _t13 _t14  ; Δ{_t13 _t14}
   let _t16 = if _t15 then
         let _t1 = call count$Int x ys  ; Δ{}
         let _t1 = call filter p ys  ; Δ{} · makes List
@@ -345,7 +349,6 @@ range lo hi  =
           ret call mapM_ f ys  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
-  ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
   ret case e of
@@ -408,6 +411,7 @@ range lo hi  =
       ret con Nothing  ; Δ{}
   ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}

@@ -97,12 +97,13 @@ limitation shared with `Buffer` operations.
 ## Limitations
 
 - **No loop support in the imperative block.** Each operation is a fixed point
-  in the state machine — there is no `while` or `for`. Large arrays are meant to be
-  filled/read via recursive helper functions, but **this does not compile natively
-  today**: a helper typed `Array Int -> … -> Array Int` makes `main` non-native on
-  both backends ("`main` must be a native function"). So arrays are currently limited
-  to small, inline-only use in a single `imperative` block (see
-  `validation-report.md` F-3).
+  in the state machine — there is no `while` or `for`. Large arrays are filled/read
+  via **recursive helper functions** (monomorphic signatures, e.g. `fill :: Array Int
+  -> Int -> Int -> Array Int` that threads the array, `sumArr :: Array Int -> …` that
+  reads it): these compile and run natively, and the array is reclaimed exactly once
+  (fixpoint borrow analysis + uniquify + single-var-case collapse — see
+  `validation-report.md` F-3). Both the `let`-shadowing form and the `imperative do`
+  form work; `bench/array_loop.axi` fills+sums 50 M elements.
 - **Bounds are checked at runtime → abort.** `getArray`/`setArray` validate the index
   and **`abort()`** with `array bounds — index N out of range [0, len)` on OOB
   (`axion_rt.c`) — a clean abort, not memory corruption or a silent 0/no-op. No

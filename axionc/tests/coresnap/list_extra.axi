@@ -92,14 +92,19 @@ concat xs  =
     Cons z zs ->
 drop n xs  =
   drop _t0
+  drop _t0
       drop _t0 : List
   drop _t0 : List
   drop _t18 : List$List$Int
   drop _t19 : List
+  drop _t22
   drop _t26 : List$Int
   drop _t2 : List$Int
   drop _t31 : List$Int
   drop _t32 : List
+  drop _t35
+  drop _t38 : List$Int
+  drop _t41 : List$Int
   drop _t42 : List
   drop _t43 : List
   drop _t5 : List$Int
@@ -161,6 +166,7 @@ length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
+  let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -260,7 +266,7 @@ length xs  =
       let _t2 = if _t0 then
   let _t30 = con Cons 20 _t29  ; Δ{_t22 _t26 _t29} · moves{_t29} · makes List$Int
   let _t31 = con Cons 10 _t30  ; Δ{_t22 _t26 _t30} · moves{_t30} · makes List$Int
-  let _t32 = call zipWith _t22 _t26 _t31  ; Δ{_t22 _t26 _t31} · moves{_t22} · makes List
+  let _t32 = call zipWith _t22 _t26 _t31  ; Δ{_t22 _t26 _t31} · makes List
   let _t33 = call sum _t32  ; Δ{_t32}
   let _t34 = + _t21 _t33  ; Δ{}
   let _t35 = closure lam$3  ; Δ{} · makes heap
@@ -272,8 +278,8 @@ length xs  =
   let _t3 = con Nil  ; Δ{_t2} · makes List$Int
   let _t40 = con Cons 6 _t39  ; Δ{_t35 _t38 _t39} · moves{_t39} · makes List$Int
   let _t41 = con Cons 5 _t40  ; Δ{_t35 _t38 _t40} · moves{_t40} · makes List$Int
-  let _t42 = call zip _t38 _t41  ; Δ{_t35 _t38 _t41} · moves{_t38 _t41} · makes List
-  let _t43 = call map _t35 _t42  ; Δ{_t35 _t42} · moves{_t35} · makes List
+  let _t42 = call zip _t38 _t41  ; Δ{_t35 _t38 _t41} · makes List
+  let _t43 = call map _t35 _t42  ; Δ{_t35 _t42} · makes List
   let _t44 = call sum _t43  ; Δ{_t43}
   let _t4 = con Cons 4 _t3  ; Δ{_t2 _t3} · moves{_t3} · makes List$Int
             let _t4 = con Cons y l  ; Δ{}
@@ -387,7 +393,6 @@ range lo hi  =
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret call snd eta$1  ; Δ{}
-  ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
   ret case e of
@@ -449,6 +454,7 @@ range lo hi  =
       ret con Nothing  ; Δ{}
   ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}

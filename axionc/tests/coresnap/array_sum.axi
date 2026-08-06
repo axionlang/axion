@@ -50,12 +50,6 @@
 
 
         _ ->
-    a ->
-        a$1 ->
-            a$2 ->
-                a$3 ->
-                    a$4 ->
-                        a$5 ->
 all p xs  =
 any p xs  =
 append xs ys  =
@@ -92,7 +86,7 @@ concat xs  =
     Cons z zs ->
 drop n xs  =
   drop _t0
-                          drop _t0 : Array
+  drop _t0
       drop _t0 : List
   drop _t0 : List
 either f g e  =
@@ -148,6 +142,7 @@ length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
+  let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
@@ -194,11 +189,11 @@ length xs  =
       let _t0 = == x y  ; Δ{}
   let _t0 = < x y  ; Δ{}
   let _t0 = <. x y  ; Δ{}
-                          let _t10 = + _t8 _t9  ; Δ{_t0}
-                          let _t11 = rtcall axion_array_get a$5 3  ; Δ{_t0}
-                          let _t12 = + _t10 _t11  ; Δ{_t0}
-                          let _t13 = rtcall axion_array_get a$5 4  ; Δ{_t0}
-  let _t14 = case _t0 of
+  let _t10 = + _t8 _t9  ; Δ{}
+  let _t11 = rtcall axion_array_get _t5 3  ; Δ{}
+  let _t12 = + _t10 _t11  ; Δ{}
+  let _t13 = rtcall axion_array_get _t5 4  ; Δ{}
+  let _t14 = + _t12 _t13  ; Δ{}
         let _t1 = call filter p ys  ; Δ{} · makes List
         let _t1 = call intersperse sep ys  ; Δ{} · makes List
       let _t1 = call map f ys  ; Δ{} · makes List
@@ -210,7 +205,7 @@ length xs  =
     let _t1 = + lo 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
         let _t1 = - n 1  ; Δ{}
-      let _t1 = rtcall axion_array_set a 0 10  ; Δ{_t0}
+  let _t1 = rtcall axion_array_set _t0 0 10  ; Δ{_t0} · moves{_t0} · makes Array
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{}
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{}
     let _t2 = + acc lo  ; Δ{}
@@ -220,17 +215,17 @@ length xs  =
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
       let _t2 = if _t0 then
-          let _t2 = rtcall axion_array_set a$1 1 20  ; Δ{_t0}
+  let _t2 = rtcall axion_array_set _t1 1 20  ; Δ{_t1} · moves{_t1} · makes Array
           let _t3 = callclo p y  ; Δ{}
-              let _t3 = rtcall axion_array_set a$2 2 30  ; Δ{_t0}
+  let _t3 = rtcall axion_array_set _t2 2 30  ; Δ{_t2} · moves{_t2} · makes Array
             let _t4 = con Cons y l  ; Δ{}
-                  let _t4 = rtcall axion_array_set a$3 3 40  ; Δ{_t0}
+  let _t4 = rtcall axion_array_set _t3 3 40  ; Δ{_t3} · moves{_t3} · makes Array
             let _t5 = con Cons y r  ; Δ{}
-                      let _t5 = rtcall axion_array_set a$4 4 50  ; Δ{_t0}
-                          let _t6 = rtcall axion_array_get a$5 0  ; Δ{_t0}
-                          let _t7 = rtcall axion_array_get a$5 1  ; Δ{_t0}
-                          let _t8 = + _t6 _t7  ; Δ{_t0}
-                          let _t9 = rtcall axion_array_get a$5 2  ; Δ{_t0}
+  let _t5 = rtcall axion_array_set _t4 4 50  ; Δ{_t4} · moves{_t4} · makes Array
+  let _t6 = rtcall axion_array_get _t5 0  ; Δ{_t5} · moves{_t5}
+  let _t7 = rtcall axion_array_get _t5 1  ; Δ{}
+  let _t8 = + _t6 _t7  ; Δ{}
+  let _t9 = rtcall axion_array_get _t5 2  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
         (l, r) ->
@@ -326,7 +321,6 @@ range lo hi  =
           ret call mapM_ f ys  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
-  ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
   ret case e of
@@ -335,12 +329,7 @@ range lo hi  =
   ret case m of
       ret case ss of
       ret case _t0 of
-      ret case _t1 of
-          ret case _t2 of
       ret case _t2 of
-              ret case _t3 of
-                  ret case _t4 of
-                      ret case _t5 of
   ret case xs of
   ret case xs of
   ret case xs of
@@ -393,6 +382,7 @@ range lo hi  =
   ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}
   ret if b then
@@ -420,7 +410,6 @@ range lo hi  =
       ret rtcall axion_strcat s _t1  ; Δ{}
   ret showInt x  ; Δ{}
           ret s  ; Δ{}
-                          ret + _t12 _t13  ; Δ{}
   ret _t14  ; Δ{}
     ret "true"  ; Δ{}
   ret tuple a b  ; Δ{} · makes heap
@@ -509,9 +498,3 @@ zip xs ys  =
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  ; Δ{_t0}
-  ; Δ{_t0}
-  ; Δ{_t0}
-  ; Δ{_t0}
-  ; Δ{_t0}
-  ; Δ{_t0}

@@ -49,10 +49,10 @@
 
 
 
-                        _ ->
-                    _ ->
-                _ ->
+            _ ->
         _ ->
+        _ ->
+    _ ->
 all p xs  =
 any p xs  =
 append xs ys  =
@@ -60,7 +60,6 @@ axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List _p  =
 catMaybes xs  =
-        client ->
 compose f g x  =
 concat xs  =
     Cons a as_ ->
@@ -89,6 +88,7 @@ concat xs  =
     Cons y ys ->
     Cons z zs ->
 drop n xs  =
+  drop _t0
   drop _t0
       drop _t0 : List
   drop _t0 : List
@@ -145,6 +145,7 @@ length xs  =
       let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List
   let _d1000000 = call concat _t0  ; Δ{_t0} · makes List
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
+  let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
@@ -197,7 +198,7 @@ length xs  =
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
       let _t1 = con Nil  ; Δ{}
       let _t1 = con Nil  ; Δ{_t0}
-      let _t1 = ffi ax_net_accept sock  ; Δ{}
+  let _t1 = ffi ax_net_accept _t0  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
@@ -211,14 +212,14 @@ length xs  =
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0}
-          let _t2 = ffi ax_net_recv client  ; Δ{}
+  let _t2 = ffi ax_net_recv _t1  ; Δ{}
       let _t2 = if _t0 then
           let _t3 = callclo p y  ; Δ{}
-              let _t3 = ffi ax_net_send client msg  ; Δ{}
+  let _t3 = ffi ax_net_send _t1 _t2  ; Δ{}
             let _t4 = con Cons y l  ; Δ{}
-                  let _t4 = ffi ax_net_close client  ; Δ{}
+      let _t4 = ffi ax_net_close _t1  ; Δ{}
             let _t5 = con Cons y r  ; Δ{}
-                      let _t5 = ffi ax_net_close sock  ; Δ{}
+          let _t5 = ffi ax_net_close _t0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
         (l, r) ->
@@ -226,7 +227,6 @@ main  =
 map f xs  =
 mapM_ f xs  =
 maybe d f m  =
-            msg ->
         Nil ->
         Nil ->
     Nil ->
@@ -315,7 +315,6 @@ range lo hi  =
           ret call mapM_ f ys  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
-  ret call zipWith _t0 xs ys  ; Δ{_t0} · moves{_t0} · makes List
   ret case e of
   ret case e of
   ret case e of
@@ -324,13 +323,10 @@ range lo hi  =
   ret case m of
       ret case ss of
       ret case _t0 of
-  ret case _t0 of
-      ret case _t1 of
-          ret case _t2 of
       ret case _t2 of
-              ret case _t3 of
-                  ret case _t4 of
-                      ret case _t5 of
+  ret case _t3 of
+      ret case _t4 of
+          ret case _t5 of
   ret case xs of
   ret case xs of
   ret case xs of
@@ -383,6 +379,7 @@ range lo hi  =
   ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret d  ; Δ{}
     ret "false"  ; Δ{}
   ret if b then
@@ -403,7 +400,7 @@ range lo hi  =
   ret if x then
     ret if y then
     ret n  ; Δ{}
-                          ret putStrLn "echoed and closed"  ; Δ{}
+              ret putStrLn "echoed and closed"  ; Δ{}
       ret putStr ""  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_show_float x  ; Δ{}
@@ -436,16 +433,12 @@ reverse xs  =
 show$Bool x  =
 show$Float x  =
 show$Int x  =
-    sock ->
 sum xs  =
 take n xs  =
 unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
-  ; Δ{}
-  ; Δ{}
-  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

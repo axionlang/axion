@@ -80,63 +80,47 @@ type `a` is **phantom** (no operation moves a value of type `a` in or out). So:
 aborts, Array is memory-safe (Int-only, bounds-checked, flat free; `array_sum.axi`
 ASan-clean). The gap is accuracy + dead code, not a hole.
 
-### F-3 — Array can't express large arrays natively (feature gap; root cause found)
-`imperative do` has no loops, and a recursive helper over `Array Int` (e.g. `fill ::
-Array Int -> Int -> Int -> Array Int`) makes `main` **non-native** on both backends.
-`bench/array_loop.axi` had wrong `Int` signatures (didn't type-check) and is orphaned
-from `bench.sh`; signatures corrected to `Array Int` here (now type-checks) but it
-still cannot run natively.
+### F-3 — Array threaded through helpers — FIXED (staged)
+An `Array` threaded through helper functions (`fill :: Array Int -> … -> Array Int`
+that fills it, `sumArr` that reads it in a recursive loop) now compiles and reclaims
+the array **exactly once**, so large arrays are usable natively. `bench/array_loop.axi`
+(50 M, `let` form) runs on both backends → `1249999975000000`. Delivered in two staged,
+fully-gated commits:
 
-**Root cause (diagnosed, three layers):**
-1. `native_ty` (core.rs) omitted `Array` from the native head-constructor whitelist,
-   so any signature mentioning `Array` fails `top_candidate` → interp-only → `main`
-   non-native. (One-liner.)
-2. `fn_ret_ty`/`op_delta_effect.produces` only tracks `boxed` (user `data`) results,
-   so an `Array`-returning function isn't recognized as producing an owned array →
-   the returned array is never reclaimed. (Small addition.)
-3. **The blocker:** `compute_borrow_args` classifies a param as a pure borrow only if
-   it never occurs in a non-borrow position, but a read-only recursive traversal
-   (`sumArr a … sumArr a …`) passes the array to its **own recursive call**, which
-   `occurs_nonborrow` counts as a move (it cannot yet know the recursive param is
-   itself a borrow). So the array is neither borrowed-and-dropped-by-caller nor
-   owned-and-dropped-by-callee → **it leaks** (`let` form) or **double-frees** (the
-   `imperative do` → nested-`case` form, where the case-var alias also drops the
-   moved-in scrutinee). Verified under ASan/LSan.
+**Stage 1 — the uniquify pass** (the prerequisite). Core violated the unique-binding
+invariant (`let a …; let a …` and the `imperative do` `a <- …; a <- …` desugaring both
+keep the name `a`), and the string-keyed `droppable_vars`/escape analyses conflated the
+successive bindings — freeing the wrong one. A shadow-only alpha-rename pass right after
+lowering makes every binding distinct (`a → a$N`). Pure renaming, behavior-preserving;
+also a general latent-correctness fix.
 
-**Prototype (attempted, reverted, validated).** A full prototype was built and
-measured against the gates:
-- layer 1 (`native_ty += Array`), layer 2 (`fn_ret_ty += Array`),
-- an array read-op **borrow spec** in `op_delta_effect` (`axion_array_get`/`_len`
-  borrow the array; `axion_array_set` consumes it and *produces* the returned handle),
-- a **greatest-fixpoint** `compute_borrow_args` (start every `%1`-free param borrowed,
-  remove any with a move/alias use under the current assumptions, via a `ba`-aware
-  `body_moves` reading `op_delta_effect` — so a self-recursive borrow converges).
+**Stage 2 — the borrow model + case collapse.** Three pieces:
+1. `native_ty += Array`, `fn_ret_ty += Array` (an `Array`-returning function produces an
+   owned array); `axion_array_set` also *produces* the in-place-returned handle
+   (`op_delta_effect`), so a threaded array is tracked to its final binding.
+2. A **greatest-fixpoint** `compute_borrow_args`: start every `%1`-free param borrowed,
+   drop any with a genuine move/alias use under the current assumptions (a dedicated
+   `body_moves` that mirrors `occurs_nonborrow` — keeping copy-`UpdateRecord` = borrow,
+   so `update_borrow` stays green — but is `ba`-aware for `CallDirect` and treats
+   `axion_array_get`/`_len` as borrowing the array). A read-only recursive traversal
+   converges to *borrowed*, so its caller keeps ownership and frees it once.
+3. A **single-var `case` collapse**: the `imperative do` `a <- e` desugars to `case e of
+   a -> …` (Axion's `let` is recursive, so `let` can't be used); the arm var aliases the
+   scrutinee, which the reclamation mishandled. In Core the scrutinee is already forced,
+   so a single Var-pattern case is a pure rebinding — collapsed to a substitution
+   `a := e`, making the imperative-do form lower identically to the `let` form.
 
-With this, a **distinct-name** program (`let a0 = newArray …; let a1 = fill a0 …;
-sumArr a1 …`) is fully correct: the array is dropped exactly once after `sumArr`,
-**ASan/LSan clean**, `array_loop` (50 M) returns `1249999975000000`. So the borrow
-model is right.
+**Validation:** all forms (`let`-shadowing, `imperative do`, inline `array_sum`, helper
+threading) are **ASan/LSan clean** and agree on both native backends; the two new
+fixtures `array_thread_{let,do}.axi` are in the leak-free gate. Full suite green: 157
+tests, sanitize 47/39, tsan 8/8, differential 3/3, check-delta 118, oracle 147/147
+(regenerated — the collapse simplifies single-var cases and the fixpoint sharpens some
+borrow verdicts, both behavior-preserving), bench (all kernels agree, perf unchanged),
+clippy/fmt.
 
-But it **regressed two existing gates** and was reverted:
-- **`array_sum` corrupts** — the *inline* idiom `a <- setArray a …` **shadows** `a`;
-  the string-keyed droppable analysis conflates the successive `a` bindings, and
-  `setArray`-produces then double-frees.
-- **`update_borrow` leaks** — the broader (cross-function, greatest-fixpoint) borrow
-  classification changed an existing verdict.
-
-**Real prerequisite found: variable-shadowing.** The blocker is not only the fixpoint
-— it is that Core violates the unique-binding invariant (`let a …; let a …` and the
-`imperative do` `a <- …; a <- …` desugaring both keep the name `a`), and the
-string-keyed `droppable_vars`/escape analysis conflates them. The correct sequencing is:
-1. a **uniquify pass** right after lowering (alpha-rename every binding to a fresh name
-   so Core is unique) — a general correctness fix, not Array-specific;
-2. **then** the borrow-spec + fixpoint (re-validated so `update_borrow`/`array_sum`
-   stay green), and Array-threading fixtures added to the gate.
-
-This is memory-safety-critical (a wrong "borrowed" verdict is a double-free; a wrong
-uniquify is a miscompile), so it is a **dedicated, staged effort** — uniquify first,
-each stage gated by the full ASan/LSan/differential suite. The compiler currently
-stays sound (Array inline-only).
+*(The interpreter still doesn't run `imperative`/`Array` — native-only by design,
+shared with `Buffer`; and it stack-overflows on a self-referential shadowed `let`,
+a pre-existing interp bug orthogonal to this work.)*
 
 ### F-4 — Executor coverage (by design, worth stating)
 `Array` / `Buffer` / `imperative` and bench-scale fused loops **do not run in the

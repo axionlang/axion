@@ -178,8 +178,11 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             // marks them as escaped, so the caller never frees them — a
             // resource passed here dies here (`axion_free` is the runtime free)
             e.moves.extend(args.iter());
-            // axion_array_new produces an Array resource that needs auto-drop
-            if func == "axion_array_new" {
+            // `axion_array_new` allocates, and `axion_array_set` CONSUMES the old
+            // array (arg 0, already moved above) and returns a new owned handle
+            // (same pointer, in-place) — both produce an Array the caller reclaims,
+            // so a threaded array is dropped exactly once at its final binding.
+            if func == "axion_array_new" || func == "axion_array_set" {
                 e.produces = Some(Res {
                     key: Some("Array".into()),
                     parent: None,
