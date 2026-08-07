@@ -974,6 +974,10 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "sqrt",
         "floor",
         "abs",
+        "fromInt",
+        "showInteger",
+        "divInteger",
+        "modInteger",
     ] {
         g.insert(b.to_string());
     }
@@ -1748,10 +1752,14 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         "sqrt",
         "floor",
         "abs",
+        "fromInt",
+        "showInteger",
     ] {
         arity.entry(b.into()).or_insert(1);
     }
-    arity.entry("strAppend".into()).or_insert(2);
+    for b in ["strAppend", "divInteger", "modInteger"] {
+        arity.entry(b.into()).or_insert(2);
+    }
     let mut e = Eta { arity, counter: 0 };
     let funcs = module.funcs.iter().map(|f| e.func(f)).collect();
     ast::Module {

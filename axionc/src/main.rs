@@ -750,6 +750,8 @@ instance Show Int where
   show x = showInt x
 instance Show Float where
   show x = showFloat x
+instance Show Integer where
+  show x = showInteger x
 instance Show Bool where
   show x = if x then \"true\" else \"false\"
 instance Eq Int where

@@ -91,6 +91,29 @@ fn integer_bignum_factorial_is_exact() {
 }
 
 #[test]
+fn integer_is_first_class() {
+    // Integration: `Integer` builtins as VALUES (`map fromInt`), a `List Integer`
+    // through `map`/`foldr`, and the `Show Integer` instance (`show`, not the raw
+    // `showInteger`). Sum of squares 1..10 = 385, on all three executors.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("integer_first_class.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "Integer first-class should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "385\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn parmap_workers_compute_integer() {
     // Integration: session workers doing arbitrary-precision compute (`Integer`,
     // via the `fromInt` builtin) inside the native session state machine, collected
