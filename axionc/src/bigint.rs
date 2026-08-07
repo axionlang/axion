@@ -129,6 +129,76 @@ impl BigInt {
             (true, true) => Self::cmp_mag(&o.mag, &self.mag),
         }
     }
+
+    /// Truncated division: `(quotient toward zero, remainder with the dividend's
+    /// sign)` — matches Rust/C `/` and `%` (so interp and native agree). `None` if
+    /// the divisor is zero. Long division base 1e9, each quotient digit found by
+    /// binary search (≤30 multiply-compares); O(n·m·30).
+    pub fn divmod(&self, o: &BigInt) -> Option<(BigInt, BigInt)> {
+        use std::cmp::Ordering::{Greater, Less};
+        if o.is_zero() {
+            return None;
+        }
+        if Self::cmp_mag(&self.mag, &o.mag) == Less {
+            return Some((BigInt { neg: false, mag: Vec::new() }, self.clone()));
+        }
+        let babs = BigInt { neg: false, mag: o.mag.clone() };
+        let base = BigInt::from_i64(BASE as i64);
+        let mut q = vec![0u32; self.mag.len()];
+        let mut r = BigInt { neg: false, mag: Vec::new() };
+        for i in (0..self.mag.len()).rev() {
+            // bring down the next digit: r = r * BASE + self.mag[i]
+            r = r.mul(&base).add(&BigInt::from_i64(i64::from(self.mag[i])));
+            // largest digit d with babs*d <= r
+            let (mut lo, mut hi, mut d) = (0i64, BASE as i64 - 1, 0i64);
+            while lo <= hi {
+                let mid = lo + (hi - lo) / 2;
+                if babs.mul(&BigInt::from_i64(mid)).cmp(&r) != Greater {
+                    d = mid;
+                    lo = mid + 1;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            q[i] = d as u32;
+            r = r.sub(&babs.mul(&BigInt::from_i64(d)));
+        }
+        let quo = BigInt { neg: self.neg != o.neg, mag: q }.norm();
+        let rem = BigInt { neg: self.neg, mag: r.mag }.norm();
+        Some((quo, rem))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BigInt;
+    fn b(n: i64) -> BigInt {
+        BigInt::from_i64(n)
+    }
+    fn s(x: &BigInt) -> String {
+        x.to_string()
+    }
+    #[test]
+    fn arithmetic_and_divmod() {
+        assert_eq!(s(&b(1_000_000_000).mul(&b(1_000_000_000))), "1000000000000000000");
+        assert_eq!(s(&b(7).sub(&b(10))), "-3");
+        // factorial 25 by mul, then divide back down
+        let mut f = b(1);
+        for i in 2..=25 {
+            f = f.mul(&b(i));
+        }
+        assert_eq!(s(&f), "15511210043330985984000000");
+        let (q, r) = f.divmod(&b(24)).unwrap();
+        // 25! / 24 : exact, remainder 0
+        assert_eq!(s(&r), "0");
+        assert_eq!(s(&q.mul(&b(24))), s(&f));
+        // 100 /% 7 = (14, 2); truncation toward zero for negatives
+        let (q, r) = b(100).divmod(&b(7)).unwrap();
+        assert_eq!((s(&q), s(&r)), ("14".into(), "2".into()));
+        let (q, r) = b(-100).divmod(&b(7)).unwrap();
+        assert_eq!((s(&q), s(&r)), ("-14".into(), "-2".into()));
+        assert!(b(5).divmod(&b(0)).is_none());
+    }
 }
 
 impl std::fmt::Display for BigInt {

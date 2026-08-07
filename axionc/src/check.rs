@@ -1163,6 +1163,8 @@ fn builtins() -> HashSet<String> {
         // arbitrary-precision Integer (§ Listing 1.4)
         "fromInt",
         "showInteger",
+        "divInteger",
+        "modInteger",
     ]
     .iter()
     .map(|s| s.to_string())

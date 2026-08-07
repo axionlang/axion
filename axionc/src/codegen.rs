@@ -92,6 +92,24 @@ extern "C" fn axion_bignum_sub(a: i64, b: i64) -> i64 {
 extern "C" fn axion_bignum_mul(a: i64, b: i64) -> i64 {
     bignum_box(bignum(a).mul(bignum(b)))
 }
+extern "C" fn axion_bignum_div(a: i64, b: i64) -> i64 {
+    match bignum(a).divmod(bignum(b)) {
+        Some((q, _)) => bignum_box(q),
+        None => {
+            eprintln!("Integer: divide by zero");
+            std::process::exit(1);
+        }
+    }
+}
+extern "C" fn axion_bignum_mod(a: i64, b: i64) -> i64 {
+    match bignum(a).divmod(bignum(b)) {
+        Some((_, r)) => bignum_box(r),
+        None => {
+            eprintln!("Integer: divide by zero");
+            std::process::exit(1);
+        }
+    }
+}
 extern "C" fn axion_bignum_eq(a: i64, b: i64) -> i64 {
     i64::from(bignum(a).cmp(bignum(b)) == std::cmp::Ordering::Equal)
 }
@@ -992,6 +1010,8 @@ impl Cg {
         builder.symbol("axion_bignum_add", axion_bignum_add as *const u8);
         builder.symbol("axion_bignum_sub", axion_bignum_sub as *const u8);
         builder.symbol("axion_bignum_mul", axion_bignum_mul as *const u8);
+        builder.symbol("axion_bignum_div", axion_bignum_div as *const u8);
+        builder.symbol("axion_bignum_mod", axion_bignum_mod as *const u8);
         builder.symbol("axion_bignum_eq", axion_bignum_eq as *const u8);
         builder.symbol("axion_bignum_lt", axion_bignum_lt as *const u8);
         builder.symbol("axion_bignum_gt", axion_bignum_gt as *const u8);
@@ -1080,6 +1100,8 @@ impl Cg {
             ("axion_bignum_add", 2, true),
             ("axion_bignum_sub", 2, true),
             ("axion_bignum_mul", 2, true),
+            ("axion_bignum_div", 2, true),
+            ("axion_bignum_mod", 2, true),
             ("axion_bignum_eq", 2, true),
             ("axion_bignum_lt", 2, true),
             ("axion_bignum_gt", 2, true),

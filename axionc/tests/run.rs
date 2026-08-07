@@ -91,6 +91,29 @@ fn integer_bignum_factorial_is_exact() {
 }
 
 #[test]
+fn integer_bignum_divmod() {
+    // §Listing 1.4 (Phase 3): arbitrary-precision truncated `divInteger`/`modInteger`.
+    // 10^30 / 7 = 142857142857142857142857142857 rem 1, on all three executors.
+    let expect = "142857142857142857142857142857\n1\n";
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("integer_divmod.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "Integer divmod should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expect, "{backend:?}");
+    }
+}
+
+#[test]
 fn nested_polymorphic_container_deep_drops() {
     // poly-drop Phase 4: a `List (List Int)` (built by `map (range 1) …`) is dropped
     // at its concrete type so the inner lists are reclaimed (was a leak). This pins

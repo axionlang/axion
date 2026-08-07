@@ -1200,6 +1200,12 @@ impl Lower<'_> {
         if name == "showInteger" && args.len() == 1 {
             return self.rtcall("axion_bignum_to_string", &args, true, buf);
         }
+        if name == "divInteger" && args.len() == 2 {
+            return self.rtcall("axion_bignum_div", &args, true, buf);
+        }
+        if name == "modInteger" && args.len() == 2 {
+            return self.rtcall("axion_bignum_mod", &args, true, buf);
+        }
         if name == "strAppend" && args.len() == 2 {
             return self.rtcall("axion_strcat", &args, true, buf);
         }

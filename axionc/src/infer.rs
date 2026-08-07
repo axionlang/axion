@@ -739,6 +739,15 @@ impl<'a> Infer<'a> {
             "showInteger".into(),
             mono(Ty::Fun(Box::new(integer()), Box::new(string()))),
         );
+        // Integer truncated division / remainder :: Integer -> Integer -> Integer.
+        let int_binop = || {
+            mono(Ty::Fun(
+                Box::new(integer()),
+                Box::new(Ty::Fun(Box::new(integer()), Box::new(integer()))),
+            ))
+        };
+        env.insert("divInteger".into(), int_binop());
+        env.insert("modInteger".into(), int_binop());
         // strAppend :: String -> String -> String (native string concatenation)
         env.insert(
             "strAppend".into(),

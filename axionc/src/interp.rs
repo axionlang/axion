@@ -239,7 +239,7 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "join" | "strAppend" => 2,
+        "join" | "strAppend" | "divInteger" | "modInteger" => 2,
         _ => 1,
     }
 }
@@ -453,6 +453,14 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "showInteger" => Ok(Value::Builtin {
             name: "showInteger",
+            args: Vec::new(),
+        }),
+        "divInteger" => Ok(Value::Builtin {
+            name: "divInteger",
+            args: Vec::new(),
+        }),
+        "modInteger" => Ok(Value::Builtin {
+            name: "modInteger",
             args: Vec::new(),
         }),
         "strAppend" => Ok(Value::Builtin {
@@ -970,6 +978,14 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // Integer (§ Listing 1.4): construct from an Int, show, convert back.
         ("fromInt", [Value::Int(n)]) => Ok(Value::Integer(crate::bigint::BigInt::from_i64(*n))),
         ("showInteger", [Value::Integer(n)]) => Ok(Value::Str(n.to_string())),
+        ("divInteger", [Value::Integer(a), Value::Integer(b)]) => a
+            .divmod(b)
+            .map(|(q, _)| Value::Integer(q))
+            .ok_or_else(|| "divInteger: divide by zero".to_string()),
+        ("modInteger", [Value::Integer(a), Value::Integer(b)]) => a
+            .divmod(b)
+            .map(|(_, r)| Value::Integer(r))
+            .ok_or_else(|| "modInteger: divide by zero".to_string()),
         ("strAppend", [Value::Str(x), Value::Str(y)]) => Ok(Value::Str(format!("{x}{y}"))),
         // split divides into a pair of shared-read halves (they share the
         // value); join recombines — trivial semantics in the interpreter.
