@@ -749,6 +749,11 @@ impl<'a> Infer<'a> {
             "fromInt".into(),
             mono(Ty::Fun(Box::new(int()), Box::new(integer()))),
         );
+        // bignumFromStr :: String -> Integer — the desugaring of a literal > i64.
+        env.insert(
+            "bignumFromStr".into(),
+            mono(Ty::Fun(Box::new(string()), Box::new(integer()))),
+        );
         env.insert(
             "showInteger".into(),
             mono(Ty::Fun(Box::new(integer()), Box::new(string()))),

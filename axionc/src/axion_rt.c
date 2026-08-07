@@ -119,6 +119,25 @@ long axion_bignum_from_i64(long n) {
   b->neg = neg && len > 0;
   return (long)b;
 }
+/* parse a decimal string (optional leading '-') → BigNum; the path for an integer
+ * literal that exceeds i64. Mirrors src/bigint.rs::from_str. */
+long axion_bignum_from_str(long sp) {
+  const char *s = (const char *)sp;
+  int neg = 0;
+  if (*s == '-') { neg = 1; s++; }
+  long dlen = (long)strlen(s);
+  BigNum *b = bn_make((dlen + 8) / 9);
+  long li = 0;
+  for (long end = dlen; end > 0; end -= 9) {
+    long start = end - 9;
+    if (start < 0) start = 0;
+    unsigned int limb = 0;
+    for (long i = start; i < end; i++) limb = limb * 10u + (unsigned int)(s[i] - '0');
+    b->limbs[li++] = limb;
+  }
+  b->neg = neg;
+  return (long)bn_norm(b);
+}
 /* compare magnitudes: -1 / 0 / 1 */
 static int bn_cmp_mag(const BigNum *a, const BigNum *b) {
   if (a->len != b->len) return a->len < b->len ? -1 : 1;

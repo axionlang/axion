@@ -451,6 +451,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "fromInt",
             args: Vec::new(),
         }),
+        "bignumFromStr" => Ok(Value::Builtin {
+            name: "bignumFromStr",
+            args: Vec::new(),
+        }),
         "showInteger" => Ok(Value::Builtin {
             name: "showInteger",
             args: Vec::new(),
@@ -991,6 +995,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("showFloat", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
         // Integer (§ Listing 1.4): construct from an Int, show, convert back.
         ("fromInt", [Value::Int(n)]) => Ok(Value::Integer(crate::bigint::BigInt::from_i64(*n))),
+        ("bignumFromStr", [Value::Str(s)]) => Ok(Value::Integer(crate::bigint::BigInt::from_str(s))),
         ("showInteger", [Value::Integer(n)]) => Ok(Value::Str(n.to_string())),
         ("divInteger", [Value::Integer(a), Value::Integer(b)]) => a
             .divmod(b)

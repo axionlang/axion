@@ -978,6 +978,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "showInteger",
         "divInteger",
         "modInteger",
+        "bignumFromStr",
     ] {
         g.insert(b.to_string());
     }
@@ -1217,6 +1218,9 @@ impl Lower<'_> {
         // Integer (§ Listing 1.4): construct from an Int / render to a String.
         if name == "fromInt" && args.len() == 1 {
             return self.rtcall("axion_bignum_from_i64", &args, true, buf);
+        }
+        if name == "bignumFromStr" && args.len() == 1 {
+            return self.rtcall("axion_bignum_from_str", &args, true, buf);
         }
         if name == "showInteger" && args.len() == 1 {
             return self.rtcall("axion_bignum_to_string", &args, true, buf);
@@ -1754,6 +1758,7 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         "abs",
         "fromInt",
         "showInteger",
+        "bignumFromStr",
     ] {
         arity.entry(b.into()).or_insert(1);
     }

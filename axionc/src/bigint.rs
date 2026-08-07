@@ -13,6 +13,20 @@ pub struct BigInt {
 }
 
 impl BigInt {
+    /// Parses a decimal string (optional leading `-`, else ASCII digits) — the path
+    /// for integer literals that exceed i64. The lexer guarantees the digit shape.
+    pub fn from_str(s: &str) -> Self {
+        let (neg, digits) = s.strip_prefix('-').map_or((false, s), |d| (true, d));
+        let mut mag = Vec::new();
+        let mut i = digits.len();
+        while i > 0 {
+            let start = i.saturating_sub(9); // 9 digits fit a base-1e9 limb
+            mag.push(digits[start..i].parse::<u32>().unwrap_or(0));
+            i = start;
+        }
+        Self { neg, mag }.norm()
+    }
+
     pub fn from_i64(n: i64) -> Self {
         let neg = n < 0;
         // handle i64::MIN without overflow by accumulating on i128
@@ -198,6 +212,15 @@ mod tests {
         let (q, r) = b(-100).divmod(&b(7)).unwrap();
         assert_eq!((s(&q), s(&r)), ("-14".into(), "-2".into()));
         assert!(b(5).divmod(&b(0)).is_none());
+    }
+    #[test]
+    fn from_str_roundtrips() {
+        for lit in ["0", "42", "12345678901234567890", "999999999000000000123"] {
+            assert_eq!(BigInt::from_str(lit).to_string(), lit);
+        }
+        // a big literal times itself, exact
+        let x = BigInt::from_str("12345678901234567890");
+        assert_eq!(s(&x.mul(&x)), "152415787532388367501905199875019052100");
     }
 }
 

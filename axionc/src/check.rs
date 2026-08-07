@@ -1163,6 +1163,7 @@ fn builtins() -> HashSet<String> {
         // arbitrary-precision Integer (§ Listing 1.4)
         "fromInt",
         "showInteger",
+        "bignumFromStr",
         "divInteger",
         "modInteger",
     ]

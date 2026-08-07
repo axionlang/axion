@@ -91,6 +91,30 @@ fn integer_bignum_factorial_is_exact() {
 }
 
 #[test]
+fn integer_literal_exceeding_i64() {
+    // §Listing 1.4: a literal larger than i64 (`12345678901234567890`) lexes as a
+    // big literal and desugars to an arbitrary-precision Integer. Squared exactly on
+    // all three executors.
+    let expect = "152415787532388367501905199875019052100\n";
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("integer_big_literal.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "big literal should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expect, "{backend:?}");
+    }
+}
+
+#[test]
 fn integer_is_first_class() {
     // Integration: `Integer` builtins as VALUES (`map fromInt`), a `List Integer`
     // through `map`/`foldr`, and the `Show Integer` instance (`show`, not the raw

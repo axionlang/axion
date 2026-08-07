@@ -7,6 +7,14 @@
 
 use logos::Logos;
 
+/// An integer literal token: fits i64 (`Small`), or exceeds it and keeps its digits
+/// (`Big`, → an arbitrary-precision `Integer` at parse time).
+#[derive(Debug, Clone, PartialEq)]
+pub enum IntLit {
+    Small(i64),
+    Big(String),
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
 #[logos(skip r"--[^\n]*")]
@@ -129,9 +137,11 @@ pub enum Tok {
     // part (`3.14`) so it wins over `Int` `.` `Int`.
     #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().ok())]
     Float(f64),
-    #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
-    #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(lex.slice().strip_prefix("0x").unwrap_or(""), 16).ok())]
-    Int(i64),
+    // an integer literal that fits i64 is `Small`; one that overflows keeps its
+    // digits (`Big`) so the parser can desugar it to an arbitrary-precision `Integer`.
+    #[regex(r"[0-9]+", |lex| Some(lex.slice().parse::<i64>().map_or_else(|_| IntLit::Big(lex.slice().to_string()), IntLit::Small)))]
+    #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(lex.slice().strip_prefix("0x").unwrap_or(""), 16).ok().map(IntLit::Small))]
+    Int(IntLit),
     #[regex(r#""([^"\\]|\\.)*""#, |lex| unquote(lex.slice()))]
     Str(String),
 

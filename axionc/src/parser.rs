@@ -694,10 +694,14 @@ impl<'a> Parser<'a> {
     fn parse_apat(&mut self) -> PResult<Pat> {
         let (s, e) = self.span_here();
         match self.cur() {
-            Some(LTok::Tok(Tok::Int(n))) => {
+            Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Small(n)))) => {
                 let n = *n;
                 self.pos += 1;
                 Ok(Pat::Int(n, (s, e)))
+            }
+            Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Big(_)))) => {
+                Err(self.syntax_err("an integer within Int (a literal exceeding Int \
+                                     can't appear in a pattern — use a guard)"))
             }
             Some(LTok::Tok(Tok::VarId(name))) => {
                 let name = name.clone();
@@ -1076,10 +1080,21 @@ impl<'a> Parser<'a> {
     fn parse_atom_base(&mut self) -> PResult<Expr> {
         let (s, e) = self.span_here();
         match self.cur() {
-            Some(LTok::Tok(Tok::Int(n))) => {
+            Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Small(n)))) => {
                 let n = *n;
                 self.pos += 1;
                 Ok(Expr::Int(n, (s, e)))
+            }
+            // a literal exceeding i64 → an arbitrary-precision Integer, desugared to
+            // `bignumFromStr "digits"` (reuses the String literal + builtin machinery).
+            Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Big(digits)))) => {
+                let digits = digits.clone();
+                self.pos += 1;
+                Ok(Expr::App(
+                    Box::new(Expr::Var("bignumFromStr".into(), (s, e))),
+                    Box::new(Expr::Str(digits, (s, e))),
+                    (s, e),
+                ))
             }
             Some(LTok::Tok(Tok::Float(f))) => {
                 let f = *f;
