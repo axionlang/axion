@@ -2423,6 +2423,14 @@ fn agree_across_backends(fx: &str, expected: &str) {
 }
 
 #[test]
+fn strict_let_binding_is_shared_not_re_evaluated() {
+    // `let x = e in …` must evaluate `e` once (strict / call-by-value): the fixture
+    // doubles through a shared binding, so it is O(n); re-evaluating per use would be
+    // O(2^n) and hang the interpreter. 2^20 == 1048576 on all three backends.
+    agree_across_backends("let_sharing.axi", "1048576\n");
+}
+
+#[test]
 fn stream_fusion_agrees_across_backends() {
     // `--fuse` rewrites `consume (range lo hi)` → `rangeFused lo hi step base`.
     // Regression: (a) the lifted step is a closure (env-first ABI) — without

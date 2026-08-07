@@ -94,11 +94,13 @@ fn child_env(parent: &Env) -> Env {
     })
 }
 
-fn lookup(env: &Env, name: &str) -> Option<Value> {
+/// The scope in the chain that binds `name`, and the bound value — the scope is
+/// returned too so a forced thunk can be written back into its slot (memoization).
+fn lookup_scope(env: &Env, name: &str) -> Option<(Env, Value)> {
     let mut cur = Some(env.clone());
     while let Some(e) = cur {
         if let Some(v) = e.vars.borrow().get(name) {
-            return Some(v.clone());
+            return Some((e.clone(), v.clone()));
         }
         cur = e.parent.clone();
     }
@@ -393,7 +395,22 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
 }
 
 fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError> {
-    if let Some(v) = lookup(env, name) {
+    if let Some((scope, v)) = lookup_scope(env, name) {
+        // A `let`/`where` binding with no parameters is a thunk: it is stored as a
+        // nullary closure, so a naive re-lookup re-runs its body every time it is
+        // referenced (turning shared work into repeated work — e.g. `let h = f x in
+        // h * h` evaluates `f x` twice, which is exponential over recursion). Axión
+        // is strict, so force such a thunk once and cache the value in its slot;
+        // native compiles `let` to a single shared value, so this also keeps the
+        // interpreter in agreement with the native backends.
+        if matches!(&v, Value::Closure { def, .. } if clause_arity(def) == 0) {
+            let forced = force(prog, v)?;
+            scope
+                .vars
+                .borrow_mut()
+                .insert(name.to_string(), forced.clone());
+            return Ok(forced);
+        }
         return force(prog, v);
     }
     if let Some(def) = prog.funcs.get(name) {
