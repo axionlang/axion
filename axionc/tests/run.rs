@@ -1245,6 +1245,10 @@ fn deep_drop_reclaims_nested_objects() {
         // is reclaimed by its own destructor (resolved from `List$Expr`), not a flat
         // free that would leak the tree's children.
         ("poly_payload_deep.axi", "2\n", "6 allocs, 6 frees"),
+        // A `where`-local accumulator borrows an owned `%1` list; the parent then
+        // deep-drops the whole list after the call (the local was invisible to the
+        // borrow analysis before, so nobody reclaimed it).
+        ("where_owned_list.axi", "112\n", "12 allocs, 12 frees"),
         // Multi-var owning params: `Tree a b %1` with two type vars specialized
         // to `Int` — the spec name uses a combined mangle `sumTree$Int$Int`.
         ("land_owned_multi.axi", "0\n", "3 allocs, 3 frees"),
@@ -1904,6 +1908,8 @@ fn native_runtime_is_leak_free_under_lsan() {
         "inplace_update",
         // deep-drop of a polymorphic container's recursive-heap elements
         "poly_payload_deep",
+        // a where-local borrows an owned list; the parent reclaims it (leak-free)
+        "where_owned_list",
         // native sessions (§11): the scheduler's nursery arena reclaims every
         // task state at `axion_sess_run` exit — no leaks, no use-after-free.
         "session_run_pingpong",
@@ -2470,6 +2476,15 @@ fn integer_literal_patterns_match_by_bignum() {
     // to compare the boxed pointer to an i64 (never matched → wrong result / infinite
     // recursion). fib 30 = 832040, classify 0 = 100, classify 21 = 42.
     agree_across_backends("integer_literal_pattern.axi", "832040\n100\n42\n");
+}
+
+#[test]
+fn where_local_aliasing_result_is_not_reclaimed() {
+    // Safety: a `where`-local that returns an element of its borrowed argument must
+    // NOT be treated as a pure borrow — otherwise the parent frees the list and the
+    // returned element is double-freed. The heap result disqualifies it; all
+    // backends must agree on 5 (native would abort on a double-free).
+    agree_across_backends("where_alias_returns_element.axi", "5\n");
 }
 
 #[test]

@@ -3773,18 +3773,47 @@ pub fn lower_with(
         f.body = collapse_var_cases(body);
     }
 
+    // deep-drop (§2): `data` type of each droppable, so the backend reclaims
+    // nested fields via a recursive destructor instead of a flat `free`.
+    let recinfo = RecordInfo::build(module);
+
     // parameter multiplicities of top-level functions with a signature, for
     // borrowed-argument reclamation
-    let param_mults: HashMap<String, Vec<ast::Mult>> = module
+    let mut param_mults: HashMap<String, Vec<ast::Mult>> = module
         .funcs
         .iter()
         .filter_map(|f| f.sig.as_ref().map(|s| (f.name.clone(), s.param_mults())))
         .collect();
+    // `where`-locals have no signature, so they were invisible to the borrow
+    // analysis — a call passing an OWNED value to a local that only READS it was
+    // treated as a move, so neither the (ownerless) local nor the parent reclaimed
+    // it (leak). Register each lifted local with all-`Many` params so the fixpoint
+    // analyzes it: a param it genuinely moves is dropped from the borrow set, and a
+    // param it only borrows lets the parent reclaim the argument after the call.
+    // GUARD: only when the local's result is provably non-heap — a heap result may
+    // ALIAS the borrowed argument (return an element of it), and then the parent
+    // reclaiming it would double-free (borrowed-argument reclamation does not track
+    // that aliasing; it is a pre-existing limitation for top-level borrows too).
+    let where_names: HashSet<String> = module
+        .funcs
+        .iter()
+        .flat_map(|f| {
+            let fname = f.name.clone();
+            f.clauses
+                .iter()
+                .flat_map(|c| &c.wher)
+                .map(move |w| format!("{fname}${}", w.name))
+        })
+        .collect();
+    for f in &out {
+        if where_names.contains(&f.name) && !result_may_be_heap(&f.body, &recinfo) {
+            param_mults
+                .entry(f.name.clone())
+                .or_insert_with(|| vec![ast::Mult::Many; f.params.len()]);
+        }
+    }
     let borrow_args = compute_borrow_args(&out, &param_mults);
 
-    // deep-drop (§2): `data` type of each droppable, so the backend reclaims
-    // nested fields via a recursive destructor instead of a flat `free`.
-    let recinfo = RecordInfo::build(module);
     let all_dty = build_all_drop_ty(&out, makecon_tys);
     let empty = HashMap::new();
 
