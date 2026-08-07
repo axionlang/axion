@@ -1289,12 +1289,15 @@ impl Lower<'_> {
             _ => {}
         }
         let mut vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
-        // over-application: `(f a…) b…` applies a top-level function beyond its arity.
-        // Call `f` to its arity (yielding a closure), then apply the remaining args to
-        // it. Without this the spine is lowered as one over-long direct call, which the
-        // backends mishandle (cranelift errors, LLVM emits garbage).
-        if self.globals.contains(name) && !self.foreigns.contains(name) {
-            if let Some(&arity) = self.fn_arity.get(name.as_str()) {
+        // over-application: `(f a…) b…` applies a function beyond its arity. Call `f`
+        // to its arity (yielding a closure), then apply the remaining args to it.
+        // Without this the spine is lowered as one over-long direct call, which the
+        // backends mishandle (cranelift errors, LLVM emits garbage). `f` may be a
+        // top-level function (looked up by name) or a `where`-local (resolved through
+        // the mangling map to its `parent$w` key).
+        if !self.foreigns.contains(name) {
+            let key = self.locals.get(name).map_or(name.as_str(), String::as_str);
+            if let Some(&arity) = self.fn_arity.get(key) {
                 if vals.len() > arity {
                     let rest = vals.split_off(arity);
                     let base = self.call_named(name, vals);
@@ -3112,12 +3115,17 @@ pub fn lower_with(
     // §9 structured fork-join: worker state machines for every `parMap` target,
     // plus the map the lowering uses to emit `axion_par_map`. Runs pre-eta.
     let (parmap_steps, parmap_map) = parmap_worker_steps(orig_module, &native_fn_names);
-    // top-level function arities, to split over-applied spines (`(f a) b`).
-    let fn_arity: HashMap<String, usize> = module
-        .funcs
-        .iter()
-        .map(|f| (f.name.clone(), f.clauses.first().map_or(0, |c| c.pats.len())))
-        .collect();
+    // function arities, to split over-applied spines (`(f a) b`): top-level functions
+    // by name, and `where`-locals by their mangled `parent$w` key (the lowering
+    // resolves a call's name through the same mangling before looking up here).
+    let mut fn_arity: HashMap<String, usize> = HashMap::new();
+    for f in &module.funcs {
+        fn_arity.insert(f.name.clone(), f.clauses.first().map_or(0, |c| c.pats.len()));
+        for w in f.clauses.iter().flat_map(|c| &c.wher) {
+            let arity = w.clauses.first().map_or(0, |c| c.pats.len());
+            fn_arity.insert(format!("{}${}", f.name, w.name), arity);
+        }
+    }
 
     // pre-pass: names + computes captures of all lambdas (by span)
     let mut lam_meta: LamMeta = HashMap::new();

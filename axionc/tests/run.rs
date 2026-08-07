@@ -43,9 +43,10 @@ fn fib_compiles_and_runs() {
 #[test]
 fn over_application_runs_on_all_backends() {
     // applying a function beyond its arity (`(f a…) b…`) — a function returning a
-    // function that is then applied. The lowering splits it into call-to-arity +
-    // apply-the-rest, so interp, cranelift and llvm all agree (→ 42). Previously
-    // cranelift errored and `--release` returned garbage.
+    // function that is then applied, for both top-level functions and a `where`-local.
+    // The lowering splits it into call-to-arity + apply-the-rest, so interp, cranelift
+    // and llvm all agree (→ 150). Previously cranelift errored and `--release`
+    // returned garbage (top-level), and the `where`-local case errored natively.
     for backend in [
         vec!["--backend", "interp"],
         vec!["--backend", "cranelift"],
@@ -60,7 +61,7 @@ fn over_application_runs_on_all_backends() {
             "over-application should run ({backend:?}): {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n", "{backend:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "150\n", "{backend:?}");
     }
 }
 

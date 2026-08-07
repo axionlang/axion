@@ -190,9 +190,7 @@ calmly and tested, without breaking the philosophy:
 mutex, not yet work-stealing** — tasks run in parallel on both backends and are
 ThreadSanitizer-clean, but the scheduler serializes channel ops on one lock and
 there is no `io_uring`/`epoll` for async I/O yet; delegation (endpoints over
-channels between siblings) is still interpreter-only; a `where`-local that returns
-a function and is over-applied fails with a clear arity error natively (top-level
-over-application lowers correctly on all three backends); and mechanized metatheory
+channels between siblings) is still interpreter-only; and mechanized metatheory
 (Iris/Actris) is still to do. None is a correctness hole — they are growth.
 
 ## Requirements
