@@ -1502,6 +1502,7 @@ impl Fx<'_, '_> {
                     "+" => self.builder.ins().iadd(a, b),
                     "-" => self.builder.ins().isub(a, b),
                     "*" => self.builder.ins().imul(a, b),
+                    "div" => self.builder.ins().sdiv(a, b),
                     "mod" => self.builder.ins().srem(a, b),
                     "band" => self.builder.ins().band(a, b),
                     "==" => cmp(self, IntCC::Equal),

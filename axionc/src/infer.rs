@@ -291,6 +291,13 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         inf.method_meta
             .insert(op.to_string(), ("Ord".to_string(), Some(0)));
     }
+    // `Integral` (`div`/`mod`) over Int or Integer — infix truncated division and
+    // remainder (§Listing 1.4). Kept separate from `Num` because `Float` has no
+    // instance (a `div`/`mod` over `Float` is correctly rejected AX0404).
+    for op in ["div", "mod"] {
+        inf.method_meta
+            .insert(op.to_string(), ("Integral".to_string(), Some(0)));
+    }
 
     // schemes of the top-level functions: from the signature, or a fresh monotype
     let mut placeholders: HashMap<String, Ty> = HashMap::new();
@@ -460,6 +467,11 @@ pub fn is_builtin_op_method(op: &str) -> bool {
     matches!(op, "+" | "-" | "*" | "==" | "<" | ">")
 }
 
+/// The built-in `Integral` operators (`div`/`mod`) — overloaded over Int/Integer.
+pub fn is_integral_method(op: &str) -> bool {
+    matches!(op, "div" | "mod")
+}
+
 /// The dotted (`Float`) form of a built-in overloaded operator — the rewrite
 /// target when a use resolves to `Float`.
 pub fn builtin_op_float(op: &str) -> &'static str {
@@ -484,6 +496,8 @@ pub fn builtin_op_integer(op: &str) -> &'static str {
         "==" => "==#I",
         "<" => "<#I",
         ">" => ">#I",
+        "div" => "div#I",
+        "mod" => "mod#I",
         _ => unreachable!("not a built-in overloaded operator: {op}"),
     }
 }
@@ -759,10 +773,9 @@ impl<'a> Infer<'a> {
         env.insert("True".into(), mono(bool()));
         env.insert("False".into(), mono(bool()));
         env.insert("otherwise".into(), mono(bool()));
-        // `mod` stays monomorphic in Int; `+ - *` are `Num a => a -> a -> a`
-        // (built-in Num, resolved per use — see `discharge_obligations`).
-        env.insert("mod".into(), mono(bin(int())));
-        for op in ["+", "-", "*"] {
+        // `+ - *` (Num) and `div`/`mod` (Integral) are built-in overloaded operators
+        // (`a -> a -> a`), resolved per use over Int/Integer — see `discharge_obligations`.
+        for op in ["+", "-", "*", "div", "mod"] {
             env.insert(
                 op.into(),
                 Scheme {
@@ -1250,6 +1263,13 @@ impl<'a> Infer<'a> {
                 // built-in Num/Ord operator over Int → keep the operator (native
                 // iadd/imul; the interpreter's Int path).
                 Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Int" => {}
+                // built-in Integral `div`/`mod` over Integer → the `#I` runtime op;
+                // over Int → keep (native sdiv/srem). (No Float instance → AX0404.)
+                Ty::Con(name, _) if is_integral_method(&o.method) && name == "Integer" => {
+                    resolutions
+                        .insert((o.func.clone(), o.span), builtin_op_integer(&o.method).into());
+                }
+                Ty::Con(name, _) if is_integral_method(&o.method) && name == "Int" => {}
                 // concrete type WITH instance → resolves to the direct impl.
                 Ty::Con(name, args) if instances.contains(&(o.class.clone(), name.clone())) => {
                     let base = crate::ast::method_impl_name(&o.method, &name);
@@ -1292,7 +1312,7 @@ impl<'a> Infer<'a> {
                 // The var is monomorphic (unsignatured function), so binding it is
                 // safe — nothing has been generalized over it. No rewrite needed:
                 // the operator keeps its Int form.
-                Ty::Var(v) if is_builtin_op_method(&o.method) => {
+                Ty::Var(v) if is_builtin_op_method(&o.method) || is_integral_method(&o.method) => {
                     self.unify(&Ty::Var(v), &Ty::Con("Int".into(), vec![]), o.span);
                 }
                 Ty::Var(_) => {

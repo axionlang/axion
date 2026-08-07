@@ -92,9 +92,10 @@ fn integer_bignum_factorial_is_exact() {
 
 #[test]
 fn integer_bignum_divmod() {
-    // §Listing 1.4 (Phase 3): arbitrary-precision truncated `divInteger`/`modInteger`.
-    // 10^30 / 7 = 142857142857142857142857142857 rem 1, on all three executors.
-    let expect = "142857142857142857142857142857\n1\n";
+    // §Listing 1.4: `div`/`mod` overloaded (Integral) over Int AND Integer, on all
+    // three executors. Integer 10^30 /% 7 (arbitrary precision) + Int 100 /% 7 (the
+    // Int `div` that did not exist before). Truncated.
+    let expect = "142857142857142857142857142857\n1\n14\n2\n";
     for backend in [
         vec!["--backend", "interp"],
         vec!["--backend", "cranelift"],

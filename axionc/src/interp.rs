@@ -910,7 +910,10 @@ fn is_builtin_op(op: &str) -> bool {
         op,
         "+" | "-"
             | "*"
+            | "div"
             | "mod"
+            | "div#I"
+            | "mod#I"
             | "=="
             | "<"
             | ">"
@@ -940,6 +943,9 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("*", Int(x), Int(y)) => Ok(Int(x.wrapping_mul(y))),
         ("mod", Int(x), Int(y)) if y != 0 => Ok(Int(x.rem_euclid(y))),
         ("mod", Int(_), Int(_)) => Err("mod by zero".to_string()),
+        // `div` (Integral): truncated toward zero, matching native sdiv.
+        ("div", Int(x), Int(y)) if y != 0 => Ok(Int(x.wrapping_div(y))),
+        ("div", Int(_), Int(_)) => Err("div by zero".to_string()),
         ("==", Int(x), Int(y)) => Ok(Bool(x == y)),
         ("<", Int(x), Int(y)) => Ok(Bool(x < y)),
         (">", Int(x), Int(y)) => Ok(Bool(x > y)),
@@ -952,6 +958,14 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("==#I", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Equal)),
         ("<#I", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Less)),
         (">#I", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Greater)),
+        ("div#I", Integer(x), Integer(y)) => x
+            .divmod(&y)
+            .map(|(q, _)| Integer(q))
+            .ok_or_else(|| "div by zero".to_string()),
+        ("mod#I", Integer(x), Integer(y)) => x
+            .divmod(&y)
+            .map(|(_, r)| Integer(r))
+            .ok_or_else(|| "mod by zero".to_string()),
         // float arithmetic (§4): `+. -. *. /.`
         ("+.", Float(x), Float(y)) => Ok(Float(x + y)),
         ("-.", Float(x), Float(y)) => Ok(Float(x - y)),

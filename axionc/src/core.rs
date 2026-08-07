@@ -295,7 +295,7 @@ pub fn is_bool(t: &Type) -> bool {
 /// `Op::Prim`. The rest is a user infix operator — a named function
 /// applied to two arguments. Matches `interp::is_builtin_op`.
 pub fn is_builtin_op(op: &str) -> bool {
-    matches!(op, "+" | "-" | "*" | "mod" | "==" | "<" | ">")
+    matches!(op, "+" | "-" | "*" | "div" | "mod" | "==" | "<" | ">")
 }
 
 /// FLOAT infix operators — arithmetic (`+. -. *. /.`) and comparisons
@@ -347,6 +347,8 @@ pub fn integer_op_rt(op: &str) -> Option<&'static str> {
         "==#I" => "axion_bignum_eq",
         "<#I" => "axion_bignum_lt",
         ">#I" => "axion_bignum_gt",
+        "div#I" => "axion_bignum_div",
+        "mod#I" => "axion_bignum_mod",
         _ => return None,
     })
 }
