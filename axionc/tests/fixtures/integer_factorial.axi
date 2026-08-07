@@ -1,11 +1,13 @@
--- Arbitrary-precision `Integer` (§ Listing 1.4): `factorial 50` overflows a
--- fixed-width `Int` but is exact with `Integer` (no wrap, at a small runtime cost).
--- The result — 65 digits — is computed by the hand-rolled base-1e9 bignum (mul,
--- sub, ==, show). `fromInt`/`showInteger` are the Int↔Integer conversions; a later
--- slice makes bare literals default into `Integer` by type (so `n - 1` works).
--- Interpreter today; native (C+Rust runtime bignum) is a follow-up.
-fac :: Integer -> Integer
-fac n = if n == fromInt 0 then fromInt 1 else n * fac (n - fromInt 1)
+-- Arbitrary-precision `Integer` (§ Listing 1.4), the spec's canonical example.
+-- `Int` is fixed-width and would overflow; `Integer` is exact (no wrap, at a small
+-- runtime cost). Bare literals (`2`, `1`, `50`) default into `Integer` here because
+-- the context (the `Integer` signature) demands it — inference makes each literal
+-- Num-polymorphic and a rewrite wraps the Integer ones as `fromInt`. `factorial 50`
+-- is 65 digits, computed by the hand-rolled base-1e9 bignum. Interpreter today;
+-- native (C+Rust runtime bignum) is a follow-up. (Literal PATTERNS — `factorial 0
+-- = 1` — still need the `if` form; that's a later slice.)
+factorial :: Integer -> Integer
+factorial n = if n < 2 then 1 else n * factorial (n - 1)
 
-main :: IO ()
-main = putStrLn (showInteger (fac (fromInt 50)))
+main :: Integer
+main = factorial 50

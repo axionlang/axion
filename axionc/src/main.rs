@@ -403,6 +403,7 @@ pub(crate) fn compile_front(
     // stops being a method (dynamic dispatch) and now compiles natively.
     let mono = infer::infer(&module, diags);
     resolve_methods(&mut module, &mono.resolutions);
+    rewrite_int_lits(&mut module, &mono.integer_lits);
     materialize_specs(&mut module, &mono.specs);
     analysis.makecon_tys = mono.makecon_tys;
     analysis.array_tys = mono.array_tys;
@@ -455,6 +456,89 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
 /// impl, per inference's `span → impl-name` map. Walks all
 /// bodies (top-level functions, `where`, lambdas, `case` arms, `let`).
 type Resolutions = std::collections::HashMap<(String, ast::Span), String>;
+
+/// Phase 1b: wrap each integer literal that inference resolved to `Integer`
+/// (`fromInt n`), so the executor builds an arbitrary-precision value. Runs after
+/// type inference; only `Integer` literals are touched, so `Int` programs are inert.
+fn rewrite_int_lits(module: &mut ast::Module, lits: &std::collections::HashSet<(usize, usize)>) {
+    if lits.is_empty() {
+        return;
+    }
+    for f in &mut module.funcs {
+        rw_int_lits_func(f, lits);
+    }
+}
+
+fn rw_int_lits_func(f: &mut ast::Func, lits: &std::collections::HashSet<(usize, usize)>) {
+    for c in &mut f.clauses {
+        match &mut c.body {
+            ast::Body::Plain(e) => rw_int_lits_expr(e, lits),
+            ast::Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    rw_int_lits_expr(g, lits);
+                    rw_int_lits_expr(r, lits);
+                }
+            }
+        }
+        for w in &mut c.wher {
+            rw_int_lits_func(w, lits);
+        }
+    }
+}
+
+fn rw_int_lits_expr(e: &mut ast::Expr, lits: &std::collections::HashSet<(usize, usize)>) {
+    use ast::Expr::{App, BinOp, Case, If, Int, Lam, Let, RecordCon, RecordUpd, Tuple, Var};
+    // an Integer literal → `fromInt n`; return so the wrapped inner `Int` (same span)
+    // is not re-visited.
+    if let Int(n, span) = e {
+        if lits.contains(span) {
+            let (sp, val) = (*span, *n);
+            *e = App(
+                Box::new(Var("fromInt".into(), sp)),
+                Box::new(Int(val, sp)),
+                sp,
+            );
+            return;
+        }
+    }
+    match e {
+        App(a, b, _) | BinOp(_, a, b, _) => {
+            rw_int_lits_expr(a, lits);
+            rw_int_lits_expr(b, lits);
+        }
+        If(c, t, el, _) => {
+            rw_int_lits_expr(c, lits);
+            rw_int_lits_expr(t, lits);
+            rw_int_lits_expr(el, lits);
+        }
+        Let(binds, body, _) => {
+            for b in binds {
+                rw_int_lits_func(b, lits);
+            }
+            rw_int_lits_expr(body, lits);
+        }
+        Case(scrut, arms, _) => {
+            rw_int_lits_expr(scrut, lits);
+            for (_, body) in arms {
+                rw_int_lits_expr(body, lits);
+            }
+        }
+        Tuple(es, _) => es.iter_mut().for_each(|x| rw_int_lits_expr(x, lits)),
+        RecordCon(_, fs, _) => {
+            for (_, x) in fs {
+                rw_int_lits_expr(x, lits);
+            }
+        }
+        RecordUpd(base, fs, _) => {
+            rw_int_lits_expr(base, lits);
+            for (_, x) in fs {
+                rw_int_lits_expr(x, lits);
+            }
+        }
+        Lam(_, body, _) => rw_int_lits_expr(body, lits),
+        _ => {}
+    }
+}
 
 fn resolve_methods(module: &mut ast::Module, res: &Resolutions) {
     if res.is_empty() {

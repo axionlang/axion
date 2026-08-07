@@ -84,6 +84,10 @@ struct Infer<'a> {
     /// Phase 4: result type at each application span (for the concrete drop key of
     /// a call/rtcall-bound local of a parametric heap type).
     call_ret_tys: HashMap<Span, Ty>,
+    /// Phase 1b: each integer-literal expression's fresh type var (span → var), so a
+    /// literal resolved to `Integer` by context is rewritten `fromInt n`, and an
+    /// unconstrained one defaults to `Int`.
+    int_lit_vars: Vec<(Span, Ty)>,
 }
 
 /// An obligation `class C over type T`, collected at a method use and
@@ -135,6 +139,8 @@ pub struct Mono {
     pub makecon_tys: HashMap<Span, Type>,
     /// Phase 2c: `newArray` call-site return types (span → Array element type)
     pub array_tys: HashMap<Span, Type>,
+    /// Phase 1b: integer-literal spans that resolved to `Integer` (rewritten `fromInt n`).
+    pub integer_lits: std::collections::HashSet<Span>,
 }
 
 /// Instruction to clone `src` into a monomorphic function `name`, substituting
@@ -177,6 +183,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         con_ret_tys: HashMap::new(),
         array_ret_tys: HashMap::new(),
         call_ret_tys: HashMap::new(),
+        int_lit_vars: Vec::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -387,8 +394,22 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
             inf.unify(&inferred, d, f.span);
         }
     }
+    // Phase 1b: resolve each integer literal. If context unified it to `Integer`,
+    // mark it for the `fromInt` rewrite; otherwise unify it with `Int` — this both
+    // defaults an unconstrained literal and re-raises the original error if a literal
+    // was forced to a non-`Int` type (e.g. `Int` vs `Float`).
+    let lit_vars = std::mem::take(&mut inf.int_lit_vars);
+    let mut integer_lits: std::collections::HashSet<Span> = std::collections::HashSet::new();
+    for (span, v) in lit_vars {
+        if matches!(inf.apply(&v), Ty::Con(ref n, _) if n == "Integer") {
+            integer_lits.insert(span);
+        } else {
+            inf.unify(&v, &Ty::Con("Int".into(), vec![]), span);
+        }
+    }
     inf.check_exhaustiveness();
     let mut mono = inf.discharge_obligations(module);
+    mono.integer_lits = integer_lits;
     // Phase B (generic-owning corner): the owning-generic specializations
     // (`dropList$P`), merged with the typeclass ones.
     let owning = inf.discharge_owning();
@@ -1402,6 +1423,7 @@ impl<'a> Infer<'a> {
             specs,
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
+            integer_lits: std::collections::HashSet::new(),
         }
     }
 
@@ -1536,6 +1558,7 @@ impl<'a> Infer<'a> {
             specs,
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
+            integer_lits: std::collections::HashSet::new(),
         }
     }
 
@@ -1888,7 +1911,13 @@ impl<'a> Infer<'a> {
 
     fn infer_expr(&mut self, env: &Env, e: &Expr) -> Ty {
         match e {
-            Expr::Int(_, _) => Ty::Con("Int".into(), vec![]),
+            // Phase 1b: Num-polymorphic literal — a fresh var resolved at the end of
+            // inference to `Integer` (→ rewritten `fromInt n`) or defaulted to `Int`.
+            Expr::Int(_, span) => {
+                let v = self.fresh();
+                self.int_lit_vars.push((*span, v.clone()));
+                v
+            }
             Expr::Float(_, _) => Ty::Con("Float".into(), vec![]),
             Expr::Str(_, _) => Ty::Con("String".into(), vec![]),
             Expr::Var(n, span) => {
