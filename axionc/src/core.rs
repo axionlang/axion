@@ -409,6 +409,7 @@ pub struct RecordInfo {
     // --- deep-drop (§2): structural reclamation of nested fields ---
     con_type: HashMap<String, String>, // constructor → name of its type
     type_cons: HashMap<String, Vec<String>>, // type → constructors (in tag order)
+    type_arity: HashMap<String, usize>, // type → number of type parameters (`List a` → 1)
     /// constructor → `data`-typed fields it **owns**: (offset, type name).
     /// They are separate allocations that a flat `free` doesn't reclaim → deep-drop.
     con_drop_slots: HashMap<String, Vec<(i32, String)>>,
@@ -437,6 +438,7 @@ impl RecordInfo {
         // heap fields exclude unboxed enums (immediate tags, not allocations).
         let data_names = boxed_data_names(module);
         for d in &module.datas {
+            r.type_arity.insert(d.name.clone(), d.params.len());
             if is_enum_data(d) {
                 r.enum_types.insert(d.name.clone());
             } else if d.cons.iter().any(|c| c.fields.is_empty()) {
@@ -514,6 +516,35 @@ impl RecordInfo {
     /// Constructors of a type, in tag order.
     pub fn type_cons(&self, ty: &str) -> Option<&[String]> {
         self.type_cons.get(ty).map(Vec::as_slice)
+    }
+
+    /// How to reclaim a POLYMORPHIC field (`a` in `Cons a (List a)`) when it is
+    /// dropped, resolved from the container's instantiation key (`scrut_key`, e.g.
+    /// `List$Expr`). Only handles a single-type-parameter container with a plain
+    /// (non-nested) element, so the single argument is unambiguous:
+    ///   - a `data` type with heap fields (`Expr`) → `Deep` (its destructor);
+    ///   - a shallow heap `data` type (`P`, a record of scalars) → `Flat` free;
+    ///   - a non-heap element (`Int`, an unboxed enum) → `Skip` (no drop).
+    /// `None` = unresolved (generic `a`, multi-parameter, or nested element) — the
+    /// caller falls back to the previous behaviour (a flat `free`).
+    fn poly_elem_drop(&self, con: &str, scrut_key: &str) -> Option<PolyDrop> {
+        let ty = self.con_type.get(con)?;
+        if self.type_arity.get(ty).copied() != Some(1) {
+            return None;
+        }
+        let elem = scrut_key.split_once('$')?.1;
+        if elem.contains('$') {
+            return None; // nested parametric (`List$Int`) — leave to the fallback
+        }
+        if self.needs_deep.contains(elem) {
+            Some(PolyDrop::Deep(elem.to_string()))
+        } else if self.enum_types.contains(elem) {
+            Some(PolyDrop::Skip) // unboxed enum immediate — nothing to free
+        } else if self.type_arity.contains_key(elem) {
+            Some(PolyDrop::Flat) // boxed `data` with no owned heap fields → flat free
+        } else {
+            Some(PolyDrop::Skip) // Int/Float/Bool/… — not a heap value
+        }
     }
 
     /// `data`-typed fields a constructor owns: (offset, type name).
@@ -4083,6 +4114,13 @@ fn subst_ty(t: &Type, subst: &HashMap<String, Type>) -> Type {
     }
 }
 
+/// How to reclaim a polymorphic field, once its element type is resolved.
+enum PolyDrop {
+    Skip,         // non-heap (Int / unboxed enum) — no drop
+    Flat,         // heap value with no owned heap fields — a flat `free`
+    Deep(String), // needs the destructor `axion_drop_<key>`
+}
+
 /// How to free a value of a (concrete) field type.
 enum DropWay {
     Flat,         // heap object with no owned heap fields → a flat `free`
@@ -5911,7 +5949,24 @@ impl Elab<'_> {
             if !elab.recinfo.field_transfers_heap(con, fi) || skip.contains(&fi) {
                 continue;
             }
-            let key = elab.recinfo.field_drop_slot(con, fi).map(|t| t.to_string());
+            let key = if let Some(k) = elab.recinfo.field_drop_slot(con, fi) {
+                // concrete `data`-typed field → its own destructor
+                Some(k.to_string())
+            } else {
+                // polymorphic field (`a`): resolve the element's concrete reclamation
+                // from the scrutinee's instantiation key. A blind flat `free` here
+                // corrupts a non-heap element (`List Int`) or shallow-frees a deep
+                // one (`List Expr`), so resolve when we can and skip when unsure.
+                match elab
+                    .dty(s)
+                    .and_then(|sk| elab.recinfo.poly_elem_drop(con, &sk))
+                {
+                    Some(PolyDrop::Skip) => continue,   // non-heap — nothing to free
+                    Some(PolyDrop::Flat) => None,       // shallow heap → flat `free`
+                    Some(PolyDrop::Deep(k)) => Some(k), // deep → its destructor
+                    None => None,                       // unresolved → prior flat `free`
+                }
+            };
             let off = elab.recinfo.field_offset(con, fi);
             if let Some(n) = subs.get(fi).and_then(|sp| {
                 if let CPat::Var(n) = sp {

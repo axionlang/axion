@@ -1241,6 +1241,10 @@ fn deep_drop_reclaims_nested_objects() {
         // Non-`%1` poly-payload gap: inline remainder reclaims the non-escaped
         // head payload when the tail of a polymorphic list is transferred.
         ("poly_payload_gap.axi", "0\n", "6 allocs, 6 frees"),
+        // Poly payload with a DEEP element type (`List Expr`): an extracted element
+        // is reclaimed by its own destructor (resolved from `List$Expr`), not a flat
+        // free that would leak the tree's children.
+        ("poly_payload_deep.axi", "2\n", "6 allocs, 6 frees"),
         // Multi-var owning params: `Tree a b %1` with two type vars specialized
         // to `Int` — the spec name uses a combined mangle `sumTree$Int$Int`.
         ("land_owned_multi.axi", "0\n", "3 allocs, 3 frees"),
@@ -1898,6 +1902,8 @@ fn native_runtime_is_leak_free_under_lsan() {
         "heap_loop",
         "linear_move",
         "inplace_update",
+        // deep-drop of a polymorphic container's recursive-heap elements
+        "poly_payload_deep",
         // native sessions (§11): the scheduler's nursery arena reclaims every
         // task state at `axion_sess_run` exit — no leaks, no use-after-free.
         "session_run_pingpong",
