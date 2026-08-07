@@ -69,6 +69,44 @@ extern "C" fn axion_show_float(bits: i64) -> *const u8 {
     s.into_raw() as *const u8
 }
 
+// --- arbitrary-precision Integer (§Listing 1.4): an `i64` is `*mut BigInt` (boxed).
+// Conservative reclamation: the boxes are never freed — Integer values are shared and
+// immutable, so a GC-free scheme (refcount/linearity) is a later slice. Same behaviour
+// as the C runtime's bignum (axion_rt.c); the two backends never share memory.
+fn bignum<'a>(p: i64) -> &'a crate::bigint::BigInt {
+    // SAFETY: `p` was produced by a bignum runtime fn (Box::into_raw of a BigInt).
+    unsafe { &*(p as *const crate::bigint::BigInt) }
+}
+fn bignum_box(v: crate::bigint::BigInt) -> i64 {
+    Box::into_raw(Box::new(v)) as i64
+}
+extern "C" fn axion_bignum_from_i64(n: i64) -> i64 {
+    bignum_box(crate::bigint::BigInt::from_i64(n))
+}
+extern "C" fn axion_bignum_add(a: i64, b: i64) -> i64 {
+    bignum_box(bignum(a).add(bignum(b)))
+}
+extern "C" fn axion_bignum_sub(a: i64, b: i64) -> i64 {
+    bignum_box(bignum(a).sub(bignum(b)))
+}
+extern "C" fn axion_bignum_mul(a: i64, b: i64) -> i64 {
+    bignum_box(bignum(a).mul(bignum(b)))
+}
+extern "C" fn axion_bignum_eq(a: i64, b: i64) -> i64 {
+    i64::from(bignum(a).cmp(bignum(b)) == std::cmp::Ordering::Equal)
+}
+extern "C" fn axion_bignum_lt(a: i64, b: i64) -> i64 {
+    i64::from(bignum(a).cmp(bignum(b)) == std::cmp::Ordering::Less)
+}
+extern "C" fn axion_bignum_gt(a: i64, b: i64) -> i64 {
+    i64::from(bignum(a).cmp(bignum(b)) == std::cmp::Ordering::Greater)
+}
+extern "C" fn axion_bignum_to_string(a: i64) -> *const u8 {
+    let s = std::ffi::CString::new(bignum(a).to_string())
+        .unwrap_or_else(|_| panic!("CString error"));
+    s.into_raw() as *const u8
+}
+
 /// String concatenation `a ++ b` into a fresh C-string. Backs `strAppend`.
 extern "C" fn axion_strcat(a: *const u8, b: *const u8) -> *const u8 {
     // SAFETY: caller passed two valid NUL-terminated C-strings.
@@ -950,6 +988,14 @@ impl Cg {
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_show_float", axion_show_float as *const u8);
         builder.symbol("axion_strcat", axion_strcat as *const u8);
+        builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
+        builder.symbol("axion_bignum_add", axion_bignum_add as *const u8);
+        builder.symbol("axion_bignum_sub", axion_bignum_sub as *const u8);
+        builder.symbol("axion_bignum_mul", axion_bignum_mul as *const u8);
+        builder.symbol("axion_bignum_eq", axion_bignum_eq as *const u8);
+        builder.symbol("axion_bignum_lt", axion_bignum_lt as *const u8);
+        builder.symbol("axion_bignum_gt", axion_bignum_gt as *const u8);
+        builder.symbol("axion_bignum_to_string", axion_bignum_to_string as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
         builder.symbol("axion_free", axion_free as *const u8);
         builder.symbol("axion_arena_new", axion_arena_new as *const u8);
@@ -1030,6 +1076,14 @@ impl Cg {
             // Show/String builtins (§tc): showFloat and strAppend
             ("axion_show_float", 1, true),
             ("axion_strcat", 2, true),
+            ("axion_bignum_from_i64", 1, true),
+            ("axion_bignum_add", 2, true),
+            ("axion_bignum_sub", 2, true),
+            ("axion_bignum_mul", 2, true),
+            ("axion_bignum_eq", 2, true),
+            ("axion_bignum_lt", 2, true),
+            ("axion_bignum_gt", 2, true),
+            ("axion_bignum_to_string", 1, true),
             // used by the generated destructors (deep-drop) via RtCall
             ("axion_free", 1, false),
             // cooperative session scheduler (§11)

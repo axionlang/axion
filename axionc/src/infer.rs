@@ -474,6 +474,20 @@ pub fn builtin_op_float(op: &str) -> &'static str {
     }
 }
 
+/// Integer (§ Listing 1.4) counterparts, resolved like the Float ones — the
+/// executors lower `#I` operators to the arbitrary-precision runtime (`axion_bignum_*`).
+pub fn builtin_op_integer(op: &str) -> &'static str {
+    match op {
+        "+" => "+#I",
+        "-" => "-#I",
+        "*" => "*#I",
+        "==" => "==#I",
+        "<" => "<#I",
+        ">" => ">#I",
+        _ => unreachable!("not a built-in overloaded operator: {op}"),
+    }
+}
+
 /// Whether the type variable `var` occurs anywhere in the (surface) type `t`.
 fn type_contains_var(t: &Type, var: &str) -> bool {
     match t {
@@ -1218,11 +1232,15 @@ impl<'a> Infer<'a> {
                     resolutions
                         .insert((o.func.clone(), o.span), builtin_op_float(&o.method).into());
                 }
-                // built-in Num/Ord operator over Int or Integer → keep the operator
-                // (no rewrite); the executor dispatches on the runtime value (§Int vs
-                // arbitrary-precision Integer, Listing 1.4).
-                Ty::Con(name, _)
-                    if is_builtin_op_method(&o.method) && (name == "Int" || name == "Integer") => {}
+                // built-in Num/Ord operator over Integer → resolve to the `#I`
+                // operator, lowered to the arbitrary-precision runtime (§Listing 1.4).
+                Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Integer" => {
+                    resolutions
+                        .insert((o.func.clone(), o.span), builtin_op_integer(&o.method).into());
+                }
+                // built-in Num/Ord operator over Int → keep the operator (native
+                // iadd/imul; the interpreter's Int path).
+                Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Int" => {}
                 // concrete type WITH instance → resolves to the direct impl.
                 Ty::Con(name, args) if instances.contains(&(o.class.clone(), name.clone())) => {
                     let base = crate::ast::method_impl_name(&o.method, &name);

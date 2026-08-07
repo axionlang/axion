@@ -913,6 +913,12 @@ fn is_builtin_op(op: &str) -> bool {
             | "<."
             | ">."
             | "==."
+            | "+#I"
+            | "-#I"
+            | "*#I"
+            | "==#I"
+            | "<#I"
+            | ">#I"
     )
 }
 
@@ -929,13 +935,15 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("==", Int(x), Int(y)) => Ok(Bool(x == y)),
         ("<", Int(x), Int(y)) => Ok(Bool(x < y)),
         (">", Int(x), Int(y)) => Ok(Bool(x > y)),
-        // Integer (§ Listing 1.4): arbitrary precision, no wrap.
-        ("+", Integer(x), Integer(y)) => Ok(Integer(x.add(&y))),
-        ("-", Integer(x), Integer(y)) => Ok(Integer(x.sub(&y))),
-        ("*", Integer(x), Integer(y)) => Ok(Integer(x.mul(&y))),
-        ("==", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Equal)),
-        ("<", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Less)),
-        (">", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Greater)),
+        // Integer (§ Listing 1.4): arbitrary precision, no wrap. The `#I` operators
+        // are inference's resolution of `+ - * == < >` over `Integer` (like Float's
+        // `+.`), so the native backends can lower them to the bignum runtime.
+        ("+#I", Integer(x), Integer(y)) => Ok(Integer(x.add(&y))),
+        ("-#I", Integer(x), Integer(y)) => Ok(Integer(x.sub(&y))),
+        ("*#I", Integer(x), Integer(y)) => Ok(Integer(x.mul(&y))),
+        ("==#I", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Equal)),
+        ("<#I", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Less)),
+        (">#I", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Greater)),
         // float arithmetic (§4): `+. -. *. /.`
         ("+.", Float(x), Float(y)) => Ok(Float(x + y)),
         ("-.", Float(x), Float(y)) => Ok(Float(x - y)),

@@ -68,21 +68,26 @@ fn over_application_runs_on_all_backends() {
 #[test]
 fn integer_bignum_factorial_is_exact() {
     // §Listing 1.4: `Integer` is arbitrary-precision — `factorial 50` (65 digits)
-    // overflows i64 but is exact with the bignum. Interpreter (Phase 1); native is
-    // a follow-up.
-    let out = axionc()
-        .args(["--backend", "interp", &fixture("integer_factorial.axi")])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "Integer factorial should run: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "30414093201713378043612608166064768844377641568960512000000000000\n"
-    );
+    // overflows i64 but is exact with the bignum, on ALL three executors (interp,
+    // cranelift, and llvm/--release each with their own runtime bignum). Bare
+    // literals default into Integer by type.
+    let expect = "30414093201713378043612608166064768844377641568960512000000000000\n";
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("integer_factorial.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "Integer factorial should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expect, "{backend:?}");
+    }
 }
 
 #[test]

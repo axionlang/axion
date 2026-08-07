@@ -252,9 +252,9 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         // helpers is reclaimed by the uniquify pass + the fixpoint borrow analysis
         // (`compute_borrow_args`) + the array read-op borrow spec (`body_moves`).
         Some(
-            "Int" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark" | "Buffer"
-            | "Array" | "()" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32" | "I64" | "Word"
-            | "Byte",
+            "Int" | "Integer" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark"
+            | "Buffer" | "Array" | "()" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32"
+            | "I64" | "Word" | "Byte",
         ) => true,
         Some(h) => data_types.contains(h),
         None => false,
@@ -335,6 +335,20 @@ pub fn is_float_unary(name: &str) -> bool {
 /// FLOAT arithmetic operators (result is `Float`).
 pub fn is_float_arith(op: &str) -> bool {
     matches!(op, "+." | "-." | "*." | "/.")
+}
+
+/// The arbitrary-precision runtime function for an Integer `#I` operator (§Listing
+/// 1.4), or `None`. Comparisons return a tagged `Bool` immediate.
+pub fn integer_op_rt(op: &str) -> Option<&'static str> {
+    Some(match op {
+        "+#I" => "axion_bignum_add",
+        "-#I" => "axion_bignum_sub",
+        "*#I" => "axion_bignum_mul",
+        "==#I" => "axion_bignum_eq",
+        "<#I" => "axion_bignum_lt",
+        ">#I" => "axion_bignum_gt",
+        _ => return None,
+    })
 }
 
 /// FLOAT comparison operators (result is `Bool`).
@@ -1077,6 +1091,13 @@ impl Lower<'_> {
                 let b = self.atom(r, buf);
                 if is_float_op(op) {
                     Op::PrimF(op.clone(), a, b)
+                } else if let Some(func) = integer_op_rt(op) {
+                    // Integer (§ Listing 1.4): `#I` operators → arbitrary-precision runtime.
+                    Op::RtCall {
+                        func: func.into(),
+                        args: vec![a, b],
+                        returns: true,
+                    }
                 } else if is_builtin_op(op) {
                     Op::Prim(op.clone(), a, b)
                 } else if op == "++" {
@@ -1171,6 +1192,13 @@ impl Lower<'_> {
         }
         if name == "showFloat" && args.len() == 1 {
             return self.rtcall("axion_show_float", &args, true, buf);
+        }
+        // Integer (§ Listing 1.4): construct from an Int / render to a String.
+        if name == "fromInt" && args.len() == 1 {
+            return self.rtcall("axion_bignum_from_i64", &args, true, buf);
+        }
+        if name == "showInteger" && args.len() == 1 {
+            return self.rtcall("axion_bignum_to_string", &args, true, buf);
         }
         if name == "strAppend" && args.len() == 2 {
             return self.rtcall("axion_strcat", &args, true, buf);

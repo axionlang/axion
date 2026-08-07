@@ -9,5 +9,5 @@
 factorial :: Integer -> Integer
 factorial n = if n < 2 then 1 else n * factorial (n - 1)
 
-main :: Integer
-main = factorial 50
+main :: IO ()
+main = putStrLn (showInteger (factorial 50))

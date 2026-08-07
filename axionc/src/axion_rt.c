@@ -84,6 +84,118 @@ void axion_free(long ptr) {
   free((char *)ptr - 8);
 }
 
+/* --- arbitrary-precision Integer (§Listing 1.4): C mirror of src/bigint.rs. An
+ * i64 is a BigNum* (boxed). Sign-magnitude, base-1e9 limbs, least-significant first.
+ * Conservative reclamation: never freed (Integer values are shared/immutable; a
+ * GC-free scheme is a later slice). Enough for factorial (add/sub/mul/compare/show);
+ * division is a later slice. */
+#define BN_BASE 1000000000L
+typedef struct {
+  long neg;
+  long len;
+  unsigned int *limbs; /* len limbs, no trailing zeros */
+} BigNum;
+
+static BigNum *bn_make(long len) {
+  BigNum *b = (BigNum *)axion_xmalloc(sizeof(BigNum));
+  b->neg = 0;
+  b->len = len;
+  b->limbs = len > 0 ? (unsigned int *)axion_xmalloc((size_t)len * sizeof(unsigned int)) : 0;
+  return b;
+}
+static BigNum *bn_norm(BigNum *b) {
+  while (b->len > 0 && b->limbs[b->len - 1] == 0) b->len--;
+  if (b->len == 0) b->neg = 0;
+  return b;
+}
+long axion_bignum_from_i64(long n) {
+  int neg = n < 0;
+  unsigned long v = neg ? -(unsigned long)n : (unsigned long)n; /* handles LONG_MIN */
+  long len = 0;
+  unsigned long t = v;
+  while (t > 0) { len++; t /= (unsigned long)BN_BASE; }
+  BigNum *b = bn_make(len);
+  for (long i = 0; i < len; i++) { b->limbs[i] = (unsigned int)(v % (unsigned long)BN_BASE); v /= (unsigned long)BN_BASE; }
+  b->neg = neg && len > 0;
+  return (long)b;
+}
+/* compare magnitudes: -1 / 0 / 1 */
+static int bn_cmp_mag(const BigNum *a, const BigNum *b) {
+  if (a->len != b->len) return a->len < b->len ? -1 : 1;
+  for (long i = a->len - 1; i >= 0; i--)
+    if (a->limbs[i] != b->limbs[i]) return a->limbs[i] < b->limbs[i] ? -1 : 1;
+  return 0;
+}
+static BigNum *bn_add_mag(const BigNum *a, const BigNum *b, int neg) {
+  long n = (a->len > b->len ? a->len : b->len) + 1;
+  BigNum *r = bn_make(n);
+  unsigned long carry = 0;
+  for (long i = 0; i < n; i++) {
+    unsigned long s = carry + (i < a->len ? a->limbs[i] : 0) + (i < b->len ? b->limbs[i] : 0);
+    r->limbs[i] = (unsigned int)(s % (unsigned long)BN_BASE);
+    carry = s / (unsigned long)BN_BASE;
+  }
+  r->neg = neg;
+  return bn_norm(r);
+}
+/* a - b, assuming |a| >= |b| */
+static BigNum *bn_sub_mag(const BigNum *a, const BigNum *b, int neg) {
+  BigNum *r = bn_make(a->len);
+  long borrow = 0;
+  for (long i = 0; i < a->len; i++) {
+    long d = (long)a->limbs[i] - borrow - (i < b->len ? (long)b->limbs[i] : 0);
+    if (d < 0) { d += BN_BASE; borrow = 1; } else { borrow = 0; }
+    r->limbs[i] = (unsigned int)d;
+  }
+  r->neg = neg;
+  return bn_norm(r);
+}
+static BigNum *bn_addsub(const BigNum *a, const BigNum *b, int sub) {
+  int bneg = sub ? !b->neg : b->neg;
+  if (a->neg == bneg) return bn_add_mag(a, b, a->neg);
+  int c = bn_cmp_mag(a, b);
+  if (c == 0) return bn_make(0);
+  return c > 0 ? bn_sub_mag(a, b, a->neg) : bn_sub_mag(b, a, bneg);
+}
+long axion_bignum_add(long a, long b) { return (long)bn_addsub((BigNum *)a, (BigNum *)b, 0); }
+long axion_bignum_sub(long a, long b) { return (long)bn_addsub((BigNum *)a, (BigNum *)b, 1); }
+long axion_bignum_mul(long a, long b) {
+  BigNum *x = (BigNum *)a, *y = (BigNum *)b;
+  if (x->len == 0 || y->len == 0) return (long)bn_make(0);
+  BigNum *r = bn_make(x->len + y->len);
+  for (long i = 0; i < r->len; i++) r->limbs[i] = 0;
+  for (long i = 0; i < x->len; i++) {
+    unsigned long carry = 0;
+    for (long j = 0; j < y->len; j++) {
+      unsigned long cur = (unsigned long)r->limbs[i + j] + (unsigned long)x->limbs[i] * y->limbs[j] + carry;
+      r->limbs[i + j] = (unsigned int)(cur % (unsigned long)BN_BASE);
+      carry = cur / (unsigned long)BN_BASE;
+    }
+    r->limbs[i + y->len] = (unsigned int)(r->limbs[i + y->len] + carry);
+  }
+  r->neg = x->neg != y->neg;
+  return (long)bn_norm(r);
+}
+static int bn_cmp(const BigNum *a, const BigNum *b) {
+  if (a->neg != b->neg) return a->neg ? -1 : 1;
+  int c = bn_cmp_mag(a, b);
+  return a->neg ? -c : c;
+}
+long axion_bignum_eq(long a, long b) { return bn_cmp((BigNum *)a, (BigNum *)b) == 0; }
+long axion_bignum_lt(long a, long b) { return bn_cmp((BigNum *)a, (BigNum *)b) < 0; }
+long axion_bignum_gt(long a, long b) { return bn_cmp((BigNum *)a, (BigNum *)b) > 0; }
+long axion_bignum_to_string(long p) {
+  BigNum *b = (BigNum *)p;
+  if (b->len == 0) { char *z = (char *)axion_xmalloc(2); z[0] = '0'; z[1] = 0; return (long)z; }
+  /* up to 9 digits per limb + sign + NUL */
+  char *buf = (char *)axion_xmalloc((size_t)b->len * 9 + 2);
+  char *o = buf;
+  if (b->neg) *o++ = '-';
+  o += snprintf(o, 11, "%u", b->limbs[b->len - 1]);
+  for (long i = b->len - 2; i >= 0; i--) o += snprintf(o, 11, "%09u", b->limbs[i]);
+  return (long)buf;
+}
+
 /* --- strings / IO --- */
 void axion_puts(long s) { puts((const char *)s); }
 void axion_put(long s) { fputs((const char *)s, stdout); }
