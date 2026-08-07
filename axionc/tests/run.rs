@@ -2431,6 +2431,33 @@ fn strict_let_binding_is_shared_not_re_evaluated() {
 }
 
 #[test]
+fn where_local_captures_enclosing_parameter() {
+    // A `where`-local referencing an enclosing parameter is lambda-lifted with that
+    // parameter threaded in (native) / closed over (interp). Regression: native used
+    // to reject it ("variable 'm' not bound in the Core").
+    agree_across_backends("where_capture.axi", "99\n");
+}
+
+#[test]
+fn nullary_toplevel_caf_is_called_by_reference() {
+    // A bare reference to a nullary top-level binding is a zero-arg call, not a free
+    // variable. Regression: native used to reject it ("variable 'x' not bound").
+    agree_across_backends("toplevel_caf.axi", "42\n");
+}
+
+#[test]
+fn rsa_modexp_round_trips_on_all_backends() {
+    // Capstone: textbook RSA over arbitrary-precision Integer with the private key
+    // derived in-language (extended-Euclid modular inverse). Jointly exercises strict
+    // `let` sharing, `where`-capture of an enclosing param, nullary CAF references, a
+    // param shadowing a same-named CAF, and bignum ×/div/mod/==. Decrypt∘encrypt = 42.
+    agree_across_backends(
+        "rsa_modexp.axi",
+        "2753\n1000000016000000063\n648946405777194593\n42\n",
+    );
+}
+
+#[test]
 fn stream_fusion_agrees_across_backends() {
     // `--fuse` rewrites `consume (range lo hi)` → `rangeFused lo hi step base`.
     // Regression: (a) the lifted step is a closure (env-first ABI) — without

@@ -774,6 +774,133 @@ fn body_refs(f: &ast::Func, out: &mut HashSet<String>) {
 
 // --- scope utilities (free variables, for closure capture) ---
 
+/// The variables a `where`-local captures from its enclosing scope: names its
+/// bodies reference that are neither its own parameters (nor a nested `where`'s
+/// name) nor module globals. Used to lambda-lift the local for the native
+/// backends (the interpreter captures the parent env directly).
+fn where_free_vars(w: &ast::Func, globals: &HashSet<String>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for c in &w.clauses {
+        let mut bound: HashSet<String> = HashSet::new();
+        for p in &c.pats {
+            let mut vs = Vec::new();
+            pat_vars(p, &mut vs);
+            bound.extend(vs);
+        }
+        for iw in &c.wher {
+            bound.insert(iw.name.clone());
+        }
+        match &c.body {
+            Body::Plain(e) => free_vars(e, &bound, &mut out),
+            Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    free_vars(g, &bound, &mut out);
+                    free_vars(r, &bound, &mut out);
+                }
+            }
+        }
+        for iw in &c.wher {
+            for n in where_free_vars(iw, globals) {
+                if !bound.contains(&n) {
+                    out.insert(n);
+                }
+            }
+        }
+    }
+    out.retain(|n| !globals.contains(n));
+    out
+}
+
+/// Every name bound *inside* an expression: `let` binders, lambda parameters and
+/// `case` pattern variables (recursively). With the clause parameters, this is the
+/// set of names that shadow same-named nullary globals during native lowering.
+fn collect_bound_names(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Lam(pats, body, _) => {
+            for p in pats {
+                let mut v = Vec::new();
+                pat_vars(p, &mut v);
+                out.extend(v);
+            }
+            collect_bound_names(body, out);
+        }
+        Expr::Let(binds, body, _) => {
+            for f in binds {
+                out.insert(f.name.clone());
+                for c in &f.clauses {
+                    for p in &c.pats {
+                        let mut v = Vec::new();
+                        pat_vars(p, &mut v);
+                        out.extend(v);
+                    }
+                    match &c.body {
+                        Body::Plain(b) => collect_bound_names(b, out),
+                        Body::Guarded(arms) => {
+                            for (g, r) in arms {
+                                collect_bound_names(g, out);
+                                collect_bound_names(r, out);
+                            }
+                        }
+                    }
+                }
+            }
+            collect_bound_names(body, out);
+        }
+        Expr::Case(s, arms, _) => {
+            collect_bound_names(s, out);
+            for (p, body) in arms {
+                let mut v = Vec::new();
+                pat_vars(p, &mut v);
+                out.extend(v);
+                collect_bound_names(body, out);
+            }
+        }
+        Expr::App(f, a, _) => {
+            collect_bound_names(f, out);
+            collect_bound_names(a, out);
+        }
+        Expr::BinOp(_, l, r, _) => {
+            collect_bound_names(l, out);
+            collect_bound_names(r, out);
+        }
+        Expr::If(c, t, el, _) => {
+            collect_bound_names(c, out);
+            collect_bound_names(t, out);
+            collect_bound_names(el, out);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|x| collect_bound_names(x, out)),
+        Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| collect_bound_names(x, out)),
+        Expr::RecordUpd(b, fs, _) => {
+            collect_bound_names(b, out);
+            fs.iter().for_each(|(_, x)| collect_bound_names(x, out));
+        }
+        _ => {}
+    }
+}
+
+/// The locally-bound names of a whole function body (clause params + everything
+/// `collect_bound_names` finds), for shadowing-aware CAF lowering.
+fn func_bound_names(f: &ast::Func) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for c in &f.clauses {
+        for p in &c.pats {
+            let mut v = Vec::new();
+            pat_vars(p, &mut v);
+            out.extend(v);
+        }
+        match &c.body {
+            Body::Plain(e) => collect_bound_names(e, &mut out),
+            Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    collect_bound_names(g, &mut out);
+                    collect_bound_names(r, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
 fn pat_vars(p: &Pat, out: &mut Vec<String>) {
     match p {
         Pat::Var(n, _) => out.push(n.clone()),
@@ -1023,6 +1150,14 @@ struct Lower<'a> {
     /// param slot) for every `parMap` target, so a `parMap` call lowers to the
     /// `axion_par_map` runtime driver.
     parmap_workers: &'a HashMap<String, (String, i32, i32)>,
+    /// Names bound locally in the function being lowered (params, `let`s, lambda
+    /// params, `case` pattern vars). A bare reference to one of these is a local
+    /// variable even if a same-named nullary global (CAF) exists — it shadows it.
+    local_names: HashSet<String>,
+    /// `where`-local (mangled `parent$w`) → the enclosing variables it captures,
+    /// lifted to leading parameters. At each direct call these are prepended as
+    /// arguments (in this order) so the lifted function receives its free vars.
+    where_captures: &'a HashMap<String, Vec<String>>,
 }
 
 impl Lower<'_> {
@@ -1055,7 +1190,25 @@ impl Lower<'_> {
             Expr::Int(n, _) => Atom::Int(*n),
             Expr::Float(f, _) => Atom::Float(*f),
             Expr::Str(s, _) => Atom::Str(s.clone()),
-            Expr::Var(n, _) => Atom::Var(n.clone()),
+            Expr::Var(n, _) => {
+                // A bare reference to a nullary global — a top-level CAF (`x = 5`) or a
+                // captured `where`-local thunk — is a zero-arg call, not a local
+                // variable. Route it through call_named so the mangling and any
+                // captured arguments are applied, then bind the result.
+                let key = self.locals.get(n).map_or(n.as_str(), String::as_str);
+                if self.globals.contains(n)
+                    && !self.foreigns.contains(n)
+                    && !self.local_names.contains(n)
+                    && self.fn_arity.get(key) == Some(&0)
+                {
+                    let op = self.call_named(n, Vec::new());
+                    let t = self.fresh();
+                    buf.push((t.clone(), Rhs::Op(op), e.span()));
+                    Atom::Var(t)
+                } else {
+                    Atom::Var(n.clone())
+                }
+            }
             _ => {
                 let rhs = self.rhs(e, buf);
                 let name = self.fresh();
@@ -1420,7 +1573,17 @@ impl Lower<'_> {
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| name.to_string());
-            Op::CallDirect(target.clone(), vals, self.fn_ret_ty.get(&target).cloned())
+            // A `where`-local lifted with captured enclosing variables receives them
+            // as leading arguments (same order as its lifted leading parameters).
+            let args = match self.where_captures.get(&target) {
+                Some(caps) if !caps.is_empty() => caps
+                    .iter()
+                    .map(|c| Atom::Var(c.clone()))
+                    .chain(vals)
+                    .collect(),
+                _ => vals,
+            };
+            Op::CallDirect(target.clone(), args, self.fn_ret_ty.get(&target).cloned())
         } else {
             // local variable of function type → indirect call
             Op::CallClosure(Atom::Var(name.to_string()), vals)
@@ -1633,6 +1796,7 @@ fn lower_func(
     array_tys: &HashMap<Span, Type>,
     parmap_workers: &HashMap<String, (String, i32, i32)>,
     fn_arity: &HashMap<String, usize>,
+    where_captures: &HashMap<String, Vec<String>>,
 ) -> (
     Vec<String>,
     Term,
@@ -1657,6 +1821,8 @@ fn lower_func(
         mono_seeds: &mut mono_seeds,
         parmap_workers,
         fn_arity,
+        where_captures,
+        local_names: func_bound_names(f),
     };
     let single_var = f.clauses.len() == 1
         && f.clauses[0]
@@ -3249,6 +3415,43 @@ pub fn lower_with(
         }
     }
 
+    // pre-pass: lambda-lift captures for `where`-locals that reference enclosing
+    // variables. Each local's `parent$w` maps to the leading capture parameters it
+    // needs; the set is the UNION of every sibling's captures (minus that local's
+    // own params), so any local can forward captures when it calls a sibling. The
+    // parent body and every sibling have all these names in scope.
+    let mut where_captures: HashMap<String, Vec<String>> = HashMap::new();
+    for f in &module.funcs {
+        if !native_ok.contains_key(&f.name) {
+            continue;
+        }
+        let wheres: Vec<&ast::Func> = f.clauses.iter().flat_map(|c| &c.wher).collect();
+        if wheres.is_empty() {
+            continue;
+        }
+        let mut union: HashSet<String> = HashSet::new();
+        for w in &wheres {
+            union.extend(where_free_vars(w, &globals));
+        }
+        if union.is_empty() {
+            continue;
+        }
+        for w in &wheres {
+            let mut own: HashSet<String> = HashSet::new();
+            for c in &w.clauses {
+                for p in &c.pats {
+                    let mut vs = Vec::new();
+                    pat_vars(p, &mut vs);
+                    own.extend(vs);
+                }
+            }
+            let mut extra: Vec<String> =
+                union.iter().filter(|n| !own.contains(*n)).cloned().collect();
+            extra.sort();
+            where_captures.insert(format!("{}${}", f.name, w.name), extra);
+        }
+    }
+
     // pre-pass: names + computes captures of all lambdas (by span)
     let mut lam_meta: LamMeta = HashMap::new();
     let mut lam_ctr = 0u32;
@@ -3320,6 +3523,7 @@ pub fn lower_with(
             array_tys,
             &parmap_map,
             &fn_arity,
+            &where_captures,
         );
         mono_seeds.extend(seeds);
         out.push(CoreFn {
@@ -3351,11 +3555,17 @@ pub fn lower_with(
                 array_tys,
                 &parmap_map,
                 &fn_arity,
+                &where_captures,
             );
             mono_seeds.extend(wseeds);
+            // A lifted `where`-local receives its captured enclosing variables as
+            // LEADING parameters (matching the arg order call_named prepends).
+            let mangled = locals[&w.name].clone();
+            let mut wparams = where_captures.get(&mangled).cloned().unwrap_or_default();
+            wparams.extend(wp);
             out.push(CoreFn {
-                name: locals[&w.name].clone(),
-                params: wp,
+                name: mangled,
+                params: wparams,
                 captures: Vec::new(),
                 is_closure: false,
                 owned_params: wo,
@@ -3379,6 +3589,9 @@ pub fn lower_with(
                 _ => format!("_w{k}"),
             })
             .collect();
+        let mut local_names: HashSet<String> = params.iter().cloned().collect();
+        local_names.extend(captures.iter().cloned());
+        collect_bound_names(body, &mut local_names);
         let mut lw = Lower {
             globals: &globals,
             fields: &fields,
@@ -3395,6 +3608,8 @@ pub fn lower_with(
             mono_seeds: &mut Vec::new(),
             parmap_workers: &parmap_map,
             fn_arity: &fn_arity,
+            where_captures: &where_captures,
+            local_names,
         };
         out.push(CoreFn {
             name,
