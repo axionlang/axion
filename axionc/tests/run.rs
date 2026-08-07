@@ -66,6 +66,25 @@ fn over_application_runs_on_all_backends() {
 }
 
 #[test]
+fn nested_polymorphic_container_deep_drops() {
+    // poly-drop Phase 4: a `List (List Int)` (built by `map (range 1) …`) is dropped
+    // at its concrete type so the inner lists are reclaimed (was a leak). This pins
+    // the value (10) on interp + cranelift; scripts/sanitize.sh pins leak-freedom.
+    for backend in [vec!["--backend", "interp"], vec!["--backend", "cranelift"]] {
+        let fx = fixture("poly_nested_list.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "nested container should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "10\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn use_after_consume_is_rejected_ax0001() {
     let out = axionc()
         .args(["--check", &fixture("use_after_consume.axi")])

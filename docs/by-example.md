@@ -250,14 +250,12 @@ linear checker — no `bound` needed, and no need for a linear *collection* of
 endpoints. Runs on all three executors; `bench/conc_parmap.axi` measures the same
 speedup as the unrolled `bench/conc.axi` (the combinator is free).
 
-Two limits today: the worker must be a **named** top-level session function (an
-inline lambda compiles under the interpreter but not natively — `Op::Unsupported`);
-and the reply `List` is reclaimed with the flat cons-cell destructor, so **scalar
-replies (`Int`/`Float`) reclaim exactly, but a worker returning a *heap* payload
-(`List`, a record) leaks the payloads** — the same limitation as any polymorphic
-`List` result. Both are lifted by keying the result at its concrete element type
-(reusing the `axion_drop_List$T` mono-destructors) and monomorphizing the worker;
-deferred until a real heap-returning worker needs it.
+Replies reclaim exactly, including **heap** payloads: a worker returning a
+`List Int` gives a `List (List Int)` result whose inner lists are deep-dropped
+(the drop is keyed at the concrete type from inference, reusing the
+`axion_drop_List$T` mono-destructor — ASan/LSan-clean, see `session_run_parmap_heap.axi`).
+One limit today: the worker must be a **named** top-level session function (an
+inline lambda compiles under the interpreter but not natively — `Op::Unsupported`).
 
 ### 12. Choice and cancellation — `select`/`offer`/`Closed` (§7)
 

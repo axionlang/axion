@@ -1270,6 +1270,19 @@ impl Lower<'_> {
                         let xs = self.atom(args[1], buf);
                         let fa = self.fresh();
                         buf.push((fa.clone(), Rhs::Op(Op::FuncAddr(step)), NO_SPAN));
+                        // Phase 4 (deep-drop): the reply `List` may carry heap payloads
+                        // (`List (List Int)`); seed its specialized destructor so the
+                        // element lists are reclaimed. The drop is keyed concretely in
+                        // `collect_drop_types` (the RtCall has no key field).
+                        if let Some(ty) = self.makecon_tys.get(&e.span()) {
+                            if ty_head_args(ty)
+                                .0
+                                .is_some_and(|h| self.parametric_data.contains(h))
+                                && mono_key(ty).is_some_and(|k| k.contains('$'))
+                            {
+                                self.mono_seeds.push(ty.clone());
+                            }
+                        }
                         return Op::RtCall {
                             func: "axion_par_map".into(),
                             args: vec![
@@ -3340,7 +3353,7 @@ pub fn lower_with(
     // deep-drop (§2): `data` type of each droppable, so the backend reclaims
     // nested fields via a recursive destructor instead of a flat `free`.
     let recinfo = RecordInfo::build(module);
-    let all_dty = build_all_drop_ty(&out);
+    let all_dty = build_all_drop_ty(&out, makecon_tys);
     let empty = HashMap::new();
 
     let mut result: Vec<CoreFn> = Vec::with_capacity(out.len());
@@ -4103,11 +4116,14 @@ fn gen_skip_destructors(seeds: &[(String, Vec<usize>)], recinfo: &RecordInfo) ->
 /// annotation attached to the node that creates the value (`Make*`/call result)
 /// or, for owned `%1` parameters, resolved on the function at lowering.
 /// `None` = unknown/non-boxed → the backend emits a flat `free` (conservative).
-fn build_all_drop_ty(fns: &[CoreFn]) -> HashMap<String, HashMap<String, Option<String>>> {
+fn build_all_drop_ty(
+    fns: &[CoreFn],
+    makecon_tys: &HashMap<Span, Type>,
+) -> HashMap<String, HashMap<String, Option<String>>> {
     let mut out = HashMap::new();
     for f in fns {
         let mut dty: HashMap<String, Option<String>> = f.owned_drop_ty.iter().cloned().collect();
-        collect_drop_types(&f.body, &mut dty);
+        collect_drop_types(&f.body, makecon_tys, &mut dty);
         out.insert(f.name.clone(), dty);
     }
     out
@@ -4144,33 +4160,55 @@ impl Op {
 /// now a plain READ of the Phase A′ annotation on each node (no reconstruction).
 /// (Results of `if`/`case` bound to `let` are not typed — they get a flat
 /// `free`; conservative, safe — see docs/backend.md.)
-fn collect_drop_types(t: &Term, out: &mut HashMap<String, Option<String>>) {
+fn collect_drop_types(
+    t: &Term,
+    makecon_tys: &HashMap<Span, Type>,
+    out: &mut HashMap<String, Option<String>>,
+) {
     match t {
-        Term::Let(x, rhs, _, body) => {
+        Term::Let(x, rhs, span, body) => {
             if let Rhs::Op(op) = rhs {
-                let ty = op.drop_ty();
+                let mut ty = op.drop_ty();
+                // Phase 4: `parMap`'s reply `List` element type is only known from
+                // inference (this binding's span) — the RtCall carries no key field,
+                // so key its drop concretely here for deep element reclamation.
+                if let Op::RtCall { func, .. } = op {
+                    if func == "axion_par_map" {
+                        if let Some(mk) = makecon_tys
+                            .get(span)
+                            .and_then(mono_key)
+                            .filter(|k| k.contains('$'))
+                        {
+                            ty = Some(mk);
+                        }
+                    }
+                }
                 if ty.is_some() {
                     out.insert(x.clone(), ty);
                 }
             }
-            collect_rhs_drop_types(rhs, out);
-            collect_drop_types(body, out);
+            collect_rhs_drop_types(rhs, makecon_tys, out);
+            collect_drop_types(body, makecon_tys, out);
         }
-        Term::Drop(_, _, _, _, body) => collect_drop_types(body, out),
-        Term::Ret(rhs, _) => collect_rhs_drop_types(rhs, out),
+        Term::Drop(_, _, _, _, body) => collect_drop_types(body, makecon_tys, out),
+        Term::Ret(rhs, _) => collect_rhs_drop_types(rhs, makecon_tys, out),
     }
 }
 
-fn collect_rhs_drop_types(rhs: &Rhs, out: &mut HashMap<String, Option<String>>) {
+fn collect_rhs_drop_types(
+    rhs: &Rhs,
+    makecon_tys: &HashMap<Span, Type>,
+    out: &mut HashMap<String, Option<String>>,
+) {
     match rhs {
         Rhs::Op(_) => {}
         Rhs::If(_, th, el) => {
-            collect_drop_types(th, out);
-            collect_drop_types(el, out);
+            collect_drop_types(th, makecon_tys, out);
+            collect_drop_types(el, makecon_tys, out);
         }
         Rhs::Case(_, arms) => {
             for (_, b) in arms {
-                collect_drop_types(b, out);
+                collect_drop_types(b, makecon_tys, out);
             }
         }
     }

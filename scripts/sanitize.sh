@@ -57,6 +57,8 @@ NATIVE=(
   axionc/tests/fixtures/poly_payload_generic_nested.axi
   axionc/tests/fixtures/poly_payload_generic_compose.axi
   axionc/tests/fixtures/poly_payload_gap.axi
+  axionc/tests/fixtures/poly_nested_list.axi
+  axionc/tests/fixtures/session_run_parmap_heap.axi
   axionc/tests/fixtures/land_call_boxed.axi
   axionc/tests/fixtures/land_enum_call.axi
   axionc/tests/fixtures/land_deepdrop_safety.axi
@@ -97,6 +99,7 @@ LEAKFREE=(
   land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned land_tuple_upd land_owned_poly
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
+  poly_nested_list session_run_parmap_heap
 )
 is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 
