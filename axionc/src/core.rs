@@ -353,6 +353,21 @@ pub fn integer_op_rt(op: &str) -> Option<&'static str> {
     })
 }
 
+/// Runtime builtins usable in a session worker's value position (compute between
+/// channel ops): name → (runtime function, arity). Mirrors the normal `app`
+/// lowering for the builtins that are plain `RtCall`s.
+fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
+    Some(match name {
+        "fromInt" => ("axion_bignum_from_i64", 1),
+        "showInteger" => ("axion_bignum_to_string", 1),
+        "divInteger" => ("axion_bignum_div", 2),
+        "modInteger" => ("axion_bignum_mod", 2),
+        "showFloat" => ("axion_show_float", 1),
+        "strAppend" => ("axion_strcat", 2),
+        _ => return None,
+    })
+}
+
 /// FLOAT comparison operators (result is `Bool`).
 pub fn is_float_cmp(op: &str) -> bool {
     matches!(op, "<." | ">." | "==.")
@@ -2077,26 +2092,51 @@ impl SessGen<'_> {
                 let av = self.val(a, binds);
                 let bv = self.val(b, binds);
                 let t = self.fresh();
-                binds.push((t.clone(), Rhs::Op(Op::Prim(op.clone(), av, bv))));
+                // Float (`+.`) and arbitrary-precision Integer (`#I`) operators lower
+                // like they do on the normal path, not as an integer `Prim`.
+                let rhs = if is_float_op(op) {
+                    Rhs::Op(Op::PrimF(op.clone(), av, bv))
+                } else if let Some(func) = integer_op_rt(op) {
+                    Rhs::Op(Op::RtCall {
+                        func: func.into(),
+                        args: vec![av, bv],
+                        returns: true,
+                    })
+                } else {
+                    Rhs::Op(Op::Prim(op.clone(), av, bv))
+                };
+                binds.push((t.clone(), rhs));
                 Atom::Var(t)
             }
-            // a call to a top-level native function (e.g. `fib n`) — lets a worker
-            // do real compute between channel ops. The callee is compiled by the
-            // normal native path (candidacy filter), so `CallDirect` resolves.
+            // a call to a top-level native function (e.g. `fib n`), or a runtime
+            // builtin (e.g. `fromInt` — §Listing 1.4) — lets a worker do real compute
+            // between channel ops. Named callees compile by the normal native path.
             Expr::App(..) => {
                 let (head, args) = sess_spine(e);
-                match head.filter(|n| self.fns.contains(*n)) {
-                    Some(name) => {
-                        let name = name.to_string();
-                        let mut atoms = Vec::with_capacity(args.len());
-                        for a in &args {
-                            atoms.push(self.val(a, binds));
-                        }
+                if let Some(name) = head.filter(|n| self.fns.contains(*n)) {
+                    let name = name.to_string();
+                    let atoms: Vec<Atom> = args.iter().map(|a| self.val(a, binds)).collect();
+                    let t = self.fresh();
+                    binds.push((t.clone(), Rhs::Op(Op::CallDirect(name, atoms, None))));
+                    Atom::Var(t)
+                } else if let Some((func, arity)) = head.and_then(sess_builtin_rt) {
+                    if args.len() == arity {
+                        let atoms: Vec<Atom> = args.iter().map(|a| self.val(a, binds)).collect();
                         let t = self.fresh();
-                        binds.push((t.clone(), Rhs::Op(Op::CallDirect(name, atoms, None))));
+                        binds.push((
+                            t.clone(),
+                            Rhs::Op(Op::RtCall {
+                                func: func.into(),
+                                args: atoms,
+                                returns: true,
+                            }),
+                        ));
                         Atom::Var(t)
+                    } else {
+                        self.unsupported(binds)
                     }
-                    None => self.unsupported(binds),
+                } else {
+                    self.unsupported(binds)
                 }
             }
             _ => self.unsupported(binds),

@@ -91,6 +91,32 @@ fn integer_bignum_factorial_is_exact() {
 }
 
 #[test]
+fn parmap_workers_compute_integer() {
+    // Integration: session workers doing arbitrary-precision compute (`Integer`,
+    // via the `fromInt` builtin) inside the native session state machine, collected
+    // by parMap. 4 × factorial 20 = 9731608032706560000 (overflows i64, exact with
+    // Integer). All three executors agree — regression guard for the SessGen builtin
+    // support the stress test uncovered.
+    let expect = "9731608032706560000\n";
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("session_parmap_integer.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "parMap+Integer should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expect, "{backend:?}");
+    }
+}
+
+#[test]
 fn integer_bignum_divmod() {
     // §Listing 1.4: `div`/`mod` overloaded (Integral) over Int AND Integer, on all
     // three executors. Integer 10^30 /% 7 (arbitrary precision) + Int 100 /% 7 (the
