@@ -694,6 +694,16 @@ impl<'a> Infer<'a> {
                 Box::new(string()),
             )),
         );
+        // Integer (§ Listing 1.4): fromInt :: Int -> Integer, showInteger :: Integer -> String.
+        let integer = || Ty::Con("Integer".into(), vec![]);
+        env.insert(
+            "fromInt".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(integer()))),
+        );
+        env.insert(
+            "showInteger".into(),
+            mono(Ty::Fun(Box::new(integer()), Box::new(string()))),
+        );
         // strAppend :: String -> String -> String (native string concatenation)
         env.insert(
             "strAppend".into(),
@@ -1187,8 +1197,11 @@ impl<'a> Infer<'a> {
                     resolutions
                         .insert((o.func.clone(), o.span), builtin_op_float(&o.method).into());
                 }
-                // built-in Num/Ord operator over Int → keep the operator (no rewrite).
-                Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Int" => {}
+                // built-in Num/Ord operator over Int or Integer → keep the operator
+                // (no rewrite); the executor dispatches on the runtime value (§Int vs
+                // arbitrary-precision Integer, Listing 1.4).
+                Ty::Con(name, _)
+                    if is_builtin_op_method(&o.method) && (name == "Int" || name == "Integer") => {}
                 // concrete type WITH instance → resolves to the direct impl.
                 Ty::Con(name, args) if instances.contains(&(o.class.clone(), name.clone())) => {
                     let base = crate::ast::method_impl_name(&o.method, &name);

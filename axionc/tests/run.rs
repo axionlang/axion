@@ -66,6 +66,26 @@ fn over_application_runs_on_all_backends() {
 }
 
 #[test]
+fn integer_bignum_factorial_is_exact() {
+    // §Listing 1.4: `Integer` is arbitrary-precision — `factorial 50` (65 digits)
+    // overflows i64 but is exact with the bignum. Interpreter (Phase 1); native is
+    // a follow-up.
+    let out = axionc()
+        .args(["--backend", "interp", &fixture("integer_factorial.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "Integer factorial should run: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "30414093201713378043612608166064768844377641568960512000000000000\n"
+    );
+}
+
+#[test]
 fn nested_polymorphic_container_deep_drops() {
     // poly-drop Phase 4: a `List (List Int)` (built by `map (range 1) …`) is dropped
     // at its concrete type so the inner lists are reclaimed (was a leak). This pins

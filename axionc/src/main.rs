@@ -33,6 +33,7 @@
 // of what the walking skeleton consumes (they grow in later phases).
 #[allow(dead_code)]
 mod ast;
+mod bigint;
 mod check;
 mod codegen;
 mod core;

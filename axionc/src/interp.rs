@@ -28,6 +28,8 @@ pub struct Program {
 #[derive(Clone)]
 enum Value {
     Int(i64),
+    /// Arbitrary-precision `Integer` (§ Listing 1.4) — no overflow, at a runtime cost.
+    Integer(crate::bigint::BigInt),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -182,6 +184,10 @@ pub fn run(module: &Module) -> Result<(), RunError> {
             println!("{n}");
             Ok(())
         }
+        Value::Integer(n) => {
+            println!("{n}");
+            Ok(())
+        }
         Value::Float(f) => {
             println!("{f}");
             Ok(())
@@ -200,6 +206,7 @@ pub fn run(module: &Module) -> Result<(), RunError> {
 fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(_) => "Int",
+        Value::Integer(_) => "Integer",
         Value::Float(_) => "Float",
         Value::Str(_) => "String",
         Value::Bool(_) => "Bool",
@@ -438,6 +445,14 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "showFloat" => Ok(Value::Builtin {
             name: "showFloat",
+            args: Vec::new(),
+        }),
+        "fromInt" => Ok(Value::Builtin {
+            name: "fromInt",
+            args: Vec::new(),
+        }),
+        "showInteger" => Ok(Value::Builtin {
+            name: "showInteger",
             args: Vec::new(),
         }),
         "strAppend" => Ok(Value::Builtin {
@@ -914,6 +929,13 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("==", Int(x), Int(y)) => Ok(Bool(x == y)),
         ("<", Int(x), Int(y)) => Ok(Bool(x < y)),
         (">", Int(x), Int(y)) => Ok(Bool(x > y)),
+        // Integer (§ Listing 1.4): arbitrary precision, no wrap.
+        ("+", Integer(x), Integer(y)) => Ok(Integer(x.add(&y))),
+        ("-", Integer(x), Integer(y)) => Ok(Integer(x.sub(&y))),
+        ("*", Integer(x), Integer(y)) => Ok(Integer(x.mul(&y))),
+        ("==", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Equal)),
+        ("<", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Less)),
+        (">", Integer(x), Integer(y)) => Ok(Bool(x.cmp(&y) == std::cmp::Ordering::Greater)),
         // float arithmetic (§4): `+. -. *. /.`
         ("+.", Float(x), Float(y)) => Ok(Float(x + y)),
         ("-.", Float(x), Float(y)) => Ok(Float(x - y)),
@@ -937,6 +959,9 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("putStr", [Value::Str(s)]) => Ok(Value::Io(s.clone())),
         ("showInt", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
         ("showFloat", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
+        // Integer (§ Listing 1.4): construct from an Int, show, convert back.
+        ("fromInt", [Value::Int(n)]) => Ok(Value::Integer(crate::bigint::BigInt::from_i64(*n))),
+        ("showInteger", [Value::Integer(n)]) => Ok(Value::Str(n.to_string())),
         ("strAppend", [Value::Str(x), Value::Str(y)]) => Ok(Value::Str(format!("{x}{y}"))),
         // split divides into a pair of shared-read halves (they share the
         // value); join recombines — trivial semantics in the interpreter.
@@ -979,7 +1004,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
         .clone();
     let v = run_func(&prog, &def, &empty_env(), Vec::new())?;
     Ok(match v {
-        Value::Int(_) => RtType::Int,
+        Value::Int(_) | Value::Integer(_) => RtType::Int,
         Value::Float(_) => RtType::Float,
         Value::Bool(_) => RtType::Bool,
         Value::Str(_) => RtType::Str,

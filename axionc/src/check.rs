@@ -1160,6 +1160,9 @@ fn builtins() -> HashSet<String> {
         "bound",
         "spawn",
         "parMap",
+        // arbitrary-precision Integer (§ Listing 1.4)
+        "fromInt",
+        "showInteger",
     ]
     .iter()
     .map(|s| s.to_string())
