@@ -40,10 +40,12 @@ Three executors for the same program, all in agreement:
 
 The general-purpose core compiles **to native**: higher-order functions
 (`map`/`filter`/`foldr`), **typeclasses** (with zero-cost monomorphization),
-`compose`/partial application, and looping IO (`mapM_`, do-blocks). Native
-**sessions** have started: `spawn`/`send`/`recv`/`close` lower to a cooperative
-state machine and the concurrent ping-pong runs under `--backend cranelift`
-(choice/cancellation and `--release` still interp-only) — see the roadmap.
+`compose`/partial application (and **over-application** — functions that return
+functions), and looping IO (`mapM_`, do-blocks). Native **sessions run M:N in
+parallel** on both native backends: `spawn`/`send`/`recv`/`close`, choice
+(`select`/`offer`) and cancellation lower to cooperative state machines over a
+thread-pool scheduler; the `parMap` structured fork-join combinator and stateful
+recursive server loops run there too — see the roadmap.
 
 `rustc`-style diagnostics (span + label + fix suggestion + JSON), with stable
 codes: `axionc --explain AX0001`.
@@ -173,7 +175,15 @@ calmly and tested, without breaking the philosophy:
   via a re-queue that re-dispatches the state machine at the loop head), and is
   **anchored to the formal oracle** — the CFSM model-checker proves the recursive
   protocol deadlock-free over its (now cyclic) state graph, with T1 duality
-  involution and non-vacuity checks for `Rec`/`Var`.
+  involution and non-vacuity checks for `Rec`/`Var`. **Stateful** server loops work
+  too: the tail carries accumulator state (`server (acc + n) d'`), so counters /
+  running totals / request-response services run on all three backends.
+- **Structured fork-join — `parMap` ✅** — `sum (parMap worker (replicate 4 34))`
+  collapses the hand-unrolled `spawn/send/recv/close` of an N-worker fork-join into
+  one combinator that opens its own nursery, forks the workers onto the same M:N
+  scheduler, and returns the replies as a `List`. The endpoints live inside the
+  runtime primitive (never the linear checker), reclaim exactly, and match the
+  hand-unrolled version's parallel speedup — the combinator is free.
 
 **Honesty about the state.** Known and documented debt: `Integer`/bignum missing
 (`factorial 20` runs, `50` doesn't); **native sessions are M:N but with a global
