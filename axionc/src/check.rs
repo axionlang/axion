@@ -77,6 +77,8 @@ pub struct Analysis {
     pub makecon_tys: HashMap<Span, Type>,
     /// Phase 2c: `newArray` call-site types for mono array destructors
     pub array_tys: HashMap<Span, Type>,
+    /// Literal patterns inference resolved to `Integer` (matched by bignum `==`).
+    pub integer_lits: HashSet<Span>,
 }
 
 /// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.

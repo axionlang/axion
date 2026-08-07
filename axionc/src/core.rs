@@ -1154,6 +1154,9 @@ struct Lower<'a> {
     /// params, `case` pattern vars). A bare reference to one of these is a local
     /// variable even if a same-named nullary global (CAF) exists — it shadows it.
     local_names: HashSet<String>,
+    /// Spans of literal patterns that inference resolved to `Integer` (not `Int`):
+    /// they must match by arbitrary-precision `axion_bignum_eq`, not an i64 compare.
+    integer_pats: &'a HashSet<Span>,
     /// `where`-local (mangled `parent$w`) → the enclosing variables it captures,
     /// lifted to leading parameters. At each direct call these are prepended as
     /// arguments (in this order) so the lifted function receives its free vars.
@@ -1227,6 +1230,15 @@ impl Lower<'_> {
             }
             Expr::Case(s, arms, _) => {
                 let sa = self.atom(s, buf);
+                // An Integer literal arm compares by bignum equality — the CPat switch
+                // would test the boxed scrutinee pointer against an i64 and never match,
+                // so desugar the whole `case` to an if-chain (like function clauses).
+                if arms
+                    .iter()
+                    .any(|(p, _)| matches!(p, Pat::Int(_, sp) if self.integer_pats.contains(sp)))
+                {
+                    return self.integer_case_rhs(sa, arms, buf);
+                }
                 let carms = arms
                     .iter()
                     .map(|(p, body)| (lower_pat(p), self.term(body)))
@@ -1615,15 +1627,70 @@ impl Lower<'_> {
         wrap_spanned(buf, Term::Ret(rhs, e.span()))
     }
 
+    /// Lowers a `case` over an `Integer` to an if-chain: the first arm's test
+    /// (bignum `==` for a literal, unconditional for a var/wildcard) is emitted into
+    /// `buf`; the remaining arms become the nested else-Term.
+    fn integer_case_rhs(
+        &mut self,
+        scrut: Atom,
+        arms: &[(Pat, Expr)],
+        buf: &mut Vec<(String, Rhs, Span)>,
+    ) -> Rhs {
+        let Some((p0, body0)) = arms.first() else {
+            return Rhs::Op(Op::Unsupported("non-exhaustive Integer case".into()));
+        };
+        match p0 {
+            // a var/wildcard arm is irrefutable — it ends the chain
+            Pat::Wild(_) => self.rhs(body0, buf),
+            Pat::Var(n, sp) => {
+                buf.push((n.clone(), Rhs::Op(Op::Atom(scrut)), *sp));
+                self.rhs(body0, buf)
+            }
+            Pat::Int(k, _) => {
+                let boxed = self.fresh();
+                buf.push((
+                    boxed.clone(),
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_bignum_from_i64".into(),
+                        args: vec![Atom::Int(*k)],
+                        returns: true,
+                    }),
+                    NO_SPAN,
+                ));
+                let c = self.fresh();
+                buf.push((
+                    c.clone(),
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_bignum_eq".into(),
+                        args: vec![scrut.clone(), Atom::Var(boxed)],
+                        returns: true,
+                    }),
+                    NO_SPAN,
+                ));
+                let then_t = self.term(body0);
+                let else_t = self.integer_case_term(scrut, &arms[1..]);
+                Rhs::If(Atom::Var(c), Box::new(then_t), Box::new(else_t))
+            }
+            // Integer scrutinees only carry literal/var/wildcard patterns
+            _ => self.rhs(body0, buf),
+        }
+    }
+
+    fn integer_case_term(&mut self, scrut: Atom, arms: &[(Pat, Expr)]) -> Term {
+        let mut buf = Vec::new();
+        let rhs = self.integer_case_rhs(scrut, arms, &mut buf);
+        wrap_spanned(buf, Term::Ret(rhs, NO_SPAN))
+    }
+
     /// Desugars multi-clause into an `if` chain (requires a catch-all at the end).
     fn clauses(&mut self, clauses: &[ast::Clause], params: &[String], i: usize) -> Term {
         let clause = &clauses[i];
-        let lits: Vec<(usize, i64)> = clause
+        let lits: Vec<(usize, i64, Span)> = clause
             .pats
             .iter()
             .enumerate()
             .filter_map(|(j, p)| match p {
-                Pat::Int(n, _) => Some((j, *n)),
+                Pat::Int(n, sp) => Some((j, *n, *sp)),
                 _ => None,
             })
             .collect();
@@ -1659,17 +1726,41 @@ impl Lower<'_> {
         // cond = band(param_j == lit, …)
         let mut buf: Vec<(String, Rhs, Span)> = Vec::new();
         let mut cond: Option<Atom> = None;
-        for (j, lit) in &lits {
+        for (j, lit, sp) in &lits {
             let c = self.fresh();
-            buf.push((
-                c.clone(),
-                Rhs::Op(Op::Prim(
-                    "==".into(),
-                    Atom::Var(params[*j].clone()),
-                    Atom::Int(*lit),
-                )),
-                NO_SPAN,
-            ));
+            if self.integer_pats.contains(sp) {
+                // Integer literal pattern: box the literal and compare by bignum
+                // equality (the scrutinee is a boxed BigInt pointer, not an i64).
+                let boxed = self.fresh();
+                buf.push((
+                    boxed.clone(),
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_bignum_from_i64".into(),
+                        args: vec![Atom::Int(*lit)],
+                        returns: true,
+                    }),
+                    NO_SPAN,
+                ));
+                buf.push((
+                    c.clone(),
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_bignum_eq".into(),
+                        args: vec![Atom::Var(params[*j].clone()), Atom::Var(boxed)],
+                        returns: true,
+                    }),
+                    NO_SPAN,
+                ));
+            } else {
+                buf.push((
+                    c.clone(),
+                    Rhs::Op(Op::Prim(
+                        "==".into(),
+                        Atom::Var(params[*j].clone()),
+                        Atom::Int(*lit),
+                    )),
+                    NO_SPAN,
+                ));
+            }
             cond = Some(match cond {
                 None => Atom::Var(c),
                 Some(prev) => {
@@ -1797,6 +1888,7 @@ fn lower_func(
     parmap_workers: &HashMap<String, (String, i32, i32)>,
     fn_arity: &HashMap<String, usize>,
     where_captures: &HashMap<String, Vec<String>>,
+    integer_pats: &HashSet<Span>,
 ) -> (
     Vec<String>,
     Term,
@@ -1823,6 +1915,7 @@ fn lower_func(
         fn_arity,
         where_captures,
         local_names: func_bound_names(f),
+        integer_pats,
     };
     let single_var = f.clauses.len() == 1
         && f.clauses[0]
@@ -3244,6 +3337,7 @@ pub fn lower_with(
     inplace: &HashSet<Span>,
     makecon_tys: &HashMap<Span, Type>,
     array_tys: &HashMap<Span, Type>,
+    integer_pats: &HashSet<Span>,
     _fuse: bool, // kept for API compatibility, auto-fusion always runs now
 ) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
@@ -3524,6 +3618,7 @@ pub fn lower_with(
             &parmap_map,
             &fn_arity,
             &where_captures,
+            integer_pats,
         );
         mono_seeds.extend(seeds);
         out.push(CoreFn {
@@ -3556,6 +3651,7 @@ pub fn lower_with(
                 &parmap_map,
                 &fn_arity,
                 &where_captures,
+                integer_pats,
             );
             mono_seeds.extend(wseeds);
             // A lifted `where`-local receives its captured enclosing variables as
@@ -3610,6 +3706,7 @@ pub fn lower_with(
             fn_arity: &fn_arity,
             where_captures: &where_captures,
             local_names,
+            integer_pats,
         };
         out.push(CoreFn {
             name,

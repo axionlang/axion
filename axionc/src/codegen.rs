@@ -2109,8 +2109,9 @@ pub fn run(
     inplace: &HashSet<Span>,
     fuse: bool,
     makecon_tys: &HashMap<Span, ast::Type>,
+    integer_pats: &HashSet<Span>,
 ) -> Result<Option<i64>, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), fuse).fns;
+    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, fuse).fns;
     let entry_ok = fns
         .iter()
         .find(|f| f.name == entry)
@@ -2203,8 +2204,9 @@ pub fn emit_ir(
     inplace: &HashSet<Span>,
     fuse: bool,
     makecon_tys: &HashMap<Span, ast::Type>,
+    integer_pats: &HashSet<Span>,
 ) -> Result<String, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), fuse).fns;
+    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, fuse).fns;
     if fns.is_empty() {
         return Ok("; no natively compilable function (Int core).\n".into());
     }

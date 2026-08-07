@@ -2458,6 +2458,15 @@ fn rsa_modexp_round_trips_on_all_backends() {
 }
 
 #[test]
+fn integer_literal_patterns_match_by_bignum() {
+    // Num-polymorphic literal patterns at Integer (`fib 0`/`fib 1`, `case n of 0 ->`)
+    // match by arbitrary-precision equality on all backends. Regression: native used
+    // to compare the boxed pointer to an i64 (never matched → wrong result / infinite
+    // recursion). fib 30 = 832040, classify 0 = 100, classify 21 = 42.
+    agree_across_backends("integer_literal_pattern.axi", "832040\n100\n42\n");
+}
+
+#[test]
 fn stream_fusion_agrees_across_backends() {
     // `--fuse` rewrites `consume (range lo hi)` → `rangeFused lo hi step base`.
     // Regression: (a) the lifted step is a closure (env-first ABI) — without

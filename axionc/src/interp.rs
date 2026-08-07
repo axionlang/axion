@@ -899,7 +899,15 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
             env.vars.borrow_mut().insert(name.clone(), v.clone());
             true
         }
-        Pat::Int(n, _) => matches!(v, Value::Int(m) if m == n),
+        // A literal pattern matches an `Int` directly, or an `Integer` by bignum
+        // comparison (Num-polymorphic literal patterns, e.g. `factorial 0 = 1`).
+        Pat::Int(n, _) => match v {
+            Value::Int(m) => m == n,
+            Value::Integer(big) => {
+                big.cmp(&crate::bigint::BigInt::from_i64(*n)) == std::cmp::Ordering::Equal
+            }
+            _ => false,
+        },
         Pat::Con(name, subpats, _) => match v {
             Value::Bool(b) => (name == "True" && *b) || (name == "False" && !*b),
             // constructor: matches if the name matches and binds sub-patterns to fields

@@ -1907,7 +1907,14 @@ impl<'a> Infer<'a> {
     fn infer_pat(&mut self, env: &mut Env, p: &Pat) -> Ty {
         match p {
             Pat::Wild(_) => self.fresh(),
-            Pat::Int(_, _) => Ty::Con("Int".into(), vec![]),
+            // Num-polymorphic literal pattern — like an `Expr::Int`, a fresh var
+            // resolved at the end of inference to `Integer` (matched by bignum `==`)
+            // or defaulted to `Int`. Lets `factorial 0 = 1` type at `Integer`.
+            Pat::Int(_, span) => {
+                let v = self.fresh();
+                self.int_lit_vars.push((*span, v.clone()));
+                v
+            }
             Pat::Var(n, _) => {
                 let t = self.fresh();
                 env.insert(n.clone(), mono(t.clone()));

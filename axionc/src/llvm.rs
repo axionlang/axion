@@ -121,8 +121,9 @@ pub fn emit_ir(
     inplace: &HashSet<Span>,
     fuse: bool,
     makecon_tys: &HashMap<Span, ast::Type>,
+    integer_pats: &HashSet<Span>,
 ) -> Result<String, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), fuse).fns;
+    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, fuse).fns;
     let records = RecordInfo::build(module);
     // type keys with a generated destructor `axion_drop_<key>` — includes the
     // monomorphized ones (`List$P`), whose key is not a `needs_deep_drop` type.
@@ -210,14 +211,15 @@ pub fn build_and_run(
     inplace: &HashSet<Span>,
     fuse: bool,
     makecon_tys: &HashMap<Span, ast::Type>,
+    integer_pats: &HashSet<Span>,
 ) -> Result<(), String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), fuse).fns;
+    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, fuse).fns;
     if !fns.iter().any(|f| f.name == entry && f.params.is_empty()) {
         return Err(format!(
             "'{entry}' must be a native function with no parameters"
         ));
     }
-    let ir = emit_ir(module, inplace, fuse, makecon_tys)?;
+    let ir = emit_ir(module, inplace, fuse, makecon_tys, integer_pats)?;
 
     let dir = std::env::temp_dir();
     let pid = std::process::id();

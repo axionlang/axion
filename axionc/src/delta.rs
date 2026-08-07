@@ -1442,6 +1442,7 @@ mod tests {
             &inplace,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
             false,
         )
     }
@@ -1471,6 +1472,7 @@ mod tests {
             &inplace,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
             false,
         );
         check_drop_coherence(&l.fns, &l.borrow_args, &l.recinfo, &analysis.drops)
@@ -1487,6 +1489,7 @@ mod tests {
             &inplace,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
             false,
         );
         let mut fns = l.fns.clone();
@@ -1925,6 +1928,7 @@ mod tests {
             &inplace,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
             false,
         );
         let lines = crate::lexer::LineMap::new(src);
@@ -2002,6 +2006,7 @@ mod tests {
             &inplace,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
             false,
         );
         let mut fns = l.fns.clone();
