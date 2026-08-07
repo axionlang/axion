@@ -1307,7 +1307,27 @@ impl Lower<'_> {
                 }
             }
         }
-        self.call_named(name, vals)
+        let mut op = self.call_named(name, vals);
+        // Phase 4 (deep-drop): if this call's result is a concrete parametric heap
+        // type (`List (List Int)`, `List P`, …), key its drop at that concrete type
+        // and seed the specialized destructor, instead of the callee's generic result
+        // head — so a call-bound local reclaims its heap ELEMENT payloads, not just
+        // the spine. Bare/monomorphic heads (`List$Int`, whose element is unboxed) are
+        // harmless; a plain `Int`/function result (no `$`) is left untouched.
+        if let Op::CallDirect(_, _, key) = &mut op {
+            if let Some(ty) = self.makecon_tys.get(&e.span()) {
+                // only parametric `data` types (List/Maybe/user) have generated
+                // mono-destructors — NOT native builtins like `Array` (freed flat).
+                let head = ty_head_args(ty).0;
+                if head.is_some_and(|h| self.parametric_data.contains(h)) {
+                    if let Some(mk) = mono_key(ty).filter(|k| k.contains('$')) {
+                        self.mono_seeds.push(ty.clone());
+                        *key = Some(mk);
+                    }
+                }
+            }
+        }
+        op
     }
 
     /// Lowers a call by name (`name` applied to `vals`), resolving whether it is

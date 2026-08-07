@@ -81,6 +81,9 @@ struct Infer<'a> {
     /// `newArray` call span → the inferred element type (for monomorphized
     /// array destructor generation, analog to `con_ret_tys`).
     array_ret_tys: HashMap<Span, Ty>,
+    /// Phase 4: result type at each application span (for the concrete drop key of
+    /// a call/rtcall-bound local of a parametric heap type).
+    call_ret_tys: HashMap<Span, Ty>,
 }
 
 /// An obligation `class C over type T`, collected at a method use and
@@ -173,6 +176,7 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         cur_fn: String::new(),
         con_ret_tys: HashMap::new(),
         array_ret_tys: HashMap::new(),
+        call_ret_tys: HashMap::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -409,6 +413,18 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
             ty_to_ast(&resolved).map(|ast| (sp, ast))
         })
         .collect();
+    // Phase 4: merge call-site result types into `makecon_tys` (a shared span→Type
+    // map, already threaded to every backend). Call spans are disjoint from
+    // constructor spans, and the `MakeCon` lowering only looks up constructor spans,
+    // so this is safe and needs no extra plumbing — the lowering reads the same map
+    // for a `CallDirect`'s concrete drop key.
+    let call_tys = std::mem::take(&mut inf.call_ret_tys);
+    for (sp, ty) in call_tys {
+        let resolved = inf.apply(&ty);
+        if let Some(ast) = ty_to_ast(&resolved) {
+            mono.makecon_tys.entry(sp).or_insert(ast);
+        }
+    }
     let _ = placeholders;
     mono
 }
@@ -1963,6 +1979,11 @@ impl<'a> Infer<'a> {
                         self.array_ret_tys.insert(*span, r.clone());
                     }
                 }
+                // Phase 4: record every application's result type; at resolution the
+                // ones that are concrete parametric heap types become the drop key of
+                // a call/rtcall-bound local (partial-application arrows resolve to a
+                // function type and are dropped by `ty_to_ast`/`mono_key`).
+                self.call_ret_tys.insert(*span, r.clone());
                 r
             }
             Expr::BinOp(op, l, r, span) => {
