@@ -160,8 +160,13 @@ pub fn emit_ir(
     }
     out.push('\n');
 
+    // function → parameter count, so a direct call with a mismatched arity fails
+    // LOUDLY (a residual over-application the lowering split didn't catch) instead of
+    // emitting a malformed `call` that silently returns garbage.
+    let fn_arity: HashMap<String, usize> =
+        fns.iter().map(|f| (f.name.clone(), f.params.len())).collect();
     for f in &fns {
-        out.push_str(&emit_fn(f, &records, &strings, &drop_keys)?);
+        out.push_str(&emit_fn(f, &records, &strings, &drop_keys, &fn_arity)?);
         out.push('\n');
     }
 
@@ -362,6 +367,7 @@ fn emit_fn(
     records: &RecordInfo,
     strings: &HashMap<String, usize>,
     drop_keys: &HashSet<String>,
+    fn_arity: &HashMap<String, usize>,
 ) -> Result<String, String> {
     let mut e = Emit {
         out: String::new(),
@@ -372,6 +378,7 @@ fn emit_fn(
         records,
         strings,
         drop_keys,
+        fn_arity,
     };
     let mut params: Vec<String> = Vec::new();
     if f.is_closure {
@@ -408,6 +415,7 @@ struct Emit<'a> {
     records: &'a RecordInfo,
     strings: &'a HashMap<String, usize>,
     drop_keys: &'a HashSet<String>,
+    fn_arity: &'a HashMap<String, usize>,
 }
 
 impl Emit<'_> {
@@ -816,6 +824,18 @@ impl Emit<'_> {
                 Ok(z)
             }
             Op::CallDirect(name, args, _) => {
+                // a direct call must match the callee's arity exactly; a mismatch is a
+                // residual over-application (`(f a…) b…`) the lowering split missed —
+                // fail loudly rather than emit garbage.
+                if let Some(&arity) = self.fn_arity.get(name) {
+                    if args.len() != arity {
+                        return Err(format!(
+                            "'{name}' called with {} argument(s) but takes {arity} \
+                             (over-application not fully lowered)",
+                            args.len()
+                        ));
+                    }
+                }
                 let a = self
                     .atoms(args)?
                     .iter()

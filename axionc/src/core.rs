@@ -969,6 +969,9 @@ struct Lower<'a> {
     /// Phase A′: function → `data`-type name of its result (boxed only). Attached
     /// to `CallDirect`.
     fn_ret_ty: &'a HashMap<String, String>,
+    /// Top-level function → parameter count, to split an OVER-applied spine
+    /// (`(f a…) b…`) into a call-to-arity + an application of the returned closure.
+    fn_arity: &'a HashMap<String, usize>,
     locals: HashMap<String, String>,
     tmp: u32,
     /// Phase 4: concrete constructor return types (span → AST type) from inference
@@ -1285,7 +1288,22 @@ impl Lower<'_> {
             }
             _ => {}
         }
-        let vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
+        let mut vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
+        // over-application: `(f a…) b…` applies a top-level function beyond its arity.
+        // Call `f` to its arity (yielding a closure), then apply the remaining args to
+        // it. Without this the spine is lowered as one over-long direct call, which the
+        // backends mishandle (cranelift errors, LLVM emits garbage).
+        if self.globals.contains(name) && !self.foreigns.contains(name) {
+            if let Some(&arity) = self.fn_arity.get(name.as_str()) {
+                if vals.len() > arity {
+                    let rest = vals.split_off(arity);
+                    let base = self.call_named(name, vals);
+                    let t = self.fresh();
+                    buf.push((t.clone(), Rhs::Op(base), NO_SPAN));
+                    return Op::CallClosure(Atom::Var(t), rest);
+                }
+            }
+        }
         self.call_named(name, vals)
     }
 
@@ -1519,6 +1537,7 @@ fn lower_func(
     makecon_tys: &HashMap<Span, Type>,
     array_tys: &HashMap<Span, Type>,
     parmap_workers: &HashMap<String, (String, i32, i32)>,
+    fn_arity: &HashMap<String, usize>,
 ) -> (
     Vec<String>,
     Term,
@@ -1542,6 +1561,7 @@ fn lower_func(
         parametric_data,
         mono_seeds: &mut mono_seeds,
         parmap_workers,
+        fn_arity,
     };
     let single_var = f.clauses.len() == 1
         && f.clauses[0]
@@ -3092,6 +3112,12 @@ pub fn lower_with(
     // §9 structured fork-join: worker state machines for every `parMap` target,
     // plus the map the lowering uses to emit `axion_par_map`. Runs pre-eta.
     let (parmap_steps, parmap_map) = parmap_worker_steps(orig_module, &native_fn_names);
+    // top-level function arities, to split over-applied spines (`(f a) b`).
+    let fn_arity: HashMap<String, usize> = module
+        .funcs
+        .iter()
+        .map(|f| (f.name.clone(), f.clauses.first().map_or(0, |c| c.pats.len())))
+        .collect();
 
     // pre-pass: names + computes captures of all lambdas (by span)
     let mut lam_meta: LamMeta = HashMap::new();
@@ -3163,6 +3189,7 @@ pub fn lower_with(
             makecon_tys,
             array_tys,
             &parmap_map,
+            &fn_arity,
         );
         mono_seeds.extend(seeds);
         out.push(CoreFn {
@@ -3193,6 +3220,7 @@ pub fn lower_with(
                 makecon_tys,
                 array_tys,
                 &parmap_map,
+                &fn_arity,
             );
             mono_seeds.extend(wseeds);
             out.push(CoreFn {
@@ -3236,6 +3264,7 @@ pub fn lower_with(
             parametric_data: &parametric_data,
             mono_seeds: &mut Vec::new(),
             parmap_workers: &parmap_map,
+            fn_arity: &fn_arity,
         };
         out.push(CoreFn {
             name,

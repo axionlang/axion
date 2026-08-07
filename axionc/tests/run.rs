@@ -41,6 +41,30 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn over_application_runs_on_all_backends() {
+    // applying a function beyond its arity (`(f a…) b…`) — a function returning a
+    // function that is then applied. The lowering splits it into call-to-arity +
+    // apply-the-rest, so interp, cranelift and llvm all agree (→ 42). Previously
+    // cranelift errored and `--release` returned garbage.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("over_application.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "over-application should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn use_after_consume_is_rejected_ax0001() {
     let out = axionc()
         .args(["--check", &fixture("use_after_consume.axi")])
