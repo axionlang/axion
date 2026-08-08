@@ -707,6 +707,20 @@ fn linear_record_used_twice_is_rejected_ax0001() {
 }
 
 #[test]
+fn heap_value_duplicated_by_ownership_is_rejected_ax0001() {
+    // `mk xs = Two xs xs` moves a borrowed HEAP list into two owned fields
+    // (contraction) — previously accepted, then double-freed natively. The
+    // linearity checker now rejects duplicating a heap value by ownership.
+    let out = axionc()
+        .args(["--check", &fixture("heap_duplication.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0001"), "expected AX0001, output: {text}");
+}
+
+#[test]
 fn droppable_linear_unused_is_accepted_by_autodrop() {
     // Buf is droppable: dropping it without consuming is OK (Auto-Drop injects free).
     let out = axionc()

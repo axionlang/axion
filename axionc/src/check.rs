@@ -1225,6 +1225,45 @@ fn check_func(
             }
         }
 
+        // --- contraction for BORROWED heap params (the %1 loop above skips them) ---
+        // A `Many` (borrowed) param may be READ any number of times, but a heap
+        // value (a `data`/tuple that is deep-dropped) may not be CONSUMED — moved
+        // into an owned position — more than once: `mk xs = Two xs xs` aliases `xs`
+        // into two owned slots, and native deep-drop then double-frees it. (Sharing
+        // by ownership requires `split` into %0.5 halves — §2.)
+        for (i, p) in clause.pats.iter().enumerate() {
+            if mults.get(i).copied() == Some(Mult::One) {
+                continue; // %1 handled above
+            }
+            if let (Pat::Var(name, span), Some(ty)) = (p, ptypes.get(i)) {
+                let heap = matches!(ty, Type::Tuple(_))
+                    || ty.head_con().is_some_and(|h| ctx.data_names.contains(h));
+                let consumes = if heap { analyze_clause(clause, name, ctx).0 } else { 0 };
+                if consumes > 1 {
+                    diags.push(
+                        Diagnostic::error(
+                            "AX0001",
+                            format!(
+                                "heap value '{name}' consumed {consumes} times \
+                                 (contraction forbidden)"
+                            ),
+                        )
+                        .label(
+                            span.0,
+                            span.1,
+                            format!("'{name}' is moved into an owned position more than once"),
+                        )
+                        .with_help(
+                            "a borrowed heap value may be READ freely, but moving it by \
+                             ownership (into a constructor/tuple/%1 argument) may happen \
+                             only once — to share it by ownership, 'split' it into two \
+                             %0.5 halves (§2).",
+                        ),
+                    );
+                }
+            }
+        }
+
         // --- sub-arena escape (§3) + NLL reset + %0.5 permissions ---
         if let Body::Plain(body) = &clause.body {
             check_arena_escapes(body, &f.name, diags, &mut out.arenas);
@@ -1477,6 +1516,9 @@ struct Ctx {
     field_mults: HashMap<String, Mult>,
     /// must-use `data` types (because they recursively contain a field without `Drop`)
     must_use_types: HashSet<String>,
+    /// user `data` type names — a heap allocation that is deep-dropped (so it may
+    /// not be duplicated by ownership: contraction is a double-free, AX0001).
+    data_names: HashSet<String>,
 }
 
 fn build_ctx(module: &Module) -> Ctx {
@@ -1550,6 +1592,7 @@ fn build_ctx(module: &Module) -> Ctx {
         consumers,
         field_mults,
         must_use_types: build_must_use_types(module),
+        data_names: module.datas.iter().map(|d| d.name.clone()).collect(),
     }
 }
 
@@ -1606,10 +1649,19 @@ fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
         ),
         Expr::App(_, _, _) => {
             let (head, args) = spine(e);
+            // A CONSTRUCTOR application takes OWNERSHIP of every field (the value is
+            // deep-dropped with the structure), so each arg is CONSUMED — not
+            // borrowed as `arg_mode` would say for a non-`%1` field. This is what
+            // makes `Two xs xs` count `xs` as consumed twice (contraction, AX0001).
+            let is_ctor = matches!(head, Expr::Con(_, _));
             let mults = head_mults(head, ctx);
             let mut u = analyze(head, x, Mode::Borrow, ctx);
             for (i, a) in args.iter().enumerate() {
-                let m = arg_mode(mults.get(i));
+                let m = if is_ctor {
+                    Mode::Consume
+                } else {
+                    arg_mode(mults.get(i))
+                };
                 u = add(u, analyze(a, x, m, ctx));
             }
             u
