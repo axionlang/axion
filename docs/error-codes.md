@@ -12,7 +12,7 @@ and are explainable via `axion --explain AXnnnn`.
 
 | Code | Category | Invariant violated | Status |
 |--------|-----------|--------------------|--------|
-| `AX0001` | Linearity | Contraction: a `%1` **consumed** >1 time (reading/borrowing is free) | **enforced by `axionc`** (Phase 1/2) |
+| `AX0001` | Linearity | Contraction: a `%1` **or heap value** (incl. a borrowed `data`/tuple) **consumed/moved** >1 time (reading/borrowing is free) | **enforced by `axionc`** (Phase 1/2) |
 | `AX0002` | Linearity | *Must-use*: a `%1` **without `Drop`** dropped without consumption (droppable types ⇒ Auto-Drop, not an error) | **enforced by `axionc`** (Phase 1/2) |
 | `AX0003` | Regions | Escape: a sub-arena value escapes its scope (missing `promote`) | **enforced by `axionc`** (Phase 2) |
 | `AX0004` | Linearity | Use-after-move: reading/consuming a `%1` after ownership was moved | **enforced by `axionc`** (Phase 2) |
@@ -60,14 +60,22 @@ acyclic pipelines) and the surface→ASC differential.
 
 **Rule (§2), with fine liveness.** *Reading* (borrowing) a `%1` is free and
 unlimited — Borrow Elision. *Consuming* (moving ownership: argument of a `%1`
-parameter, `%1` field, or return value) may happen only **once**; twice is
-contraction.
+parameter, `%1` field, or **embedding into a constructor/tuple/record**, or return
+value) may happen only **once**; twice is contraction. This holds for any HEAP
+value — a `data`/tuple that is deep-dropped — even a *borrowed* (non-`%1`)
+parameter: duplicating it by ownership aliases it, and the deep-drop would then
+free the shared payload twice (a double-free). Sharing by ownership requires
+`split` into two `%0.5` halves.
 
 ```axion
 process :: Buffer U8 %1 -> (Buffer U8 %1, Buffer U8 %1)
 process buf = (encrypt buf, encrypt buf)
 --                    ^^^            ^^^  'buf' CONSUMED twice -> AX0001
 -- (but  checksum buf + checksum buf  would be OK: two READS/borrows)
+
+mk :: List Box -> Two          -- 'xs' is BORROWED (no %1) but still a heap value
+mk xs = Two xs xs              -- moved into BOTH owned fields -> AX0001
+--          ^^ ^^              (would double-free the shared list natively)
 ```
 
 **Bench (Phase 0).** `prototype/test/negative/UseTwice.hs` fails to compile; GHC

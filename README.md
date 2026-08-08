@@ -24,6 +24,7 @@ $AX examples/01_hello.axi           # Hello, Axion!
 $AX examples/02_fib.axi             # 832040
 $AX examples/03b_fizzbuzz.axi       # 1  2  Fizz  4  Buzz … FizzBuzz   (mapM_ + compose, NATIVE)
 $AX examples/06_typeclasses.axi     # 6   (Eq a =>, monomorphized → zero-cost)
+$AX axionc/tests/fixtures/integer_factorial.axi   # factorial 50, EXACT (arbitrary-precision Integer)
 $AX --check examples/05_checksum_borrow.axi   # typecheck: linearity + Auto-Drop
 
 # concurrency ACTUALLY RUNNING (session + spawn + channels, deadlock-free):
@@ -117,7 +118,7 @@ More detail in [`docs/backend.md`](docs/backend.md) and the phase docs.
 ## Testing
 
 ```sh
-cd axionc && cargo test         # ~103 tests (integration + property + sessions)
+cd axionc && cargo test         # ~180 tests (integration + property + sessions)
 cargo clippy --all-targets      # clean (-D warnings in CI)
 
 # gates that need clang (AXION_CLANG, or clang on PATH):
@@ -142,6 +143,20 @@ AXION_CLANG=clang ../scripts/sanitize.sh      # ASan/LSan over the native runtim
 calmly and tested, without breaking the philosophy:
 - **Standard library** — lists (`map`/`filter`/`foldr`/`zipWith`/…), `++`, strings
   (`unlines`/`unwords`), user-defined infix operators.
+- **Arbitrary-precision `Integer` ✅** — a separate bignum type (§Listing 1.4):
+  `factorial 50` is exact on all three backends (a hand-rolled sign-magnitude
+  base-1e9 `BigInt`, mirrored in the C runtime). `+ - * div mod == < >` are
+  overloaded with `Int`; literals are Num-polymorphic (plain `1`), may exceed
+  `i64`, and work as **patterns** (`factorial 0 = 1`, `fib 0`/`fib 1`). Stress-tested
+  end-to-end via a toy RSA (square-and-multiply modexp + an in-language modular
+  inverse), interp == cranelift == llvm.
+- **Ownership inference (memory safety) ✅** — a list-transformer that reuses or
+  returns extracted heap elements (`head`/`append`/`reverse`/`concat`, and
+  `where`-local accumulators) is inferred to **consume** (own) its list rather than
+  borrow it, so the caller no longer double-frees the shared elements — closing a
+  class of native double-frees on heap-element lists (`List Box`/`List Expr`). And
+  the linearity checker now rejects duplicating a heap value by ownership
+  (`Two xs xs` → **AX0001**). ASan/LSan-clean on both native backends.
 - **Typeclasses** ✅ — `class`/`instance`, dispatch, static coherence
   (`AX0400`–`AX0405`), and **native codegen by monomorphization** (mono +
   constrained + transitive) — **zero-cost, measured** (see the `dispatch` benchmark).
@@ -185,9 +200,8 @@ calmly and tested, without breaking the philosophy:
   runtime primitive (never the linear checker), reclaim exactly, and match the
   hand-unrolled version's parallel speedup — the combinator is free.
 
-**Honesty about the state.** Known and documented debt: `Integer`/bignum missing
-(`factorial 20` runs, `50` doesn't); **native sessions are M:N but with a global
-mutex, not yet work-stealing** — tasks run in parallel on both backends and are
+**Honesty about the state.** Known and documented debt: **native sessions are M:N
+but with a global mutex, not yet work-stealing** — tasks run in parallel on both backends and are
 ThreadSanitizer-clean, but the scheduler serializes channel ops on one lock and
 there is no `io_uring`/`epoll` for async I/O yet; delegation (endpoints over
 channels between siblings) is still interpreter-only; and mechanized metatheory
