@@ -1263,14 +1263,19 @@ class Ord a where
   le :: a -> a -> Bool
 class Show a where
   show :: a -> String
+  showArg :: a -> String
 instance Show Int where
   show x = showInt x
+  showArg x = showInt x
 instance Show Float where
   show x = showFloat x
+  showArg x = showFloat x
 instance Show Integer where
   show x = showInteger x
+  showArg x = showInteger x
 instance Show Bool where
   show x = if x then \"true\" else \"false\"
+  showArg x = if x then \"true\" else \"false\"
 instance Eq Int where
   eq x y = x == y
 instance Ord Int where
@@ -1631,15 +1636,34 @@ fn derive_ord(d: &ast::DataDecl) -> String {
 /// show f0 …`. Nullary constructors show as just the name; fields are separated by
 /// spaces and shown recursively (`show`, so field types must be `Show`).
 fn derive_show(d: &ast::DataDecl) -> String {
+    // Two methods: `show` (top level, no outer parens) and `showArg` (argument
+    // position — wraps a constructor-WITH-ARGS in parens so nested terms are
+    // unambiguous: `Some (Some 3)`, not `Some Some 3`). Both build the same
+    // "Con field field" body; the FIELDS recurse via `showArg`, and `showArg`
+    // wraps the whole body in parens when the constructor is not nullary.
+    let body = |c: &ast::ConDecl, vars: &[String]| -> String {
+        let mut expr = format!("\"{}\"", c.name);
+        for v in vars {
+            expr = format!("strAppend (strAppend ({expr}) \" \") (showArg {v})");
+        }
+        expr
+    };
     let mut s = format!("{}  show x = case x of\n", inst_header("Show", d));
     for c in &d.cons {
         let (pat, vars) = con_pattern(c, "a");
-        // build the string: "Con" then, per field, " " ++ show field.
-        let mut expr = format!("\"{}\"", c.name);
-        for v in &vars {
-            expr = format!("strAppend (strAppend ({expr}) \" \") (show {v})");
-        }
-        s.push_str(&format!("    {pat} -> {expr}\n"));
+        s.push_str(&format!("    {pat} -> {}\n", body(c, &vars)));
+    }
+    s.push_str("  showArg x = case x of\n");
+    for c in &d.cons {
+        let (pat, vars) = con_pattern(c, "a");
+        let e = body(c, &vars);
+        // a nullary constructor needs no parens (an atom); one with fields does.
+        let wrapped = if vars.is_empty() {
+            e
+        } else {
+            format!("strAppend (strAppend \"(\" ({e})) \")\"")
+        };
+        s.push_str(&format!("    {pat} -> {wrapped}\n"));
     }
     s
 }

@@ -1961,7 +1961,7 @@ mod tests {
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
-                "== verdicts: 54 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 58 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
@@ -2047,7 +2047,7 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 53 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 57 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(

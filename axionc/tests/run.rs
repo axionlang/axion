@@ -2506,6 +2506,17 @@ fn integer_literal_patterns_match_by_bignum() {
 }
 
 #[test]
+fn derived_show_parenthesizes_compound_arguments() {
+    // Derived `Show` wraps a constructor-with-args in parens via the `showArg`
+    // method, so nested terms are unambiguous. Regression: previously
+    // `Node (Node Leaf 1 Leaf) …` printed as `Node Node Leaf 1 Leaf …`.
+    agree_across_backends(
+        "derive_show_nested.axi",
+        "Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf)\n",
+    );
+}
+
+#[test]
 fn consume_inferred_returned_element_is_not_double_freed() {
     // A monomorphic `head`-like function returning an extracted heap element gets
     // its `List Box` param inferred `%1`, so the caller does not free the returned
