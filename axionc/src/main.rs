@@ -528,7 +528,7 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
         for i in consumed_params(f, &con_field_heap) {
             if ptypes
                 .get(i)
-                .is_some_and(|t| is_heap_shaped(t) && !type_has_var(t))
+                .is_some_and(|t| core::is_heap_shaped(t) && !core::ty_has_var(t))
             {
                 consuming.entry(f.name.clone()).or_default().insert(i);
                 apply.push((idx, i));
@@ -555,17 +555,21 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
                     continue;
                 }
                 let ty = ptypes[i];
-                if !(is_heap_shaped(ty) && type_has_var(ty)) {
+                if !(core::is_heap_shaped(ty) && core::ty_has_var(ty)) {
                     continue; // generic heap params only
                 }
-                // optimistically assume this param is consuming, then verify.
-                let mut trial = consuming.clone();
-                trial.entry(f.name.clone()).or_default().insert(i);
-                if param_is_pure_escape(f, i, &con_field_heap, &trial) {
-                    consuming.entry(f.name.clone()).or_default().insert(i);
+                // Optimistically assume this param is consuming, verify, and undo on
+                // failure — insert-in-place instead of cloning the whole map per
+                // candidate. (`newly` is false if hand-written `%1` already had it.)
+                let newly = consuming.entry(f.name.clone()).or_default().insert(i);
+                if param_is_pure_escape(f, i, &con_field_heap, &consuming) {
                     exempt.insert(f.name.clone());
                     apply.push((idx, i));
                     changed = true;
+                } else if newly {
+                    if let Some(s) = consuming.get_mut(&f.name) {
+                        s.remove(&i);
+                    }
                 }
             }
         }
@@ -687,7 +691,7 @@ fn embedded_in_ctor(name: &str, e: &ast::Expr) -> bool {
     let is_var = |x: &ast::Expr| matches!(x, ast::Expr::Var(n, _) if n == name);
     match e {
         ast::Expr::App(_, _, _) => {
-            let (head, args) = app_spine(e);
+            let (head, args) = core::spine(e);
             let here = matches!(head, ast::Expr::Con(_, _)) && args.iter().any(|a| is_var(a));
             here || args.iter().any(|a| embedded_in_ctor(name, a))
         }
@@ -702,17 +706,6 @@ fn embedded_in_ctor(name: &str, e: &ast::Expr) -> bool {
     }
 }
 
-/// Uncurries an application into (head, args in source order).
-fn app_spine(e: &ast::Expr) -> (&ast::Expr, Vec<&ast::Expr>) {
-    let mut args = Vec::new();
-    let mut cur = e;
-    while let ast::Expr::App(f, a, _) = cur {
-        args.push(a.as_ref());
-        cur = f.as_ref();
-    }
-    args.reverse();
-    (cur, args)
-}
 
 /// Applies `g` to each immediate sub-expression of `e` (one level).
 fn for_each_subexpr(e: &ast::Expr, g: &mut dyn FnMut(&ast::Expr)) {
@@ -766,7 +759,7 @@ fn set_param_mult_one(sig: &mut ast::Type, idx: usize) {
     let mut i = 0;
     while let ast::Type::Arrow { mult, from, to } = cur {
         if i == idx {
-            if is_heap_shaped(from) {
+            if core::is_heap_shaped(from) {
                 *mult = ast::Mult::One;
             }
             return;
@@ -774,13 +767,6 @@ fn set_param_mult_one(sig: &mut ast::Type, idx: usize) {
         i += 1;
         cur = to;
     }
-}
-
-/// A type that denotes a heap allocation: a `data`/parametric application or a tuple
-/// (a bare var is an unboxed i64 at the ABI; a primitive `Con` like `Int` is not
-/// separately allocated). Matches the owning-param shape in infer/core.
-fn is_heap_shaped(t: &ast::Type) -> bool {
-    matches!(t, ast::Type::Tuple(_)) || t.head_con().is_some()
 }
 
 fn is_var_named(e: &ast::Expr, name: &str) -> bool {
@@ -797,7 +783,7 @@ fn moved_into_consuming(
 ) -> bool {
     match e {
         ast::Expr::App(_, _, _) => {
-            let (head, args) = app_spine(e);
+            let (head, args) = core::spine(e);
             let here = if let ast::Expr::Var(g, _) = head {
                 consuming.get(g).is_some_and(|cp| {
                     args.iter()
@@ -942,21 +928,49 @@ fn arm_heap_escape_every_path(
     };
     subs.iter().enumerate().all(|(fi, sp)| {
         if heaps.get(fi).copied().unwrap_or(false) {
-            matches!(sp, ast::Pat::Var(b, _) if escapes_every_path(b, body, consuming))
+            // A heap field must escape on every path — AND its binder must not be
+            // shadowed inside the arm (the escape analysis is name-based; a nested
+            // binder reusing the name would make a DROPPED field look escaped).
+            matches!(sp, ast::Pat::Var(b, _) if escapes_every_path(b, body, consuming)
+                && !is_rebound(b, body))
         } else {
             true
         }
     })
 }
 
-/// `true` if the type mentions a type variable anywhere.
-fn type_has_var(t: &ast::Type) -> bool {
-    match t {
-        ast::Type::Var(_) => true,
-        ast::Type::Con(_) | ast::Type::Unit => false,
-        ast::Type::App(f, a) => type_has_var(f) || type_has_var(a),
-        ast::Type::Arrow { from, to, .. } => type_has_var(from) || type_has_var(to),
-        ast::Type::Tuple(ts) => ts.iter().any(type_has_var),
+/// `true` if `name` is re-bound (shadowed) by any pattern — a `case` arm, lambda,
+/// or `let` — anywhere in `e`. Used to bail out of the name-based escape analysis.
+fn is_rebound(name: &str, e: &ast::Expr) -> bool {
+    let binds_here = match e {
+        ast::Expr::Case(_, arms, _) => arms.iter().any(|(pat, _)| pat_binds(pat, name)),
+        ast::Expr::Lam(pats, _, _) => pats.iter().any(|p| pat_binds(p, name)),
+        ast::Expr::Let(binds, _, _) => binds.iter().any(|f| {
+            f.clauses
+                .iter()
+                .any(|c| c.pats.iter().any(|p| pat_binds(p, name)))
+        }),
+        _ => false,
+    };
+    if binds_here {
+        return true;
+    }
+    let mut found = false;
+    for_each_subexpr(e, &mut |sub| {
+        if is_rebound(name, sub) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn pat_binds(p: &ast::Pat, name: &str) -> bool {
+    match p {
+        ast::Pat::Var(n, _) => n == name,
+        ast::Pat::Con(_, subs, _) | ast::Pat::Tuple(subs, _) => {
+            subs.iter().any(|s| pat_binds(s, name))
+        }
+        _ => false,
     }
 }
 

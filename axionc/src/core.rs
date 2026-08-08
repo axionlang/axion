@@ -747,7 +747,7 @@ fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
 }
 
 /// True if the type contains a type variable anywhere.
-fn ty_has_var(t: &Type) -> bool {
+pub(crate) fn ty_has_var(t: &Type) -> bool {
     match t {
         Type::Var(_) => true,
         Type::App(f, a) => ty_has_var(f) || ty_has_var(a),
@@ -755,6 +755,13 @@ fn ty_has_var(t: &Type) -> bool {
         Type::Tuple(ts) => ts.iter().any(ty_has_var),
         _ => false,
     }
+}
+
+/// A type that denotes a heap allocation the owning machinery reclaims: a
+/// parametric/`data` application or a tuple (a bare var/arrow is an unboxed i64).
+/// Shared by `owning_generic_var` and the front-end consume-inference.
+pub(crate) fn is_heap_shaped(t: &Type) -> bool {
+    matches!(t, Type::Tuple(_)) || t.head_con().is_some()
 }
 
 /// The name of a Phase B generic-owning TEMPLATE, if `f` is one: an
@@ -775,8 +782,7 @@ fn owning_generic_var(f: &ast::Func) -> Option<String> {
             continue;
         }
         // heap-shaped owned params only (bare vars/arrows are i64, not owned)
-        let heap_shape = matches!(p, Type::Tuple(_)) || p.head_con().is_some();
-        if heap_shape && ty_has_var(p) {
+        if is_heap_shaped(p) && ty_has_var(p) {
             return Some(f.name.clone());
         }
     }
@@ -1885,7 +1891,7 @@ fn wrap(buf: Vec<(String, Rhs)>, tail: Term, span: Span) -> Term {
     term
 }
 
-fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
+pub(crate) fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
     let mut args = Vec::new();
     let mut cur = e;
     while let Expr::App(f, a, _) = cur {
@@ -3460,6 +3466,12 @@ pub fn lower_with(
     // UNLESS it is a consume-inferred "pure-escape" function (`append`/`reverse`/
     // `concat`): those only shell-free the spine (every element escapes), so they
     // need no key and compile natively as generic shell-freers.
+    // ASSUMPTION (whole-function granularity): a function in `consume_exempt` has NO
+    // deep-dropping owned generic param — consume-inference only marks a var-carrying
+    // param `%1` when it is pure-escape, so a single exempt function cannot mix a
+    // pure-escape and a deep-dropping generic owned param (which would leak its
+    // element under the lifted exclusion). Safe today (no prelude/user fn has two
+    // owning generic params); revisit as per-param if a future rule broadens `%1`.
     let owning_generics: HashSet<String> = module
         .funcs
         .iter()
