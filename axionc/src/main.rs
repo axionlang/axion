@@ -213,6 +213,7 @@ fn main() -> ExitCode {
             &analysis.makecon_tys,
             &analysis.array_tys,
             &analysis.integer_lits,
+            &analysis.consume_native_exempt,
             fuse,
         );
         let mut errs = delta::check_all(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
@@ -252,6 +253,7 @@ fn main() -> ExitCode {
             &analysis.makecon_tys,
             &analysis.array_tys,
             &analysis.integer_lits,
+            &analysis.consume_native_exempt,
             fuse,
         );
         print!(
@@ -272,6 +274,7 @@ fn main() -> ExitCode {
             &analysis.makecon_tys,
             &analysis.array_tys,
             &analysis.integer_lits,
+            &analysis.consume_native_exempt,
             fuse,
         );
         print!(
@@ -290,7 +293,7 @@ fn main() -> ExitCode {
 
     // --- native --dev backend (Cranelift): IR dump or JIT+run main::Int ---
     if emit == Emit::Clif {
-        match codegen::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits) {
+        match codegen::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -303,7 +306,7 @@ fn main() -> ExitCode {
     }
     // --- backend --release (LLVM): dump do IR ou compilar+correr ---
     if emit == Emit::Llvm {
-        match llvm::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits) {
+        match llvm::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -315,7 +318,7 @@ fn main() -> ExitCode {
         }
     }
     if backend == Backend::Cranelift {
-        return match codegen::run(&module, "main", &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits) {
+        return match codegen::run(&module, "main", &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
             Ok(Some(n)) => {
                 println!("{n}");
                 ExitCode::SUCCESS
@@ -328,7 +331,7 @@ fn main() -> ExitCode {
         };
     }
     if backend == Backend::Llvm {
-        return match llvm::build_and_run(&module, "main", &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits) {
+        return match llvm::build_and_run(&module, "main", &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
             Ok(()) => ExitCode::SUCCESS, // the binary already printed the result
             Err(e) => {
                 eprintln!("llvm backend (--release): {e}");
@@ -405,8 +408,9 @@ pub(crate) fn compile_front(
     // specialization / borrow analysis / drop insertion / Δ-coherence) treats it as
     // a hand-written `%1` — otherwise the caller deep-drops a list whose elements
     // the callee reused/returned → double-free (heap elements only).
-    infer_consumed_ownership(&mut module);
+    let consume_exempt = infer_consumed_ownership(&mut module);
     let mut analysis = check::check(&module, diags);
+    analysis.consume_native_exempt = consume_exempt;
     // Inference returns the monomorphic method resolutions (use span →
     // concrete instance implementation). We rewrite them as direct
     // calls (`eq 3 3` → `eq$Int 3 3`): monomorphization — the use
@@ -475,7 +479,7 @@ type Resolutions = std::collections::HashMap<(String, ast::Span), String>;
 /// elements), so it must own+reclaim it rather than borrow it (else the caller
 /// double-frees the shared elements). See docs — this fixes the `head`/`append`/
 /// `reverse` element-aliasing double-free on native.
-fn infer_consumed_ownership(module: &mut ast::Module) {
+fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashSet<String> {
     use std::collections::{HashMap, HashSet};
     let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
     // constructor → per-field "carries a heap payload" (a `data`/tuple field, or a
@@ -491,21 +495,90 @@ fn infer_consumed_ownership(module: &mut ast::Module) {
             con_field_heap.insert(c.name.clone(), flags);
         }
     }
-    let plans: Vec<(usize, HashSet<usize>)> = module
-        .funcs
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| f.sig.is_some() && f.constraints.is_empty())
-        .map(|(idx, f)| (idx, consumed_params(f, &con_field_heap)))
-        .filter(|(_, s)| !s.is_empty())
-        .collect();
-    for (idx, indices) in plans {
-        if let Some(sig) = &mut module.funcs[idx].sig {
-            for i in indices {
-                force_param_mult_one(sig, i);
+    // `consuming[fn]` = parameter indices that are (or become) `%1`. Seeded from the
+    // hand-written `%1`, then grown by Rule A (concrete consumers) and Rule B (generic
+    // pure-escape). It is the authority the pure-escape fixpoint consults to decide
+    // whether a field "moved into a call" is moved into a CONSUMING position.
+    let mut consuming: HashMap<String, HashSet<usize>> = HashMap::new();
+    for f in &module.funcs {
+        if let Some(sig) = &f.sig {
+            let owned: HashSet<usize> = sig
+                .param_mults()
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| **m == ast::Mult::One)
+                .map(|(i, _)| i)
+                .collect();
+            if !owned.is_empty() {
+                consuming.insert(f.name.clone(), owned);
             }
         }
     }
+    // (func idx, param idx) pairs to force `%1`.
+    let mut apply: Vec<(usize, usize)> = Vec::new();
+    // Rule A — CONCRETE consumers: SOME extracted heap field escapes via the result.
+    // Concrete because a var-carrying `%1` becomes an owning-generic (handled by B);
+    // a concrete `%1` deep-drops the non-escaping fields via its resolved key.
+    for (idx, f) in module.funcs.iter().enumerate() {
+        let Some(sig) = &f.sig else { continue };
+        if !f.constraints.is_empty() {
+            continue;
+        }
+        let ptypes = sig.param_types();
+        for i in consumed_params(f, &con_field_heap) {
+            if ptypes
+                .get(i)
+                .is_some_and(|t| is_heap_shaped(t) && !type_has_var(t))
+            {
+                consuming.entry(f.name.clone()).or_default().insert(i);
+                apply.push((idx, i));
+            }
+        }
+    }
+    // Rule B — GENERIC pure-escape: a var-carrying param where EVERY extracted heap
+    // field escapes (returned/embedded OR moved into a consuming call) and NONE is
+    // deep-dropped. Such a function only SHELL-FREES its spine natively (no element
+    // key needed), so it can compile as a generic (exempted from the owning-generic
+    // native exclusion). Least fixpoint with optimistic self-assumption: append's
+    // recursion and concat→append converge across iterations.
+    let mut exempt: HashSet<String> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for (idx, f) in module.funcs.iter().enumerate() {
+            let Some(sig) = &f.sig else { continue };
+            if !f.constraints.is_empty() {
+                continue;
+            }
+            let ptypes = sig.param_types();
+            for i in 0..ptypes.len() {
+                if consuming.get(&f.name).is_some_and(|s| s.contains(&i)) {
+                    continue;
+                }
+                let ty = ptypes[i];
+                if !(is_heap_shaped(ty) && type_has_var(ty)) {
+                    continue; // generic heap params only
+                }
+                // optimistically assume this param is consuming, then verify.
+                let mut trial = consuming.clone();
+                trial.entry(f.name.clone()).or_default().insert(i);
+                if param_is_pure_escape(f, i, &con_field_heap, &trial) {
+                    consuming.entry(f.name.clone()).or_default().insert(i);
+                    exempt.insert(f.name.clone());
+                    apply.push((idx, i));
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (fidx, i) in apply {
+        if let Some(sig) = &mut module.funcs[fidx].sig {
+            set_param_mult_one(sig, i);
+        }
+    }
+    exempt
 }
 
 /// A constructor field that carries a separately-allocated heap payload once
@@ -684,22 +757,16 @@ fn for_each_subexpr(e: &ast::Expr, g: &mut dyn FnMut(&ast::Expr)) {
     }
 }
 
-/// Forces the multiplicity of the `idx`-th parameter arrow in a signature to `One`
-/// (`%1`), but only when that param is a CONCRETE heap type (a `data`/tuple with no
-/// type variable). We deliberately do NOT infer `%1` on a var-carrying param
-/// (`List a`): that would make the function an owning-GENERIC (interp-only, requiring
-/// per-instantiation specialization), which breaks native compilation of common
-/// generic/operator uses (`++`, `concat`). A concrete `%1` (`List Box`) is a plain
-/// owned param the existing native owned-drop machinery reclaims correctly.
-fn force_param_mult_one(sig: &mut ast::Type, idx: usize) {
+/// Sets the multiplicity of the `idx`-th parameter arrow in a signature to `One`
+/// (`%1`), when the param is heap-shaped (a `data`/tuple — a bare var is an i64 with
+/// no owned payload). Eligibility (concrete Rule A vs generic pure-escape Rule B) is
+/// decided by the caller; this only writes the annotation.
+fn set_param_mult_one(sig: &mut ast::Type, idx: usize) {
     let mut cur = sig;
     let mut i = 0;
     while let ast::Type::Arrow { mult, from, to } = cur {
         if i == idx {
-            let concrete_heap = (matches!(from.as_ref(), ast::Type::Tuple(_))
-                || from.head_con().is_some())
-                && !type_has_var(from);
-            if concrete_heap {
+            if is_heap_shaped(from) {
                 *mult = ast::Mult::One;
             }
             return;
@@ -707,6 +774,179 @@ fn force_param_mult_one(sig: &mut ast::Type, idx: usize) {
         i += 1;
         cur = to;
     }
+}
+
+/// A type that denotes a heap allocation: a `data`/parametric application or a tuple
+/// (a bare var is an unboxed i64 at the ABI; a primitive `Con` like `Int` is not
+/// separately allocated). Matches the owning-param shape in infer/core.
+fn is_heap_shaped(t: &ast::Type) -> bool {
+    matches!(t, ast::Type::Tuple(_)) || t.head_con().is_some()
+}
+
+fn is_var_named(e: &ast::Expr, name: &str) -> bool {
+    matches!(e, ast::Expr::Var(n, _) if n == name)
+}
+
+/// `true` if `name` is moved into a CONSUMING (`%1`) parameter position of some call
+/// in `e` (per `consuming`, `fn → owned param indices`). This is the transitive
+/// escape clause: `zs` in `append zs ys` escapes because `append`'s arg0 is `%1`.
+fn moved_into_consuming(
+    name: &str,
+    e: &ast::Expr,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+) -> bool {
+    match e {
+        ast::Expr::App(_, _, _) => {
+            let (head, args) = app_spine(e);
+            let here = if let ast::Expr::Var(g, _) = head {
+                consuming.get(g).is_some_and(|cp| {
+                    args.iter()
+                        .enumerate()
+                        .any(|(i, a)| cp.contains(&i) && is_var_named(a, name))
+                })
+            } else {
+                false
+            };
+            here || args.iter().any(|a| moved_into_consuming(name, a, consuming))
+        }
+        ast::Expr::If(_, t, el, _) => {
+            moved_into_consuming(name, t, consuming) || moved_into_consuming(name, el, consuming)
+        }
+        ast::Expr::Case(_, arms, _) => arms
+            .iter()
+            .any(|(_, b)| moved_into_consuming(name, b, consuming)),
+        ast::Expr::Let(_, body, _) => moved_into_consuming(name, body, consuming),
+        ast::Expr::Tuple(es, _) => es.iter().any(|x| moved_into_consuming(name, x, consuming)),
+        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => {
+            fs.iter().any(|(_, x)| moved_into_consuming(name, x, consuming))
+        }
+        _ => false,
+    }
+}
+
+/// `true` if `name` escapes on EVERY control-flow path of `e` — returned/embedded or
+/// moved into a consuming call at every `if`/`case` leaf. Distinct from
+/// `escapes_via_result`'s "escapes on SOME branch": a PARTIAL consumer (`filter`'s
+/// `else` drops the element, `take`'s `n==0` drops the list) fails here, so it is
+/// correctly NOT pure-escape (it deep-drops on the discarding path).
+fn escapes_every_path(
+    name: &str,
+    e: &ast::Expr,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+) -> bool {
+    match e {
+        ast::Expr::If(_, t, el, _) => {
+            escapes_every_path(name, t, consuming) && escapes_every_path(name, el, consuming)
+        }
+        ast::Expr::Case(_, arms, _) => {
+            !arms.is_empty() && arms.iter().all(|(_, b)| escapes_every_path(name, b, consuming))
+        }
+        ast::Expr::Let(_, body, _) => escapes_every_path(name, body, consuming),
+        _ => escapes_via_result(name, e) || moved_into_consuming(name, e, consuming),
+    }
+}
+
+/// `true` if parameter `idx` of `f` is PURE-ESCAPE: on EVERY path it is destructured
+/// by `case`, EVERY extracted heap field escapes on every path, and the param is
+/// never deep-dropped (unused/discarded). Such a param is only SHELL-FREED natively
+/// (no element key needed), so the function can compile as a generic shell-freer.
+fn param_is_pure_escape(
+    f: &ast::Func,
+    idx: usize,
+    con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+) -> bool {
+    let mut saw = false;
+    for clause in &f.clauses {
+        let bodies: Vec<&ast::Expr> = match &clause.body {
+            ast::Body::Plain(e) => vec![e],
+            ast::Body::Guarded(arms) => arms.iter().map(|(_, r)| r).collect(),
+        };
+        match clause.pats.get(idx) {
+            Some(ast::Pat::Var(p, _)) => {
+                for body in &bodies {
+                    if !p_path_ok(p, body, false, con_field_heap, consuming, &mut saw) {
+                        return false;
+                    }
+                }
+            }
+            // clause-head destructuring: `f (Cons b ..) = <b escapes>`
+            Some(ast::Pat::Con(con, subs, _)) => {
+                for body in &bodies {
+                    if !arm_heap_escape_every_path(con, subs, body, con_field_heap, consuming) {
+                        return false;
+                    }
+                }
+                saw = true;
+            }
+            _ => return false,
+        }
+    }
+    saw
+}
+
+/// Flow check for the owned param `p` along one body: on EVERY path, `p` must be
+/// consumed EXACTLY once — by a `case p of` whose arms fully escape (then `consumed`
+/// holds downstream), or by escaping whole (returned / moved into a consuming call).
+/// A path where `p` is neither consumed nor escaped (e.g. `take`'s `n==0 -> Nil`)
+/// means `p` is deep-dropped there → NOT pure-escape.
+fn p_path_ok(
+    p: &str,
+    e: &ast::Expr,
+    consumed: bool,
+    cfh: &std::collections::HashMap<String, Vec<bool>>,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    saw: &mut bool,
+) -> bool {
+    match e {
+        // `p` consumed here by destructuring — arms fully escape; downstream `consumed`.
+        ast::Expr::Case(scrut, arms, _) if is_var_named(scrut, p) && !consumed => {
+            *saw = true;
+            !arms.is_empty()
+                && arms.iter().all(|(pat, body)| match pat {
+                    ast::Pat::Con(con, subs, _) => {
+                        arm_heap_escape_every_path(con, subs, body, cfh, consuming)
+                            && p_path_ok(p, body, true, cfh, consuming, saw)
+                    }
+                    _ => p_path_ok(p, body, true, cfh, consuming, saw),
+                })
+        }
+        ast::Expr::If(_, t, el, _) => {
+            p_path_ok(p, t, consumed, cfh, consuming, saw)
+                && p_path_ok(p, el, consumed, cfh, consuming, saw)
+        }
+        // a `case` on something OTHER than `p`: `p` must be handled in every arm.
+        ast::Expr::Case(_, arms, _) => {
+            !arms.is_empty()
+                && arms
+                    .iter()
+                    .all(|(_, body)| p_path_ok(p, body, consumed, cfh, consuming, saw))
+        }
+        ast::Expr::Let(_, body, _) => p_path_ok(p, body, consumed, cfh, consuming, saw),
+        // a tail: OK iff `p` was already consumed upstream, or escapes whole here.
+        _ => consumed || escapes_via_result(p, e) || moved_into_consuming(p, e, consuming),
+    }
+}
+
+/// `true` if EVERY heap field of `Con subs` (per `cfh`) has a binder that escapes on
+/// EVERY path of `body`. A discarded/nested-pattern heap field fails (deep-dropped).
+fn arm_heap_escape_every_path(
+    con: &str,
+    subs: &[ast::Pat],
+    body: &ast::Expr,
+    cfh: &std::collections::HashMap<String, Vec<bool>>,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+) -> bool {
+    let Some(heaps) = cfh.get(con) else {
+        return false;
+    };
+    subs.iter().enumerate().all(|(fi, sp)| {
+        if heaps.get(fi).copied().unwrap_or(false) {
+            matches!(sp, ast::Pat::Var(b, _) if escapes_every_path(b, body, consuming))
+        } else {
+            true
+        }
+    })
 }
 
 /// `true` if the type mentions a type variable anywhere.

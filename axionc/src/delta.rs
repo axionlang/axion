@@ -1443,6 +1443,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
+            &analysis.consume_native_exempt,
             false,
         )
     }
@@ -1473,6 +1474,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
+            &analysis.consume_native_exempt,
             false,
         );
         check_drop_coherence(&l.fns, &l.borrow_args, &l.recinfo, &analysis.drops)
@@ -1490,6 +1492,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
+            &analysis.consume_native_exempt,
             false,
         );
         let mut fns = l.fns.clone();
@@ -1780,14 +1783,14 @@ mod tests {
         let d1 = super::dump_annotated(&l.fns, &l.borrow_args, &l.recinfo);
         let d2 = super::dump_annotated(&l.fns, &l.borrow_args, &l.recinfo);
         assert_eq!(d1, d2, "dump_annotated must be deterministic");
-        // the reverse kernel: `append` consumes the carried suffix
-        assert!(d1.contains("      let _d1000000 = call append _t0 _t2  ; Δ{_t0} · makes List\n"));
-        // an embedding moves its payload out of Δ
-        assert!(d1.contains("      let _t2 = con Cons y _t1  ; Δ{_t0}\n"));
-        // returning a produced resource leaves Δ (aliased — freely duplicable)
-        assert!(d1.contains("      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}\n"));
-        // drop lines stay unannotated
-        assert!(d1.contains("      drop _t0 : List\n"));
+        // the reverse kernel: the recursive `reverse` consumes the tail (`%1`)…
+        assert!(d1.contains("      let _t0 = call reverse ys  ; Δ{y ys} · moves{ys} · makes List\n"));
+        // …an embedding moves its payload out of Δ…
+        assert!(d1.contains("      let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}\n"));
+        // …and the tail `append` consumes the carried suffix (aliased result)
+        assert!(d1.contains("      ret call append _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List\n"));
+        // drop lines stay unannotated — `reverse` now OWNS `xs` and shell-frees it
+        assert!(d1.contains("      drop xs\n"));
         assert!(
             !d1.lines()
                 .any(|l| l.trim_start().starts_with("drop ") && l.contains("; Δ")),
@@ -1929,6 +1932,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
+            &analysis.consume_native_exempt,
             false,
         );
         let lines = crate::lexer::LineMap::new(src);
@@ -1951,7 +1955,9 @@ mod tests {
             v.contains("makeAndDrop b = ok — never-used %1: b\n"),
             "got:\n{v}"
         );
-        assert!(v.contains("reverse xs = ok — drops: _t0\n"), "got:\n{v}");
+        // `reverse` is now a generic pure-escape consumer (`%1`): it OWNS `xs` and
+        // shell-frees each spine cell (one drop per arm) instead of borrowing.
+        assert!(v.contains("reverse xs = ok — drops: xs xs\n"), "got:\n{v}");
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
@@ -1959,11 +1965,12 @@ mod tests {
             ),
             "got:\n{v}"
         );
-        // `unwords :: List String -> String` is now consume-inferred `%1` (it returns
-        // an extracted element), so a 2nd owned param agrees with the front-end.
+        // 6 owned params agree: makeAndDrop + `unwords` + the generic pure-escape
+        // consumers `append`/`reverse`/`concat`/`intersperse` — all coherent with the
+        // front-end (`%1` synthesized before the linear checker runs).
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 2/2 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 6/6 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -1986,10 +1993,11 @@ mod tests {
         // `owned`) — so it is NOT never-used, and coherence counts it as used
         let v = delta_view(OWNED_POLY);
         assert!(!v.contains("never-used %1:"), "got:\n{v}");
-        // 2 owned params: the fixture's `sum` + the prelude's consume-inferred `unwords`.
+        // 6 owned params (fixture `sum` + prelude `unwords`/`append`/`reverse`/
+        // `concat`/`intersperse`) all agree with the front-end DropPoints.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 2/2 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 6/6 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2010,6 +2018,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
+            &analysis.consume_native_exempt,
             false,
         );
         let mut fns = l.fns.clone();
@@ -2042,7 +2051,7 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== coherence (Δ-3, move 2): 1/2 `%1` params agree"),
+            v.contains("== coherence (Δ-3, move 2): 5/6 `%1` params agree"),
             "got:\n{v}"
         );
     }

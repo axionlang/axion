@@ -1254,6 +1254,10 @@ fn deep_drop_reclaims_nested_objects() {
         // and reclaims the spine (elements move into the result) instead of being a
         // borrow the caller double-frees.
         ("consume_monomorphic.axi", "6\n", "8 allocs, 8 frees"),
+        // GENERIC list-transformers (`append`/`reverse`/`concat`) on `List Box`: a
+        // var-carrying `%1` "pure-escape" param compiles natively as a generic
+        // shell-freer (exempt from the owning-generic exclusion) — no double-free.
+        ("generic_consume_box.axi", "6\n", "13 allocs, 13 frees"),
         // Multi-var owning params: `Tree a b %1` with two type vars specialized
         // to `Int` — the spec name uses a combined mangle `sumTree$Int$Int`.
         ("land_owned_multi.axi", "0\n", "3 allocs, 3 frees"),
@@ -1917,6 +1921,8 @@ fn native_runtime_is_leak_free_under_lsan() {
         "where_owned_list",
         // consume-inferred %1 on a monomorphic list-transformer (element reuse)
         "consume_monomorphic",
+        // generic pure-escape append/reverse/concat on List Box (native shell-free)
+        "generic_consume_box",
         // native sessions (§11): the scheduler's nursery arena reclaims every
         // task state at `axion_sess_run` exit — no leaks, no use-after-free.
         "session_run_pingpong",

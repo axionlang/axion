@@ -79,6 +79,9 @@ pub struct Analysis {
     pub array_tys: HashMap<Span, Type>,
     /// Literal patterns inference resolved to `Integer` (matched by bignum `==`).
     pub integer_lits: HashSet<Span>,
+    /// Generic pure-escape functions (consume-inferred `%1` on a var-carrying param
+    /// that only shell-frees) — EXEMPT from the owning-generic native exclusion.
+    pub consume_native_exempt: HashSet<String>,
 }
 
 /// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.

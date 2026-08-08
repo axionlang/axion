@@ -3369,6 +3369,7 @@ pub fn lower_with(
     makecon_tys: &HashMap<Span, Type>,
     array_tys: &HashMap<Span, Type>,
     integer_pats: &HashSet<Span>,
+    consume_exempt: &HashSet<String>,
     _fuse: bool, // kept for API compatibility, auto-fusion always runs now
 ) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
@@ -3455,8 +3456,16 @@ pub fn lower_with(
     // unresolvable (flat free → payload leak), so it must not compile natively
     // — only the monomorphized specializations (`dropList$P`, materialized
     // before lowering) have concrete parameters and deep-drop.
-    let owning_generics: HashSet<String> =
-        module.funcs.iter().filter_map(owning_generic_var).collect();
+    // A generic owning param is EXCLUDED from native (unresolvable element key) —
+    // UNLESS it is a consume-inferred "pure-escape" function (`append`/`reverse`/
+    // `concat`): those only shell-free the spine (every element escapes), so they
+    // need no key and compile natively as generic shell-freers.
+    let owning_generics: HashSet<String> = module
+        .funcs
+        .iter()
+        .filter_map(owning_generic_var)
+        .filter(|n| !consume_exempt.contains(n))
+        .collect();
 
     // TRANSITIVE native candidacy: a function is only compilable if, besides passing
     // `top_candidate`, all top-level functions it calls also are (fixpoint). Closes
