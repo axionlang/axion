@@ -399,6 +399,13 @@ pub(crate) fn compile_front(
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
+    // Infer `%1` (consumed) ownership for a signature param whose extracted heap
+    // element escapes via the result (`head`/`append`/`reverse`). Runs BEFORE the
+    // linear checker and inference so the whole pipeline (owned_meta / Phase-B
+    // specialization / borrow analysis / drop insertion / Δ-coherence) treats it as
+    // a hand-written `%1` — otherwise the caller deep-drops a list whose elements
+    // the callee reused/returned → double-free (heap elements only).
+    infer_consumed_ownership(&mut module);
     let mut analysis = check::check(&module, diags);
     // Inference returns the monomorphic method resolutions (use span →
     // concrete instance implementation). We rewrite them as direct
@@ -460,6 +467,258 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
 /// impl, per inference's `span → impl-name` map. Walks all
 /// bodies (top-level functions, `where`, lambdas, `case` arms, `let`).
 type Resolutions = std::collections::HashMap<(String, ast::Span), String>;
+
+/// Consume-inference: synthesize `%1` on a signature parameter whose extracted
+/// heap element escapes via the function's result (returned directly, or embedded
+/// in a returned constructor/tuple/record — but NOT merely passed to a call, which
+/// transforms it). Such a function CONSUMES the list (its result aliases the
+/// elements), so it must own+reclaim it rather than borrow it (else the caller
+/// double-frees the shared elements). See docs — this fixes the `head`/`append`/
+/// `reverse` element-aliasing double-free on native.
+fn infer_consumed_ownership(module: &mut ast::Module) {
+    use std::collections::{HashMap, HashSet};
+    let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
+    // constructor → per-field "carries a heap payload" (a `data`/tuple field, or a
+    // bare type variable that may be heap once instantiated).
+    let mut con_field_heap: HashMap<String, Vec<bool>> = HashMap::new();
+    for d in &module.datas {
+        for c in &d.cons {
+            let flags = c
+                .fields
+                .iter()
+                .map(|f| is_heap_field_ty(&f.ty, &data_names))
+                .collect();
+            con_field_heap.insert(c.name.clone(), flags);
+        }
+    }
+    let plans: Vec<(usize, HashSet<usize>)> = module
+        .funcs
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.sig.is_some() && f.constraints.is_empty())
+        .map(|(idx, f)| (idx, consumed_params(f, &con_field_heap)))
+        .filter(|(_, s)| !s.is_empty())
+        .collect();
+    for (idx, indices) in plans {
+        if let Some(sig) = &mut module.funcs[idx].sig {
+            for i in indices {
+                force_param_mult_one(sig, i);
+            }
+        }
+    }
+}
+
+/// A constructor field that carries a separately-allocated heap payload once
+/// instantiated: a `data`/tuple field, or a bare type variable (poly-heap).
+fn is_heap_field_ty(ty: &ast::Type, data_names: &std::collections::HashSet<String>) -> bool {
+    match ty {
+        ast::Type::Var(_) | ast::Type::Tuple(_) => true,
+        _ => ty.head_con().is_some_and(|h| data_names.contains(h)),
+    }
+}
+
+/// Parameter indices of `f` that are CONSUMED — an extracted heap field of the
+/// param escapes via the result. Covers `case <param> of Cons b .. -> <b escapes>`
+/// and direct clause destructuring `f (Cons b ..) = <b escapes>`.
+fn consumed_params(
+    f: &ast::Func,
+    con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+) -> std::collections::HashSet<usize> {
+    use std::collections::HashSet;
+    let mut out = HashSet::new();
+    for clause in &f.clauses {
+        let bodies: Vec<&ast::Expr> = match &clause.body {
+            ast::Body::Plain(e) => vec![e],
+            ast::Body::Guarded(arms) => arms.iter().map(|(_, r)| r).collect(),
+        };
+        // scrutinee variable names consumed by a `case <var> of` inside the bodies
+        let mut names: HashSet<String> = HashSet::new();
+        for body in &bodies {
+            collect_consuming_cases(body, con_field_heap, &mut names);
+        }
+        for (i, p) in clause.pats.iter().enumerate() {
+            match p {
+                ast::Pat::Var(n, _) if names.contains(n) => {
+                    out.insert(i);
+                }
+                // direct destructuring in the clause head: `f (Cons b ..) = <b>`
+                ast::Pat::Con(con, subs, _) => {
+                    if arm_field_escapes(con, subs, &bodies, con_field_heap) {
+                        out.insert(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Records scrutinee var names of a `case <var> of` whose arm extracts a heap
+/// field that escapes via that arm's result. Recurses into all subexpressions.
+fn collect_consuming_cases(
+    e: &ast::Expr,
+    con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+    names: &mut std::collections::HashSet<String>,
+) {
+    if let ast::Expr::Case(scrut, arms, _) = e {
+        if let ast::Expr::Var(s, _) = scrut.as_ref() {
+            for (pat, body) in arms {
+                if let ast::Pat::Con(con, subs, _) = pat {
+                    if arm_field_escapes(con, subs, &[body], con_field_heap) {
+                        names.insert(s.clone());
+                    }
+                }
+            }
+        }
+    }
+    for_each_subexpr(e, &mut |sub| collect_consuming_cases(sub, con_field_heap, names));
+}
+
+/// `true` if some heap field binder of pattern `Con subs` escapes via any of the
+/// arm result expressions.
+fn arm_field_escapes(
+    con: &str,
+    subs: &[ast::Pat],
+    bodies: &[&ast::Expr],
+    con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+) -> bool {
+    let Some(heaps) = con_field_heap.get(con) else {
+        return false;
+    };
+    subs.iter().enumerate().any(|(fi, sp)| {
+        matches!(sp, ast::Pat::Var(b, _) if heaps.get(fi).copied().unwrap_or(false)
+            && bodies.iter().any(|body| escapes_via_result(b, body)))
+    })
+}
+
+/// `true` if variable `name` reaches the function's RESULT: returned directly, or
+/// embedded (directly or nested) in a returned constructor/tuple/record. A value
+/// passed to a call is NOT counted — the call transforms/consumes it, its result
+/// does not alias the argument (keeps `map`/`filter` as pure borrows).
+fn escapes_via_result(name: &str, e: &ast::Expr) -> bool {
+    returned_directly(name, e) || embedded_in_ctor(name, e)
+}
+
+fn returned_directly(name: &str, e: &ast::Expr) -> bool {
+    match e {
+        ast::Expr::Var(n, _) => n == name,
+        ast::Expr::If(_, t, el, _) => returned_directly(name, t) || returned_directly(name, el),
+        ast::Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| returned_directly(name, b)),
+        ast::Expr::Let(_, body, _) => returned_directly(name, body),
+        _ => false,
+    }
+}
+
+fn embedded_in_ctor(name: &str, e: &ast::Expr) -> bool {
+    let is_var = |x: &ast::Expr| matches!(x, ast::Expr::Var(n, _) if n == name);
+    match e {
+        ast::Expr::App(_, _, _) => {
+            let (head, args) = app_spine(e);
+            let here = matches!(head, ast::Expr::Con(_, _)) && args.iter().any(|a| is_var(a));
+            here || args.iter().any(|a| embedded_in_ctor(name, a))
+        }
+        ast::Expr::Tuple(es, _) => es.iter().any(|x| is_var(x) || embedded_in_ctor(name, x)),
+        ast::Expr::RecordCon(_, fs, _) => {
+            fs.iter().any(|(_, x)| is_var(x) || embedded_in_ctor(name, x))
+        }
+        ast::Expr::If(_, t, el, _) => embedded_in_ctor(name, t) || embedded_in_ctor(name, el),
+        ast::Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| embedded_in_ctor(name, b)),
+        ast::Expr::Let(_, body, _) => embedded_in_ctor(name, body),
+        _ => false,
+    }
+}
+
+/// Uncurries an application into (head, args in source order).
+fn app_spine(e: &ast::Expr) -> (&ast::Expr, Vec<&ast::Expr>) {
+    let mut args = Vec::new();
+    let mut cur = e;
+    while let ast::Expr::App(f, a, _) = cur {
+        args.push(a.as_ref());
+        cur = f.as_ref();
+    }
+    args.reverse();
+    (cur, args)
+}
+
+/// Applies `g` to each immediate sub-expression of `e` (one level).
+fn for_each_subexpr(e: &ast::Expr, g: &mut dyn FnMut(&ast::Expr)) {
+    match e {
+        ast::Expr::App(a, b, _) | ast::Expr::BinOp(_, a, b, _) => {
+            g(a);
+            g(b);
+        }
+        ast::Expr::If(c, t, el, _) => {
+            g(c);
+            g(t);
+            g(el);
+        }
+        ast::Expr::Case(s, arms, _) => {
+            g(s);
+            arms.iter().for_each(|(_, b)| g(b));
+        }
+        ast::Expr::Let(binds, body, _) => {
+            for f in binds {
+                for c in &f.clauses {
+                    if let ast::Body::Plain(be) = &c.body {
+                        g(be);
+                    }
+                    if let ast::Body::Guarded(arms) = &c.body {
+                        arms.iter().for_each(|(gg, r)| {
+                            g(gg);
+                            g(r);
+                        });
+                    }
+                }
+            }
+            g(body);
+        }
+        ast::Expr::Tuple(es, _) => es.iter().for_each(g),
+        ast::Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| g(x)),
+        ast::Expr::RecordUpd(b, fs, _) => {
+            g(b);
+            fs.iter().for_each(|(_, x)| g(x));
+        }
+        ast::Expr::Lam(_, body, _) => g(body),
+        _ => {}
+    }
+}
+
+/// Forces the multiplicity of the `idx`-th parameter arrow in a signature to `One`
+/// (`%1`), but only when that param is a CONCRETE heap type (a `data`/tuple with no
+/// type variable). We deliberately do NOT infer `%1` on a var-carrying param
+/// (`List a`): that would make the function an owning-GENERIC (interp-only, requiring
+/// per-instantiation specialization), which breaks native compilation of common
+/// generic/operator uses (`++`, `concat`). A concrete `%1` (`List Box`) is a plain
+/// owned param the existing native owned-drop machinery reclaims correctly.
+fn force_param_mult_one(sig: &mut ast::Type, idx: usize) {
+    let mut cur = sig;
+    let mut i = 0;
+    while let ast::Type::Arrow { mult, from, to } = cur {
+        if i == idx {
+            let concrete_heap = (matches!(from.as_ref(), ast::Type::Tuple(_))
+                || from.head_con().is_some())
+                && !type_has_var(from);
+            if concrete_heap {
+                *mult = ast::Mult::One;
+            }
+            return;
+        }
+        i += 1;
+        cur = to;
+    }
+}
+
+/// `true` if the type mentions a type variable anywhere.
+fn type_has_var(t: &ast::Type) -> bool {
+    match t {
+        ast::Type::Var(_) => true,
+        ast::Type::Con(_) | ast::Type::Unit => false,
+        ast::Type::App(f, a) => type_has_var(f) || type_has_var(a),
+        ast::Type::Arrow { from, to, .. } => type_has_var(from) || type_has_var(to),
+        ast::Type::Tuple(ts) => ts.iter().any(type_has_var),
+    }
+}
 
 /// Phase 1b: wrap each integer literal that inference resolved to `Integer`
 /// (`fromInt n`), so the executor builds an arbitrary-precision value. Runs after

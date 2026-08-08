@@ -1249,6 +1249,11 @@ fn deep_drop_reclaims_nested_objects() {
         // deep-drops the whole list after the call (the local was invisible to the
         // borrow analysis before, so nobody reclaimed it).
         ("where_owned_list.axi", "112\n", "12 allocs, 12 frees"),
+        // Consume-inference: a monomorphic list-transformer that reuses heap
+        // elements in its result gets its `List Box` param inferred `%1`, so it OWNS
+        // and reclaims the spine (elements move into the result) instead of being a
+        // borrow the caller double-frees.
+        ("consume_monomorphic.axi", "6\n", "8 allocs, 8 frees"),
         // Multi-var owning params: `Tree a b %1` with two type vars specialized
         // to `Int` — the spec name uses a combined mangle `sumTree$Int$Int`.
         ("land_owned_multi.axi", "0\n", "3 allocs, 3 frees"),
@@ -1910,6 +1915,8 @@ fn native_runtime_is_leak_free_under_lsan() {
         "poly_payload_deep",
         // a where-local borrows an owned list; the parent reclaims it (leak-free)
         "where_owned_list",
+        // consume-inferred %1 on a monomorphic list-transformer (element reuse)
+        "consume_monomorphic",
         // native sessions (§11): the scheduler's nursery arena reclaims every
         // task state at `axion_sess_run` exit — no leaks, no use-after-free.
         "session_run_pingpong",
@@ -2476,6 +2483,15 @@ fn integer_literal_patterns_match_by_bignum() {
     // to compare the boxed pointer to an i64 (never matched → wrong result / infinite
     // recursion). fib 30 = 832040, classify 0 = 100, classify 21 = 42.
     agree_across_backends("integer_literal_pattern.axi", "832040\n100\n42\n");
+}
+
+#[test]
+fn consume_inferred_returned_element_is_not_double_freed() {
+    // A monomorphic `head`-like function returning an extracted heap element gets
+    // its `List Box` param inferred `%1`, so the caller does not free the returned
+    // element (which aliases the list). Regression: this double-freed on native
+    // (SIGABRT) when the param was treated as a borrow. All backends agree on 5.
+    agree_across_backends("consume_returns_element.axi", "5\n");
 }
 
 #[test]

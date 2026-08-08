@@ -1955,13 +1955,15 @@ mod tests {
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
-                "== verdicts: 53 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 54 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
+        // `unwords :: List String -> String` is now consume-inferred `%1` (it returns
+        // an extracted element), so a 2nd owned param agrees with the front-end.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 1/1 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 2/2 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -1984,9 +1986,10 @@ mod tests {
         // `owned`) — so it is NOT never-used, and coherence counts it as used
         let v = delta_view(OWNED_POLY);
         assert!(!v.contains("never-used %1:"), "got:\n{v}");
+        // 2 owned params: the fixture's `sum` + the prelude's consume-inferred `unwords`.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 1/1 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 2/2 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2035,11 +2038,11 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 52 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 53 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(
-            v.contains("== coherence (Δ-3, move 2): 0/1 `%1` params agree"),
+            v.contains("== coherence (Δ-3, move 2): 1/2 `%1` params agree"),
             "got:\n{v}"
         );
     }
