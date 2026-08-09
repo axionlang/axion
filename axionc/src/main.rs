@@ -550,11 +550,11 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
                 continue;
             }
             let ptypes = sig.param_types();
-            for i in 0..ptypes.len() {
+            for (i, ty) in ptypes.iter().enumerate() {
                 if consuming.get(&f.name).is_some_and(|s| s.contains(&i)) {
                     continue;
                 }
-                let ty = ptypes[i];
+                let ty = *ty;
                 if !(core::is_heap_shaped(ty) && core::ty_has_var(ty)) {
                     continue; // generic heap params only
                 }
@@ -619,11 +619,10 @@ fn consumed_params(
                     out.insert(i);
                 }
                 // direct destructuring in the clause head: `f (Cons b ..) = <b>`
-                ast::Pat::Con(con, subs, _) => {
-                    if arm_field_escapes(con, subs, &bodies, con_field_heap) {
+                ast::Pat::Con(con, subs, _)
+                    if arm_field_escapes(con, subs, &bodies, con_field_heap) => {
                         out.insert(i);
                     }
-                }
                 _ => {}
             }
         }

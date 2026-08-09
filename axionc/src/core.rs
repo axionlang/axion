@@ -525,6 +525,7 @@ impl RecordInfo {
     ///   - a `data` type with heap fields (`Expr`) → `Deep` (its destructor);
     ///   - a shallow heap `data` type (`P`, a record of scalars) → `Flat` free;
     ///   - a non-heap element (`Int`, an unboxed enum) → `Skip` (no drop).
+    ///
     /// `None` = unresolved (generic `a`, multi-parameter, or nested element) — the
     /// caller falls back to the previous behaviour (a flat `free`).
     fn poly_elem_drop(&self, con: &str, scrut_key: &str) -> Option<PolyDrop> {
@@ -747,7 +748,7 @@ fn calls_method(f: &ast::Func, methods: &HashSet<String>) -> bool {
 }
 
 /// True if the type contains a type variable anywhere.
-pub(crate) fn ty_has_var(t: &Type) -> bool {
+pub fn ty_has_var(t: &Type) -> bool {
     match t {
         Type::Var(_) => true,
         Type::App(f, a) => ty_has_var(f) || ty_has_var(a),
@@ -760,7 +761,7 @@ pub(crate) fn ty_has_var(t: &Type) -> bool {
 /// A type that denotes a heap allocation the owning machinery reclaims: a
 /// parametric/`data` application or a tuple (a bare var/arrow is an unboxed i64).
 /// Shared by `owning_generic_var` and the front-end consume-inference.
-pub(crate) fn is_heap_shaped(t: &Type) -> bool {
+pub fn is_heap_shaped(t: &Type) -> bool {
     matches!(t, Type::Tuple(_)) || t.head_con().is_some()
 }
 
@@ -1891,7 +1892,7 @@ fn wrap(buf: Vec<(String, Rhs)>, tail: Term, span: Span) -> Term {
     term
 }
 
-pub(crate) fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
+pub fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
     let mut args = Vec::new();
     let mut cur = e;
     while let Expr::App(f, a, _) = cur {

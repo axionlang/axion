@@ -21,7 +21,7 @@ impl BigInt {
         let mut i = digits.len();
         while i > 0 {
             let start = i.saturating_sub(9); // 9 digits fit a base-1e9 limb
-            mag.push(digits[start..i].parse::<u32>().unwrap_or(0));
+            mag.push(digits.get(start..i).and_then(|d| d.parse::<u32>().ok()).unwrap_or(0));
             i = start;
         }
         Self { neg, mag }.norm()
@@ -167,11 +167,11 @@ impl BigInt {
             let (mut lo, mut hi, mut d) = (0i64, BASE as i64 - 1, 0i64);
             while lo <= hi {
                 let mid = lo + (hi - lo) / 2;
-                if babs.mul(&BigInt::from_i64(mid)).cmp(&r) != Greater {
+                if babs.mul(&BigInt::from_i64(mid)).cmp(&r) == Greater {
+                    hi = mid - 1;
+                } else {
                     d = mid;
                     lo = mid + 1;
-                } else {
-                    hi = mid - 1;
                 }
             }
             q[i] = d as u32;
