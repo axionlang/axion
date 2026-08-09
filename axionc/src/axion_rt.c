@@ -252,9 +252,11 @@ long axion_bignum_mod(long a, long b) {
 }
 long axion_bignum_to_string(long p) {
   BigNum *b = (BigNum *)p;
-  if (b->len == 0) { char *z = (char *)axion_xmalloc(2); z[0] = '0'; z[1] = 0; return (long)z; }
+  /* String results carry the `axion_alloc` size header so `axion_str_drop`
+     reclaims them (like show_int/strcat); see §tc. */
+  if (b->len == 0) { char *z = (char *)axion_alloc(2); z[0] = '0'; z[1] = 0; return (long)z; }
   /* up to 9 digits per limb + sign + NUL */
-  char *buf = (char *)axion_xmalloc((size_t)b->len * 9 + 2);
+  char *buf = (char *)axion_alloc(b->len * 9 + 2);
   char *o = buf;
   if (b->neg) *o++ = '-';
   o += snprintf(o, 11, "%u", b->limbs[b->len - 1]);
@@ -265,8 +267,15 @@ long axion_bignum_to_string(long p) {
 /* --- strings / IO --- */
 void axion_puts(long s) { puts((const char *)s); }
 void axion_put(long s) { fputs((const char *)s, stdout); }
+/* Drops a `String`: heap strings carry the `axion_alloc` size header (nonzero at
+   `s-8`); string literals are emitted with a ZERO header (static `.rodata`), so
+   this frees the former and skips the latter. See core.rs string-drop lowering. */
+void axion_str_drop(long s) {
+  if (s && *(long *)(s - 8))
+    axion_free(s);
+}
 long axion_show_int(long n) {
-  char *buf = (char *)axion_xmalloc(24);
+  char *buf = (char *)axion_alloc(24);
   snprintf(buf, 24, "%ld", n);
   return (long)buf;
 }
@@ -292,7 +301,7 @@ void axion_print_float(double d) {
 long axion_show_float(long bits) {
   double d;
   memcpy(&d, &bits, sizeof d);
-  char *buf = (char *)axion_xmalloc(32);
+  char *buf = (char *)axion_alloc(32);
   float_shortest(d, buf, 32);
   return (long)buf;
 }
@@ -302,7 +311,7 @@ long axion_show_float(long bits) {
 long axion_strcat(long a, long b) {
   const char *x = (const char *)a, *y = (const char *)b;
   long la = (long)strlen(x), lb = (long)strlen(y);
-  char *buf = (char *)axion_xmalloc(la + lb + 1);
+  char *buf = (char *)axion_alloc(la + lb + 1);
   memcpy(buf, x, la);
   memcpy(buf + la, y, lb + 1); /* copies y's NUL too */
   return (long)buf;

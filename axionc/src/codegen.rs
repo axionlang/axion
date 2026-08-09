@@ -54,19 +54,42 @@ extern "C" fn axion_put(ptr: *const u8) {
     drop(std::io::stdout().flush());
 }
 
-/// `show :: Int -> String`: formats an integer and returns a C-string (leaked;
-/// lives until the end of the process — acceptable for a single `run`).
+/// Copies `bytes` + a NUL into an `axion_alloc` buffer (8-byte size header), so the
+/// resulting String is reclaimable by `axion_str_drop`/`axion_free` and counted in
+/// the heap stats (unlike a leaked `CString`). Returns the payload C-string pointer.
+fn axion_str_alloc(bytes: &[u8]) -> *const u8 {
+    let p = axion_alloc(bytes.len() as i64 + 1);
+    // SAFETY: `axion_alloc(n+1)` returns a payload of at least `n+1` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+        *p.add(bytes.len()) = 0;
+    }
+    p.cast_const()
+}
+
+/// Drops a `String`: heap strings carry the `axion_alloc` size header (nonzero at
+/// `s-8`); literals are emitted with a ZERO header, so this frees the former and
+/// skips the latter. Mirrors `axion_str_drop` in axion_rt.c.
+extern "C" fn axion_str_drop(s: *mut u8) {
+    if s.is_null() {
+        return;
+    }
+    // SAFETY: a valid String points 8 bytes past a size-header word.
+    let hdr = unsafe { s.sub(8).cast::<u64>().read_unaligned() };
+    if hdr != 0 {
+        axion_free(s);
+    }
+}
+
+/// `show :: Int -> String`: formats an integer as a reclaimable heap C-string.
 extern "C" fn axion_show_int(n: i64) -> *const u8 {
-    let s = std::ffi::CString::new(n.to_string()).unwrap_or_else(|_| panic!("CString error"));
-    s.into_raw() as *const u8
+    axion_str_alloc(n.to_string().as_bytes())
 }
 
 /// `show :: Float -> String`: the shortest round-tripping decimal (matching Rust
-/// `{}`), as a C-string. The i64 argument is the f64 bit pattern.
+/// `{}`), as a reclaimable heap C-string. The i64 argument is the f64 bit pattern.
 extern "C" fn axion_show_float(bits: i64) -> *const u8 {
-    let s = std::ffi::CString::new(f64::from_bits(bits as u64).to_string())
-        .unwrap_or_else(|_| panic!("CString error"));
-    s.into_raw() as *const u8
+    axion_str_alloc(f64::from_bits(bits as u64).to_string().as_bytes())
 }
 
 // --- arbitrary-precision Integer (§Listing 1.4): an `i64` is `*mut BigInt` (boxed).
@@ -125,12 +148,11 @@ extern "C" fn axion_bignum_gt(a: i64, b: i64) -> i64 {
     i64::from(bignum(a).cmp(bignum(b)) == std::cmp::Ordering::Greater)
 }
 extern "C" fn axion_bignum_to_string(a: i64) -> *const u8 {
-    let s = std::ffi::CString::new(bignum(a).to_string())
-        .unwrap_or_else(|_| panic!("CString error"));
-    s.into_raw() as *const u8
+    axion_str_alloc(bignum(a).to_string().as_bytes())
 }
 
-/// String concatenation `a ++ b` into a fresh C-string. Backs `strAppend`.
+/// String concatenation `a ++ b` into a fresh reclaimable heap C-string. Backs
+/// `strAppend`. Reads (borrows) both operands; the caller still owns/drops them.
 extern "C" fn axion_strcat(a: *const u8, b: *const u8) -> *const u8 {
     // SAFETY: caller passed two valid NUL-terminated C-strings.
     let (x, y) = unsafe {
@@ -141,9 +163,7 @@ extern "C" fn axion_strcat(a: *const u8, b: *const u8) -> *const u8 {
     };
     let mut s = x.to_bytes().to_vec();
     s.extend_from_slice(y.to_bytes());
-    std::ffi::CString::new(s)
-        .unwrap_or_else(|_| panic!("CString error"))
-        .into_raw() as *const u8
+    axion_str_alloc(&s)
 }
 
 // Heap counters (§13): how many allocations and frees occurred. With
@@ -1011,6 +1031,7 @@ impl Cg {
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_show_float", axion_show_float as *const u8);
         builder.symbol("axion_strcat", axion_strcat as *const u8);
+        builder.symbol("axion_str_drop", axion_str_drop as *const u8);
         builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
         builder.symbol("axion_bignum_from_str", axion_bignum_from_str as *const u8);
         builder.symbol("axion_bignum_add", axion_bignum_add as *const u8);
@@ -1102,6 +1123,8 @@ impl Cg {
             // Show/String builtins (§tc): showFloat and strAppend
             ("axion_show_float", 1, true),
             ("axion_strcat", 2, true),
+            // drops a String: frees a heap string, skips a static literal (§tc)
+            ("axion_str_drop", 1, false),
             ("axion_bignum_from_i64", 1, true),
             ("axion_bignum_from_str", 1, true),
             ("axion_bignum_add", 2, true),
@@ -1277,7 +1300,12 @@ impl Fx<'_, '_> {
             .declare_data(&name, Linkage::Local, false, false)
             .map_err(|e| e.to_string())?;
         let mut desc = DataDescription::new();
-        let mut bytes = s.as_bytes().to_vec();
+        // 8-byte ZERO size-header (mirrors `axion_alloc`), then the NUL-terminated
+        // bytes. The String VALUE points past the header (see `Atom::Str`), so
+        // `axion_str_drop` reads a 0 header and skips the static literal, while heap
+        // strings (nonzero header) are freed.
+        let mut bytes = vec![0u8; 8];
+        bytes.extend_from_slice(s.as_bytes());
         bytes.push(0);
         desc.define(bytes.into_boxed_slice());
         self.module
@@ -1349,7 +1377,10 @@ impl Fx<'_, '_> {
             Atom::Str(s) => {
                 let data = self.intern(s)?;
                 let gv = self.module.declare_data_in_func(data, self.builder.func);
-                Ok(self.builder.ins().global_value(types::I64, gv))
+                let base = self.builder.ins().global_value(types::I64, gv);
+                // point past the 8-byte size-header to the C-string bytes.
+                let eight = self.builder.ins().iconst(types::I64, 8);
+                Ok(self.builder.ins().iadd(base, eight))
             }
             Atom::Var(name) => match self.vars.get(name) {
                 Some(v) => Ok(self.builder.use_var(*v)),
@@ -1386,6 +1417,15 @@ impl Fx<'_, '_> {
             .copied()
             .ok_or_else(|| format!("drop of unbound variable '{name}'"))?;
         let ptr = self.builder.use_var(v);
+        // a String is reclaimed by the tagged runtime drop (frees a heap string,
+        // skips a static literal via its zero size-header) — never the plain
+        // `axion_free`, which would free a literal's rodata.
+        if ty == Some("String") {
+            let (id, _) = self.rt_fns["axion_str_drop"];
+            let callee = self.module.declare_func_in_func(id, self.builder.func);
+            self.builder.ins().call(callee, &[ptr]);
+            return Ok(());
+        }
         let deep = if skip.is_empty() {
             ty.map(|t| format!("axion_drop_{t}"))
         } else {

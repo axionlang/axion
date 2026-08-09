@@ -158,7 +158,17 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.borrows.push(v);
         }
         Op::FuncAddr(_) => {}
-        Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => e.borrows.push(a),
+        Op::PutStrLn(a) | Op::PutStr(a) => e.borrows.push(a),
+        // `show :: Int -> String` reads its Int and returns a fresh heap String the
+        // caller reclaims via the tagged `axion_str_drop` (§tc).
+        Op::ShowInt(a) => {
+            e.borrows.push(a);
+            e.produces = Some(Res {
+                key: Some("String".into()),
+                parent: None,
+                slot: None,
+            });
+        }
         Op::WithArena { parent, clos } => {
             if let Some(p) = parent {
                 e.borrows.push(p);
@@ -174,6 +184,22 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
         | Op::Ffi {
             name: func, args, ..
         } => {
+            // String builtins (§tc) READ their operands (no free) and return a
+            // fresh heap String the caller reclaims via `axion_str_drop`. So they
+            // BORROW their args (the caller still drops them) — unlike the general
+            // runtime-owns-its-args rule below.
+            if func == "axion_strcat"
+                || func == "axion_show_float"
+                || func == "axion_bignum_to_string"
+            {
+                e.borrows.extend(args.iter());
+                e.produces = Some(Res {
+                    key: Some("String".into()),
+                    parent: None,
+                    slot: None,
+                });
+                return e;
+            }
             // runtime/FFI calls own their arguments: the reclamation analysis
             // marks them as escaped, so the caller never frees them — a
             // resource passed here dies here (`axion_free` is the runtime free)

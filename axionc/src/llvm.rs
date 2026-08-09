@@ -44,6 +44,7 @@ declare i64 @axion_bignum_gt(i64, i64)
 declare i64 @axion_bignum_to_string(i64)
 declare i64 @axion_alloc(i64)
 declare void @axion_free(i64)
+declare void @axion_str_drop(i64)
 declare i64 @axion_arena_new()
 declare i64 @axion_arena_alloc(i64, i64)
 declare void @axion_arena_reset(i64)
@@ -166,9 +167,13 @@ pub fn emit_ir(
     sorted.sort_by_key(|(_, i)| **i);
     for (s, i) in sorted {
         let bytes = encode_cstr(s);
+        let n = s.len() + 1;
+        // `{ i64, [n x i8] }`: a ZERO size-header (mirrors `axion_alloc`'s header),
+        // then the NUL-terminated bytes. The String VALUE points at the bytes
+        // (past the header), so `axion_str_drop` reads a 0 header and skips the
+        // static literal, while heap strings (nonzero header) are freed.
         out.push_str(&format!(
-            "@.str{i} = private unnamed_addr constant [{} x i8] c\"{bytes}\"\n",
-            s.len() + 1
+            "@.str{i} = private unnamed_addr constant {{ i64, [{n} x i8] }} {{ i64 0, [{n} x i8] c\"{bytes}\" }}\n"
         ));
     }
     out.push('\n');
@@ -532,8 +537,12 @@ impl Emit<'_> {
                 .ok_or_else(|| format!("variable '{n}' not bound in the LLVM IR")),
             Atom::Str(s) => {
                 let i = self.strings.get(s).ok_or("string not interned")?;
-                // constant expression: the string pointer as i64
-                Ok(format!("ptrtoint (ptr @.str{i} to i64)"))
+                let n = s.len() + 1;
+                // constant expression: the string pointer as i64, past the 8-byte
+                // size-header (field 1 of `{ i64, [n x i8] }`).
+                Ok(format!(
+                    "ptrtoint (ptr getelementptr inbounds ({{ i64, [{n} x i8] }}, ptr @.str{i}, i32 0, i32 1) to i64)"
+                ))
             }
         }
     }
@@ -550,6 +559,13 @@ impl Emit<'_> {
             }
             Term::Drop(x, ty, skip, _, body) => {
                 let v = self.atom(&Atom::Var(x.clone()))?;
+                // a String is reclaimed by the tagged runtime drop (frees a heap
+                // string, skips a static literal via its zero size-header) — never
+                // the plain `axion_free`, which would free a literal's rodata.
+                if ty.as_deref() == Some("String") {
+                    self.rt("axion_str_drop", false, &[v]);
+                    return self.term(body);
+                }
                 let key = ty.as_deref().map(|t| {
                     if skip.is_empty() {
                         t.to_string()

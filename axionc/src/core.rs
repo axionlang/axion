@@ -3433,6 +3433,11 @@ pub fn lower_with(
             // array the caller reclaims — keyed flat, like `ArrayNew`.
             if h == "Array" {
                 Some((f.name.clone(), "Array".to_string()))
+            } else if h == "String" {
+                // a function returning String yields an owned heap string the
+                // caller reclaims via the tagged `axion_str_drop` (§tc): frees a
+                // heap string, skips a static literal (zero size-header).
+                Some((f.name.clone(), "String".to_string()))
             } else if boxed.contains(h) {
                 let key = mono_key(rt).unwrap_or_else(|| h.to_string());
                 Some((f.name.clone(), key))
@@ -4627,6 +4632,16 @@ impl Op {
         match self {
             Op::MakeRecord { ty, .. } | Op::MakeCon { ty, .. } => ty.clone(),
             Op::CallDirect(_, _, ty) => ty.clone(),
+            // String producers → reclaimed by the tagged `axion_str_drop` (§tc):
+            // frees a heap string, skips a static literal (zero size-header).
+            Op::ShowInt(_) => Some("String".into()),
+            Op::RtCall { func, .. }
+                if func == "axion_strcat"
+                    || func == "axion_show_float"
+                    || func == "axion_bignum_to_string" =>
+            {
+                Some("String".into())
+            }
             Op::RtCall { func, .. } if func == "axion_array_new" => Some("Array".into()),
             // §9 parMap returns an owned `List` of the workers' replies — reclaimed by
             // the generic `axion_drop_List` (flat cons-cell free), like `replicate`'s
@@ -4775,6 +4790,15 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::WithArena { parent, clos } => parent.iter().any(|a| atom_is(v, a)) || atom_is(v, clos),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => atom_is(v, a),
         Op::Promote(t, c) => atom_is(v, t) || atom_is(v, c),
+        // String builtins READ their operands (return a fresh String), so the
+        // operand is borrowed, not moved — matches `op_moves`/delta (§tc).
+        Op::RtCall { func, .. }
+            if func == "axion_strcat"
+                || func == "axion_show_float"
+                || func == "axion_bignum_to_string" =>
+        {
+            false
+        }
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
         Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => atom_is(v, a),
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => atom_is(v, a),
@@ -5147,6 +5171,16 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
             args.iter()
                 .enumerate()
                 .any(|(i, a)| i != 0 && atom_is(v, a))
+        }
+        // String builtins READ their operands and return a fresh String — the
+        // operand stays owned by the caller (matches delta::op_delta_effect, §tc),
+        // so a read-only String param is a borrow-arg the caller reclaims.
+        Op::RtCall { func, .. }
+            if func == "axion_strcat"
+                || func == "axion_show_float"
+                || func == "axion_bignum_to_string" =>
+        {
+            false
         }
         // --- the rest mirrors `occurs_nonborrow`'s `op_nonborrow` exactly ---
         Op::Field { .. }

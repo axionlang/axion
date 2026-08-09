@@ -1935,6 +1935,11 @@ fn native_runtime_is_leak_free_under_lsan() {
         "where_owned_list",
         // consume-inferred %1 on a monomorphic list-transformer (element reuse)
         "consume_monomorphic",
+        // String reclamation (§tc): tagged heap/literal strings freed via
+        // axion_str_drop — literals (zero header) skipped, no double-free, no leak
+        "string_reclaim",
+        // nested-parametric derived Show allocates/reclaims its intermediate strings
+        "derive_show_nested_param",
         // generic pure-escape append/reverse/concat on List Box (native shell-free)
         "generic_consume_box",
         // native sessions (§11): the scheduler's nursery arena reclaims every
@@ -2527,6 +2532,19 @@ fn derived_show_nested_parametric_instantiation_compiles_native() {
     agree_across_backends(
         "derive_show_nested_param.axi",
         "Some (Some 3)\nSome (Some (Some true))\n",
+    );
+}
+
+#[test]
+fn native_strings_are_reclaimed_not_leaked() {
+    // Native strings carry a size-header (§tc): heap strings (show/strAppend, via
+    // axion_alloc) have a nonzero header, static literals a zero header, so
+    // `axion_str_drop` frees the former and skips the latter — every String
+    // reclaimed once, no double-free of a literal's rodata. (Leak-freedom is pinned
+    // by `native_runtime_is_leak_free_under_lsan`.)
+    agree_across_backends(
+        "string_reclaim.axi",
+        "literal\nhi bob\n10000\nconst\nyes\nhi 5\nhi 4\nhi 3\nhi 2\nhi 1\n",
     );
 }
 
