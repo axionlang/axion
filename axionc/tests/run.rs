@@ -2517,6 +2517,20 @@ fn derived_show_parenthesizes_compound_arguments() {
 }
 
 #[test]
+fn derived_show_nested_parametric_instantiation_compiles_native() {
+    // A derived method used at a NESTED parametric type (`show (Some (Some 3))` at
+    // `Option (Option Int)`) monomorphizes natively: the outer spec
+    // `show$Option$Option$Int` is seeded with the FULL element-type key (`Option$Int`,
+    // not just the head `Option`), and the inner parametric method `showArg$Option$Int`
+    // is materialized transitively. Regression: only the flat `show$Option$Int` was
+    // seeded, so the outer spec was missing and `main` fell out of the native subset.
+    agree_across_backends(
+        "derive_show_nested_param.axi",
+        "Some (Some 3)\nSome (Some (Some true))\n",
+    );
+}
+
+#[test]
 fn consume_inferred_returned_element_is_not_double_freed() {
     // A monomorphic `head`-like function returning an extracted heap element gets
     // its `List Box` param inferred `%1`, so the caller does not free the returned

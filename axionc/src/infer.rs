@@ -1244,6 +1244,10 @@ impl<'a> Infer<'a> {
         // impl_base, element_type). Appended to `seeds` so the specialized
         // `impl$Elem` is materialized and the use rewritten to it.
         let mut method_seeds: Vec<(String, Span, String, String)> = Vec::new();
+        // mangle-key → the real substitution type, for specialization keys that
+        // are themselves parametric (`Option$Int` → `Option Int`). Simple keys
+        // (`Int`) are absent and fall back to a nullary `Type::Con`.
+        let mut key_types: HashMap<String, Type> = HashMap::new();
         // per constrained function: polymorphic method uses (span → method) and
         // polymorphic calls to constrained functions (span → function, including
         // self-recursion) — the points specialization rewrites to `$T`.
@@ -1284,8 +1288,16 @@ impl<'a> Infer<'a> {
                     // even if the native spec turns out invalid.
                     if parametric_inst.contains(&(o.class.clone(), name.clone())) {
                         resolutions.insert((o.func.clone(), o.span), base.clone());
-                        if let Some(Ty::Con(elem, _)) = args.first().map(|a| self.resolve(a)) {
-                            method_seeds.push((o.func.clone(), o.span, base, elem));
+                        // the element type may itself be parametric (`Option Int`
+                        // in `show (Some (Some 3))`): key on its full mangle
+                        // (`Option$Int`) so the OUTER spec is `show$Option$Option$Int`,
+                        // and remember the real type for the substitution.
+                        if let Some(elem_ast) =
+                            args.first().map(|a| self.apply(a)).and_then(|a| ty_to_ast(&a))
+                        {
+                            let key = ty_mangle(&elem_ast);
+                            key_types.insert(key.clone(), elem_ast);
+                            method_seeds.push((o.func.clone(), o.span, base, key));
                         }
                     } else {
                         resolutions.insert((o.func.clone(), o.span), base);
@@ -1380,6 +1392,26 @@ impl<'a> Infer<'a> {
                     queue.push(node);
                 }
             }
+            // parametric element type (`Option Int` in `show$Option$Option$Int`):
+            // each method use in `f` at the constraint var dispatches to the
+            // element's OWN parametric instance (`showArg$Option` at `Int`), so
+            // seed that nested spec too. Single-parameter instances only
+            // (`App(Con Head, arg)`), matching the deriving-native subset.
+            if let Some(Type::App(head, arg)) = key_types.get(&t).cloned() {
+                if let Type::Con(hname) = head.as_ref() {
+                    let ak = ty_mangle(&arg);
+                    key_types.entry(ak.clone()).or_insert_with(|| (*arg).clone());
+                    for (_, m) in poly_methods.get(&f).into_iter().flatten() {
+                        if is_builtin_op_method(m) {
+                            continue;
+                        }
+                        let node = (crate::ast::method_impl_name(m, hname), ak.clone());
+                        if cands.insert(node.clone()) {
+                            queue.push(node);
+                        }
+                    }
+                }
+            }
         }
 
         // fixpoint validity: `(f, T)` is valid unless `f` is
@@ -1400,8 +1432,24 @@ impl<'a> Infer<'a> {
                     || no_spec_var
                     || poly_methods.get(f).into_iter().flatten().any(|(_, m)| {
                         // built-in Num operators are always available (Int/Float).
-                        !is_builtin_op_method(m)
-                            && !func_names.contains(crate::ast::method_impl_name(m, t).as_str())
+                        if is_builtin_op_method(m) {
+                            return false;
+                        }
+                        // parametric element (`Option Int`): the method dispatches
+                        // to the element's own parametric instance spec
+                        // (`showArg$Option` at `Int`, a cand) — available unless
+                        // that nested spec is itself invalid.
+                        if let Some(Type::App(head, arg)) = key_types.get(t) {
+                            if let Type::Con(hname) = head.as_ref() {
+                                let base = crate::ast::method_impl_name(m, hname);
+                                let ak = ty_mangle(arg);
+                                let full = crate::ast::method_impl_name(&base, &ak);
+                                let cand_ok = cands.contains(&(base.clone(), ak.clone()))
+                                    && !invalid.contains(&(base, ak));
+                                return !(func_names.contains(full.as_str()) || cand_ok);
+                            }
+                        }
+                        !func_names.contains(crate::ast::method_impl_name(m, t).as_str())
                     })
                     || poly_calls
                         .get(f)
@@ -1448,7 +1496,10 @@ impl<'a> Infer<'a> {
             specs.push(SpecPlan {
                 src: f.clone(),
                 name,
-                subs: vec![(tyvar, Type::Con(t.clone()))],
+                subs: vec![(
+                    tyvar,
+                    key_types.get(t).cloned().unwrap_or_else(|| Type::Con(t.clone())),
+                )],
                 rewrites,
             });
         }
