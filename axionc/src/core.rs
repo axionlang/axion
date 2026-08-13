@@ -3844,13 +3844,53 @@ pub fn lower_with(
     let all_dty = build_all_drop_ty(&out, makecon_tys);
     let empty = HashMap::new();
 
+    // Concrete heap parameter types (from signatures), for reclaiming a
+    // conditionally-escaping OWNED heap param — `headOr`'s default: returned in one
+    // arm, dead in another where the branch-insensitive `escaped` set never drops
+    // it (a leak). See `reclaim_cond_escape`.
+    let param_types: HashMap<String, Vec<Type>> = module
+        .funcs
+        .iter()
+        .filter_map(|f| {
+            f.sig
+                .as_ref()
+                .map(|s| (f.name.clone(), s.param_types().into_iter().cloned().collect()))
+        })
+        .collect();
+
     let mut result: Vec<CoreFn> = Vec::with_capacity(out.len());
     let mut skip_seeds: Vec<(String, Vec<usize>)> = Vec::new();
     // stream-fusion pass: fuse producer→consumer chains on List operations
     fuse_list_ops(&mut out);
     for f in out {
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
-        let (f, seeds) = insert_drops(f, &borrow_args, dty, &recinfo);
+        let (mut f, seeds) = insert_drops(f, &borrow_args, dty, &recinfo);
+        // A2: reclaim a conditionally-escaping owned heap param in a tail case/if.
+        if let Some(ptys) = param_types.get(&f.name) {
+            let ba_set = borrow_args.get(&f.name);
+            let drp = droppable_vars(&f, &borrow_args);
+            let owned: Vec<(String, Option<String>)> = f
+                .params
+                .iter()
+                .zip(ptys)
+                .enumerate()
+                // a heap `data`/tuple (NOT a scalar — `is_heap_shaped` is true for
+                // Int, which would free a raw integer), a concrete monomorphic key
+                // (so its destructor exists), NOT a borrow-arg (the caller moves it
+                // in → this fn owns it), and NOT already reclaimed by `insert_drops`.
+                .filter(|(i, (name, ty))| {
+                    heap_ty(ty, &data_types)
+                        && mono_key(ty).is_some()
+                        && !ba_set.is_some_and(|s| s.contains(i))
+                        && !drp.contains(name.as_str())
+                })
+                .map(|(_, (name, ty))| (name.clone(), mono_key(ty)))
+                .collect();
+            if !owned.is_empty() {
+                let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
+                f.body = reclaim_cond_escape(body, owned);
+            }
+        }
         result.push(f);
         skip_seeds.extend(seeds);
     }
@@ -5317,6 +5357,97 @@ fn droppable_vars(f: &CoreFn, ba: &BorrowArgs) -> HashSet<String> {
     let mut escaped = HashSet::new();
     scan_body(&f.body, ba, &mut allocated, &mut escaped);
     allocated.difference(&escaped).cloned().collect()
+}
+
+/// Reclaims a conditionally-escaping OWNED heap parameter in a tail-position
+/// `case`/`if` — `headOr dflt xs = case xs of Vn -> dflt; Vc y ys -> y`, where the
+/// owned default `dflt` is RETURNED in one arm (escapes) but DEAD in another, in
+/// which the main reclamation never drops it (its branch-insensitive `escaped`
+/// set excludes it on all paths) → leak. For each such param this drops it at the
+/// head of every arm/branch where its name is PROVABLY ABSENT (so it is neither
+/// consumed nor read there — the drop cannot double-free; worst case is a residual
+/// leak). Descends past leading `let`/`drop`, dropping a param from the working set
+/// as soon as a binding mentions it (it may be consumed before the case → then we
+/// conservatively leave it to leak rather than risk a double free).
+fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>) -> Term {
+    let drop_if_absent = |mut arm: Term, skip: Option<&str>| -> Term {
+        for (v, key) in &owned {
+            if Some(v.as_str()) == skip {
+                continue;
+            }
+            if !term_mentions_any(&arm, &HashSet::from([v.clone()])) {
+                let sp = term_span(&arm);
+                arm = Term::Drop(v.clone(), key.clone(), Vec::new(), sp, Box::new(arm));
+            }
+        }
+        arm
+    };
+    match body {
+        Term::Let(x, rhs, sp, b) => {
+            let owned: Vec<_> = owned
+                .into_iter()
+                .filter(|(v, _)| v != &x && !rhs_mentions_any(&rhs, &HashSet::from([v.clone()])))
+                .collect();
+            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned)))
+        }
+        Term::Drop(v, k, sk, sp, b) => {
+            let owned: Vec<_> = owned.into_iter().filter(|(n, _)| n != &v).collect();
+            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned)))
+        }
+        Term::Ret(Rhs::Case(scrut, arms), sp) => {
+            let scrut_name = match &scrut {
+                Atom::Var(n) => Some(n.clone()),
+                _ => None,
+            };
+            let arms = arms
+                .into_iter()
+                .map(|(pat, arm)| {
+                    // exclude the scrutinee (reclaimed by the scrutinee drop) and any
+                    // param the pattern re-binds (shadowed).
+                    let owned_arm: Vec<_> = owned
+                        .iter()
+                        .filter(|(v, _)| {
+                            Some(v) != scrut_name.as_ref() && !cpat_binds(&pat, v)
+                        })
+                        .cloned()
+                        .collect();
+                    let arm = reclaim_cond_escape_arm(arm, &owned_arm);
+                    (pat, arm)
+                })
+                .collect();
+            Term::Ret(Rhs::Case(scrut, arms), sp)
+        }
+        Term::Ret(Rhs::If(c, th, el), sp) => Term::Ret(
+            Rhs::If(
+                c,
+                Box::new(drop_if_absent(*th, None)),
+                Box::new(drop_if_absent(*el, None)),
+            ),
+            sp,
+        ),
+        other => other,
+    }
+}
+
+/// Drops each `owned` param at the head of `arm` when its name is absent from the
+/// arm (so it is dead there — see `reclaim_cond_escape`).
+fn reclaim_cond_escape_arm(mut arm: Term, owned: &[(String, Option<String>)]) -> Term {
+    for (v, key) in owned {
+        if !term_mentions_any(&arm, &HashSet::from([v.clone()])) {
+            let sp = term_span(&arm);
+            arm = Term::Drop(v.clone(), key.clone(), Vec::new(), sp, Box::new(arm));
+        }
+    }
+    arm
+}
+
+/// `true` if the Core pattern binds `name` (so it shadows an outer binder).
+fn cpat_binds(pat: &CPat, name: &str) -> bool {
+    match pat {
+        CPat::Var(n) => n == name,
+        CPat::Con(_, subs) | CPat::Tuple(subs) => subs.iter().any(|p| cpat_binds(p, name)),
+        _ => false,
+    }
 }
 
 fn scan_body(t: &Term, ba: &BorrowArgs, alloc: &mut HashSet<String>, esc: &mut HashSet<String>) {

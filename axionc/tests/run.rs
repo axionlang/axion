@@ -1950,6 +1950,9 @@ fn native_runtime_is_leak_free_under_lsan() {
         "where_owned_list",
         // consume-inferred %1 on a monomorphic list-transformer (element reuse)
         "consume_monomorphic",
+        // conditionally-escaping owned heap param (headOr default) reclaimed in the
+        // arm where it is dead — no leak, no double-free
+        "cond_escape_reclaim",
         // String reclamation (§tc): tagged heap/literal strings freed via
         // axion_str_drop — literals (zero header) skipped, no double-free, no leak
         "string_reclaim",
@@ -2548,6 +2551,16 @@ fn derived_show_nested_parametric_instantiation_compiles_native() {
         "derive_show_nested_param.axi",
         "Some (Some 3)\nSome (Some (Some true))\n",
     );
+}
+
+#[test]
+fn conditionally_escaping_owned_param_is_reclaimed() {
+    // A `headOr`/`getOrElse`-shaped function returns its owned heap default in one
+    // `case` arm (escapes) but leaves it dead in another, where the main
+    // reclamation's branch-insensitive escape set never dropped it (a leak).
+    // `reclaim_cond_escape` drops it in the arm where its name is absent — no leak,
+    // no double-free. (Leak-freedom pinned by `native_runtime_is_leak_free_under_lsan`.)
+    agree_across_backends("cond_escape_reclaim.axi", "1\n8\n");
 }
 
 #[test]
