@@ -3,8 +3,15 @@
 **Status:** Phase 1–2 IMPLEMENTED (owned `%1` params of a concrete parametric
 type, transitively closed over nested/multi-parameter instantiations) and
 **Phase 5 IMPLEMENTED** (generic owning functions — Phase B monomorphization,
-`infer.rs::discharge_owning`; see §8). Phase 4 (`Make`-bound locals) remains
-deferred.
+`infer.rs::discharge_owning`; see §8). **Phase 4 (non-`%1` sites) mostly
+IMPLEMENTED** (commit e383d8a): a non-`%1` param of a concrete parametric type
+now carries its monomorphic key in the drop-type map (from the signature), and
+`emit_per_field_drops` resolves the recursive-spine field of a `case`-scrutinee
+to the scrutinee's mono key — so `case`-extracted element and spine drops of a
+`Lst Box`/`List Box`/tree reclaim the elements. `Make`-bound locals in `main`
+already used their `makecon_tys` key. Residual leaks (safe): a nested-parametric
+element (`poly_elem_drop` bails on `List$List$Int`) and a non-recursive
+parametric field (head mismatch with the scrutinee).
 
 **Goal:** close a real, latent leak — a generic container of
 heap elements (`List String`, `List (Maybe a)`, `List P`, a tree of records, …)
