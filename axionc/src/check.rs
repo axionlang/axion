@@ -1280,6 +1280,9 @@ fn check_func(
                     }
                 }
             }
+            // heap-return summary of this clause's `where`-locals, so a
+            // `let z = local xs` heap-returning call is not laundered past the check.
+            let locals = build_local_heap(&clause.wher, ctx);
             // `where`-bound heap aliases obey the same rule as `let` aliases
             // (`mk xs = T z z where z = xs`); count uses across the whole clause
             // (`analyze_clause` spans the body and any guards).
@@ -1287,7 +1290,7 @@ fn check_func(
                 if let [c] = w.clauses.as_slice() {
                     if c.pats.is_empty() {
                         if let Body::Plain(rhs) = &c.body {
-                            if rhs_is_heap(rhs, &heap, ctx) {
+                            if rhs_is_heap(rhs, &heap, ctx, &locals) {
                                 let n = analyze_clause(clause, &w.name, ctx).0;
                                 if n > 1 {
                                     push_contraction(&w.name, rhs.span(), n, diags);
@@ -1300,17 +1303,17 @@ fn check_func(
             }
             // walk the clause body (Plain, or each guarded result) + `where` bodies
             match &clause.body {
-                Body::Plain(body) => check_contraction(body, &heap, ctx, diags),
+                Body::Plain(body) => check_contraction(body, &heap, ctx, &locals, diags),
                 Body::Guarded(arms) => {
                     for (_, r) in arms {
-                        check_contraction(r, &heap, ctx, diags);
+                        check_contraction(r, &heap, ctx, &locals, diags);
                     }
                 }
             }
             for w in &clause.wher {
                 for c in &w.clauses {
                     if let Body::Plain(rhs) = &c.body {
-                        check_contraction(rhs, &heap, ctx, diags);
+                        check_contraction(rhs, &heap, ctx, &locals, diags);
                     }
                 }
             }
@@ -1350,10 +1353,16 @@ fn check_func(
 /// heap binder is moved into two owned slots and the native deep-drop frees it
 /// twice. `heap` carries the in-scope MANY heap binders (params + those bound
 /// deeper). Bare polymorphic binders are never flagged (see `is_heap_ty`).
-fn check_contraction(e: &Expr, heap: &HashSet<String>, ctx: &Ctx, diags: &mut Diagnostics) {
+fn check_contraction(
+    e: &Expr,
+    heap: &HashSet<String>,
+    ctx: &Ctx,
+    locals: &LocalHeap,
+    diags: &mut Diagnostics,
+) {
     match e {
         Expr::Case(scrut, arms, _) => {
-            check_contraction(scrut, heap, ctx, diags);
+            check_contraction(scrut, heap, ctx, locals, diags);
             for (pat, body) in arms {
                 let mut heap = heap.clone();
                 for (name, span) in pat_heap_binders(pat, ctx) {
@@ -1363,7 +1372,7 @@ fn check_contraction(e: &Expr, heap: &HashSet<String>, ctx: &Ctx, diags: &mut Di
                     }
                     heap.insert(name);
                 }
-                check_contraction(body, &heap, ctx, diags);
+                check_contraction(body, &heap, ctx, locals, diags);
             }
         }
         Expr::Let(binds, body, _) => {
@@ -1371,7 +1380,7 @@ fn check_contraction(e: &Expr, heap: &HashSet<String>, ctx: &Ctx, diags: &mut Di
             for f in binds {
                 for c in &f.clauses {
                     if let Body::Plain(rhs) = &c.body {
-                        check_contraction(rhs, &heap, ctx, diags);
+                        check_contraction(rhs, &heap, ctx, locals, diags);
                     }
                 }
                 // a plain `let name = rhs` (no params) whose RHS is a heap value:
@@ -1379,7 +1388,7 @@ fn check_contraction(e: &Expr, heap: &HashSet<String>, ctx: &Ctx, diags: &mut Di
                 if let [c] = f.clauses.as_slice() {
                     if c.pats.is_empty() {
                         if let Body::Plain(rhs) = &c.body {
-                            if rhs_is_heap(rhs, &heap, ctx) {
+                            if rhs_is_heap(rhs, &heap, ctx, locals) {
                                 let n = analyze(body, &f.name, Mode::Consume, ctx).0;
                                 if n > 1 {
                                     push_contraction(&f.name, rhs.span(), n, diags);
@@ -1390,26 +1399,30 @@ fn check_contraction(e: &Expr, heap: &HashSet<String>, ctx: &Ctx, diags: &mut Di
                     }
                 }
             }
-            check_contraction(body, &heap, ctx, diags);
+            check_contraction(body, &heap, ctx, locals, diags);
         }
         Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
-            check_contraction(a, heap, ctx, diags);
-            check_contraction(b, heap, ctx, diags);
+            check_contraction(a, heap, ctx, locals, diags);
+            check_contraction(b, heap, ctx, locals, diags);
         }
         Expr::If(a, b, c, _) => {
-            check_contraction(a, heap, ctx, diags);
-            check_contraction(b, heap, ctx, diags);
-            check_contraction(c, heap, ctx, diags);
+            check_contraction(a, heap, ctx, locals, diags);
+            check_contraction(b, heap, ctx, locals, diags);
+            check_contraction(c, heap, ctx, locals, diags);
         }
-        Expr::Tuple(es, _) => es.iter().for_each(|e| check_contraction(e, heap, ctx, diags)),
+        Expr::Tuple(es, _) => es
+            .iter()
+            .for_each(|e| check_contraction(e, heap, ctx, locals, diags)),
         Expr::RecordCon(_, fs, _) => {
-            fs.iter().for_each(|(_, e)| check_contraction(e, heap, ctx, diags));
+            fs.iter()
+                .for_each(|(_, e)| check_contraction(e, heap, ctx, locals, diags));
         }
         Expr::RecordUpd(base, fs, _) => {
-            check_contraction(base, heap, ctx, diags);
-            fs.iter().for_each(|(_, e)| check_contraction(e, heap, ctx, diags));
+            check_contraction(base, heap, ctx, locals, diags);
+            fs.iter()
+                .for_each(|(_, e)| check_contraction(e, heap, ctx, locals, diags));
         }
-        Expr::Lam(_, b, _) => check_contraction(b, heap, ctx, diags),
+        Expr::Lam(_, b, _) => check_contraction(b, heap, ctx, locals, diags),
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Var(..) | Expr::Con(..) => {}
     }
 }
@@ -1438,27 +1451,97 @@ fn collect_pat_heap(pat: &Pat, ctx: &Ctx, out: &mut Vec<(String, Span)>) {
     }
 }
 
+/// Per-clause summary of `where`-local functions, so a `let z = local xs`
+/// heap-returning call is not laundered past the contraction check (the
+/// module-level `fn_ret_heap` sees only top-level functions). `always` = returns a
+/// heap value regardless of args; `proj[g] = i` = returns its i-th parameter (so
+/// `local xs` is heap iff `xs` is).
+#[derive(Default)]
+struct LocalHeap {
+    always: HashSet<String>,
+    proj: HashMap<String, usize>,
+}
+
+/// Builds the [`LocalHeap`] summary for a clause's `where`-locals.
+fn build_local_heap(wher: &[Func], ctx: &Ctx) -> LocalHeap {
+    let mut lh = LocalHeap::default();
+    for w in wher {
+        let [c] = w.clauses.as_slice() else { continue };
+        let Body::Plain(body) = &c.body else { continue };
+        // projection: the body returns one of the parameters directly.
+        if let Expr::Var(n, _) = body {
+            if let Some(i) = c
+                .pats
+                .iter()
+                .position(|p| matches!(p, Pat::Var(pn, _) if pn == n))
+            {
+                lh.proj.insert(w.name.clone(), i);
+                continue;
+            }
+        }
+        if expr_structurally_heap(body, ctx, &lh) {
+            lh.always.insert(w.name.clone());
+        }
+    }
+    lh
+}
+
+/// `true` if `e` STRUCTURALLY yields a heap value regardless of its inputs: a
+/// tuple, a constructor application, a call to a heap-returning function, or an
+/// `if`/`case`/`let` whose result is such. (No heap-binder set needed — used to
+/// classify a `where`-local's body.)
+fn expr_structurally_heap(e: &Expr, ctx: &Ctx, lh: &LocalHeap) -> bool {
+    match e {
+        Expr::Tuple(..) => true,
+        Expr::If(_, t, el, _) => {
+            expr_structurally_heap(t, ctx, lh) || expr_structurally_heap(el, ctx, lh)
+        }
+        Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| expr_structurally_heap(b, ctx, lh)),
+        Expr::Let(_, body, _) => expr_structurally_heap(body, ctx, lh),
+        _ => {
+            let (head, args) = spine(e);
+            match head {
+                Expr::Con(c, _) => !args.is_empty() && ctx.con_fields.contains_key(c),
+                Expr::Var(f, _) => {
+                    !args.is_empty() && (ctx.fn_ret_heap.contains(f) || lh.always.contains(f))
+                }
+                _ => false,
+            }
+        }
+    }
+}
+
 /// `true` if `rhs` can evaluate to a heap value the `let`/`where` binder
 /// owns/aliases — so contracting the binder (moving it into two owned slots)
 /// double-frees. Covers an alias of an in-scope heap binder, a fresh tuple, a
 /// constructor application (a boxed `data` value — nullary constructors are
-/// immediate), a call to a heap-returning function, and `if`/`case`/`let` whose
-/// result can be heap. Conservative toward heap (may reject a genuinely-unsafe
-/// contraction; never a copyable value — `is_heap_ty` gates on `data`/tuple).
-fn rhs_is_heap(rhs: &Expr, heap: &HashSet<String>, ctx: &Ctx) -> bool {
+/// immediate), a call to a heap-returning function (top-level or a `where`-local,
+/// including a projection), and `if`/`case`/`let` whose result can be heap.
+/// Conservative toward heap (may reject a genuinely-unsafe contraction; never a
+/// copyable value — `is_heap_ty` gates on `data`/tuple).
+fn rhs_is_heap(rhs: &Expr, heap: &HashSet<String>, ctx: &Ctx, lh: &LocalHeap) -> bool {
     match rhs {
         Expr::Var(n, _) => heap.contains(n),
         Expr::Tuple(..) => true,
-        Expr::If(_, t, e, _) => rhs_is_heap(t, heap, ctx) || rhs_is_heap(e, heap, ctx),
-        Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| rhs_is_heap(b, heap, ctx)),
-        Expr::Let(_, body, _) => rhs_is_heap(body, heap, ctx),
+        Expr::If(_, t, e, _) => rhs_is_heap(t, heap, ctx, lh) || rhs_is_heap(e, heap, ctx, lh),
+        Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| rhs_is_heap(b, heap, ctx, lh)),
+        Expr::Let(_, body, _) => rhs_is_heap(body, heap, ctx, lh),
         _ => {
             let (head, args) = spine(rhs);
             match head {
                 // a boxed constructor value (nullary constructors are immediate)
                 Expr::Con(c, _) => !args.is_empty() && ctx.con_fields.contains_key(c),
-                // a call to a function whose result type is heap
-                Expr::Var(f, _) => !args.is_empty() && ctx.fn_ret_heap.contains(f),
+                Expr::Var(f, _) => {
+                    // a call to a heap-returning function (top-level or where-local)…
+                    if !args.is_empty() && (ctx.fn_ret_heap.contains(f) || lh.always.contains(f)) {
+                        return true;
+                    }
+                    // …or a projection `local xs` → heap iff the projected arg is.
+                    if let Some(&i) = lh.proj.get(f) {
+                        return args.get(i).is_some_and(|a| rhs_is_heap(a, heap, ctx, lh));
+                    }
+                    false
+                }
                 _ => false,
             }
         }

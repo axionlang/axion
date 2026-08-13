@@ -31,6 +31,12 @@ mkGuard xs
   | otherwise = T z z
   where z = xs
 
--- (5) `let` bound to a heap-returning CALL.
+-- (5) `let` bound to a heap-returning CALL (top-level).
 mkCall :: V -> T
 mkCall xs = let z = idv xs in T z z
+
+-- (6) `let` bound to a heap-returning WHERE-LOCAL (projection) — the module-level
+-- return-type table doesn't see locals, so this laundered past the check before.
+mkLocal :: V -> T
+mkLocal xs = let z = loc xs in T z z
+  where loc v = v

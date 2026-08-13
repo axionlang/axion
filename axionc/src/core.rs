@@ -3866,7 +3866,10 @@ pub fn lower_with(
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
         let (mut f, seeds) = insert_drops(f, &borrow_args, dty, &recinfo);
         // A2: reclaim a conditionally-escaping owned heap param in a tail case/if.
-        if let Some(ptys) = param_types.get(&f.name) {
+        // Guard: only when the Core params line up 1:1 with the signature arrows
+        // (a captured/synthetic param would otherwise pick the WRONG destructor key
+        // for a slot and free a differently-shaped value → heap corruption).
+        if let Some(ptys) = param_types.get(&f.name).filter(|p| p.len() == f.params.len()) {
             let ba_set = borrow_args.get(&f.name);
             let drp = droppable_vars(&f, &borrow_args);
             let owned: Vec<(String, Option<String>)> = f
