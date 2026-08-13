@@ -707,6 +707,21 @@ fn linear_record_used_twice_is_rejected_ax0001() {
 }
 
 #[test]
+fn indirect_heap_duplication_is_rejected_ax0001() {
+    // The parameter contraction check saw only parameters, so a heap value could be
+    // laundered past it and double-freed natively: through a `let` ALIAS
+    // (`let z = xs in T z z`) or a `case`-EXTRACTED field binder
+    // (`Vc y ys -> T (Vc y ys) (Vc y ys)`). Both are now rejected at compile time.
+    let out = axionc()
+        .args(["--check", &fixture("heap_duplication_indirect.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0001"), "expected AX0001, output: {text}");
+}
+
+#[test]
 fn heap_value_duplicated_by_ownership_is_rejected_ax0001() {
     // `mk xs = Two xs xs` moves a borrowed HEAP list into two owned fields
     // (contraction) — previously accepted, then double-freed natively. The

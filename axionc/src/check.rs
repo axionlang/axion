@@ -1236,8 +1236,7 @@ fn check_func(
                 continue; // %1 handled above
             }
             if let (Pat::Var(name, span), Some(ty)) = (p, ptypes.get(i)) {
-                let heap = matches!(ty, Type::Tuple(_))
-                    || ty.head_con().is_some_and(|h| ctx.data_names.contains(h));
+                let heap = is_heap_ty(ty, ctx);
                 let consumes = if heap { analyze_clause(clause, name, ctx).0 } else { 0 };
                 if consumes > 1 {
                     diags.push(
@@ -1260,6 +1259,59 @@ fn check_func(
                              %0.5 halves (§2).",
                         ),
                     );
+                }
+            }
+        }
+
+        // --- contraction of `case`-extracted / `let`-aliased heap binders ---
+        // The two loops above only see PARAMETERS; a heap value bound by a `case`
+        // field pattern (`case xs of C y ys -> Q (C y ys) (C y ys)`) or aliased by
+        // a `let` (`let z = xs in T z z`) evaded them and double-freed natively.
+        {
+            let mut heap: HashSet<String> = HashSet::new();
+            for (i, p) in clause.pats.iter().enumerate() {
+                // MANY heap params only — `%1` sources are handled by `scan_lets`
+                // below (avoid a double AX0001 on the same alias).
+                if mults.get(i).copied() != Some(Mult::One) {
+                    if let (Pat::Var(name, _), Some(ty)) = (p, ptypes.get(i)) {
+                        if is_heap_ty(ty, ctx) {
+                            heap.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            // `where`-bound heap aliases obey the same rule as `let` aliases
+            // (`mk xs = T z z where z = xs`); count uses across the whole clause
+            // (`analyze_clause` spans the body and any guards).
+            for w in &clause.wher {
+                if let [c] = w.clauses.as_slice() {
+                    if c.pats.is_empty() {
+                        if let Body::Plain(rhs) = &c.body {
+                            if rhs_is_heap(rhs, &heap, ctx) {
+                                let n = analyze_clause(clause, &w.name, ctx).0;
+                                if n > 1 {
+                                    push_contraction(&w.name, rhs.span(), n, diags);
+                                }
+                                heap.insert(w.name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            // walk the clause body (Plain, or each guarded result) + `where` bodies
+            match &clause.body {
+                Body::Plain(body) => check_contraction(body, &heap, ctx, diags),
+                Body::Guarded(arms) => {
+                    for (_, r) in arms {
+                        check_contraction(r, &heap, ctx, diags);
+                    }
+                }
+            }
+            for w in &clause.wher {
+                for c in &w.clauses {
+                    if let Body::Plain(rhs) = &c.body {
+                        check_contraction(rhs, &heap, ctx, diags);
+                    }
                 }
             }
         }
@@ -1289,6 +1341,147 @@ fn check_func(
             }
         }
     }
+}
+
+/// Rejects CONTRACTION (double consumption) of a heap value bound by a `case`
+/// field pattern or aliased by a `let` — the gap the parameter/`%1` contraction
+/// checks (which only see parameters) miss. `case xs of C y ys -> Q (C y ys) (C y ys)`
+/// and `let z = xs in T z z` both compiled clean but double-freed natively: the
+/// heap binder is moved into two owned slots and the native deep-drop frees it
+/// twice. `heap` carries the in-scope MANY heap binders (params + those bound
+/// deeper). Bare polymorphic binders are never flagged (see `is_heap_ty`).
+fn check_contraction(e: &Expr, heap: &HashSet<String>, ctx: &Ctx, diags: &mut Diagnostics) {
+    match e {
+        Expr::Case(scrut, arms, _) => {
+            check_contraction(scrut, heap, ctx, diags);
+            for (pat, body) in arms {
+                let mut heap = heap.clone();
+                for (name, span) in pat_heap_binders(pat, ctx) {
+                    let n = analyze(body, &name, Mode::Consume, ctx).0;
+                    if n > 1 {
+                        push_contraction(&name, span, n, diags);
+                    }
+                    heap.insert(name);
+                }
+                check_contraction(body, &heap, ctx, diags);
+            }
+        }
+        Expr::Let(binds, body, _) => {
+            let mut heap = heap.clone();
+            for f in binds {
+                for c in &f.clauses {
+                    if let Body::Plain(rhs) = &c.body {
+                        check_contraction(rhs, &heap, ctx, diags);
+                    }
+                }
+                // a plain `let name = rhs` (no params) whose RHS is a heap value:
+                // `name` aliases/owns it, so a double consume double-frees.
+                if let [c] = f.clauses.as_slice() {
+                    if c.pats.is_empty() {
+                        if let Body::Plain(rhs) = &c.body {
+                            if rhs_is_heap(rhs, &heap, ctx) {
+                                let n = analyze(body, &f.name, Mode::Consume, ctx).0;
+                                if n > 1 {
+                                    push_contraction(&f.name, rhs.span(), n, diags);
+                                }
+                                heap.insert(f.name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            check_contraction(body, &heap, ctx, diags);
+        }
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+            check_contraction(a, heap, ctx, diags);
+            check_contraction(b, heap, ctx, diags);
+        }
+        Expr::If(a, b, c, _) => {
+            check_contraction(a, heap, ctx, diags);
+            check_contraction(b, heap, ctx, diags);
+            check_contraction(c, heap, ctx, diags);
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|e| check_contraction(e, heap, ctx, diags)),
+        Expr::RecordCon(_, fs, _) => {
+            fs.iter().for_each(|(_, e)| check_contraction(e, heap, ctx, diags));
+        }
+        Expr::RecordUpd(base, fs, _) => {
+            check_contraction(base, heap, ctx, diags);
+            fs.iter().for_each(|(_, e)| check_contraction(e, heap, ctx, diags));
+        }
+        Expr::Lam(_, b, _) => check_contraction(b, heap, ctx, diags),
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Var(..) | Expr::Con(..) => {}
+    }
+}
+
+/// Heap-typed `Var` binders introduced by a constructor pattern (`C y ys` →
+/// those of `y`/`ys` whose field type is a `data`/tuple). Recurses into nested
+/// constructor patterns; tuple sub-patterns are skipped (element types unknown
+/// here — conservative, never a false positive).
+fn pat_heap_binders(pat: &Pat, ctx: &Ctx) -> Vec<(String, Span)> {
+    let mut out = Vec::new();
+    collect_pat_heap(pat, ctx, &mut out);
+    out
+}
+
+fn collect_pat_heap(pat: &Pat, ctx: &Ctx, out: &mut Vec<(String, Span)>) {
+    if let Pat::Con(c, subpats, _) = pat {
+        if let Some(ftys) = ctx.con_fields.get(c) {
+            for (sp, fty) in subpats.iter().zip(ftys) {
+                match sp {
+                    Pat::Var(name, span) if is_heap_ty(fty, ctx) => out.push((name.clone(), *span)),
+                    Pat::Con(..) => collect_pat_heap(sp, ctx, out),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// `true` if `rhs` can evaluate to a heap value the `let`/`where` binder
+/// owns/aliases — so contracting the binder (moving it into two owned slots)
+/// double-frees. Covers an alias of an in-scope heap binder, a fresh tuple, a
+/// constructor application (a boxed `data` value — nullary constructors are
+/// immediate), a call to a heap-returning function, and `if`/`case`/`let` whose
+/// result can be heap. Conservative toward heap (may reject a genuinely-unsafe
+/// contraction; never a copyable value — `is_heap_ty` gates on `data`/tuple).
+fn rhs_is_heap(rhs: &Expr, heap: &HashSet<String>, ctx: &Ctx) -> bool {
+    match rhs {
+        Expr::Var(n, _) => heap.contains(n),
+        Expr::Tuple(..) => true,
+        Expr::If(_, t, e, _) => rhs_is_heap(t, heap, ctx) || rhs_is_heap(e, heap, ctx),
+        Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| rhs_is_heap(b, heap, ctx)),
+        Expr::Let(_, body, _) => rhs_is_heap(body, heap, ctx),
+        _ => {
+            let (head, args) = spine(rhs);
+            match head {
+                // a boxed constructor value (nullary constructors are immediate)
+                Expr::Con(c, _) => !args.is_empty() && ctx.con_fields.contains_key(c),
+                // a call to a function whose result type is heap
+                Expr::Var(f, _) => !args.is_empty() && ctx.fn_ret_heap.contains(f),
+                _ => false,
+            }
+        }
+    }
+}
+
+fn push_contraction(name: &str, span: Span, n: usize, diags: &mut Diagnostics) {
+    diags.push(
+        Diagnostic::error(
+            "AX0001",
+            format!("heap value '{name}' consumed {n} times (contraction forbidden)"),
+        )
+        .label(
+            span.0,
+            span.1,
+            format!("'{name}' is moved into an owned position more than once"),
+        )
+        .with_help(
+            "a heap value may be READ freely, but moving it by ownership (into a \
+             constructor/tuple/%1 argument) may happen only once — to share it by \
+             ownership, 'split' it into two %0.5 halves (§2).",
+        ),
+    );
 }
 
 /// Emits the diagnostic or records the drop, applying the linearity rule to a
@@ -1519,6 +1712,20 @@ struct Ctx {
     /// user `data` type names — a heap allocation that is deep-dropped (so it may
     /// not be duplicated by ownership: contraction is a double-free, AX0001).
     data_names: HashSet<String>,
+    /// constructor name → its field types (positional), for classifying the heap-ness
+    /// of `case`-extracted field binders in the contraction check.
+    con_fields: HashMap<String, Vec<Type>>,
+    /// functions whose RESULT is a heap value (`data`/tuple) — so `let z = f a`
+    /// binds a heap value that must not be contracted (moved into two owned slots).
+    fn_ret_heap: HashSet<String>,
+}
+
+/// A value of this type is a HEAP allocation that gets deep-dropped, so moving it
+/// into an owned position more than once double-frees (AX0001). A bare type var is
+/// NOT heap here — its heap-ness is unknown until monomorphization (conservative:
+/// no false positive on a copyable `Int` element).
+fn is_heap_ty(ty: &Type, ctx: &Ctx) -> bool {
+    matches!(ty, Type::Tuple(_)) || ty.head_con().is_some_and(|h| ctx.data_names.contains(h))
 }
 
 fn build_ctx(module: &Module) -> Ctx {
@@ -1529,9 +1736,11 @@ fn build_ctx(module: &Module) -> Ctx {
             consumers.insert(f.name.clone(), sig.param_mults());
         }
     }
+    let mut con_fields = HashMap::new();
     for d in &module.datas {
         for c in &d.cons {
             consumers.insert(c.name.clone(), c.fields.iter().map(|f| f.mult).collect());
+            con_fields.insert(c.name.clone(), c.fields.iter().map(|f| f.ty.clone()).collect());
             for f in &c.fields {
                 if !f.name.is_empty() {
                     consumers.insert(f.name.clone(), vec![Mult::Many]); // selector: borrows
@@ -1588,11 +1797,28 @@ fn build_ctx(module: &Module) -> Ctx {
         let arity = fo.sig.param_mults().len();
         consumers.insert(fo.name.clone(), vec![Mult::Many; arity]);
     }
+    let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
+    // functions whose result type is a heap value (`data`/tuple) — a `let z = f a`
+    // then binds a heap value that must not be contracted.
+    let fn_ret_heap: HashSet<String> = module
+        .funcs
+        .iter()
+        .filter(|f| {
+            f.sig.as_ref().is_some_and(|s| {
+                let rt = crate::core::result_type(s);
+                matches!(rt, Type::Tuple(_))
+                    || rt.head_con().is_some_and(|h| data_names.contains(h))
+            })
+        })
+        .map(|f| f.name.clone())
+        .collect();
     Ctx {
         consumers,
         field_mults,
         must_use_types: build_must_use_types(module),
-        data_names: module.datas.iter().map(|d| d.name.clone()).collect(),
+        data_names,
+        con_fields,
+        fn_ret_heap,
     }
 }
 
