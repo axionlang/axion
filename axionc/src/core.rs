@@ -1955,25 +1955,36 @@ fn lower_func(
         local_names: func_bound_names(f),
         integer_pats,
     };
-    let single_var = f.clauses.len() == 1
-        && f.clauses[0]
-            .pats
-            .iter()
-            .all(|p| matches!(p, Pat::Var(_, _) | Pat::Wild(_)));
-    let (params, body) = if single_var {
-        let params: Vec<String> = f.clauses[0]
+    // A single clause is irrefutable (a non-exhaustive single clause is rejected by
+    // AX0202), so its parameter patterns bind unconditionally: `Var` directly, and
+    // a `Con`/`Tuple` pattern by DESTRUCTURING the parameter through a `case` (which
+    // binds the field variables — the multi-clause `if`-chain desugar below only
+    // binds `Var` params, so a head like `label (Named s k) = …` left `s`/`k`
+    // unbound in the Core → native "variable not bound").
+    let (params, body) = if f.clauses.len() == 1 {
+        let clause = &f.clauses[0];
+        let params: Vec<String> = clause
             .pats
             .iter()
             .enumerate()
             .map(|(k, p)| match p {
                 Pat::Var(n, _) => n.clone(),
-                _ => format!("_w{k}"),
+                _ => format!("_p{k}"),
             })
             .collect();
-        let body = match &f.clauses[0].body {
+        let mut body = match &clause.body {
             Body::Plain(e) => lw.term(e),
             Body::Guarded(arms) => lw.guarded(arms),
         };
+        for (k, p) in clause.pats.iter().enumerate() {
+            if matches!(p, Pat::Con(..) | Pat::Tuple(..)) {
+                let cpat = lower_pat(p);
+                body = Term::Ret(
+                    Rhs::Case(Atom::Var(params[k].clone()), vec![(cpat, body)]),
+                    NO_SPAN,
+                );
+            }
+        }
         (params, body)
     } else {
         let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();

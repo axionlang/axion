@@ -2554,6 +2554,15 @@ fn derived_show_nested_parametric_instantiation_compiles_native() {
 }
 
 #[test]
+fn single_clause_head_pattern_destructures_natively() {
+    // A single-clause function may destructure a `Con`/`Tuple` parameter in its
+    // head (`label (Named s k) = …`); the field variables must be bound in native
+    // Core. Regression: the multi-clause `if`-chain desugar bound only `Var` params,
+    // so the fields were left unbound → "variable not bound" on cranelift/llvm.
+    agree_across_backends("head_pattern_destructure.axi", "hi!\n42\n17\n");
+}
+
+#[test]
 fn conditionally_escaping_owned_param_is_reclaimed() {
     // A `headOr`/`getOrElse`-shaped function returns its owned heap default in one
     // `case` arm (escapes) but leaves it dead in another, where the main
