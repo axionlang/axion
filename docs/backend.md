@@ -135,7 +135,6 @@ main = fib 20
 - (Non-exhaustive `case`/clauses are now rejected at compile time — `AX0202` —
   before reaching the backend; an exhaustive `case` compiles with its last arm as
   the fallback, no explicit wildcard needed.)
-- Over-application (functions that return functions and are re-applied).
 - `String` as a first-class value beyond building/printing (slicing, indexing, …).
 
 The transitive native-candidacy analysis excludes gracefully whatever doesn't
