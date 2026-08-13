@@ -1953,6 +1953,9 @@ fn native_runtime_is_leak_free_under_lsan() {
         // conditionally-escaping owned heap param (headOr default) reclaimed in the
         // arm where it is dead — no leak, no double-free
         "cond_escape_reclaim",
+        // generic container of heap elements (Lst Box) reclaims its ELEMENTS via the
+        // monomorphic destructor (axion_drop_Lst$Box), not just the spine
+        "poly_element_reclaim",
         // String reclamation (§tc): tagged heap/literal strings freed via
         // axion_str_drop — literals (zero header) skipped, no double-free, no leak
         "string_reclaim",
@@ -2551,6 +2554,16 @@ fn derived_show_nested_parametric_instantiation_compiles_native() {
         "derive_show_nested_param.axi",
         "Some (Some 3)\nSome (Some (Some true))\n",
     );
+}
+
+#[test]
+fn generic_container_reclaims_heap_elements() {
+    // A `case` on a concrete `Lst Box` value reclaims the element and recursive-spine
+    // field drops via the monomorphic destructor `axion_drop_Lst$Box` (resolved from
+    // the scrutinee's concrete key), not the generic `axion_drop_Lst` that leaked the
+    // `Box` payloads. `Lst Int` still does not deep-drop its scalars (no corruption).
+    // Leak-freedom pinned by `native_runtime_is_leak_free_under_lsan`.
+    agree_across_backends("poly_element_reclaim.axi", "1\n");
 }
 
 #[test]

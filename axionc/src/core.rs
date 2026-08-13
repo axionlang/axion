@@ -3852,7 +3852,7 @@ pub fn lower_with(
     }
     let borrow_args = compute_borrow_args(&out, &param_mults);
 
-    let all_dty = build_all_drop_ty(&out, makecon_tys);
+    let mut all_dty = build_all_drop_ty(&out, makecon_tys);
     let empty = HashMap::new();
 
     // Concrete heap parameter types (from signatures), for reclaiming a
@@ -3868,6 +3868,26 @@ pub fn lower_with(
                 .map(|s| (f.name.clone(), s.param_types().into_iter().cloned().collect()))
         })
         .collect();
+
+    // A NON-`%1` param of a concrete PARAMETRIC type (`Lst Box`) carries its
+    // monomorphic key (`Lst$Box`) too, so a `case` on it resolves the element/spine
+    // field drops to the mono destructor (`axion_drop_Lst$Box`) instead of the leaky
+    // generic `axion_drop_Lst`. `%1` params already have theirs (`owned_drop_ty`).
+    // Safe: an absent mono destructor routes to a flat free (leak), never a crash,
+    // and the scrutinee's deep-vs-shell choice is by escape analysis, not this key.
+    for f in &out {
+        let Some(ptys) = param_types.get(&f.name).filter(|p| p.len() == f.params.len()) else {
+            continue;
+        };
+        let dty = all_dty.entry(f.name.clone()).or_default();
+        for (name, ty) in f.params.iter().zip(ptys) {
+            if !dty.contains_key(name) {
+                if let Some(k) = mono_key(ty).filter(|k| k.contains('$')) {
+                    dty.insert(name.clone(), Some(k));
+                }
+            }
+        }
+    }
 
     let mut result: Vec<CoreFn> = Vec::with_capacity(out.len());
     let mut skip_seeds: Vec<(String, Vec<usize>)> = Vec::new();
@@ -6180,8 +6200,15 @@ impl Elab<'_> {
                 continue;
             }
             let key = if let Some(k) = elab.recinfo.field_drop_slot(con, fi) {
-                // concrete `data`-typed field → its own destructor
-                Some(k.to_string())
+                // concrete `data`-typed field → its own destructor. For the RECURSIVE
+                // SPINE of a parametric container (`Lst a` inside a `Lst Box` value,
+                // same head as the scrutinee), resolve to the scrutinee's monomorphic
+                // key (`Lst$Box`) so the ELEMENTS are reclaimed, not the leaky generic
+                // head (`Lst`). An absent mono destructor routes to a flat free (safe).
+                match elab.dty(s) {
+                    Some(sk) if sk.contains('$') && sk.split('$').next() == Some(k) => Some(sk),
+                    _ => Some(k.to_string()),
+                }
             } else {
                 // polymorphic field (`a`): resolve the element's concrete reclamation
                 // from the scrutinee's instantiation key. A blind flat `free` here
