@@ -5588,7 +5588,20 @@ fn insert_drops(
         &mut f.body,
         Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
     );
-    f.body = e.go(body, &HashSet::new());
+    let mut body = e.go(body, &HashSet::new());
+    // A NEVER-USED owned (`%1`) param is missed by the use-driven insertion above
+    // (it drops at a value's last use, and an unused param has none — `consume xs =
+    // 0` left `xs` un-dropped → total leak). It is in `drp` (so it does not escape)
+    // and absent from the body, so dropping it at the entry reclaims it and cannot
+    // double-free. Local `let`-bound droppables are already handled inside `go`.
+    for v in &f.owned_params {
+        if e.drp.contains(v) && !term_mentions_any(&body, &HashSet::from([v.clone()])) {
+            let ty = e.dty(v);
+            let sp = term_span(&body);
+            body = Term::Drop(v.clone(), ty, Vec::new(), sp, Box::new(body));
+        }
+    }
+    f.body = body;
     (f, e.skip_seeds)
 }
 

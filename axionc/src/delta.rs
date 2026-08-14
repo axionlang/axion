@@ -302,10 +302,11 @@ fn drop_sets(drops: &[crate::check::DropPoint], fname: &str) -> (HashSet<String>
     (never_used, used)
 }
 
-/// The Δ-3, move 2 classification cross-check for one function: the `%1` heap
-/// parameters the front-end classifies (by `DropPoint` reason) must match how
-/// the judgment's `owned` set ended — never-used ⇔ stayed in `owned` to the
-/// end; used ⇔ drained by the exit. Returns the disagreement messages.
+/// The Δ-3, move 2 classification cross-check for one function: every `%1` heap
+/// parameter the front-end classifies as dying (never-used OR used) must be
+/// drained from the judgment's `owned` set by the exit — never-used is now
+/// reclaimed at entry (Auto-Drop), used is drained at its death. A param still
+/// in `owned` at the exit was leaked. Returns the disagreement messages.
 fn coherence_violations(
     universe: &HashSet<String>,
     never_used: &HashSet<String>,
@@ -313,10 +314,15 @@ fn coherence_violations(
     fin: &Scope,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    // Every `%1` heap param the front-end says dies — never used OR after the last
+    // read — must be RECLAIMED by the exit: drained from `owned` by a `Drop`, a
+    // move, or a borrow. A never-used param is now dropped at entry (Auto-Drop),
+    // just like a used one is drained at its death. If it STAYS in `owned`, the
+    // Core leaked it — drift between the two liveness engines.
     for v in never_used.intersection(universe) {
-        if !fin.owned.contains_key(v) {
+        if fin.owned.contains_key(v) {
             out.push(format!(
-                "coherence: `{v}` dies at entry per the front-end analysis but the Core uses it (it entered Δ and was reclaimed)"
+                "coherence: `{v}` dies at entry (never used) per the front-end analysis but the Core leaves it owned (leaked, not reclaimed)"
             ));
         }
     }
@@ -438,10 +444,13 @@ fn position_violations(
 /// the Auto-Drop plan, print-only in codegen). Core terms carry no spans, so
 /// the two analyses cannot share death *positions*; they must agree on the
 /// *classification* instead, per `%1` heap parameter of every function:
-///  - a DropPoint "dies at entry (never used)" ⇒ the parameter must never
-///    enter Δ — it stays in `owned` to the end (the Core never touches it);
+///  - a DropPoint "dies at entry (never used)" ⇒ the parameter is reclaimed at
+///    entry (Auto-Drop) — `owned` must be drained by the exit (a `Drop`);
 ///  - a DropPoint "dies after the last read" ⇒ the parameter must enter Δ —
 ///    `owned` must be drained by the exit (a borrow, a `Drop`, or a move).
+///
+/// Either way, a `%1` heap param the front-end classifies as dying must be
+/// drained from `owned`; a param still owned at the exit is a leak (drift).
 ///
 /// A violation is drift between the two liveness engines (the reclamation
 /// pipeline frees something the front-end thinks is alive, or vice-versa).
@@ -1831,8 +1840,8 @@ mod tests {
 
     #[test]
     fn coherence_accepts_never_used_param() {
-        // `makeAndDrop b = 0`: check.rs says "dies at entry (never used)";
-        // Δ agrees — `b` stays in `owned` to the end (the Core never touches it)
+        // `makeAndDrop b = 0`: check.rs says "dies at entry (never used)"; Δ agrees
+        // — `b` is reclaimed at entry (Auto-Drop) so it is drained from `owned`.
         assert_eq!(msgs(&coherence_src(DROP_OK)), Vec::<String>::new());
     }
 
@@ -1845,10 +1854,12 @@ mod tests {
     }
 
     #[test]
-    fn coherence_rejects_core_using_entry_dead_param() {
+    fn coherence_accepts_core_reclaiming_entry_dead_param() {
         // make the Core move `b` (the front-end said it is never used):
-        // `ret 0` → `ret call makeAndDrop b` — the param enters Δ, so the
-        // two engines now disagree on what dies
+        // `ret 0` → `ret call makeAndDrop b`. `b` still leaves `owned` (moved into
+        // the call), so it IS reclaimed — coherent, like the Auto-Drop at entry.
+        // (Only a param LEFT owned at the exit is a leak/drift — see the tests
+        // below.)
         let errs = coherence_tampered(DROP_OK, |fns| {
             let f = fns.iter_mut().find(|f| f.name == "makeAndDrop").unwrap();
             f.body = Term::Ret(
@@ -1860,13 +1871,7 @@ mod tests {
                 NO_SPAN,
             );
         });
-        let m = msgs(&errs);
-        assert!(
-            m.iter().any(
-                |s| s.contains("dies at entry per the front-end analysis but the Core uses it")
-            ),
-            "got: {m:?}"
-        );
+        assert_eq!(msgs(&errs), Vec::<String>::new());
     }
 
     #[test]
@@ -1977,8 +1982,10 @@ mod tests {
         let v = delta_view(DROP_OK);
         // the judgment's per-function conclusions, incl. the resource-life
         // facts the annotated dump cannot show
+        // `makeAndDrop b = 0` now reclaims the never-used `%1` param at entry
+        // (Auto-Drop) rather than leaking it — a `drops: b` fact, not `never-used`.
         assert!(
-            v.contains("makeAndDrop b = ok — never-used %1: b\n"),
+            v.contains("makeAndDrop b = ok — drops: b\n"),
             "got:\n{v}"
         );
         // `reverse` is now a generic pure-escape consumer (`%1`): it OWNS `xs` and
@@ -2031,9 +2038,9 @@ mod tests {
 
     #[test]
     fn delta_view_surfaces_coherence_violations() {
-        // the Δ-3 tamper that makes the Core use an entry-dead param: the view
-        // must surface the disagreement as a violation of that function, in
-        // sync with the `--check-delta` verdict
+        // the Δ-3 tamper that makes the Core LEAK an entry-dead param (`ret 0`
+        // drops the Auto-Drop of `b`, leaving it owned at the exit): the view must
+        // surface the disagreement as a violation, in sync with `--check-delta`
         let mut diags = Diagnostics::default();
         let (module, analysis) = crate::compile_front(DROP_OK, ".", &mut diags);
         let module = module.expect("front-end must compile");
@@ -2049,14 +2056,8 @@ mod tests {
         );
         let mut fns = l.fns.clone();
         let f = fns.iter_mut().find(|f| f.name == "makeAndDrop").unwrap();
-        f.body = Term::Ret(
-            Rhs::Op(Op::CallDirect(
-                "makeAndDrop".into(),
-                vec![Atom::Var("b".into())],
-                None,
-            )),
-            NO_SPAN,
-        );
+        // leak the never-used `%1` param `b`: drop its Auto-Drop so it stays owned.
+        f.body = Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN);
         let v = super::dump_delta(
             &fns,
             &l.borrow_args,
@@ -2065,10 +2066,10 @@ mod tests {
             &crate::lexer::LineMap::new(DROP_OK),
             DROP_OK,
         );
-        assert!(v.contains("makeAndDrop b = 1 violation(s)\n"), "got:\n{v}");
+        assert!(v.contains("makeAndDrop b = 1 violation(s)"), "got:\n{v}");
         assert!(
             v.contains(
-                "coherence: `b` dies at entry per the front-end analysis but the Core uses it"
+                "coherence: `b` dies at entry (never used) per the front-end analysis but the Core leaves it owned"
             ),
             "got:\n{v}"
         );

@@ -1956,6 +1956,8 @@ fn native_runtime_is_leak_free_under_lsan() {
         // generic container of heap elements (Lst Box) reclaims its ELEMENTS via the
         // monomorphic destructor (axion_drop_Lst$Box), not just the spine
         "poly_element_reclaim",
+        // an owned %1 param a function never uses is dropped at entry, not leaked
+        "unused_linear_param_reclaim",
         // String reclamation (§tc): tagged heap/literal strings freed via
         // axion_str_drop — literals (zero header) skipped, no double-free, no leak
         "string_reclaim",
@@ -2554,6 +2556,15 @@ fn derived_show_nested_parametric_instantiation_compiles_native() {
         "derive_show_nested_param.axi",
         "Some (Some 3)\nSome (Some (Some true))\n",
     );
+}
+
+#[test]
+fn unused_linear_param_is_reclaimed() {
+    // An owned `%1` parameter a function never uses is dropped at the function
+    // entry (Auto-Drop), not leaked. Regression: the use-driven drop insertion had
+    // no last-use to hang the drop on, so `consume xs = 0` left `xs` un-dropped —
+    // a total leak (N allocs, 0 frees). Leak-freedom pinned by the LSan gate.
+    agree_across_backends("unused_linear_param_reclaim.axi", "0\n");
 }
 
 #[test]
