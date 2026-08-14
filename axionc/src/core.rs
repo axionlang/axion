@@ -2025,6 +2025,25 @@ fn lower_func(
             NO_SPAN,
         );
         (params, body)
+    } else if f
+        .clauses
+        .iter()
+        .any(|c| c.pats.iter().any(|p| matches!(p, Pat::Con(..) | Pat::Tuple(..))))
+    {
+        // multi-clause with a constructor/tuple head pattern: the `if`-chain desugar
+        // (`lw.clauses`) dispatches only on Int literals, NOT on Con tags — it would
+        // select clause 0 unconditionally (a silent miscompile: `fj Nothing = 0;
+        // fj (Just x) = x` returns 0 for `fj (Just 5)`) or leave a field binder
+        // unbound. Exclude from native (interpreter only) — the documented "write
+        // the match with `case`" limitation, now SAFE instead of a miscompile.
+        let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
+        let body = Term::Ret(
+            Rhs::Op(Op::Unsupported(
+                "constructor pattern in a multi-clause function head — interpreter only".into(),
+            )),
+            NO_SPAN,
+        );
+        (params, body)
     } else {
         let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
         let body = lw.clauses(&f.clauses, &params, 0);

@@ -2598,6 +2598,26 @@ fn refutable_single_clause_head_is_interpreter_only() {
 }
 
 #[test]
+fn multiclause_constructor_head_is_interpreter_only() {
+    // A multi-clause function matching constructors in its head (`fj Nothing = 0;
+    // fj (Just x) = x`) is the documented `case`-in-body limitation. The if-chain
+    // desugar dispatches only on Int literals, not Con tags, so native SILENTLY
+    // returned clause 0 (`fj (Just 5)` → 0, a miscompile). It is now excluded from
+    // native; the interpreter returns the correct 5, `--backend` fails loudly.
+    let fx = fixture("multiclause_con_head_interp_only.axi");
+    let interp = axionc().arg(&fx).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "5\n");
+    let native = axionc()
+        .args(["--backend", "cranelift", &fx])
+        .output()
+        .unwrap();
+    assert!(
+        !native.status.success(),
+        "a multi-clause constructor head must fail natively, not silently return clause 0"
+    );
+}
+
+#[test]
 fn single_clause_head_pattern_destructures_natively() {
     // A single-clause function may destructure a `Con`/`Tuple` parameter in its
     // head (`label (Named s k) = …`); the field variables must be bound in native
