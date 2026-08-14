@@ -2578,6 +2578,26 @@ fn generic_container_reclaims_heap_elements() {
 }
 
 #[test]
+fn refutable_single_clause_head_is_interpreter_only() {
+    // A single-clause function with a REFUTABLE head (`fromJust (Just x) = x` — a
+    // Con of a multi-constructor type) is a partial function; there is no
+    // clause-head exhaustiveness check, so it must be EXCLUDED from native, never
+    // destructured (matching `Nothing` as `Just` is memory-unsafe; an Int literal
+    // head would drop the comparison). Interpreter runs it; `--backend` fails loudly.
+    let fx = fixture("refutable_head_interp_only.axi");
+    let interp = axionc().arg(&fx).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "5\n");
+    let native = axionc()
+        .args(["--backend", "cranelift", &fx])
+        .output()
+        .unwrap();
+    assert!(
+        !native.status.success(),
+        "a refutable single-clause head must fail natively, not miscompile"
+    );
+}
+
+#[test]
 fn single_clause_head_pattern_destructures_natively() {
     // A single-clause function may destructure a `Con`/`Tuple` parameter in its
     // head (`label (Named s k) = …`); the field variables must be bound in native

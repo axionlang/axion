@@ -1903,6 +1903,23 @@ pub fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
     (cur, args)
 }
 
+/// `true` if the pattern always matches: a `Var`/`Wild`, a `Tuple` whose
+/// sub-patterns are irrefutable, or a `Con` of a SINGLE-constructor type with
+/// irrefutable fields. A literal (`Int`) or a `Con` of a multi-constructor type is
+/// REFUTABLE. Decides whether a single-clause function head may be destructured
+/// natively; a refutable single-clause head is a partial function (no clause-head
+/// exhaustiveness check exists) and must stay interpreter-only.
+fn pat_irrefutable(p: &Pat, single_con: &HashSet<String>) -> bool {
+    match p {
+        Pat::Var(_, _) | Pat::Wild(_) => true,
+        Pat::Tuple(subs, _) => subs.iter().all(|q| pat_irrefutable(q, single_con)),
+        Pat::Con(c, subs, _) => {
+            single_con.contains(c) && subs.iter().all(|q| pat_irrefutable(q, single_con))
+        }
+        Pat::Int(_, _) => false,
+    }
+}
+
 /// Lowers a function (top-level or `where`), returning `(params, body,
 /// owned-params)`. Single-clause functions with only variable/`_` patterns
 /// name the parameters directly (without the redundant alias `let n = _p0`),
@@ -1918,6 +1935,7 @@ fn lower_func(
     inplace: &HashSet<Span>,
     foreigns: &HashSet<String>,
     data_types: &HashSet<String>,
+    single_con: &HashSet<String>,
     con_ty: &HashMap<String, Option<String>>,
     fn_ret_ty: &HashMap<String, String>,
     parametric_data: &HashSet<String>,
@@ -1955,13 +1973,24 @@ fn lower_func(
         local_names: func_bound_names(f),
         integer_pats,
     };
-    // A single clause is irrefutable (a non-exhaustive single clause is rejected by
-    // AX0202), so its parameter patterns bind unconditionally: `Var` directly, and
-    // a `Con`/`Tuple` pattern by DESTRUCTURING the parameter through a `case` (which
-    // binds the field variables — the multi-clause `if`-chain desugar below only
-    // binds `Var` params, so a head like `label (Named s k) = …` left `s`/`k`
-    // unbound in the Core → native "variable not bound").
-    let (params, body) = if f.clauses.len() == 1 {
+    // A single clause with an IRREFUTABLE head (every param is a `Var`/`Wild`, or a
+    // `Con` of a single-constructor type / a `Tuple` whose sub-patterns are also
+    // irrefutable) binds unconditionally: `Var` directly, and a `Con`/`Tuple` by
+    // DESTRUCTURING the parameter through a one-arm `case` (which binds the field
+    // variables — the multi-clause `if`-chain desugar below only binds `Var`
+    // params, so `label (Named s k) = …` left `s`/`k` unbound → native "variable
+    // not bound"). A REFUTABLE single-clause head (a `Con` of a MULTI-constructor
+    // type, or a literal) is a PARTIAL function — there is NO exhaustiveness check
+    // on clause heads (AX0202 covers only `case`) — so it must NOT be destructured
+    // natively (matching a mismatched constructor is memory-unsafe, and a dropped
+    // literal test is a miscompile). It is excluded from native (`Unsupported`), so
+    // the interpreter reports the no-match at runtime.
+    let single_irrefutable = f.clauses.len() == 1
+        && f.clauses[0]
+            .pats
+            .iter()
+            .all(|p| pat_irrefutable(p, single_con));
+    let (params, body) = if single_irrefutable {
         let clause = &f.clauses[0];
         let params: Vec<String> = clause
             .pats
@@ -1985,6 +2014,16 @@ fn lower_func(
                 );
             }
         }
+        (params, body)
+    } else if f.clauses.len() == 1 {
+        // partial single clause (refutable head) → interp-only.
+        let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
+        let body = Term::Ret(
+            Rhs::Op(Op::Unsupported(
+                "partial single-clause head pattern (refutable) — interpreter only".into(),
+            )),
+            NO_SPAN,
+        );
         (params, body)
     } else {
         let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
@@ -3401,6 +3440,14 @@ pub fn lower_with(
     // identity — the interp already handles partial application, so it stays here.
     let module = &eta_expand(module);
     let data_types = data_type_names(module);
+    // constructors of SINGLE-constructor `data` types — an irrefutable `Con`
+    // pattern (matching one always succeeds). See `pat_irrefutable`.
+    let single_con: HashSet<String> = module
+        .datas
+        .iter()
+        .filter(|d| d.cons.len() == 1)
+        .flat_map(|d| d.cons.iter().map(|c| c.name.clone()))
+        .collect();
     // heap/drop decisions exclude unboxed enums (immediate tags, not allocations).
     let boxed = boxed_data_names(module);
     let globals = global_names(module);
@@ -3679,6 +3726,7 @@ pub fn lower_with(
             inplace,
             &foreigns,
             &boxed,
+            &single_con,
             &con_ty,
             &fn_ret_ty,
             &parametric_data,
@@ -3712,6 +3760,7 @@ pub fn lower_with(
                 inplace,
                 &foreigns,
                 &boxed,
+                &single_con,
                 &con_ty,
                 &fn_ret_ty,
                 &parametric_data,
