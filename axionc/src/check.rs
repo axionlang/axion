@@ -1527,8 +1527,8 @@ fn rhs_is_heap(rhs: &Expr, heap: &HashSet<String>, ctx: &Ctx, lh: &LocalHeap) ->
         Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| rhs_is_heap(b, heap, ctx, lh)),
         Expr::Let(_, body, _) => rhs_is_heap(body, heap, ctx, lh),
         _ => {
-            let (head, args) = spine(rhs);
-            match head {
+            let (callee, args) = spine(rhs);
+            match callee {
                 // a boxed constructor value (nullary constructors are immediate)
                 Expr::Con(c, _) => !args.is_empty() && ctx.con_fields.contains_key(c),
                 Expr::Var(f, _) => {
