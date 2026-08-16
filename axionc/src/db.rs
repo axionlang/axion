@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::ast;
+use crate::check::{self, SigEnv};
 use crate::diag::{Diagnostic, Diagnostics};
 
 /// The salsa database. Holds the query storage plus a registry mapping file paths
@@ -91,10 +92,26 @@ pub struct SourceFile {
 #[derive(Debug, Clone)]
 pub struct Diag(pub Diagnostic);
 
-/// Stage 1 (memoized per text): parse a single file to its `Module`. Parse-time
-/// diagnostics (lex/parse errors, level-ceiling violations) are accumulated.
-/// `no_eq`: the AST is not `PartialEq`, so skip salsa's output-equality backdating
-/// — a text edit that changes the parse should invalidate downstream anyway.
+/// A single top-level declaration, tracked so salsa can memoize its per-decl check
+/// independently. Identified by `name`; its `func` field changes only when THAT
+/// declaration is edited, so editing another function's body leaves this one's
+/// check memoized.
+#[salsa::tracked]
+pub struct DeclItem<'db> {
+    // `name` + `file` are identity fields: the struct keeps its identity across body
+    // edits to OTHER declarations. `func` is a tracked field, compared per edit, so
+    // only the edited declaration's `check_decl` is invalidated.
+    pub name: String,
+    pub file: SourceFile,
+    #[tracked]
+    #[returns(ref)]
+    pub func: ast::Func,
+}
+
+/// Parse a single file to its `Module` (memoized per text). Parse-time diagnostics
+/// (lex/parse errors, level-ceiling violations) are accumulated. `no_eq`: the AST
+/// is not compared for backdating here — the downstream `sig_env` is where
+/// body-stable backdating happens.
 #[salsa::tracked(no_eq)]
 pub fn parse(db: &dyn salsa::Database, file: SourceFile) -> Option<ast::Module> {
     let mut diags = Diagnostics::new();
@@ -105,39 +122,85 @@ pub fn parse(db: &dyn salsa::Database, file: SourceFile) -> Option<ast::Module> 
     module
 }
 
-/// Stage 2: the full front end for a file. Reuses the memoized [`parse`] and runs
-/// the cross-file downstream, accumulating every diagnostic. Returns whether the
-/// front end produced a module (a coarse success flag; the diagnostics are the
-/// payload the LSP consumes).
-#[salsa::tracked]
-pub fn file_diagnostics(db: &dyn salsa::Database, file: SourceFile) -> bool {
-    // Re-accumulate parse diagnostics into THIS query's set (accumulators are
-    // per-query), reusing the memoized parse result.
-    let Some(module) = parse(db, file) else {
-        for d in parse::accumulated::<Diag>(db, file) {
-            Diag(d.0.clone()).accumulate(db);
-        }
-        return false;
-    };
-    for d in parse::accumulated::<Diag>(db, file) {
-        Diag(d.0.clone()).accumulate(db);
-    }
+/// The checker-ready module: parse + imports + prelude + `deriving` + class
+/// lowering + consumed-ownership inference. Re-runs on any edit (the body is in it);
+/// import/derive diagnostics are accumulated. `no_eq` — its consumers key off the
+/// body-independent `sig_env`, not this whole module.
+#[salsa::tracked(no_eq)]
+pub fn processed_module(db: &dyn salsa::Database, file: SourceFile) -> Option<ast::Module> {
+    let parsed = parse(db, file).as_ref()?.clone();
     let mut diags = Diagnostics::new();
-    // salsa returns the tracked value by reference; the downstream consumes it by
-    // value (it rewrites the module in place), so clone out of storage.
-    let _ = crate::analyze_module(module.clone(), file.path(db), &mut diags);
+    let (module, _exempt) = crate::prepare_for_check(parsed, file.path(db), &mut diags);
     for d in diags.items {
         Diag(d).accumulate(db);
     }
-    true
+    Some(module)
+}
+
+/// The body-independent signature environment (globals + `Ctx`). Because it never
+/// inspects a function's body, salsa BACKDATES it across body edits — so the
+/// per-decl `check_decl` queries that depend on it are not invalidated when an
+/// unrelated function's body changes. (Default eq: `SigEnv: PartialEq`.)
+#[salsa::tracked]
+pub fn sig_env(db: &dyn salsa::Database, file: SourceFile) -> Option<SigEnv> {
+    processed_module(db, file)
+        .as_ref()
+        .map(check::signature_env)
+}
+
+/// One `DeclItem` per top-level function of the checker-ready module.
+#[salsa::tracked]
+pub fn decl_items(db: &dyn salsa::Database, file: SourceFile) -> Vec<DeclItem<'_>> {
+    let Some(module) = processed_module(db, file) else {
+        return Vec::new();
+    };
+    module
+        .funcs
+        .iter()
+        .map(|f| DeclItem::new(db, f.name.clone(), file, f.clone()))
+        .collect()
+}
+
+/// The per-declaration linearity/Auto-Drop/name check — the incremental unit.
+/// Depends only on this declaration's `func` and the (body-stable) `sig_env`.
+#[salsa::tracked]
+pub fn check_decl<'db>(db: &'db dyn salsa::Database, item: DeclItem<'db>) -> Vec<Diagnostic> {
+    match sig_env(db, *item.file(db)) {
+        Some(env) => check::check_one_func(item.func(db), env),
+        None => Vec::new(),
+    }
+}
+
+/// The diagnostics that are NOT per-function: HM inference (cross-function) plus the
+/// whole-module session/`bound`/instance checks. `no_eq` — re-runs on any edit.
+#[salsa::tracked(no_eq)]
+pub fn whole_module_diags(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnostic> {
+    let mut diags = Diagnostics::new();
+    if let Some(module) = processed_module(db, file) {
+        crate::whole_module_diags(module, &mut diags);
+    }
+    diags.items
 }
 
 /// Run the incremental front end for `file` and collect all diagnostics. This is
-/// the entry point the LSP uses; on unchanged text the queries are memoized.
+/// the entry point the LSP uses; on unchanged text the queries are memoized, and
+/// on a body edit only the edited declaration's `check_decl` re-runs (the other
+/// declarations' checks are reused via the backdated `sig_env`).
 pub fn diagnostics_of(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnostic> {
-    file_diagnostics(db, file);
-    file_diagnostics::accumulated::<Diag>(db, file)
-        .into_iter()
-        .map(|d| d.0.clone())
-        .collect()
+    let mut out = Vec::new();
+    // Parse + prepare diagnostics (accumulated across the processed_module subtree,
+    // which includes `parse`).
+    let _ = processed_module(db, file);
+    out.extend(
+        processed_module::accumulated::<Diag>(db, file)
+            .into_iter()
+            .map(|d| d.0.clone()),
+    );
+    // Per-declaration linearity checks (each memoized independently).
+    for item in decl_items(db, file).clone() {
+        out.extend(check_decl(db, item).iter().cloned());
+    }
+    // Whole-module inference + session/bound/instance checks.
+    out.extend(whole_module_diags(db, file).iter().cloned());
+    out
 }

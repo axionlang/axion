@@ -59,14 +59,30 @@ what makes it incremental: an edit re-sets one file's text input and salsa
 recomputes only what depends on it. The constant prelude is parsed once per process
 (a `OnceLock`), so it never re-parses on any edit.
 
+### Per-declaration invalidation
+
+The linearity / Auto-Drop / name-resolution check runs **per declaration**. The key
+is that its environment — the callable global names plus the `Ctx` of parameter
+multiplicities, `data` shapes and class headers (`check::signature_env`) — is
+derived only from *signatures and types*, never function bodies. So:
+
+- `sig_env(file)` is `PartialEq` and salsa **backdates** it across body edits;
+- each function is a salsa tracked struct (`DeclItem`, identified by name), and
+  `check_decl(item)` depends only on that function's AST and `sig_env`.
+
+Editing one function's body changes only that function's `DeclItem.func`, so **only
+its `check_decl` re-runs** — every other declaration's linearity check is reused
+(proven by `tests/salsa.rs::editing_one_body_rechecks_only_that_declaration`).
+
 ## Scope & what's deferred
 
-This increment memoizes at **file granularity**. Two things are deliberately left
-for later increments:
+Per-declaration invalidation covers the **linearity/Auto-Drop/name** phase. Still
+whole-module (re-run on any edit), because Axión's top-level signatures are optional
+and HM inference is therefore cross-function:
 
-- **Per-declaration invalidation** — editing one function currently re-checks the
-  whole file. The finer-grained query graph (the spec's "only the affected AST node
-  is invalidated") builds on this foundation.
+- **HM type inference** (AX0200/0201) and the session/`bound`/instance checks. Making
+  inference per-declaration means strongly-connected-component analysis of the call
+  graph — the next increment.
 - **Salsa-tracked cross-file imports** — the downstream still reads imported files
   straight from disk (invisible to salsa), so editing an imported file does not yet
   invalidate its dependents through the engine.

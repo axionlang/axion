@@ -86,6 +86,32 @@ pub struct Analysis {
 
 /// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.
 pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
+    let env = signature_env(module);
+    let mut out = Analysis::default();
+    for f in &module.funcs {
+        check_func(f, &env.globals, &env.ctx, diags, &mut out);
+    }
+    check_sessions(module, diags);
+    check_bound_escapes(module, diags);
+    check_instances(module, diags);
+    out
+}
+
+/// The body-independent environment for the per-function linearity/Auto-Drop
+/// check: the set of callable global names + the [`Ctx`] built from signatures,
+/// `data`, and class headers. It never inspects a function's BODY, so it is stable
+/// across body edits — which is what lets the salsa engine memoize
+/// [`check_one_func`] per declaration (`crate::db`).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+pub struct SigEnv {
+    globals: HashSet<String>,
+    ctx: Ctx,
+}
+
+/// Build the [`SigEnv`] for a module — the same globals + `Ctx` that whole-module
+/// [`check`] uses.
+pub fn signature_env(module: &Module) -> SigEnv {
     let mut globals: HashSet<String> = builtins();
     for f in &module.funcs {
         globals.insert(f.name.clone());
@@ -110,15 +136,32 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
             globals.insert(m.clone());
         }
     }
-    let ctx = build_ctx(module);
-    let mut out = Analysis::default();
-    for f in &module.funcs {
-        check_func(f, &globals, &ctx, diags, &mut out);
+    SigEnv {
+        globals,
+        ctx: build_ctx(module),
     }
-    check_sessions(module, diags);
-    check_bound_escapes(module, diags);
-    check_instances(module, diags);
-    out
+}
+
+/// Run the linearity/Auto-Drop/name-resolution check for ONE function against a
+/// precomputed [`SigEnv`], returning just its diagnostics. This is the per-decl
+/// unit the salsa engine memoizes: its inputs are the function's own AST and the
+/// (body-independent) `SigEnv`, so editing another function's body cannot affect it.
+#[cfg_attr(not(feature = "salsa"), allow(dead_code))] // only the salsa engine calls it
+pub fn check_one_func(f: &Func, env: &SigEnv) -> Vec<Diagnostic> {
+    let mut diags = Diagnostics::new();
+    let mut out = Analysis::default();
+    check_func(f, &env.globals, &env.ctx, &mut diags, &mut out);
+    diags.items
+}
+
+/// The whole-module checks that are NOT per-function: session-type fidelity,
+/// `bound` nursery escapes, and instance coherence.
+pub fn check_non_func(module: &Module) -> Vec<Diagnostic> {
+    let mut diags = Diagnostics::new();
+    check_sessions(module, &mut diags);
+    check_bound_escapes(module, &mut diags);
+    check_instances(module, &mut diags);
+    diags.items
 }
 
 /// Static typeclass coherence. Each `instance`:
@@ -1858,6 +1901,8 @@ enum Mode {
 
 /// Multiplicities of parameters/fields (functions, constructors) + mult per field
 /// + the set of `data` types that are must-use (structural propagation).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
 struct Ctx {
     /// function/constructor → multiplicities of the parameters/fields (in order)
     consumers: HashMap<String, Vec<Mult>>,

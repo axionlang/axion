@@ -482,21 +482,11 @@ pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
 /// Stage 2 — the cross-file downstream: imports + prelude + class lowering +
 /// linearity/Auto-Drop checking + HM inference. Takes an already-parsed module.
 pub fn analyze_module(
-    mut module: ast::Module,
+    module: ast::Module,
     path: &str,
     diags: &mut Diagnostics,
 ) -> (ast::Module, check::Analysis) {
-    resolve_imports(&mut module, path, diags);
-    inject_prelude(&mut module);
-    derive_instances(&mut module, diags);
-    lower_classes(&mut module);
-    // Infer `%1` (consumed) ownership for a signature param whose extracted heap
-    // element escapes via the result (`head`/`append`/`reverse`). Runs BEFORE the
-    // linear checker and inference so the whole pipeline (owned_meta / Phase-B
-    // specialization / borrow analysis / drop insertion / Δ-coherence) treats it as
-    // a hand-written `%1` — otherwise the caller deep-drops a list whose elements
-    // the callee reused/returned → double-free (heap elements only).
-    let consume_exempt = infer_consumed_ownership(&mut module);
+    let (mut module, consume_exempt) = prepare_for_check(module, path, diags);
     let mut analysis = check::check(&module, diags);
     analysis.consume_native_exempt = consume_exempt;
     // Inference returns the monomorphic method resolutions (use span →
@@ -511,6 +501,41 @@ pub fn analyze_module(
     analysis.array_tys = mono.array_tys;
     analysis.integer_lits = mono.integer_lits;
     (module, analysis)
+}
+
+/// The stages that turn a freshly-parsed module into the one the checker sees:
+/// imports + prelude + `deriving` + class lowering + consumed-ownership inference.
+/// Diagnostics (import/derive) are pushed into `diags`; the returned set is the
+/// consume-native-exempt names. Shared by [`analyze_module`] and the salsa engine
+/// (`crate::db`), which memoizes the derived signature environment on top of it.
+pub fn prepare_for_check(
+    mut module: ast::Module,
+    path: &str,
+    diags: &mut Diagnostics,
+) -> (ast::Module, std::collections::HashSet<String>) {
+    resolve_imports(&mut module, path, diags);
+    inject_prelude(&mut module);
+    derive_instances(&mut module, diags);
+    lower_classes(&mut module);
+    // Infer `%1` (consumed) ownership for a signature param whose extracted heap
+    // element escapes via the result (`head`/`append`/`reverse`). Runs BEFORE the
+    // linear checker and inference so the whole pipeline (owned_meta / Phase-B
+    // specialization / borrow analysis / drop insertion / Δ-coherence) treats it as
+    // a hand-written `%1` — otherwise the caller deep-drops a list whose elements
+    // the callee reused/returned → double-free (heap elements only).
+    let consume_exempt = infer_consumed_ownership(&mut module);
+    (module, consume_exempt)
+}
+
+/// The diagnostics that are NOT produced per-function: HM type inference (§16,
+/// cross-function because top-level signatures are optional) plus the whole-module
+/// session/`bound`/instance checks. The salsa engine runs this once per file while
+/// memoizing the per-function linearity checks separately.
+pub fn whole_module_diags(module: &ast::Module, diags: &mut Diagnostics) {
+    for d in check::check_non_func(module) {
+        diags.push(d);
+    }
+    let _ = infer::infer(module, diags);
 }
 
 /// Materializes the specialized constrained functions: clones each

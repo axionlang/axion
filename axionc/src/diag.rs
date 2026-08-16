@@ -9,6 +9,7 @@ use crate::lexer::LineMap;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))] // already PartialEq above
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Error,
@@ -16,6 +17,7 @@ pub enum Severity {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
 pub struct Label {
     pub start: usize,
     pub end: usize,
@@ -26,6 +28,7 @@ pub struct Label {
 /// `replacement`. Emitted in `--emit json` so editors/tools can auto-apply, and
 /// rendered as a `suggestion:` line in text output.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
 pub struct Fix {
     pub start: usize,
     pub end: usize,
@@ -34,6 +37,7 @@ pub struct Fix {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
 pub struct Diagnostic {
     pub code: String, // ex.: "AX0001"
     pub severity: Severity,
