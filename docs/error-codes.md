@@ -7,8 +7,8 @@
 
 Format: `AXnnnn`, four digits, allocated sequentially. Each entry has: the
 invariant it protects, a minimal example, and (where applicable) the
-*machine-applicable fix* the LSP offers (§8). Diagnostics are also emitted as JSON
-and are explainable via `axion --explain AXnnnn`.
+*machine-applicable fix* the [LSP](lsp.md) offers (§8). Diagnostics are also emitted
+as JSON and are explainable via `axion --explain AXnnnn`.
 
 | Code | Category | Invariant violated | Status |
 |--------|-----------|--------------------|--------|

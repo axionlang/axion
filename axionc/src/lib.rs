@@ -52,6 +52,11 @@ mod lexer;
 mod llvm;
 mod parser;
 
+/// The Language Server (`axion-lsp`), gated behind the `lsp` cargo feature so the
+/// default build stays free of the tokio/tower-lsp async dependency tree.
+#[cfg(feature = "lsp")]
+pub mod lsp;
+
 #[cfg(test)]
 mod props;
 #[cfg(test)]
@@ -1974,7 +1979,23 @@ fn print_arenas(resets: &[check::ArenaReset], path: &str, lines: &LineMap) {
     }
 }
 
+/// CLI `--explain`: print the long-form explanation of an `AXnnnn` code.
 fn explain(code: &str) -> ExitCode {
+    match explain_text(code) {
+        Some(text) => {
+            println!("{text}");
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("unknown code: {code}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// The long-form text for an `AXnnnn` code (§8), or `None` if unknown. One source
+/// of truth for both the CLI `--explain` and the LSP's hover.
+pub fn explain_text(code: &str) -> Option<&'static str> {
     let text = match code.to_uppercase().as_str() {
         "AX0001" => {
             "AX0001 — contraction of a linear resource (consumed more than once).\n\
@@ -2135,13 +2156,9 @@ fn explain(code: &str) -> ExitCode {
              not tokenize (a stray character or malformed literal there). Fix the\n\
              imported module; the error location points into it."
         }
-        other => {
-            eprintln!("unknown code: {other}");
-            return ExitCode::from(2);
-        }
+        _ => return None,
     };
-    println!("{text}");
-    ExitCode::SUCCESS
+    Some(text)
 }
 
 fn print_usage() {

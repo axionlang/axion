@@ -9,10 +9,24 @@ publish = false
 name = "axionc"
 path = "src/main.rs"
 
+# The Language Server (§8). Gated behind `--features lsp` so the default build
+# — and the tokio-free `--dev` fast path — stay lean.
+[[bin]]
+name = "axion-lsp"
+path = "src/bin/lsp_main.rs"
+required-features = ["lsp"]
+
+[features]
+lsp = ["dep:tokio", "dep:tower-lsp"]
+
 [dependencies]
 logos = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# LSP server (optional — only under `--features lsp`).
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "macros"], optional = true }
+tower-lsp = { version = "0.20", optional = true }
 
 # Backend nativo --dev (§11/§18): o «Fast-Path Backend».
 cranelift = "0.116"
