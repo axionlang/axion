@@ -1312,6 +1312,7 @@ impl<'a> Infer<'a> {
         // I8Array reductions
         env.insert("i8Sum".into(), mono(Ty::Fun(Box::new(i8a_ty()), Box::new(int()))));
         env.insert("i8Dot".into(), mono(fun2(i8a_ty(), arr_int(), int())));
+        env.insert("i8DotI8".into(), mono(fun2(i8a_ty(), i8a_ty(), int())));
         // I32Array: compact int32 array
         let i32a_ty = || Ty::Con("I32Array".into(), vec![]);
         env.insert("newI32Array".into(), mono(fun2(int(), int(), i32a_ty())));

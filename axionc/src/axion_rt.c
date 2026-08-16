@@ -684,6 +684,22 @@ long axion_i8_dot(long arr, long act_arr) {
   return s;
 }
 
+/* axion_i8_dot_i8(a, b) → sum_i a[i]*b[i] where BOTH are I8Array (compact int8 ×
+ * int8 dot; same length; borrows both). Streams two 1-byte arrays — the fair
+ * dense-int8 dot (both operands stored compactly, no i64 activation). */
+long axion_i8_dot_i8(long a, long b) {
+  long n = *(long *)a, m = *(long *)b;
+  if (n != m) {
+    fprintf(stderr, "axion: i8_dot_i8 — length mismatch %ld vs %ld\n", n, m);
+    fflush(stderr);
+    abort();
+  }
+  signed char *wa = (signed char *)(a + 8), *wb = (signed char *)(b + 8);
+  long s = 0;
+  for (long i = 0; i < n; i++) s += (long)wa[i] * (long)wb[i];
+  return s;
+}
+
 /* --- I32Array: a compact SIGNED 32-bit array (general primitives) ------------
  * [8-byte len][n int32]. 4 bytes/elem — half of Array's i64 — for indices,
  * moderate-range or quantized data. Flat block via axion_alloc → flat axion_free,

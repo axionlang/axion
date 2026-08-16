@@ -219,6 +219,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_i8_matvec_sum"
                 || func == "axion_i8_sum"
                 || func == "axion_i8_dot"
+                || func == "axion_i8_dot_i8"
                 || func == "axion_array_sum"
                 || func == "axion_array_dot"
                 || func == "axion_i32_sum"

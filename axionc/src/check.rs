@@ -1169,6 +1169,7 @@ fn builtins() -> HashSet<String> {
         "i8MatVecSum",
         "i8Sum",
         "i8Dot",
+        "i8DotI8",
         // general dense-array primitives
         "arraySum",
         "arrayDot",
@@ -1916,6 +1917,7 @@ fn build_ctx(module: &Module) -> Ctx {
     // general dense-array primitives: readers borrow; setI32 consumes arg 0.
     consumers.insert("i8Sum".to_string(), vec![Mult::Many]);
     consumers.insert("i8Dot".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("i8DotI8".to_string(), vec![Mult::Many, Mult::Many]);
     consumers.insert("arraySum".to_string(), vec![Mult::Many]);
     consumers.insert("arrayDot".to_string(), vec![Mult::Many, Mult::Many]);
     consumers.insert("newI32Array".to_string(), vec![Mult::Many, Mult::Many]);

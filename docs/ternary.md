@@ -85,25 +85,26 @@ a claim — decides how far to push it.
 
 ### Cross-language reality check (Axion vs C vs Rust)
 
-The same dot product across languages (`bench/{tritvec,dot_i8}.{axi,c,rs}`, N=50M,
-`Ax --release` vs `C/Rust -O2`, ms):
+Current numbers (N=50M, `Ax --release` vs `C/Rust -O2`, ms; full detail and the
+memory-width gradient in `docs/benchmarks.md`):
 
-| representation | Axion | C | Rust | footprint |
+| kernel | Axion | C | Rust | shape |
 |---|---:|---:|---:|---|
-| packed `TritVec` (base-243) | 533 | 456 | 431 | 10 MB |
-| dense — natural per language | 416 (`Array`, i64) | **149** (`int8`) | **149** (`Vec<i8>`) | int8 50 MB · Axion `Array` 400 MB |
+| `dot_i8` (fair int8×int8 dot) | 197 | 98 | 98 | full dot, both operands compact |
+| `ternmv` (packed matvec) | 109 | 87 | 120 | small reused activation |
+| `i8mv` (int8 matvec) | 143 | 108 | 129 | small reused activation |
 
 Two honest conclusions:
 
-- **Axion is slower here, and that's expected.** C/Rust reach for `int8` and finish
-  in 149 ms; Axion has no native int8 array (its `Array` is i64, 8 B/elem) so its
-  fastest option is 416 ms. On raw throughput, hand-written C/Rust win ~2.8×.
-- **But `TritVec` is *Axion's* compact answer, not a speed play.** Packing costs
-  speed in every language (C/Rust `int8` is ~3× faster than their own packed form;
-  even Axion `Array` beats `TritVec`). Its payoff is footprint — and that payoff is
-  ~5× in C/Rust vs **~40×** in Axion (10 MB vs `Array`'s 400 MB). So `TritVec`
-  earns its keep only when 50M+ ternary weights must fit in cache/RAM, which is
-  precisely why it is **off by default**.
+- **On a full dot, Axion trails C ~2×** (`dot_i8` 197 vs 98) — not a throughput
+  problem (a compact 50 MB `i8Sum` stream is 104 ms, *faster* than C's old i64 dot),
+  but because Axion's runtime fill/dot loops autovectorize less than clang's inline
+  SIMD. The compact `I8Array` (Phase B) already removed the old 8-byte-slot penalty
+  that made this ~2–4× worse.
+- **In the matvec — the real ML shape — packed ternary is the fastest option in
+  every language** (`ternmv` beats `i8mv`, and beats Rust int8 outright). `TritVec`
+  is a footprint feature whose footprint becomes *speed* exactly when the activation
+  is small/reused and only the weights stream. It ships **off by default**.
 
 ### Faster without giving up footprint or safety — the fused `tritDot`
 
@@ -186,11 +187,12 @@ the root cause: dense narrow-int data no longer pays for 8-byte slots.
 ternary corner into reusable primitives, since they help any dense narrow-int
 workload: fused closure-free reductions on the workhorse `Array Int` (`arraySum`,
 `arrayDot`), the same on `I8Array` (`i8Sum`, `i8Dot`), and a full compact **`I32Array`**
-(4 B/element — new/iota/get/set/len + `i32Sum`/`i32Dot`/`i32MatVecSum`). The matvec
-now shows a clean memory→speed gradient by width — packed 10 MB (106 ms) < int8
-50 MB (144) < int32 200 MB (159) ≪ i64 400 MB (387) — with `I32Array` at parity
-with C (159 vs 157). See `docs/benchmarks.md` and
-`tests/fixtures/{array_reduce,i8_reduce,i32array_run,i32_reduce}.axi`. (Design note:
+(4 B/element — new/iota/get/set/len + `i32Sum`/`i32Dot`/`i32MatVecSum`), plus a
+fair int8×int8 dot (`i8DotI8`). The matvec shows a clean memory→speed gradient by
+width — packed 10 MB (~109 ms) < int8 50 MB (~143) < int32 200 MB (~160); an i64
+`Array` would be ~2× again — with `I32Array` at parity with C. See
+`docs/benchmarks.md` and
+`tests/fixtures/{array_reduce,i8_reduce,i8_dot_i8,i32array_run,i32_reduce}.axi`. (Design note:
 three concrete widths is pragmatic; a parametric width-tagged array is the clean
 future consolidation.)
 

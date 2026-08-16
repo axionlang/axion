@@ -934,6 +934,23 @@ extern "C" fn axion_i8_dot(arr: i64, act_arr: i64) -> i64 {
         s
     }
 }
+extern "C" fn axion_i8_dot_i8(a: i64, b: i64) -> i64 {
+    // SAFETY: valid I8Arrays; equal-length checked (int8 × int8 dot).
+    unsafe {
+        let n = (a as *const i64).read_unaligned();
+        let m = (b as *const i64).read_unaligned();
+        if n != m {
+            std::process::abort();
+        }
+        let wa = (a + 8) as *const i8;
+        let wb = (b + 8) as *const i8;
+        let mut s: i64 = 0;
+        for i in 0..n {
+            s += *wa.add(i as usize) as i64 * *wb.add(i as usize) as i64;
+        }
+        s
+    }
+}
 
 // --- I32Array: compact signed 32-bit array (general primitives), the --dev
 // mirror. Flat block [8-byte len][n i32] via axion_alloc (header-based free). 4
@@ -1546,6 +1563,7 @@ impl Cg {
         builder.symbol("axion_i8_matvec_sum", axion_i8_matvec_sum as *const u8);
         builder.symbol("axion_i8_sum", axion_i8_sum as *const u8);
         builder.symbol("axion_i8_dot", axion_i8_dot as *const u8);
+        builder.symbol("axion_i8_dot_i8", axion_i8_dot_i8 as *const u8);
         // Array fused reductions + I32Array (general primitives)
         builder.symbol("axion_array_sum", axion_array_sum as *const u8);
         builder.symbol("axion_array_dot", axion_array_dot as *const u8);
@@ -1632,6 +1650,7 @@ impl Cg {
             ("axion_i8_matvec_sum", 3, true),
             ("axion_i8_sum", 1, true),
             ("axion_i8_dot", 2, true),
+            ("axion_i8_dot_i8", 2, true),
             ("axion_array_sum", 1, true),
             ("axion_array_dot", 2, true),
             ("axion_i32_new", 2, true),

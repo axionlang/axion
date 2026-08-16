@@ -1526,6 +1526,7 @@ fn general_dense_array_primitives() {
     let cases = [
         ("array_reduce.axi", "330\n"),  // 45 + 285
         ("i8_reduce.axi", "-103\n"),    // -1*100 + -3
+        ("i8_dot_i8.axi", "7\n"),       // fair int8×int8 dot: sum of squares over 0..9
         ("i32array_run.axi", "4950000\n"), // sum i*1000, 0..99 (int32 range)
         ("i32_reduce.axi", "346\n"),    // 285 + 61
     ];

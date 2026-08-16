@@ -1151,6 +1151,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "i8MatVecSum",
         "i8Sum",
         "i8Dot",
+        "i8DotI8",
         "arraySum",
         "arrayDot",
         "newI32Array",
@@ -1560,6 +1561,7 @@ impl Lower<'_> {
             ("i8MatVecSum", 3) => return self.rtcall("axion_i8_matvec_sum", &args, true, buf),
             ("i8Sum", 1) => return self.rtcall("axion_i8_sum", &args, true, buf),
             ("i8Dot", 2) => return self.rtcall("axion_i8_dot", &args, true, buf),
+            ("i8DotI8", 2) => return self.rtcall("axion_i8_dot_i8", &args, true, buf),
             // Array Int fused reductions (general primitives).
             ("arraySum", 1) => return self.rtcall("axion_array_sum", &args, true, buf),
             ("arrayDot", 2) => return self.rtcall("axion_array_dot", &args, true, buf),
@@ -5048,6 +5050,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
                 || func == "axion_i8_matvec_sum"
                 || func == "axion_i8_sum"
                 || func == "axion_i8_dot"
+                || func == "axion_i8_dot_i8"
                 || func == "axion_array_sum"
                 || func == "axion_array_dot"
                 || func == "axion_i32_sum"
@@ -5457,6 +5460,7 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
                 || func == "axion_tritvec_matvec_sum"
                 || func == "axion_i8_matvec_sum"
                 || func == "axion_i8_dot"
+                || func == "axion_i8_dot_i8"
                 || func == "axion_array_dot"
                 || func == "axion_i32_dot"
                 || func == "axion_i32_matvec_sum" =>
