@@ -68,7 +68,7 @@ pub struct ArenaReset {
 
 /// Analysis result: Auto-Drop `free`s, in-place updates, and the
 /// NLL reset points of the sub-arenas.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Analysis {
     pub drops: Vec<DropPoint>,
     pub inplace: Vec<InPlace>,

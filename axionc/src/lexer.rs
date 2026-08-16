@@ -191,6 +191,7 @@ pub struct Spanned {
 }
 
 /// Map of offsets → (line, column), both 1-based.
+#[derive(Debug)]
 pub struct LineMap {
     line_starts: Vec<usize>,
 }
