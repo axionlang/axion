@@ -200,6 +200,23 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 });
                 return e;
             }
+            // tritDot (§10) READS both the packed vec and the activation array and
+            // returns a scalar Int — it BORROWS both (the caller still Auto-Drops
+            // them), and produces no heap resource.
+            if func == "axion_tritvec_dot"
+                || func == "axion_tritvec_matvec_sum"
+                || func == "axion_i8_matvec_sum"
+                || func == "axion_i8_sum"
+                || func == "axion_i8_dot"
+                || func == "axion_array_sum"
+                || func == "axion_array_dot"
+                || func == "axion_i32_sum"
+                || func == "axion_i32_dot"
+                || func == "axion_i32_matvec_sum"
+            {
+                e.borrows.extend(args.iter());
+                return e;
+            }
             // runtime/FFI calls own their arguments: the reclamation analysis
             // marks them as escaped, so the caller never frees them — a
             // resource passed here dies here (`axion_free` is the runtime free)
@@ -211,6 +228,48 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             if func == "axion_array_new" || func == "axion_array_set" {
                 e.produces = Some(Res {
                     key: Some("Array".into()),
+                    parent: None,
+                    slot: None,
+                });
+            } else if func == "axion_tritvec_iota" {
+                // bulk builder → fresh owned TritVec, reclaimed like newTritVec.
+                e.produces = Some(Res {
+                    key: Some("TritVec".into()),
+                    parent: None,
+                    slot: None,
+                });
+            } else if func == "axion_array_iota" {
+                e.produces = Some(Res {
+                    key: Some("Array".into()),
+                    parent: None,
+                    slot: None,
+                });
+            } else if func == "axion_i8_new"
+                || func == "axion_i8_iota"
+                || func == "axion_i8_set"
+            {
+                // I8Array constructors + in-place set → fresh/threaded owned block.
+                e.produces = Some(Res {
+                    key: Some("I8Array".into()),
+                    parent: None,
+                    slot: None,
+                });
+            } else if func == "axion_i32_new"
+                || func == "axion_i32_iota"
+                || func == "axion_i32_set"
+            {
+                e.produces = Some(Res {
+                    key: Some("I32Array".into()),
+                    parent: None,
+                    slot: None,
+                });
+            } else if func == "axion_tritvec_new" || func == "axion_tritvec_set" {
+                // TritVec (§10): new allocates, set CONSUMES the old vec (arg 0,
+                // moved above) and returns the same in-place handle — both produce
+                // a TritVec the caller reclaims (flat `axion_free`), so a threaded
+                // vec is dropped exactly once at its final binding, like Array.
+                e.produces = Some(Res {
+                    key: Some("TritVec".into()),
                     parent: None,
                     slot: None,
                 });

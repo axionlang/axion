@@ -662,6 +662,448 @@ extern "C" fn axion_array_free(arr: i64) {
     }
 }
 
+// Fused reductions on Array Int (borrows): one vectorizable pass vs per-element getArray.
+extern "C" fn axion_array_sum(arr: i64) -> i64 {
+    // SAFETY: valid Array; reads its length then n i64 elements.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        let d = (arr + 8) as *const i64;
+        let mut s: i64 = 0;
+        for i in 0..n {
+            s += d.add(i as usize).read_unaligned();
+        }
+        s
+    }
+}
+extern "C" fn axion_array_dot(a: i64, b: i64) -> i64 {
+    // SAFETY: valid Arrays; equal-length checked.
+    unsafe {
+        let n = (a as *const i64).read_unaligned();
+        let m = (b as *const i64).read_unaligned();
+        if n != m {
+            std::process::abort();
+        }
+        let da = (a + 8) as *const i64;
+        let db = (b + 8) as *const i64;
+        let mut s: i64 = 0;
+        for i in 0..n {
+            s += da.add(i as usize).read_unaligned() * db.add(i as usize).read_unaligned();
+        }
+        s
+    }
+}
+
+// --- TritVec: base-243 packed balanced-ternary array (spec §10.B), the --dev
+// mirror of the C runtime.  Flat block [8-byte trit-count][packed bytes];
+// 5 trits/byte (3^5=243). A trit is a digit d∈{0,1,2}; the WEIGHT is w=d-1
+// (-1/0/+1 = TMinus/TZero/TPlus). Scalar radix-3 codec (the uniform-fast default,
+// §10.C). Allocated via `axion_alloc` so the flat `axion_free` Auto-Drop reclaims
+// it (header at -8) and the alloc/free counters balance — no destructor.
+const AXION_POW3: [i64; 5] = [1, 3, 9, 27, 81];
+
+/// Decode LUT (§10.C): `TRIT_LUT[byte][k]` = the WEIGHT (-1/0/+1) of the k-th
+/// trit packed in `byte`. Replaces the per-trit div/mod (radix-3) with one table
+/// lookup — ~2× faster decode, measured. Built at compile time (zero runtime
+/// init). Bytes 243..255 are never produced by the encoder; left at 0.
+const TRIT_LUT: [[i8; 5]; 256] = {
+    let mut t = [[0i8; 5]; 256];
+    let mut b = 0;
+    while b < 243 {
+        let mut x = b;
+        let mut k = 0;
+        while k < 5 {
+            t[b][k] = (x % 3) as i8 - 1;
+            x /= 3;
+            k += 1;
+        }
+        b += 1;
+    }
+    t
+};
+
+extern "C" fn axion_tritvec_new(len: i64, init_weight: i64) -> i64 {
+    let n = len.max(0);
+    let d = (init_weight + 1).clamp(0, 2);
+    let nbytes = (n + 4) / 5;
+    let p = axion_alloc(8 + nbytes) as i64;
+    // SAFETY: axion_alloc gave a payload of at least 8+nbytes bytes, 8-aligned.
+    unsafe {
+        (p as *mut i64).write_unaligned(n);
+        let data = (p + 8) as *mut u8;
+        let packed = (d * 121) as u8; // 121 = 1+3+9+27+81
+        for i in 0..nbytes {
+            *data.add(i as usize) = packed;
+        }
+    }
+    p
+}
+
+extern "C" fn axion_tritvec_get(tv: i64, idx: i64) -> i64 {
+    // SAFETY: tv is a valid TritVec — reads within bounds or aborts.
+    unsafe {
+        let n = (tv as *const i64).read_unaligned();
+        if idx < 0 || idx >= n {
+            std::process::abort();
+        }
+        let byte = *((tv + 8) as *const u8).add((idx / 5) as usize) as usize;
+        TRIT_LUT[byte][(idx % 5) as usize] as i64 // LUT-256 decode (§10.C)
+    }
+}
+
+extern "C" fn axion_tritvec_set(tv: i64, idx: i64, weight: i64) -> i64 {
+    // SAFETY: tv is a valid TritVec — writes within bounds or aborts.
+    unsafe {
+        let n = (tv as *const i64).read_unaligned();
+        if idx < 0 || idx >= n {
+            std::process::abort();
+        }
+        let d = (weight + 1).clamp(0, 2);
+        let place = AXION_POW3[(idx % 5) as usize];
+        let cell = ((tv + 8) as *mut u8).add((idx / 5) as usize);
+        let byte = *cell as i64;
+        let old_digit = TRIT_LUT[byte as usize][(idx % 5) as usize] as i64 + 1; // weight → digit
+        *cell = (byte + (d - old_digit) * place) as u8;
+        tv
+    }
+}
+
+extern "C" fn axion_tritvec_len(tv: i64) -> i64 {
+    // SAFETY: tv is a valid TritVec — reads the length header.
+    unsafe { (tv as *const i64).read_unaligned() }
+}
+
+// Bulk builder (§10): a fresh TritVec with weight(i) = (i mod 3)-1, packed 5
+// trits/byte in ONE write per byte — no per-trit read-modify-write, no
+// per-element bounds check (the pathology of a setTritVec fill). Allocated via
+// axion_alloc so the flat axion_free Auto-Drop reclaims it (header at -8).
+extern "C" fn axion_tritvec_iota(len: i64) -> i64 {
+    let n = len.max(0);
+    let nbytes = (n + 4) / 5;
+    let p = axion_alloc(8 + nbytes) as i64;
+    // SAFETY: axion_alloc gave a payload of at least 8+nbytes bytes, 8-aligned.
+    unsafe {
+        (p as *mut i64).write_unaligned(n);
+        let data = (p + 8) as *mut u8;
+        for b in 0..nbytes {
+            let base = b * 5;
+            let mut byte: i64 = 0;
+            let mut k = 0i64;
+            while k < 5 && base + k < n {
+                let w = ((base + k) % 3) - 1;
+                byte += (w + 1) * AXION_POW3[k as usize];
+                k += 1;
+            }
+            *data.add(b as usize) = byte as u8;
+        }
+    }
+    p
+}
+
+// Bulk builder: a fresh Array with a[i] = i. Same raw layout as axion_array_new
+// (reclaimed by axion_array_free via the generated axion_drop_Array).
+extern "C" fn axion_array_iota(len: i64) -> i64 {
+    let n = len.max(0) as usize;
+    let layout = std::alloc::Layout::from_size_align(8 + n * 8, 8)
+        .unwrap_or_else(|_| panic!("layout error"));
+    // SAFETY: layout well-formed; every element is written below.
+    unsafe {
+        let b = std::alloc::alloc(layout);
+        if b.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        b.cast::<i64>().write_unaligned(n as i64);
+        #[allow(clippy::cast_ptr_alignment)]
+        let d = b.add(8).cast::<i64>();
+        for i in 0..n {
+            *d.add(i) = i as i64;
+        }
+        b as i64
+    }
+}
+
+// --- I8Array (Phase B): compact signed-byte array, the --dev mirror. Flat block
+// [8-byte len][n signed bytes] via axion_alloc (header-based axion_free reclaims
+// it, like TritVec). 1 byte/elem vs Array's 8 → 8× less memory for dense narrow ints.
+extern "C" fn axion_i8_new(len: i64, init: i64) -> i64 {
+    let n = len.max(0);
+    let p = axion_alloc(8 + n) as i64;
+    // SAFETY: axion_alloc gave >= 8+n bytes; every byte is written.
+    unsafe {
+        (p as *mut i64).write_unaligned(n);
+        let d = (p + 8) as *mut i8;
+        for i in 0..n {
+            *d.add(i as usize) = init as i8;
+        }
+    }
+    p
+}
+
+extern "C" fn axion_i8_iota(len: i64) -> i64 {
+    let n = len.max(0);
+    let p = axion_alloc(8 + n) as i64;
+    // SAFETY: as above.
+    unsafe {
+        (p as *mut i64).write_unaligned(n);
+        let d = (p + 8) as *mut i8;
+        for i in 0..n {
+            *d.add(i as usize) = ((i % 3) - 1) as i8;
+        }
+    }
+    p
+}
+
+extern "C" fn axion_i8_get(arr: i64, idx: i64) -> i64 {
+    // SAFETY: valid I8Array; bounds checked (sign-extended read).
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        if idx < 0 || idx >= n {
+            std::process::abort();
+        }
+        *((arr + 8) as *const i8).add(idx as usize) as i64
+    }
+}
+
+extern "C" fn axion_i8_set(arr: i64, idx: i64, val: i64) -> i64 {
+    // SAFETY: valid I8Array; bounds checked (writes low byte).
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        if idx < 0 || idx >= n {
+            std::process::abort();
+        }
+        *((arr + 8) as *mut i8).add(idx as usize) = val as i8;
+        arr
+    }
+}
+
+extern "C" fn axion_i8_len(arr: i64) -> i64 {
+    // SAFETY: valid I8Array — reads the length header.
+    unsafe { (arr as *const i64).read_unaligned() }
+}
+
+// int8 matvec: n int8 weights against a small reused K-activation (act cached).
+// The dense counterpart of axion_tritvec_matvec_sum — 8× the weight traffic.
+extern "C" fn axion_i8_matvec_sum(arr: i64, act_arr: i64, k_width: i64) -> i64 {
+    // SAFETY: valid I8Array/Array; K and act-len bounds checked.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        let alen = (act_arr as *const i64).read_unaligned();
+        if k_width <= 0 || alen < k_width {
+            std::process::abort();
+        }
+        let w = (arr + 8) as *const i8;
+        let act = (act_arr + 8) as *const i64;
+        let mut acc: i64 = 0;
+        let mut k: i64 = 0;
+        for i in 0..n {
+            acc += *w.add(i as usize) as i64 * act.add(k as usize).read_unaligned();
+            k += 1;
+            if k == k_width {
+                k = 0;
+            }
+        }
+        acc
+    }
+}
+
+extern "C" fn axion_i8_sum(arr: i64) -> i64 {
+    // SAFETY: valid I8Array; sums the signed bytes.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        let d = (arr + 8) as *const i8;
+        let mut s: i64 = 0;
+        for i in 0..n {
+            s += *d.add(i as usize) as i64;
+        }
+        s
+    }
+}
+extern "C" fn axion_i8_dot(arr: i64, act_arr: i64) -> i64 {
+    // SAFETY: valid I8Array/Array; equal-length checked.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        let m = (act_arr as *const i64).read_unaligned();
+        if n != m {
+            std::process::abort();
+        }
+        let w = (arr + 8) as *const i8;
+        let act = (act_arr + 8) as *const i64;
+        let mut s: i64 = 0;
+        for i in 0..n {
+            s += *w.add(i as usize) as i64 * act.add(i as usize).read_unaligned();
+        }
+        s
+    }
+}
+
+// --- I32Array: compact signed 32-bit array (general primitives), the --dev
+// mirror. Flat block [8-byte len][n i32] via axion_alloc (header-based free). 4
+// bytes/elem vs Array's 8. Mirrors the I8Array surface.
+extern "C" fn axion_i32_new(len: i64, init: i64) -> i64 {
+    let n = len.max(0);
+    let p = axion_alloc(8 + n * 4) as i64;
+    // SAFETY: axion_alloc gave >= 8+4n bytes; every element written.
+    unsafe {
+        (p as *mut i64).write_unaligned(n);
+        let d = (p + 8) as *mut i32;
+        for i in 0..n {
+            d.add(i as usize).write_unaligned(init as i32);
+        }
+    }
+    p
+}
+extern "C" fn axion_i32_iota(len: i64) -> i64 {
+    let n = len.max(0);
+    let p = axion_alloc(8 + n * 4) as i64;
+    // SAFETY: as above.
+    unsafe {
+        (p as *mut i64).write_unaligned(n);
+        let d = (p + 8) as *mut i32;
+        for i in 0..n {
+            d.add(i as usize).write_unaligned(i as i32);
+        }
+    }
+    p
+}
+extern "C" fn axion_i32_get(arr: i64, idx: i64) -> i64 {
+    // SAFETY: valid I32Array; bounds checked (sign-extended read).
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        if idx < 0 || idx >= n {
+            std::process::abort();
+        }
+        ((arr + 8) as *const i32).add(idx as usize).read_unaligned() as i64
+    }
+}
+extern "C" fn axion_i32_set(arr: i64, idx: i64, val: i64) -> i64 {
+    // SAFETY: valid I32Array; bounds checked.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        if idx < 0 || idx >= n {
+            std::process::abort();
+        }
+        ((arr + 8) as *mut i32)
+            .add(idx as usize)
+            .write_unaligned(val as i32);
+        arr
+    }
+}
+extern "C" fn axion_i32_len(arr: i64) -> i64 {
+    // SAFETY: valid I32Array — reads the length header.
+    unsafe { (arr as *const i64).read_unaligned() }
+}
+extern "C" fn axion_i32_sum(arr: i64) -> i64 {
+    // SAFETY: valid I32Array.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        let d = (arr + 8) as *const i32;
+        let mut s: i64 = 0;
+        for i in 0..n {
+            s += d.add(i as usize).read_unaligned() as i64;
+        }
+        s
+    }
+}
+extern "C" fn axion_i32_dot(arr: i64, act_arr: i64) -> i64 {
+    // SAFETY: valid I32Array/Array; equal-length checked.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        let m = (act_arr as *const i64).read_unaligned();
+        if n != m {
+            std::process::abort();
+        }
+        let w = (arr + 8) as *const i32;
+        let act = (act_arr + 8) as *const i64;
+        let mut s: i64 = 0;
+        for i in 0..n {
+            s += w.add(i as usize).read_unaligned() as i64 * act.add(i as usize).read_unaligned();
+        }
+        s
+    }
+}
+extern "C" fn axion_i32_matvec_sum(arr: i64, act_arr: i64, k_width: i64) -> i64 {
+    // SAFETY: valid I32Array/Array; K and act-len bounds checked.
+    unsafe {
+        let n = (arr as *const i64).read_unaligned();
+        let alen = (act_arr as *const i64).read_unaligned();
+        if k_width <= 0 || alen < k_width {
+            std::process::abort();
+        }
+        let w = (arr + 8) as *const i32;
+        let act = (act_arr + 8) as *const i64;
+        let mut acc: i64 = 0;
+        let mut k: i64 = 0;
+        for i in 0..n {
+            acc += w.add(i as usize).read_unaligned() as i64 * act.add(k as usize).read_unaligned();
+            k += 1;
+            if k == k_width {
+                k = 0;
+            }
+        }
+        acc
+    }
+}
+
+// Fused ternary dot product (§10): sum_i weight(tv,i) * arr[i], decoding 5
+// trits/byte via TRIT_LUT and MACing against the dense activation Array in ONE
+// pass — the --dev mirror of axion_tritvec_dot. Borrows both; allocates nothing.
+extern "C" fn axion_tritvec_dot(tv: i64, arr: i64) -> i64 {
+    // SAFETY: tv/arr are valid TritVec/Array allocations; bounds checked below.
+    unsafe {
+        let n = (tv as *const i64).read_unaligned();
+        let alen = (arr as *const i64).read_unaligned();
+        if alen < n {
+            std::process::abort();
+        }
+        let data = (tv + 8) as *const u8;
+        let act = (arr + 8) as *const i64;
+        let nbytes = (n + 4) / 5;
+        let mut acc: i64 = 0;
+        for b in 0..nbytes {
+            let w = &TRIT_LUT[*data.add(b as usize) as usize];
+            let base = b * 5;
+            let mut k = 0i64;
+            while k < 5 && base + k < n {
+                acc += w[k as usize] as i64 * act.add((base + k) as usize).read_unaligned();
+                k += 1;
+            }
+        }
+        acc
+    }
+}
+
+// Ternary matvec (§10): M×K packed weights against a SMALL reused K-activation —
+// streams ~10 MB weights, act[k] cache-resident (the BitNet inner loop where
+// packing's footprint becomes a speed win). Borrows both; k wraps by counter.
+extern "C" fn axion_tritvec_matvec_sum(tv: i64, arr: i64, k_width: i64) -> i64 {
+    // SAFETY: tv/arr valid; K and act-len bounds checked below.
+    unsafe {
+        let n = (tv as *const i64).read_unaligned();
+        let alen = (arr as *const i64).read_unaligned();
+        if k_width <= 0 || alen < k_width {
+            std::process::abort();
+        }
+        let data = (tv + 8) as *const u8;
+        let act = (arr + 8) as *const i64;
+        let nbytes = (n + 4) / 5;
+        let mut acc: i64 = 0;
+        let mut k: i64 = 0;
+        for b in 0..nbytes {
+            let w = &TRIT_LUT[*data.add(b as usize) as usize];
+            let base = b * 5;
+            let mut j = 0i64;
+            while j < 5 && base + j < n {
+                acc += w[j as usize] as i64 * act.add(k as usize).read_unaligned();
+                k += 1;
+                if k == k_width {
+                    k = 0;
+                }
+                j += 1;
+            }
+        }
+        acc
+    }
+}
+
 // --- M:N session scheduler (§11): the --dev mirror of the C runtime
 // (axion_rt.c). Same ABI: a task is a state machine `long step(sched, state)`
 // returning 1=done / 0=blocked, storing its result into state[0] when done. Tasks
@@ -1063,6 +1505,35 @@ impl Cg {
         builder.symbol("axion_array_set", axion_array_set as *const u8);
         builder.symbol("axion_array_len", axion_array_len as *const u8);
         builder.symbol("axion_array_free", axion_array_free as *const u8);
+        // TritVec (§10)
+        builder.symbol("axion_tritvec_new", axion_tritvec_new as *const u8);
+        builder.symbol("axion_tritvec_get", axion_tritvec_get as *const u8);
+        builder.symbol("axion_tritvec_set", axion_tritvec_set as *const u8);
+        builder.symbol("axion_tritvec_len", axion_tritvec_len as *const u8);
+        builder.symbol("axion_tritvec_dot", axion_tritvec_dot as *const u8);
+        builder.symbol("axion_tritvec_matvec_sum", axion_tritvec_matvec_sum as *const u8);
+        builder.symbol("axion_tritvec_iota", axion_tritvec_iota as *const u8);
+        builder.symbol("axion_array_iota", axion_array_iota as *const u8);
+        // I8Array (Phase B)
+        builder.symbol("axion_i8_new", axion_i8_new as *const u8);
+        builder.symbol("axion_i8_iota", axion_i8_iota as *const u8);
+        builder.symbol("axion_i8_get", axion_i8_get as *const u8);
+        builder.symbol("axion_i8_set", axion_i8_set as *const u8);
+        builder.symbol("axion_i8_len", axion_i8_len as *const u8);
+        builder.symbol("axion_i8_matvec_sum", axion_i8_matvec_sum as *const u8);
+        builder.symbol("axion_i8_sum", axion_i8_sum as *const u8);
+        builder.symbol("axion_i8_dot", axion_i8_dot as *const u8);
+        // Array fused reductions + I32Array (general primitives)
+        builder.symbol("axion_array_sum", axion_array_sum as *const u8);
+        builder.symbol("axion_array_dot", axion_array_dot as *const u8);
+        builder.symbol("axion_i32_new", axion_i32_new as *const u8);
+        builder.symbol("axion_i32_iota", axion_i32_iota as *const u8);
+        builder.symbol("axion_i32_get", axion_i32_get as *const u8);
+        builder.symbol("axion_i32_set", axion_i32_set as *const u8);
+        builder.symbol("axion_i32_len", axion_i32_len as *const u8);
+        builder.symbol("axion_i32_sum", axion_i32_sum as *const u8);
+        builder.symbol("axion_i32_dot", axion_i32_dot as *const u8);
+        builder.symbol("axion_i32_matvec_sum", axion_i32_matvec_sum as *const u8);
         builder.symbol("axion_sess_new", axion_sess_new as *const u8);
         builder.symbol("axion_sess_channel", axion_sess_channel as *const u8);
         builder.symbol("axion_sess_send", axion_sess_send as *const u8);
@@ -1120,6 +1591,33 @@ impl Cg {
             ("axion_array_set", 3, true),
             ("axion_array_len", 1, true),
             ("axion_array_free", 1, false),
+            // TritVec (§10): base-243 packed ternary array
+            ("axion_tritvec_new", 2, true),
+            ("axion_tritvec_get", 2, true),
+            ("axion_tritvec_set", 3, true),
+            ("axion_tritvec_len", 1, true),
+            ("axion_tritvec_dot", 2, true),
+            ("axion_tritvec_matvec_sum", 3, true),
+            ("axion_tritvec_iota", 1, true),
+            ("axion_array_iota", 1, true),
+            ("axion_i8_new", 2, true),
+            ("axion_i8_iota", 1, true),
+            ("axion_i8_get", 2, true),
+            ("axion_i8_set", 3, true),
+            ("axion_i8_len", 1, true),
+            ("axion_i8_matvec_sum", 3, true),
+            ("axion_i8_sum", 1, true),
+            ("axion_i8_dot", 2, true),
+            ("axion_array_sum", 1, true),
+            ("axion_array_dot", 2, true),
+            ("axion_i32_new", 2, true),
+            ("axion_i32_iota", 1, true),
+            ("axion_i32_get", 2, true),
+            ("axion_i32_set", 3, true),
+            ("axion_i32_len", 1, true),
+            ("axion_i32_sum", 1, true),
+            ("axion_i32_dot", 2, true),
+            ("axion_i32_matvec_sum", 3, true),
             // Show/String builtins (§tc): showFloat and strAppend
             ("axion_show_float", 1, true),
             ("axion_strcat", 2, true),

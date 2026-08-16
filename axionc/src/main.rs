@@ -1323,6 +1323,12 @@ data Either a b = Left a | Right b
 
 data Ordering = LT | EQ | GT
 
+-- Trit: the balanced-ternary three-state enum (spec §10.A). An ordinary N=3
+-- sum type (the ternary analogue of `Ordering`): TMinus = -1, TZero = 0,
+-- TPlus = +1.  A value-selecting `case` over it lowers branchless like any
+-- small enum; `observe` (§9) returns it (Closed/Pending/Live → TMinus/TZero/TPlus).
+data Trit = TMinus | TZero | TPlus
+
 not :: Bool -> Bool
 not b = if b then False else True
 

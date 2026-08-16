@@ -1495,6 +1495,141 @@ fn array_sum_runs_natively() {
 }
 
 #[test]
+fn tritvec_base243_roundtrip_reclaims_once() {
+    // TritVec (spec §10.B): base-243 packed ternary array. `fillTrit` OWNS the vec
+    // (setTritVec in-place), `sumTrit` BORROWS it (getTritVec read loop) — the same
+    // threaded pattern as Array. Fill 99 trits with the repeating weight pattern
+    // (i mod 3)-1 = -1,0,+1 (33 cycles → sum 0), proving pack→unpack is faithful
+    // across byte boundaries. Native-only (like Array); leak-freedom is gated by
+    // scripts/sanitize.sh (1 alloc == 1 free).
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("tritvec_roundtrip.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n", "{args:?}");
+    }
+}
+
+#[test]
+fn general_dense_array_primitives() {
+    // Fused reductions on Array Int (arraySum/arrayDot), I8Array (i8Sum/i8Dot), and
+    // the compact I32Array (new/set/get/len/i32Sum/i32Dot/i32MatVecSum) — closure-free
+    // one-pass readers, owned/borrow linearity (reclaimed once; sanitize-gated).
+    let cases = [
+        ("array_reduce.axi", "330\n"),  // 45 + 285
+        ("i8_reduce.axi", "-103\n"),    // -1*100 + -3
+        ("i32array_run.axi", "4950000\n"), // sum i*1000, 0..99 (int32 range)
+        ("i32_reduce.axi", "346\n"),    // 285 + 61
+    ];
+    for (fx, want) in cases {
+        for backend in [["--backend", "cranelift"], ["--release", ""]] {
+            let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+            let out = axionc().args(&args).arg(fixture(fx)).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{fx} {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{fx} {args:?}");
+        }
+    }
+}
+
+#[test]
+fn i8array_compact_signed_byte_array() {
+    // I8Array (Phase B): compact 1-byte-per-element signed array. `i8array_run`
+    // threads new/setI8/getI8/lenI8 (fillI8 owns, sumI8 borrows) — sum of (i-3)
+    // over 0..99 = 4650, confirming signed storage; reclaimed once (sanitize gate).
+    // `i8array_matvec` runs the int8 matvec (i8Iota weights, small activation) = -3.
+    for (fx, want) in [("i8array_run.axi", "4650\n"), ("i8array_matvec.axi", "-3\n")] {
+        for backend in [["--backend", "cranelift"], ["--release", ""]] {
+            let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+            let out = axionc().args(&args).arg(fixture(fx)).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{fx} {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{fx} {args:?}");
+        }
+    }
+}
+
+#[test]
+fn tritvec_matvec_streams_packed_weights() {
+    // tritMatVecSum (§10): ternary matvec — M×K packed weights against a small
+    // reused K-activation (streams only the packed weights). Borrows both; both
+    // Auto-Dropped once (leak-freedom gated by sanitize.sh). N=10, K=4,
+    // weight(i)=(i mod 3)-1, act(k)=k → sum_i weight(i)*act(i mod 4) = -3.
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("tritvec_matvec.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "-3\n", "{args:?}");
+    }
+}
+
+#[test]
+fn tritvec_bulk_builders_pack_and_reclaim() {
+    // Bulk builders (§10): tritVecIota packs weight(i)=(i mod 3)-1 five trits/byte
+    // in one native pass (no per-trit read-modify-write); arrayIota fills a[i]=i in
+    // one pass. Both are fresh OWNED resources, Auto-Dropped once (leak-freedom
+    // gated by sanitize.sh). `tritDot (tritVecIota 10) (arrayIota 10)` = -3.
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("tritvec_iota.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "-3\n", "{args:?}");
+    }
+}
+
+#[test]
+fn tritvec_fused_dot_borrows_both_and_reclaims() {
+    // tritDot (§10): fused ternary dot product, sum_i weight(i)*acts[i], decoding
+    // 5 trits/byte in one pass. Borrows both the packed TritVec and the activation
+    // Array (both Auto-Dropped once — leak-freedom gated by sanitize.sh). 10 trits,
+    // weight (i mod 3)-1, acts i → sum = -3. Agrees on both native backends.
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("tritvec_dot.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "-3\n", "{args:?}");
+    }
+}
+
+#[test]
 fn array_threaded_through_helpers_reclaims_once() {
     // An Array threaded through helper functions: `fill` owns+returns it, `sumArr`
     // BORROWS it (recursive read-only getArray loop). The fixpoint borrow analysis
@@ -2875,6 +3010,14 @@ fn deriving_show_renders_constructors_and_fields() {
     // (native string concat `strAppend`), agreeing across the three executors.
     agree_across_backends("derive_show_enum.axi", "Green\n");
     agree_across_backends("derive_show.axi", "Rect 2 3\n");
+}
+
+#[test]
+fn trit_enum_is_a_prelude_ternary_sum_type() {
+    // Trit (spec §10.A) is an ordinary N=3 sum type in the prelude: a
+    // value-selecting `case` maps the three variants to their ternary weights
+    // (-1/0/+1) and sums to 0, branchless, agreeing across the three executors.
+    agree_across_backends("trit_enum.axi", "0\n");
 }
 
 #[test]

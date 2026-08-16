@@ -1148,6 +1148,195 @@ impl<'a> Infer<'a> {
                 ty: Ty::Fun(Box::new(arra_ty()), Box::new(int())),
             },
         );
+        // TritVec (§10): base-243 packed balanced-ternary array. Monomorphic (the
+        // element is a ternary WEIGHT -1/0/+1 carried as Int); `newTritVec` takes
+        // (len, initWeight).  A linear resource like Array (setTritVec is in-place).
+        let tvec_ty = || Ty::Con("TritVec".into(), vec![]);
+        // newTritVec :: Int -> Int -> TritVec
+        env.insert(
+            "newTritVec".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(tvec_ty()))),
+                ),
+            },
+        );
+        // getTritVec :: TritVec -> Int -> Int
+        env.insert(
+            "getTritVec".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(tvec_ty()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                ),
+            },
+        );
+        // setTritVec :: TritVec -> Int -> Int -> TritVec
+        env.insert(
+            "setTritVec".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(tvec_ty()),
+                    Box::new(Ty::Fun(
+                        Box::new(int()),
+                        Box::new(Ty::Fun(Box::new(int()), Box::new(tvec_ty()))),
+                    )),
+                ),
+            },
+        );
+        // lenTritVec :: TritVec -> Int
+        env.insert(
+            "lenTritVec".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(Box::new(tvec_ty()), Box::new(int())),
+            },
+        );
+        // tritMatVecSum :: TritVec -> Array Int -> Int -> Int — ternary matvec (§10),
+        // borrows both; the 3rd arg is the row width K (a small reused activation).
+        env.insert(
+            "tritMatVecSum".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(tvec_ty()),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Con("Array".into(), vec![int()])),
+                        Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                    )),
+                ),
+            },
+        );
+        // tritVecIota :: Int -> TritVec — bulk builder, weight(i)=(i mod 3)-1.
+        env.insert(
+            "tritVecIota".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(Box::new(int()), Box::new(tvec_ty())),
+            },
+        );
+        // arrayIota :: Int -> Array Int — bulk builder, a[i]=i.
+        env.insert(
+            "arrayIota".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(Box::new(int()), Box::new(Ty::Con("Array".into(), vec![int()]))),
+            },
+        );
+        // I8Array (Phase B): compact signed-byte array. Monomorphic (elements are
+        // signed bytes carried as Int).
+        let i8a_ty = || Ty::Con("I8Array".into(), vec![]);
+        // newI8Array :: Int -> Int -> I8Array
+        env.insert(
+            "newI8Array".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(i8a_ty()))),
+                ),
+            },
+        );
+        // i8Iota :: Int -> I8Array  (bulk builder, a[i]=(i mod 3)-1)
+        env.insert(
+            "i8Iota".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(Box::new(int()), Box::new(i8a_ty())),
+            },
+        );
+        // getI8 :: I8Array -> Int -> Int
+        env.insert(
+            "getI8".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(i8a_ty()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                ),
+            },
+        );
+        // setI8 :: I8Array -> Int -> Int -> I8Array
+        env.insert(
+            "setI8".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(i8a_ty()),
+                    Box::new(Ty::Fun(
+                        Box::new(int()),
+                        Box::new(Ty::Fun(Box::new(int()), Box::new(i8a_ty()))),
+                    )),
+                ),
+            },
+        );
+        // lenI8 :: I8Array -> Int
+        env.insert(
+            "lenI8".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(Box::new(i8a_ty()), Box::new(int())),
+            },
+        );
+        // i8MatVecSum :: I8Array -> Array Int -> Int -> Int — int8 matvec, borrows both.
+        env.insert(
+            "i8MatVecSum".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(i8a_ty()),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Con("Array".into(), vec![int()])),
+                        Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                    )),
+                ),
+            },
+        );
+        // --- general dense-array primitives ---
+        let arr_int = || Ty::Con("Array".into(), vec![int()]);
+        let fun2 = |a: Ty, b: Ty, c: Ty| Ty::Fun(Box::new(a), Box::new(Ty::Fun(Box::new(b), Box::new(c))));
+        let fun3 = |a: Ty, b: Ty, c: Ty, d: Ty| {
+            Ty::Fun(
+                Box::new(a),
+                Box::new(Ty::Fun(Box::new(b), Box::new(Ty::Fun(Box::new(c), Box::new(d))))),
+            )
+        };
+        let mono = |ty: Ty| Scheme { vars: vec![], ty };
+        // Array Int fused reductions
+        env.insert("arraySum".into(), mono(Ty::Fun(Box::new(arr_int()), Box::new(int()))));
+        env.insert("arrayDot".into(), mono(fun2(arr_int(), arr_int(), int())));
+        // I8Array reductions
+        env.insert("i8Sum".into(), mono(Ty::Fun(Box::new(i8a_ty()), Box::new(int()))));
+        env.insert("i8Dot".into(), mono(fun2(i8a_ty(), arr_int(), int())));
+        // I32Array: compact int32 array
+        let i32a_ty = || Ty::Con("I32Array".into(), vec![]);
+        env.insert("newI32Array".into(), mono(fun2(int(), int(), i32a_ty())));
+        env.insert("i32Iota".into(), mono(Ty::Fun(Box::new(int()), Box::new(i32a_ty()))));
+        env.insert("getI32".into(), mono(fun2(i32a_ty(), int(), int())));
+        env.insert("setI32".into(), mono(fun3(i32a_ty(), int(), int(), i32a_ty())));
+        env.insert("lenI32".into(), mono(Ty::Fun(Box::new(i32a_ty()), Box::new(int()))));
+        env.insert("i32Sum".into(), mono(Ty::Fun(Box::new(i32a_ty()), Box::new(int()))));
+        env.insert("i32Dot".into(), mono(fun2(i32a_ty(), arr_int(), int())));
+        env.insert("i32MatVecSum".into(), mono(fun3(i32a_ty(), arr_int(), int(), int())));
+        // tritDot :: TritVec -> Array Int -> Int — fused ternary dot product (§10),
+        // borrows both, returns the scalar sum_i weight(i) * acts[i].
+        env.insert(
+            "tritDot".into(),
+            Scheme {
+                vars: vec![],
+                ty: Ty::Fun(
+                    Box::new(tvec_ty()),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Con("Array".into(), vec![int()])),
+                        Box::new(int()),
+                    )),
+                ),
+            },
+        );
         // imperative :: forall a. a -> a — the imperative block (§5) is identity.
         env.insert(
             "imperative".into(),

@@ -60,6 +60,84 @@ Times (ms, best of 3):
 `loop`/`dispatch`/`sumtype` it is on par with, and here slightly ahead of, C/Rust
 at `-O0`, its comparable tier.)
 
+### Ternary dot product: `tritvec` vs `dot_i8` — the honest comparison (§10)
+
+The same ternary-quantized dot product (`N = 50M`, all variants agree on the
+result), measured **two ways** — a separate run, so compare ratios *within* a row,
+not absolute ms against the table above.
+
+- **`tritvec`** — everyone uses the base-243 packed `TritVec` (LUT-256 decode); C
+  and Rust hand-write the *same* packed storage. A pure zero-cost-abstraction test.
+- **`dot_i8`** — each language uses the representation it would *actually* pick: C
+  `signed char[]` and Rust `Vec<i8>` (1 byte/weight); Axion `Array Int` (its only
+  dense array — elements are **i64, 8 bytes**; there is no native int8 array).
+
+Both kernels use the fast native path end to end: **bulk builders** (`tritVecIota`
+packs 5 trits/byte in one pass; `arrayIota` fills the activations) + the **fused**
+`tritDot` reduce. C and Rust hand-write the same bulk-pack + fused loop.
+
+```
+  kernel    Ax --rel |   C -O2 |  Rs -O2   footprint (50M weights)
+  tritvec        308 |     271 |     291   packed: 10 MB (0.2 B/trit)
+  dot_i8         400 |     150 |     149   int8: 50 MB · Axion Array: 400 MB (8 B)
+```
+
+**What this actually shows — three honest points:**
+
+1. **On the packed kernel, Axion is ~parity with C and faster than Rust** (308 vs
+   271 / 291). Two fixes got it there: the fused `tritDot` reduce (~53 ms/pass vs
+   ~166 ms per-element — ~3.1×, near C's ~44 ms) and, decisively, the **bulk
+   builders**. Packing a `TritVec` element-by-element was **~320 ms for 10 MB** (a
+   read-modify-write per trit into shared bytes); `tritVecIota` writes whole bytes
+   in one pass → **~55 ms (~6×)**, taking the kernel from ~671 → 308 ms (and `--dev`
+   from ~13 s → ~5 s). What's left is dominated by the 400 MB i64 activation array
+   (memory-bound, same for all three) — see `docs/ternary.md`.
+2. **On raw speed, nobody should pack.** With its natural `int8`, C/Rust run the
+   same kernel in **~150 ms — ~2× faster than their own packed `tritvec`** (271–291).
+   Packing does not buy speed in any language; it buys footprint. (Axion's `dot_i8`
+   column, 400 ms, still fills its `Array` element-by-element — it would also drop
+   with `arrayIota`; it's shown as the int8 *baseline*, not an Axion tuning target.)
+3. **TritVec's only win is footprint — and that win is far bigger for Axion.** At
+   50M weights: packed = 10 MB, int8 = 50 MB, **Axion `Array` = 400 MB** (i64
+   elements). In C/Rust, packing saves 5× over int8 for a 3× slowdown — rarely
+   worth it. In Axion, packing saves **40×** over its dense `Array` for a modest
+   slowdown (and the fused reduce is near C's — point 1) — genuinely useful when
+   50M ternary weights must fit in cache/RAM.
+
+So on the *single-dot* kernel above, packed reaches ~parity with C but int8 is
+still faster — because the 50M activation dominates. The **matvec** below is where
+packing's footprint becomes a genuine speed win.
+
+### The realistic matvec — packing beats int8 (§10, Phase A + B)
+
+A real ternary matvec streams the packed weights against a *small reused*
+activation (K=8192, cache-resident) — so only the weights' footprint matters.
+`ternmv` packs the weights (10 MB, via `tritMatVecSum`); `i8mv` uses the compact
+`I8Array` (50 MB, Phase B). N=50M, all variants agree:
+
+```
+  kernel   Ax --rel |   C -O2 |  Rs -O2   weights streamed
+  ternmv        106 |      85 |     121   10 MB (packed base-243)
+  i8mv          144 |     105 |     126   50 MB (int8 / I8Array)
+  i32mv         159 |     157 |     176   200 MB (int32 / I32Array)
+  dot_i8        387 |     145 |     147   400 MB (i64 Array)
+```
+
+- **A clean memory→speed gradient by element width**: packed (10 MB, 106) < int8
+  (50 MB, 144) < int32 (200 MB, 159) ≪ i64 `Array` (400 MB, 387). Less footprint =
+  less traffic = faster. **Packed ternary is the fastest option**, in every language.
+- **The compact arrays close Axion's dense gap.** With only the i64 `Array`, the
+  int8 workload cost **387 ms** (`dot_i8`); `I8Array` (Phase B) does it in **144 ms**
+  (~2.7×), and `I32Array` matches C outright (**159 vs 157**). Axion no longer pays
+  for 8-byte slots on narrow-int data. (`I8Array`/`I32Array` + fused `arraySum`/
+  `arrayDot`/`i8Dot`/`i32Dot`/`*MatVecSum` are general primitives, not ternary-specific.)
+
+So the honest arc: `TritVec` is a *footprint* feature, and in the workload where
+footprint is the binding constraint (matvec with a reused activation) that footprint
+becomes **speed** — packed ternary is the fastest option, in Axion and in C/Rust.
+It still ships **off by default** (see `docs/ternary.md`).
+(`bench/{tritvec,dot_i8,ternmv,i8mv,i32mv}.{axi,c,rs}`.)
+
 ## Reading
 
 - **Compute and loops — parity with C.** On `fib` (252 ms) and `loop` (542 ms),

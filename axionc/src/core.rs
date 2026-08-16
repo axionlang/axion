@@ -253,8 +253,8 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         // (`compute_borrow_args`) + the array read-op borrow spec (`body_moves`).
         Some(
             "Int" | "Integer" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark"
-            | "Buffer" | "Array" | "()" | "U8" | "U16" | "U32" | "U64" | "I8" | "I16" | "I32"
-            | "I64" | "Word" | "Byte",
+            | "Buffer" | "Array" | "TritVec" | "I8Array" | "I32Array" | "()" | "U8" | "U16" | "U32"
+            | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte",
         ) => true,
         Some(h) => data_types.contains(h),
         None => false,
@@ -1134,6 +1134,32 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "getArray",
         "setArray",
         "lenArray",
+        "newTritVec",
+        "getTritVec",
+        "setTritVec",
+        "lenTritVec",
+        "tritDot",
+        "tritMatVecSum",
+        "tritVecIota",
+        "arrayIota",
+        "newI8Array",
+        "i8Iota",
+        "getI8",
+        "setI8",
+        "lenI8",
+        "i8MatVecSum",
+        "i8Sum",
+        "i8Dot",
+        "arraySum",
+        "arrayDot",
+        "newI32Array",
+        "i32Iota",
+        "getI32",
+        "setI32",
+        "lenI32",
+        "i32Sum",
+        "i32Dot",
+        "i32MatVecSum",
         "toFloat",
         "truncate",
         "sqrt",
@@ -1503,6 +1529,44 @@ impl Lower<'_> {
             ("getArray", 2) => return self.rtcall("axion_array_get", &args, true, buf),
             ("setArray", 3) => return self.rtcall("axion_array_set", &args, true, buf),
             ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
+            // TritVec (§10): base-243 packed ternary array. A flat block (packed
+            // bytes inline, no nested heap) → Auto-Drop's flat `axion_free`
+            // reclaims it; `drop_ty` marks the `newTritVec` binding as owned.
+            ("newTritVec", 2) => return self.rtcall("axion_tritvec_new", &args, true, buf),
+            ("getTritVec", 2) => return self.rtcall("axion_tritvec_get", &args, true, buf),
+            ("setTritVec", 3) => return self.rtcall("axion_tritvec_set", &args, true, buf),
+            ("lenTritVec", 1) => return self.rtcall("axion_tritvec_len", &args, true, buf),
+            // fused ternary dot product (§10): borrows both, returns a scalar Int.
+            ("tritDot", 2) => return self.rtcall("axion_tritvec_dot", &args, true, buf),
+            // ternary matvec (§10): borrows both, K inert, returns a scalar Int.
+            ("tritMatVecSum", 3) => {
+                return self.rtcall("axion_tritvec_matvec_sum", &args, true, buf)
+            }
+            // bulk builders (§10): construct a packed vec / dense array in one
+            // native pass — owned results, reclaimed like newTritVec / newArray.
+            ("tritVecIota", 1) => return self.rtcall("axion_tritvec_iota", &args, true, buf),
+            ("arrayIota", 1) => return self.rtcall("axion_array_iota", &args, true, buf),
+            // I8Array (Phase B): compact signed-byte array.
+            ("newI8Array", 2) => return self.rtcall("axion_i8_new", &args, true, buf),
+            ("i8Iota", 1) => return self.rtcall("axion_i8_iota", &args, true, buf),
+            ("getI8", 2) => return self.rtcall("axion_i8_get", &args, true, buf),
+            ("setI8", 3) => return self.rtcall("axion_i8_set", &args, true, buf),
+            ("lenI8", 1) => return self.rtcall("axion_i8_len", &args, true, buf),
+            ("i8MatVecSum", 3) => return self.rtcall("axion_i8_matvec_sum", &args, true, buf),
+            ("i8Sum", 1) => return self.rtcall("axion_i8_sum", &args, true, buf),
+            ("i8Dot", 2) => return self.rtcall("axion_i8_dot", &args, true, buf),
+            // Array Int fused reductions (general primitives).
+            ("arraySum", 1) => return self.rtcall("axion_array_sum", &args, true, buf),
+            ("arrayDot", 2) => return self.rtcall("axion_array_dot", &args, true, buf),
+            // I32Array (compact int32 array).
+            ("newI32Array", 2) => return self.rtcall("axion_i32_new", &args, true, buf),
+            ("i32Iota", 1) => return self.rtcall("axion_i32_iota", &args, true, buf),
+            ("getI32", 2) => return self.rtcall("axion_i32_get", &args, true, buf),
+            ("setI32", 3) => return self.rtcall("axion_i32_set", &args, true, buf),
+            ("lenI32", 1) => return self.rtcall("axion_i32_len", &args, true, buf),
+            ("i32Sum", 1) => return self.rtcall("axion_i32_sum", &args, true, buf),
+            ("i32Dot", 2) => return self.rtcall("axion_i32_dot", &args, true, buf),
+            ("i32MatVecSum", 3) => return self.rtcall("axion_i32_matvec_sum", &args, true, buf),
             // `imperative e` = e (the imperative block is identity; §5)
             ("imperative", 1) => return self.op(args[0], buf),
             // withBuffer n f = f (newBuffer n): allocates and passes to the closure (which consumes)
@@ -3511,6 +3575,16 @@ pub fn lower_with(
             // array the caller reclaims — keyed flat, like `ArrayNew`.
             if h == "Array" {
                 Some((f.name.clone(), "Array".to_string()))
+            } else if h == "TritVec" {
+                // TritVec (§10): a flat native heap resource; a function returning
+                // it produces an owned vec the caller reclaims via the flat
+                // `axion_free` (no generated destructor), like a threaded Array.
+                Some((f.name.clone(), "TritVec".to_string()))
+            } else if h == "I8Array" {
+                // I8Array (Phase B): flat compact byte array, same as TritVec.
+                Some((f.name.clone(), "I8Array".to_string()))
+            } else if h == "I32Array" {
+                Some((f.name.clone(), "I32Array".to_string()))
             } else if h == "String" {
                 // a function returning String yields an owned heap string the
                 // caller reclaims via the tagged `axion_str_drop` (§tc): frees a
@@ -4786,6 +4860,26 @@ impl Op {
                 Some("String".into())
             }
             Op::RtCall { func, .. } if func == "axion_array_new" => Some("Array".into()),
+            // TritVec (§10) is a flat block — no generated `axion_drop_TritVec`
+            // exists, so `emit_drop` falls back to the flat `axion_free`, which is
+            // exactly right (the packed bytes are inline). Returning `Some` here is
+            // what marks the binding owned+droppable at its liveness death point.
+            Op::RtCall { func, .. } if func == "axion_tritvec_new" => Some("TritVec".into()),
+            // bulk builders: fresh owned resources reclaimed like their _new kin.
+            Op::RtCall { func, .. } if func == "axion_tritvec_iota" => Some("TritVec".into()),
+            Op::RtCall { func, .. } if func == "axion_array_iota" => Some("Array".into()),
+            // I8Array constructors: fresh owned flat blocks, flat-freed like TritVec.
+            Op::RtCall { func, .. }
+                if func == "axion_i8_new" || func == "axion_i8_iota" =>
+            {
+                Some("I8Array".into())
+            }
+            // I32Array constructors: likewise flat owned blocks.
+            Op::RtCall { func, .. }
+                if func == "axion_i32_new" || func == "axion_i32_iota" =>
+            {
+                Some("I32Array".into())
+            }
             // §9 parMap returns an owned `List` of the workers' replies — reclaimed by
             // the generic `axion_drop_List` (flat cons-cell free), like `replicate`'s
             // polymorphic-List result. LIMITATION: scalar replies (Int/Float) reclaim
@@ -4938,7 +5032,18 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::RtCall { func, .. }
             if func == "axion_strcat"
                 || func == "axion_show_float"
-                || func == "axion_bignum_to_string" =>
+                || func == "axion_bignum_to_string"
+                // dot/matvec/sum readers read their operands, return a scalar — borrows.
+                || func == "axion_tritvec_dot"
+                || func == "axion_tritvec_matvec_sum"
+                || func == "axion_i8_matvec_sum"
+                || func == "axion_i8_sum"
+                || func == "axion_i8_dot"
+                || func == "axion_array_sum"
+                || func == "axion_array_dot"
+                || func == "axion_i32_sum"
+                || func == "axion_i32_dot"
+                || func == "axion_i32_matvec_sum" =>
         {
             false
         }
@@ -5314,6 +5419,36 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
             args.iter()
                 .enumerate()
                 .any(|(i, a)| i != 0 && atom_is(v, a))
+        }
+        // get/len/sum BORROW the resource (arg 0), same as the array read ops — a
+        // read-only traversal does not consume it.
+        Op::RtCall { func, args, .. }
+            if func == "axion_tritvec_get"
+                || func == "axion_tritvec_len"
+                || func == "axion_i8_get"
+                || func == "axion_i8_len"
+                || func == "axion_i8_sum"
+                || func == "axion_array_sum"
+                || func == "axion_i32_get"
+                || func == "axion_i32_len"
+                || func == "axion_i32_sum" =>
+        {
+            args.iter()
+                .enumerate()
+                .any(|(i, a)| i != 0 && atom_is(v, a))
+        }
+        // Dot/matvec readers READ both operands and return a scalar — neither is
+        // moved, like the String read builtins; the caller reclaims both.
+        Op::RtCall { func, .. }
+            if func == "axion_tritvec_dot"
+                || func == "axion_tritvec_matvec_sum"
+                || func == "axion_i8_matvec_sum"
+                || func == "axion_i8_dot"
+                || func == "axion_array_dot"
+                || func == "axion_i32_dot"
+                || func == "axion_i32_matvec_sum" =>
+        {
+            false
         }
         // String builtins READ their operands and return a fresh String — the
         // operand stays owned by the caller (matches delta::op_delta_effect, §tc),

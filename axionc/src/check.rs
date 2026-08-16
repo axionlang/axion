@@ -1150,6 +1150,35 @@ fn builtins() -> HashSet<String> {
         "getArray",
         "setArray",
         "lenArray",
+        // TritVec: base-243 packed ternary array (§10)
+        "newTritVec",
+        "getTritVec",
+        "setTritVec",
+        "lenTritVec",
+        "tritDot",
+        "tritMatVecSum",
+        "tritVecIota",
+        "arrayIota",
+        // I8Array: compact signed-byte array (Phase B)
+        "newI8Array",
+        "i8Iota",
+        "getI8",
+        "setI8",
+        "lenI8",
+        "i8MatVecSum",
+        "i8Sum",
+        "i8Dot",
+        // general dense-array primitives
+        "arraySum",
+        "arrayDot",
+        "newI32Array",
+        "i32Iota",
+        "getI32",
+        "setI32",
+        "lenI32",
+        "i32Sum",
+        "i32Dot",
+        "i32MatVecSum",
         // fractional permissions (§2)
         "split",
         "join",
@@ -1851,6 +1880,52 @@ fn build_ctx(module: &Module) -> Ctx {
         vec![Mult::One, Mult::Many, Mult::Many],
     );
     consumers.insert("lenArray".to_string(), vec![Mult::Many]);
+    // TritVec (§10): like Array — setTritVec consumes the vec (in-place, returns
+    // the same linear thread), the others borrow.
+    consumers.insert("newTritVec".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("getTritVec".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert(
+        "setTritVec".to_string(),
+        vec![Mult::One, Mult::Many, Mult::Many],
+    );
+    consumers.insert("lenTritVec".to_string(), vec![Mult::Many]);
+    // tritDot borrows both the vec and the activation array (reads, returns Int).
+    consumers.insert("tritDot".to_string(), vec![Mult::Many, Mult::Many]);
+    // tritMatVecSum borrows the vec + activation; the K arg is inert.
+    consumers.insert(
+        "tritMatVecSum".to_string(),
+        vec![Mult::Many, Mult::Many, Mult::Many],
+    );
+    // bulk builders: the Int arg is inert; the result is a fresh owned resource.
+    consumers.insert("tritVecIota".to_string(), vec![Mult::Many]);
+    consumers.insert("arrayIota".to_string(), vec![Mult::Many]);
+    // I8Array (Phase B): setI8 consumes the array (in-place), others borrow;
+    // constructors take inert Ints.
+    consumers.insert("newI8Array".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("i8Iota".to_string(), vec![Mult::Many]);
+    consumers.insert("getI8".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("setI8".to_string(), vec![Mult::One, Mult::Many, Mult::Many]);
+    consumers.insert("lenI8".to_string(), vec![Mult::Many]);
+    consumers.insert(
+        "i8MatVecSum".to_string(),
+        vec![Mult::Many, Mult::Many, Mult::Many],
+    );
+    // general dense-array primitives: readers borrow; setI32 consumes arg 0.
+    consumers.insert("i8Sum".to_string(), vec![Mult::Many]);
+    consumers.insert("i8Dot".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("arraySum".to_string(), vec![Mult::Many]);
+    consumers.insert("arrayDot".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("newI32Array".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("i32Iota".to_string(), vec![Mult::Many]);
+    consumers.insert("getI32".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("setI32".to_string(), vec![Mult::One, Mult::Many, Mult::Many]);
+    consumers.insert("lenI32".to_string(), vec![Mult::Many]);
+    consumers.insert("i32Sum".to_string(), vec![Mult::Many]);
+    consumers.insert("i32Dot".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert(
+        "i32MatVecSum".to_string(),
+        vec![Mult::Many, Mult::Many, Mult::Many],
+    );
     // foldBytes (f init buf) borrows the buffer (reads without consuming) — Listing 2.2.
     consumers.insert(
         "foldBytes".to_string(),

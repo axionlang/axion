@@ -474,6 +474,373 @@ long axion_array_len(long arr) {
 
 void axion_array_free(long arr) { free((void *)arr); }
 
+/* axion_array_sum(arr) → sum of all elements. Fused bulk reduction (borrows) —
+ * one vectorizable pass vs a per-element getArray recursion. */
+long axion_array_sum(long arr) {
+  long n = *(long *)arr, s = 0;
+  long *d = (long *)(arr + 8);
+  for (long i = 0; i < n; i++) s += d[i];
+  return s;
+}
+
+/* axion_array_dot(a, b) → sum_i a[i]*b[i]. Fused dot (borrows both); aborts on
+ * length mismatch. */
+long axion_array_dot(long a, long b) {
+  long n = *(long *)a, m = *(long *)b;
+  if (n != m) {
+    fprintf(stderr, "axion: array_dot — length mismatch %ld vs %ld\n", n, m);
+    fflush(stderr);
+    abort();
+  }
+  long *da = (long *)(a + 8), *db = (long *)(b + 8), s = 0;
+  for (long i = 0; i < n; i++) s += da[i] * db[i];
+  return s;
+}
+
+/* ---- TritVec: base-243 packed balanced-ternary array (spec §10.B) ----------
+ * A flat, single-allocation linear resource: [8-byte trit-count][packed bytes].
+ * Five balanced trits pack into one byte (3^5 = 243 ≤ 256).  A trit is stored
+ * as a base-3 DIGIT d ∈ {0,1,2}; the language-level ternary WEIGHT is w = d - 1,
+ * so digit 0/1/2 ↔ weight -1/0/+1 (TMinus/TZero/TPlus).  The codec is the
+ * portable scalar radix-3 path — the "uniformly fast" default (§10.C); the
+ * PDEP/SIMD fast paths are deferred (spec: do NOT hard-depend on BMI2, slow on
+ * Zen 1/2).  Being a flat block with no nested heap payload, it is reclaimed by
+ * the generic flat `axion_free` at its Auto-Drop death point — no destructor. */
+static const int AXION_POW3[5] = {1, 3, 9, 27, 81};
+
+/* Decode LUT (§10.C): TRIT_LUT[byte][k] = the WEIGHT (-1/0/+1) of the k-th trit
+ * packed in `byte`. Replaces the per-trit div/mod (radix-3) with a single table
+ * lookup — ~2× faster decode, measured. Filled once at load. Bytes 243..255 are
+ * never produced by the encoder; left at 0 (weight of an all-TZero byte). */
+static signed char TRIT_LUT[256][5];
+__attribute__((constructor)) static void axion_trit_lut_init(void) {
+  for (int b = 0; b < 243; b++) {
+    int x = b;
+    for (int k = 0; k < 5; k++) {
+      TRIT_LUT[b][k] = (signed char)((x % 3) - 1);
+      x /= 3;
+    }
+  }
+}
+
+/* axion_tritvec_new(len, initWeight) → ptr to a TritVec of `len` trits, each set
+ * to `initWeight` (clamped to [-1,+1]). */
+long axion_tritvec_new(long len, long init_weight) {
+  long n = len < 0 ? 0 : len;
+  long d = init_weight + 1; /* weight → digit */
+  if (d < 0) d = 0;
+  if (d > 2) d = 2;
+  long nbytes = (n + 4) / 5; /* ceil(n/5) */
+  /* allocate via axion_alloc so the flat Auto-Drop `axion_free` (which reads the
+   * 8-byte size header at offset -8) reclaims it correctly — no destructor. */
+  long p = axion_alloc(8 + nbytes);
+  *(long *)p = n;
+  unsigned char *data = (unsigned char *)(p + 8);
+  unsigned char packed = (unsigned char)(d * 121); /* 121 = 1+3+9+27+81 */
+  for (long i = 0; i < nbytes; i++) data[i] = packed;
+  return p;
+}
+
+/* axion_tritvec_get(tv, idx) → the WEIGHT (-1/0/+1) at idx; aborts OOB. */
+long axion_tritvec_get(long tv, long idx) {
+  long n = *(long *)tv;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: tritvec bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
+  unsigned char *data = (unsigned char *)(tv + 8);
+  return TRIT_LUT[data[idx / 5]][idx % 5]; /* LUT-256 decode (§10.C) */
+}
+
+/* axion_tritvec_set(tv, idx, weight) → tv (in-place); aborts OOB. */
+long axion_tritvec_set(long tv, long idx, long weight) {
+  long n = *(long *)tv;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: tritvec bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
+  long d = weight + 1;
+  if (d < 0) d = 0;
+  if (d > 2) d = 2;
+  unsigned char *data = (unsigned char *)(tv + 8);
+  long place = AXION_POW3[idx % 5];
+  long byte = data[idx / 5];
+  long old_digit = TRIT_LUT[byte][idx % 5] + 1; /* weight → digit, via LUT */
+  data[idx / 5] = (unsigned char)(byte + (d - old_digit) * place);
+  return tv;
+}
+
+/* axion_tritvec_len(tv) → number of trits. */
+long axion_tritvec_len(long tv) { return *(long *)tv; }
+
+/* axion_tritvec_iota(n) → a fresh TritVec with weight(i) = (i mod 3)-1, the
+ * balanced-ternary cycle (-1,0,+1,…). BULK builder (spec §10): packs 5 trits into
+ * each byte in ONE write per byte — no per-trit read-modify-write (the pathology
+ * of a setTritVec fill loop), no per-element bounds check → vectorizable, like
+ * `axion_buf_iota`. This is the fast path to populate a packed vector. */
+long axion_tritvec_iota(long len) {
+  long n = len < 0 ? 0 : len;
+  long nbytes = (n + 4) / 5;
+  long p = axion_alloc(8 + nbytes);
+  *(long *)p = n;
+  unsigned char *data = (unsigned char *)(p + 8);
+  for (long b = 0; b < nbytes; b++) {
+    long base = b * 5;
+    long byte = 0;
+    for (long k = 0; k < 5 && base + k < n; k++) {
+      long w = ((base + k) % 3) - 1; /* weight */
+      byte += (w + 1) * AXION_POW3[k]; /* digit * place */
+    }
+    data[b] = (unsigned char)byte;
+  }
+  return p;
+}
+
+/* axion_array_iota(n) → a fresh Array with a[i] = i. BULK builder: one
+ * vectorizable pass, no per-element bounds check (unlike a setArray fill loop).
+ * Same raw layout as axion_array_new (reclaimed by axion_array_free via the
+ * generated axion_drop_Array — NOT the header-based axion_free). */
+long axion_array_iota(long len) {
+  long n = len < 0 ? 0 : len;
+  char *b = (char *)axion_xmalloc(8 + n * 8);
+  *(long *)b = n;
+  long *d = (long *)(b + 8);
+  for (long i = 0; i < n; i++) d[i] = i;
+  return (long)b;
+}
+
+/* --- I8Array: a compact SIGNED-BYTE array (Phase B) --------------------------
+ * [8-byte len][n signed bytes] — 1 byte/element vs Array's 8 (i64), so dense
+ * narrow-int data (quantized weights, activations) moves 8× less memory. A flat
+ * block reclaimed by the header-based axion_free (allocated via axion_alloc), like
+ * TritVec — no destructor. */
+long axion_i8_new(long len, long init) {
+  long n = len < 0 ? 0 : len;
+  long p = axion_alloc(8 + n);
+  *(long *)p = n;
+  signed char *d = (signed char *)(p + 8);
+  for (long i = 0; i < n; i++) d[i] = (signed char)init;
+  return p;
+}
+
+/* axion_i8_iota(n) → I8Array with a[i] = (i mod 3)-1 (ternary weights as bytes).
+ * Bulk builder: one vectorizable pass, no per-element bounds check. */
+long axion_i8_iota(long len) {
+  long n = len < 0 ? 0 : len;
+  long p = axion_alloc(8 + n);
+  *(long *)p = n;
+  signed char *d = (signed char *)(p + 8);
+  for (long i = 0; i < n; i++) d[i] = (signed char)((i % 3) - 1);
+  return p;
+}
+
+/* axion_i8_get(arr, idx) → the SIGN-EXTENDED byte at idx; aborts OOB. */
+long axion_i8_get(long arr, long idx) {
+  long n = *(long *)arr;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: i8 bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
+  return ((signed char *)(arr + 8))[idx];
+}
+
+/* axion_i8_set(arr, idx, val) → arr (in-place, low byte); aborts OOB. */
+long axion_i8_set(long arr, long idx, long val) {
+  long n = *(long *)arr;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: i8 bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
+  ((signed char *)(arr + 8))[idx] = (signed char)val;
+  return arr;
+}
+
+/* axion_i8_len(arr) → number of elements. */
+long axion_i8_len(long arr) { return *(long *)arr; }
+
+/* axion_i8_sum(arr) → sum of the signed bytes (borrows). */
+long axion_i8_sum(long arr) {
+  long n = *(long *)arr, s = 0;
+  signed char *d = (signed char *)(arr + 8);
+  for (long i = 0; i < n; i++) s += d[i];
+  return s;
+}
+
+/* axion_i8_dot(arr, act) → sum_i i8[i] * act[i] (same length; borrows both). */
+long axion_i8_dot(long arr, long act_arr) {
+  long n = *(long *)arr, m = *(long *)act_arr;
+  if (n != m) {
+    fprintf(stderr, "axion: i8_dot — length mismatch %ld vs %ld\n", n, m);
+    fflush(stderr);
+    abort();
+  }
+  signed char *w = (signed char *)(arr + 8);
+  long *act = (long *)(act_arr + 8), s = 0;
+  for (long i = 0; i < n; i++) s += (long)w[i] * act[i];
+  return s;
+}
+
+/* --- I32Array: a compact SIGNED 32-bit array (general primitives) ------------
+ * [8-byte len][n int32]. 4 bytes/elem — half of Array's i64 — for indices,
+ * moderate-range or quantized data. Flat block via axion_alloc → flat axion_free,
+ * like I8Array. Mirrors the I8Array surface with 4-byte elements. */
+long axion_i32_new(long len, long init) {
+  long n = len < 0 ? 0 : len;
+  long p = axion_alloc(8 + n * 4);
+  *(long *)p = n;
+  int *d = (int *)(p + 8);
+  for (long i = 0; i < n; i++) d[i] = (int)init;
+  return p;
+}
+long axion_i32_iota(long len) {
+  long n = len < 0 ? 0 : len;
+  long p = axion_alloc(8 + n * 4);
+  *(long *)p = n;
+  int *d = (int *)(p + 8);
+  for (long i = 0; i < n; i++) d[i] = (int)i;
+  return p;
+}
+long axion_i32_get(long arr, long idx) {
+  long n = *(long *)arr;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: i32 bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
+  return ((int *)(arr + 8))[idx];
+}
+long axion_i32_set(long arr, long idx, long val) {
+  long n = *(long *)arr;
+  if (idx < 0 || idx >= n) {
+    fprintf(stderr, "axion: i32 bounds — index %ld out of range [0, %ld)\n", idx, n);
+    fflush(stderr);
+    abort();
+  }
+  ((int *)(arr + 8))[idx] = (int)val;
+  return arr;
+}
+long axion_i32_len(long arr) { return *(long *)arr; }
+long axion_i32_sum(long arr) {
+  long n = *(long *)arr, s = 0;
+  int *d = (int *)(arr + 8);
+  for (long i = 0; i < n; i++) s += d[i];
+  return s;
+}
+long axion_i32_dot(long arr, long act_arr) {
+  long n = *(long *)arr, m = *(long *)act_arr;
+  if (n != m) {
+    fprintf(stderr, "axion: i32_dot — length mismatch %ld vs %ld\n", n, m);
+    fflush(stderr);
+    abort();
+  }
+  int *w = (int *)(arr + 8);
+  long *act = (long *)(act_arr + 8), s = 0;
+  for (long i = 0; i < n; i++) s += (long)w[i] * act[i];
+  return s;
+}
+long axion_i32_matvec_sum(long arr, long act_arr, long K) {
+  long n = *(long *)arr, alen = *(long *)act_arr;
+  if (K <= 0 || alen < K) {
+    fprintf(stderr, "axion: i32_matvec_sum — K=%ld invalid or act len %ld < K\n", K, alen);
+    fflush(stderr);
+    abort();
+  }
+  int *w = (int *)(arr + 8);
+  long *act = (long *)(act_arr + 8), acc = 0, k = 0;
+  for (long i = 0; i < n; i++) {
+    acc += (long)w[i] * act[k];
+    if (++k == K) k = 0;
+  }
+  return acc;
+}
+
+/* axion_i8_matvec_sum(arr, act, K) → int8 matvec: sum over rows of dot(row, act),
+ * streaming the n int8 weights against a small reused K-activation (act cache-
+ * resident). The dense counterpart of axion_tritvec_matvec_sum — same shape,
+ * 8× the weight traffic (n bytes vs n/5). Borrows both; k wraps by counter. */
+long axion_i8_matvec_sum(long arr, long act_arr, long K) {
+  long n = *(long *)arr;
+  long alen = *(long *)act_arr;
+  if (K <= 0 || alen < K) {
+    fprintf(stderr, "axion: i8_matvec_sum — K=%ld invalid or act len %ld < K\n", K, alen);
+    fflush(stderr);
+    abort();
+  }
+  signed char *w = (signed char *)(arr + 8);
+  long *act = (long *)(act_arr + 8);
+  long acc = 0, k = 0;
+  for (long i = 0; i < n; i++) {
+    acc += (long)w[i] * act[k];
+    if (++k == K) k = 0;
+  }
+  return acc;
+}
+
+/* axion_tritvec_dot(tv, arr) → sum_i weight(tv,i) * arr[i]. The FUSED ternary
+ * dot product (§10): decodes 5 trits/byte via the LUT and multiply-accumulates
+ * against the dense activation Array in ONE pass — vs a per-element getTritVec
+ * call. BORROWS both (no free); the packed store is untouched (footprint
+ * unchanged). Aborts if the array is shorter than the tritvec. */
+long axion_tritvec_dot(long tv, long arr) {
+  long n = *(long *)tv;
+  long alen = *(long *)arr;
+  if (alen < n) {
+    fprintf(stderr, "axion: tritvec_dot — activation array len %ld < %ld trits\n", alen, n);
+    fflush(stderr);
+    abort();
+  }
+  unsigned char *data = (unsigned char *)(tv + 8);
+  long *act = (long *)(arr + 8);
+  long nbytes = (n + 4) / 5;
+  long acc = 0;
+  for (long b = 0; b < nbytes; b++) {
+    const signed char *w = TRIT_LUT[data[b]]; /* 5 weights for this byte */
+    long base = b * 5;
+    if (base + 5 <= n) {
+      acc += (long)w[0] * act[base] + (long)w[1] * act[base + 1] +
+             (long)w[2] * act[base + 2] + (long)w[3] * act[base + 3] +
+             (long)w[4] * act[base + 4];
+    } else {
+      for (long k = 0; base + k < n; k++) acc += (long)w[k] * act[base + k];
+    }
+  }
+  return acc;
+}
+
+/* axion_tritvec_matvec_sum(tv, arr, K) → sum over all rows of dot(row, act), where
+ * the packed vec holds M×K weights (M rows of width K) and `act` is a SMALL,
+ * REUSED activation vector of length K. Streams only the packed weights (~10 MB);
+ * act[k] stays cache-resident — the real ternary-matvec inner loop (BitNet), where
+ * packing's small footprint becomes a SPEED win over a wide int8 array. Borrows
+ * both; the position within the row (k) is tracked by a wrapping counter (no
+ * per-element division). Equivalent to sum_i weight(i) * act[i mod K]. */
+long axion_tritvec_matvec_sum(long tv, long arr, long K) {
+  long n = *(long *)tv;
+  long alen = *(long *)arr;
+  if (K <= 0 || alen < K) {
+    fprintf(stderr, "axion: tritvec_matvec_sum — K=%ld invalid or act len %ld < K\n", K, alen);
+    fflush(stderr);
+    abort();
+  }
+  unsigned char *data = (unsigned char *)(tv + 8);
+  long *act = (long *)(arr + 8);
+  long nbytes = (n + 4) / 5;
+  long acc = 0, k = 0;
+  for (long b = 0; b < nbytes; b++) {
+    const signed char *w = TRIT_LUT[data[b]];
+    long base = b * 5;
+    for (long j = 0; j < 5 && base + j < n; j++) {
+      acc += (long)w[j] * act[k];
+      if (++k == K) k = 0;
+    }
+  }
+  return acc;
+}
+
 /* axion_list_to_buf(list: List Int) → Buffer: packs the list into a dense byte
  * buffer [len][byte0][byte1]… (each element truncated to u8). */
 long axion_list_to_buf(long list) {
