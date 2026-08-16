@@ -2212,6 +2212,7 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         foreigns: module.foreigns.clone(),
         classes: module.classes.clone(),
         instances: module.instances.clone(),
+        level_ceiling: module.level_ceiling,
     }
 }
 

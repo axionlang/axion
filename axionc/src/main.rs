@@ -44,6 +44,7 @@ mod ffi;
 mod infer;
 mod interp;
 mod layout;
+mod levels;
 mod lexer;
 mod llvm;
 mod parser;
@@ -373,6 +374,43 @@ fn main() -> ExitCode {
 
 /// Runs the front-end (lex → layout → parse → check → infer), accumulating
 /// diagnostics and returning the `free`s inserted by Auto-Drop.
+/// Scan the raw source for a `{-# LEVEL Ln #-}` pragma (§8) and return the ceiling
+/// `n`. A malformed `{-# LEVEL … #-}` yields a warning and is ignored (no ceiling).
+/// Done here (not in the grammar) because the lexer skips `{-# … #-}` entirely.
+fn scan_level_pragma(src: &str, diags: &mut Diagnostics) -> Option<u8> {
+    let start = src.find("{-#")?;
+    let rest = src.get(start + 3..)?; // `.get` (not `[..]`) keeps clippy `string_slice` happy
+    let end_rel = rest.find("#-}")?;
+    let inner = rest.get(..end_rel)?.trim();
+    let mut words = inner.split_whitespace();
+    if words.next() != Some("LEVEL") {
+        return None; // some other pragma — not ours
+    }
+    let end = start + 3 + end_rel + 3;
+    let bad = |diags: &mut Diagnostics| {
+        diags.push(
+            Diagnostic::warning("AX0500", "malformed `{-# LEVEL … #-}` pragma — ignored")
+                .label(start, end, "expected `{-# LEVEL L0 #-}` … `{-# LEVEL L3 #-}`"),
+        );
+    };
+    let Some(tok) = words.next() else {
+        bad(diags);
+        return None;
+    };
+    if words.next().is_some() {
+        bad(diags);
+        return None;
+    }
+    let digits = tok.strip_prefix('L').unwrap_or(tok);
+    match digits.parse::<u8>() {
+        Ok(n @ 0..=3) => Some(n),
+        _ => {
+            bad(diags);
+            None
+        }
+    }
+}
+
 pub(crate) fn compile_front(
     src: &str,
     path: &str,
@@ -398,6 +436,12 @@ pub(crate) fn compile_front(
             return (None, check::Analysis::default());
         }
     };
+    // §8 progressive-disclosure ceiling: scan the raw source for `{-# LEVEL Ln #-}`
+    // (the lexer skips the pragma, so the grammar never sees it) and enforce it over
+    // the user's *own* declarations — BEFORE imports/prelude inject foreign funcs
+    // that this module's ceiling does not govern.
+    module.level_ceiling = scan_level_pragma(src, diags);
+    levels::check_levels(&module, diags);
     resolve_imports(&mut module, path, diags);
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
@@ -2062,6 +2106,15 @@ fn explain(code: &str) -> ExitCode {
              compiler cannot derive (only Eq, Ord, Show — incl. 1-parameter\n\
              parametric types natively). Write the instance by hand, or drop it\n\
              from the `deriving` list."
+        }
+        "AX0500" => {
+            "AX0500 — declaration exceeds the module's LEVEL ceiling. `{-# LEVEL Ln #-}`\n\
+             caps what each declaration may WRITE (its own multiplicities, level-\n\
+             defining types, and builtins), on the L0–L3 progressive-disclosure scale\n\
+             (§8): L0 plain strict-Haskell, L1 linear resources/arenas, L2 channels/\n\
+             session types, L3 Trit/coupling. The ceiling only TIGHTENS and governs\n\
+             what a decl writes, NOT what it calls — an L0 module may still depend on\n\
+             an L3 library. Raise the ceiling, or drop the higher-level feature."
         }
         "AX0900" => {
             "AX0900 — could not import module. The imported module file was not\n\

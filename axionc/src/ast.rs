@@ -207,6 +207,10 @@ pub struct Module {
     pub foreigns: Vec<Foreign>,
     pub classes: Vec<ClassDecl>,
     pub instances: Vec<InstanceDecl>,
+    /// `{-# LEVEL Ln #-}` ceiling (§8), scanned off the raw source in `main.rs`.
+    /// `None` when absent — no ceiling to enforce. Only tightens what a decl may
+    /// *write* (its own multiplicities/types/builtins), never what it calls.
+    pub level_ceiling: Option<u8>,
 }
 
 #[derive(Debug, Clone)]

@@ -18,6 +18,10 @@ pub enum IntLit {
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
 #[logos(skip r"--[^\n]*")]
+// `{-# … #-}` pragmas (e.g. `{-# LEVEL L1 #-}`, §8) are scanned off the raw
+// source in `main.rs`; the grammar never sees them. `[^#]*` is fine — the LEVEL
+// pragma has no interior `#`, and the closing `#-}` terminates the match.
+#[logos(skip r"\{-#[^#]*#-\}")]
 pub enum Tok {
     // --- keywords (priority over VarId since they are literals) ---
     #[token("where")]

@@ -236,11 +236,45 @@ fn typo_gets_a_machine_applicable_fix() {
 }
 
 #[test]
+fn level_ceiling_enforced_ax0500() {
+    // §8 progressive disclosure: `{-# LEVEL Ln #-}` caps what a declaration may
+    // WRITE. An L1 decl (`%1` / `Buffer`) under an L0 ceiling is AX0500…
+    let bad = axionc()
+        .args(["--check", &fixture("level_exceeded.axi")])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "L1 decl under L0 ceiling should fail");
+    let text = String::from_utf8_lossy(&bad.stdout);
+    assert!(text.contains("AX0500"), "expected AX0500, got: {text}");
+    assert!(text.contains("L1"), "diagnostic should name the level, got: {text}");
+
+    // …but the same decl under an L1 ceiling is fine…
+    let ok = axionc().args(["--check", &fixture("level_ok.axi")]).output().unwrap();
+    assert!(ok.status.success(), "L1 decl under L1 ceiling should pass");
+
+    // …and with no pragma there is no ceiling to enforce…
+    let np = axionc()
+        .args(["--check", &fixture("level_no_pragma.axi")])
+        .output()
+        .unwrap();
+    assert!(np.status.success(), "no pragma => no ceiling");
+
+    // …and CALLING a user function never raises the caller's level: the ceiling
+    // governs what a decl writes, not what it calls (an L0 module may depend on a
+    // higher-level library).
+    let call = axionc()
+        .args(["--check", &fixture("level_call_does_not_raise.axi")])
+        .output()
+        .unwrap();
+    assert!(call.status.success(), "a plain call must not raise the level");
+}
+
+#[test]
 fn explain_covers_every_emitted_code() {
     // Every AXnnnn the compiler can emit has an `--explain` entry (§8); an unknown
-    // code is rejected. (Regression guard for the newly-added 0202/0203/0411/09xx.)
+    // code is rejected. (Regression guard for the newly-added 0202/0203/0411/0500/09xx.)
     for code in [
-        "AX0001", "AX0002", "AX0101", "AX0202", "AX0203", "AX0411", "AX0900", "AX0901",
+        "AX0001", "AX0002", "AX0101", "AX0202", "AX0203", "AX0411", "AX0500", "AX0900", "AX0901",
     ] {
         let out = axionc().args(["--explain", code]).output().unwrap();
         assert!(out.status.success(), "--explain {code} should succeed");

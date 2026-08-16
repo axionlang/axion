@@ -42,6 +42,7 @@ pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
         foreigns: asm.foreigns,
         classes: asm.classes,
         instances: asm.instances,
+        level_ceiling: None, // filled from the source pragma in main.rs
     })
 }
 

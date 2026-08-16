@@ -31,9 +31,10 @@ and are explainable via `axion --explain AXnnnn`.
 | `AX0304` | Sessions | Non-exhaustive `case offer c`: a branch the external choice offers has no arm | **enforced by `axionc`** (Phase 3) |
 | `AX0305` | Sessions | `spawn` closure captures an endpoint from outside: would break the nursery's tree topology (§9) | **enforced by `axionc`** (Phase 3) |
 | `AX0400`–`AX0405` | Typeclasses | Class/instance coherence and use-site constraints (see the `AX04xx` band below) | **enforced by `axionc`** |
+| `AX0500` | Levels | A declaration's *written* level (its own multiplicities/level-defining types/builtins) exceeds the module's `{-# LEVEL Ln #-}` ceiling (§8) | **enforced by `axionc`** |
 
 Next free per band — language: `AX0007`; front-end: `AX0102`; types: `AX0204`;
-channels/sessions: `AX0306`; typeclasses: `AX0406`.
+channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`.
 
 **`AX03xx` channels and session types (Phase 3).** The §17 band for the session
 calculus (see [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Enforced:
@@ -51,8 +52,9 @@ acyclic pipelines) and the surface→ASC differential.
 
 > **Band note.** `AX0001`–`AX0099` for *language semantics* invariants (linearity,
 > regions, sessions); `AX0100`–`AX0199` for *front-end* (syntax, name resolution);
-> `AX0200`+ for *types* (HM inference); `AX0400`+ for *typeclasses*. Codes are
-> stable: a number never changes meaning nor is reused.
+> `AX0200`+ for *types* (HM inference); `AX0400`+ for *typeclasses*; `AX0500`+ for
+> *levels* (§8 progressive disclosure). Codes are stable: a number never changes
+> meaning nor is reused.
 
 ---
 
@@ -284,3 +286,39 @@ Method dispatch itself is dynamic in the interpreter; on the native path,
 monomorphization specializes constrained functions per type and resolves methods
 to the concrete instance impls — zero-cost, à la Rust (measured; see the
 `dispatch` benchmark).
+
+---
+
+## `AX0500` — declaration exceeds the module's LEVEL ceiling
+
+**Rule (§8, progressive disclosure).** The L0–L3 scale grades how much of the
+substructural machinery a declaration exposes — **L0** plain strict-Haskell (no
+linearity/regions *written*; they may be inferred but stay invisible), **L1**
+linear resources (`%1`/`%0.5`) and arenas, **L2** channels and session types
+(`bound`/`spawn`/…), **L3** the `Trit`/`TritVec` type and coupling (`~`/`Maybe~`).
+
+A module caps itself with a `{-# LEVEL Ln #-}` pragma on the first line. The
+ceiling is a **mechanical firewall** (à la `#![forbid(unsafe_code)]`): each
+declaration whose *written* level exceeds it is rejected. A declaration's level is
+the max over what it **writes in its own body and signature** — its parameter
+multiplicities, the level-defining type heads in its signature, and the
+level-defining builtins it names.
+
+Crucially, the ceiling governs **what a declaration writes, not what it calls**.
+Calling a user (or imported) function is an ordinary reference, never a
+level-defining construct, so an `{-# LEVEL L0 #-}` module may freely depend on an
+L3 library — it just may not *write* L1+ constructs itself. The ceiling only ever
+**tightens**.
+
+```axion
+{-# LEVEL L0 #-}
+f :: Buffer U8 %1 -> Buffer U8 %1   -- writes %1 + Buffer ⇒ L1
+f b = b                             -- AX0500: L1 under an L0 ceiling
+```
+
+Fix: raise the ceiling to `{-# LEVEL L1 #-}` (or higher), or remove the
+higher-level feature. Malformed pragmas (`{-# LEVEL wat #-}`) are reported as an
+`AX0500` *warning* and ignored (no ceiling applied).
+
+> Scope: the module pragma is enforced today. The manifest `max-level` cap (§8)
+> awaits the `axion` driver/`axion.toml` and is deferred.
