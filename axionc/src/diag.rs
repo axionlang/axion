@@ -22,6 +22,17 @@ pub struct Label {
     pub message: String,
 }
 
+/// A machine-applicable fix (§8): replace the source span `start..end` with
+/// `replacement`. Emitted in `--emit json` so editors/tools can auto-apply, and
+/// rendered as a `suggestion:` line in text output.
+#[derive(Debug, Clone, Serialize)]
+pub struct Fix {
+    pub start: usize,
+    pub end: usize,
+    pub replacement: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     pub code: String, // ex.: "AX0001"
@@ -30,6 +41,10 @@ pub struct Diagnostic {
     pub labels: Vec<Label>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
+    // Boxed to keep `Diagnostic` small: it is the `Err` type of several `Result`s,
+    // and a large error variant is moved around by value (clippy `result_large_err`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<Box<Fix>>,
 }
 
 impl Diagnostic {
@@ -40,6 +55,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             help: None,
+            fix: None,
         }
     }
 
@@ -50,6 +66,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             help: None,
+            fix: None,
         }
     }
 
@@ -64,6 +81,23 @@ impl Diagnostic {
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+
+    /// Attach a machine-applicable fix: replace `start..end` with `replacement`.
+    pub fn with_fix(
+        mut self,
+        start: usize,
+        end: usize,
+        replacement: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        self.fix = Some(Box::new(Fix {
+            start,
+            end,
+            replacement: replacement.into(),
+            message: message.into(),
+        }));
         self
     }
 
@@ -95,6 +129,12 @@ impl Diagnostic {
         }
         if let Some(help) = &self.help {
             out.push_str(&format!("  = help: {help}\n"));
+        }
+        if let Some(fix) = &self.fix {
+            out.push_str(&format!(
+                "  = suggestion: {} (replace with `{}`)\n",
+                fix.message, fix.replacement
+            ));
         }
         out
     }

@@ -241,6 +241,9 @@ analysis. `axionc --explain AX0100`.
 
 An identifier that is not a parameter, a local (`where`/`let`), a top-level
 function, nor a builtin. Emitted by name resolution in `axionc/src/check.rs`.
+When a close match is in scope (edit distance ≤ 2), it carries a **machine-applicable
+fix** — `did you mean \`x\`?` in text, and a `fix` (span + replacement) in `--emit
+json` that an editor can auto-apply (§8).
 
 ---
 

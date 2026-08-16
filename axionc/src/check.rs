@@ -1715,6 +1715,39 @@ fn resolve_clause(
     }
 }
 
+/// Levenshtein edit distance (small strings; used only for typo suggestions).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(cur[j] + 1).min(prev[j + 1] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// The closest in-scope name to `n` (a mis-spelling), if one is within edit
+/// distance 2 — the source of the AX0101 "did you mean" suggestion. Skips very
+/// short candidates (len < 3) to avoid noisy 1-2 char coincidences.
+fn nearest_name(n: &str, scope: &HashSet<String>, globals: &HashSet<String>) -> Option<String> {
+    if n.len() < 3 {
+        return None;
+    }
+    scope
+        .iter()
+        .chain(globals.iter())
+        .filter(|c| c.len() >= 3)
+        .map(|c| (edit_distance(n, c), c))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, c)| (*d, c.len(), (*c).clone()))
+        .map(|(_, c)| c.clone())
+}
+
 fn resolve_expr(
     e: &Expr,
     scope: &HashSet<String>,
@@ -1724,14 +1757,23 @@ fn resolve_expr(
     match e {
         Expr::Var(n, sp) => {
             if !scope.contains(n) && !globals.contains(n) {
-                diags.push(
-                    Diagnostic::error("AX0101", format!("name not found: '{n}'"))
-                        .label(sp.0, sp.1, "not in scope")
-                        .with_help(
+                let mut d = Diagnostic::error("AX0101", format!("name not found: '{n}'"))
+                    .label(sp.0, sp.1, "not in scope");
+                // machine-applicable fix: suggest the closest in-scope name (§8).
+                match nearest_name(n, scope, globals) {
+                    Some(best) => {
+                        d = d
+                            .with_help(format!("did you mean `{best}`?"))
+                            .with_fix(sp.0, sp.1, best.clone(), format!("`{n}` → `{best}`"));
+                    }
+                    None => {
+                        d = d.with_help(
                             "check the spelling, or whether it is a parameter/local in \
                              scope, or a missing top-level function/import.",
-                        ),
-                );
+                        );
+                    }
+                }
+                diags.push(d);
             }
         }
         Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}

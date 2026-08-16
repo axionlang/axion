@@ -2045,6 +2045,34 @@ fn explain(code: &str) -> ExitCode {
              signature must declare 'C a =>' (otherwise there is no guarantee an\n\
              instance exists at the call site)."
         }
+        "AX0202" => {
+            "AX0202 — non-exhaustive patterns. A `case` does not cover every\n\
+             constructor of the scrutinee's type (or lacks a catch-all `_` for an\n\
+             open/large domain like Int). Add the missing arms, or a wildcard\n\
+             `_ -> …`. Non-exhaustiveness is an error: there is no runtime\n\
+             'pattern match failure' fallback (§ exhaustiveness)."
+        }
+        "AX0203" => {
+            "AX0203 — unreachable pattern (warning). An arm can never match because\n\
+             an earlier arm (a catch-all `_`, or a subsuming/duplicate pattern)\n\
+             already covers it. Remove it or reorder the arms."
+        }
+        "AX0411" => {
+            "AX0411 — cannot derive that class. `deriving (…)` named a class the\n\
+             compiler cannot derive (only Eq, Ord, Show — incl. 1-parameter\n\
+             parametric types natively). Write the instance by hand, or drop it\n\
+             from the `deriving` list."
+        }
+        "AX0900" => {
+            "AX0900 — could not import module. The imported module file was not\n\
+             found or could not be read. Check the module name, the file path, and\n\
+             the search roots."
+        }
+        "AX0901" => {
+            "AX0901 — lex error in an imported module. The imported file itself does\n\
+             not tokenize (a stray character or malformed literal there). Fix the\n\
+             imported module; the error location points into it."
+        }
         other => {
             eprintln!("unknown code: {other}");
             return ExitCode::from(2);

@@ -207,6 +207,53 @@ fn nested_polymorphic_container_deep_drops() {
 }
 
 #[test]
+fn typo_gets_a_machine_applicable_fix() {
+    // Teaching diagnostics (§8): a mis-spelled name yields AX0101 with a "did you
+    // mean" suggestion in text, and a machine-applicable `fixes` entry in JSON that
+    // an editor can auto-apply.
+    let check = axionc()
+        .args(["--check", &fixture("typo_suggestion.axi")])
+        .output()
+        .unwrap();
+    assert!(!check.status.success(), "typo should fail --check");
+    let text = String::from_utf8_lossy(&check.stdout);
+    assert!(text.contains("AX0101"), "expected AX0101, got: {text}");
+    assert!(
+        text.contains("did you mean `length`?"),
+        "expected typo suggestion, got: {text}"
+    );
+    // JSON carries the fix (span + replacement) for editors to auto-apply.
+    let json = axionc()
+        .args(["--emit", "json", &fixture("typo_suggestion.axi")])
+        .output()
+        .unwrap();
+    let j = String::from_utf8_lossy(&json.stdout);
+    assert!(j.contains("\"fix\""), "expected a `fix` in JSON: {j}");
+    assert!(
+        j.contains("\"replacement\": \"length\""),
+        "expected replacement=length in JSON: {j}"
+    );
+}
+
+#[test]
+fn explain_covers_every_emitted_code() {
+    // Every AXnnnn the compiler can emit has an `--explain` entry (§8); an unknown
+    // code is rejected. (Regression guard for the newly-added 0202/0203/0411/09xx.)
+    for code in [
+        "AX0001", "AX0002", "AX0101", "AX0202", "AX0203", "AX0411", "AX0900", "AX0901",
+    ] {
+        let out = axionc().args(["--explain", code]).output().unwrap();
+        assert!(out.status.success(), "--explain {code} should succeed");
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+            "--explain {code} should print text"
+        );
+    }
+    let unknown = axionc().args(["--explain", "AX9999"]).output().unwrap();
+    assert!(!unknown.status.success(), "--explain of unknown code should fail");
+}
+
+#[test]
 fn use_after_consume_is_rejected_ax0001() {
     let out = axionc()
         .args(["--check", &fixture("use_after_consume.axi")])
