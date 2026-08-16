@@ -28,7 +28,8 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::diag::{Diagnostics, Severity};
+use crate::db::{self, AxionDb};
+use crate::diag::{Diagnostic as AxDiagnostic, Severity};
 use crate::lexer::LineMap;
 
 /// One analyzed diagnostic: the LSP diagnostic plus the optional edit that fixes
@@ -69,49 +70,55 @@ fn to_range(lines: &LineMap, start: usize, end: usize) -> Range {
     }
 }
 
-/// The pure core, testable without any async runtime: compile `src` (from `path`,
-/// so imports resolve) and return the diagnostics as LSP data. The front end is
-/// wrapped in `catch_unwind` so a compiler panic degrades to "no diagnostics"
+/// Map one compiler diagnostic to LSP data (diagnostic + optional fix edit),
+/// resolving byte spans against `lines`.
+fn to_analyzed(d: &AxDiagnostic, lines: &LineMap) -> Analyzed {
+    let range = d
+        .labels
+        .first()
+        .map_or_else(Range::default, |l| to_range(lines, l.start, l.end));
+    let severity = match d.severity {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+    };
+    let message = match &d.help {
+        Some(h) => format!("{}\n\nhelp: {h}", d.message),
+        None => d.message.clone(),
+    };
+    let diagnostic = Diagnostic {
+        range,
+        severity: Some(severity),
+        code: Some(NumberOrString::String(d.code.clone())),
+        source: Some("axion".to_string()),
+        message,
+        ..Diagnostic::default()
+    };
+    let fix = d.fix.as_ref().map(|f| FixEdit {
+        range: to_range(lines, f.start, f.end),
+        new_text: f.replacement.clone(),
+    });
+    Analyzed { diagnostic, fix }
+}
+
+/// Run the incremental front end for `file` on `db` and map the diagnostics to LSP
+/// data. Wrapped in `catch_unwind` so a compiler panic degrades to "no diagnostics"
 /// rather than taking the server down.
-pub fn analyze(path: &str, src: &str) -> Vec<Analyzed> {
+fn analyze_on(db: &AxionDb, file: db::SourceFile, src: &str) -> Vec<Analyzed> {
     let lines = LineMap::new(src);
     let items = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut diags = Diagnostics::new();
-        let _ = crate::compile_front(src, path, &mut diags);
-        diags.items
+        db::diagnostics_of(db, file)
     }))
     .unwrap_or_default();
+    items.iter().map(|d| to_analyzed(d, &lines)).collect()
+}
 
-    items
-        .iter()
-        .map(|d| {
-            let range = d
-                .labels
-                .first()
-                .map_or_else(Range::default, |l| to_range(&lines, l.start, l.end));
-            let severity = match d.severity {
-                Severity::Error => DiagnosticSeverity::ERROR,
-                Severity::Warning => DiagnosticSeverity::WARNING,
-            };
-            let message = match &d.help {
-                Some(h) => format!("{}\n\nhelp: {h}", d.message),
-                None => d.message.clone(),
-            };
-            let diagnostic = Diagnostic {
-                range,
-                severity: Some(severity),
-                code: Some(NumberOrString::String(d.code.clone())),
-                source: Some("axion".to_string()),
-                message,
-                ..Diagnostic::default()
-            };
-            let fix = d.fix.as_ref().map(|f| FixEdit {
-                range: to_range(&lines, f.start, f.end),
-                new_text: f.replacement.clone(),
-            });
-            Analyzed { diagnostic, fix }
-        })
-        .collect()
+/// The pure core, testable without any async runtime: compile `src` (from `path`,
+/// so imports resolve) through a throwaway salsa database and return the
+/// diagnostics as LSP data.
+pub fn analyze(path: &str, src: &str) -> Vec<Analyzed> {
+    let mut db = AxionDb::default();
+    let file = db.set_file(path, src.to_string());
+    analyze_on(&db, file, src)
 }
 
 /// Per-document state: the current text and its last analysis.
@@ -124,6 +131,11 @@ struct Doc {
 struct Backend {
     client: Client,
     docs: Mutex<HashMap<Url, Doc>>,
+    /// The persistent salsa database: keeping it across edits is what makes the
+    /// engine incremental — an edit re-sets one file's text input, and salsa
+    /// recomputes only what depends on it (the prelude and unchanged files stay
+    /// memoized).
+    db: Mutex<AxionDb>,
 }
 
 impl Backend {
@@ -131,13 +143,21 @@ impl Backend {
         Backend {
             client,
             docs: Mutex::new(HashMap::new()),
+            db: Mutex::new(AxionDb::default()),
         }
     }
 
-    /// Recompile `uri`'s buffer, cache the analysis, and publish the diagnostics.
+    /// Recompile `uri`'s buffer (incrementally, via the persistent salsa DB),
+    /// cache the analysis, and publish the diagnostics.
     async fn refresh(&self, uri: Url, text: String) {
-        let path = uri.to_file_path().map_or_else(|()| uri.to_string(), |p| p.display().to_string());
-        let analyzed = analyze(&path, &text);
+        let path = uri
+            .to_file_path()
+            .map_or_else(|()| uri.to_string(), |p| p.display().to_string());
+        let analyzed = {
+            let mut db = self.db.lock().await;
+            let file = db.set_file(&path, text.clone());
+            analyze_on(&db, file, &text)
+        };
         let diags: Vec<Diagnostic> = analyzed.iter().map(|a| a.diagnostic.clone()).collect();
         self.docs
             .lock()

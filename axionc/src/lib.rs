@@ -52,6 +52,10 @@ mod lexer;
 mod llvm;
 mod parser;
 
+/// The salsa incremental query engine (§8), gated behind the `salsa` feature.
+#[cfg(feature = "salsa")]
+pub mod db;
+
 /// The Language Server (`axion-lsp`), gated behind the `lsp` cargo feature so the
 /// default build stays free of the tokio/tower-lsp async dependency tree.
 #[cfg(feature = "lsp")]
@@ -430,6 +434,22 @@ pub fn compile_front(
     path: &str,
     diags: &mut Diagnostics,
 ) -> (Option<ast::Module>, check::Analysis) {
+    // Two stages, split so the salsa engine can memoize them independently
+    // (`crate::db`): `parse_source` depends only on THIS file's text; the
+    // downstream `analyze_module` also depends on the prelude and imports.
+    match parse_source(src, diags) {
+        Some(module) => {
+            let (module, analysis) = analyze_module(module, path, diags);
+            (Some(module), analysis)
+        }
+        None => (None, check::Analysis::default()),
+    }
+}
+
+/// Stage 1 — the pure, single-file front: lex → layout → parse → `{-# LEVEL #-}`
+/// scan + ceiling check. Depends only on `src`, so the salsa `parse` query can
+/// memoize it per file text. Returns `None` (with a diagnostic) on lex/parse error.
+pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
     let tokens = match lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {
@@ -438,7 +458,7 @@ pub fn compile_front(
                 e.end,
                 "not part of any token",
             ));
-            return (None, check::Analysis::default());
+            return None;
         }
     };
     let lines = LineMap::new(src);
@@ -447,15 +467,25 @@ pub fn compile_front(
         Ok(m) => m,
         Err(d) => {
             diags.push(d);
-            return (None, check::Analysis::default());
+            return None;
         }
     };
     // §8 progressive-disclosure ceiling: scan the raw source for `{-# LEVEL Ln #-}`
     // (the lexer skips the pragma, so the grammar never sees it) and enforce it over
-    // the user's *own* declarations — BEFORE imports/prelude inject foreign funcs
-    // that this module's ceiling does not govern.
+    // the user's *own* declarations — this depends only on this file, so it stays in
+    // the memoizable parse stage.
     module.level_ceiling = scan_level_pragma(src, diags);
     levels::check_levels(&module, diags);
+    Some(module)
+}
+
+/// Stage 2 — the cross-file downstream: imports + prelude + class lowering +
+/// linearity/Auto-Drop checking + HM inference. Takes an already-parsed module.
+pub fn analyze_module(
+    mut module: ast::Module,
+    path: &str,
+    diags: &mut Diagnostics,
+) -> (ast::Module, check::Analysis) {
     resolve_imports(&mut module, path, diags);
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
@@ -480,7 +510,7 @@ pub fn compile_front(
     analysis.makecon_tys = mono.makecon_tys;
     analysis.array_tys = mono.array_tys;
     analysis.integer_lits = mono.integer_lits;
-    (Some(module), analysis)
+    (module, analysis)
 }
 
 /// Materializes the specialized constrained functions: clones each
@@ -1883,11 +1913,21 @@ fn resolve_imports(module: &mut ast::Module, path: &str, diags: &mut Diagnostics
     }
 }
 
+/// The parsed prelude, lexed+parsed once per process. The prelude is a compile-time
+/// constant, so `inject_prelude` re-parsing it on every `compile_front` was pure
+/// waste; cloning the cached AST is far cheaper (and helps the salsa path too).
+fn prelude_module() -> &'static ast::Module {
+    static PRELUDE_AST: std::sync::OnceLock<ast::Module> = std::sync::OnceLock::new();
+    PRELUDE_AST.get_or_init(|| {
+        let lines = LineMap::new(PRELUDE);
+        let tokens = lexer::lex(PRELUDE).unwrap_or_else(|e| panic!("prelude: lex: {e:?}"));
+        let lt = layout::layout(&tokens, &lines);
+        parser::parse_module(&lt).unwrap_or_else(|e| panic!("prelude: parse: {e:?}"))
+    })
+}
+
 fn inject_prelude(module: &mut ast::Module) {
-    let lines = LineMap::new(PRELUDE);
-    let tokens = lexer::lex(PRELUDE).unwrap_or_else(|e| panic!("prelude: lex: {e:?}"));
-    let lt = layout::layout(&tokens, &lines);
-    let prelude = parser::parse_module(&lt).unwrap_or_else(|e| panic!("prelude: parse: {e:?}"));
+    let prelude = prelude_module().clone();
     let has_data: std::collections::HashSet<String> =
         module.datas.iter().map(|d| d.name.clone()).collect();
     let has_func: std::collections::HashSet<String> =
