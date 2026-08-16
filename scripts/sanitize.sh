@@ -38,6 +38,7 @@ NATIVE=(
   axionc/tests/fixtures/record_run.axi
   axionc/tests/fixtures/buffer_sum.axi
   axionc/tests/fixtures/array_sum.axi
+  axionc/tests/fixtures/single_scope_reclaim.axi
   axionc/tests/fixtures/array_thread_let.axi
   axionc/tests/fixtures/array_thread_do.axi
   axionc/tests/fixtures/tritvec_roundtrip.axi
@@ -105,7 +106,7 @@ NATIVE=(
 LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
-  nested_drop sum_payload array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce
+  nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce
   poly_payload_drop poly_payload_tco poly_payload_borrow_alias
   poly_payload_generic_drop poly_payload_generic_nested poly_payload_generic_compose poly_payload_gap
   land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned land_tuple_upd land_owned_poly

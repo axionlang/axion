@@ -4867,6 +4867,13 @@ impl Op {
                 Some("String".into())
             }
             Op::RtCall { func, .. } if func == "axion_array_new" => Some("Array".into()),
+            // in-place setters return the SAME owned resource (threaded handle) —
+            // it carries the resource type so a flat-scope final binding is dropped
+            // with the right free (a bare `drop` would flat-free a raw-malloc Array).
+            Op::RtCall { func, .. } if func == "axion_array_set" => Some("Array".into()),
+            Op::RtCall { func, .. } if func == "axion_tritvec_set" => Some("TritVec".into()),
+            Op::RtCall { func, .. } if func == "axion_i8_set" => Some("I8Array".into()),
+            Op::RtCall { func, .. } if func == "axion_i32_set" => Some("I32Array".into()),
             // TritVec (§10) is a flat block — no generated `axion_drop_TritVec`
             // exists, so `emit_drop` falls back to the flat `axion_free`, which is
             // exactly right (the packed bytes are inline). Returning `Some` here is

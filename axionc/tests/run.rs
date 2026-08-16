@@ -1519,6 +1519,29 @@ fn tritvec_base243_roundtrip_reclaims_once() {
 }
 
 #[test]
+fn single_scope_owned_resource_reclaims_once() {
+    // Drop-insertion fix: an owned heap resource in a flat let-chain whose last uses
+    // are read-only getters (getI8/lenI8) is reclaimed exactly once — the getters
+    // were previously treated as *moving* the resource, leaking it unless threaded
+    // through a helper. 5 (set) + -1 (weight 3) + 20 (len) = 24. Leak-freedom gated
+    // by sanitize.sh; here we check the value on both native backends.
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("single_scope_reclaim.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "24\n", "{args:?}");
+    }
+}
+
+#[test]
 fn general_dense_array_primitives() {
     // Fused reductions on Array Int (arraySum/arrayDot), I8Array (i8Sum/i8Dot), and
     // the compact I32Array (new/set/get/len/i32Sum/i32Dot/i32MatVecSum) — closure-free

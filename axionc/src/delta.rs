@@ -225,6 +225,19 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_i32_sum"
                 || func == "axion_i32_dot"
                 || func == "axion_i32_matvec_sum"
+                // read-only getters BORROW their resource (arg 0) and return a
+                // scalar — they don't free it, so the owner still reclaims it. Not
+                // treating these as borrows here leaked any owned resource whose
+                // last use was a get/len in a flat scope (the caller never saw it
+                // die, since a `move` marks it escaped into the runtime call).
+                || func == "axion_array_get"
+                || func == "axion_array_len"
+                || func == "axion_tritvec_get"
+                || func == "axion_tritvec_len"
+                || func == "axion_i8_get"
+                || func == "axion_i8_len"
+                || func == "axion_i32_get"
+                || func == "axion_i32_len"
             {
                 e.borrows.extend(args.iter());
                 return e;
