@@ -1157,6 +1157,7 @@ fn builtins() -> HashSet<String> {
         "lenTritVec",
         "tritDot",
         "tritMatVecSum",
+        "tritVecFromBuffer",
         "tritVecIota",
         "arrayIota",
         // I8Array: compact signed-byte array (Phase B)
@@ -1896,6 +1897,8 @@ fn build_ctx(module: &Module) -> Ctx {
         "tritMatVecSum".to_string(),
         vec![Mult::Many, Mult::Many, Mult::Many],
     );
+    // tritVecFromBuffer borrows the buffer (caller frees it); the Int is inert.
+    consumers.insert("tritVecFromBuffer".to_string(), vec![Mult::Many, Mult::Many]);
     // bulk builders: the Int arg is inert; the result is a fresh owned resource.
     consumers.insert("tritVecIota".to_string(), vec![Mult::Many]);
     consumers.insert("arrayIota".to_string(), vec![Mult::Many]);

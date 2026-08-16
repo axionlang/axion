@@ -1071,6 +1071,28 @@ extern "C" fn axion_tritvec_dot(tv: i64, arr: i64) -> i64 {
     }
 }
 
+// Wrap already-packed base-243 bytes from a Buffer into a fresh TritVec (§10) —
+// the --dev mirror. Copies ceil(n/5) bytes, borrows the buffer, owned result.
+extern "C" fn axion_tritvec_from_buffer(buf: i64, n: i64) -> i64 {
+    let trits = n.max(0);
+    let nbytes = (trits + 4) / 5;
+    // SAFETY: buf is a valid Buffer [len][bytes]; byte-count checked ≥ nbytes.
+    unsafe {
+        let buflen = (buf as *const i64).read_unaligned();
+        if buflen < nbytes {
+            std::process::abort();
+        }
+        let p = axion_alloc(8 + nbytes) as i64;
+        (p as *mut i64).write_unaligned(trits);
+        std::ptr::copy_nonoverlapping(
+            (buf + 8) as *const u8,
+            (p + 8) as *mut u8,
+            nbytes as usize,
+        );
+        p
+    }
+}
+
 // Ternary matvec (§10): M×K packed weights against a SMALL reused K-activation —
 // streams ~10 MB weights, act[k] cache-resident (the BitNet inner loop where
 // packing's footprint becomes a speed win). Borrows both; k wraps by counter.
@@ -1512,6 +1534,7 @@ impl Cg {
         builder.symbol("axion_tritvec_len", axion_tritvec_len as *const u8);
         builder.symbol("axion_tritvec_dot", axion_tritvec_dot as *const u8);
         builder.symbol("axion_tritvec_matvec_sum", axion_tritvec_matvec_sum as *const u8);
+        builder.symbol("axion_tritvec_from_buffer", axion_tritvec_from_buffer as *const u8);
         builder.symbol("axion_tritvec_iota", axion_tritvec_iota as *const u8);
         builder.symbol("axion_array_iota", axion_array_iota as *const u8);
         // I8Array (Phase B)
@@ -1598,6 +1621,7 @@ impl Cg {
             ("axion_tritvec_len", 1, true),
             ("axion_tritvec_dot", 2, true),
             ("axion_tritvec_matvec_sum", 3, true),
+            ("axion_tritvec_from_buffer", 2, true),
             ("axion_tritvec_iota", 1, true),
             ("axion_array_iota", 1, true),
             ("axion_i8_new", 2, true),

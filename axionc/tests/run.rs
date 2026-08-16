@@ -1564,6 +1564,28 @@ fn i8array_compact_signed_byte_array() {
 }
 
 #[test]
+fn tritvec_from_buffer_wraps_prepacked_bytes() {
+    // tritVecFromBuffer (§10): wrap already-packed base-243 bytes from a Buffer into
+    // a TritVec (the real weight-loading path). Borrows the buffer (freed explicitly),
+    // produces an owned TritVec reclaimed once (sanitize-gated). bufIota bytes 0..4,
+    // 25 trits; sum of all decoded weights = -5-4-3-4-3 = -19.
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("tritvec_from_buffer.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "-19\n", "{args:?}");
+    }
+}
+
+#[test]
 fn tritvec_matvec_streams_packed_weights() {
     // tritMatVecSum (§10): ternary matvec — M×K packed weights against a small
     // reused K-activation (streams only the packed weights). Borrows both; both

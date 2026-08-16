@@ -811,6 +811,25 @@ long axion_tritvec_dot(long tv, long arr) {
   return acc;
 }
 
+/* axion_tritvec_from_buffer(buf, n) → a fresh TritVec of `n` trits wrapping the
+ * already-packed base-243 bytes in `buf` (e.g. loaded/mmap'd weights). Copies the
+ * ceil(n/5) bytes — no re-packing. Borrows the buffer (caller frees it). Bytes are
+ * the caller's responsibility to be valid base-243; 243..255 decode to TZero. */
+long axion_tritvec_from_buffer(long buf, long n) {
+  long trits = n < 0 ? 0 : n;
+  long nbytes = (trits + 4) / 5;
+  long buflen = *(long *)buf;
+  if (buflen < nbytes) {
+    fprintf(stderr, "axion: tritvec_from_buffer — buffer has %ld bytes, need %ld\n", buflen, nbytes);
+    fflush(stderr);
+    abort();
+  }
+  long p = axion_alloc(8 + nbytes);
+  *(long *)p = trits;
+  memcpy((void *)(p + 8), (const void *)(buf + 8), (size_t)nbytes);
+  return p;
+}
+
 /* axion_tritvec_matvec_sum(tv, arr, K) → sum over all rows of dot(row, act), where
  * the packed vec holds M×K weights (M rows of width K) and `act` is a SMALL,
  * REUSED activation vector of length K. Streams only the packed weights (~10 MB);

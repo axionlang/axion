@@ -1140,6 +1140,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "lenTritVec",
         "tritDot",
         "tritMatVecSum",
+        "tritVecFromBuffer",
         "tritVecIota",
         "arrayIota",
         "newI8Array",
@@ -1541,6 +1542,10 @@ impl Lower<'_> {
             // ternary matvec (§10): borrows both, K inert, returns a scalar Int.
             ("tritMatVecSum", 3) => {
                 return self.rtcall("axion_tritvec_matvec_sum", &args, true, buf)
+            }
+            // wrap pre-packed base-243 bytes into a TritVec (borrows the buffer).
+            ("tritVecFromBuffer", 2) => {
+                return self.rtcall("axion_tritvec_from_buffer", &args, true, buf)
             }
             // bulk builders (§10): construct a packed vec / dense array in one
             // native pass — owned results, reclaimed like newTritVec / newArray.
@@ -4865,6 +4870,10 @@ impl Op {
             // exactly right (the packed bytes are inline). Returning `Some` here is
             // what marks the binding owned+droppable at its liveness death point.
             Op::RtCall { func, .. } if func == "axion_tritvec_new" => Some("TritVec".into()),
+            // tritVecFromBuffer produces a fresh owned TritVec (borrows the buffer).
+            Op::RtCall { func, .. } if func == "axion_tritvec_from_buffer" => {
+                Some("TritVec".into())
+            }
             // bulk builders: fresh owned resources reclaimed like their _new kin.
             Op::RtCall { func, .. } if func == "axion_tritvec_iota" => Some("TritVec".into()),
             Op::RtCall { func, .. } if func == "axion_array_iota" => Some("Array".into()),
@@ -5043,7 +5052,9 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
                 || func == "axion_array_dot"
                 || func == "axion_i32_sum"
                 || func == "axion_i32_dot"
-                || func == "axion_i32_matvec_sum" =>
+                || func == "axion_i32_matvec_sum"
+                // tritVecFromBuffer reads the buffer, produces a fresh TritVec — borrow.
+                || func == "axion_tritvec_from_buffer" =>
         {
             false
         }
@@ -5431,7 +5442,9 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
                 || func == "axion_array_sum"
                 || func == "axion_i32_get"
                 || func == "axion_i32_len"
-                || func == "axion_i32_sum" =>
+                || func == "axion_i32_sum"
+                // tritVecFromBuffer READS the buffer (arg 0); produces a fresh TritVec.
+                || func == "axion_tritvec_from_buffer" =>
         {
             args.iter()
                 .enumerate()

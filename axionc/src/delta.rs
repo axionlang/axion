@@ -203,6 +203,17 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             // tritDot (§10) READS both the packed vec and the activation array and
             // returns a scalar Int — it BORROWS both (the caller still Auto-Drops
             // them), and produces no heap resource.
+            // tritVecFromBuffer BORROWS the buffer (caller frees it) and PRODUCES a
+            // fresh owned TritVec — the ShowInt shape (borrow input, produce output).
+            if func == "axion_tritvec_from_buffer" {
+                e.borrows.extend(args.iter());
+                e.produces = Some(Res {
+                    key: Some("TritVec".into()),
+                    parent: None,
+                    slot: None,
+                });
+                return e;
+            }
             if func == "axion_tritvec_dot"
                 || func == "axion_tritvec_matvec_sum"
                 || func == "axion_i8_matvec_sum"

@@ -194,8 +194,21 @@ with C (159 vs 157). See `docs/benchmarks.md` and
 three concrete widths is pragmatic; a parametric width-tagged array is the clean
 future consolidation.)
 
-Remaining levers (not built): a SIMD `tritMatVecSum` (spec §10.C) and
-`tritVecFromBuffer` to load real pre-packed weights.
+**Loading real weights.** `tritVecFromBuffer :: Buffer a -> Int -> TritVec` wraps
+already-packed base-243 bytes (loaded/mmap'd, e.g. a trained ternary weight file)
+into a TritVec without re-packing — the realistic weight-loading path. Borrows the
+buffer (caller frees it), produces an owned TritVec; ASan + LSan clean
+(`tests/fixtures/tritvec_from_buffer.axi`).
+
+**Deliberately not built (measured):**
+- **SIMD codecs (§10.C).** `-O3 -march=native` (full AVX2 autovectorization) buys
+  only ~7–8% on the matvec kernels (`ternmv` 85→79, `i8mv` 106→97) and regresses
+  `i32mv` — they're memory/compute-bound with no headroom. Hand-written intrinsics
+  can't beat that meaningfully and would add x86/ARM `#ifdef` + runtime CPU
+  detection for <10%. Not worth it.
+- **Parametric width-tagged array.** One runtime-width `IntArray` could replace
+  `Array`/`I8Array`/`I32Array` — a cleaner surface, but a refactor that churns
+  tested code for zero new capability. Left as a future consolidation.
 
 ## When the footprint wins (applications)
 

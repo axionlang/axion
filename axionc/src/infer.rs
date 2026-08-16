@@ -1337,6 +1337,18 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // tritVecFromBuffer :: forall a. Buffer a -> Int -> TritVec — wrap pre-packed
+        // base-243 bytes; borrows the buffer, produces an owned TritVec.
+        env.insert(
+            "tritVecFromBuffer".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(Ty::Con("Buffer".into(), vec![Ty::Var(0)])),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(tvec_ty()))),
+                ),
+            },
+        );
         // imperative :: forall a. a -> a — the imperative block (§5) is identity.
         env.insert(
             "imperative".into(),
