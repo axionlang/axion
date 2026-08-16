@@ -626,13 +626,20 @@ long axion_i8_new(long len, long init) {
 }
 
 /* axion_i8_iota(n) → I8Array with a[i] = (i mod 3)-1 (ternary weights as bytes).
- * Bulk builder: one vectorizable pass, no per-element bounds check. */
+ * Bulk builder. Unrolled by 3 so the store loop vectorizes — a per-element `i%3`
+ * forces a scalar loop (a vector division), ~2-3× slower. */
 long axion_i8_iota(long len) {
   long n = len < 0 ? 0 : len;
   long p = axion_alloc(8 + n);
   *(long *)p = n;
   signed char *d = (signed char *)(p + 8);
-  for (long i = 0; i < n; i++) d[i] = (signed char)((i % 3) - 1);
+  long i = 0;
+  for (; i + 3 <= n; i += 3) {
+    d[i] = -1;
+    d[i + 1] = 0;
+    d[i + 2] = 1;
+  }
+  for (; i < n; i++) d[i] = (signed char)((i % 3) - 1);
   return p;
 }
 
@@ -695,9 +702,18 @@ long axion_i8_dot_i8(long a, long b) {
     abort();
   }
   signed char *wa = (signed char *)(a + 8), *wb = (signed char *)(b + 8);
-  long s = 0;
-  for (long i = 0; i < n; i++) s += (long)wa[i] * (long)wb[i];
-  return s;
+  /* Blocked accumulation: sum into a 32-bit partial within safe-size chunks (so
+   * the inner loop vectorizes — clang won't vectorize int8×int8 into an i64
+   * accumulator), then flush to i64. BLK*127*127 < INT_MAX keeps `part` safe. */
+  long acc = 0, i = 0;
+  const long BLK = 32768;
+  while (i < n) {
+    long e = i + BLK < n ? i + BLK : n;
+    int part = 0;
+    for (; i < e; i++) part += (int)wa[i] * (int)wb[i];
+    acc += part;
+  }
+  return acc;
 }
 
 /* --- I32Array: a compact SIGNED 32-bit array (general primitives) ------------

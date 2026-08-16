@@ -90,21 +90,22 @@ memory-width gradient in `docs/benchmarks.md`):
 
 | kernel | Axion | C | Rust | shape |
 |---|---:|---:|---:|---|
-| `dot_i8` (fair int8×int8 dot) | 197 | 98 | 98 | full dot, both operands compact |
-| `ternmv` (packed matvec) | 109 | 87 | 120 | small reused activation |
-| `i8mv` (int8 matvec) | 143 | 108 | 129 | small reused activation |
+| `dot_i8` (fair int8×int8 dot) | **49** | 60 | 60 | full dot, both operands compact |
+| `ternmv` (packed matvec) | 66 | 52 | 73 | small reused activation |
+| `i8mv` (int8 matvec) | 56 | 64 | 76 | small reused activation |
 
 Two honest conclusions:
 
-- **On a full dot, Axion trails C ~2×** (`dot_i8` 197 vs 98) — not a throughput
-  problem (a compact 50 MB `i8Sum` stream is 104 ms, *faster* than C's old i64 dot),
-  but because Axion's runtime fill/dot loops autovectorize less than clang's inline
-  SIMD. The compact `I8Array` (Phase B) already removed the old 8-byte-slot penalty
-  that made this ~2–4× worse.
-- **In the matvec — the real ML shape — packed ternary is the fastest option in
-  every language** (`ternmv` beats `i8mv`, and beats Rust int8 outright). `TritVec`
-  is a footprint feature whose footprint becomes *speed* exactly when the activation
-  is small/reused and only the weights stream. It ships **off by default**.
+- **On the fair int8 dot, Axion now *beats* naive C/Rust** (`dot_i8` 49 vs 60): the
+  runtime's `i8DotI8` uses blocked int32 accumulation and vectorizes, where the naive
+  i64-accumulator C/Rust loop stays scalar. A hand-blocked C dot would match — the
+  point is Axion's library ships the vectorized version for free. (This was 197 ms
+  before the runtime fix: a scalar `i8Iota` `%3` fill + non-vectorizing i64 dot.)
+- **In the matvec, whether packed beats int8 is bandwidth-dependent.** Here int8
+  (`i8mv` 56) edges packed (`ternmv` 66) because the machine isn't bandwidth-bound;
+  on a bandwidth-bound machine packed wins (an earlier run had `ternmv` 106 < 143).
+  `TritVec` is a footprint feature — off by default; its speed edge appears only when
+  the smaller stream is the binding constraint.
 
 ### Faster without giving up footprint or safety — the fused `tritDot`
 
@@ -157,20 +158,23 @@ A real BitNet-style matvec doesn't use a 50M activation: weights are `M×K` (hug
 packed), the activation is a *small* `K`-vector reused across all `M` rows. So only
 the packed weights stream; the activation stays cache-resident. `tritMatVecSum ::
 TritVec -> Array Int -> Int -> Int` (`axion_tritvec_matvec_sum`) does exactly this —
-one fused pass, borrows both, `k` wraps by counter. Now the 5× smaller footprint
-becomes a **speed** win, because packing moves 10 MB where int8 moves 50 MB:
+one fused pass, borrows both, `k` wraps by counter. Here packing streams 10 MB
+where int8 streams 50 MB — so **when memory bandwidth is the binding constraint,
+the smaller stream wins**:
 
-| matvec (N=50M, K=8192) | Axion `--rel` | C `-O2` | Rust `-O2` |
+| matvec (N=50M, K=8192), bandwidth-bound run | Axion `--rel` | C `-O2` | Rust `-O2` |
 |---|---:|---:|---:|
 | **packed ternary** (`ternmv`, weights 10 MB) | **107** | 85 | 118 |
 | int8 (`i8mv`, weights 50 MB) | 139 | 105 | 125 |
 
-Packed beats int8 in **every** language (Axion 107 < 139, C 85 < 105, Rust 118 <
-125), and Axion's *packed* matvec (107) beats hand-written **Rust int8** (125) and
-essentially ties **C int8** (105). This is the footprint-as-speed payoff the whole
-feature is for — and the packed kernel dropped from 308 ms (full activation) to
-107 ms (~2.9×) just by using the realistic activation shape. ASan + LSan clean
-(`tests/fixtures/tritvec_matvec.axi`).
+On *that* run packed beat int8 in every language (Axion 107 < 139, and packed
+beat hand-written Rust int8 125). But it's **conditional**: on a faster-memory
+machine the LUT-decode cost is not offset and int8 edges packed (a later run had
+`i8mv` 56 < `ternmv` 66). The robust claim is the spec's: packing always saves
+footprint, and converts to speed only under bandwidth pressure — which is why
+`TritVec` is off by default. The realistic activation shape did drop the kernel
+from 308 ms (full 400 MB activation) to ~107 ms (~2.9×) regardless. ASan + LSan
+clean (`tests/fixtures/tritvec_matvec.axi`).
 
 ### Phase B — a compact `I8Array` closes the int8 gap
 
