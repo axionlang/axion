@@ -2670,6 +2670,55 @@ fn agree_across_backends(fx: &str, expected: &str) {
     assert_eq!(String::from_utf8_lossy(&llvm.stdout), expected, "{fx} llvm");
 }
 
+/// Drift guard: run `fx` on both NATIVE backends and assert their stdout is
+/// identical — the `--dev` Cranelift JIT uses the Rust runtime reimpls
+/// (`codegen.rs`), `--release` uses the C runtime (`axion_rt.c`). The two are
+/// maintained separately (the price of a C-toolchain-free `--dev`), so any silent
+/// divergence must fail loudly. No hardcoded expected value: the guarantee is that
+/// the two runtimes *match*, whatever they compute.
+fn native_agree(fx: &str) {
+    let cl = axionc()
+        .args(["--backend", "cranelift", &fixture(fx)])
+        .output()
+        .unwrap();
+    assert!(
+        cl.status.success(),
+        "{fx} cranelift: {}",
+        String::from_utf8_lossy(&cl.stderr)
+    );
+    let rel = axionc().args(["--release", &fixture(fx)]).output().unwrap();
+    assert!(
+        rel.status.success(),
+        "{fx} release: {}",
+        String::from_utf8_lossy(&rel.stderr)
+    );
+    let (a, b) = (
+        String::from_utf8_lossy(&cl.stdout),
+        String::from_utf8_lossy(&rel.stdout),
+    );
+    assert!(!a.trim().is_empty(), "{fx}: empty output");
+    assert_eq!(
+        a, b,
+        "{fx}: RUNTIME DRIFT — --dev (Rust runtime) {a:?} != --release (C runtime) {b:?}"
+    );
+}
+
+#[test]
+fn runtime_backends_agree() {
+    // The C (--release, axion_rt.c) and Rust (--dev, codegen.rs) runtimes are
+    // duplicated by design; this guards them against silent drift by exercising the
+    // drift-prone deterministic compute ops over broad/edge inputs (int reductions
+    // crossing the i8DotI8 int32-block boundary, the matvecs with wrapping K, the
+    // base-243 codec across byte boundaries) and asserting both backends agree.
+    for fx in [
+        "drift_reductions.axi",
+        "drift_matvec.axi",
+        "drift_codec.axi",
+    ] {
+        native_agree(fx);
+    }
+}
+
 #[test]
 fn strict_let_binding_is_shared_not_re_evaluated() {
     // `let x = e in …` must evaluate `e` once (strict / call-by-value): the fixture
