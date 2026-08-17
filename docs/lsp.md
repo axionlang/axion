@@ -157,14 +157,17 @@ stages (`src/cst.rs`, `--features cst`).
 - **Stage 3a** — the first slice of the pipeline flip: a *token-driven*,
   CST-emitting parser (via rowan checkpoints) that parses tokens DIRECTLY into a
   lossless CST — rather than deriving structure from the AST — plus a CST→AST
-  lowering (`lower_expr`). It currently covers a subset of expressions (atoms,
-  application, `* + - == < >`, parens) and is proven to produce EXACTLY the same
-  `ast::Expr` as the recursive-descent parser by a differential test
+  lowering (`lower_expr`). It covers the full expression operator ladder with its
+  desugarings (`:`→`Cons`, `.`→`compose`, `$`→application, `++`, backtick infix,
+  dotted operators), application, tuples, parenthesised expressions, `if`, and
+  lambdas with patterns — proven to produce EXACTLY the same `ast::Expr` as the
+  recursive-descent parser by a differential test
   (`token_driven_parser_matches_recursive_descent_over_the_subset`, plus an honest
-  `subset_boundary_is_honest`). Later slices extend the grammar (patterns, types,
-  declarations, the remaining operators/desugarings); once it covers everything and
-  provably agrees over all fixtures, the default pipeline flips onto it and the
-  recursive-descent parser is retired.
+  `subset_boundary_is_honest`). Still out of the subset (later slices): `let`/`case`/
+  `do` (need layout blocks), list literals, operator sections, records; then
+  declarations/types/signatures. Once it covers everything and provably agrees over
+  all fixtures, the default pipeline flips onto it and the recursive-descent parser
+  is retired.
 
 It is **additive**: the analysis pipeline still runs on `ast::Module` via the
 recursive-descent parser; the token-driven parser is validated behind the `cst`

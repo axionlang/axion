@@ -97,6 +97,32 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
         "f (a + b) c",
         "foo 1 2 + bar 3",
         "map f (g x)",
+        // Stage 3b: full operator ladder + desugarings, if, lambda, tuples.
+        "x : xs",
+        "1 : 2 : xs",
+        "xs ++ ys",
+        "x : xs ++ ys",
+        "a $ f b",
+        "f $ g $ x",
+        "f . g",
+        "f . g . h",
+        "f . g $ x",
+        "a `div` b",
+        "x `mod` y + 1",
+        "1.0 +. 2.0 *. 3.0",
+        "a ==. b",
+        "x <. y",
+        "if a then b else c",
+        "if x < y then x else y",
+        "\\x -> x + 1",
+        "\\x y -> f x y",
+        "\\_ -> 0",
+        "\\(Cons x xs) -> x",
+        "(1, 2)",
+        "(a, b, c)",
+        "(f x, g y)",
+        "map (\\x -> x * 2) xs",
+        "if p then (\\x -> x) else g",
     ] {
         assert!(
             expr_matches_parser(e),
@@ -107,9 +133,16 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
 
 #[test]
 fn subset_boundary_is_honest() {
-    // Constructs outside the supported subset report `false` (not a silent match),
-    // so the corpus above cannot accidentally hide a gap.
-    for e in ["if x then 1 else 2", "x : xs", "f . g", "\\y -> y", "a $ b"] {
+    // Constructs still outside the supported subset report `false` (not a silent
+    // match), so the corpus above cannot accidentally hide a gap.
+    for e in [
+        "let x = 1 in x", // needs layout
+        "case x of A -> 1",
+        "do { x }",
+        "[1, 2, 3]", // list literal
+        "(+)",       // operator section
+        "Con { a = 1 }",
+    ] {
         assert!(!expr_matches_parser(e), "unexpectedly claimed support for: {e}");
     }
 }

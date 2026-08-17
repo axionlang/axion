@@ -456,17 +456,52 @@ impl ExprParser<'_> {
         }
     }
 
+    /// Mirrors `parser::parse_expr`: `if`/`\` prefix forms, else the operator ladder.
+    /// (`let`/`case`/`do` need layout blocks — a later slice; here they fall out of
+    /// the subset.)
     fn expr(&mut self) {
+        match self.cur() {
+            Some(Tok::If) => self.if_expr(),
+            Some(Tok::Backslash) => self.lam_expr(),
+            Some(Tok::Let | Tok::Case | Tok::Do) => self.ok = false,
+            _ => self.dollar(),
+        }
+    }
+
+    /// `f $ x` (right-assoc, lowest precedence).
+    fn dollar(&mut self) {
+        let cp = self.b.checkpoint();
         self.cmp();
+        if matches!(self.cur(), Some(Tok::Dollar)) {
+            self.b.start_node_at(cp, BINOP_EXPR.into());
+            self.bump();
+            self.expr(); // rhs is a full expression
+            self.b.finish_node();
+        }
     }
 
     fn cmp(&mut self) {
         let cp = self.b.checkpoint();
-        self.add();
-        while matches!(self.cur(), Some(Tok::EqEq | Tok::Lt | Tok::Gt)) {
+        self.cons();
+        while matches!(
+            self.cur(),
+            Some(Tok::EqEq | Tok::Lt | Tok::Gt | Tok::EqEqDot | Tok::LtDot | Tok::GtDot)
+        ) {
             self.b.start_node_at(cp, BINOP_EXPR.into());
             self.bump();
-            self.add();
+            self.cons();
+            self.b.finish_node();
+        }
+    }
+
+    /// `x : xs` and `xs ++ ys` (right-assoc).
+    fn cons(&mut self) {
+        let cp = self.b.checkpoint();
+        self.add();
+        if matches!(self.cur(), Some(Tok::Colon | Tok::PlusPlus)) {
+            self.b.start_node_at(cp, BINOP_EXPR.into());
+            self.bump();
+            self.cons();
             self.b.finish_node();
         }
     }
@@ -474,7 +509,10 @@ impl ExprParser<'_> {
     fn add(&mut self) {
         let cp = self.b.checkpoint();
         self.mul();
-        while matches!(self.cur(), Some(Tok::Plus | Tok::Minus)) {
+        while matches!(
+            self.cur(),
+            Some(Tok::Plus | Tok::Minus | Tok::PlusDot | Tok::MinusDot)
+        ) {
             self.b.start_node_at(cp, BINOP_EXPR.into());
             self.bump();
             self.mul();
@@ -484,11 +522,42 @@ impl ExprParser<'_> {
 
     fn mul(&mut self) {
         let cp = self.b.checkpoint();
+        self.compose();
+        loop {
+            if matches!(self.cur(), Some(Tok::Star | Tok::StarDot | Tok::SlashDot)) {
+                self.b.start_node_at(cp, BINOP_EXPR.into());
+                self.bump();
+                self.compose();
+                self.b.finish_node();
+            } else if matches!(self.cur(), Some(Tok::Backtick)) {
+                self.b.start_node_at(cp, BINOP_EXPR.into());
+                self.bump(); // `
+                if matches!(self.cur(), Some(Tok::VarId(_))) {
+                    self.bump(); // operator name
+                } else {
+                    self.ok = false;
+                }
+                if matches!(self.cur(), Some(Tok::Backtick)) {
+                    self.bump(); // `
+                } else {
+                    self.ok = false;
+                }
+                self.compose();
+                self.b.finish_node();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// `f . g` → `compose f g` (right-assoc).
+    fn compose(&mut self) {
+        let cp = self.b.checkpoint();
         self.app();
-        while matches!(self.cur(), Some(Tok::Star)) {
+        if matches!(self.cur(), Some(Tok::Dot)) {
             self.b.start_node_at(cp, BINOP_EXPR.into());
             self.bump();
-            self.app();
+            self.compose();
             self.b.finish_node();
         }
     }
@@ -530,14 +599,113 @@ impl ExprParser<'_> {
                 self.b.finish_node();
             }
             Some(Tok::LParen) => {
-                self.b.start_node(PAREN_EXPR.into());
+                // `( e )` is transparent; `( e , e , … )` is a tuple. Decide after
+                // seeing (or not) a comma, then wrap retroactively from the `(`.
+                let cp = self.b.checkpoint();
                 self.bump(); // '('
                 self.expr();
+                let mut tuple = false;
+                while matches!(self.cur(), Some(Tok::Comma)) {
+                    tuple = true;
+                    self.bump();
+                    self.expr();
+                }
                 if matches!(self.cur(), Some(Tok::RParen)) {
                     self.bump(); // ')'
                 } else {
                     self.ok = false;
                 }
+                let kind = if tuple { TUPLE_EXPR } else { PAREN_EXPR };
+                self.b.start_node_at(cp, kind.into());
+                self.b.finish_node();
+            }
+            _ => self.ok = false,
+        }
+    }
+
+    fn if_expr(&mut self) {
+        self.b.start_node(IF_EXPR.into());
+        self.bump(); // if
+        self.expr();
+        self.expect(&Tok::Then);
+        self.expr();
+        self.expect(&Tok::Else);
+        self.expr();
+        self.b.finish_node();
+    }
+
+    fn lam_expr(&mut self) {
+        self.b.start_node(LAMBDA_EXPR.into());
+        self.bump(); // '\'
+        while !matches!(self.cur(), Some(Tok::Arrow) | None) {
+            self.apat();
+        }
+        self.expect(&Tok::Arrow);
+        self.expr();
+        self.b.finish_node();
+    }
+
+    fn expect(&mut self, t: &Tok) {
+        if self.cur() == Some(t) {
+            self.bump();
+        } else {
+            self.ok = false;
+        }
+    }
+
+    fn starts_apat(&self) -> bool {
+        matches!(
+            self.cur(),
+            Some(Tok::Int(_) | Tok::VarId(_) | Tok::ConId(_) | Tok::LParen)
+        )
+    }
+
+    /// Pattern: applied constructor `Con apat*`, else an atomic pattern.
+    fn pat(&mut self) {
+        if matches!(self.cur(), Some(Tok::ConId(_))) {
+            self.b.start_node(CON_PAT.into());
+            self.bump(); // ConId
+            while self.starts_apat() {
+                self.apat();
+            }
+            self.b.finish_node();
+        } else {
+            self.apat();
+        }
+    }
+
+    fn apat(&mut self) {
+        match self.cur() {
+            Some(Tok::Int(IntLit::Small(_))) => {
+                self.b.start_node(LIT_PAT.into());
+                self.bump();
+                self.b.finish_node();
+            }
+            Some(Tok::VarId(name)) => {
+                let kind = if name == "_" { WILD_PAT } else { VAR_PAT };
+                self.b.start_node(kind.into());
+                self.bump();
+                self.b.finish_node();
+            }
+            Some(Tok::ConId(_)) => {
+                self.b.start_node(CON_PAT.into()); // nullary
+                self.bump();
+                self.b.finish_node();
+            }
+            Some(Tok::LParen) => {
+                let cp = self.b.checkpoint();
+                self.bump(); // '('
+                self.pat();
+                while matches!(self.cur(), Some(Tok::Comma)) {
+                    self.bump();
+                    self.pat();
+                }
+                if matches!(self.cur(), Some(Tok::RParen)) {
+                    self.bump();
+                } else {
+                    self.ok = false;
+                }
+                self.b.start_node_at(cp, TUPLE_PAT.into());
                 self.b.finish_node();
             }
             _ => self.ok = false,
@@ -573,8 +741,40 @@ fn head_token(node: &SyntaxNode) -> Option<rowan::SyntaxToken<AxionLang>> {
         .find(|t| !is_trivia(t.kind()))
 }
 
+fn is_expr_kind(k: SyntaxKind) -> bool {
+    matches!(
+        k,
+        LITERAL_EXPR | NAME_EXPR | APP_EXPR | BINOP_EXPR | IF_EXPR | LAMBDA_EXPR | TUPLE_EXPR
+            | PAREN_EXPR | LET_EXPR | CASE_EXPR | RECORD_EXPR
+    )
+}
+
+/// `App(App(head, a), b)` — the shared desugaring shape (`:`, `.`, applied cons…).
+fn app2(head: Expr, a: Expr, b: Expr, sp: Span) -> Expr {
+    Expr::App(
+        Box::new(Expr::App(Box::new(head), Box::new(a), sp)),
+        Box::new(b),
+        sp,
+    )
+}
+
+/// The operator NAME of a `BINOP_EXPR` node — the single operator token, or the
+/// identifier between backticks for `` x `op` y ``.
+fn binop_operator(node: &SyntaxNode) -> Option<String> {
+    let toks: Vec<_> = node
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !is_trivia(t.kind()))
+        .collect();
+    if toks.first()?.text() == "`" {
+        toks.get(1).map(|t| t.text().to_string())
+    } else {
+        Some(toks.first()?.text().to_string())
+    }
+}
+
 /// Lower a CST expression node to `ast::Expr`, re-lexing literal/name leaves for
-/// their values so the result matches the recursive-descent parser.
+/// their values and applying the same desugarings as the recursive-descent parser.
 fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
     let r = node.text_range();
     let sp = (usize::from(r.start()), usize::from(r.end()));
@@ -610,11 +810,74 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             Some(Expr::App(Box::new(f), Box::new(a), sp))
         }
         BINOP_EXPR => {
-            let op = head_token(node)?.text().to_string();
+            let op = binop_operator(node)?;
             let mut kids = node.children();
             let l = lower_expr(&kids.next()?)?;
             let rhs = lower_expr(&kids.next()?)?;
-            Some(Expr::BinOp(op, Box::new(l), Box::new(rhs), sp))
+            // The same desugarings as `parser.rs`: `:`→`Cons`, `.`→`compose`, `$`→app.
+            Some(match op.as_str() {
+                ":" => app2(Expr::Con("Cons".into(), sp), l, rhs, sp),
+                "." => app2(Expr::Var("compose".into(), sp), l, rhs, sp),
+                "$" => Expr::App(Box::new(l), Box::new(rhs), sp),
+                _ => Expr::BinOp(op, Box::new(l), Box::new(rhs), sp),
+            })
+        }
+        IF_EXPR => {
+            let mut kids = node.children();
+            let c = lower_expr(&kids.next()?)?;
+            let t = lower_expr(&kids.next()?)?;
+            let e = lower_expr(&kids.next()?)?;
+            Some(Expr::If(Box::new(c), Box::new(t), Box::new(e), sp))
+        }
+        LAMBDA_EXPR => {
+            let mut pats = Vec::new();
+            let mut body = None;
+            for child in node.children() {
+                if is_expr_kind(child.kind()) {
+                    body = Some(lower_expr(&child)?);
+                } else {
+                    pats.push(lower_pat(&child)?);
+                }
+            }
+            Some(Expr::Lam(pats, Box::new(body?), sp))
+        }
+        TUPLE_EXPR => {
+            let es: Option<Vec<Expr>> = node.children().map(|c| lower_expr(&c)).collect();
+            Some(Expr::Tuple(es?, sp))
+        }
+        _ => None,
+    }
+}
+
+/// Lower a CST pattern node to `ast::Pat`.
+fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
+    let r = node.text_range();
+    let sp = (usize::from(r.start()), usize::from(r.end()));
+    match node.kind() {
+        WILD_PAT => Some(Pat::Wild(sp)),
+        VAR_PAT => Some(Pat::Var(head_token(node)?.text().to_string(), sp)),
+        LIT_PAT => {
+            let tok = head_token(node)?;
+            match lex(tok.text()).ok()?.first()?.tok {
+                Tok::Int(IntLit::Small(n)) => Some(Pat::Int(n, sp)),
+                _ => None,
+            }
+        }
+        CON_PAT => {
+            let name = head_token(node)?.text().to_string();
+            let args: Option<Vec<Pat>> = node.children().map(|c| lower_pat(&c)).collect();
+            Some(Pat::Con(name, args?, sp))
+        }
+        TUPLE_PAT => {
+            let mut ps: Vec<Pat> = node
+                .children()
+                .map(|c| lower_pat(&c))
+                .collect::<Option<_>>()?;
+            if ps.len() == 1 {
+                ps.pop()
+            } else {
+                Some(Pat::Tuple(ps, sp))
+            }
         }
         _ => None,
     }
@@ -644,14 +907,22 @@ fn zero_spans(e: &mut Expr) {
             *s = z;
             es.iter_mut().for_each(zero_spans);
         }
-        Expr::Lam(_, b, s) | Expr::Let(_, b, s) => {
+        Expr::Lam(pats, b, s) => {
+            *s = z;
+            pats.iter_mut().for_each(zero_pat);
+            zero_spans(b);
+        }
+        Expr::Let(_, b, s) => {
             *s = z;
             zero_spans(b);
         }
         Expr::Case(sc, arms, s) => {
             *s = z;
             zero_spans(sc);
-            arms.iter_mut().for_each(|(_, e)| zero_spans(e));
+            arms.iter_mut().for_each(|(p, e)| {
+                zero_pat(p);
+                zero_spans(e);
+            });
         }
         Expr::RecordCon(_, fs, s) => {
             *s = z;
@@ -661,6 +932,17 @@ fn zero_spans(e: &mut Expr) {
             *s = z;
             zero_spans(b);
             fs.iter_mut().for_each(|(_, e)| zero_spans(e));
+        }
+    }
+}
+
+fn zero_pat(p: &mut Pat) {
+    let z = (0usize, 0usize);
+    match p {
+        Pat::Wild(s) | Pat::Var(_, s) | Pat::Int(_, s) => *s = z,
+        Pat::Con(_, ps, s) | Pat::Tuple(ps, s) => {
+            *s = z;
+            ps.iter_mut().for_each(zero_pat);
         }
     }
 }
