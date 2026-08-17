@@ -270,6 +270,25 @@ fn level_ceiling_enforced_ax0500() {
 }
 
 #[test]
+fn parser_recovers_at_declaration_boundaries() {
+    // §8 resilience: a malformed declaration is reported (AX0100), but the parser
+    // recovers at the next declaration boundary so a valid sibling is still analysed
+    // — here `good`'s use of an unbound name surfaces AX0101. Before recovery the
+    // syntax error would have aborted the whole parse and hidden it.
+    let out = axionc()
+        .args(["--check", &fixture("recover_partial.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a file with errors should fail --check");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0100"), "expected the syntax error, got: {text}");
+    assert!(
+        text.contains("AX0101"),
+        "the valid sibling must still be analysed past the broken decl, got: {text}"
+    );
+}
+
+#[test]
 fn explain_covers_every_emitted_code() {
     // Every AXnnnn the compiler can emit has an `--explain` entry (§8); an unknown
     // code is rejected. (Regression guard for the newly-added 0202/0203/0411/0500/09xx.)

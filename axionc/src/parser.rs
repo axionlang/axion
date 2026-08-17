@@ -1,9 +1,10 @@
 //! Recursive-descent parser for the L0/L1 subset (see `docs/grammar.md`).
 //!
 //! Consumes the already-laid-out tokens ([`crate::layout`]) and produces the AST.
-//! No error recovery in Phase 1: the first syntax error is reported as
-//! `AX0100` and analysis stops (the walking skeleton prioritizes running, not
-//! LSP resilience — that comes with the rowan CST in Phase 4).
+//! [`parse_module`] fails on the first syntax error (used for the prelude/imports,
+//! which are trusted). [`parse_module_resilient`] recovers at top-level declaration
+//! boundaries — a malformed declaration is reported but the others still parse — so
+//! the LSP keeps analysing the rest of a half-typed file (§8).
 
 use crate::ast::{
     Body, ClassDecl, Clause, ConDecl, DataDecl, Expr, Field, Foreign, Func, ImportDecl,
@@ -16,13 +17,13 @@ use crate::lexer::Tok;
 pub struct Parser<'a> {
     toks: &'a [LSpanned],
     pos: usize,
+    /// Errors recovered at declaration boundaries (resilient parse only).
+    errors: Vec<Diagnostic>,
 }
 
 type PResult<T> = Result<T, Diagnostic>;
 
-pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
-    let mut p = Parser { toks, pos: 0 };
-    let items = p.block(Parser::top_item)?;
+fn build_module(items: Vec<TopItem>) -> Module {
     let mut mod_name = None;
     let mut imports = Vec::new();
     let mut decls = Vec::with_capacity(items.len());
@@ -34,7 +35,7 @@ pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
         }
     }
     let asm = assemble(decls);
-    Ok(Module {
+    Module {
         name: mod_name,
         imports,
         funcs: asm.funcs,
@@ -43,7 +44,32 @@ pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
         classes: asm.classes,
         instances: asm.instances,
         level_ceiling: None, // filled from the source pragma in main.rs
-    })
+    }
+}
+
+pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        errors: Vec::new(),
+    };
+    let items = p.block(Parser::top_item)?;
+    Ok(build_module(items))
+}
+
+/// Parse a module with declaration-level error recovery: a top-level declaration
+/// that fails to parse is skipped (its error collected), and parsing resumes at the
+/// next declaration boundary. Returns the partial module plus the recovered errors,
+/// so downstream analysis still runs over the well-formed declarations.
+pub fn parse_module_resilient(toks: &[LSpanned]) -> (Module, Vec<Diagnostic>) {
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        errors: Vec::new(),
+    };
+    let items = p.block_recover(Parser::top_item);
+    let errors = std::mem::take(&mut p.errors);
+    (build_module(items), errors)
 }
 
 enum TopItem {
@@ -235,6 +261,52 @@ impl<'a> Parser<'a> {
         }
         self.eat_v(&LTok::VRBrace);
         Ok(items)
+    }
+
+    /// Like [`Parser::block`] but recovers: when an item fails, its error is
+    /// collected and parsing skips to the next declaration boundary (a layout
+    /// `VSemi`/`VRBrace`) instead of aborting the whole block. Used for the
+    /// top-level module so one broken declaration does not discard the rest.
+    fn block_recover<T>(&mut self, mut item: impl FnMut(&mut Self) -> PResult<T>) -> Vec<T> {
+        if !self.eat_v(&LTok::VLBrace) {
+            return Vec::new();
+        }
+        let mut items = Vec::new();
+        loop {
+            while self.at_v(&LTok::VSemi) {
+                self.pos += 1;
+            }
+            if self.at_v(&LTok::VRBrace) || self.cur().is_none() {
+                break;
+            }
+            let start = self.pos;
+            match item(self) {
+                Ok(it) => items.push(it),
+                Err(e) => {
+                    self.errors.push(e);
+                    // Guarantee progress even if the item consumed nothing.
+                    if self.pos == start {
+                        self.pos += 1;
+                    }
+                    self.recover_to_decl_boundary();
+                }
+            }
+            while self.at_v(&LTok::VSemi) {
+                self.pos += 1;
+            }
+            if self.at_v(&LTok::VRBrace) || self.cur().is_none() {
+                break;
+            }
+        }
+        self.eat_v(&LTok::VRBrace);
+        items
+    }
+
+    /// Skip tokens up to (not past) the next top-level declaration boundary.
+    fn recover_to_decl_boundary(&mut self) {
+        while self.cur().is_some() && !self.at_v(&LTok::VSemi) && !self.at_v(&LTok::VRBrace) {
+            self.pos += 1;
+        }
     }
 
     fn expect_v(&mut self, v: &LTok, what: &str) -> PResult<()> {

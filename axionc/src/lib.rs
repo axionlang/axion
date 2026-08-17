@@ -476,13 +476,18 @@ pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
     };
     let lines = LineMap::new(src);
     let ltokens = layout::layout(&tokens, &lines);
-    let mut module = match parser::parse_module(&ltokens) {
-        Ok(m) => m,
-        Err(d) => {
-            diags.push(d);
-            return None;
-        }
-    };
+    // Declaration-level error recovery (§8): a malformed declaration is reported but
+    // the rest of the file still parses, so the LSP keeps analysing valid code while
+    // one declaration is half-typed. `None` only when nothing at all parsed.
+    let (mut module, parse_errors) = parser::parse_module_resilient(&ltokens);
+    let recovered = !parse_errors.is_empty();
+    for d in parse_errors {
+        diags.push(d);
+    }
+    if recovered && module.funcs.is_empty() && module.datas.is_empty() && module.classes.is_empty()
+    {
+        return None;
+    }
     // §8 progressive-disclosure ceiling: scan the raw source for `{-# LEVEL Ln #-}`
     // (the lexer skips the pragma, so the grammar never sees it) and enforce it over
     // the user's *own* declarations — this depends only on this file, so it stays in

@@ -114,12 +114,29 @@ editor hasn't opened; open files keep their in-memory buffer. Disk reads happen 
 (mutably, setting inputs), never inside a query. The `Vfs` map changes only when a
 file is *added*, so ordinary text edits don't invalidate unrelated importers.
 
+### Resilience (half-typed code)
+
+The parser recovers at **declaration boundaries**: a malformed top-level
+declaration is reported (AX0100) and skipped, and parsing resumes at the next
+declaration, so every other declaration still parses and gets full per-decl
+analysis (`parser::parse_module_resilient`, `tests/…parser_recovers_at_declaration_boundaries`).
+Editing one declaration therefore no longer blanks out the whole file's
+diagnostics. Because signatures and clauses are separate declarations, a broken
+clause body keeps the function's *signature* in scope, so references to it from
+elsewhere don't spuriously go unresolved.
+
+This is declaration-level recovery on the existing recursive-descent parser, not a
+full rowan lossless CST. Intra-declaration recovery (a broken expression inside an
+otherwise-valid declaration), lossless round-tripping for formatting/refactoring,
+and subtree-incremental reparse would come with a rowan CST — deferred.
+
 ## Scope & what's deferred
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- Completion, go-to-definition, the inline ownership / Auto-Drop topology overlay,
-  a UTF-16 position remap, and the WASM playground (see below).
+- A rowan lossless CST (intra-declaration recovery, formatting), completion,
+  go-to-definition, the inline ownership / Auto-Drop topology overlay, a UTF-16
+  position remap, and the WASM playground.
 
 Also deferred: **rowan** (a lossless, error-resilient CST so diagnostics degrade
 gracefully on half-typed code — a `parser.rs` rewrite), completion, go-to-def, the
