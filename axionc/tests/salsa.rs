@@ -167,6 +167,41 @@ fn engine_diagnostics_match_whole_module() {
 }
 
 #[test]
+fn editing_an_imported_file_updates_the_importer() {
+    // A imports B and uses B's `helper`. Editing B (an open buffer) through the
+    // engine must invalidate A's diagnostics — the salsa-tracked cross-file link.
+    let dir = std::env::temp_dir().join(format!("axion_import_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let a_path = dir.join("A.axi");
+    let b_path = dir.join("B.axi");
+    let a_src = "import B\n\nmain :: Int\nmain = helper 0\n";
+    std::fs::write(&a_path, a_src).unwrap();
+    std::fs::write(&b_path, "helper :: Int -> Int\nhelper x = x\n").unwrap();
+
+    let mut db = AxionDb::default();
+    let a = db.set_file(a_path.to_str().unwrap(), a_src.to_string());
+    // B is an OPEN buffer defining `helper`.
+    db.set_file(b_path.to_str().unwrap(), "helper :: Int -> Int\nhelper x = x\n".to_string());
+    db.load_imports(a_path.to_str().unwrap());
+
+    let d1 = db::diagnostics_of(&db, a);
+    assert!(
+        d1.iter().all(|d| d.code != "AX0101"),
+        "A should resolve `helper` from B: {d1:?}"
+    );
+
+    // Edit B: `helper` is gone. A's use of it must now be unresolved.
+    db.set_file(b_path.to_str().unwrap(), "other :: Int -> Int\nother x = x\n".to_string());
+    let d2 = db::diagnostics_of(&db, a);
+    assert!(
+        d2.iter().any(|d| d.code == "AX0101"),
+        "editing the imported file must invalidate A, surfacing AX0101: {d2:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn diagnostics_flow_through_the_engine() {
     let mut db = AxionDb::default();
 

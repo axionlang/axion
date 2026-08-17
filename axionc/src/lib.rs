@@ -522,11 +522,22 @@ pub fn analyze_module(
 /// consume-native-exempt names. Shared by [`analyze_module`] and the salsa engine
 /// (`crate::db`), which memoizes the derived signature environment on top of it.
 pub fn prepare_for_check(
-    mut module: ast::Module,
+    module: ast::Module,
     path: &str,
     diags: &mut Diagnostics,
 ) -> (ast::Module, std::collections::HashSet<String>) {
-    resolve_imports(&mut module, path, diags);
+    prepare_for_check_with(module, path, diags, &disk_import_resolver)
+}
+
+/// [`prepare_for_check`] with a custom import resolver (the salsa engine passes one
+/// backed by tracked inputs, so a dependent is invalidated when an import changes).
+pub fn prepare_for_check_with(
+    mut module: ast::Module,
+    path: &str,
+    diags: &mut Diagnostics,
+    resolve: &ImportResolver,
+) -> (ast::Module, std::collections::HashSet<String>) {
+    resolve_imports_with(&mut module, path, diags, resolve);
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
@@ -1816,7 +1827,103 @@ fn derive_eq(d: &ast::DataDecl) -> String {
     s
 }
 
-fn resolve_imports(module: &mut ast::Module, path: &str, diags: &mut Diagnostics) {
+/// The import declarations of a source (lex + layout + parse; empty on any error).
+/// Used to walk the import graph when loading files into the salsa engine.
+pub fn module_imports(src: &str) -> Vec<ast::ImportDecl> {
+    let Ok(tokens) = lexer::lex(src) else {
+        return Vec::new();
+    };
+    let lines = LineMap::new(src);
+    let lt = layout::layout(&tokens, &lines);
+    parser::parse_module(&lt)
+        .map(|m| m.imports)
+        .unwrap_or_default()
+}
+
+/// The `.axi` file an import names, relative to the importer's directory.
+pub fn import_target_path(dir: &std::path::Path, import: &ast::ImportDecl) -> std::path::PathBuf {
+    let mod_path = import
+        .module
+        .iter()
+        .fold(std::path::PathBuf::new(), |p, seg| p.join(seg))
+        .with_extension("axi");
+    dir.join(mod_path)
+}
+
+/// Lex + layout + parse an imported module's source. Import lex/parse errors are
+/// reported at the IMPORT site (`AX0901` / the parser's own error). Shared by the
+/// disk (CLI) and salsa (LSP) import resolvers so both surface identical
+/// diagnostics.
+pub fn parse_import_text(
+    src: &str,
+    import: &ast::ImportDecl,
+    diags: &mut Diagnostics,
+) -> Option<ast::Module> {
+    let tokens = match lexer::lex(src) {
+        Ok(t) => t,
+        Err(e) => {
+            diags.push(
+                Diagnostic::error("AX0901", "lex error in imported module").label(
+                    import.span.0,
+                    import.span.1,
+                    format!("lex: {e:?}"),
+                ),
+            );
+            return None;
+        }
+    };
+    let lines = LineMap::new(src);
+    let lt = layout::layout(&tokens, &lines);
+    match parser::parse_module(&lt) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            diags.push(e);
+            None
+        }
+    }
+}
+
+/// Resolves one import to its parsed module and the filesystem path to resolve ITS
+/// (transitive) imports against. Returns `None` after pushing a diagnostic when the
+/// file is missing or malformed. The CLI reads the file from disk; the salsa engine
+/// reads it from a tracked input so dependents are invalidated when it changes.
+pub type ImportResolver<'a> =
+    dyn Fn(&std::path::Path, &ast::ImportDecl, &mut Diagnostics) -> Option<(ast::Module, String)>
+        + 'a;
+
+/// Disk-backed import resolution (the CLI path): read the file, then parse it.
+pub fn disk_import_resolver(
+    dir: &std::path::Path,
+    import: &ast::ImportDecl,
+    diags: &mut Diagnostics,
+) -> Option<(ast::Module, String)> {
+    let file = import_target_path(dir, import);
+    let src = match std::fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(e) => {
+            diags.push(
+                Diagnostic::error("AX0900", "could not import module").label(
+                    import.span.0,
+                    import.span.1,
+                    format!("{e}"),
+                ),
+            );
+            return None;
+        }
+    };
+    let module = parse_import_text(&src, import, diags)?;
+    Some((module, file.to_str().unwrap_or("").to_string()))
+}
+
+/// Import resolution parameterized over how a module is fetched (disk vs. salsa
+/// input). The merge logic — dedup, qualified prefixing, "skip locally defined",
+/// transitive recursion — is identical for both.
+pub fn resolve_imports_with(
+    module: &mut ast::Module,
+    path: &str,
+    diags: &mut Diagnostics,
+    resolve: &ImportResolver,
+) {
     if module.imports.is_empty() {
         return;
     }
@@ -1842,46 +1949,10 @@ fn resolve_imports(module: &mut ast::Module, path: &str, diags: &mut Diagnostics
         if !seen.insert(key.clone()) {
             continue;
         }
-        let mod_path = import
-            .module
-            .iter()
-            .fold(std::path::PathBuf::new(), |p, seg| p.join(seg))
-            .with_extension("axi");
-        let file = dir.join(&mod_path);
-        let src = match std::fs::read_to_string(&file) {
-            Ok(s) => s,
-            Err(e) => {
-                diags.push(
-                    crate::diag::Diagnostic::error("AX0900", "could not import module").label(
-                        import.span.0,
-                        import.span.1,
-                        format!("{e}"),
-                    ),
-                );
-                continue;
-            }
+        let Some((mut imported, resolved_path)) = resolve(dir, &import, diags) else {
+            continue;
         };
-        let tokens =
-            match crate::lexer::lex(&src) {
-                Ok(t) => t,
-                Err(e) => {
-                    diags.push(
-                        crate::diag::Diagnostic::error("AX0901", "lex error in imported module")
-                            .label(import.span.0, import.span.1, format!("lex: {e:?}")),
-                    );
-                    continue;
-                }
-            };
-        let lines = crate::lexer::LineMap::new(&src);
-        let lt = crate::layout::layout(&tokens, &lines);
-        let mut imported = match crate::parser::parse_module(&lt) {
-            Ok(m) => m,
-            Err(e) => {
-                diags.push(e);
-                continue;
-            }
-        };
-        resolve_imports(&mut imported, file.to_str().unwrap_or(""), diags);
+        resolve_imports_with(&mut imported, &resolved_path, diags, resolve);
         // prepend imported definitions, skipping those already defined locally.
         // qualified imports: prefix names with the alias (or last module component).
         let prefix = if import.qualified {

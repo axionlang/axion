@@ -99,13 +99,27 @@ memoized diagnostics carry relative spans and are re-based to absolute per edit 
 each declaration's current base offset — a cheap, non-memoized step in
 `diagnostics_of`. Both the per-decl linearity and inference queries benefit.
 
+### Cross-file imports
+
+Imports flow through salsa. Each source file is a `SourceFile` input; a singleton
+`Vfs` input maps import paths to those inputs. When a module resolves an import, the
+engine looks the path up in the `Vfs` and reads the imported file's `text(db)` — and
+*that tracked read* makes the importer's `processed_module` depend on the imported
+file. So **editing an imported file (an open buffer) invalidates its importers** and
+refreshes their diagnostics (`tests/salsa.rs::editing_an_imported_file_updates_the_importer`).
+
+Before querying, `AxionDb::load_imports` walks the import graph and pulls every
+imported file into the database as an input — reading from disk only for files the
+editor hasn't opened; open files keep their in-memory buffer. Disk reads happen there
+(mutably, setting inputs), never inside a query. The `Vfs` map changes only when a
+file is *added*, so ordinary text edits don't invalidate unrelated importers.
+
 ## Scope & what's deferred
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- **Salsa-tracked cross-file imports** — the downstream still reads imported files
-  straight from disk (invisible to salsa), so editing an imported file does not yet
-  invalidate its dependents through the engine.
+- Completion, go-to-definition, the inline ownership / Auto-Drop topology overlay,
+  a UTF-16 position remap, and the WASM playground (see below).
 
 Also deferred: **rowan** (a lossless, error-resilient CST so diagnostics degrade
 gracefully on half-typed code — a `parser.rs` rewrite), completion, go-to-def, the

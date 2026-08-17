@@ -35,6 +35,20 @@ use crate::infer;
 pub struct AxionDb {
     storage: salsa::Storage<Self>,
     files: Arc<Mutex<HashMap<String, SourceFile>>>,
+    /// The singleton `Vfs` input (created on first `set_file`). Queries read it to
+    /// resolve import paths to `SourceFile`s in a salsa-tracked way.
+    vfs: Arc<Mutex<Option<Vfs>>>,
+}
+
+/// The workspace file map (path → `SourceFile` input), as a salsa **input** so a
+/// query that resolves an import (reading this map) depends on it. It changes only
+/// when a file is ADDED — a text edit updates the `SourceFile.text` input, not this
+/// map — so editing a file does not spuriously invalidate importers; editing an
+/// *imported* file invalidates its importers through the `SourceFile.text` read.
+#[salsa::input(singleton)]
+pub struct Vfs {
+    #[returns(ref)]
+    pub files: std::collections::BTreeMap<String, SourceFile>,
 }
 
 #[salsa::db]
@@ -53,12 +67,14 @@ impl AxionDb {
         AxionDb {
             storage,
             files: Arc::default(),
+            vfs: Arc::default(),
         }
     }
 
     /// Intern (or update) a file's text, returning its `SourceFile` input. If the
     /// path is already known, its text is set on the existing input so salsa only
-    /// invalidates when the text actually changed.
+    /// invalidates when the text actually changed. A NEW path also refreshes the
+    /// `Vfs` map (used to resolve imports).
     pub fn set_file(&mut self, path: &str, text: String) -> SourceFile {
         let existing = self.files.lock().ok().and_then(|m| m.get(path).copied());
         match existing {
@@ -73,7 +89,65 @@ impl AxionDb {
                 if let Ok(mut m) = self.files.lock() {
                     m.insert(path.to_string(), file);
                 }
+                self.sync_vfs();
                 file
+            }
+        }
+    }
+
+    /// Rebuild the `Vfs` singleton from the current file registry (creating it on
+    /// first use). Called only when a file is added, so text edits leave `Vfs`
+    /// untouched.
+    fn sync_vfs(&mut self) {
+        let map: std::collections::BTreeMap<String, SourceFile> = self
+            .files
+            .lock()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default();
+        let existing = self.vfs.lock().ok().and_then(|v| *v);
+        match existing {
+            Some(vfs) => {
+                vfs.set_files(self).to(map);
+            }
+            None => {
+                let vfs = Vfs::new(self, map);
+                if let Ok(mut v) = self.vfs.lock() {
+                    *v = Some(vfs);
+                }
+            }
+        }
+    }
+
+    /// Load the transitive import closure of `root_path` into the database: for each
+    /// imported file not already open, read it from disk and register it as an input
+    /// (open files keep their in-memory buffer). Must run before querying so the
+    /// salsa import resolver can find every imported file. Disk reads happen HERE
+    /// (mutably, setting inputs), never inside a query.
+    pub fn load_imports(&mut self, root_path: &str) {
+        let mut stack = vec![root_path.to_string()];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(p) = stack.pop() {
+            if !visited.insert(p.clone()) {
+                continue;
+            }
+            let existing = self.files.lock().ok().and_then(|m| m.get(&p).copied());
+            let text = match existing {
+                Some(sf) => sf.text(self).clone(),
+                None => match std::fs::read_to_string(&p) {
+                    Ok(t) => {
+                        self.set_file(&p, t.clone());
+                        t
+                    }
+                    Err(_) => continue, // missing → AX0900 emitted at query time
+                },
+            };
+            let dir = std::path::Path::new(&p)
+                .parent()
+                .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf);
+            for import in crate::module_imports(&text) {
+                if let Some(s) = crate::import_target_path(&dir, &import).to_str() {
+                    stack.push(s.to_string());
+                }
             }
         }
     }
@@ -131,7 +205,34 @@ pub fn parse(db: &dyn salsa::Database, file: SourceFile) -> Option<ast::Module> 
 pub fn processed_module(db: &dyn salsa::Database, file: SourceFile) -> Option<ast::Module> {
     let parsed = parse(db, file).as_ref()?.clone();
     let mut diags = Diagnostics::new();
-    let (module, _exempt) = crate::prepare_for_check(parsed, file.path(db), &mut diags);
+    // Salsa-tracked import resolution: resolve each import to a `SourceFile` via the
+    // `Vfs` map, then read its `.text(db)` — that tracked read makes THIS query
+    // depend on the imported file, so editing the import invalidates this module.
+    let resolve = |dir: &std::path::Path,
+                   import: &ast::ImportDecl,
+                   diags: &mut Diagnostics|
+     -> Option<(ast::Module, String)> {
+        let path = crate::import_target_path(dir, import)
+            .to_str()
+            .unwrap_or("")
+            .to_string();
+        let sf = Vfs::get(db).files(db).get(&path).copied();
+        let Some(sf) = sf else {
+            diags.push(
+                Diagnostic::error("AX0900", "could not import module").label(
+                    import.span.0,
+                    import.span.1,
+                    "module not loaded into the workspace",
+                ),
+            );
+            return None;
+        };
+        let text = sf.text(db).clone();
+        let module = crate::parse_import_text(&text, import, diags)?;
+        Some((module, path))
+    };
+    let (module, _exempt) =
+        crate::prepare_for_check_with(parsed, file.path(db), &mut diags, &resolve);
     for d in diags.items {
         Diag(d).accumulate(db);
     }

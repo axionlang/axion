@@ -118,6 +118,7 @@ fn analyze_on(db: &AxionDb, file: db::SourceFile, src: &str) -> Vec<Analyzed> {
 pub fn analyze(path: &str, src: &str) -> Vec<Analyzed> {
     let mut db = AxionDb::default();
     let file = db.set_file(path, src.to_string());
+    db.load_imports(path); // pull the import closure into the DB before querying
     analyze_on(&db, file, src)
 }
 
@@ -156,6 +157,7 @@ impl Backend {
         let analyzed = {
             let mut db = self.db.lock().await;
             let file = db.set_file(&path, text.clone());
+            db.load_imports(&path); // ensure imported files are loaded for resolution
             analyze_on(&db, file, &text)
         };
         let diags: Vec<Diagnostic> = analyzed.iter().map(|a| a.diagnostic.clone()).collect();
