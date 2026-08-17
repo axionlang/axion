@@ -151,6 +151,12 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
         "case p of\n    Cons y ys -> y\n    Nil -> 0",
         "let\n    x = 1\n    y = 2\n  in x + y",
         "\\x -> case x of Just y -> y",
+        // Stage 3e: do-notation (desugars to nested case).
+        "do x",
+        "do\n  x <- f\n  g x",
+        "do\n  a <- act1\n  b <- act2\n  pure (a + b)",
+        "do\n  putLine s\n  x",
+        "do\n  (x, y) <- recv c\n  send c x",
     ] {
         assert!(
             expr_matches_parser(e),
@@ -161,8 +167,10 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
 
 #[test]
 fn subset_boundary_is_honest() {
-    // `do` (statement desugaring) is still outside the subset — Stage 3e.
-    for e in ["do x", "do\n  x <- f\n  g x"] {
+    // Declarations, signatures and types are not yet parsed by the token-driven path
+    // (Stage 3f: the module parser). A signature construct isn't a valid expression,
+    // so it stays out of the expression subset.
+    for e in ["x :: Int", "\\x -> y where y = x"] {
         assert!(!expr_matches_parser(e), "unexpectedly claimed support for: {e}");
     }
 }

@@ -161,15 +161,16 @@ stages (`src/cst.rs`, `--features cst`).
   desugarings (`:`→`Cons`, `.`→`compose`, `$`→application, `++`, backtick infix,
   dotted operators), application, tuples, parenthesised expressions, `if`, lambdas
   with patterns, list literals and ranges (`[a, b]`, `[a..b]`), operator sections
-  (`(+)`), records (`Con { f = e }`), and the layout-block forms `case … of { … }`
-  and `let { … } in …`. It runs on the real layout tokens (`LTok` with virtual
-  `VLBrace`/`VSemi`/`VRBrace`; trivia is woven only for real tokens), and is proven
-  to produce EXACTLY the same `ast::Expr` as the recursive-descent parser by a
+  (`(+)`), records (`Con { f = e }`), the layout-block forms `case … of { … }`
+  and `let { … } in …`, and `do`-notation (desugared to nested `case`) — in short,
+  the **entire expression grammar**. It runs on the real layout tokens (`LTok` with
+  virtual `VLBrace`/`VSemi`/`VRBrace`; trivia is woven only for real tokens), and is
+  proven to produce EXACTLY the same `ast::Expr` as the recursive-descent parser by a
   differential test (`token_driven_parser_matches_recursive_descent_over_the_subset`,
-  plus an honest `subset_boundary_is_honest`). Still out of the subset: `do`
-  (statement desugaring), then declarations/types/signatures. Once it covers
-  everything and provably agrees over all fixtures, the default pipeline flips onto
-  it and the recursive-descent parser is retired.
+  plus an honest `subset_boundary_is_honest`). Remaining before the flip:
+  declarations, signatures, and types (the module parser). Once the token-driven
+  parser covers those and provably agrees over all fixtures, the default pipeline
+  flips onto it and the recursive-descent parser is retired.
 
 It is **additive**: the analysis pipeline still runs on `ast::Module` via the
 recursive-descent parser; the token-driven parser is validated behind the `cst`

@@ -54,6 +54,9 @@ pub enum SyntaxKind {
     PAREN_EXPR,
     LIST_EXPR,
     SECTION_EXPR,
+    DO_EXPR,
+    BIND_STMT,
+    EXPR_STMT,
     // pattern nodes
     WILD_PAT,
     VAR_PAT,
@@ -64,8 +67,9 @@ pub enum SyntaxKind {
 
 use SyntaxKind::{
     APP_EXPR, BINOP_EXPR, CASE_EXPR, COMMENT, CON_PAT, CONID, DECL, ERROR, IDENT, IF_EXPR, KEYWORD,
-    LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, MODULE, NAME_EXPR, PAREN_EXPR,
-    PUNCT, RECORD_EXPR, SECTION_EXPR, TUPLE_EXPR, TUPLE_PAT, VAR_PAT, WHITESPACE, WILD_PAT,
+    BIND_STMT, DO_EXPR, EXPR_STMT, LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT,
+    MODULE, NAME_EXPR, PAREN_EXPR, PUNCT, RECORD_EXPR, SECTION_EXPR, TUPLE_EXPR, TUPLE_PAT, VAR_PAT,
+    WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -108,6 +112,9 @@ impl Language for AxionLang {
             PAREN_EXPR,
             LIST_EXPR,
             SECTION_EXPR,
+            DO_EXPR,
+            BIND_STMT,
+            EXPR_STMT,
             WILD_PAT,
             VAR_PAT,
             LIT_PAT,
@@ -523,9 +530,54 @@ impl ExprParser<'_> {
             Some(Tok::Backslash) => self.lam_expr(),
             Some(Tok::Case) => self.case_expr(),
             Some(Tok::Let) => self.let_expr(),
-            Some(Tok::Do) => self.ok = false, // Stage 3e (statement desugaring)
+            Some(Tok::Do) => self.do_expr(),
             _ => self.dollar(),
         }
+    }
+
+    /// `do { stmt ; … }` — statements desugared to nested `Case` in lowering.
+    fn do_expr(&mut self) {
+        self.b.start_node(DO_EXPR.into());
+        self.bump(); // do
+        self.block(Self::stmt);
+        self.b.finish_node();
+    }
+
+    /// A `do` statement: `pat <- expr` (bind) or `expr`. `<-` is bind-only syntax, so
+    /// a lookahead for it at statement depth 0 avoids the reference's backtracking.
+    fn stmt(&mut self) {
+        if self.stmt_is_bind() {
+            self.b.start_node(BIND_STMT.into());
+            self.apat();
+            self.expect(&Tok::LArrow);
+            self.expr();
+            self.b.finish_node();
+        } else {
+            self.b.start_node(EXPR_STMT.into());
+            self.expr();
+            self.b.finish_node();
+        }
+    }
+
+    fn stmt_is_bind(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = self.pos;
+        while let Some(s) = self.toks.get(i) {
+            match &s.tok {
+                LTok::VLBrace => depth += 1,
+                LTok::VRBrace => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                LTok::VSemi if depth == 0 => break,
+                LTok::Tok(Tok::LArrow) if depth == 0 => return true,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     /// `case scrut of { pat -> body ; … }`.
@@ -931,8 +983,14 @@ fn is_expr_kind(k: SyntaxKind) -> bool {
     matches!(
         k,
         LITERAL_EXPR | NAME_EXPR | APP_EXPR | BINOP_EXPR | IF_EXPR | LAMBDA_EXPR | TUPLE_EXPR
-            | PAREN_EXPR | LET_EXPR | CASE_EXPR | RECORD_EXPR | LIST_EXPR | SECTION_EXPR
+            | PAREN_EXPR | LET_EXPR | CASE_EXPR | RECORD_EXPR | LIST_EXPR | SECTION_EXPR | DO_EXPR
     )
+}
+
+/// A lowered `do` statement (mirrors the parser's internal `Stmt`).
+enum DoStmt {
+    Bind(Pat, Expr),
+    Expr(Expr),
 }
 
 /// `App(App(head, a), b)` — the shared desugaring shape (`:`, `.`, applied cons…).
@@ -1118,6 +1176,40 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             }
             Some(Expr::Let(funcs, Box::new(body?), sp))
         }
+        DO_EXPR => {
+            // Desugar strictly via `case` (same as `parser::parse_do`): `pat <- e;
+            // rest` → `case e of pat -> rest`; `e; rest` → `case e of _ -> rest`;
+            // the last statement is the block's value.
+            let stmts: Vec<DoStmt> = node
+                .children()
+                .map(|c| lower_stmt(&c))
+                .collect::<Option<_>>()?;
+            let mut it = stmts.into_iter().rev();
+            let mut acc = match it.next()? {
+                DoStmt::Expr(e) => e,
+                DoStmt::Bind(..) => return None, // a `do` block can't end in `<-`
+            };
+            for stmt in it {
+                let (pat, e) = match stmt {
+                    DoStmt::Bind(p, e) => (p, e),
+                    DoStmt::Expr(e) => (Pat::Wild(sp), e),
+                };
+                acc = Expr::Case(Box::new(e), vec![(pat, acc)], sp);
+            }
+            Some(acc)
+        }
+        _ => None,
+    }
+}
+
+fn lower_stmt(node: &SyntaxNode) -> Option<DoStmt> {
+    match node.kind() {
+        BIND_STMT => {
+            let pat = node.children().find(|c| !is_expr_kind(c.kind()))?;
+            let e = node.children().find(|c| is_expr_kind(c.kind()))?;
+            Some(DoStmt::Bind(lower_pat(&pat)?, lower_expr(&e)?))
+        }
+        EXPR_STMT => Some(DoStmt::Expr(lower_expr(&node.children().next()?)?)),
         _ => None,
     }
 }
