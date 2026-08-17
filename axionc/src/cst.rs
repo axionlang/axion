@@ -20,6 +20,7 @@
 use rowan::{GreenNodeBuilder, Language};
 
 use crate::ast::{Body, Clause, Expr, Func, Pat, Span};
+use crate::layout::{self, LSpanned, LTok};
 use crate::lexer::{lex, LineMap, Spanned, Tok};
 
 /// Node and token kinds of the Axión CST.
@@ -426,7 +427,7 @@ fn is_trivia(k: SyntaxKind) -> bool {
 
 struct ExprParser<'a> {
     src: &'a str,
-    toks: &'a [Spanned],
+    toks: &'a [LSpanned],
     pos: usize,
     cursor: usize,
     b: GreenNodeBuilder<'static>,
@@ -434,8 +435,35 @@ struct ExprParser<'a> {
 }
 
 impl ExprParser<'_> {
+    /// The current REAL token (`None` at a layout-virtual token or end of input), so
+    /// the whole operator ladder can match `Tok` variants unchanged.
     fn cur(&self) -> Option<&Tok> {
-        self.toks.get(self.pos).map(|s| &s.tok)
+        match self.toks.get(self.pos).map(|s| &s.tok) {
+            Some(LTok::Tok(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    fn peek_tok(&self, n: usize) -> Option<&Tok> {
+        match self.toks.get(self.pos + n).map(|s| &s.tok) {
+            Some(LTok::Tok(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    fn at_v(&self, v: &LTok) -> bool {
+        self.toks.get(self.pos).map(|s| &s.tok) == Some(v)
+    }
+
+    /// Consume a layout-virtual token (`VLBrace`/`VSemi`/`VRBrace`): advance without
+    /// emitting a leaf and without moving the trivia cursor (virtuals carry no text).
+    fn eat_v(&mut self, v: &LTok) -> bool {
+        if self.at_v(v) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
     }
 
     fn trivia(&mut self, to: usize) {
@@ -447,17 +475,43 @@ impl ExprParser<'_> {
         self.cursor = to;
     }
 
-    /// Emit the current token (with its leading trivia) as a leaf and advance.
+    /// Emit the current REAL token (with its leading trivia) as a leaf and advance.
     fn bump(&mut self) {
-        if let Some(t) = self.toks.get(self.pos) {
-            if t.start > self.cursor {
-                self.trivia(t.start);
+        if let Some(s) = self.toks.get(self.pos) {
+            if let LTok::Tok(t) = &s.tok {
+                if s.start > self.cursor {
+                    self.trivia(s.start);
+                }
+                let text = self.src.get(s.start..s.end).unwrap_or("");
+                self.b.token(token_kind(t).into(), text);
+                self.cursor = s.end;
             }
-            let text = self.src.get(t.start..t.end).unwrap_or("");
-            self.b.token(token_kind(&t.tok).into(), text);
-            self.cursor = t.end;
             self.pos += 1;
         }
+    }
+
+    /// A layout block: `{ item (; item)* }`, mirroring `parser::block`.
+    fn block(&mut self, mut item: impl FnMut(&mut Self)) {
+        self.eat_v(&LTok::VLBrace);
+        loop {
+            while self.eat_v(&LTok::VSemi) {}
+            if self.at_v(&LTok::VRBrace) || self.pos >= self.toks.len() {
+                break;
+            }
+            let before = self.pos;
+            item(self);
+            // Guarantee termination: an item that cannot make progress (malformed
+            // input outside the subset) bails instead of looping forever.
+            if self.pos == before {
+                self.ok = false;
+                break;
+            }
+            while self.eat_v(&LTok::VSemi) {}
+            if self.at_v(&LTok::VRBrace) || self.pos >= self.toks.len() {
+                break;
+            }
+        }
+        self.eat_v(&LTok::VRBrace);
     }
 
     /// Mirrors `parser::parse_expr`: `if`/`\` prefix forms, else the operator ladder.
@@ -467,9 +521,51 @@ impl ExprParser<'_> {
         match self.cur() {
             Some(Tok::If) => self.if_expr(),
             Some(Tok::Backslash) => self.lam_expr(),
-            Some(Tok::Let | Tok::Case | Tok::Do) => self.ok = false,
+            Some(Tok::Case) => self.case_expr(),
+            Some(Tok::Let) => self.let_expr(),
+            Some(Tok::Do) => self.ok = false, // Stage 3e (statement desugaring)
             _ => self.dollar(),
         }
+    }
+
+    /// `case scrut of { pat -> body ; … }`.
+    fn case_expr(&mut self) {
+        self.b.start_node(CASE_EXPR.into());
+        self.bump(); // case
+        self.expr(); // scrutinee
+        self.expect(&Tok::Of);
+        self.block(|p| {
+            p.pat();
+            p.expect(&Tok::Arrow);
+            p.expr();
+        });
+        self.b.finish_node();
+    }
+
+    /// `let { binding ; … } in body`. Bindings are simple clauses `name apat* = e`
+    /// (signatures / guards / `where` fall out of the subset).
+    fn let_expr(&mut self) {
+        self.b.start_node(LET_EXPR.into());
+        self.bump(); // let
+        self.block(Self::let_binding);
+        self.expect(&Tok::In);
+        self.expr(); // body
+        self.b.finish_node();
+    }
+
+    fn let_binding(&mut self) {
+        self.b.start_node(DECL.into());
+        if matches!(self.cur(), Some(Tok::VarId(_))) {
+            self.bump(); // name
+        } else {
+            self.ok = false;
+        }
+        while self.starts_apat() {
+            self.apat();
+        }
+        self.expect(&Tok::Equals);
+        self.expr(); // body
+        self.b.finish_node();
     }
 
     /// `f $ x` (right-assoc, lowest precedence).
@@ -632,7 +728,7 @@ impl ExprParser<'_> {
             self.cur(),
             Some(Tok::Plus | Tok::Minus | Tok::Star | Tok::EqEq | Tok::Lt | Tok::Gt)
         );
-        is_op && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::RParen))
+        is_op && matches!(self.peek_tok(1), Some(Tok::RParen))
     }
 
     fn atom(&mut self) {
@@ -788,12 +884,17 @@ impl ExprParser<'_> {
     }
 }
 
-/// Parse `src` as a single expression, token-driven, into a CST. Returns the root
-/// `SyntaxNode` and whether the whole input was consumed by the supported subset.
-fn parse_expr_cst(src: &str) -> Option<(SyntaxNode, bool)> {
-    let toks = lex(src).ok()?;
+/// Parse `src` as an expression, token-driven, into a CST. `src` is wrapped as
+/// `main = src` and run through the real layout algorithm — identical to the
+/// reference — so block forms (`case`/`let`) get their virtual braces. Returns the
+/// module root and whether the supported subset consumed all REAL tokens (i.e. the
+/// only leftovers are layout-virtual closers).
+fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
+    let raw = lex(wrapped).ok()?;
+    let lines = LineMap::new(wrapped);
+    let toks = layout::layout(&raw, &lines);
     let mut p = ExprParser {
-        src,
+        src: wrapped,
         toks: &toks,
         pos: 0,
         cursor: 0,
@@ -801,8 +902,18 @@ fn parse_expr_cst(src: &str) -> Option<(SyntaxNode, bool)> {
         ok: true,
     };
     p.b.start_node(MODULE.into());
-    p.expr();
-    let full = p.ok && p.pos == p.toks.len();
+    p.eat_v(&LTok::VLBrace); // outer module block
+    // `main =` — leaves, not nodes, so the body expression is MODULE's only node child.
+    if matches!(p.cur(), Some(Tok::VarId(n)) if n == "main") {
+        p.bump();
+    } else {
+        p.ok = false;
+    }
+    p.expect(&Tok::Equals);
+    p.expr(); // the body expression
+    // Any remaining REAL token means the subset didn't cover the whole expression.
+    let leftover_real = p.toks[p.pos..].iter().any(|s| matches!(s.tok, LTok::Tok(_)));
+    let full = p.ok && !leftover_real;
     let end = p.src.len();
     p.trivia(end);
     p.b.finish_node();
@@ -985,8 +1096,64 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
                 other => Expr::RecordUpd(Box::new(other), fields, sp),
             })
         }
+        CASE_EXPR => {
+            let mut kids = node.children();
+            let scrut = lower_expr(&kids.next()?)?;
+            let mut arms = Vec::new();
+            while let Some(pnode) = kids.next() {
+                let enode = kids.next()?;
+                arms.push((lower_pat(&pnode)?, lower_expr(&enode)?));
+            }
+            Some(Expr::Case(Box::new(scrut), arms, sp))
+        }
+        LET_EXPR => {
+            let mut funcs = Vec::new();
+            let mut body = None;
+            for child in node.children() {
+                if child.kind() == DECL {
+                    funcs.push(lower_let_binding(&child)?);
+                } else if is_expr_kind(child.kind()) {
+                    body = Some(lower_expr(&child)?);
+                }
+            }
+            Some(Expr::Let(funcs, Box::new(body?), sp))
+        }
         _ => None,
     }
+}
+
+/// Lower a `let`/`where` binding node (a `DECL` from `let_binding`) to a `Func` with
+/// a single, signature-less clause.
+fn lower_let_binding(node: &SyntaxNode) -> Option<Func> {
+    let r = node.text_range();
+    let sp = (usize::from(r.start()), usize::from(r.end()));
+    let name = node
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == IDENT)?
+        .text()
+        .to_string();
+    let mut pats = Vec::new();
+    let mut body = None;
+    for c in node.children() {
+        if is_expr_kind(c.kind()) {
+            body = Some(lower_expr(&c)?);
+        } else {
+            pats.push(lower_pat(&c)?);
+        }
+    }
+    Some(Func {
+        name,
+        sig: None,
+        clauses: vec![Clause {
+            pats,
+            body: Body::Plain(body?),
+            wher: Vec::new(),
+            span: sp,
+        }],
+        span: sp,
+        constraints: Vec::new(),
+    })
 }
 
 /// Lower a CST pattern node to `ast::Pat`.
@@ -1052,8 +1219,9 @@ fn zero_spans(e: &mut Expr) {
             pats.iter_mut().for_each(zero_pat);
             zero_spans(b);
         }
-        Expr::Let(_, b, s) => {
+        Expr::Let(funcs, b, s) => {
             *s = z;
+            funcs.iter_mut().for_each(zero_func);
             zero_spans(b);
         }
         Expr::Case(sc, arms, s) => {
@@ -1087,6 +1255,23 @@ fn zero_pat(p: &mut Pat) {
     }
 }
 
+/// Zero the spans of a `let`/`where` binding (its clauses' patterns and bodies).
+fn zero_func(f: &mut Func) {
+    f.span = (0, 0);
+    for c in &mut f.clauses {
+        c.span = (0, 0);
+        c.pats.iter_mut().for_each(zero_pat);
+        match &mut c.body {
+            Body::Plain(e) => zero_spans(e),
+            Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+                zero_spans(g);
+                zero_spans(r);
+            }),
+        }
+        c.wher.iter_mut().for_each(zero_func);
+    }
+}
+
 /// The recursive-descent parser's `ast::Expr` for the expression `src` (wrapped as
 /// `main = src`), spans zeroed.
 fn parser_expr(src: &str) -> Option<Expr> {
@@ -1111,7 +1296,8 @@ fn parser_expr(src: &str) -> Option<Expr> {
 /// differential test that gates the pipeline flip. `false` when `src` uses a
 /// construct outside the supported subset (so the corpus stays honest).
 pub fn expr_matches_parser(src: &str) -> bool {
-    let Some((cst, full)) = parse_expr_cst(src) else {
+    let wrapped = format!("main = {src}\n");
+    let Some((cst, full)) = parse_expr_cst(&wrapped) else {
         return false;
     };
     if !full {

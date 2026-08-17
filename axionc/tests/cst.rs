@@ -140,6 +140,17 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
         "p { x = 5 }",
         "Wrap { inner = f a }",
         "map (+) [1, 2]",
+        // Stage 3d: layout blocks — case, let (single-line and multi-line).
+        "case x of A -> 1",
+        "case xs of Nil -> 0",
+        "case m of Just x -> x",
+        "let x = 1 in x + 1",
+        "let f y = y * 2 in f 3",
+        "let a = 1 in let b = 2 in a + b",
+        "case n of\n    0 -> True\n    _ -> False",
+        "case p of\n    Cons y ys -> y\n    Nil -> 0",
+        "let\n    x = 1\n    y = 2\n  in x + y",
+        "\\x -> case x of Just y -> y",
     ] {
         assert!(
             expr_matches_parser(e),
@@ -150,10 +161,8 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
 
 #[test]
 fn subset_boundary_is_honest() {
-    // Constructs still outside the supported subset report `false` (not a silent
-    // match), so the corpus above cannot accidentally hide a gap. Layout-block forms
-    // (`let`/`case`/`do`) are Stage 3d.
-    for e in ["let x = 1 in x", "case x of A -> 1", "do { x }"] {
+    // `do` (statement desugaring) is still outside the subset — Stage 3e.
+    for e in ["do x", "do\n  x <- f\n  g x"] {
         assert!(!expr_matches_parser(e), "unexpectedly claimed support for: {e}");
     }
 }
