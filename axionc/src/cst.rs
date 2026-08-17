@@ -51,6 +51,8 @@ pub enum SyntaxKind {
     TUPLE_EXPR,
     RECORD_EXPR,
     PAREN_EXPR,
+    LIST_EXPR,
+    SECTION_EXPR,
     // pattern nodes
     WILD_PAT,
     VAR_PAT,
@@ -61,8 +63,8 @@ pub enum SyntaxKind {
 
 use SyntaxKind::{
     APP_EXPR, BINOP_EXPR, CASE_EXPR, COMMENT, CON_PAT, CONID, DECL, ERROR, IDENT, IF_EXPR, KEYWORD,
-    LAMBDA_EXPR, LET_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, MODULE, NAME_EXPR, PAREN_EXPR, PUNCT,
-    RECORD_EXPR, TUPLE_EXPR, TUPLE_PAT, VAR_PAT, WHITESPACE, WILD_PAT,
+    LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, MODULE, NAME_EXPR, PAREN_EXPR,
+    PUNCT, RECORD_EXPR, SECTION_EXPR, TUPLE_EXPR, TUPLE_PAT, VAR_PAT, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -103,6 +105,8 @@ impl Language for AxionLang {
             TUPLE_EXPR,
             RECORD_EXPR,
             PAREN_EXPR,
+            LIST_EXPR,
+            SECTION_EXPR,
             WILD_PAT,
             VAR_PAT,
             LIT_PAT,
@@ -564,12 +568,46 @@ impl ExprParser<'_> {
 
     fn app(&mut self) {
         let cp = self.b.checkpoint();
-        self.atom();
+        self.atom_post();
         while self.starts_atom() {
             self.b.start_node_at(cp, APP_EXPR.into());
-            self.atom();
+            self.atom_post();
             self.b.finish_node();
         }
+    }
+
+    /// An atom with any trailing record `{ … }` (`Con { f = e }` constructs,
+    /// `e { f = e }` updates — records bind tighter than application).
+    fn atom_post(&mut self) {
+        let cp = self.b.checkpoint();
+        self.atom();
+        while matches!(self.cur(), Some(Tok::LBrace)) {
+            self.b.start_node_at(cp, RECORD_EXPR.into());
+            self.record_fields();
+            self.b.finish_node();
+        }
+    }
+
+    fn record_fields(&mut self) {
+        self.bump(); // '{'
+        if !matches!(self.cur(), Some(Tok::RBrace)) {
+            self.field_assign();
+            while matches!(self.cur(), Some(Tok::Comma)) {
+                self.bump();
+                self.field_assign();
+            }
+        }
+        self.expect(&Tok::RBrace);
+    }
+
+    fn field_assign(&mut self) {
+        if matches!(self.cur(), Some(Tok::VarId(_))) {
+            self.bump(); // field name
+        } else {
+            self.ok = false;
+        }
+        self.expect(&Tok::Equals);
+        self.expr();
     }
 
     fn starts_atom(&self) -> bool {
@@ -582,8 +620,19 @@ impl ExprParser<'_> {
                     | Tok::VarId(_)
                     | Tok::ConId(_)
                     | Tok::LParen
+                    | Tok::LBracket
             )
         )
+    }
+
+    /// The operator of a section `(op)` — an operator token immediately followed by
+    /// `)` at the current position.
+    fn section_op(&self) -> bool {
+        let is_op = matches!(
+            self.cur(),
+            Some(Tok::Plus | Tok::Minus | Tok::Star | Tok::EqEq | Tok::Lt | Tok::Gt)
+        );
+        is_op && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::RParen))
     }
 
     fn atom(&mut self) {
@@ -599,10 +648,16 @@ impl ExprParser<'_> {
                 self.b.finish_node();
             }
             Some(Tok::LParen) => {
-                // `( e )` is transparent; `( e , e , … )` is a tuple. Decide after
-                // seeing (or not) a comma, then wrap retroactively from the `(`.
                 let cp = self.b.checkpoint();
                 self.bump(); // '('
+                if self.section_op() {
+                    self.bump(); // operator
+                    self.bump(); // ')'
+                    self.b.start_node_at(cp, SECTION_EXPR.into());
+                    self.b.finish_node();
+                    return;
+                }
+                // `( e )` is transparent; `( e , e , … )` is a tuple.
                 self.expr();
                 let mut tuple = false;
                 while matches!(self.cur(), Some(Tok::Comma)) {
@@ -617,6 +672,26 @@ impl ExprParser<'_> {
                 }
                 let kind = if tuple { TUPLE_EXPR } else { PAREN_EXPR };
                 self.b.start_node_at(cp, kind.into());
+                self.b.finish_node();
+            }
+            Some(Tok::LBracket) => {
+                self.b.start_node(LIST_EXPR.into());
+                self.bump(); // '['
+                if matches!(self.cur(), Some(Tok::RBracket)) {
+                    self.bump(); // ']' — empty list
+                } else {
+                    self.expr();
+                    if matches!(self.cur(), Some(Tok::DotDot)) {
+                        self.bump(); // '..'
+                        self.expr(); // range end
+                    } else {
+                        while matches!(self.cur(), Some(Tok::Comma)) {
+                            self.bump();
+                            self.expr();
+                        }
+                    }
+                    self.expect(&Tok::RBracket);
+                }
                 self.b.finish_node();
             }
             _ => self.ok = false,
@@ -745,7 +820,7 @@ fn is_expr_kind(k: SyntaxKind) -> bool {
     matches!(
         k,
         LITERAL_EXPR | NAME_EXPR | APP_EXPR | BINOP_EXPR | IF_EXPR | LAMBDA_EXPR | TUPLE_EXPR
-            | PAREN_EXPR | LET_EXPR | CASE_EXPR | RECORD_EXPR
+            | PAREN_EXPR | LET_EXPR | CASE_EXPR | RECORD_EXPR | LIST_EXPR | SECTION_EXPR
     )
 }
 
@@ -844,6 +919,71 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
         TUPLE_EXPR => {
             let es: Option<Vec<Expr>> = node.children().map(|c| lower_expr(&c)).collect();
             Some(Expr::Tuple(es?, sp))
+        }
+        LIST_EXPR => {
+            let elems: Vec<Expr> = node
+                .children()
+                .map(|c| lower_expr(&c))
+                .collect::<Option<_>>()?;
+            let is_range = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .any(|t| t.text() == "..");
+            if is_range && elems.len() == 2 {
+                // `[a..b]` → `range a b`
+                let mut it = elems.into_iter();
+                Some(app2(Expr::Var("range".into(), sp), it.next()?, it.next()?, sp))
+            } else {
+                // `[e1, …]` → `Cons e1 (Cons … Nil)`; `[]` → `Nil`.
+                let mut list = Expr::Con("Nil".into(), sp);
+                for e in elems.into_iter().rev() {
+                    list = app2(Expr::Con("Cons".into(), sp), e, list, sp);
+                }
+                Some(list)
+            }
+        }
+        SECTION_EXPR => {
+            // `(op)` → `\_op0 _op1 -> _op0 op _op1`
+            let op = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .filter(|t| !is_trivia(t.kind()))
+                .nth(1)? // between '(' and ')'
+                .text()
+                .to_string();
+            let body = Expr::BinOp(
+                op,
+                Box::new(Expr::Var("_op0".into(), sp)),
+                Box::new(Expr::Var("_op1".into(), sp)),
+                sp,
+            );
+            Some(Expr::Lam(
+                vec![Pat::Var("_op0".into(), sp), Pat::Var("_op1".into(), sp)],
+                Box::new(body),
+                sp,
+            ))
+        }
+        RECORD_EXPR => {
+            let base = lower_expr(&node.children().next()?)?;
+            let mut fields = Vec::new();
+            let mut pending: Option<String> = None;
+            for el in node.children_with_tokens() {
+                match el {
+                    rowan::NodeOrToken::Token(t) if t.kind() == IDENT => {
+                        pending = Some(t.text().to_string());
+                    }
+                    rowan::NodeOrToken::Node(n) if is_expr_kind(n.kind()) => {
+                        if let Some(name) = pending.take() {
+                            fields.push((name, lower_expr(&n)?));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(match base {
+                Expr::Con(name, _) => Expr::RecordCon(name, fields, sp),
+                other => Expr::RecordUpd(Box::new(other), fields, sp),
+            })
         }
         _ => None,
     }

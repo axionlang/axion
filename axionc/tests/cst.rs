@@ -123,6 +123,23 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
         "(f x, g y)",
         "map (\\x -> x * 2) xs",
         "if p then (\\x -> x) else g",
+        // Stage 3c: lists, ranges, operator sections, records.
+        "[]",
+        "[1, 2, 3]",
+        "[a, b, c]",
+        "[1 + 2, f x]",
+        "[1 .. 10]",
+        "[lo .. hi]",
+        "1 : [2, 3]",
+        "map f [1, 2, 3]",
+        "(+)",
+        "(*)",
+        "(==)",
+        "foldr (+) 0 xs",
+        "Point { x = 1, y = 2 }",
+        "p { x = 5 }",
+        "Wrap { inner = f a }",
+        "map (+) [1, 2]",
     ] {
         assert!(
             expr_matches_parser(e),
@@ -134,15 +151,9 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
 #[test]
 fn subset_boundary_is_honest() {
     // Constructs still outside the supported subset report `false` (not a silent
-    // match), so the corpus above cannot accidentally hide a gap.
-    for e in [
-        "let x = 1 in x", // needs layout
-        "case x of A -> 1",
-        "do { x }",
-        "[1, 2, 3]", // list literal
-        "(+)",       // operator section
-        "Con { a = 1 }",
-    ] {
+    // match), so the corpus above cannot accidentally hide a gap. Layout-block forms
+    // (`let`/`case`/`do`) are Stage 3d.
+    for e in ["let x = 1 in x", "case x of A -> 1", "do { x }"] {
         assert!(!expr_matches_parser(e), "unexpectedly claimed support for: {e}");
     }
 }
