@@ -63,13 +63,27 @@ pub enum SyntaxKind {
     LIT_PAT,
     CON_PAT,
     TUPLE_PAT,
+    // type nodes
+    TYPE_CON,
+    TYPE_VAR,
+    TYPE_APP,
+    TYPE_ARROW,
+    TYPE_TUPLE,
+    TYPE_UNIT,
+    // declaration nodes
+    SIG,
+    FUN_CLAUSE,
+    GUARD,
+    WHERE,
+    CONSTRAINT,
 }
 
 use SyntaxKind::{
     APP_EXPR, BINOP_EXPR, CASE_EXPR, COMMENT, CON_PAT, CONID, DECL, ERROR, IDENT, IF_EXPR, KEYWORD,
-    BIND_STMT, DO_EXPR, EXPR_STMT, LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT,
-    MODULE, NAME_EXPR, PAREN_EXPR, PUNCT, RECORD_EXPR, SECTION_EXPR, TUPLE_EXPR, TUPLE_PAT, VAR_PAT,
-    WHITESPACE, WILD_PAT,
+    BIND_STMT, CONSTRAINT, DO_EXPR, EXPR_STMT, FUN_CLAUSE, GUARD, LAMBDA_EXPR, LET_EXPR, LIST_EXPR,
+    LITERAL, LITERAL_EXPR, LIT_PAT, MODULE, NAME_EXPR, PAREN_EXPR, PUNCT, RECORD_EXPR, SECTION_EXPR,
+    SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON, TYPE_TUPLE, TYPE_UNIT, TYPE_VAR,
+    VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -120,6 +134,17 @@ impl Language for AxionLang {
             LIT_PAT,
             CON_PAT,
             TUPLE_PAT,
+            TYPE_CON,
+            TYPE_VAR,
+            TYPE_APP,
+            TYPE_ARROW,
+            TYPE_TUPLE,
+            TYPE_UNIT,
+            SIG,
+            FUN_CLAUSE,
+            GUARD,
+            WHERE,
+            CONSTRAINT,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -934,6 +959,190 @@ impl ExprParser<'_> {
             _ => self.ok = false,
         }
     }
+
+    // --- declarations, signatures and types (Stage 3f) ---
+
+    fn expect_tok(&mut self, t: &Tok) {
+        self.expect(t);
+    }
+
+    /// A top-level declaration: a signature `name :: [ctx =>] type` or a function
+    /// clause `name apat* rhs [where …]`. Non-function declarations (data/class/
+    /// instance/foreign/module/import) fall out of the subset (Stage 3g).
+    fn top_decl(&mut self) {
+        if matches!(
+            self.cur(),
+            Some(
+                Tok::Data
+                    | Tok::Class
+                    | Tok::Instance
+                    | Tok::Foreign
+                    | Tok::Module
+                    | Tok::Import
+            )
+        ) {
+            self.ok = false;
+            return;
+        }
+        let cp = self.b.checkpoint();
+        if matches!(self.cur(), Some(Tok::VarId(_))) {
+            self.bump(); // name
+        } else {
+            self.ok = false;
+            return;
+        }
+        if matches!(self.cur(), Some(Tok::ColonColon)) {
+            self.bump(); // ::
+            self.qualified_type();
+            self.b.start_node_at(cp, SIG.into());
+            self.b.finish_node();
+        } else {
+            while !matches!(self.cur(), Some(Tok::Equals | Tok::Bar)) && self.cur().is_some() {
+                self.apat();
+                if !self.ok {
+                    break;
+                }
+            }
+            self.rhs();
+            if matches!(self.cur(), Some(Tok::Where)) {
+                self.where_block();
+            }
+            self.b.start_node_at(cp, FUN_CLAUSE.into());
+            self.b.finish_node();
+        }
+    }
+
+    /// The right-hand side: `= expr` (plain) or `(| guard = expr)+` (guarded).
+    fn rhs(&mut self) {
+        if matches!(self.cur(), Some(Tok::Bar)) {
+            while matches!(self.cur(), Some(Tok::Bar)) {
+                self.b.start_node(GUARD.into());
+                self.bump(); // |
+                self.expr(); // guard
+                self.expect_tok(&Tok::Equals);
+                self.expr(); // result
+                self.b.finish_node();
+            }
+        } else {
+            self.expect_tok(&Tok::Equals);
+            self.expr(); // plain body
+        }
+    }
+
+    fn where_block(&mut self) {
+        self.b.start_node(WHERE.into());
+        self.bump(); // where
+        self.block(Self::let_binding);
+        self.b.finish_node();
+    }
+
+    /// `[context =>] type`. A `=>` at type depth 0 (found by lookahead, avoiding the
+    /// reference's backtracking) marks a constraint context.
+    fn qualified_type(&mut self) {
+        if self.has_fat_arrow() {
+            self.b.start_node(CONSTRAINT.into());
+            self.btype();
+            self.b.finish_node();
+            self.expect_tok(&Tok::FatArrow);
+        }
+        self.type_();
+    }
+
+    fn has_fat_arrow(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = self.pos;
+        while let Some(s) = self.toks.get(i) {
+            match &s.tok {
+                LTok::Tok(Tok::LParen) => depth += 1,
+                LTok::Tok(Tok::RParen) => depth -= 1,
+                LTok::Tok(Tok::FatArrow) if depth == 0 => return true,
+                LTok::Tok(Tok::Arrow) if depth == 0 => return false, // `->` before any `=>`
+                LTok::VSemi | LTok::VRBrace if depth == 0 => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// A type: `btype` optionally followed by `%mult ->` or `->` (right-assoc).
+    fn type_(&mut self) {
+        let cp = self.b.checkpoint();
+        self.btype();
+        if matches!(self.cur(), Some(Tok::Mult(_))) {
+            if matches!(self.peek_tok(1), Some(Tok::Arrow)) {
+                self.b.start_node_at(cp, TYPE_ARROW.into());
+                self.bump(); // %mult
+                self.bump(); // ->
+                self.type_();
+                self.b.finish_node();
+            } else {
+                self.bump(); // `%mult` on a result type: consumed, no arrow (inert)
+            }
+        } else if matches!(self.cur(), Some(Tok::Arrow)) {
+            self.b.start_node_at(cp, TYPE_ARROW.into());
+            self.bump(); // ->
+            self.type_();
+            self.b.finish_node();
+        }
+    }
+
+    /// Applied type `atype atype*` (left-assoc).
+    fn btype(&mut self) {
+        let cp = self.b.checkpoint();
+        self.atype();
+        while self.starts_atype() {
+            self.b.start_node_at(cp, TYPE_APP.into());
+            self.atype();
+            self.b.finish_node();
+        }
+    }
+
+    fn starts_atype(&self) -> bool {
+        matches!(
+            self.cur(),
+            Some(Tok::ConId(_) | Tok::VarId(_) | Tok::LParen)
+        )
+    }
+
+    fn atype(&mut self) {
+        match self.cur() {
+            Some(Tok::ConId(_)) => {
+                self.b.start_node(TYPE_CON.into());
+                self.bump();
+                self.b.finish_node();
+            }
+            Some(Tok::VarId(_)) => {
+                self.b.start_node(TYPE_VAR.into());
+                self.bump();
+                self.b.finish_node();
+            }
+            Some(Tok::LParen) => {
+                let cp = self.b.checkpoint();
+                self.bump(); // '('
+                if matches!(self.cur(), Some(Tok::RParen)) {
+                    self.bump(); // ')' — unit
+                    self.b.start_node_at(cp, TYPE_UNIT.into());
+                    self.b.finish_node();
+                    return;
+                }
+                self.type_();
+                let mut tuple = false;
+                while matches!(self.cur(), Some(Tok::Comma)) {
+                    tuple = true;
+                    self.bump();
+                    self.type_();
+                }
+                self.expect_tok(&Tok::RParen);
+                if tuple {
+                    self.b.start_node_at(cp, TYPE_TUPLE.into());
+                    self.b.finish_node();
+                }
+                // single: transparent (the inner type node stands on its own)
+            }
+            _ => self.ok = false,
+        }
+    }
 }
 
 /// Parse `src` as an expression, token-driven, into a CST. `src` is wrapped as
@@ -1403,4 +1612,235 @@ pub fn expr_matches_parser(src: &str) -> bool {
     };
     zero_spans(&mut lowered);
     parser_expr(src).is_some_and(|expected| expected == lowered)
+}
+
+// === Stage 3f: types + declarations → ast::Module, and the module differential ===
+
+fn is_type_kind(k: SyntaxKind) -> bool {
+    matches!(
+        k,
+        TYPE_CON | TYPE_VAR | TYPE_APP | TYPE_ARROW | TYPE_TUPLE | TYPE_UNIT
+    )
+}
+
+fn mult_of(text: &str) -> crate::ast::Mult {
+    match text.trim_start_matches('%') {
+        "1" => crate::ast::Mult::One,
+        "0.5" => crate::ast::Mult::Half,
+        _ => crate::ast::Mult::Many,
+    }
+}
+
+fn lower_type(node: &SyntaxNode) -> Option<crate::ast::Type> {
+    use crate::ast::Type;
+    match node.kind() {
+        TYPE_CON => Some(Type::Con(head_token(node)?.text().to_string())),
+        TYPE_VAR => Some(Type::Var(head_token(node)?.text().to_string())),
+        TYPE_UNIT => Some(Type::Unit),
+        TYPE_APP => {
+            let mut kids = node.children();
+            let f = lower_type(&kids.next()?)?;
+            let a = lower_type(&kids.next()?)?;
+            Some(Type::App(Box::new(f), Box::new(a)))
+        }
+        TYPE_TUPLE => {
+            let ts: Option<Vec<Type>> = node.children().map(|c| lower_type(&c)).collect();
+            Some(Type::Tuple(ts?))
+        }
+        TYPE_ARROW => {
+            let mult = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .find(|t| t.text().starts_with('%'))
+                .map_or(crate::ast::Mult::Many, |t| mult_of(t.text()));
+            let mut kids = node.children();
+            let from = lower_type(&kids.next()?)?;
+            let to = lower_type(&kids.next()?)?;
+            Some(Type::Arrow {
+                mult,
+                from: Box::new(from),
+                to: Box::new(to),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// `(class, var)` pairs from a constraint context type (`Eq a` → `[(Eq, a)]`,
+/// `(Eq a, Ord b)` → both), mirroring `parser::context_constraints`.
+fn constraints_of(t: &crate::ast::Type) -> Vec<(String, String)> {
+    use crate::ast::Type;
+    let mut out = Vec::new();
+    fn one(t: &Type, out: &mut Vec<(String, String)>) {
+        match t {
+            Type::App(f, a) => {
+                if let (Some(c), Type::Var(v)) = (f.head_con(), a.as_ref()) {
+                    out.push((c.to_string(), v.clone()));
+                }
+            }
+            Type::Tuple(ts) => ts.iter().for_each(|x| one(x, out)),
+            _ => {}
+        }
+    }
+    one(t, &mut out);
+    out
+}
+
+/// `(name, class constraints, type)` of a signature.
+type SigParts = (String, Vec<(String, String)>, crate::ast::Type);
+
+fn lower_sig(node: &SyntaxNode) -> Option<SigParts> {
+    let name = node
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == IDENT)?
+        .text()
+        .to_string();
+    let constraints = node
+        .children()
+        .find(|c| c.kind() == CONSTRAINT)
+        .and_then(|c| lower_type(&c.children().next()?))
+        .map(|t| constraints_of(&t))
+        .unwrap_or_default();
+    let ty_node = node.children().find(|c| is_type_kind(c.kind()))?;
+    Some((name, constraints, lower_type(&ty_node)?))
+}
+
+fn lower_clause(node: &SyntaxNode) -> Option<(String, Clause)> {
+    let r = node.text_range();
+    let sp = (usize::from(r.start()), usize::from(r.end()));
+    let name = node
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == IDENT)?
+        .text()
+        .to_string();
+    let mut pats = Vec::new();
+    let mut guards: Vec<(Expr, Expr)> = Vec::new();
+    let mut plain: Option<Expr> = None;
+    let mut wher: Vec<Func> = Vec::new();
+    for c in node.children() {
+        match c.kind() {
+            GUARD => {
+                let mut g = c.children();
+                guards.push((lower_expr(&g.next()?)?, lower_expr(&g.next()?)?));
+            }
+            WHERE => {
+                for d in c.children().filter(|d| d.kind() == DECL) {
+                    wher.push(lower_let_binding(&d)?);
+                }
+            }
+            k if is_expr_kind(k) => plain = Some(lower_expr(&c)?),
+            _ => pats.push(lower_pat(&c)?),
+        }
+    }
+    let body = if guards.is_empty() {
+        Body::Plain(plain?)
+    } else {
+        Body::Guarded(guards)
+    };
+    Some((
+        name,
+        Clause {
+            pats,
+            body,
+            wher,
+            span: sp,
+        },
+    ))
+}
+
+/// Lower a token-driven module CST to `ast::Module`, assembling signatures and
+/// clauses into `Func`s exactly as `parser::assemble` does.
+fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
+    let mut funcs: Vec<Func> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut slot = |funcs: &mut Vec<Func>, name: &str| -> usize {
+        *index.entry(name.to_string()).or_insert_with(|| {
+            funcs.push(Func {
+                name: name.to_string(),
+                sig: None,
+                clauses: Vec::new(),
+                span: (0, 0),
+                constraints: Vec::new(),
+            });
+            funcs.len() - 1
+        })
+    };
+    for decl in cst.children() {
+        match decl.kind() {
+            SIG => {
+                let (name, constraints, ty) = lower_sig(&decl)?;
+                let i = slot(&mut funcs, &name);
+                funcs[i].sig = Some(ty);
+                funcs[i].constraints = constraints;
+            }
+            FUN_CLAUSE => {
+                let (name, clause) = lower_clause(&decl)?;
+                let i = slot(&mut funcs, &name);
+                funcs[i].clauses.push(clause);
+            }
+            _ => {}
+        }
+    }
+    Some(crate::ast::Module {
+        name: None,
+        imports: Vec::new(),
+        funcs,
+        datas: Vec::new(),
+        foreigns: Vec::new(),
+        classes: Vec::new(),
+        instances: Vec::new(),
+        level_ceiling: None,
+    })
+}
+
+fn parse_module_cst(src: &str) -> Option<(SyntaxNode, bool)> {
+    let raw = lex(src).ok()?;
+    let lines = LineMap::new(src);
+    let toks = layout::layout(&raw, &lines);
+    let mut p = ExprParser {
+        src,
+        toks: &toks,
+        pos: 0,
+        cursor: 0,
+        b: GreenNodeBuilder::new(),
+        ok: true,
+    };
+    p.b.start_node(MODULE.into());
+    p.block(ExprParser::top_decl);
+    let leftover_real = p.toks[p.pos..].iter().any(|s| matches!(s.tok, LTok::Tok(_)));
+    let full = p.ok && !leftover_real;
+    p.trivia(src.len());
+    p.b.finish_node();
+    Some((SyntaxNode::new_root(p.b.finish()), full))
+}
+
+fn zero_module(m: &mut crate::ast::Module) {
+    m.funcs.iter_mut().for_each(zero_func);
+}
+
+/// Whether the token-driven module parser + lowering reproduces the recursive-descent
+/// parser's `ast::Module` for `src` (structurally, spans ignored). The gate that will
+/// authorise flipping the pipeline onto the CST. `false` for modules using constructs
+/// outside the current subset (declarations other than functions/signatures).
+pub fn module_matches_parser(src: &str) -> bool {
+    let Some((cst, full)) = parse_module_cst(src) else {
+        return false;
+    };
+    if !full {
+        return false;
+    }
+    let Some(mut got) = lower_module(&cst) else {
+        return false;
+    };
+    zero_module(&mut got);
+
+    let Ok(raw) = lex(src) else { return false };
+    let lines = LineMap::new(src);
+    let lt = layout::layout(&raw, &lines);
+    let (mut expected, _errs) = crate::parser::parse_module_resilient(&lt);
+    zero_module(&mut expected);
+
+    got == expected
 }

@@ -2,7 +2,9 @@
 #![cfg(feature = "cst")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::cst::{build_cst, document_symbols, expr_matches_parser, SyntaxKind, SyntaxNode};
+use axionc::cst::{
+    build_cst, document_symbols, expr_matches_parser, module_matches_parser, SyntaxKind, SyntaxNode,
+};
 
 fn has_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
     root.descendants().any(|n| n.kind() == kind)
@@ -161,6 +163,34 @@ fn token_driven_parser_matches_recursive_descent_over_the_subset() {
         assert!(
             expr_matches_parser(e),
             "token-driven parser diverges from the reference for: {e}"
+        );
+    }
+}
+
+#[test]
+fn token_driven_module_matches_recursive_descent() {
+    // Stage 3f: whole function-only modules (signatures with types + constraints,
+    // multi-clause functions, patterns, guards, where) lower to EXACTLY the same
+    // `ast::Module` as the recursive-descent parser.
+    for m in [
+        "main :: Int\nmain = 0\n",
+        "id :: a -> a\nid x = x\n",
+        "add :: Int -> Int -> Int\nadd x y = x + y\n",
+        "const :: a -> b -> a\nconst x _ = x\n",
+        "f :: Buffer U8 %1 -> Buffer U8 %1\nf b = b\n",
+        "pair :: a -> b -> (a, b)\npair x y = (x, y)\n",
+        "eq3 :: Eq a => a -> Bool\neq3 x = x == x\n",
+        "cmp :: (Eq a, Ord b) => a -> b -> Int\ncmp x y = 0\n",
+        "len :: List a -> Int\nlen Nil = 0\nlen (Cons x xs) = 1 + len xs\n",
+        "sign :: Int -> Int\nsign n\n  | n < 0 = 0 - 1\n  | n == 0 = 0\n  | otherwise = 1\n",
+        "g :: Int -> Int\ng x = y + z\n  where\n    y = x + 1\n    z = x * 2\n",
+        "a :: Int\na = 1\n\nb :: Int\nb = a + 1\n\nmain :: Int\nmain = b\n",
+        "unit :: ()\nunit = 0\n",
+        "h y = case y of\n    Nil -> 0\n    Cons z zs -> z\n",
+    ] {
+        assert!(
+            module_matches_parser(m),
+            "token-driven module parser diverges from the reference for:\n{m}"
         );
     }
 }

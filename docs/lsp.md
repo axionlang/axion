@@ -166,11 +166,15 @@ stages (`src/cst.rs`, `--features cst`).
   the **entire expression grammar**. It runs on the real layout tokens (`LTok` with
   virtual `VLBrace`/`VSemi`/`VRBrace`; trivia is woven only for real tokens), and is
   proven to produce EXACTLY the same `ast::Expr` as the recursive-descent parser by a
-  differential test (`token_driven_parser_matches_recursive_descent_over_the_subset`,
-  plus an honest `subset_boundary_is_honest`). Remaining before the flip:
-  declarations, signatures, and types (the module parser). Once the token-driven
-  parser covers those and provably agrees over all fixtures, the default pipeline
-  flips onto it and the recursive-descent parser is retired.
+  differential test (`token_driven_parser_matches_recursive_descent_over_the_subset`).
+  The **module** level is under way too: types (`Con`/`Var`/`App`/`Arrow` with `%mult`/
+  `Tuple`/`Unit` + `C a =>` constraints), signatures, and function clauses (patterns,
+  plain/guarded bodies, `where`) lower to EXACTLY the same `ast::Module` as the
+  recursive-descent parser (`token_driven_module_matches_recursive_descent`). Remaining
+  before the flip: the non-function declarations — `data`/`class`/`instance`/`foreign`,
+  the module header, and imports. Once the token-driven parser covers those and
+  provably agrees over all fixtures, the default pipeline flips onto it and the
+  recursive-descent parser is retired.
 
 It is **additive**: the analysis pipeline still runs on `ast::Module` via the
 recursive-descent parser; the token-driven parser is validated behind the `cst`
