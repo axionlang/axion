@@ -74,15 +74,33 @@ Editing one function's body changes only that function's `DeclItem.func`, so **o
 its `check_decl` re-runs** — every other declaration's linearity check is reused
 (proven by `tests/salsa.rs::editing_one_body_rechecks_only_that_declaration`).
 
+### Per-declaration inference (annotated-function firewall)
+
+HM inference is also **per-declaration for annotated functions**. Axión's top-level
+signatures are optional, so unannotated functions share one monomorphic
+substitution and must be inferred together — but a function that is **isolated**
+(has a full signature *and* references no unannotated top-level function) only ever
+unifies against annotated schemes, builtins and constructors, all body-stable. Its
+inference therefore reproduces the whole-module result exactly and is memoized per
+declaration (`infer_decl`), keyed on its own AST and the body-and-span-normalized
+`sig_view`. Unannotated functions and their dependents are inferred together in a
+whole-module `infer_residual`.
+
+The soundness of that split — that `{isolated per-decl ∪ residual}` equals
+whole-module inference — is guarded by a **differential test** over every fixture
+(`tests/salsa.rs::engine_diagnostics_match_whole_module`).
+
+> **Span-shift note.** A per-decl query is keyed on its function's AST, which carries
+> real source spans so diagnostics land correctly. A length-*changing* edit shifts
+> the byte offsets of every later declaration, so those re-run too; declarations
+> *before* the edit, and all declarations under a length-preserving edit, are reused.
+> Making this fully position-independent (relative-offset bodies re-based per edit)
+> is a future refinement that would benefit the whole per-decl layer.
+
 ## Scope & what's deferred
 
-Per-declaration invalidation covers the **linearity/Auto-Drop/name** phase. Still
-whole-module (re-run on any edit), because Axión's top-level signatures are optional
-and HM inference is therefore cross-function:
-
-- **HM type inference** (AX0200/0201) and the session/`bound`/instance checks. Making
-  inference per-declaration means strongly-connected-component analysis of the call
-  graph — the next increment.
+- **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
+  and inference of unannotated functions (the residual).
 - **Salsa-tracked cross-file imports** — the downstream still reads imported files
   straight from disk (invisible to salsa), so editing an imported file does not yet
   invalidate its dependents through the engine.

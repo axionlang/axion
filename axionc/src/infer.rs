@@ -161,7 +161,104 @@ pub struct SpecPlan {
 /// method resolutions (`(function, use span) → impl name`), so that
 /// monomorphization rewrites the uses as direct calls. The
 /// key includes the function because the prelude's and the user's spans collide.
+/// Whole-module type inference (§16): the setup + every function body + the
+/// post-passes. Unchanged in behavior; the body is now split into [`setup`],
+/// [`Infer::check_body`] and [`Infer::finish`] so the salsa engine can run
+/// inference for a SUBSET of functions (`crate::db`).
 pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
+    let (mut inf, env) = setup(module, diags);
+    for f in &module.funcs {
+        inf.check_body(&env, f);
+    }
+    inf.finish(module)
+}
+
+/// Diagnostics from inferring ONLY `funcs`, against `module`'s (body-independent)
+/// signature environment. For a function that is ISOLATED — annotated and calling
+/// only annotated/builtin/constructor names — this reproduces its whole-module
+/// diagnostics exactly, because its inference never touches another function's
+/// placeholder type var. The salsa engine memoizes this per declaration; a
+/// differential test (`tests/salsa.rs`) guards the "reproduces exactly" claim.
+#[cfg_attr(not(feature = "salsa"), allow(dead_code))]
+pub fn infer_partial(module: &Module, funcs: &[&Func], diags: &mut Diagnostics) {
+    let (mut inf, env) = setup(module, diags);
+    for f in funcs {
+        inf.check_body(&env, f);
+    }
+    let _ = inf.finish(module);
+}
+
+/// Top-level functions WITHOUT a signature. In inference these get a monomorphic
+/// placeholder var shared across the whole module, so any function that references
+/// one has its inference tied to that function's body — the reason such callers are
+/// NOT isolated. Derived from signatures only (body-independent).
+#[cfg_attr(not(feature = "salsa"), allow(dead_code))]
+pub fn unannotated_funcs(module: &Module) -> HashSet<String> {
+    module
+        .funcs
+        .iter()
+        .filter(|f| f.sig.is_none())
+        .map(|f| f.name.clone())
+        .collect()
+}
+
+/// Whether `f`'s inference is independent of every other function's body: it has a
+/// full signature AND references no unannotated top-level function (so it only ever
+/// unifies against annotated schemes / builtins / constructors — all body-stable).
+/// For such a function, per-declaration inference reproduces its whole-module
+/// diagnostics exactly. The name check over-approximates (it counts shadowing local
+/// binders too), which only makes MORE functions residual — always safe.
+#[cfg_attr(not(feature = "salsa"), allow(dead_code))]
+pub fn is_isolated(f: &Func, unannotated: &HashSet<String>) -> bool {
+    if f.sig.is_none() || unannotated.is_empty() {
+        return f.sig.is_some();
+    }
+    !f.clauses.iter().any(|c| clause_refs_any(c, unannotated))
+}
+
+fn clause_refs_any(c: &Clause, set: &HashSet<String>) -> bool {
+    let body_hit = match &c.body {
+        Body::Plain(e) => expr_refs_any(e, set),
+        Body::Guarded(arms) => arms
+            .iter()
+            .any(|(g, r)| expr_refs_any(g, set) || expr_refs_any(r, set)),
+    };
+    body_hit || c.wher.iter().any(|w| func_refs_any(w, set))
+}
+
+fn func_refs_any(f: &Func, set: &HashSet<String>) -> bool {
+    f.clauses.iter().any(|c| clause_refs_any(c, set))
+}
+
+fn expr_refs_any(e: &Expr, set: &HashSet<String>) -> bool {
+    match e {
+        Expr::Var(n, _) | Expr::Con(n, _) => set.contains(n),
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) => false,
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+            expr_refs_any(a, set) || expr_refs_any(b, set)
+        }
+        Expr::If(a, b, c, _) => {
+            expr_refs_any(a, set) || expr_refs_any(b, set) || expr_refs_any(c, set)
+        }
+        Expr::Let(funcs, body, _) => {
+            funcs.iter().any(|f| func_refs_any(f, set)) || expr_refs_any(body, set)
+        }
+        Expr::Case(scrut, arms, _) => {
+            expr_refs_any(scrut, set) || arms.iter().any(|(_, e)| expr_refs_any(e, set))
+        }
+        Expr::Tuple(es, _) => es.iter().any(|e| expr_refs_any(e, set)),
+        Expr::RecordCon(_, fs, _) => fs.iter().any(|(_, e)| expr_refs_any(e, set)),
+        Expr::RecordUpd(b, fs, _) => {
+            expr_refs_any(b, set) || fs.iter().any(|(_, e)| expr_refs_any(e, set))
+        }
+        Expr::Lam(_, b, _) => expr_refs_any(b, set),
+    }
+}
+
+/// Setup shared by whole-module and partial inference: the type environment
+/// (constructor/selector/method/function schemes) and inference metadata, all
+/// derived from signatures, `data` and class headers — never function bodies.
+fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
     let mut inf = Infer {
         subst: HashMap::new(),
         counter: 0,
@@ -379,10 +476,16 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
         }
     }
 
-    // checks each function against its type (in checking mode when there is a
-    // signature: parameters inherit the declared types before the body)
-    for f in &module.funcs {
-        let declared = env.get(&f.name).cloned().map(|s| inf.instantiate(&s));
+    let _ = placeholders; // built above for the (now-removed) vestigial use
+    (inf, env)
+}
+
+impl Infer<'_> {
+    /// Infer one function's body against `env` (checking mode when it has a
+    /// signature). Emits that function's type diagnostics and accumulates its
+    /// obligations (discharged in [`Infer::finish`]).
+    fn check_body(&mut self, env: &Env, f: &Func) {
+        let declared = env.get(&f.name).cloned().map(|s| self.instantiate(&s));
         // Checking mode (parameters inherit the declared types) ONLY when there is a
         // signature. Without a signature, `declared` is a `Var` placeholder that
         // `peel_fun` cannot split into arrows — infer freely and unify the
@@ -394,13 +497,19 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
             None
         };
         // constraints in scope of this function (to discharge polymorphic uses)
-        inf.cur_constraints = f.constraints.iter().map(|(c, _)| c.clone()).collect();
-        inf.cur_fn = f.name.clone();
-        let inferred = inf.infer_func(&env, f, expected);
+        self.cur_constraints = f.constraints.iter().map(|(c, _)| c.clone()).collect();
+        self.cur_fn = f.name.clone();
+        let inferred = self.infer_func(env, f, expected);
         if let Some(d) = &declared {
-            inf.unify(&inferred, d, f.span);
+            self.unify(&inferred, d, f.span);
         }
     }
+
+    /// The post-passes: integer-literal defaulting, exhaustiveness, obligation
+    /// discharge, and the monomorphization artifacts. Runs over whatever bodies
+    /// were checked (all of them for [`infer`], one for a per-decl partial).
+    fn finish(&mut self, module: &Module) -> Mono {
+        let inf = self;
     // Phase 1b: resolve each integer literal. If context unified it to `Integer`,
     // mark it for the `fromInt` rewrite; otherwise unify it with `Int` — this both
     // defaults an unconstrained literal and re-raises the original error if a literal
@@ -453,8 +562,8 @@ pub fn infer(module: &Module, diags: &mut Diagnostics) -> Mono {
             mono.makecon_tys.entry(sp).or_insert(ast);
         }
     }
-    let _ = placeholders;
-    mono
+        mono
+    }
 }
 
 /// Built-in overloaded operators — arithmetic `+ - *` (`Num`, `a -> a -> a`)

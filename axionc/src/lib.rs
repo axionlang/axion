@@ -41,7 +41,10 @@ mod check;
 mod codegen;
 mod core;
 mod delta;
-#[allow(dead_code)]
+// `Diagnostic` is re-exported (public API of the engine); its fields carry inline
+// comments rather than rustdoc, and its builder methods are used fluently, so waive
+// the doc / must-use requirements that only apply now that it is public.
+#[allow(dead_code, missing_docs, clippy::return_self_not_must_use)]
 mod diag;
 mod ffi;
 mod infer;
@@ -66,7 +69,9 @@ mod props;
 #[cfg(test)]
 mod session;
 
-use diag::{Diagnostic, Diagnostics};
+use diag::Diagnostics;
+/// Re-exported so the engine's public `Vec<Diagnostic>` returns are nameable.
+pub use diag::Diagnostic;
 use lexer::LineMap;
 use std::process::ExitCode;
 
@@ -425,6 +430,14 @@ fn scan_level_pragma(src: &str, diags: &mut Diagnostics) -> Option<u8> {
     }
 }
 
+/// All whole-module front-end diagnostics for a source. The reference the salsa
+/// engine's incremental decomposition (`crate::db`) is differential-tested against.
+pub fn compile_diagnostics(src: &str, path: &str) -> Vec<Diagnostic> {
+    let mut diags = Diagnostics::new();
+    let _ = compile_front(src, path, &mut diags);
+    diags.items
+}
+
 /// The front end: source → lexer → layout → parser → prelude/imports → class
 /// lowering → linearity/Auto-Drop checking → HM inference. Diagnostics are pushed
 /// into `diags`; the returned `Module`/`Analysis` are `Some` when the front end got
@@ -527,16 +540,6 @@ pub fn prepare_for_check(
     (module, consume_exempt)
 }
 
-/// The diagnostics that are NOT produced per-function: HM type inference (§16,
-/// cross-function because top-level signatures are optional) plus the whole-module
-/// session/`bound`/instance checks. The salsa engine runs this once per file while
-/// memoizing the per-function linearity checks separately.
-pub fn whole_module_diags(module: &ast::Module, diags: &mut Diagnostics) {
-    for d in check::check_non_func(module) {
-        diags.push(d);
-    }
-    let _ = infer::infer(module, diags);
-}
 
 /// Materializes the specialized constrained functions: clones each
 /// `src` (already rewritten by the direct resolutions), specializes the signature

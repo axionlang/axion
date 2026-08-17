@@ -22,9 +22,10 @@ use salsa::{Accumulator, Setter};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::ast;
+use crate::ast::{self, Func};
 use crate::check::{self, SigEnv};
 use crate::diag::{Diagnostic, Diagnostics};
+use crate::infer;
 
 /// The salsa database. Holds the query storage plus a registry mapping file paths
 /// to their `SourceFile` inputs, so a path can be re-set (edited) in place —
@@ -171,21 +172,127 @@ pub fn check_decl<'db>(db: &'db dyn salsa::Database, item: DeclItem<'db>) -> Vec
     }
 }
 
-/// The diagnostics that are NOT per-function: HM inference (cross-function) plus the
-/// whole-module session/`bound`/instance checks. `no_eq` — re-runs on any edit.
-#[salsa::tracked(no_eq)]
-pub fn whole_module_diags(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnostic> {
-    let mut diags = Diagnostics::new();
-    if let Some(module) = processed_module(db, file) {
-        crate::whole_module_diags(module, &mut diags);
+/// The checker-ready module with function BODIES stripped — the body-independent
+/// view that inference setup needs. Being independent of bodies, it is
+/// `PartialEq`-equal across body edits, so salsa BACKDATES it and the per-decl
+/// `infer_decl` queries that depend on it are not invalidated when an unrelated
+/// function's body changes.
+#[salsa::tracked]
+pub fn sig_view(db: &dyn salsa::Database, file: SourceFile) -> Option<ast::Module> {
+    let module = processed_module(db, file).as_ref()?;
+    Some(strip_bodies_and_spans(module))
+}
+
+const NO_SPAN: ast::Span = (0, 0);
+
+/// A module reduced to what inference SETUP reads: function bodies removed and all
+/// spans zeroed. Zeroing spans is essential — editing one body shifts the byte
+/// offsets of every later declaration, and without normalization the view would
+/// differ on every edit and salsa could not backdate it. Setup never uses these
+/// spans (the real diagnostics come from the real function passed to `infer_partial`).
+fn strip_bodies_and_spans(m: &ast::Module) -> ast::Module {
+    let sig_func = |f: &Func| Func {
+        name: f.name.clone(),
+        sig: f.sig.clone(),
+        clauses: Vec::new(),
+        span: NO_SPAN,
+        constraints: f.constraints.clone(),
+    };
+    ast::Module {
+        name: m.name.clone(),
+        imports: Vec::new(),
+        funcs: m.funcs.iter().map(sig_func).collect(),
+        datas: m
+            .datas
+            .iter()
+            .map(|d| ast::DataDecl {
+                span: NO_SPAN,
+                ..d.clone()
+            })
+            .collect(),
+        foreigns: m
+            .foreigns
+            .iter()
+            .map(|fo| ast::Foreign {
+                span: NO_SPAN,
+                ..fo.clone()
+            })
+            .collect(),
+        classes: m
+            .classes
+            .iter()
+            .map(|c| ast::ClassDecl {
+                span: NO_SPAN,
+                ..c.clone()
+            })
+            .collect(),
+        instances: m
+            .instances
+            .iter()
+            .map(|i| ast::InstanceDecl {
+                methods: i.methods.iter().map(sig_func).collect(),
+                span: NO_SPAN,
+                ..i.clone()
+            })
+            .collect(),
+        level_ceiling: m.level_ceiling,
     }
+}
+
+/// The per-declaration HM inference for an ISOLATED function (annotated + no
+/// unannotated callees): its diagnostics reproduce the whole-module result exactly,
+/// and depend only on its own `func` and the body-stable `sig_view` — so editing an
+/// unrelated body does not re-run it. Non-isolated functions return nothing here;
+/// they are covered by [`infer_residual`].
+#[salsa::tracked]
+pub fn infer_decl<'db>(db: &'db dyn salsa::Database, item: DeclItem<'db>) -> Vec<Diagnostic> {
+    let Some(view) = sig_view(db, *item.file(db)) else {
+        return Vec::new();
+    };
+    let unannotated = infer::unannotated_funcs(view);
+    if infer::is_isolated(item.func(db), &unannotated) {
+        let mut diags = Diagnostics::new();
+        infer::infer_partial(view, &[item.func(db)], &mut diags);
+        diags.items
+    } else {
+        Vec::new()
+    }
+}
+
+/// HM inference for the NON-isolated functions (unannotated, or referencing an
+/// unannotated function): they share one monomorphic substitution, so they are
+/// inferred together. `no_eq` — re-runs on any edit.
+#[salsa::tracked(no_eq)]
+pub fn infer_residual(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnostic> {
+    let Some(module) = processed_module(db, file) else {
+        return Vec::new();
+    };
+    let unannotated = infer::unannotated_funcs(module);
+    let residual: Vec<&Func> = module
+        .funcs
+        .iter()
+        .filter(|f| !infer::is_isolated(f, &unannotated))
+        .collect();
+    let mut diags = Diagnostics::new();
+    infer::infer_partial(module, &residual, &mut diags);
     diags.items
 }
 
+/// The whole-module checks that are neither per-function linearity nor inference:
+/// session-type fidelity, `bound` escapes, instance coherence. `no_eq`.
+#[salsa::tracked(no_eq)]
+pub fn non_func_diags(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnostic> {
+    match processed_module(db, file) {
+        Some(module) => check::check_non_func(module),
+        None => Vec::new(),
+    }
+}
+
 /// Run the incremental front end for `file` and collect all diagnostics. This is
-/// the entry point the LSP uses; on unchanged text the queries are memoized, and
-/// on a body edit only the edited declaration's `check_decl` re-runs (the other
-/// declarations' checks are reused via the backdated `sig_env`).
+/// the entry point the LSP uses; on unchanged text the queries are memoized, and on
+/// a body edit only the edited declaration's `check_decl`/`infer_decl` re-run — the
+/// other declarations' per-decl checks are reused via the backdated `sig_env` /
+/// `sig_view`. Inference for unannotated functions stays whole-module (`infer_residual`).
 pub fn diagnostics_of(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     // Parse + prepare diagnostics (accumulated across the processed_module subtree,
@@ -196,11 +303,13 @@ pub fn diagnostics_of(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnos
             .into_iter()
             .map(|d| d.0.clone()),
     );
-    // Per-declaration linearity checks (each memoized independently).
+    // Per-declaration linearity + isolated inference (each memoized independently).
     for item in decl_items(db, file).clone() {
         out.extend(check_decl(db, item).iter().cloned());
+        out.extend(infer_decl(db, item).iter().cloned());
     }
-    // Whole-module inference + session/bound/instance checks.
-    out.extend(whole_module_diags(db, file).iter().cloned());
+    // Whole-module residual inference + session/bound/instance checks.
+    out.extend(infer_residual(db, file).iter().cloned());
+    out.extend(non_func_diags(db, file).iter().cloned());
     out
 }

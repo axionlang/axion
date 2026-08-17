@@ -156,6 +156,7 @@ pub fn check_one_func(f: &Func, env: &SigEnv) -> Vec<Diagnostic> {
 
 /// The whole-module checks that are NOT per-function: session-type fidelity,
 /// `bound` nursery escapes, and instance coherence.
+#[cfg_attr(not(feature = "salsa"), allow(dead_code))]
 pub fn check_non_func(module: &Module) -> Vec<Diagnostic> {
     let mut diags = Diagnostics::new();
     check_sessions(module, &mut diags);
