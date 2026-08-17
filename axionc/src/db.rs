@@ -149,6 +149,150 @@ pub fn sig_env(db: &dyn salsa::Database, file: SourceFile) -> Option<SigEnv> {
         .map(check::signature_env)
 }
 
+// --- position-independent per-declaration bodies (relative-offset refinement) ---
+//
+// A `DeclItem` stores its function with spans made RELATIVE to the declaration's
+// base offset (`Func.span.0`, the first clause's start — a valid lower bound on
+// every span in the function). Two content-identical declarations then produce the
+// same normalized `Func` regardless of where they sit in the file, so a
+// length-changing edit to one declaration no longer invalidates the per-decl
+// queries of the declarations after it. `diagnostics_of` re-bases each memoized
+// diagnostic back to absolute by adding the declaration's CURRENT base — a cheap,
+// non-memoized step.
+
+fn shift_span(s: &mut ast::Span, d: i64) {
+    s.0 = (s.0 as i64 + d).max(0) as usize;
+    s.1 = (s.1 as i64 + d).max(0) as usize;
+}
+
+fn shift_func(f: &mut Func, d: i64) {
+    shift_span(&mut f.span, d);
+    for c in &mut f.clauses {
+        shift_clause(c, d);
+    }
+}
+
+fn shift_clause(c: &mut ast::Clause, d: i64) {
+    shift_span(&mut c.span, d);
+    for p in &mut c.pats {
+        shift_pat(p, d);
+    }
+    match &mut c.body {
+        ast::Body::Plain(e) => shift_expr(e, d),
+        ast::Body::Guarded(arms) => {
+            for (g, r) in arms {
+                shift_expr(g, d);
+                shift_expr(r, d);
+            }
+        }
+    }
+    for w in &mut c.wher {
+        shift_func(w, d);
+    }
+}
+
+fn shift_pat(p: &mut ast::Pat, d: i64) {
+    use ast::Pat::{Con, Int, Tuple, Var, Wild};
+    match p {
+        Wild(s) | Var(_, s) | Int(_, s) => shift_span(s, d),
+        Con(_, ps, s) | Tuple(ps, s) => {
+            shift_span(s, d);
+            for p in ps {
+                shift_pat(p, d);
+            }
+        }
+    }
+}
+
+fn shift_expr(e: &mut ast::Expr, d: i64) {
+    use ast::Expr::{
+        App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+    };
+    match e {
+        Int(_, s) | Float(_, s) | Str(_, s) | Var(_, s) | Con(_, s) => shift_span(s, d),
+        App(a, b, s) | BinOp(_, a, b, s) => {
+            shift_span(s, d);
+            shift_expr(a, d);
+            shift_expr(b, d);
+        }
+        If(a, b, c, s) => {
+            shift_span(s, d);
+            shift_expr(a, d);
+            shift_expr(b, d);
+            shift_expr(c, d);
+        }
+        Let(fs, body, s) => {
+            shift_span(s, d);
+            for f in fs {
+                shift_func(f, d);
+            }
+            shift_expr(body, d);
+        }
+        Case(sc, arms, s) => {
+            shift_span(s, d);
+            shift_expr(sc, d);
+            for (p, e) in arms {
+                shift_pat(p, d);
+                shift_expr(e, d);
+            }
+        }
+        Tuple(es, s) => {
+            shift_span(s, d);
+            for e in es {
+                shift_expr(e, d);
+            }
+        }
+        RecordCon(_, fs, s) => {
+            shift_span(s, d);
+            for (_, e) in fs {
+                shift_expr(e, d);
+            }
+        }
+        RecordUpd(b, fs, s) => {
+            shift_span(s, d);
+            shift_expr(b, d);
+            for (_, e) in fs {
+                shift_expr(e, d);
+            }
+        }
+        Lam(ps, b, s) => {
+            shift_span(s, d);
+            for p in ps {
+                shift_pat(p, d);
+            }
+            shift_expr(b, d);
+        }
+    }
+}
+
+/// A copy of `f` with every span shifted so the declaration's base (`f.span.0`)
+/// becomes 0 — position-independent.
+fn normalized(f: &Func) -> Func {
+    let base = f.span.0 as i64;
+    let mut g = f.clone();
+    shift_func(&mut g, -base);
+    g
+}
+
+/// Re-base relative diagnostics back to absolute by adding `base` to every span.
+fn rebased(diags: &[Diagnostic], base: usize) -> Vec<Diagnostic> {
+    diags
+        .iter()
+        .map(|d| {
+            let mut d = d.clone();
+            for l in &mut d.labels {
+                l.start += base;
+                l.end += base;
+            }
+            if let Some(fx) = &mut d.fix {
+                fx.start += base;
+                fx.end += base;
+            }
+            d
+        })
+        .collect()
+}
+
 /// One `DeclItem` per top-level function of the checker-ready module.
 #[salsa::tracked]
 pub fn decl_items(db: &dyn salsa::Database, file: SourceFile) -> Vec<DeclItem<'_>> {
@@ -158,7 +302,7 @@ pub fn decl_items(db: &dyn salsa::Database, file: SourceFile) -> Vec<DeclItem<'_
     module
         .funcs
         .iter()
-        .map(|f| DeclItem::new(db, f.name.clone(), file, f.clone()))
+        .map(|f| DeclItem::new(db, f.name.clone(), file, normalized(f)))
         .collect()
 }
 
@@ -303,10 +447,18 @@ pub fn diagnostics_of(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnos
             .into_iter()
             .map(|d| d.0.clone()),
     );
-    // Per-declaration linearity + isolated inference (each memoized independently).
+    // Per-declaration linearity + isolated inference (each memoized independently on
+    // the POSITION-INDEPENDENT normalized body). The per-decl results carry spans
+    // relative to the declaration; re-base them to absolute with the declaration's
+    // current base offset (looked up fresh — cheap, not memoized).
+    let bases: HashMap<String, usize> = processed_module(db, file)
+        .as_ref()
+        .map(|m| m.funcs.iter().map(|f| (f.name.clone(), f.span.0)).collect())
+        .unwrap_or_default();
     for item in decl_items(db, file).clone() {
-        out.extend(check_decl(db, item).iter().cloned());
-        out.extend(infer_decl(db, item).iter().cloned());
+        let base = bases.get(item.name(db)).copied().unwrap_or(0);
+        out.extend(rebased(check_decl(db, item), base));
+        out.extend(rebased(infer_decl(db, item), base));
     }
     // Whole-module residual inference + session/bound/instance checks.
     out.extend(infer_residual(db, file).iter().cloned());

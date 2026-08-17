@@ -90,12 +90,14 @@ The soundness of that split — that `{isolated per-decl ∪ residual}` equals
 whole-module inference — is guarded by a **differential test** over every fixture
 (`tests/salsa.rs::engine_diagnostics_match_whole_module`).
 
-> **Span-shift note.** A per-decl query is keyed on its function's AST, which carries
-> real source spans so diagnostics land correctly. A length-*changing* edit shifts
-> the byte offsets of every later declaration, so those re-run too; declarations
-> *before* the edit, and all declarations under a length-preserving edit, are reused.
-> Making this fully position-independent (relative-offset bodies re-based per edit)
-> is a future refinement that would benefit the whole per-decl layer.
+**Position independence.** Each per-decl query is keyed on its function's body with
+spans made **relative** to the declaration's start (`normalized` in `db.rs`), so a
+declaration's cached body is identical wherever it sits in the file. A
+length-*changing* edit to one declaration therefore does NOT invalidate the
+declarations after it (which merely shift): only the edited declaration re-runs. The
+memoized diagnostics carry relative spans and are re-based to absolute per edit with
+each declaration's current base offset — a cheap, non-memoized step in
+`diagnostics_of`. Both the per-decl linearity and inference queries benefit.
 
 ## Scope & what's deferred
 

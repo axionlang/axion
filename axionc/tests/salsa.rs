@@ -63,7 +63,7 @@ fn editing_one_body_rechecks_only_that_declaration() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut db = AxionDb::with_event_logger(Arc::clone(&log));
 
-    // Two independent functions.
+    // Three declarations; g is in the MIDDLE.
     let v1 = "f :: Int -> Int\nf x = x\n\ng :: Int -> Int\ng y = y\n\nmain :: Int\nmain = 0\n";
     let file = db.set_file("/two.axi", v1.to_string());
     let _ = db::diagnostics_of(&db, file);
@@ -73,16 +73,16 @@ fn editing_one_body_rechecks_only_that_declaration() {
         "first run should check every declaration (>=2 incl. prelude), got {after_first}"
     );
 
-    // Edit ONLY g's body. f's signature environment is unchanged (backdated), and
-    // f's own AST is unchanged, so only g's check must re-run.
-    let v2 = "f :: Int -> Int\nf x = x\n\ng :: Int -> Int\ng y = y\n\nmain :: Int\nmain = g 0\n";
-    // ^ change main's body (calls g); f untouched.
+    // Edit g's body with a LENGTH-CHANGING edit. Thanks to the relative-offset
+    // normalization, `main` (which shifts in the file) has an unchanged normalized
+    // body and is reused; `f` (before g) is unchanged. Only g re-checks.
+    let v2 = "f :: Int -> Int\nf x = x\n\ng :: Int -> Int\ng y = y + 1234\n\nmain :: Int\nmain = 0\n";
     let file = db.set_file("/two.axi", v2.to_string());
     let _ = db::diagnostics_of(&db, file);
     let delta = check_runs(&log) - after_first;
     assert_eq!(
         delta, 1,
-        "editing one function's body must re-check exactly one declaration, re-checked {delta}"
+        "a length-changing edit to a middle declaration must re-check exactly one, re-checked {delta}"
     );
 }
 
@@ -107,18 +107,16 @@ fn editing_one_isolated_body_reinfers_only_that_declaration() {
     let after_first = infer_runs(&log);
     assert!(after_first >= 2, "first run infers each isolated decl, got {after_first}");
 
-    // Edit only g's body, LENGTH-PRESERVING (`+ 2` -> `+ 9`), so no later
-    // declaration's byte offsets shift. f (before g) and main (after g) are reused;
-    // only g re-infers. (A length-CHANGING edit also re-runs later decls, because a
-    // DeclItem carries real spans so diagnostics land correctly — a property of the
-    // whole per-decl layer, noted in docs/lsp.md.)
-    let v2 = "f :: Int -> Int\nf x = x + 1\n\ng :: Int -> Int\ng y = y + 9\n\nmain :: Int\nmain = 0\n";
+    // Edit g's body with a LENGTH-CHANGING edit. The relative-offset normalization
+    // keeps `main`'s normalized body identical despite its shift in the file, so it
+    // is reused; only g re-infers.
+    let v2 = "f :: Int -> Int\nf x = x + 1\n\ng :: Int -> Int\ng y = y + 999999\n\nmain :: Int\nmain = 0\n";
     let file = db.set_file("/iso.axi", v2.to_string());
     let _ = db::diagnostics_of(&db, file);
     assert_eq!(
         infer_runs(&log) - after_first,
         1,
-        "editing one isolated body (length-preserving) must re-infer exactly one declaration"
+        "a length-changing edit to a middle isolated body must re-infer exactly one declaration"
     );
 }
 
