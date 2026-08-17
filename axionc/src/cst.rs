@@ -458,6 +458,30 @@ pub fn document_symbols(root: &SyntaxNode) -> Vec<(String, rowan::TextRange)> {
         .collect()
 }
 
+/// The name (identifier/constructor) token at `offset`, if any — the target of a
+/// go-to-definition or hover request.
+pub fn name_at(root: &SyntaxNode, offset: usize) -> Option<String> {
+    let ts = rowan::TextSize::new(u32::try_from(offset).unwrap_or(0));
+    root.token_at_offset(ts)
+        .find(|t| matches!(t.kind(), IDENT | CONID))
+        .map(|t| t.text().to_string())
+}
+
+/// The defining occurrence of `name`: the name token of the first top-level
+/// declaration that introduces it (a function signature/clause, `data` type, etc.).
+/// Powers `textDocument/definition`.
+pub fn definition_site(root: &SyntaxNode, name: &str) -> Option<rowan::TextRange> {
+    root.children()
+        .filter(|n| matches!(n.kind(), DECL | ERROR))
+        .find_map(|decl| {
+            let tok = decl
+                .children_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|t| matches!(t.kind(), IDENT | CONID))?;
+            (tok.text() == name).then(|| tok.text_range())
+        })
+}
+
 // === Stage 3a: token-driven CST-emitting parser (a subset) + CST→AST lowering ===
 //
 // The first real slice of the pipeline flip: instead of deriving the CST from the

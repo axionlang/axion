@@ -22,11 +22,12 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, FoldingRange, FoldingRangeKind, FoldingRangeParams, Hover,
-    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, Position, Range,
-    SelectionRange, SelectionRangeParams, ServerCapabilities, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
+    DocumentSymbolResponse, FoldingRange, FoldingRangeKind, FoldingRangeParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
+    MarkupKind, MessageType, NumberOrString, OneOf, Position, Range, SelectionRange,
+    SelectionRangeParams, ServerCapabilities, SymbolKind, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -226,6 +227,7 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true)),
                 selection_range_provider: Some(tower_lsp::lsp_types::SelectionRangeProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -382,6 +384,39 @@ impl LanguageServer for Backend {
             .collect();
         Ok(Some(ranges))
     }
+
+    /// Go to definition: resolve the identifier under the cursor to the top-level
+    /// declaration that introduces it (same file), from the CST.
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> RpcResult<Option<GotoDefinitionResponse>> {
+        let pos = params.text_document_position_params;
+        let uri = pos.text_document.uri;
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let lines = LineMap::new(&doc.text);
+        let offset = lines.offset(pos.position.line, pos.position.character);
+        let Some(range) = definition(&doc.text, offset) else {
+            return Ok(None);
+        };
+        Ok(Some(GotoDefinitionResponse::Scalar(Location {
+            uri,
+            range,
+        })))
+    }
+}
+
+/// The definition site (as an LSP range) of the identifier at byte `offset` in
+/// `src` — the name token of the top-level declaration that introduces it, or `None`
+/// when the cursor isn't on a name or the name is not a top-level declaration.
+pub fn definition(src: &str, offset: usize) -> Option<Range> {
+    let cst = cst::build_cst(src);
+    let name = cst::name_at(&cst, offset)?;
+    let range = cst::definition_site(&cst, &name)?;
+    Some(text_range_to_range(&LineMap::new(src), range))
 }
 
 /// Document outline: one symbol per top-level declaration of `src`'s CST.

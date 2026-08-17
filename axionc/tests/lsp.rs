@@ -4,7 +4,7 @@
 #![cfg(feature = "lsp")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::lsp::{analyze, folds, outline, selection};
+use axionc::lsp::{analyze, definition, folds, outline, selection};
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
 fn fixture(name: &str) -> String {
@@ -58,6 +58,28 @@ fn selection_range_expands_through_the_syntax_tree() {
         widest.end > innermost.end || widest.start < innermost.start,
         "selection should expand outward: inner={innermost:?} outer={widest:?}"
     );
+}
+
+#[test]
+fn goto_definition_jumps_to_the_declaration() {
+    // `main = helper 0` — jumping from the use of `helper` lands on `helper`'s
+    // defining line (its signature), not the use site.
+    let src = "helper :: Int -> Int\nhelper x = x\n\nmain :: Int\nmain = helper 0\n";
+    let use_site = src.rfind("helper").unwrap() + 1; // cursor inside the call `helper`
+    let def = definition(src, use_site).expect("expected a definition");
+    // The signature is on line 0; the use is on line 4.
+    assert_eq!(def.start.line, 0, "should jump to the first `helper` decl, got {def:?}");
+    // And it points at the name, not the whole line.
+    assert_eq!(def.start.character, 0);
+
+    // Data type names resolve too.
+    let src2 = "data Color = Red | Green\n\nfirst :: Color -> Color\nfirst c = c\n";
+    let at = src2.rfind("Color").unwrap();
+    let d2 = definition(src2, at).expect("data type should resolve");
+    assert_eq!(d2.start.line, 0, "should jump to the `data Color` line: {d2:?}");
+
+    // A cursor on empty space / a literal resolves to nothing.
+    assert!(definition(src, src.find(" 0").unwrap() + 1).is_none());
 }
 
 #[test]
