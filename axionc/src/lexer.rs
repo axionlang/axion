@@ -216,6 +216,17 @@ impl LineMap {
         let col = offset - self.line_starts[line] + 1;
         (line + 1, col)
     }
+
+    /// Byte offset of a 0-based `(line, column)` — the inverse of [`LineMap::pos`]
+    /// on the LSP's 0-based coordinates. Clamped to the source bounds.
+    pub fn offset(&self, line: u32, column: u32) -> usize {
+        let start = self
+            .line_starts
+            .get(line as usize)
+            .copied()
+            .unwrap_or_else(|| self.line_starts.last().copied().unwrap_or(0));
+        start + column as usize
+    }
 }
 
 /// Lexical error (unexpected character): reported as AX0100.

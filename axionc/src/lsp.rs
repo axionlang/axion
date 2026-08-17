@@ -21,16 +21,55 @@ use tower_lsp::jsonrpc::Result as RpcResult;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, MarkupContent, MarkupKind,
-    MessageType, NumberOrString, Position, Range, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, FoldingRange, FoldingRangeKind, FoldingRangeParams, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, Position, Range,
+    SelectionRange, SelectionRangeParams, ServerCapabilities, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use crate::cst::{self, SyntaxKind, SyntaxNode};
 use crate::db::{self, AxionDb};
 use crate::diag::{Diagnostic as AxDiagnostic, Severity};
 use crate::lexer::LineMap;
+
+/// Byte offset → LSP position (0-based) via the line table.
+fn offset_to_position(lines: &LineMap, offset: usize) -> Position {
+    let (line, col) = lines.pos(offset);
+    Position {
+        line: (line.saturating_sub(1)) as u32,
+        character: (col.saturating_sub(1)) as u32,
+    }
+}
+
+/// A rowan `TextRange` (byte offsets) → an LSP `Range`.
+fn text_range_to_range(lines: &LineMap, r: rowan::TextRange) -> Range {
+    Range {
+        start: offset_to_position(lines, usize::from(r.start())),
+        end: offset_to_position(lines, usize::from(r.end())),
+    }
+}
+
+fn is_trivia(k: SyntaxKind) -> bool {
+    matches!(k, SyntaxKind::WHITESPACE | SyntaxKind::COMMENT)
+}
+
+/// The content span of a node: from its first to its last non-trivia token, so
+/// folding/symbol ranges don't include trailing blank lines.
+fn content_range(node: &SyntaxNode) -> Option<rowan::TextRange> {
+    let mut toks = node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !is_trivia(t.kind()));
+    let first = toks.next()?;
+    let last = toks.last().unwrap_or_else(|| first.clone());
+    Some(rowan::TextRange::new(
+        first.text_range().start(),
+        last.text_range().end(),
+    ))
+}
 
 /// One analyzed diagnostic: the LSP diagnostic plus the optional edit that fixes
 /// it (kept so `code_action` can turn it into a `WorkspaceEdit`).
@@ -183,6 +222,10 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                // CST-powered structural features (§8).
+                document_symbol_provider: Some(OneOf::Left(true)),
+                folding_range_provider: Some(tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true)),
+                selection_range_provider: Some(tower_lsp::lsp_types::SelectionRangeProviderCapability::Simple(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -295,6 +338,137 @@ impl LanguageServer for Backend {
             Ok(Some(actions))
         }
     }
+
+    /// Document outline from the CST: one symbol per top-level declaration.
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> RpcResult<Option<DocumentSymbolResponse>> {
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        Ok(Some(DocumentSymbolResponse::Nested(outline(&doc.text))))
+    }
+
+    /// Folding ranges from the CST: each multi-line top-level declaration folds.
+    async fn folding_range(
+        &self,
+        params: FoldingRangeParams,
+    ) -> RpcResult<Option<Vec<FoldingRange>>> {
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        Ok(Some(folds(&doc.text)))
+    }
+
+    /// Selection ranges from the CST: for each cursor, the token and its enclosing
+    /// nodes form the "expand selection" chain.
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> RpcResult<Option<Vec<SelectionRange>>> {
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let lines = LineMap::new(&doc.text);
+        let cst = cst::build_cst(&doc.text);
+        let ranges = params
+            .positions
+            .into_iter()
+            .map(|p| selection_at(&cst, &lines, lines.offset(p.line, p.character)))
+            .collect();
+        Ok(Some(ranges))
+    }
+}
+
+/// Document outline: one symbol per top-level declaration of `src`'s CST.
+pub fn outline(src: &str) -> Vec<DocumentSymbol> {
+    let lines = LineMap::new(src);
+    cst::document_symbols(&cst::build_cst(src))
+        .into_iter()
+        .map(|(name, r)| {
+            let range = text_range_to_range(&lines, r);
+            #[allow(deprecated)] // `deprecated` field is required by the struct
+            DocumentSymbol {
+                name,
+                detail: None,
+                kind: SymbolKind::FUNCTION,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range: range,
+                children: None,
+            }
+        })
+        .collect()
+}
+
+/// Folding ranges: each multi-line top-level declaration of `src`'s CST.
+pub fn folds(src: &str) -> Vec<FoldingRange> {
+    let lines = LineMap::new(src);
+    cst::build_cst(src)
+        .children()
+        .filter_map(|decl| content_range(&decl))
+        .filter_map(|r| {
+            let start_line = offset_to_position(&lines, usize::from(r.start())).line;
+            let end_line = offset_to_position(&lines, usize::from(r.end())).line;
+            (end_line > start_line).then_some(FoldingRange {
+                start_line,
+                start_character: None,
+                end_line,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Region),
+                collapsed_text: None,
+            })
+        })
+        .collect()
+}
+
+/// The expand-selection chain at a byte `offset` in `src` (builds the CST fresh).
+pub fn selection(src: &str, offset: usize) -> SelectionRange {
+    let lines = LineMap::new(src);
+    selection_at(&cst::build_cst(src), &lines, offset)
+}
+
+/// Build the nested "expand selection" range at `offset`: the token there, then each
+/// enclosing node, outermost wrapping innermost.
+pub fn selection_at(cst: &SyntaxNode, lines: &LineMap, offset: usize) -> SelectionRange {
+    let ts = rowan::TextSize::new(u32::try_from(offset).unwrap_or(0));
+    let token = cst.token_at_offset(ts).right_biased();
+    // innermost → outermost ranges (token, then ancestor nodes), de-duplicating
+    // equal ranges so each level strictly grows.
+    let mut ranges: Vec<rowan::TextRange> = Vec::new();
+    if let Some(tok) = token {
+        ranges.push(tok.text_range());
+        if let Some(parent) = tok.parent() {
+            for node in parent.ancestors() {
+                let r = node.text_range();
+                if ranges.last() != Some(&r) {
+                    ranges.push(r);
+                }
+            }
+        }
+    } else {
+        ranges.push(cst.text_range());
+    }
+    // Fold outermost → innermost so each SelectionRange's `parent` is the next-larger.
+    let mut parent: Option<Box<SelectionRange>> = None;
+    for r in ranges.into_iter().rev() {
+        parent = Some(Box::new(SelectionRange {
+            range: text_range_to_range(lines, r),
+            parent,
+        }));
+    }
+    parent.map_or_else(
+        || SelectionRange {
+            range: Range::default(),
+            parent: None,
+        },
+        |b| *b,
+    )
 }
 
 /// Serve the language server over stdin/stdout (the standard LSP transport).

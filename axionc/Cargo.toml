@@ -20,7 +20,7 @@ required-features = ["lsp"]
 # The salsa incremental query engine (§8). The LSP pulls it in so the server
 # reuses memoized parses (prelude + unchanged imports) across edits.
 salsa = ["dep:salsa"]
-lsp = ["dep:tokio", "dep:tower-lsp", "salsa"]
+lsp = ["dep:tokio", "dep:tower-lsp", "salsa", "cst"]
 # Lossless rowan CST (§8) — Stage 1 foundation, additive (does not yet drive
 # analysis). Feature-gated so default/CLI builds stay lean.
 cst = ["dep:rowan"]

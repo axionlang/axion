@@ -4,7 +4,7 @@
 #![cfg(feature = "lsp")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::lsp::analyze;
+use axionc::lsp::{analyze, folds, outline, selection};
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
 fn fixture(name: &str) -> String {
@@ -16,6 +16,48 @@ fn code_of(d: &tower_lsp::lsp_types::Diagnostic) -> Option<&str> {
         Some(NumberOrString::String(s)) => Some(s.as_str()),
         _ => None,
     }
+}
+
+#[test]
+fn outline_lists_top_level_declarations() {
+    let names: Vec<String> = outline("f :: Int\nf = 0\n\ndata Color = Red\n\nmain :: Int\nmain = f\n")
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert!(names.contains(&"f".to_string()), "expected `f` in {names:?}");
+    assert!(names.contains(&"main".to_string()), "expected `main` in {names:?}");
+}
+
+#[test]
+fn folding_ranges_cover_multiline_declarations() {
+    // A one-line decl doesn't fold; a multi-line one does.
+    let src = "one = 1\n\nbig x =\n  case x of\n    A -> 1\n    B -> 2\n";
+    let fs = folds(src);
+    assert!(
+        fs.iter().any(|f| f.end_line > f.start_line),
+        "the multi-line `big` should produce a fold: {fs:?}"
+    );
+}
+
+#[test]
+fn selection_range_expands_through_the_syntax_tree() {
+    // Cursor on the `1` inside `x + 1`: the chain must grow (literal ⊂ … ⊂ decl).
+    let src = "f x = x + 1\n";
+    let offset = src.find('1').unwrap();
+    let sel = selection(src, offset);
+    // Walk the parent chain; ranges must be strictly non-shrinking and reach beyond
+    // the single character.
+    let innermost = sel.range;
+    let mut widest = sel.range;
+    let mut cur = sel.parent;
+    while let Some(p) = cur {
+        widest = p.range;
+        cur = p.parent;
+    }
+    assert!(
+        widest.end > innermost.end || widest.start < innermost.start,
+        "selection should expand outward: inner={innermost:?} outer={widest:?}"
+    );
 }
 
 #[test]

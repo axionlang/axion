@@ -15,6 +15,17 @@ promises in §8 — with unchanged work memoized across edits.
 - **Quick fixes** — where the compiler attaches a machine-applicable `Fix` (e.g. the
   AX0101 "did you mean `length`?" rename), the LSP offers it as a one-click
   `quickfix` code action.
+- **Document symbols / outline** — top-level declarations, from the CST
+  (`textDocument/documentSymbol`).
+- **Folding ranges** — each multi-line top-level declaration folds
+  (`textDocument/foldingRange`).
+- **Selection ranges** — "expand selection" walks the CST from the token under the
+  cursor out through its enclosing expression/pattern/declaration nodes
+  (`textDocument/selectionRange`).
+
+The last three are built on the lossless [rowan CST](#rowan-cst-stages-12); the
+`lsp` feature pulls in `cst`. (The `outline`/`folds`/`selection` cores are pure
+functions, unit-tested in `tests/lsp.rs`.)
 
 ## Building & running
 
