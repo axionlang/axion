@@ -481,8 +481,14 @@ pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
     let lines = LineMap::new(src);
     let ltokens = layout::layout(&tokens, &lines);
     // Declaration-level error recovery (§8): a malformed declaration is reported but
-    // the rest of the file still parses, so the LSP keeps analysing valid code while
-    // one declaration is half-typed. `None` only when nothing at all parsed.
+    // the rest of the file still parses. `None` only when nothing at all parsed.
+    //
+    // NOTE: the token-driven rowan CST parser (`cst::parse_module_full`) is proven
+    // structurally equivalent to this parser over every fixture, but the pipeline is
+    // NOT yet flipped onto it — spans are SEMANTIC keys here (the `array_tys`/
+    // `makecon_tys` mono maps are keyed by span, and diagnostics render spans), so the
+    // flip additionally needs the CST lowering to reproduce this parser's span
+    // conventions byte-for-byte. That is the remaining work.
     let (mut module, parse_errors) = parser::parse_module_resilient(&ltokens);
     let recovered = !parse_errors.is_empty();
     for d in parse_errors {

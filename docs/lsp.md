@@ -173,10 +173,19 @@ stages (`src/cst.rs`, `--features cst`).
   (positional + record constructors, `deriving`), `class`, `instance`, `foreign`, the
   module header, and imports — and lowers to EXACTLY the same `ast::Module` as the
   recursive-descent parser **over every fixture and example**
-  (`token_driven_module_matches_over_all_fixtures`, 205 modules). The remaining step
-  is the flip itself: switch `parse_source`/`compile_front` onto the token-driven
-  parser and retire `parser.rs`, guarded by the whole test suite + oracle across all
-  three backends.
+  (`token_driven_module_matches_over_all_fixtures`, 205 modules; spans normalised).
+  `cst::parse_module_full` exposes it as a drop-in parse entry.
+
+  The **flip** — making it the primary parser — was attempted and reverted: spans
+  are *semantic keys* in the pipeline (the `array_tys`/`makecon_tys` monomorphisation
+  maps are keyed by span, and diagnostics render spans), so structural equivalence
+  isn't enough — the CST lowering must reproduce the recursive-descent parser's span
+  conventions **byte-for-byte**. `node_span` (spans measured from the first to the
+  last non-trivia token) closes most of the gap; the remaining work is matching the
+  handful of productions whose spans run to the *next* token, then extending the
+  differential test to compare spans un-normalised. Until then the pipeline stays on
+  the recursive-descent parser and the token-driven parser powers the CST's LSP
+  features and validates itself against the reference.
 
 It is **additive**: the analysis pipeline still runs on `ast::Module` via the
 recursive-descent parser; the token-driven parser is validated behind the `cst`

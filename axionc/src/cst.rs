@@ -1372,6 +1372,29 @@ fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
     Some((SyntaxNode::new_root(p.b.finish()), full))
 }
 
+/// The span of a node measured from its first to its last NON-trivia token — so
+/// leading/trailing whitespace woven into the node doesn't shift the offsets. This
+/// matches the recursive-descent parser, whose spans start/end on real tokens.
+fn node_span(node: &SyntaxNode) -> Span {
+    let mut toks = node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !is_trivia(t.kind()));
+    match toks.next() {
+        Some(first) => {
+            let last = toks.last().unwrap_or_else(|| first.clone());
+            (
+                usize::from(first.text_range().start()),
+                usize::from(last.text_range().end()),
+            )
+        }
+        None => {
+            let r = node.text_range();
+            (usize::from(r.start()), usize::from(r.end()))
+        }
+    }
+}
+
 /// The first non-trivia token directly under `node`.
 fn head_token(node: &SyntaxNode) -> Option<rowan::SyntaxToken<AxionLang>> {
     node.children_with_tokens()
@@ -1420,8 +1443,7 @@ fn binop_operator(node: &SyntaxNode) -> Option<String> {
 /// Lower a CST expression node to `ast::Expr`, re-lexing literal/name leaves for
 /// their values and applying the same desugarings as the recursive-descent parser.
 fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
-    let r = node.text_range();
-    let sp = (usize::from(r.start()), usize::from(r.end()));
+    let sp = node_span(node);
     match node.kind() {
         LITERAL_EXPR => {
             let text = head_token(node)?.text().to_string();
@@ -1610,8 +1632,7 @@ fn lower_stmt(node: &SyntaxNode) -> Option<DoStmt> {
 
 /// Lower a CST pattern node to `ast::Pat`.
 fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
-    let r = node.text_range();
-    let sp = (usize::from(r.start()), usize::from(r.end()));
+    let sp = node_span(node);
     match node.kind() {
         WILD_PAT => Some(Pat::Wild(sp)),
         VAR_PAT => Some(Pat::Var(head_token(node)?.text().to_string(), sp)),
@@ -1858,8 +1879,7 @@ fn lower_sig(node: &SyntaxNode) -> Option<SigParts> {
 }
 
 fn lower_clause(node: &SyntaxNode) -> Option<(String, Clause)> {
-    let r = node.text_range();
-    let sp = (usize::from(r.start()), usize::from(r.end()));
+    let sp = node_span(node);
     let name = node
         .children_with_tokens()
         .filter_map(|e| e.into_token())
@@ -2121,6 +2141,19 @@ fn lower_module_name(node: &SyntaxNode) -> Vec<String> {
         .filter(|t| matches!(t.kind(), IDENT | CONID))
         .map(|t| t.text().to_string())
         .collect()
+}
+
+/// Parse a whole module via the token-driven parser and lower it to `ast::Module`,
+/// returning `Some` only when the ENTIRE input parsed within the grammar (no leftover
+/// real tokens). This is the primary parse path the pipeline is flipped onto; a
+/// malformed file yields `None`, and the caller falls back to the recursive-descent
+/// parser for error reporting and declaration-level recovery.
+pub fn parse_module_full(src: &str) -> Option<crate::ast::Module> {
+    let (cst, full) = parse_module_cst(src)?;
+    if !full {
+        return None;
+    }
+    lower_module(&cst)
 }
 
 fn parse_module_cst(src: &str) -> Option<(SyntaxNode, bool)> {
