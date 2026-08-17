@@ -21,6 +21,9 @@ required-features = ["lsp"]
 # reuses memoized parses (prelude + unchanged imports) across edits.
 salsa = ["dep:salsa"]
 lsp = ["dep:tokio", "dep:tower-lsp", "salsa"]
+# Lossless rowan CST (§8) — Stage 1 foundation, additive (does not yet drive
+# analysis). Feature-gated so default/CLI builds stay lean.
+cst = ["dep:rowan"]
 
 [dependencies]
 logos = "0.14"
@@ -33,6 +36,9 @@ tower-lsp = { version = "0.20", optional = true }
 
 # Incremental query engine (optional — `--features salsa`, pulled in by `lsp`).
 salsa = { version = "0.28", optional = true }
+
+# Lossless CST (optional — `--features cst`).
+rowan = { version = "0.17", optional = true }
 
 # Backend nativo --dev (§11/§18): o «Fast-Path Backend».
 cranelift = "0.116"

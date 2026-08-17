@@ -125,10 +125,23 @@ diagnostics. Because signatures and clauses are separate declarations, a broken
 clause body keeps the function's *signature* in scope, so references to it from
 elsewhere don't spuriously go unresolved.
 
-This is declaration-level recovery on the existing recursive-descent parser, not a
-full rowan lossless CST. Intra-declaration recovery (a broken expression inside an
-otherwise-valid declaration), lossless round-tripping for formatting/refactoring,
-and subtree-incremental reparse would come with a rowan CST — deferred.
+This is declaration-level recovery on the existing recursive-descent parser.
+
+### Rowan CST (Stage 1)
+
+A lossless [rowan](https://github.com/rust-analyzer/rowan) CST is being introduced in
+stages (`src/cst.rs`, `--features cst`). **Stage 1** is the foundation: a *lossless*
+green tree — every byte of source, including whitespace and comments, is a leaf, so
+it round-trips exactly (`cst_round_trips_every_fixture`) — with a coarse grammar
+structure (the module splits into top-level declaration nodes at column-1
+boundaries). It already powers document symbols / outline (`document_symbols`).
+
+It is **additive**: the analysis pipeline still runs on `ast::Module` via the
+recursive-descent parser; the CST does not drive checking yet. Later stages will
+structure expressions/patterns/types with grammar-level ERROR nodes (intra-declaration
+recovery), then lower the CST → `ast::Module` and flip the pipeline onto it (an
+oracle-guarded step). Those remain deferred — a full rowan migration is multi-stage
+by design.
 
 ## Scope & what's deferred
 

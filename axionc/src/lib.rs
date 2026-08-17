@@ -59,6 +59,10 @@ mod parser;
 #[cfg(feature = "salsa")]
 pub mod db;
 
+/// The lossless rowan CST (§8), gated behind the `cst` feature.
+#[cfg(feature = "cst")]
+pub mod cst;
+
 /// The Language Server (`axion-lsp`), gated behind the `lsp` cargo feature so the
 /// default build stays free of the tokio/tower-lsp async dependency tree.
 #[cfg(feature = "lsp")]
