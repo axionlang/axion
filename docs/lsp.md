@@ -154,12 +154,24 @@ stages (`src/cst.rs`, `--features cst`).
   holds by construction. Powers document symbols and selection/navigation at
   expression granularity.
 
-It is **additive**: the analysis pipeline still runs on `ast::Module`; the CST does
-not drive checking yet. Deferred: structuring type signatures and `data`/`class`
-internals, intra-*declaration* error recovery (a broken expression inside an
-otherwise-valid declaration — needs parser-level expression recovery), and the final
-step — lowering the CST → `ast::Module` and flipping the pipeline onto it
-(oracle-guarded). A full rowan migration is multi-stage by design.
+- **Stage 3a** — the first slice of the pipeline flip: a *token-driven*,
+  CST-emitting parser (via rowan checkpoints) that parses tokens DIRECTLY into a
+  lossless CST — rather than deriving structure from the AST — plus a CST→AST
+  lowering (`lower_expr`). It currently covers a subset of expressions (atoms,
+  application, `* + - == < >`, parens) and is proven to produce EXACTLY the same
+  `ast::Expr` as the recursive-descent parser by a differential test
+  (`token_driven_parser_matches_recursive_descent_over_the_subset`, plus an honest
+  `subset_boundary_is_honest`). Later slices extend the grammar (patterns, types,
+  declarations, the remaining operators/desugarings); once it covers everything and
+  provably agrees over all fixtures, the default pipeline flips onto it and the
+  recursive-descent parser is retired.
+
+It is **additive**: the analysis pipeline still runs on `ast::Module` via the
+recursive-descent parser; the token-driven parser is validated behind the `cst`
+feature and does not drive checking yet. Deferred: extending the token-driven parser
+to the full grammar and flipping the pipeline; structuring type signatures and
+`data`/`class` internals in the derived CST; intra-*declaration* error recovery. A
+full rowan migration is multi-stage by design.
 
 ## Scope & what's deferred
 

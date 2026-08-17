@@ -2,7 +2,7 @@
 #![cfg(feature = "cst")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::cst::{build_cst, document_symbols, SyntaxKind, SyntaxNode};
+use axionc::cst::{build_cst, document_symbols, expr_matches_parser, SyntaxKind, SyntaxNode};
 
 fn has_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
     root.descendants().any(|n| n.kind() == kind)
@@ -69,6 +69,49 @@ fn broken_declaration_becomes_an_error_node_but_siblings_survive() {
     );
     // And it still round-trips.
     assert_eq!(cst.text().to_string(), "broken = = =\n\ngood :: Int\ngood = h 1\n");
+}
+
+#[test]
+fn token_driven_parser_matches_recursive_descent_over_the_subset() {
+    // Stage 3a: the token-driven CST parser + lowering must produce EXACTLY the same
+    // AST as the existing recursive-descent parser, over the supported subset. This
+    // equivalence is what will gate flipping the pipeline onto the CST.
+    for e in [
+        "1",
+        "42",
+        "3.14",
+        "\"hi\"",
+        "x",
+        "Nothing",
+        "f x",
+        "f x y",
+        "g (h x)",
+        "1 + 2",
+        "1 + 2 * 3",
+        "a - b - c",
+        "a * b + c",
+        "a == b",
+        "x < y + 1",
+        "1 + 2 == 3",
+        "(1 + 2) * 3",
+        "f (a + b) c",
+        "foo 1 2 + bar 3",
+        "map f (g x)",
+    ] {
+        assert!(
+            expr_matches_parser(e),
+            "token-driven parser diverges from the reference for: {e}"
+        );
+    }
+}
+
+#[test]
+fn subset_boundary_is_honest() {
+    // Constructs outside the supported subset report `false` (not a silent match),
+    // so the corpus above cannot accidentally hide a gap.
+    for e in ["if x then 1 else 2", "x : xs", "f . g", "\\y -> y", "a $ b"] {
+        assert!(!expr_matches_parser(e), "unexpectedly claimed support for: {e}");
+    }
 }
 
 #[test]

@@ -50,6 +50,7 @@ pub enum SyntaxKind {
     LAMBDA_EXPR,
     TUPLE_EXPR,
     RECORD_EXPR,
+    PAREN_EXPR,
     // pattern nodes
     WILD_PAT,
     VAR_PAT,
@@ -60,8 +61,8 @@ pub enum SyntaxKind {
 
 use SyntaxKind::{
     APP_EXPR, BINOP_EXPR, CASE_EXPR, COMMENT, CON_PAT, CONID, DECL, ERROR, IDENT, IF_EXPR, KEYWORD,
-    LAMBDA_EXPR, LET_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, MODULE, NAME_EXPR, PUNCT, RECORD_EXPR,
-    TUPLE_EXPR, TUPLE_PAT, VAR_PAT, WHITESPACE, WILD_PAT,
+    LAMBDA_EXPR, LET_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, MODULE, NAME_EXPR, PAREN_EXPR, PUNCT,
+    RECORD_EXPR, TUPLE_EXPR, TUPLE_PAT, VAR_PAT, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -101,6 +102,7 @@ impl Language for AxionLang {
             LAMBDA_EXPR,
             TUPLE_EXPR,
             RECORD_EXPR,
+            PAREN_EXPR,
             WILD_PAT,
             VAR_PAT,
             LIT_PAT,
@@ -398,4 +400,307 @@ pub fn document_symbols(root: &SyntaxNode) -> Vec<(String, rowan::TextRange)> {
             Some((name, decl.text_range()))
         })
         .collect()
+}
+
+// === Stage 3a: token-driven CST-emitting parser (a subset) + CST→AST lowering ===
+//
+// The first real slice of the pipeline flip: instead of deriving the CST from the
+// AST, this parses TOKENS DIRECTLY into a lossless, grammar-structured CST, then
+// LOWERS that CST back to `ast::Expr`. It covers a subset of the expression grammar
+// — atoms (literals, names, parenthesised), application, and the `* + - == < >`
+// operators — and is proven equivalent to the existing recursive-descent parser by
+// `expr_matches_parser` (used in the differential test). Later slices extend the
+// grammar; once it covers everything and provably agrees, the default pipeline flips
+// onto it. Excluded here (fall through to `None`): `:`/`++`/`.`/`$`/backtick/dotted
+// operators, sections, records, lists, and `if`/`let`/`case`/`\`/`do`.
+
+use crate::lexer::IntLit;
+
+fn is_trivia(k: SyntaxKind) -> bool {
+    matches!(k, WHITESPACE | COMMENT)
+}
+
+struct ExprParser<'a> {
+    src: &'a str,
+    toks: &'a [Spanned],
+    pos: usize,
+    cursor: usize,
+    b: GreenNodeBuilder<'static>,
+    ok: bool,
+}
+
+impl ExprParser<'_> {
+    fn cur(&self) -> Option<&Tok> {
+        self.toks.get(self.pos).map(|s| &s.tok)
+    }
+
+    fn trivia(&mut self, to: usize) {
+        let text = self.src.get(self.cursor..to).unwrap_or("");
+        if !text.is_empty() {
+            let kind = if text.contains("--") { COMMENT } else { WHITESPACE };
+            self.b.token(kind.into(), text);
+        }
+        self.cursor = to;
+    }
+
+    /// Emit the current token (with its leading trivia) as a leaf and advance.
+    fn bump(&mut self) {
+        if let Some(t) = self.toks.get(self.pos) {
+            if t.start > self.cursor {
+                self.trivia(t.start);
+            }
+            let text = self.src.get(t.start..t.end).unwrap_or("");
+            self.b.token(token_kind(&t.tok).into(), text);
+            self.cursor = t.end;
+            self.pos += 1;
+        }
+    }
+
+    fn expr(&mut self) {
+        self.cmp();
+    }
+
+    fn cmp(&mut self) {
+        let cp = self.b.checkpoint();
+        self.add();
+        while matches!(self.cur(), Some(Tok::EqEq | Tok::Lt | Tok::Gt)) {
+            self.b.start_node_at(cp, BINOP_EXPR.into());
+            self.bump();
+            self.add();
+            self.b.finish_node();
+        }
+    }
+
+    fn add(&mut self) {
+        let cp = self.b.checkpoint();
+        self.mul();
+        while matches!(self.cur(), Some(Tok::Plus | Tok::Minus)) {
+            self.b.start_node_at(cp, BINOP_EXPR.into());
+            self.bump();
+            self.mul();
+            self.b.finish_node();
+        }
+    }
+
+    fn mul(&mut self) {
+        let cp = self.b.checkpoint();
+        self.app();
+        while matches!(self.cur(), Some(Tok::Star)) {
+            self.b.start_node_at(cp, BINOP_EXPR.into());
+            self.bump();
+            self.app();
+            self.b.finish_node();
+        }
+    }
+
+    fn app(&mut self) {
+        let cp = self.b.checkpoint();
+        self.atom();
+        while self.starts_atom() {
+            self.b.start_node_at(cp, APP_EXPR.into());
+            self.atom();
+            self.b.finish_node();
+        }
+    }
+
+    fn starts_atom(&self) -> bool {
+        matches!(
+            self.cur(),
+            Some(
+                Tok::Int(_)
+                    | Tok::Float(_)
+                    | Tok::Str(_)
+                    | Tok::VarId(_)
+                    | Tok::ConId(_)
+                    | Tok::LParen
+            )
+        )
+    }
+
+    fn atom(&mut self) {
+        match self.cur() {
+            Some(Tok::Int(_) | Tok::Float(_) | Tok::Str(_)) => {
+                self.b.start_node(LITERAL_EXPR.into());
+                self.bump();
+                self.b.finish_node();
+            }
+            Some(Tok::VarId(_) | Tok::ConId(_)) => {
+                self.b.start_node(NAME_EXPR.into());
+                self.bump();
+                self.b.finish_node();
+            }
+            Some(Tok::LParen) => {
+                self.b.start_node(PAREN_EXPR.into());
+                self.bump(); // '('
+                self.expr();
+                if matches!(self.cur(), Some(Tok::RParen)) {
+                    self.bump(); // ')'
+                } else {
+                    self.ok = false;
+                }
+                self.b.finish_node();
+            }
+            _ => self.ok = false,
+        }
+    }
+}
+
+/// Parse `src` as a single expression, token-driven, into a CST. Returns the root
+/// `SyntaxNode` and whether the whole input was consumed by the supported subset.
+fn parse_expr_cst(src: &str) -> Option<(SyntaxNode, bool)> {
+    let toks = lex(src).ok()?;
+    let mut p = ExprParser {
+        src,
+        toks: &toks,
+        pos: 0,
+        cursor: 0,
+        b: GreenNodeBuilder::new(),
+        ok: true,
+    };
+    p.b.start_node(MODULE.into());
+    p.expr();
+    let full = p.ok && p.pos == p.toks.len();
+    let end = p.src.len();
+    p.trivia(end);
+    p.b.finish_node();
+    Some((SyntaxNode::new_root(p.b.finish()), full))
+}
+
+/// The first non-trivia token directly under `node`.
+fn head_token(node: &SyntaxNode) -> Option<rowan::SyntaxToken<AxionLang>> {
+    node.children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| !is_trivia(t.kind()))
+}
+
+/// Lower a CST expression node to `ast::Expr`, re-lexing literal/name leaves for
+/// their values so the result matches the recursive-descent parser.
+fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
+    let r = node.text_range();
+    let sp = (usize::from(r.start()), usize::from(r.end()));
+    match node.kind() {
+        LITERAL_EXPR => {
+            let text = head_token(node)?.text().to_string();
+            match lex(&text).ok()?.first()?.tok.clone() {
+                Tok::Int(IntLit::Small(n)) => Some(Expr::Int(n, sp)),
+                Tok::Int(IntLit::Big(d)) => Some(Expr::App(
+                    Box::new(Expr::Var("bignumFromStr".into(), sp)),
+                    Box::new(Expr::Str(d, sp)),
+                    sp,
+                )),
+                Tok::Float(f) => Some(Expr::Float(f, sp)),
+                Tok::Str(s) => Some(Expr::Str(s, sp)),
+                _ => None,
+            }
+        }
+        NAME_EXPR => {
+            let tok = head_token(node)?;
+            let name = tok.text().to_string();
+            Some(if tok.kind() == CONID {
+                Expr::Con(name, sp)
+            } else {
+                Expr::Var(name, sp)
+            })
+        }
+        PAREN_EXPR => lower_expr(&node.children().next()?), // parens are transparent
+        APP_EXPR => {
+            let mut kids = node.children();
+            let f = lower_expr(&kids.next()?)?;
+            let a = lower_expr(&kids.next()?)?;
+            Some(Expr::App(Box::new(f), Box::new(a), sp))
+        }
+        BINOP_EXPR => {
+            let op = head_token(node)?.text().to_string();
+            let mut kids = node.children();
+            let l = lower_expr(&kids.next()?)?;
+            let rhs = lower_expr(&kids.next()?)?;
+            Some(Expr::BinOp(op, Box::new(l), Box::new(rhs), sp))
+        }
+        _ => None,
+    }
+}
+
+/// Zero every span in an expression, so two ASTs can be compared for STRUCTURAL
+/// equality (the token-driven parser and the recursive-descent parser number spans
+/// from different origins).
+fn zero_spans(e: &mut Expr) {
+    let z = (0usize, 0usize);
+    match e {
+        Expr::Int(_, s) | Expr::Float(_, s) | Expr::Str(_, s) | Expr::Var(_, s) | Expr::Con(_, s) => {
+            *s = z;
+        }
+        Expr::App(a, b, s) | Expr::BinOp(_, a, b, s) => {
+            *s = z;
+            zero_spans(a);
+            zero_spans(b);
+        }
+        Expr::If(a, b, c, s) => {
+            *s = z;
+            zero_spans(a);
+            zero_spans(b);
+            zero_spans(c);
+        }
+        Expr::Tuple(es, s) => {
+            *s = z;
+            es.iter_mut().for_each(zero_spans);
+        }
+        Expr::Lam(_, b, s) | Expr::Let(_, b, s) => {
+            *s = z;
+            zero_spans(b);
+        }
+        Expr::Case(sc, arms, s) => {
+            *s = z;
+            zero_spans(sc);
+            arms.iter_mut().for_each(|(_, e)| zero_spans(e));
+        }
+        Expr::RecordCon(_, fs, s) => {
+            *s = z;
+            fs.iter_mut().for_each(|(_, e)| zero_spans(e));
+        }
+        Expr::RecordUpd(b, fs, s) => {
+            *s = z;
+            zero_spans(b);
+            fs.iter_mut().for_each(|(_, e)| zero_spans(e));
+        }
+    }
+}
+
+/// The recursive-descent parser's `ast::Expr` for the expression `src` (wrapped as
+/// `main = src`), spans zeroed.
+fn parser_expr(src: &str) -> Option<Expr> {
+    let wrapped = format!("main = {src}\n");
+    let toks = lex(&wrapped).ok()?;
+    let lines = LineMap::new(&wrapped);
+    let lt = crate::layout::layout(&toks, &lines);
+    let (module, _errs) = crate::parser::parse_module_resilient(&lt);
+    let main = module.funcs.iter().find(|f| f.name == "main")?;
+    match &main.clauses.first()?.body {
+        crate::ast::Body::Plain(e) => {
+            let mut e = e.clone();
+            zero_spans(&mut e);
+            Some(e)
+        }
+        crate::ast::Body::Guarded(_) => None,
+    }
+}
+
+/// Whether the token-driven CST parser + lowering reproduces the recursive-descent
+/// parser's AST for the expression `src` (structurally, spans ignored). Used by the
+/// differential test that gates the pipeline flip. `false` when `src` uses a
+/// construct outside the supported subset (so the corpus stays honest).
+pub fn expr_matches_parser(src: &str) -> bool {
+    let Some((cst, full)) = parse_expr_cst(src) else {
+        return false;
+    };
+    if !full {
+        return false;
+    }
+    let Some(node) = cst.children().next() else {
+        return false;
+    };
+    let Some(mut lowered) = lower_expr(&node) else {
+        return false;
+    };
+    zero_spans(&mut lowered);
+    parser_expr(src).is_some_and(|expected| expected == lowered)
 }

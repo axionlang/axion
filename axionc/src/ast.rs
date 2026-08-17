@@ -11,7 +11,8 @@ pub enum Mult {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub enum Type {
     Con(String),
     Var(String),
@@ -59,7 +60,8 @@ impl Type {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub enum Pat {
     Wild(Span),
     Var(String, Span),
@@ -69,7 +71,8 @@ pub enum Pat {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub enum Expr {
     Int(i64, Span),
     Float(f64, Span),
@@ -112,7 +115,8 @@ impl Expr {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct Clause {
     pub pats: Vec<Pat>,
     pub body: Body,
@@ -121,14 +125,16 @@ pub struct Clause {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub enum Body {
     Plain(Expr),
     Guarded(Vec<(Expr, Expr)>), // (guard, result)
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct Func {
     pub name: String,
     pub sig: Option<Type>,
@@ -143,7 +149,8 @@ pub struct Func {
 
 /// A record field: name, type and multiplicity (`%1` marks a linear field).
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct Field {
     pub name: String,
     pub ty: Type,
@@ -152,7 +159,8 @@ pub struct Field {
 
 /// A data constructor, with named (record) or positional fields.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct ConDecl {
     pub name: String,
     pub fields: Vec<Field>, // empty name ("") for positional fields
@@ -166,7 +174,8 @@ impl ConDecl {
 
 /// `data T = Con { ... } | ...`
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct DataDecl {
     pub name: String,
     pub params: Vec<String>, // type parameters (e.g. `a` in `data List a`)
@@ -180,7 +189,8 @@ pub struct DataDecl {
 /// `class C a where <method signatures>` (§ typeclasses). A class declares
 /// overloaded method names; each `instance` provides the implementations.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct ClassDecl {
     pub name: String,                 // ex.: "Eq"
     pub tyvar: String,                // the class type variable (e.g. "a")
@@ -191,7 +201,8 @@ pub struct ClassDecl {
 /// `instance C T where <clauses>` — the implementations of class `C`'s methods
 /// for the type whose head is `ty_head` (e.g. "Int", "Maybe").
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct InstanceDecl {
     pub class_name: String,
     pub ty_head: String,
@@ -211,7 +222,8 @@ pub fn method_impl_name(method: &str, ty_head: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct Module {
     pub name: Option<Vec<String>>,
     pub imports: Vec<ImportDecl>,
@@ -227,7 +239,8 @@ pub struct Module {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct ImportDecl {
     pub module: Vec<String>,
     pub qualified: bool,
@@ -255,7 +268,8 @@ impl Module {
 /// C function `name` (Int/i64 ABI), resolved by `dlsym` (§18). With the optional
 /// library path, that `.so` is loaded before resolving the symbols.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct Foreign {
     pub name: String,
     pub sig: Type,
