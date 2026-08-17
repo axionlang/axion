@@ -127,21 +127,28 @@ elsewhere don't spuriously go unresolved.
 
 This is declaration-level recovery on the existing recursive-descent parser.
 
-### Rowan CST (Stage 1)
+### Rowan CST (Stages 1–2)
 
 A lossless [rowan](https://github.com/rust-analyzer/rowan) CST is being introduced in
-stages (`src/cst.rs`, `--features cst`). **Stage 1** is the foundation: a *lossless*
-green tree — every byte of source, including whitespace and comments, is a leaf, so
-it round-trips exactly (`cst_round_trips_every_fixture`) — with a coarse grammar
-structure (the module splits into top-level declaration nodes at column-1
-boundaries). It already powers document symbols / outline (`document_symbols`).
+stages (`src/cst.rs`, `--features cst`).
 
-It is **additive**: the analysis pipeline still runs on `ast::Module` via the
-recursive-descent parser; the CST does not drive checking yet. Later stages will
-structure expressions/patterns/types with grammar-level ERROR nodes (intra-declaration
-recovery), then lower the CST → `ast::Module` and flip the pipeline onto it (an
-oracle-guarded step). Those remain deferred — a full rowan migration is multi-stage
-by design.
+- **Stage 1** — a *lossless* green tree: every byte of source, including whitespace
+  and comments, is a leaf, so it round-trips exactly (`cst_round_trips_every_fixture`).
+- **Stage 2** — **grammar structure**: top-level declaration nodes with nested
+  expression and pattern nodes (`APP_EXPR`, `BINOP_EXPR`, `IF_EXPR`, `CON_PAT`, …),
+  plus **ERROR nodes** over declarations the parser could not parse. To avoid a
+  second, divergent parser, the structure is derived from the AST the proven
+  recursive-descent parser already produces — its `Expr`/`Pat`/`Clause` spans drive
+  where nodes open and close, while every token is still emitted, so losslessness
+  holds by construction. Powers document symbols and selection/navigation at
+  expression granularity.
+
+It is **additive**: the analysis pipeline still runs on `ast::Module`; the CST does
+not drive checking yet. Deferred: structuring type signatures and `data`/`class`
+internals, intra-*declaration* error recovery (a broken expression inside an
+otherwise-valid declaration — needs parser-level expression recovery), and the final
+step — lowering the CST → `ast::Module` and flipping the pipeline onto it
+(oracle-guarded). A full rowan migration is multi-stage by design.
 
 ## Scope & what's deferred
 

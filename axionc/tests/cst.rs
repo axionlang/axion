@@ -2,7 +2,11 @@
 #![cfg(feature = "cst")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::cst::{build_cst, document_symbols};
+use axionc::cst::{build_cst, document_symbols, SyntaxKind, SyntaxNode};
+
+fn has_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
+    root.descendants().any(|n| n.kind() == kind)
+}
 
 /// The defining property: the CST is LOSSLESS — concatenating its leaves reproduces
 /// the source byte-for-byte. Checked over every fixture and example.
@@ -39,6 +43,32 @@ fn cst_round_trips_comments_and_layout() {
     let src = "-- a leading comment\nf :: Int   -- trailing\nf  =  0\n\n\ndata T = A | B\n";
     let cst = build_cst(src);
     assert_eq!(cst.text().to_string(), src, "trivia must round-trip");
+}
+
+#[test]
+fn cst_is_grammar_structured() {
+    // Stage 2: expressions and patterns are nested nodes, not a flat token run.
+    let cst = build_cst("f x = x + 1\n");
+    assert!(has_kind(&cst, SyntaxKind::VAR_PAT), "the parameter `x` should be a VAR_PAT");
+    assert!(has_kind(&cst, SyntaxKind::BINOP_EXPR), "`x + 1` should be a BINOP_EXPR");
+    assert!(has_kind(&cst, SyntaxKind::LITERAL_EXPR), "`1` should be a LITERAL_EXPR");
+
+    let cst = build_cst("g y = if y then A else B\n");
+    assert!(has_kind(&cst, SyntaxKind::IF_EXPR), "should have an IF_EXPR");
+}
+
+#[test]
+fn broken_declaration_becomes_an_error_node_but_siblings_survive() {
+    // A malformed declaration is wrapped in an ERROR node; a valid sibling still gets
+    // its grammar structure — CST-level resilience.
+    let cst = build_cst("broken = = =\n\ngood :: Int\ngood = h 1\n");
+    assert!(has_kind(&cst, SyntaxKind::ERROR), "the broken decl should be an ERROR node");
+    assert!(
+        has_kind(&cst, SyntaxKind::APP_EXPR),
+        "the valid sibling `h 1` should still be a structured APP_EXPR"
+    );
+    // And it still round-trips.
+    assert_eq!(cst.text().to_string(), "broken = = =\n\ngood :: Int\ngood = h 1\n");
 }
 
 #[test]
