@@ -167,14 +167,16 @@ stages (`src/cst.rs`, `--features cst`).
   virtual `VLBrace`/`VSemi`/`VRBrace`; trivia is woven only for real tokens), and is
   proven to produce EXACTLY the same `ast::Expr` as the recursive-descent parser by a
   differential test (`token_driven_parser_matches_recursive_descent_over_the_subset`).
-  The **module** level is under way too: types (`Con`/`Var`/`App`/`Arrow` with `%mult`/
-  `Tuple`/`Unit` + `C a =>` constraints), signatures, and function clauses (patterns,
-  plain/guarded bodies, `where`) lower to EXACTLY the same `ast::Module` as the
-  recursive-descent parser (`token_driven_module_matches_recursive_descent`). Remaining
-  before the flip: the non-function declarations — `data`/`class`/`instance`/`foreign`,
-  the module header, and imports. Once the token-driven parser covers those and
-  provably agrees over all fixtures, the default pipeline flips onto it and the
-  recursive-descent parser is retired.
+  The token-driven parser now also handles the **whole module grammar** — types
+  (`Con`/`Var`/`App`/`Arrow` with `%mult`/`Tuple`/`Unit` + `C a =>` constraints),
+  signatures, function clauses (patterns, plain/guarded bodies, `where`), `data`
+  (positional + record constructors, `deriving`), `class`, `instance`, `foreign`, the
+  module header, and imports — and lowers to EXACTLY the same `ast::Module` as the
+  recursive-descent parser **over every fixture and example**
+  (`token_driven_module_matches_over_all_fixtures`, 205 modules). The remaining step
+  is the flip itself: switch `parse_source`/`compile_front` onto the token-driven
+  parser and retire `parser.rs`, guarded by the whole test suite + oracle across all
+  three backends.
 
 It is **additive**: the analysis pipeline still runs on `ast::Module` via the
 recursive-descent parser; the token-driven parser is validated behind the `cst`

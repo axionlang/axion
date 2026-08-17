@@ -76,14 +76,24 @@ pub enum SyntaxKind {
     GUARD,
     WHERE,
     CONSTRAINT,
+    DATA_DECL,
+    CON_DECL,
+    FIELD,
+    CLASS_DECL,
+    METHOD_SIG,
+    INSTANCE_DECL,
+    FOREIGN_DECL,
+    IMPORT_DECL,
+    MODULE_HEADER,
 }
 
 use SyntaxKind::{
     APP_EXPR, BINOP_EXPR, CASE_EXPR, COMMENT, CON_PAT, CONID, DECL, ERROR, IDENT, IF_EXPR, KEYWORD,
-    BIND_STMT, CONSTRAINT, DO_EXPR, EXPR_STMT, FUN_CLAUSE, GUARD, LAMBDA_EXPR, LET_EXPR, LIST_EXPR,
-    LITERAL, LITERAL_EXPR, LIT_PAT, MODULE, NAME_EXPR, PAREN_EXPR, PUNCT, RECORD_EXPR, SECTION_EXPR,
-    SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON, TYPE_TUPLE, TYPE_UNIT, TYPE_VAR,
-    VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
+    BIND_STMT, CLASS_DECL, CONSTRAINT, CON_DECL, DATA_DECL, DO_EXPR, EXPR_STMT, FIELD, FOREIGN_DECL,
+    FUN_CLAUSE, GUARD, IMPORT_DECL, INSTANCE_DECL, LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL,
+    LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, PAREN_EXPR, PUNCT,
+    RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON,
+    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -145,6 +155,15 @@ impl Language for AxionLang {
             GUARD,
             WHERE,
             CONSTRAINT,
+            DATA_DECL,
+            CON_DECL,
+            FIELD,
+            CLASS_DECL,
+            METHOD_SIG,
+            INSTANCE_DECL,
+            FOREIGN_DECL,
+            IMPORT_DECL,
+            MODULE_HEADER,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -624,23 +643,8 @@ impl ExprParser<'_> {
     fn let_expr(&mut self) {
         self.b.start_node(LET_EXPR.into());
         self.bump(); // let
-        self.block(Self::let_binding);
+        self.block(Self::top_decl);
         self.expect(&Tok::In);
-        self.expr(); // body
-        self.b.finish_node();
-    }
-
-    fn let_binding(&mut self) {
-        self.b.start_node(DECL.into());
-        if matches!(self.cur(), Some(Tok::VarId(_))) {
-            self.bump(); // name
-        } else {
-            self.ok = false;
-        }
-        while self.starts_apat() {
-            self.apat();
-        }
-        self.expect(&Tok::Equals);
         self.expr(); // body
         self.b.finish_node();
     }
@@ -970,19 +974,14 @@ impl ExprParser<'_> {
     /// clause `name apat* rhs [where …]`. Non-function declarations (data/class/
     /// instance/foreign/module/import) fall out of the subset (Stage 3g).
     fn top_decl(&mut self) {
-        if matches!(
-            self.cur(),
-            Some(
-                Tok::Data
-                    | Tok::Class
-                    | Tok::Instance
-                    | Tok::Foreign
-                    | Tok::Module
-                    | Tok::Import
-            )
-        ) {
-            self.ok = false;
-            return;
+        match self.cur() {
+            Some(Tok::Data) => return self.data_decl(),
+            Some(Tok::Class) => return self.class_decl(),
+            Some(Tok::Instance) => return self.instance_decl(),
+            Some(Tok::Foreign) => return self.foreign_decl(),
+            Some(Tok::Module) => return self.module_header(),
+            Some(Tok::Import) => return self.import_decl(),
+            _ => {}
         }
         let cp = self.b.checkpoint();
         if matches!(self.cur(), Some(Tok::VarId(_))) {
@@ -1032,7 +1031,7 @@ impl ExprParser<'_> {
     fn where_block(&mut self) {
         self.b.start_node(WHERE.into());
         self.bump(); // where
-        self.block(Self::let_binding);
+        self.block(Self::top_decl);
         self.b.finish_node();
     }
 
@@ -1141,6 +1140,198 @@ impl ExprParser<'_> {
                 // single: transparent (the inner type node stands on its own)
             }
             _ => self.ok = false,
+        }
+    }
+
+    fn at_kw(&self, kw: &str) -> bool {
+        matches!(self.cur(), Some(Tok::VarId(k)) if k == kw)
+    }
+
+    fn con_id(&mut self) {
+        if matches!(self.cur(), Some(Tok::ConId(_))) {
+            self.bump();
+        } else {
+            self.ok = false;
+        }
+    }
+
+    fn var_id(&mut self) {
+        if matches!(self.cur(), Some(Tok::VarId(_))) {
+            self.bump();
+        } else {
+            self.ok = false;
+        }
+    }
+
+    /// `data Name p* = Con | … [deriving (C, …)]`.
+    fn data_decl(&mut self) {
+        self.b.start_node(DATA_DECL.into());
+        self.bump(); // data
+        self.con_id(); // type name
+        while matches!(self.cur(), Some(Tok::VarId(_))) {
+            self.bump(); // type parameter
+        }
+        self.expect_tok(&Tok::Equals);
+        self.con_decl();
+        while matches!(self.cur(), Some(Tok::Bar)) {
+            self.bump();
+            self.con_decl();
+        }
+        if self.at_kw("deriving") {
+            self.bump(); // deriving
+            self.expect_tok(&Tok::LParen);
+            loop {
+                self.con_id();
+                if !matches!(self.cur(), Some(Tok::Comma)) {
+                    break;
+                }
+                self.bump();
+            }
+            self.expect_tok(&Tok::RParen);
+        }
+        self.b.finish_node();
+    }
+
+    fn con_decl(&mut self) {
+        self.b.start_node(CON_DECL.into());
+        self.con_id(); // constructor name
+        if matches!(self.cur(), Some(Tok::LBrace)) {
+            self.bump(); // {
+            if !matches!(self.cur(), Some(Tok::RBrace)) {
+                self.record_field();
+                while matches!(self.cur(), Some(Tok::Comma)) {
+                    self.bump();
+                    self.record_field();
+                }
+            }
+            self.expect_tok(&Tok::RBrace);
+        } else {
+            while self.starts_atype() && !self.at_kw("deriving") {
+                self.positional_field();
+            }
+        }
+        self.b.finish_node();
+    }
+
+    /// `name :: btype [%mult]`.
+    fn record_field(&mut self) {
+        self.b.start_node(FIELD.into());
+        self.var_id(); // field name
+        self.expect_tok(&Tok::ColonColon);
+        self.btype();
+        if matches!(self.cur(), Some(Tok::Mult(_))) {
+            self.bump();
+        }
+        self.b.finish_node();
+    }
+
+    /// `atype [%mult]` or `( btype [%mult] )`.
+    fn positional_field(&mut self) {
+        self.b.start_node(FIELD.into());
+        if matches!(self.cur(), Some(Tok::LParen)) {
+            self.bump(); // (
+            self.btype();
+            if matches!(self.cur(), Some(Tok::Mult(_))) {
+                self.bump();
+            }
+            self.expect_tok(&Tok::RParen);
+        } else {
+            self.atype();
+            if matches!(self.cur(), Some(Tok::Mult(_))) {
+                self.bump();
+            }
+        }
+        self.b.finish_node();
+    }
+
+    /// `class Name tyvar where { method :: type ; … }`.
+    fn class_decl(&mut self) {
+        self.b.start_node(CLASS_DECL.into());
+        self.bump(); // class
+        self.con_id(); // class name
+        self.var_id(); // type variable
+        self.expect_tok(&Tok::Where);
+        self.block(ExprParser::method_sig);
+        self.b.finish_node();
+    }
+
+    fn method_sig(&mut self) {
+        self.b.start_node(METHOD_SIG.into());
+        self.var_id(); // method name
+        self.expect_tok(&Tok::ColonColon);
+        self.type_();
+        self.b.finish_node();
+    }
+
+    /// `instance [ctx =>] Class head where { methods }`.
+    fn instance_decl(&mut self) {
+        self.b.start_node(INSTANCE_DECL.into());
+        self.bump(); // instance
+        if self.has_fat_arrow() {
+            self.b.start_node(CONSTRAINT.into());
+            self.btype();
+            self.b.finish_node();
+            self.expect_tok(&Tok::FatArrow);
+        }
+        self.con_id(); // class name
+        self.atype(); // head type
+        self.expect_tok(&Tok::Where);
+        self.block(ExprParser::top_decl);
+        self.b.finish_node();
+    }
+
+    /// `foreign ["lib.so"] name :: type`.
+    fn foreign_decl(&mut self) {
+        self.b.start_node(FOREIGN_DECL.into());
+        self.bump(); // foreign
+        if matches!(self.cur(), Some(Tok::Str(_))) {
+            self.bump(); // library path
+        }
+        self.var_id(); // name
+        self.expect_tok(&Tok::ColonColon);
+        self.type_();
+        self.b.finish_node();
+    }
+
+    /// `import [qualified] A.B [as C]`.
+    fn import_decl(&mut self) {
+        self.b.start_node(IMPORT_DECL.into());
+        self.bump(); // import
+        if matches!(self.cur(), Some(Tok::Qualified)) {
+            self.bump();
+        }
+        self.module_path();
+        if matches!(self.cur(), Some(Tok::As)) {
+            self.bump(); // as
+            self.name_ref(); // alias
+        }
+        self.b.finish_node();
+    }
+
+    /// `module A.B where` — consumes the extra `VLBrace` the layout inserts for the
+    /// module body, so the outer block then sees the first real declaration.
+    fn module_header(&mut self) {
+        self.b.start_node(MODULE_HEADER.into());
+        self.bump(); // module
+        self.module_path();
+        self.expect_tok(&Tok::Where);
+        self.eat_v(&LTok::VLBrace);
+        self.b.finish_node();
+    }
+
+    fn module_path(&mut self) {
+        self.name_ref();
+        while matches!(self.cur(), Some(Tok::Dot)) {
+            self.bump();
+            self.name_ref();
+        }
+    }
+
+    fn name_ref(&mut self) {
+        if matches!(self.cur(), Some(Tok::ConId(_) | Tok::VarId(_))) {
+            self.bump();
+        } else {
+            self.ok = false;
         }
     }
 }
@@ -1374,16 +1565,9 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             Some(Expr::Case(Box::new(scrut), arms, sp))
         }
         LET_EXPR => {
-            let mut funcs = Vec::new();
-            let mut body = None;
-            for child in node.children() {
-                if child.kind() == DECL {
-                    funcs.push(lower_let_binding(&child)?);
-                } else if is_expr_kind(child.kind()) {
-                    body = Some(lower_expr(&child)?);
-                }
-            }
-            Some(Expr::Let(funcs, Box::new(body?), sp))
+            let funcs = assemble_funcs(node.children())?;
+            let body = lower_expr(&node.children().find(|c| is_expr_kind(c.kind()))?)?;
+            Some(Expr::Let(funcs, Box::new(body), sp))
         }
         DO_EXPR => {
             // Desugar strictly via `case` (same as `parser::parse_do`): `pat <- e;
@@ -1423,39 +1607,6 @@ fn lower_stmt(node: &SyntaxNode) -> Option<DoStmt> {
     }
 }
 
-/// Lower a `let`/`where` binding node (a `DECL` from `let_binding`) to a `Func` with
-/// a single, signature-less clause.
-fn lower_let_binding(node: &SyntaxNode) -> Option<Func> {
-    let r = node.text_range();
-    let sp = (usize::from(r.start()), usize::from(r.end()));
-    let name = node
-        .children_with_tokens()
-        .filter_map(|e| e.into_token())
-        .find(|t| t.kind() == IDENT)?
-        .text()
-        .to_string();
-    let mut pats = Vec::new();
-    let mut body = None;
-    for c in node.children() {
-        if is_expr_kind(c.kind()) {
-            body = Some(lower_expr(&c)?);
-        } else {
-            pats.push(lower_pat(&c)?);
-        }
-    }
-    Some(Func {
-        name,
-        sig: None,
-        clauses: vec![Clause {
-            pats,
-            body: Body::Plain(body?),
-            wher: Vec::new(),
-            span: sp,
-        }],
-        span: sp,
-        constraints: Vec::new(),
-    })
-}
 
 /// Lower a CST pattern node to `ast::Pat`.
 fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
@@ -1725,11 +1876,7 @@ fn lower_clause(node: &SyntaxNode) -> Option<(String, Clause)> {
                 let mut g = c.children();
                 guards.push((lower_expr(&g.next()?)?, lower_expr(&g.next()?)?));
             }
-            WHERE => {
-                for d in c.children().filter(|d| d.kind() == DECL) {
-                    wher.push(lower_let_binding(&d)?);
-                }
-            }
+            WHERE => wher = assemble_funcs(c.children())?,
             k if is_expr_kind(k) => plain = Some(lower_expr(&c)?),
             _ => pats.push(lower_pat(&c)?),
         }
@@ -1750,40 +1897,58 @@ fn lower_clause(node: &SyntaxNode) -> Option<(String, Clause)> {
     ))
 }
 
-/// Lower a token-driven module CST to `ast::Module`, assembling signatures and
-/// clauses into `Func`s exactly as `parser::assemble` does.
-fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
+/// The non-trivia tokens directly under `node` (not inside a child node).
+fn direct_tokens(node: &SyntaxNode) -> impl Iterator<Item = rowan::SyntaxToken<AxionLang>> + '_ {
+    node.children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !is_trivia(t.kind()))
+}
+
+fn first_kind_token(node: &SyntaxNode, kind: SyntaxKind) -> Option<String> {
+    direct_tokens(node)
+        .find(|t| t.kind() == kind)
+        .map(|t| t.text().to_string())
+}
+
+/// Assemble a run of `SIG`/`FUN_CLAUSE` nodes into `Func`s by name and first-mention
+/// order, exactly as `parser::assemble` does. Shared by the module and instance bodies.
+fn assemble_funcs(decls: impl Iterator<Item = SyntaxNode>) -> Option<Vec<Func>> {
     let mut funcs: Vec<Func> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut slot = |funcs: &mut Vec<Func>, name: &str| -> usize {
-        *index.entry(name.to_string()).or_insert_with(|| {
+    for decl in decls {
+        let name = match decl.kind() {
+            SIG => lower_sig(&decl)?.0,
+            FUN_CLAUSE => lower_clause(&decl)?.0,
+            _ => continue,
+        };
+        let i = *index.entry(name.clone()).or_insert_with(|| {
             funcs.push(Func {
-                name: name.to_string(),
+                name: name.clone(),
                 sig: None,
                 clauses: Vec::new(),
                 span: (0, 0),
                 constraints: Vec::new(),
             });
             funcs.len() - 1
-        })
-    };
-    for decl in cst.children() {
+        });
         match decl.kind() {
             SIG => {
-                let (name, constraints, ty) = lower_sig(&decl)?;
-                let i = slot(&mut funcs, &name);
+                let (_, constraints, ty) = lower_sig(&decl)?;
                 funcs[i].sig = Some(ty);
                 funcs[i].constraints = constraints;
             }
-            FUN_CLAUSE => {
-                let (name, clause) = lower_clause(&decl)?;
-                let i = slot(&mut funcs, &name);
-                funcs[i].clauses.push(clause);
-            }
+            FUN_CLAUSE => funcs[i].clauses.push(lower_clause(&decl)?.1),
             _ => {}
         }
     }
-    Some(crate::ast::Module {
+    Some(funcs)
+}
+
+/// Lower a token-driven module CST to `ast::Module`.
+fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
+    use crate::ast;
+    let funcs = assemble_funcs(cst.children())?;
+    let mut m = ast::Module {
         name: None,
         imports: Vec::new(),
         funcs,
@@ -1792,7 +1957,170 @@ fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
         classes: Vec::new(),
         instances: Vec::new(),
         level_ceiling: None,
+    };
+    for decl in cst.children() {
+        match decl.kind() {
+            DATA_DECL => m.datas.push(lower_data(&decl)?),
+            CLASS_DECL => m.classes.push(lower_class(&decl)?),
+            INSTANCE_DECL => m.instances.push(lower_instance(&decl)?),
+            FOREIGN_DECL => m.foreigns.push(lower_foreign(&decl)?),
+            IMPORT_DECL => m.imports.push(lower_import(&decl)),
+            MODULE_HEADER => m.name = Some(lower_module_name(&decl)),
+            _ => {}
+        }
+    }
+    Some(m)
+}
+
+fn lower_data(node: &SyntaxNode) -> Option<crate::ast::DataDecl> {
+    let mut name = None;
+    let mut params = Vec::new();
+    let mut deriving = Vec::new();
+    let mut seen_eq = false;
+    let mut in_deriving = false;
+    for t in direct_tokens(node) {
+        let text = t.text();
+        if !seen_eq {
+            match t.kind() {
+                CONID if name.is_none() => name = Some(text.to_string()),
+                IDENT => params.push(text.to_string()),
+                PUNCT if text == "=" => seen_eq = true,
+                _ => {}
+            }
+        } else if in_deriving {
+            if t.kind() == CONID {
+                deriving.push(text.to_string());
+            }
+        } else if t.kind() == IDENT && text == "deriving" {
+            in_deriving = true;
+        }
+    }
+    let cons: Option<Vec<_>> = node
+        .children()
+        .filter(|c| c.kind() == CON_DECL)
+        .map(|c| lower_con(&c))
+        .collect();
+    Some(crate::ast::DataDecl {
+        name: name?,
+        params,
+        cons: cons?,
+        deriving,
+        span: (0, 0),
     })
+}
+
+fn lower_con(node: &SyntaxNode) -> Option<crate::ast::ConDecl> {
+    let name = first_kind_token(node, CONID)?;
+    let fields: Option<Vec<_>> = node
+        .children()
+        .filter(|c| c.kind() == FIELD)
+        .map(|c| lower_field(&c))
+        .collect();
+    Some(crate::ast::ConDecl {
+        name,
+        fields: fields?,
+    })
+}
+
+fn lower_field(node: &SyntaxNode) -> Option<crate::ast::Field> {
+    let name = first_kind_token(node, IDENT).unwrap_or_default(); // "" for positional
+    let ty = lower_type(&node.children().find(|c| is_type_kind(c.kind()))?)?;
+    let mult = direct_tokens(node)
+        .find(|t| t.text().starts_with('%'))
+        .map_or(crate::ast::Mult::Many, |t| mult_of(t.text()));
+    Some(crate::ast::Field { name, ty, mult })
+}
+
+fn lower_class(node: &SyntaxNode) -> Option<crate::ast::ClassDecl> {
+    let name = first_kind_token(node, CONID)?;
+    let tyvar = first_kind_token(node, IDENT)?;
+    let methods: Option<Vec<_>> = node
+        .children()
+        .filter(|c| c.kind() == METHOD_SIG)
+        .map(|m| {
+            let mname = first_kind_token(&m, IDENT)?;
+            let ty = lower_type(&m.children().find(|c| is_type_kind(c.kind()))?)?;
+            Some((mname, ty))
+        })
+        .collect();
+    Some(crate::ast::ClassDecl {
+        name,
+        tyvar,
+        methods: methods?,
+        span: (0, 0),
+    })
+}
+
+fn lower_instance(node: &SyntaxNode) -> Option<crate::ast::InstanceDecl> {
+    let constraints = node
+        .children()
+        .find(|c| c.kind() == CONSTRAINT)
+        .and_then(|c| lower_type(&c.children().next()?))
+        .map(|t| constraints_of(&t))
+        .unwrap_or_default();
+    let class_name = first_kind_token(node, CONID)?;
+    let head_ty = lower_type(&node.children().find(|c| is_type_kind(c.kind()))?)?;
+    let ty_head = head_ty.head_con()?.to_string();
+    let methods = assemble_funcs(node.children())?;
+    Some(crate::ast::InstanceDecl {
+        class_name,
+        ty_head,
+        head_ty,
+        constraints,
+        methods,
+        span: (0, 0),
+    })
+}
+
+fn lower_foreign(node: &SyntaxNode) -> Option<crate::ast::Foreign> {
+    let lib = direct_tokens(node)
+        .find(|t| t.kind() == LITERAL)
+        .and_then(|t| match lex(t.text()).ok()?.first()?.tok.clone() {
+            Tok::Str(s) => Some(s),
+            _ => None,
+        });
+    let name = first_kind_token(node, IDENT)?;
+    let sig = lower_type(&node.children().find(|c| is_type_kind(c.kind()))?)?;
+    Some(crate::ast::Foreign {
+        name,
+        sig,
+        lib,
+        span: (0, 0),
+    })
+}
+
+fn lower_import(node: &SyntaxNode) -> crate::ast::ImportDecl {
+    let qualified = direct_tokens(node).any(|t| t.text() == "qualified");
+    let mut module = Vec::new();
+    let mut alias = None;
+    let mut after_as = false;
+    for t in direct_tokens(node) {
+        match t.text() {
+            "import" | "qualified" | "." => {}
+            "as" => after_as = true,
+            _ if matches!(t.kind(), IDENT | CONID) => {
+                if after_as {
+                    alias = Some(t.text().to_string());
+                } else {
+                    module.push(t.text().to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    crate::ast::ImportDecl {
+        module,
+        qualified,
+        alias,
+        span: (0, 0),
+    }
+}
+
+fn lower_module_name(node: &SyntaxNode) -> Vec<String> {
+    direct_tokens(node)
+        .filter(|t| matches!(t.kind(), IDENT | CONID))
+        .map(|t| t.text().to_string())
+        .collect()
 }
 
 fn parse_module_cst(src: &str) -> Option<(SyntaxNode, bool)> {
@@ -1818,6 +2146,14 @@ fn parse_module_cst(src: &str) -> Option<(SyntaxNode, bool)> {
 
 fn zero_module(m: &mut crate::ast::Module) {
     m.funcs.iter_mut().for_each(zero_func);
+    m.datas.iter_mut().for_each(|d| d.span = (0, 0));
+    m.classes.iter_mut().for_each(|c| c.span = (0, 0));
+    m.foreigns.iter_mut().for_each(|f| f.span = (0, 0));
+    m.imports.iter_mut().for_each(|i| i.span = (0, 0));
+    for inst in &mut m.instances {
+        inst.span = (0, 0);
+        inst.methods.iter_mut().for_each(zero_func);
+    }
 }
 
 /// Whether the token-driven module parser + lowering reproduces the recursive-descent

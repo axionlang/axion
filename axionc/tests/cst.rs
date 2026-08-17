@@ -196,6 +196,42 @@ fn token_driven_module_matches_recursive_descent() {
 }
 
 #[test]
+fn token_driven_module_matches_over_all_fixtures() {
+    // The flip gate: the token-driven module parser must reproduce the
+    // recursive-descent parser's `ast::Module` for EVERY real program.
+    let mut failures = Vec::new();
+    let mut checked = 0;
+    for base in ["tests/fixtures", "../examples"] {
+        let dir = format!("{}/{base}", env!("CARGO_MANIFEST_DIR"));
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("axi") {
+                continue;
+            }
+            // `recover_partial.axi` is deliberately malformed; the two parsers recover
+            // differently by design, so byte-identical ASTs aren't expected there.
+            if path.file_name().unwrap() == "recover_partial.axi" {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            checked += 1;
+            if !module_matches_parser(&src) {
+                failures.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    assert!(checked > 20, "expected many fixtures, got {checked}");
+    assert!(
+        failures.is_empty(),
+        "{} / {checked} modules diverge from the reference: {failures:?}",
+        failures.len()
+    );
+}
+
+#[test]
 fn subset_boundary_is_honest() {
     // Declarations, signatures and types are not yet parsed by the token-driven path
     // (Stage 3f: the module parser). A signature construct isn't a valid expression,
