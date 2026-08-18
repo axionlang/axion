@@ -83,6 +83,30 @@ fn goto_definition_jumps_to_the_declaration() {
 }
 
 #[test]
+fn goto_definition_resolves_locals_and_constructors() {
+    // A parameter beats a same-named top-level: cursor on `x` in the body resolves to
+    // the PARAMETER on line 1, not the top-level `x` on line 0.
+    let src = "x :: Int\nx = 0\n\nf :: Int -> Int\nf x = x + 1\n";
+    let body_x = src.rfind("x +").unwrap();
+    let def = definition(src, body_x).expect("param should resolve");
+    assert_eq!(def.start.line, 4, "should jump to the parameter on line 4, got {def:?}");
+
+    // A `let` binding resolves to itself.
+    let src2 = "g :: Int\ng = let y = 1 in y + y\n";
+    let use_y = src2.rfind("y +").unwrap();
+    let d2 = definition(src2, use_y).expect("let binding should resolve");
+    assert_eq!(d2.start.line, 1);
+    // and it points at the binding `y`, left of the use.
+    assert!(d2.start.character < 15);
+
+    // A constructor resolves to its `data` declaration.
+    let src3 = "data List a = Cons a (List a) | Nil\n\nhd :: List a -> a\nhd (Cons x xs) = x\n";
+    let use_cons = src3.rfind("Cons").unwrap();
+    let d3 = definition(src3, use_cons).expect("constructor should resolve");
+    assert_eq!(d3.start.line, 0, "Cons should resolve into the data decl: {d3:?}");
+}
+
+#[test]
 fn use_after_consume_surfaces_ax0001() {
     let path = fixture("use_after_consume.axi");
     let src = std::fs::read_to_string(&path).unwrap();

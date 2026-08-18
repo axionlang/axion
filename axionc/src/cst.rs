@@ -467,19 +467,65 @@ pub fn name_at(root: &SyntaxNode, offset: usize) -> Option<String> {
         .map(|t| t.text().to_string())
 }
 
-/// The defining occurrence of `name`: the name token of the first top-level
-/// declaration that introduces it (a function signature/clause, `data` type, etc.).
-/// Powers `textDocument/definition`.
+/// The defining occurrence of `name` among the top-level declarations: a function
+/// name, a `data` type or constructor, a `class` name or method, or a `foreign`
+/// name. Powers `textDocument/definition`.
 pub fn definition_site(root: &SyntaxNode, name: &str) -> Option<rowan::TextRange> {
     root.children()
         .filter(|n| matches!(n.kind(), DECL | ERROR))
-        .find_map(|decl| {
-            let tok = decl
-                .children_with_tokens()
-                .filter_map(|el| el.into_token())
-                .find(|t| matches!(t.kind(), IDENT | CONID))?;
-            (tok.text() == name).then(|| tok.text_range())
-        })
+        .find_map(|decl| decl_defines(&decl, name))
+}
+
+fn decl_defines(decl: &SyntaxNode, name: &str) -> Option<rowan::TextRange> {
+    let toks: Vec<_> = decl
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| !is_trivia(t.kind()))
+        .collect();
+    let first = toks.first()?;
+    let kw = (first.kind() == KEYWORD).then(|| first.text());
+    match kw {
+        // `data T p* = C1 f* | C2 f* …`: the type name (after `data`) and each
+        // constructor (after `=`/`|`) are defining CONIDs; field-type CONIDs are not.
+        Some("data") => {
+            let mut defining = false;
+            for t in &toks {
+                let text = t.text();
+                if (t.kind() == KEYWORD && text == "data") || text == "=" || text == "|" {
+                    defining = true;
+                    continue;
+                }
+                if defining && t.kind() == CONID {
+                    defining = false;
+                    if text == name {
+                        return Some(t.text_range());
+                    }
+                    continue;
+                }
+                defining = false;
+            }
+            None
+        }
+        // `class C a where { m :: … ; … }`: the class name, and each method (an
+        // identifier immediately before `::`).
+        Some("class") => {
+            for w in toks.windows(2) {
+                if w[0].kind() == IDENT && w[1].text() == "::" && w[0].text() == name {
+                    return Some(w[0].text_range());
+                }
+            }
+            toks.iter()
+                .find(|t| t.kind() == CONID && t.text() == name)
+                .map(rowan::SyntaxToken::<AxionLang>::text_range)
+        }
+        // instance/import/module headers don't *introduce* a queried name.
+        Some("instance" | "import" | "module") => None,
+        // function / signature / `foreign`: the declared name is the first identifier.
+        _ => {
+            let nt = toks.iter().find(|t| matches!(t.kind(), IDENT | CONID))?;
+            (nt.text() == name).then(|| nt.text_range())
+        }
+    }
 }
 
 // === Stage 3a: token-driven CST-emitting parser (a subset) + CST→AST lowering ===

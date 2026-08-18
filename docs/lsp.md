@@ -22,10 +22,11 @@ promises in §8 — with unchanged work memoized across edits.
 - **Selection ranges** — "expand selection" walks the CST from the token under the
   cursor out through its enclosing expression/pattern/declaration nodes
   (`textDocument/selectionRange`).
-- **Go to definition** — resolves the identifier under the cursor to the top-level
-  declaration that introduces it (`textDocument/definition`), via the CST. Jumping to
-  local bindings (parameters, `let`/`where`) and to constructors/class methods is a
-  follow-up.
+- **Go to definition** (`textDocument/definition`) — scope-aware: a local binder
+  (parameter, `let`/`where`, lambda or `case` pattern) in the enclosing function wins
+  over a top-level name (resolved via the AST's binder spans); otherwise the
+  top-level declaration that introduces it — a function, `data` type *or constructor*,
+  `class` name *or method*, or `foreign` — is found in the CST.
 
 The last three are built on the lossless [rowan CST](#rowan-cst-stages-12); the
 `lsp` feature pulls in `cst`. (The `outline`/`folds`/`selection` cores are pure

@@ -410,13 +410,158 @@ impl LanguageServer for Backend {
 }
 
 /// The definition site (as an LSP range) of the identifier at byte `offset` in
-/// `src` — the name token of the top-level declaration that introduces it, or `None`
-/// when the cursor isn't on a name or the name is not a top-level declaration.
+/// `src`. Resolution is scope-aware: a local binder (parameter, `let`/`where`,
+/// lambda or `case` pattern) in the enclosing function wins over a top-level name;
+/// otherwise the top-level declaration that introduces it (function, `data` type or
+/// constructor, `class` name or method, `foreign`) is returned.
 pub fn definition(src: &str, offset: usize) -> Option<Range> {
     let cst = cst::build_cst(src);
     let name = cst::name_at(&cst, offset)?;
+    let lines = LineMap::new(src);
+
+    if let Some(module) = parse_ast(src) {
+        if let Some(sp) = resolve_local(&module, &name, offset) {
+            return Some(Range {
+                start: offset_to_position(&lines, sp.0),
+                end: offset_to_position(&lines, sp.1),
+            });
+        }
+    }
     let range = cst::definition_site(&cst, &name)?;
-    Some(text_range_to_range(&LineMap::new(src), range))
+    Some(text_range_to_range(&lines, range))
+}
+
+/// Parse `src` to a raw `ast::Module` (no prelude/imports) for scope resolution.
+fn parse_ast(src: &str) -> Option<crate::ast::Module> {
+    let toks = crate::lexer::lex(src).ok()?;
+    let lines = LineMap::new(src);
+    let ltokens = crate::layout::layout(&toks, &lines);
+    Some(crate::parser::parse_module_resilient(&ltokens).0)
+}
+
+fn span_contains(sp: crate::ast::Span, off: usize) -> bool {
+    sp.0 <= off && off < sp.1
+}
+
+/// The span of the pattern variable `name` bound by `p`, if any.
+fn pat_binds(p: &crate::ast::Pat, name: &str) -> Option<crate::ast::Span> {
+    use crate::ast::Pat;
+    match p {
+        Pat::Var(n, s) if n == name => Some(*s),
+        Pat::Con(_, ps, _) | Pat::Tuple(ps, _) => ps.iter().find_map(|p| pat_binds(p, name)),
+        _ => None,
+    }
+}
+
+/// The nearest local binder of `name` in scope at `offset`, or `None` if it's not a
+/// local (so the caller falls back to top-level resolution).
+fn resolve_local(module: &crate::ast::Module, name: &str, offset: usize) -> Option<crate::ast::Span> {
+    module
+        .funcs
+        .iter()
+        .flat_map(|f| &f.clauses)
+        .find(|c| span_contains(c.span, offset))
+        .and_then(|c| resolve_clause(c, name, offset))
+}
+
+fn resolve_clause(c: &crate::ast::Clause, name: &str, offset: usize) -> Option<crate::ast::Span> {
+    // A nested `where` binding whose clause encloses the cursor is the innermost
+    // scope; if it doesn't bind `name`, fall through to this clause's own binders.
+    for w in &c.wher {
+        for wc in &w.clauses {
+            if span_contains(wc.span, offset) {
+                if let Some(sp) = resolve_clause(wc, name, offset) {
+                    return Some(sp);
+                }
+            }
+        }
+    }
+    if let Some(sp) = resolve_body(&c.body, name, offset) {
+        return Some(sp);
+    }
+    for w in &c.wher {
+        if w.name == name {
+            return Some(w.span);
+        }
+    }
+    c.pats.iter().find_map(|p| pat_binds(p, name))
+}
+
+fn resolve_body(b: &crate::ast::Body, name: &str, offset: usize) -> Option<crate::ast::Span> {
+    use crate::ast::Body;
+    match b {
+        Body::Plain(e) => resolve_expr(e, name, offset),
+        Body::Guarded(arms) => arms.iter().find_map(|(g, r)| {
+            [g, r]
+                .into_iter()
+                .find(|e| span_contains(e.span(), offset))
+                .and_then(|e| resolve_expr(e, name, offset))
+        }),
+    }
+}
+
+fn resolve_expr(e: &crate::ast::Expr, name: &str, offset: usize) -> Option<crate::ast::Span> {
+    use crate::ast::Expr;
+    match e {
+        Expr::Let(funcs, body, _) => {
+            for c in funcs.iter().flat_map(|f| &f.clauses) {
+                if span_contains(c.span, offset) {
+                    if let Some(sp) = resolve_clause(c, name, offset) {
+                        return Some(sp);
+                    }
+                }
+            }
+            if span_contains(body.span(), offset) {
+                if let Some(sp) = resolve_expr(body, name, offset) {
+                    return Some(sp);
+                }
+            }
+            funcs.iter().find(|f| f.name == name).map(|f| f.span)
+        }
+        Expr::Lam(pats, body, _) => {
+            if span_contains(body.span(), offset) {
+                if let Some(sp) = resolve_expr(body, name, offset) {
+                    return Some(sp);
+                }
+            }
+            pats.iter().find_map(|p| pat_binds(p, name))
+        }
+        Expr::Case(scrut, arms, _) => {
+            if span_contains(scrut.span(), offset) {
+                return resolve_expr(scrut, name, offset);
+            }
+            for (pat, body) in arms {
+                if span_contains(body.span(), offset) {
+                    if let Some(sp) = resolve_expr(body, name, offset) {
+                        return Some(sp);
+                    }
+                    return pat_binds(pat, name);
+                }
+            }
+            None
+        }
+        // Non-binders: descend into the sub-expression under the cursor.
+        _ => child_exprs(e)
+            .into_iter()
+            .find(|c| span_contains(c.span(), offset))
+            .and_then(|c| resolve_expr(c, name, offset)),
+    }
+}
+
+fn child_exprs(e: &crate::ast::Expr) -> Vec<&crate::ast::Expr> {
+    use crate::ast::Expr;
+    match e {
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => vec![a, b],
+        Expr::If(a, b, c, _) => vec![a, b, c],
+        Expr::Tuple(es, _) => es.iter().collect(),
+        Expr::RecordCon(_, fs, _) => fs.iter().map(|(_, e)| e).collect(),
+        Expr::RecordUpd(b, fs, _) => {
+            let mut v = vec![b.as_ref()];
+            v.extend(fs.iter().map(|(_, e)| e));
+            v
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Document outline: one symbol per top-level declaration of `src`'s CST.
