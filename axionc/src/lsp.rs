@@ -26,9 +26,9 @@ use tower_lsp::lsp_types::{
     DocumentSymbolResponse, FoldingRange, FoldingRangeKind, FoldingRangeParams,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
-    MarkupKind, MessageType, NumberOrString, OneOf, Position, Range, SelectionRange,
-    SelectionRangeParams, ServerCapabilities, SymbolKind, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
+    MarkupKind, MessageType, NumberOrString, OneOf, Position, Range, ReferenceParams,
+    RenameParams, SelectionRange, SelectionRangeParams, ServerCapabilities, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -230,6 +230,8 @@ impl LanguageServer for Backend {
                 selection_range_provider: Some(tower_lsp::lsp_types::SelectionRangeProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -424,6 +426,101 @@ impl LanguageServer for Backend {
         let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
         Ok(Some(CompletionResponse::Array(completions(&doc.text, offset))))
     }
+
+    /// Find references: every occurrence that resolves to the same binding as the one
+    /// under the cursor (scope-aware).
+    async fn references(&self, params: ReferenceParams) -> RpcResult<Option<Vec<Location>>> {
+        let pos = params.text_document_position;
+        let uri = pos.text_document.uri;
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        let ranges = references_of(&doc.text, offset, params.context.include_declaration);
+        Ok(Some(
+            ranges
+                .into_iter()
+                .map(|range| Location {
+                    uri: uri.clone(),
+                    range,
+                })
+                .collect(),
+        ))
+    }
+
+    /// Rename: replace every reference (including the declaration) with `new_name`.
+    async fn rename(&self, params: RenameParams) -> RpcResult<Option<WorkspaceEdit>> {
+        let pos = params.text_document_position;
+        let uri = pos.text_document.uri;
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        let ranges = references_of(&doc.text, offset, true);
+        if ranges.is_empty() {
+            return Ok(None);
+        }
+        let edits: Vec<TextEdit> = ranges
+            .into_iter()
+            .map(|range| TextEdit {
+                range,
+                new_text: params.new_name.clone(),
+            })
+            .collect();
+        let mut changes = HashMap::new();
+        changes.insert(uri, edits);
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..WorkspaceEdit::default()
+        }))
+    }
+}
+
+/// The binding an occurrence of `name` at `offset` resolves to, as a normalised
+/// `(start, end)` byte span — a local binder (via the AST) or a top-level declaration
+/// site (via the CST). The key that groups references and separates shadowed names.
+fn binding_of(
+    cst: &cst::SyntaxNode,
+    module: &crate::ast::Module,
+    name: &str,
+    offset: usize,
+) -> Option<(usize, usize)> {
+    if let Some(sp) = resolve_local(module, name, offset) {
+        return Some(sp);
+    }
+    cst::definition_site(cst, name).map(|r| (usize::from(r.start()), usize::from(r.end())))
+}
+
+/// All references (as LSP ranges) to the binding under the cursor at `offset` — every
+/// occurrence of the name that resolves to the same binding. `include_declaration`
+/// keeps the binder/declaration itself.
+pub fn references_of(src: &str, offset: usize, include_declaration: bool) -> Vec<Range> {
+    let cst = cst::build_cst(src);
+    let Some(name) = cst::name_at(&cst, offset) else {
+        return Vec::new();
+    };
+    let Some(module) = parse_ast(src) else {
+        return Vec::new();
+    };
+    let Some(target) = binding_of(&cst, &module, &name, offset) else {
+        return Vec::new();
+    };
+    let lines = LineMap::new(src);
+    cst::name_occurrences(&cst, &name)
+        .into_iter()
+        .filter_map(|r| {
+            let span = (usize::from(r.start()), usize::from(r.end()));
+            if binding_of(&cst, &module, &name, span.0) != Some(target) {
+                return None;
+            }
+            if !include_declaration && span == target {
+                return None;
+            }
+            Some(text_range_to_range(&lines, r))
+        })
+        .collect()
 }
 
 const KEYWORDS: &[&str] = &[

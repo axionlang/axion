@@ -458,6 +458,17 @@ pub fn document_symbols(root: &SyntaxNode) -> Vec<(String, rowan::TextRange)> {
         .collect()
 }
 
+/// Every occurrence of the identifier/constructor `name` in the tree, as text ranges
+/// — the candidate set for find-references / rename (filtered to one binding by the
+/// caller's scope resolution).
+pub fn name_occurrences(root: &SyntaxNode, name: &str) -> Vec<rowan::TextRange> {
+    root.descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| matches!(t.kind(), IDENT | CONID) && t.text() == name)
+        .map(|t| t.text_range())
+        .collect()
+}
+
 /// The name (identifier/constructor) token at `offset`, if any — the target of a
 /// go-to-definition or hover request.
 pub fn name_at(root: &SyntaxNode, offset: usize) -> Option<String> {

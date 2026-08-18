@@ -33,8 +33,15 @@ promises in §8 — with unchanged work memoized across edits.
   over a top-level name (resolved via the AST's binder spans); otherwise the
   top-level declaration that introduces it — a function, `data` type *or constructor*,
   `class` name *or method*, or `foreign` — is found in the CST.
+- **Find references** (`textDocument/references`) and **rename** (`textDocument/rename`)
+  — the inverse of go-to-definition: every occurrence of the name is grouped by the
+  binding it resolves to (a local binder via the AST, or a top-level declaration site
+  via the CST), so a parameter's references stay within its function and never bleed
+  into a same-named top-level name (shadowing is handled). References honour
+  `include_declaration`; rename replaces the whole set (declaration included) with a
+  single `WorkspaceEdit`.
 
-The last three are built on the lossless [rowan CST](#rowan-cst-stages-12); the
+The scope-aware features are built on the lossless [rowan CST](#rowan-cst-stages-12); the
 `lsp` feature pulls in `cst`. (The `outline`/`folds`/`selection` cores are pure
 functions, unit-tested in `tests/lsp.rs`.)
 
@@ -209,14 +216,16 @@ full rowan migration is multi-stage by design.
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- A rowan lossless CST (intra-declaration recovery, formatting), completion,
-  go-to-definition, the inline ownership / Auto-Drop topology overlay, a UTF-16
-  position remap, and the WASM playground.
+- Intra-declaration CST recovery (formatting, better mid-edit completion locals),
+  cross-file references/rename, the inline ownership / Auto-Drop topology overlay,
+  a UTF-16 position remap, and the WASM playground.
 
-Also deferred: **rowan** (a lossless, error-resilient CST so diagnostics degrade
-gracefully on half-typed code — a `parser.rs` rewrite), completion, go-to-def, the
-inline ownership / Auto-Drop topology overlay (§8 "draws the graph inline"), and a
-UTF-16 position remap (positions are ASCII-correct today).
+Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
+front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
+monomorphisation maps), intra-declaration error recovery, the inline ownership /
+Auto-Drop topology overlay (§8 "draws the graph inline"), and a UTF-16 position remap
+(positions are ASCII-correct today). Completion, go-to-definition, find-references and
+rename are **done** (above).
 
 ## Internals
 

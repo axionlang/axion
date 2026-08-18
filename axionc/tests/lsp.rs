@@ -4,7 +4,7 @@
 #![cfg(feature = "lsp")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::lsp::{analyze, completions, definition, folds, outline, selection};
+use axionc::lsp::{analyze, completions, definition, folds, outline, references_of, selection};
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
 fn fixture(name: &str) -> String {
@@ -130,6 +130,27 @@ fn completion_offers_scope_toplevel_builtins_and_keywords() {
     // Outside any function, a local param isn't in scope.
     let top = completions(src, src.find("main = 0").unwrap());
     assert!(!top.iter().any(|c| c.label == "x"), "`x` is not in scope at top level of main");
+}
+
+#[test]
+fn find_references_is_scope_aware() {
+    // Top-level `inc` — its signature, its clause, and the call from `main` — three
+    // references (with the declaration).
+    let src = "inc :: Int -> Int\ninc n = n + 1\n\nmain :: Int\nmain = inc (inc 0)\n";
+    let at_def = src.find("inc ::").unwrap();
+    let with_decl = references_of(src, at_def, true);
+    assert_eq!(with_decl.len(), 4, "sig + clause name + two calls: {with_decl:?}");
+    let without = references_of(src, at_def, false);
+    assert_eq!(without.len(), 3, "excluding the declaration line's name");
+
+    // Shadowing: a parameter `n` is distinct from a top-level `n`.
+    let src2 = "n :: Int\nn = 0\n\nf :: Int -> Int\nf n = n + n\n";
+    let param_use = src2.rfind("n + n").unwrap(); // the first `n` in the body
+    let refs = references_of(src2, param_use, true);
+    // f's clause: the param `n` + two uses = 3, and NOT the top-level `n` (2 more).
+    assert_eq!(refs.len(), 3, "only the local `n` occurrences, not the top-level: {refs:?}");
+    // All references are on line 4 (f's clause), not line 1 (top-level n).
+    assert!(refs.iter().all(|r| r.start.line == 4), "should stay within f: {refs:?}");
 }
 
 #[test]
