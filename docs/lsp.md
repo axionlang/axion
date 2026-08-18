@@ -45,10 +45,12 @@ promises in §8 — with unchanged work memoized across edits.
   site via the CST — keyed by `(file, span)`), so a parameter's references stay within
   its function and never bleed into a same-named top-level name (shadowing is handled,
   across files too). A top-level name's references are gathered from **every file in the
-  workspace** (open buffers + the active file's import closure); references honour
-  `include_declaration`; rename emits one multi-file `WorkspaceEdit`. The reverse import
-  graph of *unopened* files is out of scope (they'd need a workspace-wide scan) — an open
-  editor sees all its buffers, which is the common case.
+  workspace**, which is indexed by scanning the `initialize` workspace roots (falling back
+  to the active file's directory) for `.axi` files — so references and rename reach a file
+  that **imports** the symbol even when it is *not open* (the reverse import graph), not
+  just the active file's forward import closure. Open buffers win over disk (an unsaved
+  edit is resolved from its buffer); build/hidden directories are skipped. References
+  honour `include_declaration`; rename emits one multi-file `WorkspaceEdit`.
 - **Ownership overlay** (`textDocument/inlayHint`) — §8's "draw the graph inline": the
   Auto-Drop / ownership topology the compiler already computes, shown *inline* at each
   source span. Every linear resource's inserted `free` — `⌫ drop x: Ty`, with a tooltip
@@ -263,15 +265,15 @@ full rowan migration is multi-stage by design.
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- A workspace-wide index (so references reach *unopened* importers) and the WASM
-  playground.
+- Signature help, a UTF-16 position remap (positions are ASCII-correct today), and the
+  WASM playground. The project index re-scans on each references/rename request (no
+  persistent, file-watched index yet — fine at this scale).
 
 Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
 front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
-monomorphisation maps) and a UTF-16 position remap (positions are ASCII-correct today).
-Intra-declaration recovery (parser-level), completion, go-to-definition, find-references,
-rename (all cross-file), and the inline ownership / Auto-Drop overlay are **done**
-(above).
+monomorphisation maps). Intra-declaration recovery (parser-level), completion,
+go-to-definition, find-references, rename (all cross-file, references/rename over the
+whole workspace index), and the inline ownership / Auto-Drop overlay are **done** (above).
 
 ## Internals
 

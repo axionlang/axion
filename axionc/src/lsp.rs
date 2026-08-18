@@ -262,6 +262,9 @@ struct Backend {
     /// recomputes only what depends on it (the prelude and unchanged files stay
     /// memoized).
     db: Mutex<AxionDb>,
+    /// Workspace root directories (from `initialize`), scanned for `.axi` files so
+    /// references/rename reach files that import a symbol without being open.
+    roots: Mutex<Vec<std::path::PathBuf>>,
 }
 
 impl Backend {
@@ -270,6 +273,19 @@ impl Backend {
             client,
             docs: Mutex::new(HashMap::new()),
             db: Mutex::new(AxionDb::default()),
+            roots: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The directories to scan for the project index, for the file at `path`: the
+    /// client-supplied workspace roots, or — when the client sent none — the active
+    /// file's own directory (so same-directory siblings are still found).
+    async fn effective_roots(&self, path: &str) -> Vec<std::path::PathBuf> {
+        let roots = self.roots.lock().await;
+        if roots.is_empty() {
+            vec![dir_of(path)]
+        } else {
+            roots.clone()
         }
     }
 
@@ -300,7 +316,22 @@ fn range_contains(range: &Range, pos: Position) -> bool {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> RpcResult<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> RpcResult<InitializeResult> {
+        // Record the workspace roots so references/rename can scan the project for files
+        // that import a symbol without being open. Prefer `workspace_folders`; fall back
+        // to the (deprecated) single `root_uri`.
+        let mut roots: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(folders) = &params.workspace_folders {
+            roots.extend(folders.iter().filter_map(|f| f.uri.to_file_path().ok()));
+        }
+        #[allow(deprecated)]
+        if roots.is_empty() {
+            if let Some(root) = params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()) {
+                roots.push(root);
+            }
+        }
+        *self.roots.lock().await = roots;
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -490,7 +521,8 @@ impl LanguageServer for Backend {
         let lines = LineMap::new(&doc.text);
         let offset = lines.offset(pos.position.line, pos.position.character);
         let path = uri_to_path(&uri);
-        let ws = build_workspace(&path, &doc.text, &docs);
+        // Go-to-definition follows FORWARD imports only, so it skips the project scan.
+        let ws = build_workspace(&path, &doc.text, &docs, &[]);
         let Some((def_path, range)) = definition_at(&path, &doc.text, offset, &ws) else {
             return Ok(None);
         };
@@ -532,7 +564,8 @@ impl LanguageServer for Backend {
         };
         let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
         let path = uri_to_path(&uri);
-        let ws = build_workspace(&path, &doc.text, &docs);
+        let roots = self.effective_roots(&path).await;
+        let ws = build_workspace(&path, &doc.text, &docs, &roots);
         let refs = references_at(&path, &doc.text, offset, &ws, params.context.include_declaration);
         Ok(Some(
             refs.into_iter()
@@ -559,7 +592,8 @@ impl LanguageServer for Backend {
         };
         let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
         let path = uri_to_path(&uri);
-        let ws = build_workspace(&path, &doc.text, &docs);
+        let roots = self.effective_roots(&path).await;
+        let ws = build_workspace(&path, &doc.text, &docs, &roots);
         let refs = references_at(&path, &doc.text, offset, &ws, true);
         if refs.is_empty() {
             return Ok(None);
@@ -629,7 +663,12 @@ fn uri_to_path(uri: &Url) -> String {
 /// (an edited-but-unsaved file is resolved from its buffer). This finds definitions in
 /// files the active file imports, and references in any *open* file — the reverse import
 /// graph of unopened files is out of scope (they'd need a workspace-wide scan).
-fn build_workspace(path: &str, src: &str, open: &HashMap<Url, Doc>) -> Workspace {
+fn build_workspace(
+    path: &str,
+    src: &str,
+    open: &HashMap<Url, Doc>,
+    roots: &[std::path::PathBuf],
+) -> Workspace {
     let mut ws: Workspace = open
         .iter()
         .filter_map(|(u, d)| {
@@ -664,7 +703,46 @@ fn build_workspace(path: &str, src: &str, open: &HashMap<Url, Doc>) -> Workspace
             }
         }
     }
+
+    // Index the whole project: scan each given root for `.axi` files, so a file that
+    // IMPORTS the active symbol is reachable even when it is not open and the active file
+    // does not import it (the reverse import graph). Open buffers in `ws` win over disk.
+    // `roots` is empty for features that don't need the reverse graph (go-to-definition),
+    // so they skip the scan entirely.
+    for root in roots {
+        scan_axi_dir(root, &mut ws);
+    }
     ws
+}
+
+/// Recursively add every `.axi` file under `dir` to `ws` (open buffers already present
+/// are not overwritten — an unsaved edit wins over disk). Skips VCS/build/hidden dirs so
+/// the scan stays cheap.
+fn scan_axi_dir(dir: &std::path::Path, ws: &mut Workspace) {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if name.starts_with('.') || matches!(name, "target" | "node_modules") {
+                    continue;
+                }
+                stack.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("axi") {
+                if let Some(s) = p.to_str() {
+                    if !ws.contains_key(s) {
+                        if let Ok(t) = std::fs::read_to_string(&p) {
+                            ws.insert(s.to_string(), t);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// All references (as LSP ranges) to the binding under the cursor at `offset`, within a
@@ -1211,4 +1289,43 @@ pub async fn run() {
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(Backend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_axi_dir_indexes_the_project_and_skips_build_dirs() {
+        // The project index: every `.axi` under a root is collected (recursively),
+        // build/hidden directories are skipped, and an already-present open buffer is not
+        // overwritten by disk (an unsaved edit wins).
+        let dir = std::env::temp_dir().join(format!("axion_scan_{}", std::process::id()));
+        let sub = dir.join("sub");
+        let skip = dir.join("target");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&skip).unwrap();
+        std::fs::write(dir.join("a.axi"), "a = 1\n").unwrap();
+        std::fs::write(sub.join("b.axi"), "b = 2\n").unwrap();
+        std::fs::write(skip.join("c.axi"), "c = 3\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignore me\n").unwrap();
+
+        let mut ws: Workspace = Workspace::new();
+        // An open buffer for a.axi with UNSAVED text must survive the scan.
+        let a_path = dir.join("a.axi").to_str().unwrap().to_string();
+        ws.insert(a_path.clone(), "a = 999\n".to_string());
+
+        scan_axi_dir(&dir, &mut ws);
+
+        assert_eq!(ws.get(&a_path).map(String::as_str), Some("a = 999\n"), "open buffer wins over disk");
+        assert!(
+            ws.keys().any(|k| k.ends_with("sub/b.axi")),
+            "recurses into subdirectories: {:?}",
+            ws.keys().collect::<Vec<_>>()
+        );
+        assert!(!ws.keys().any(|k| k.contains("target")), "skips build dirs");
+        assert!(!ws.keys().any(|k| k.ends_with("notes.txt")), "only .axi files");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
