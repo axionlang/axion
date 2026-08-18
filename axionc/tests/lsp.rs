@@ -4,7 +4,9 @@
 #![cfg(feature = "lsp")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::lsp::{analyze, completions, definition, folds, outline, references_of, selection};
+use axionc::lsp::{
+    analyze, completions, definition, folds, outline, ownership_hints, references_of, selection,
+};
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
 fn fixture(name: &str) -> String {
@@ -151,6 +153,31 @@ fn find_references_is_scope_aware() {
     assert_eq!(refs.len(), 3, "only the local `n` occurrences, not the top-level: {refs:?}");
     // All references are on line 4 (f's clause), not line 1 (top-level n).
     assert!(refs.iter().all(|r| r.start.line == 4), "should stay within f: {refs:?}");
+}
+
+#[test]
+fn ownership_hints_draw_the_auto_drop_topology() {
+    // `b : Buf` is a linear resource the function never consumes → the compiler injects
+    // a `free` at its death point (here: entry). The overlay surfaces that inline.
+    let src = "data Buf = Buf { size :: Int }\n\nmakeAndDrop :: Buf %1 -> Int\nmakeAndDrop b = 0\n";
+    let hints = ownership_hints("test.axi", src);
+    let drop_b = hints
+        .iter()
+        .find(|h| h.label.contains("drop b"))
+        .unwrap_or_else(|| panic!("expected an Auto-Drop hint for `b`: {hints:?}"));
+    assert!(drop_b.label.contains("Buf"), "hint names the type: {}", drop_b.label);
+    assert!(
+        drop_b.tooltip.contains("Auto-Drop"),
+        "tooltip explains the drop: {}",
+        drop_b.tooltip
+    );
+
+    // A program with no linear resources produces no ownership hints.
+    let plain = "main :: Int\nmain = 1 + 2\n";
+    assert!(ownership_hints("test.axi", plain).is_empty(), "no resources → no hints");
+
+    // A syntactically broken buffer degrades to no hints rather than panicking.
+    assert!(ownership_hints("test.axi", "main = = =").is_empty());
 }
 
 #[test]

@@ -25,7 +25,8 @@ use tower_lsp::lsp_types::{
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
     DocumentSymbolResponse, FoldingRange, FoldingRangeKind, FoldingRangeParams,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
+    HoverProviderCapability, InitializeParams, InitializeResult, InlayHint, InlayHintKind,
+    InlayHintLabel, InlayHintParams, InlayHintTooltip, Location, MarkupContent,
     MarkupKind, MessageType, NumberOrString, OneOf, Position, Range, ReferenceParams,
     RenameParams, SelectionRange, SelectionRangeParams, ServerCapabilities, SymbolKind,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
@@ -163,6 +164,89 @@ pub fn analyze(path: &str, src: &str) -> Vec<Analyzed> {
     analyze_on(&db, file, src)
 }
 
+/// One inlay hint's worth of Auto-Drop / ownership information, as pure data
+/// (mapped to an LSP `InlayHint` by the handler). The `range` is the source span the
+/// hint annotates; `label` is the inline text; `tooltip` is the on-hover explanation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwnershipHint {
+    /// The source span the hint annotates (the resource's death point / reuse site).
+    pub range: Range,
+    /// The inline text shown in the editor, e.g. `⌫ drop xs: List`.
+    pub label: String,
+    /// The on-hover explanation (why the drop / reuse happens here).
+    pub tooltip: String,
+}
+
+/// The Auto-Drop / in-place-reuse topology of `src` (compiled from `path` so imports
+/// resolve), as inline hints — §8's promise to "draw the graph inline". Surfaces the
+/// ownership information the compiler already computes: where each linear resource's
+/// `free` is inserted and why (dies at entry / after its last read), and where a record
+/// update reuses its base in place. Compiler panics degrade to no hints (never crash the
+/// server). A pure function, unit-tested without any async runtime.
+pub fn ownership_hints(path: &str, src: &str) -> Vec<OwnershipHint> {
+    // The full analysis covers the prelude too, but the prelude is parsed in its OWN
+    // coordinate space (see `inject_prelude`), so its spans collide numerically with
+    // `src`. Keep only hints for functions the user actually wrote (`user_funcs`,
+    // gathered from `src` alone, before prelude injection).
+    let (analysis, user_funcs) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut diags = crate::diag::Diagnostics::default();
+        let analysis = crate::compile_front(src, path, &mut diags).1;
+        let mut names = std::collections::HashSet::new();
+        if let Some(m) = crate::parse_source(src, &mut crate::diag::Diagnostics::default()) {
+            names.extend(m.funcs.iter().map(|f| f.name.clone()));
+        }
+        (analysis, names)
+    }))
+    .unwrap_or_default();
+    let lines = LineMap::new(src);
+    let in_src = |s: crate::ast::Span| s != crate::core::NO_SPAN && s.1 <= src.len();
+    let span_range = |s: crate::ast::Span| Range {
+        start: offset_to_position(&lines, s.0),
+        end: offset_to_position(&lines, s.1),
+    };
+
+    let mut hints = Vec::new();
+    for d in &analysis.drops {
+        if !user_funcs.contains(&d.func) || !in_src(d.span) {
+            continue; // prelude-owned or compiler-generated: not in this buffer
+        }
+        hints.push(OwnershipHint {
+            range: span_range(d.span),
+            label: format!("⌫ drop {}: {}", d.var, d.ty),
+            tooltip: format!("Auto-Drop — `{}` (`{}`) {}.", d.var, d.ty, d.reason),
+        });
+    }
+    for ip in &analysis.inplace {
+        if !user_funcs.contains(&ip.func) || !in_src(ip.span) {
+            continue;
+        }
+        hints.push(OwnershipHint {
+            range: span_range(ip.span),
+            label: format!("↻ reuse {}", ip.var),
+            tooltip: format!(
+                "In-place update — `{}` is linear and this is its last live mention, so the \
+                 record is mutated in place (no copy).",
+                ip.var
+            ),
+        });
+    }
+    for a in &analysis.arenas {
+        if !user_funcs.contains(&a.func) || !in_src(a.span) {
+            continue;
+        }
+        hints.push(OwnershipHint {
+            range: span_range(a.span),
+            label: format!("⤺ reset {}", a.sub),
+            tooltip: format!(
+                "Arena reset — sub-arena `{}` is reset at the last live mention of `{}` \
+                 (NLL, not lexical end).",
+                a.sub, a.last_var
+            ),
+        });
+    }
+    hints
+}
+
 /// Per-document state: the current text and its last analysis.
 #[derive(Debug, Default)]
 struct Doc {
@@ -232,6 +316,8 @@ impl LanguageServer for Backend {
                 completion_provider: Some(CompletionOptions::default()),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                // §8's "draw the graph inline": the Auto-Drop / ownership topology.
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -476,6 +562,41 @@ impl LanguageServer for Backend {
             ..WorkspaceEdit::default()
         }))
     }
+
+    /// Inlay hints: the Auto-Drop / ownership topology drawn inline (§8). Every
+    /// linear resource's inserted `free` (where and why it dies) and every in-place
+    /// record reuse, shown at its source span — filtered to the client's visible range.
+    async fn inlay_hint(&self, params: InlayHintParams) -> RpcResult<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let path = uri_to_path(&uri);
+        let hints = ownership_hints(&path, &doc.text)
+            .into_iter()
+            .filter(|h| h.range.start >= params.range.start && h.range.start <= params.range.end)
+            .map(|h| InlayHint {
+                position: h.range.start,
+                label: InlayHintLabel::String(h.label),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: Some(InlayHintTooltip::String(h.tooltip)),
+                padding_left: Some(true),
+                padding_right: Some(false),
+                data: None,
+            })
+            .collect();
+        Ok(Some(hints))
+    }
+}
+
+/// A filesystem path for `uri` (so imports resolve); falls back to the URL path.
+fn uri_to_path(uri: &Url) -> String {
+    uri.to_file_path()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| uri.path().to_string())
 }
 
 /// The binding an occurrence of `name` at `offset` resolves to, as a normalised

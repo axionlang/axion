@@ -40,6 +40,15 @@ promises in §8 — with unchanged work memoized across edits.
   into a same-named top-level name (shadowing is handled). References honour
   `include_declaration`; rename replaces the whole set (declaration included) with a
   single `WorkspaceEdit`.
+- **Ownership overlay** (`textDocument/inlayHint`) — §8's "draw the graph inline": the
+  Auto-Drop / ownership topology the compiler already computes, shown *inline* at each
+  source span. Every linear resource's inserted `free` — `⌫ drop x: Ty`, with a tooltip
+  saying why it dies here (*at entry, never used* / *after its last read*) — every
+  in-place record reuse (`↻ reuse x`), and every sub-arena NLL reset (`⤺ reset s`). This
+  is the one editor feature that is uniquely Axión: it makes linearity and Auto-Drop
+  *visible* rather than implicit. Hints come from `check::Analysis` (`drops`/`inplace`/
+  `arenas`); prelude-owned drops are filtered out (the prelude is compiled in its own
+  coordinate space), so only the buffer's own resources are annotated.
 
 The scope-aware features are built on the lossless [rowan CST](#rowan-cst-stages-12); the
 `lsp` feature pulls in `cst`. (The `outline`/`folds`/`selection` cores are pure
@@ -217,15 +226,13 @@ full rowan migration is multi-stage by design.
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
 - Intra-declaration CST recovery (formatting, better mid-edit completion locals),
-  cross-file references/rename, the inline ownership / Auto-Drop topology overlay,
-  a UTF-16 position remap, and the WASM playground.
+  cross-file references/rename, and the WASM playground.
 
 Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
 front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
-monomorphisation maps), intra-declaration error recovery, the inline ownership /
-Auto-Drop topology overlay (§8 "draws the graph inline"), and a UTF-16 position remap
-(positions are ASCII-correct today). Completion, go-to-definition, find-references and
-rename are **done** (above).
+monomorphisation maps), intra-declaration error recovery, and a UTF-16 position remap
+(positions are ASCII-correct today). Completion, go-to-definition, find-references,
+rename, and the inline ownership / Auto-Drop overlay are **done** (above).
 
 ## Internals
 
