@@ -104,6 +104,25 @@ fn token_driven_parser_recovers_within_a_declaration() {
 }
 
 #[test]
+fn a_stray_illegal_character_does_not_blank_the_cst() {
+    // Lexer-level recovery: a single illegal character (`@`) used to make `lex` fail and
+    // clear the whole token stream. Now it is skipped (surviving in trivia), so the CST
+    // still round-trips AND the surrounding declarations keep their structure — the
+    // editor no longer goes dark on one bad keystroke.
+    let src = "helper :: Int\nhelper = x @ 1\n\nmain :: Int\nmain = helper\n";
+    let cst = build_cst(src);
+    assert_eq!(cst.text().to_string(), src, "the illegal char survives in trivia (lossless)");
+    // Both declarations are still present (not a single blank MODULE).
+    let decls = cst
+        .children()
+        .filter(|n| matches!(n.kind(), SyntaxKind::DECL | SyntaxKind::ERROR))
+        .count();
+    assert!(decls >= 4, "sig+clause for helper and main all survive: {decls}");
+    // The names are still findable across the illegal character.
+    assert!(document_symbols(&cst).iter().any(|(n, _)| n == "main"), "main still named");
+}
+
+#[test]
 fn token_driven_parser_matches_recursive_descent_over_the_subset() {
     // Stage 3a: the token-driven CST parser + lowering must produce EXACTLY the same
     // AST as the existing recursive-descent parser, over the supported subset. This

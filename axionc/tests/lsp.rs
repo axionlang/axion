@@ -169,6 +169,14 @@ fn completion_survives_a_half_typed_body() {
     // Top-level and builtins are still there too.
     assert!(labels.contains(&"helper".to_string()));
     assert!(labels.contains(&"putStrLn".to_string()));
+
+    // Lexer-level recovery: a stray illegal character in the body no longer clears the
+    // buffer — the param and top-level names are still offered.
+    let bad = "helper :: Int -> Int\nhelper x = x @ \n\nmain :: Int\nmain = 0\n";
+    let at = bad.find("x @").unwrap();
+    let l2: Vec<String> = completions(bad, at).into_iter().map(|c| c.label).collect();
+    assert!(l2.contains(&"x".to_string()), "param survives an illegal char: {l2:?}");
+    assert!(l2.contains(&"helper".to_string()), "top-level survives an illegal char");
 }
 
 #[test]

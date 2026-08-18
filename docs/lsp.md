@@ -30,8 +30,9 @@ promises in §8 — with unchanged work memoized across edits.
   binders are harvested from the recovered token-driven CST
   ([intra-declaration recovery](#intra-declaration-recovery)), so a clause with an
   incomplete expression still offers its parameters and `let`/`where` names (an
-  over-approximation of scope — the client filters by the typed prefix). A *lex* error (a
-  stray illegal character) still clears suggestions to builtins + keywords.
+  over-approximation of scope — the client filters by the typed prefix). Even a stray
+  illegal character no longer clears the buffer — see
+  [intra-declaration recovery](#intra-declaration-recovery).
 - **Go to definition** (`textDocument/definition`) — scope-aware and **cross-file**: a
   local binder (parameter, `let`/`where`, lambda or `case` pattern) in the enclosing
   function wins over a top-level name (resolved via the AST's binder spans); otherwise
@@ -188,11 +189,19 @@ equivalence still holds.
 
 Completion consumes this directly: `cst::binders_in_decl(offset)` harvests the binder
 names of the declaration under the cursor from the recovered tree, feeding the
-half-typed-body completion above. Limitation: recovery is **parser-level** — a *lex*
-error (an illegal character) still clears the token stream, because the lexer has no
-recovery yet (a separate follow-up); `build_cst` degrades the same way.
+half-typed-body completion above.
+
+Recovery reaches the **lexer** too: `lexer::lex_recover` skips an unrecognized character
+(collecting its span) and keeps going instead of failing on the first one, so a stray
+illegal character no longer clears the token stream — the skipped byte survives in trivia
+(the CST still round-trips) and the surrounding declarations keep their structure. Both
+CST entry points (`build_cst`, `parse_module_cst`) use it; the compiler's own `lex` still
+fails fast and reports the character as AX0100, so the *diagnostic* is unchanged while
+the *editor features* stay alive. A lex error keeps the token-driven parse non-`full`, so
+the flip's differential gate is unaffected.
 (`tests/…token_driven_parser_recovers_within_a_declaration`,
-`tests/…completion_survives_a_half_typed_body`.)
+`tests/…completion_survives_a_half_typed_body`,
+`tests/…a_stray_illegal_character_does_not_blank_the_cst`.)
 
 ### Rowan CST (Stages 1–2)
 
@@ -254,9 +263,8 @@ full rowan migration is multi-stage by design.
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- Lexer-level recovery (so a stray illegal character no longer clears the token
-  stream), a workspace-wide index (so references reach *unopened* importers), and the
-  WASM playground.
+- A workspace-wide index (so references reach *unopened* importers) and the WASM
+  playground.
 
 Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
 front-end — blocked on byte-exact spans, since spans are semantic keys in inference's

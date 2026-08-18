@@ -258,3 +258,31 @@ pub fn lex(src: &str) -> Result<Vec<Spanned>, LexError> {
     }
     Ok(out)
 }
+
+/// Like [`lex`], but never fails: an unrecognized character is **skipped** (its span
+/// collected) and lexing continues. The skipped bytes stay in `src`, so a CST built from
+/// these tokens is still lossless — they land in the inter-token trivia. For the editor
+/// path, where a single stray illegal character must not blank out the whole buffer;
+/// the compiler's own `lex` still reports it (AX0100). Returns the tokens and every
+/// skipped span, in source order.
+#[cfg(feature = "cst")]
+pub fn lex_recover(src: &str) -> (Vec<Spanned>, Vec<LexError>) {
+    let mut out = Vec::new();
+    let mut errs = Vec::new();
+    let mut lexer = Tok::lexer(src);
+    while let Some(res) = lexer.next() {
+        let span = lexer.span();
+        match res {
+            Ok(tok) => out.push(Spanned {
+                tok,
+                start: span.start,
+                end: span.end,
+            }),
+            Err(()) => errs.push(LexError {
+                start: span.start,
+                end: span.end,
+            }),
+        }
+    }
+    (out, errs)
+}

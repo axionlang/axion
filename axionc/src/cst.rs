@@ -365,7 +365,9 @@ impl Emitter<'_> {
 
 /// Build the grammar-structured, lossless CST of `src`.
 pub fn build_cst(src: &str) -> SyntaxNode {
-    let toks = lex(src).unwrap_or_default();
+    // Recovering lex: a stray illegal character is skipped (it lands in trivia) rather
+    // than clearing the whole token stream, so editor features survive it.
+    let (toks, _lex_errs) = crate::lexer::lex_recover(src);
     let lines = LineMap::new(src);
 
     // Parse (with declaration-level recovery) to drive the structure.
@@ -473,16 +475,10 @@ pub fn name_occurrences(root: &SyntaxNode, name: &str) -> Vec<rowan::TextRange> 
 /// become ERROR nodes and the surrounding declarations survive. Unlike [`build_cst`]
 /// (AST-derived, so a broken clause loses its nested structure), this keeps a half-typed
 /// declaration's binders as `VAR_PAT` nodes, so the editor can still see the locals in
-/// scope while you type. On a lex failure, an empty `MODULE`.
+/// scope while you type. Recovering lex means even a stray illegal character keeps the
+/// buffer's structure (the bad byte survives in trivia).
 pub fn parse_recover(src: &str) -> SyntaxNode {
-    parse_module_cst(src)
-        .map(|(cst, _full)| cst)
-        .unwrap_or_else(|| {
-            let mut b = GreenNodeBuilder::new();
-            b.start_node(MODULE.into());
-            b.finish_node();
-            SyntaxNode::new_root(b.finish())
-        })
+    parse_module_cst(src).0
 }
 
 /// The names bound within the top-level declaration containing `offset`: every `VAR_PAT`
@@ -2330,15 +2326,17 @@ fn lower_module_name(node: &SyntaxNode) -> Vec<String> {
 /// malformed file yields `None`, and the caller falls back to the recursive-descent
 /// parser for error reporting and declaration-level recovery.
 pub fn parse_module_full(src: &str) -> Option<crate::ast::Module> {
-    let (cst, full) = parse_module_cst(src)?;
+    let (cst, full) = parse_module_cst(src);
     if !full {
         return None;
     }
     lower_module(&cst)
 }
 
-fn parse_module_cst(src: &str) -> Option<(SyntaxNode, bool)> {
-    let raw = lex(src).ok()?;
+fn parse_module_cst(src: &str) -> (SyntaxNode, bool) {
+    // Recovering lex: illegal characters are skipped (they survive as trivia) instead of
+    // aborting, so `parse_recover` stays useful on a buffer with a stray bad character.
+    let (raw, lex_errs) = crate::lexer::lex_recover(src);
     let lines = LineMap::new(src);
     let toks = layout::layout(&raw, &lines);
     let mut p = ExprParser {
@@ -2352,10 +2350,12 @@ fn parse_module_cst(src: &str) -> Option<(SyntaxNode, bool)> {
     p.b.start_node(MODULE.into());
     p.block(ExprParser::top_decl);
     let leftover_real = p.toks[p.pos..].iter().any(|s| matches!(s.tok, LTok::Tok(_)));
-    let full = p.ok && !leftover_real;
+    // A lex error makes the parse non-`full`, so `module_matches_parser` (the flip's
+    // differential gate) still demands a completely clean parse.
+    let full = p.ok && !leftover_real && lex_errs.is_empty();
     p.trivia(src.len());
     p.b.finish_node();
-    Some((SyntaxNode::new_root(p.b.finish()), full))
+    (SyntaxNode::new_root(p.b.finish()), full)
 }
 
 fn zero_module(m: &mut crate::ast::Module) {
@@ -2375,9 +2375,7 @@ fn zero_module(m: &mut crate::ast::Module) {
 /// authorise flipping the pipeline onto the CST. `false` for modules using constructs
 /// outside the current subset (declarations other than functions/signatures).
 pub fn module_matches_parser(src: &str) -> bool {
-    let Some((cst, full)) = parse_module_cst(src) else {
-        return false;
-    };
+    let (cst, full) = parse_module_cst(src);
     if !full {
         return false;
     }
