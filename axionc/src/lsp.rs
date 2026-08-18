@@ -27,9 +27,11 @@ use tower_lsp::lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InlayHint, InlayHintKind,
     InlayHintLabel, InlayHintParams, InlayHintTooltip, Location, MarkupContent,
-    MarkupKind, MessageType, NumberOrString, OneOf, Position, Range, ReferenceParams,
-    RenameParams, SelectionRange, SelectionRangeParams, ServerCapabilities, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
+    MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation, ParameterLabel,
+    Position, Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -349,6 +351,12 @@ impl LanguageServer for Backend {
                 rename_provider: Some(OneOf::Left(true)),
                 // §8's "draw the graph inline": the Auto-Drop / ownership topology.
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                // Application is by juxtaposition, so a space advances to the next arg.
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), " ".to_string()]),
+                    retrigger_characters: Some(vec![" ".to_string()]),
+                    work_done_progress_options: Default::default(),
+                }),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -648,6 +656,25 @@ impl LanguageServer for Backend {
             .collect();
         Ok(Some(hints))
     }
+
+    /// Signature help: the type signature of the function being applied at the cursor,
+    /// with the argument the cursor is on highlighted.
+    async fn signature_help(
+        &self,
+        params: SignatureHelpParams,
+    ) -> RpcResult<Option<SignatureHelp>> {
+        let pos = params.text_document_position_params;
+        let uri = pos.text_document.uri;
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        let path = uri_to_path(&uri);
+        // Forward imports suffice to find the callee's signature (no project scan).
+        let ws = build_workspace(&path, &doc.text, &docs, &[]);
+        Ok(signature_help(&path, &doc.text, offset, &ws))
+    }
 }
 
 /// A filesystem path for `uri` (so imports resolve); falls back to the URL path.
@@ -890,6 +917,182 @@ pub fn references_at(
         }
     }
     out
+}
+
+/// Render a type roughly as it would be written in source: `List a`, `(a -> b) -> c`,
+/// `(Int, Bool)`. Minimal parentheses (only where precedence needs them). Multiplicity
+/// annotations are elided — the signature-help label stays readable.
+fn fmt_type(t: &crate::ast::Type) -> String {
+    use crate::ast::Type;
+    match t {
+        Type::Con(n) | Type::Var(n) => n.clone(),
+        Type::Unit => "()".to_string(),
+        Type::Tuple(ts) => {
+            format!("({})", ts.iter().map(fmt_type).collect::<Vec<_>>().join(", "))
+        }
+        Type::App(f, x) => format!("{} {}", fmt_type(f), fmt_atom(x)),
+        Type::Arrow { from, to, .. } => format!("{} -> {}", fmt_param(from), fmt_type(to)),
+    }
+}
+
+/// A type in atom position (an application argument): compound types get parentheses.
+fn fmt_atom(t: &crate::ast::Type) -> String {
+    use crate::ast::Type;
+    match t {
+        Type::App(..) | Type::Arrow { .. } => format!("({})", fmt_type(t)),
+        _ => fmt_type(t),
+    }
+}
+
+/// A type on the left of an arrow (a parameter): only a nested arrow needs parentheses
+/// (`(a -> b) -> c`); an application like `List a` does not.
+fn fmt_param(t: &crate::ast::Type) -> String {
+    match t {
+        crate::ast::Type::Arrow { .. } => format!("({})", fmt_type(t)),
+        _ => fmt_type(t),
+    }
+}
+
+fn tok_atom_start(t: &crate::lexer::Tok) -> bool {
+    use crate::lexer::Tok::{ConId, Float, Int, LBracket, LParen, Str, VarId};
+    matches!(t, VarId(_) | ConId(_) | Int(_) | Float(_) | Str(_) | LParen | LBracket)
+}
+
+fn tok_ident(t: &crate::lexer::Tok) -> Option<String> {
+    match t {
+        crate::lexer::Tok::VarId(s) | crate::lexer::Tok::ConId(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// The call the cursor is inside: the head function's name and the 0-based index of the
+/// argument being written. Walks the token stream left from `offset`, tracking bracket
+/// depth, until the application spine ends (an operator, keyword, `=`, `,`, or the
+/// enclosing `(`). `None` when the cursor is not applying a named function.
+fn call_context(src: &str, offset: usize) -> Option<(String, usize)> {
+    use crate::lexer::Tok;
+    let (toks, _errs) = crate::lexer::lex_recover(src);
+    let mut depth = 0i32;
+    let mut atoms: Vec<usize> = Vec::new(); // atom start offsets (head last), right→left
+    let mut head_idx: Option<usize> = None;
+    for i in (0..toks.len()).rev() {
+        let t = &toks[i];
+        if t.start >= offset {
+            continue; // only what begins before the cursor
+        }
+        match &t.tok {
+            Tok::RParen | Tok::RBracket => depth += 1,
+            Tok::LParen | Tok::LBracket => {
+                if depth > 0 {
+                    depth -= 1;
+                } else if atoms.is_empty() {
+                    // a fresh open bracket right before the cursor: an argument atom of
+                    // the OUTER application — record it and keep walking to that head.
+                    atoms.push(t.start);
+                } else {
+                    break; // the bracket enclosing the current innermost application
+                }
+            }
+            _ if depth == 0 => {
+                if tok_atom_start(&t.tok) {
+                    atoms.push(t.start);
+                    head_idx = Some(i);
+                } else {
+                    break; // operator / keyword / `=` / `,` ends the spine
+                }
+            }
+            _ => {} // inside brackets: skip
+        }
+    }
+    let head = tok_ident(&toks[head_idx?].tok)?;
+    let arg_count = atoms.len().saturating_sub(1); // `atoms` includes the head
+    // A trailing gap (whitespace before the cursor) means we've moved on to the NEXT
+    // argument; otherwise the cursor is still writing the last atom.
+    let in_gap = offset == 0
+        || src
+            .as_bytes()
+            .get(offset - 1)
+            .is_some_and(u8::is_ascii_whitespace);
+    let active = if in_gap { arg_count } else { arg_count.saturating_sub(1) };
+    Some((head, active))
+}
+
+/// The declared type of the top-level function `name`, looked up in `src` then in each
+/// imported file present in `ws`. Only functions with an explicit `::` signature.
+fn lookup_sig(name: &str, path: &str, src: &str, ws: &Workspace) -> Option<crate::ast::Type> {
+    let sig_in = |text: &str| -> Option<crate::ast::Type> {
+        parse_ast(text)?
+            .funcs
+            .iter()
+            .find(|f| f.name == name)
+            .and_then(|f| f.sig.clone())
+    };
+    if let Some(t) = sig_in(src) {
+        return Some(t);
+    }
+    let dir = dir_of(path);
+    for import in crate::module_imports(src) {
+        let target = crate::import_target_path(&dir, &import);
+        let Some(tpath) = target.to_str() else { continue };
+        if let Some(text) = ws.get(tpath) {
+            if let Some(t) = sig_in(text) {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+/// Signature help at byte `offset`: the signature of the function being applied, with the
+/// active argument highlighted. `None` unless the cursor is applying a named function that
+/// has an explicit signature (in this file or an imported one).
+pub fn signature_help(
+    path: &str,
+    src: &str,
+    offset: usize,
+    ws: &Workspace,
+) -> Option<SignatureHelp> {
+    use crate::ast::Type;
+    let (head, active) = call_context(src, offset)?;
+    let sig = lookup_sig(&head, path, src, ws)?;
+
+    // Build the label `head :: p0 -> p1 -> … -> result`, recording each parameter's
+    // offsets within the label so the client can highlight the active one.
+    let mut label = format!("{head} :: ");
+    let mut params: Vec<ParameterInformation> = Vec::new();
+    let mut cur = &sig;
+    let mut first = true;
+    while let Type::Arrow { from, to, .. } = cur {
+        if !first {
+            label.push_str(" -> ");
+        }
+        first = false;
+        let start = label.len() as u32;
+        label.push_str(&fmt_param(from));
+        let end = label.len() as u32;
+        params.push(ParameterInformation {
+            label: ParameterLabel::LabelOffsets([start, end]),
+            documentation: None,
+        });
+        cur = to;
+    }
+    if params.is_empty() {
+        return None; // not a function type — nothing to guide
+    }
+    label.push_str(" -> ");
+    label.push_str(&fmt_type(cur));
+
+    let active = (active as u32).min(params.len() as u32 - 1);
+    Some(SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label,
+            documentation: None,
+            parameters: Some(params),
+            active_parameter: Some(active),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active),
+    })
 }
 
 const KEYWORDS: &[&str] = &[

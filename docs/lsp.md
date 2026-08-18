@@ -51,6 +51,15 @@ promises in §8 — with unchanged work memoized across edits.
   just the active file's forward import closure. Open buffers win over disk (an unsaved
   edit is resolved from its buffer); build/hidden directories are skipped. References
   honour `include_declaration`; rename emits one multi-file `WorkspaceEdit`.
+- **Signature help** (`textDocument/signatureHelp`) — while writing a call, the callee's
+  type signature with the **active parameter** highlighted. Application is by
+  juxtaposition, so the head function and the argument index are recovered by walking the
+  token stream left from the cursor (bracket-depth-aware; the spine ends at an operator,
+  keyword, `=`, `,`, or the enclosing `(`), and a trailing space advances to the next
+  parameter. The signature is the function's declared type (`Func.sig`), found in this
+  file or an imported one; the label reuses the source-like type formatting
+  (`(a -> b) -> List a -> List b`). Functions with an explicit `::` signature only
+  (constructors and builtins are not yet covered).
 - **Ownership overlay** (`textDocument/inlayHint`) — §8's "draw the graph inline": the
   Auto-Drop / ownership topology the compiler already computes, shown *inline* at each
   source span. Every linear resource's inserted `free` — `⌫ drop x: Ty`, with a tooltip
@@ -265,15 +274,17 @@ full rowan migration is multi-stage by design.
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- Signature help, a UTF-16 position remap (positions are ASCII-correct today), and the
-  WASM playground. The project index re-scans on each references/rename request (no
+- Signature help for constructors and builtins (functions with a declared `::` are
+  covered), a UTF-16 position remap (positions are ASCII-correct today), and the WASM
+  playground. The project index re-scans on each references/rename request (no
   persistent, file-watched index yet — fine at this scale).
 
 Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
 front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
 monomorphisation maps). Intra-declaration recovery (parser-level), completion,
 go-to-definition, find-references, rename (all cross-file, references/rename over the
-whole workspace index), and the inline ownership / Auto-Drop overlay are **done** (above).
+whole workspace index), signature help, and the inline ownership / Auto-Drop overlay are
+**done** (above).
 
 ## Internals
 

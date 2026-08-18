@@ -6,7 +6,7 @@
 
 use axionc::lsp::{
     analyze, completions, definition, definition_at, folds, outline, ownership_hints,
-    references_at, references_of, selection,
+    references_at, references_of, selection, signature_help,
 };
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
@@ -154,6 +154,37 @@ fn find_references_is_scope_aware() {
     assert_eq!(refs.len(), 3, "only the local `n` occurrences, not the top-level: {refs:?}");
     // All references are on line 4 (f's clause), not line 1 (top-level n).
     assert!(refs.iter().all(|r| r.start.line == 4), "should stay within f: {refs:?}");
+}
+
+#[test]
+fn signature_help_tracks_the_active_parameter() {
+    let src = "add :: Int -> Int -> Int\nadd x y = x + y\n\nmain :: Int\nmain = add 1 2\n";
+    let ws: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let base = src.rfind("add 1 2").unwrap();
+
+    // Writing the first argument → parameter 0 active; the label is the full signature.
+    let first = signature_help("t.axi", src, base + 4, &ws).expect("sig help on first arg");
+    assert_eq!(first.signatures[0].label, "add :: Int -> Int -> Int");
+    assert_eq!(first.active_parameter, Some(0));
+    assert_eq!(first.signatures[0].parameters.as_ref().unwrap().len(), 2);
+
+    // After the first argument (a space) → parameter 1 active.
+    let second = signature_help("t.axi", src, base + 6, &ws).expect("sig help after first arg");
+    assert_eq!(second.active_parameter, Some(1));
+
+    // The callee's signature can come from an imported file.
+    let (a, b) = ("/w/A.axi", "/w/B.axi");
+    let a_src = "import B\n\nmain :: Int\nmain = twice 5\n";
+    let mut ws2: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    ws2.insert(a.to_string(), a_src.to_string());
+    ws2.insert(b.to_string(), "twice :: Int -> Int\ntwice n = n\n".to_string());
+    let at = a_src.rfind("twice 5").unwrap() + 6;
+    let sh = signature_help(a, a_src, at, &ws2).expect("cross-file sig help");
+    assert_eq!(sh.signatures[0].label, "twice :: Int -> Int");
+    assert_eq!(sh.active_parameter, Some(0));
+
+    // Not applying a named function → nothing.
+    assert!(signature_help("t.axi", src, src.find("x + y").unwrap() + 4, &ws).is_none());
 }
 
 #[test]
