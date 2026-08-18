@@ -22,6 +22,12 @@ promises in §8 — with unchanged work memoized across edits.
 - **Selection ranges** — "expand selection" walks the CST from the token under the
   cursor out through its enclosing expression/pattern/declaration nodes
   (`textDocument/selectionRange`).
+- **Completion** (`textDocument/completion`) — the names in scope at the cursor:
+  locals (parameters, `let`/`where`, lambda/`case` binders of the enclosing function),
+  the module's top-level declarations (functions, `data` types + constructors, classes
+  + methods, foreigns), the builtins, and the keywords — de-duplicated (locals shadow
+  the rest). Local suggestions need the enclosing clause to parse; when the code around
+  the cursor is malformed it degrades to top-level + builtins + keywords.
 - **Go to definition** (`textDocument/definition`) — scope-aware: a local binder
   (parameter, `let`/`where`, lambda or `case` pattern) in the enclosing function wins
   over a top-level name (resolved via the AST's binder spans); otherwise the

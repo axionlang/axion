@@ -20,7 +20,8 @@ use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result as RpcResult;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
-    CodeActionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    CodeActionResponse, CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
+    CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
     DocumentSymbolResponse, FoldingRange, FoldingRangeKind, FoldingRangeParams,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
@@ -228,6 +229,7 @@ impl LanguageServer for Backend {
                 folding_range_provider: Some(tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true)),
                 selection_range_provider: Some(tower_lsp::lsp_types::SelectionRangeProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions::default()),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -406,6 +408,175 @@ impl LanguageServer for Backend {
             uri,
             range,
         })))
+    }
+
+    /// Completion: names in scope at the cursor (locals, then top-level declarations
+    /// and builtins) plus keywords. The client filters by the typed prefix.
+    async fn completion(
+        &self,
+        params: CompletionParams,
+    ) -> RpcResult<Option<CompletionResponse>> {
+        let pos = params.text_document_position;
+        let docs = self.docs.lock().await;
+        let Some(doc) = docs.get(&pos.text_document.uri) else {
+            return Ok(None);
+        };
+        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        Ok(Some(CompletionResponse::Array(completions(&doc.text, offset))))
+    }
+}
+
+const KEYWORDS: &[&str] = &[
+    "let", "in", "if", "then", "else", "case", "of", "where", "do", "data", "class", "instance",
+    "module", "import", "qualified", "as", "deriving", "foreign",
+];
+
+fn completion_item(label: impl Into<String>, kind: CompletionItemKind) -> CompletionItem {
+    CompletionItem {
+        label: label.into(),
+        kind: Some(kind),
+        ..CompletionItem::default()
+    }
+}
+
+/// Completion candidates at byte `offset` in `src`: keywords, the module's top-level
+/// declarations, the builtins, and the locals in scope — de-duplicated by label
+/// (locals and top-level shadow builtins/keywords).
+pub fn completions(src: &str, offset: usize) -> Vec<CompletionItem> {
+    let mut items: Vec<CompletionItem> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let add = |items: &mut Vec<CompletionItem>, seen: &mut std::collections::HashSet<String>, label: String, kind| {
+        if seen.insert(label.clone()) {
+            items.push(completion_item(label, kind));
+        }
+    };
+
+    if let Some(module) = parse_ast(src) {
+        // Locals first, so they shadow same-named top-level/builtin entries.
+        for name in locals_in_scope(&module, offset) {
+            add(&mut items, &mut seen, name, CompletionItemKind::VARIABLE);
+        }
+        for f in &module.funcs {
+            add(&mut items, &mut seen, f.name.clone(), CompletionItemKind::FUNCTION);
+        }
+        for fo in &module.foreigns {
+            add(&mut items, &mut seen, fo.name.clone(), CompletionItemKind::FUNCTION);
+        }
+        for d in &module.datas {
+            add(&mut items, &mut seen, d.name.clone(), CompletionItemKind::CLASS);
+            for c in &d.cons {
+                add(&mut items, &mut seen, c.name.clone(), CompletionItemKind::CONSTRUCTOR);
+            }
+        }
+        for c in &module.classes {
+            add(&mut items, &mut seen, c.name.clone(), CompletionItemKind::INTERFACE);
+            for (m, _) in &c.methods {
+                add(&mut items, &mut seen, m.clone(), CompletionItemKind::METHOD);
+            }
+        }
+    }
+    let mut builtins: Vec<String> = crate::check::builtins().into_iter().collect();
+    builtins.sort();
+    for b in builtins {
+        add(&mut items, &mut seen, b, CompletionItemKind::FUNCTION);
+    }
+    for kw in KEYWORDS {
+        add(&mut items, &mut seen, (*kw).to_string(), CompletionItemKind::KEYWORD);
+    }
+    items
+}
+
+/// All local binders in scope at `offset` — the enclosing clause's parameters and
+/// `where` names, plus the binders of any `let`/lambda/`case` enclosing the cursor.
+fn locals_in_scope(module: &crate::ast::Module, offset: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(c) = module
+        .funcs
+        .iter()
+        .flat_map(|f| &f.clauses)
+        .find(|c| span_contains(c.span, offset))
+    {
+        collect_clause(c, offset, &mut out);
+    }
+    out
+}
+
+fn collect_pat(p: &crate::ast::Pat, out: &mut Vec<String>) {
+    use crate::ast::Pat;
+    match p {
+        Pat::Var(n, _) => out.push(n.clone()),
+        Pat::Con(_, ps, _) | Pat::Tuple(ps, _) => ps.iter().for_each(|p| collect_pat(p, out)),
+        _ => {}
+    }
+}
+
+fn collect_clause(c: &crate::ast::Clause, offset: usize, out: &mut Vec<String>) {
+    c.pats.iter().for_each(|p| collect_pat(p, out));
+    for w in &c.wher {
+        out.push(w.name.clone());
+        for wc in &w.clauses {
+            if span_contains(wc.span, offset) {
+                collect_clause(wc, offset, out);
+            }
+        }
+    }
+    collect_body(&c.body, offset, out);
+}
+
+fn collect_body(b: &crate::ast::Body, offset: usize, out: &mut Vec<String>) {
+    use crate::ast::Body;
+    match b {
+        Body::Plain(e) => collect_expr(e, offset, out),
+        Body::Guarded(arms) => {
+            for (g, r) in arms {
+                for e in [g, r] {
+                    if span_contains(e.span(), offset) {
+                        collect_expr(e, offset, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_expr(e: &crate::ast::Expr, offset: usize, out: &mut Vec<String>) {
+    use crate::ast::Expr;
+    match e {
+        Expr::Let(funcs, body, _) => {
+            funcs.iter().for_each(|f| out.push(f.name.clone()));
+            for c in funcs.iter().flat_map(|f| &f.clauses) {
+                if span_contains(c.span, offset) {
+                    collect_clause(c, offset, out);
+                }
+            }
+            if span_contains(body.span(), offset) {
+                collect_expr(body, offset, out);
+            }
+        }
+        Expr::Lam(pats, body, _) => {
+            pats.iter().for_each(|p| collect_pat(p, out));
+            if span_contains(body.span(), offset) {
+                collect_expr(body, offset, out);
+            }
+        }
+        Expr::Case(scrut, arms, _) => {
+            if span_contains(scrut.span(), offset) {
+                collect_expr(scrut, offset, out);
+            }
+            for (pat, body) in arms {
+                if span_contains(body.span(), offset) {
+                    collect_pat(pat, out);
+                    collect_expr(body, offset, out);
+                }
+            }
+        }
+        _ => {
+            for c in child_exprs(e) {
+                if span_contains(c.span(), offset) {
+                    collect_expr(c, offset, out);
+                }
+            }
+        }
     }
 }
 

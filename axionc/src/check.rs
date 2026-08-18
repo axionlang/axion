@@ -1157,7 +1157,7 @@ fn build_must_use_types(module: &Module) -> HashSet<String> {
     set
 }
 
-fn builtins() -> HashSet<String> {
+pub fn builtins() -> HashSet<String> {
     [
         "putStrLn",
         "putStr",

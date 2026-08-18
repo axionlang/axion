@@ -4,7 +4,7 @@
 #![cfg(feature = "lsp")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axionc::lsp::{analyze, definition, folds, outline, selection};
+use axionc::lsp::{analyze, completions, definition, folds, outline, selection};
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
 fn fixture(name: &str) -> String {
@@ -104,6 +104,32 @@ fn goto_definition_resolves_locals_and_constructors() {
     let use_cons = src3.rfind("Cons").unwrap();
     let d3 = definition(src3, use_cons).expect("constructor should resolve");
     assert_eq!(d3.start.line, 0, "Cons should resolve into the data decl: {d3:?}");
+}
+
+#[test]
+fn completion_offers_scope_toplevel_builtins_and_keywords() {
+    let src = "data Color = Red | Green\n\nhelper :: Int -> Int -> Int\nhelper x y = x + y\n\nmain :: Int\nmain = 0\n";
+    // Cursor on `y` in the body — the param `x` (and `y`) and top-level/builtins are
+    // in scope. (Completion needs the enclosing clause to parse; it degrades to
+    // top-level + builtins + keywords when the code around the cursor is malformed.)
+    let offset = src.rfind('y').unwrap();
+    let labels: Vec<String> = completions(src, offset).into_iter().map(|c| c.label).collect();
+
+    assert!(labels.contains(&"x".to_string()), "local param `x` should be offered");
+    assert!(labels.contains(&"helper".to_string()), "top-level `helper` should be offered");
+    assert!(labels.contains(&"Color".to_string()), "the data type should be offered");
+    assert!(labels.contains(&"Red".to_string()), "the constructor `Red` should be offered");
+    assert!(labels.contains(&"putStrLn".to_string()), "a builtin should be offered");
+    assert!(labels.contains(&"case".to_string()), "a keyword should be offered");
+    // De-duplicated.
+    let mut sorted = labels.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), labels.len(), "labels should be unique");
+
+    // Outside any function, a local param isn't in scope.
+    let top = completions(src, src.find("main = 0").unwrap());
+    assert!(!top.iter().any(|c| c.label == "x"), "`x` is not in scope at top level of main");
 }
 
 #[test]
