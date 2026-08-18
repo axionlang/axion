@@ -5,7 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use axionc::lsp::{
-    analyze, completions, definition, folds, outline, ownership_hints, references_of, selection,
+    analyze, completions, definition, definition_at, folds, outline, ownership_hints,
+    references_at, references_of, selection,
 };
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
@@ -153,6 +154,43 @@ fn find_references_is_scope_aware() {
     assert_eq!(refs.len(), 3, "only the local `n` occurrences, not the top-level: {refs:?}");
     // All references are on line 4 (f's clause), not line 1 (top-level n).
     assert!(refs.iter().all(|r| r.start.line == 4), "should stay within f: {refs:?}");
+}
+
+#[test]
+fn cross_file_definition_and_references_follow_imports() {
+    // A imports B and uses B's `helper` twice; B defines it. The workspace holds both.
+    let a = "/w/A.axi";
+    let b = "/w/B.axi";
+    let a_src = "import B\n\nmain :: Int\nmain = helper (helper 0)\n";
+    let b_src = "helper :: Int -> Int\nhelper x = x\n";
+    let mut ws = std::collections::HashMap::new();
+    ws.insert(a.to_string(), a_src.to_string());
+    ws.insert(b.to_string(), b_src.to_string());
+
+    // Go-to-definition from A's use of `helper` lands in B's signature.
+    let use_off = a_src.find("helper (").unwrap() + 1;
+    let (def_path, range) = definition_at(a, a_src, use_off, &ws).expect("cross-file def");
+    assert_eq!(def_path, b, "helper is defined in B");
+    assert_eq!(range.start.line, 0, "B's signature is on line 0: {range:?}");
+
+    // References from B's definition gather A's two calls AND B's sig + clause name.
+    let def_off = b_src.find("helper ::").unwrap();
+    let refs = references_at(b, b_src, def_off, &ws, true);
+    let in_a = refs.iter().filter(|(p, _)| p == a).count();
+    let in_b = refs.iter().filter(|(p, _)| p == b).count();
+    assert_eq!(in_a, 2, "two calls in A: {refs:?}");
+    assert_eq!(in_b, 2, "sig + clause name in B: {refs:?}");
+
+    // A local `x` in B is confined to B — never gathered across files.
+    let x_off = b_src.rfind('x').unwrap();
+    let xrefs = references_at(b, b_src, x_off, &ws, true);
+    assert!(!xrefs.is_empty(), "the local `x` resolves to itself");
+    assert!(xrefs.iter().all(|(p, _)| p == b), "local `x` stays in B: {xrefs:?}");
+
+    // With an empty workspace, cross-file resolution degrades to single-file: the use in
+    // A resolves to nothing (helper is not defined in A).
+    let empty = std::collections::HashMap::new();
+    assert!(definition_at(a, a_src, use_off, &empty).is_none(), "no B → no cross-file def");
 }
 
 #[test]

@@ -28,18 +28,22 @@ promises in §8 — with unchanged work memoized across edits.
   + methods, foreigns), the builtins, and the keywords — de-duplicated (locals shadow
   the rest). Local suggestions need the enclosing clause to parse; when the code around
   the cursor is malformed it degrades to top-level + builtins + keywords.
-- **Go to definition** (`textDocument/definition`) — scope-aware: a local binder
-  (parameter, `let`/`where`, lambda or `case` pattern) in the enclosing function wins
-  over a top-level name (resolved via the AST's binder spans); otherwise the
-  top-level declaration that introduces it — a function, `data` type *or constructor*,
-  `class` name *or method*, or `foreign` — is found in the CST.
+- **Go to definition** (`textDocument/definition`) — scope-aware and **cross-file**: a
+  local binder (parameter, `let`/`where`, lambda or `case` pattern) in the enclosing
+  function wins over a top-level name (resolved via the AST's binder spans); otherwise
+  the top-level declaration that introduces it — a function, `data` type *or
+  constructor*, `class` name *or method*, or `foreign` — is found in the CST, first in
+  this file and then in each **imported** file (the definition may live in another file).
 - **Find references** (`textDocument/references`) and **rename** (`textDocument/rename`)
   — the inverse of go-to-definition: every occurrence of the name is grouped by the
-  binding it resolves to (a local binder via the AST, or a top-level declaration site
-  via the CST), so a parameter's references stay within its function and never bleed
-  into a same-named top-level name (shadowing is handled). References honour
-  `include_declaration`; rename replaces the whole set (declaration included) with a
-  single `WorkspaceEdit`.
+  *definition* it resolves to (a local binder via the AST, or a top-level declaration
+  site via the CST — keyed by `(file, span)`), so a parameter's references stay within
+  its function and never bleed into a same-named top-level name (shadowing is handled,
+  across files too). A top-level name's references are gathered from **every file in the
+  workspace** (open buffers + the active file's import closure); references honour
+  `include_declaration`; rename emits one multi-file `WorkspaceEdit`. The reverse import
+  graph of *unopened* files is out of scope (they'd need a workspace-wide scan) — an open
+  editor sees all its buffers, which is the common case.
 - **Ownership overlay** (`textDocument/inlayHint`) — §8's "draw the graph inline": the
   Auto-Drop / ownership topology the compiler already computes, shown *inline* at each
   source span. Every linear resource's inserted `free` — `⌫ drop x: Ty`, with a tooltip
@@ -226,13 +230,15 @@ full rowan migration is multi-stage by design.
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
 - Intra-declaration CST recovery (formatting, better mid-edit completion locals),
-  cross-file references/rename, and the WASM playground.
+  a workspace-wide index (so references reach *unopened* importers), and the WASM
+  playground.
 
 Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
 front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
 monomorphisation maps), intra-declaration error recovery, and a UTF-16 position remap
 (positions are ASCII-correct today). Completion, go-to-definition, find-references,
-rename, and the inline ownership / Auto-Drop overlay are **done** (above).
+rename (all cross-file), and the inline ownership / Auto-Drop overlay are **done**
+(above).
 
 ## Internals
 

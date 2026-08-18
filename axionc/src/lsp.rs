@@ -489,11 +489,18 @@ impl LanguageServer for Backend {
         };
         let lines = LineMap::new(&doc.text);
         let offset = lines.offset(pos.position.line, pos.position.character);
-        let Some(range) = definition(&doc.text, offset) else {
+        let path = uri_to_path(&uri);
+        let ws = build_workspace(&path, &doc.text, &docs);
+        let Some((def_path, range)) = definition_at(&path, &doc.text, offset, &ws) else {
             return Ok(None);
         };
+        let def_uri = if def_path == path {
+            uri
+        } else {
+            Url::from_file_path(&def_path).unwrap_or(uri)
+        };
         Ok(Some(GotoDefinitionResponse::Scalar(Location {
-            uri,
+            uri: def_uri,
             range,
         })))
     }
@@ -513,8 +520,9 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(completions(&doc.text, offset))))
     }
 
-    /// Find references: every occurrence that resolves to the same binding as the one
-    /// under the cursor (scope-aware).
+    /// Find references: every occurrence that resolves to the same definition as the one
+    /// under the cursor — scope-aware and cross-file (a top-level name gathers uses from
+    /// every open/imported file in the workspace).
     async fn references(&self, params: ReferenceParams) -> RpcResult<Option<Vec<Location>>> {
         let pos = params.text_document_position;
         let uri = pos.text_document.uri;
@@ -523,19 +531,25 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
-        let ranges = references_of(&doc.text, offset, params.context.include_declaration);
+        let path = uri_to_path(&uri);
+        let ws = build_workspace(&path, &doc.text, &docs);
+        let refs = references_at(&path, &doc.text, offset, &ws, params.context.include_declaration);
         Ok(Some(
-            ranges
-                .into_iter()
-                .map(|range| Location {
-                    uri: uri.clone(),
-                    range,
+            refs.into_iter()
+                .filter_map(|(p, range)| {
+                    let file_uri = if p == path {
+                        uri.clone()
+                    } else {
+                        Url::from_file_path(&p).ok()?
+                    };
+                    Some(Location { uri: file_uri, range })
                 })
                 .collect(),
         ))
     }
 
-    /// Rename: replace every reference (including the declaration) with `new_name`.
+    /// Rename: replace every reference (including the declaration) with `new_name`,
+    /// across every file in the workspace (a single multi-file `WorkspaceEdit`).
     async fn rename(&self, params: RenameParams) -> RpcResult<Option<WorkspaceEdit>> {
         let pos = params.text_document_position;
         let uri = pos.text_document.uri;
@@ -544,19 +558,30 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
-        let ranges = references_of(&doc.text, offset, true);
-        if ranges.is_empty() {
+        let path = uri_to_path(&uri);
+        let ws = build_workspace(&path, &doc.text, &docs);
+        let refs = references_at(&path, &doc.text, offset, &ws, true);
+        if refs.is_empty() {
             return Ok(None);
         }
-        let edits: Vec<TextEdit> = ranges
-            .into_iter()
-            .map(|range| TextEdit {
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (p, range) in refs {
+            let file_uri = if p == path {
+                uri.clone()
+            } else {
+                match Url::from_file_path(&p) {
+                    Ok(u) => u,
+                    Err(()) => continue,
+                }
+            };
+            changes.entry(file_uri).or_default().push(TextEdit {
                 range,
                 new_text: params.new_name.clone(),
-            })
-            .collect();
-        let mut changes = HashMap::new();
-        changes.insert(uri, edits);
+            });
+        }
+        if changes.is_empty() {
+            return Ok(None);
+        }
         Ok(Some(WorkspaceEdit {
             changes: Some(changes),
             ..WorkspaceEdit::default()
@@ -599,49 +624,194 @@ fn uri_to_path(uri: &Url) -> String {
         .unwrap_or_else(|| uri.path().to_string())
 }
 
-/// The binding an occurrence of `name` at `offset` resolves to, as a normalised
-/// `(start, end)` byte span — a local binder (via the AST) or a top-level declaration
-/// site (via the CST). The key that groups references and separates shadowed names.
-fn binding_of(
-    cst: &cst::SyntaxNode,
-    module: &crate::ast::Module,
-    name: &str,
-    offset: usize,
-) -> Option<(usize, usize)> {
-    if let Some(sp) = resolve_local(module, name, offset) {
-        return Some(sp);
+/// The workspace to resolve cross-file features against: every open buffer, plus the
+/// on-disk import closure of the active file (`path`/`src`). Open buffers win over disk
+/// (an edited-but-unsaved file is resolved from its buffer). This finds definitions in
+/// files the active file imports, and references in any *open* file — the reverse import
+/// graph of unopened files is out of scope (they'd need a workspace-wide scan).
+fn build_workspace(path: &str, src: &str, open: &HashMap<Url, Doc>) -> Workspace {
+    let mut ws: Workspace = open
+        .iter()
+        .filter_map(|(u, d)| {
+            u.to_file_path()
+                .ok()
+                .and_then(|p| p.to_str().map(|s| (s.to_string(), d.text.clone())))
+        })
+        .collect();
+    ws.entry(path.to_string()).or_insert_with(|| src.to_string());
+
+    // Walk the active file's import closure, reading disk for anything not already open.
+    let mut stack = vec![path.to_string()];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(p) = stack.pop() {
+        if !visited.insert(p.clone()) {
+            continue;
+        }
+        let text = match ws.get(&p) {
+            Some(t) => t.clone(),
+            None => match std::fs::read_to_string(&p) {
+                Ok(t) => {
+                    ws.insert(p.clone(), t.clone());
+                    t
+                }
+                Err(_) => continue,
+            },
+        };
+        let dir = dir_of(&p);
+        for import in crate::module_imports(&text) {
+            if let Some(s) = crate::import_target_path(&dir, &import).to_str() {
+                stack.push(s.to_string());
+            }
+        }
     }
-    cst::definition_site(cst, name).map(|r| (usize::from(r.start()), usize::from(r.end())))
+    ws
 }
 
-/// All references (as LSP ranges) to the binding under the cursor at `offset` — every
-/// occurrence of the name that resolves to the same binding. `include_declaration`
-/// keeps the binder/declaration itself.
+/// All references (as LSP ranges) to the binding under the cursor at `offset`, within a
+/// single file. A thin wrapper over [`references_at`] with an empty workspace.
 pub fn references_of(src: &str, offset: usize, include_declaration: bool) -> Vec<Range> {
+    references_at("", src, offset, &Workspace::new(), include_declaration)
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect()
+}
+
+/// A workspace: the text of every file the server can resolve across, keyed by path
+/// (open buffers plus the on-disk import closure of the active file).
+pub type Workspace = HashMap<String, String>;
+
+/// A resolved definition, possibly in another file. `local` marks a binder inside a
+/// function (parameter, `let`/`where`, …) — references to it never cross files.
+#[derive(Debug, Clone, PartialEq)]
+struct DefSite {
+    path: String,
+    span: (usize, usize),
+    local: bool,
+}
+
+/// The directory an import in `path` resolves against.
+fn dir_of(path: &str) -> std::path::PathBuf {
+    std::path::Path::new(path)
+        .parent()
+        .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf)
+}
+
+/// The definition the identifier `name` (used at `offset` in `path`/`src`) resolves to,
+/// searching, in order: a local binder in the enclosing function, a top-level
+/// declaration in this file, then a top-level declaration in each imported file present
+/// in `ws`. `cst`/`module` are `src`'s already-built tree and AST (`module` is `None`
+/// when `src` doesn't parse — then only the top-level/imported paths apply).
+fn def_site(
+    path: &str,
+    src: &str,
+    cst: &SyntaxNode,
+    module: Option<&crate::ast::Module>,
+    name: &str,
+    offset: usize,
+    ws: &Workspace,
+) -> Option<DefSite> {
+    if let Some(m) = module {
+        if let Some(sp) = resolve_local(m, name, offset) {
+            return Some(DefSite { path: path.to_string(), span: sp, local: true });
+        }
+    }
+    if let Some(r) = cst::definition_site(cst, name) {
+        return Some(DefSite {
+            path: path.to_string(),
+            span: (usize::from(r.start()), usize::from(r.end())),
+            local: false,
+        });
+    }
+    // Not defined here: try each imported file's top-level declarations.
+    let dir = dir_of(path);
+    for import in crate::module_imports(src) {
+        let target = crate::import_target_path(&dir, &import);
+        let Some(tpath) = target.to_str() else { continue };
+        let Some(text) = ws.get(tpath) else { continue };
+        let tcst = cst::build_cst(text);
+        if let Some(r) = cst::definition_site(&tcst, name) {
+            return Some(DefSite {
+                path: tpath.to_string(),
+                span: (usize::from(r.start()), usize::from(r.end())),
+                local: false,
+            });
+        }
+    }
+    None
+}
+
+/// Cross-file go-to-definition: the `(file, range)` the identifier at `offset` in
+/// `path`/`src` defines to — the definition may live in an imported file present in
+/// `ws`. Falls back to the current file when there is no workspace / no import hit.
+pub fn definition_at(path: &str, src: &str, offset: usize, ws: &Workspace) -> Option<(String, Range)> {
+    let cst = cst::build_cst(src);
+    let name = cst::name_at(&cst, offset)?;
+    let module = parse_ast(src);
+    let def = def_site(path, src, &cst, module.as_ref(), &name, offset, ws)?;
+    let text: &str = if def.path == path {
+        src
+    } else {
+        ws.get(&def.path)?
+    };
+    let lines = LineMap::new(text);
+    let range = Range {
+        start: offset_to_position(&lines, def.span.0),
+        end: offset_to_position(&lines, def.span.1),
+    };
+    Some((def.path, range))
+}
+
+/// Cross-file find-references: every occurrence, across the current file and every file
+/// in `ws`, that resolves to the same definition as the identifier under the cursor.
+/// A local binder stays within its own file; a top-level name gathers uses from every
+/// workspace file that resolves to it (imports included), so shadowing is respected
+/// across files. Each result is `(file, range)`.
+pub fn references_at(
+    path: &str,
+    src: &str,
+    offset: usize,
+    ws: &Workspace,
+    include_declaration: bool,
+) -> Vec<(String, Range)> {
     let cst = cst::build_cst(src);
     let Some(name) = cst::name_at(&cst, offset) else {
         return Vec::new();
     };
-    let Some(module) = parse_ast(src) else {
+    let module = parse_ast(src);
+    let Some(target) = def_site(path, src, &cst, module.as_ref(), &name, offset, ws) else {
         return Vec::new();
     };
-    let Some(target) = binding_of(&cst, &module, &name, offset) else {
-        return Vec::new();
-    };
-    let lines = LineMap::new(src);
-    cst::name_occurrences(&cst, &name)
-        .into_iter()
-        .filter_map(|r| {
+
+    // The files to scan: the active file plus every workspace file. A local binder is
+    // confined to its own file (no other file can name it).
+    let mut files: Vec<(String, String)> = vec![(path.to_string(), src.to_string())];
+    if !target.local {
+        for (p, t) in ws {
+            if p != path {
+                files.push((p.clone(), t.clone()));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (fpath, ftext) in &files {
+        let fcst = cst::build_cst(ftext);
+        let fmodule = parse_ast(ftext);
+        let lines = LineMap::new(ftext);
+        for r in cst::name_occurrences(&fcst, &name) {
             let span = (usize::from(r.start()), usize::from(r.end()));
-            if binding_of(&cst, &module, &name, span.0) != Some(target) {
-                return None;
+            if def_site(fpath, ftext, &fcst, fmodule.as_ref(), &name, span.0, ws).as_ref()
+                != Some(&target)
+            {
+                continue;
             }
-            if !include_declaration && span == target {
-                return None;
+            if !include_declaration && *fpath == target.path && span == target.span {
+                continue;
             }
-            Some(text_range_to_range(&lines, r))
-        })
-        .collect()
+            out.push((fpath.clone(), text_range_to_range(&lines, r)));
+        }
+    }
+    out
 }
 
 const KEYWORDS: &[&str] = &[
@@ -804,20 +974,7 @@ fn collect_expr(e: &crate::ast::Expr, offset: usize, out: &mut Vec<String>) {
 /// otherwise the top-level declaration that introduces it (function, `data` type or
 /// constructor, `class` name or method, `foreign`) is returned.
 pub fn definition(src: &str, offset: usize) -> Option<Range> {
-    let cst = cst::build_cst(src);
-    let name = cst::name_at(&cst, offset)?;
-    let lines = LineMap::new(src);
-
-    if let Some(module) = parse_ast(src) {
-        if let Some(sp) = resolve_local(&module, &name, offset) {
-            return Some(Range {
-                start: offset_to_position(&lines, sp.0),
-                end: offset_to_position(&lines, sp.1),
-            });
-        }
-    }
-    let range = cst::definition_site(&cst, &name)?;
-    Some(text_range_to_range(&lines, range))
+    definition_at("", src, offset, &Workspace::new()).map(|(_, r)| r)
 }
 
 /// Parse `src` to a raw `ast::Module` (no prelude/imports) for scope resolution.
