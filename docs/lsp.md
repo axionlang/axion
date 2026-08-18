@@ -26,8 +26,12 @@ promises in §8 — with unchanged work memoized across edits.
   locals (parameters, `let`/`where`, lambda/`case` binders of the enclosing function),
   the module's top-level declarations (functions, `data` types + constructors, classes
   + methods, foreigns), the builtins, and the keywords — de-duplicated (locals shadow
-  the rest). Local suggestions need the enclosing clause to parse; when the code around
-  the cursor is malformed it degrades to top-level + builtins + keywords.
+  the rest). Local suggestions survive a **half-typed body**: the enclosing declaration's
+  binders are harvested from the recovered token-driven CST
+  ([intra-declaration recovery](#intra-declaration-recovery)), so a clause with an
+  incomplete expression still offers its parameters and `let`/`where` names (an
+  over-approximation of scope — the client filters by the typed prefix). A *lex* error (a
+  stray illegal character) still clears suggestions to builtins + keywords.
 - **Go to definition** (`textDocument/definition`) — scope-aware and **cross-file**: a
   local binder (parameter, `let`/`where`, lambda or `case` pattern) in the enclosing
   function wins over a top-level name (resolved via the AST's binder spans); otherwise
@@ -169,6 +173,27 @@ elsewhere don't spuriously go unresolved.
 
 This is declaration-level recovery on the existing recursive-descent parser.
 
+### Intra-declaration recovery
+
+Declaration-level recovery still drops a *single* malformed declaration whole — and
+the mid-edit state (an incomplete expression *inside* the one you're typing) is the
+common case. The **token-driven CST parser** (`cst::parse_recover`) recovers *within* a
+declaration: an item its block parser cannot start is wrapped in an `ERROR` node and the
+block **continues**, so the surrounding declarations keep their structure, and a
+half-typed clause keeps its parameter `VAR_PAT`s even when its body has a hole
+(`cst::ExprParser::recover_item`, guaranteed to make progress so parsing always
+terminates). Recovery marks the parse non-`full`, so the flip's differential gate
+(`module_matches_parser`, which requires a fully clean parse) is unaffected — the 205-fixture
+equivalence still holds.
+
+Completion consumes this directly: `cst::binders_in_decl(offset)` harvests the binder
+names of the declaration under the cursor from the recovered tree, feeding the
+half-typed-body completion above. Limitation: recovery is **parser-level** — a *lex*
+error (an illegal character) still clears the token stream, because the lexer has no
+recovery yet (a separate follow-up); `build_cst` degrades the same way.
+(`tests/…token_driven_parser_recovers_within_a_declaration`,
+`tests/…completion_survives_a_half_typed_body`.)
+
 ### Rowan CST (Stages 1–2)
 
 A lossless [rowan](https://github.com/rust-analyzer/rowan) CST is being introduced in
@@ -229,14 +254,14 @@ full rowan migration is multi-stage by design.
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- Intra-declaration CST recovery (formatting, better mid-edit completion locals),
-  a workspace-wide index (so references reach *unopened* importers), and the WASM
-  playground.
+- Lexer-level recovery (so a stray illegal character no longer clears the token
+  stream), a workspace-wide index (so references reach *unopened* importers), and the
+  WASM playground.
 
 Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
 front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
-monomorphisation maps), intra-declaration error recovery, and a UTF-16 position remap
-(positions are ASCII-correct today). Completion, go-to-definition, find-references,
+monomorphisation maps) and a UTF-16 position remap (positions are ASCII-correct today).
+Intra-declaration recovery (parser-level), completion, go-to-definition, find-references,
 rename (all cross-file), and the inline ownership / Auto-Drop overlay are **done**
 (above).
 

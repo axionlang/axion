@@ -469,6 +469,66 @@ pub fn name_occurrences(root: &SyntaxNode, name: &str) -> Vec<rowan::TextRange> 
         .collect()
 }
 
+/// The token-driven CST of `src`, WITH intra-declaration recovery — malformed regions
+/// become ERROR nodes and the surrounding declarations survive. Unlike [`build_cst`]
+/// (AST-derived, so a broken clause loses its nested structure), this keeps a half-typed
+/// declaration's binders as `VAR_PAT` nodes, so the editor can still see the locals in
+/// scope while you type. On a lex failure, an empty `MODULE`.
+pub fn parse_recover(src: &str) -> SyntaxNode {
+    parse_module_cst(src)
+        .map(|(cst, _full)| cst)
+        .unwrap_or_else(|| {
+            let mut b = GreenNodeBuilder::new();
+            b.start_node(MODULE.into());
+            b.finish_node();
+            SyntaxNode::new_root(b.finish())
+        })
+}
+
+/// The names bound within the top-level declaration containing `offset`: every `VAR_PAT`
+/// binder (parameters, lambda/`case`/`let` pattern variables) plus each clause name (the
+/// function itself and its `let`/`where` bindings). An over-approximation of the locals
+/// in scope — robust to a half-typed body, which the AST scope walker would drop — for
+/// mid-edit completion (the client filters by the typed prefix). Walk over the recovered
+/// token-driven CST ([`parse_recover`]).
+pub fn binders_in_decl(root: &SyntaxNode, offset: usize) -> Vec<String> {
+    let probe = |off: usize| -> Option<SyntaxNode> {
+        let ts = rowan::TextSize::new(u32::try_from(off).unwrap_or(0));
+        root.children()
+            .find(|n| n.text_range().start() <= ts && ts <= n.text_range().end())
+    };
+    // Probe the cursor AND the character before it: after typing a hole, the cursor sits
+    // in the following declaration's leading trivia, but the binders you want belong to
+    // the one you were just editing — `offset - 1` still points into it.
+    let mut decls: Vec<SyntaxNode> = Vec::new();
+    for off in [Some(offset), offset.checked_sub(1)].into_iter().flatten() {
+        if let Some(d) = probe(off) {
+            if !decls.iter().any(|x| x.text_range() == d.text_range()) {
+                decls.push(d);
+            }
+        }
+    }
+    let leading_ident = |n: &SyntaxNode| {
+        n.children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|t| t.kind() == IDENT)
+            .map(|t| t.text().to_string())
+    };
+    let mut out = Vec::new();
+    for decl in &decls {
+        for node in decl.descendants() {
+            if matches!(node.kind(), VAR_PAT | FUN_CLAUSE) {
+                if let Some(name) = leading_ident(&node) {
+                    if !out.contains(&name) {
+                        out.push(name);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The name (identifier/constructor) token at `offset`, if any — the target of a
 /// go-to-definition or hover request.
 pub fn name_at(root: &SyntaxNode, offset: usize) -> Option<String> {
@@ -632,11 +692,12 @@ impl ExprParser<'_> {
             }
             let before = self.pos;
             item(self);
-            // Guarantee termination: an item that cannot make progress (malformed
-            // input outside the subset) bails instead of looping forever.
+            // Intra-declaration recovery: an item that cannot even start (malformed
+            // input) is wrapped in an ERROR node and the block CONTINUES, so a
+            // half-typed declaration no longer kills its siblings. `recover_item`
+            // guarantees progress, so the loop still terminates.
             if self.pos == before {
-                self.ok = false;
-                break;
+                self.recover_item();
             }
             while self.eat_v(&LTok::VSemi) {}
             if self.at_v(&LTok::VRBrace) || self.pos >= self.toks.len() {
@@ -644,6 +705,45 @@ impl ExprParser<'_> {
             }
         }
         self.eat_v(&LTok::VRBrace);
+    }
+
+    /// Recover from an item the block parser could not start: wrap the un-parseable
+    /// tokens — up to the next item boundary (`VSemi`/`VRBrace`) at this block's depth —
+    /// in an ERROR node, so the surrounding declarations survive. Nested layout blocks
+    /// are skipped whole (depth-tracked). Marks the parse non-`full`; guarantees the
+    /// position advances so the enclosing `block` loop always terminates.
+    fn recover_item(&mut self) {
+        self.ok = false;
+        self.b.start_node(ERROR.into());
+        let start = self.pos;
+        let mut depth = 0i32;
+        while let Some(s) = self.toks.get(self.pos) {
+            match &s.tok {
+                LTok::VLBrace => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                LTok::VRBrace => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    self.pos += 1;
+                }
+                LTok::VSemi => {
+                    if depth == 0 {
+                        break;
+                    }
+                    self.pos += 1;
+                }
+                LTok::Tok(_) => self.bump(),
+            }
+        }
+        // Defensive: the call site never enters on a depth-0 delimiter, but never spin.
+        if self.pos == start {
+            self.pos += 1;
+        }
+        self.b.finish_node();
     }
 
     /// Mirrors `parser::parse_expr`: `if`/`\` prefix forms, else the operator ladder.

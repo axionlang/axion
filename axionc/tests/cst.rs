@@ -3,7 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use axionc::cst::{
-    build_cst, document_symbols, expr_matches_parser, module_matches_parser, SyntaxKind, SyntaxNode,
+    binders_in_decl, build_cst, document_symbols, expr_matches_parser, module_matches_parser,
+    parse_recover, SyntaxKind, SyntaxNode,
 };
 
 fn has_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
@@ -71,6 +72,35 @@ fn broken_declaration_becomes_an_error_node_but_siblings_survive() {
     );
     // And it still round-trips.
     assert_eq!(cst.text().to_string(), "broken = = =\n\ngood :: Int\ngood = h 1\n");
+}
+
+#[test]
+fn token_driven_parser_recovers_within_a_declaration() {
+    // Intra-declaration recovery: a half-typed clause keeps its structure (the params
+    // survive as VAR_PAT nodes), and lexable garbage between two good declarations is
+    // wrapped in an ERROR node without killing the siblings — all still lossless.
+    let src = "helper x y = x + \n\n= = =\n\nmain z = z\n";
+    let cst = parse_recover(src);
+    assert_eq!(cst.text().to_string(), src, "recovery must stay lossless");
+    assert!(has_kind(&cst, SyntaxKind::ERROR), "the `= = =` garbage becomes an ERROR node");
+    // `helper`'s params survive even though its body has a hole.
+    assert!(
+        has_kind(&cst, SyntaxKind::VAR_PAT),
+        "the half-typed clause keeps its parameter patterns"
+    );
+
+    // The binders in scope inside `helper`'s (broken) body: the function + its params.
+    let at_hole = src.find("x + ").unwrap() + 4;
+    let binders = binders_in_decl(&cst, at_hole);
+    assert!(binders.contains(&"x".to_string()), "param x survives: {binders:?}");
+    assert!(binders.contains(&"y".to_string()), "param y survives: {binders:?}");
+
+    // The valid sibling after the garbage still parses — its param `z` is a binder.
+    let at_z = src.rfind('z').unwrap();
+    assert!(
+        binders_in_decl(&cst, at_z).contains(&"z".to_string()),
+        "the sibling after the ERROR node still parses"
+    );
 }
 
 #[test]

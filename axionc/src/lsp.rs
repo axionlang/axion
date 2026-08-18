@@ -839,6 +839,14 @@ pub fn completions(src: &str, offset: usize) -> Vec<CompletionItem> {
         }
     };
 
+    // Mid-edit locals: harvest binder names from the RECOVERED token-driven CST, so a
+    // half-typed clause — which the AST scope walker below drops — still offers its
+    // parameters and `let`/`where` names. De-duplication keeps these first, so they
+    // shadow same-named top-level/builtin entries.
+    for name in cst::binders_in_decl(&cst::parse_recover(src), offset) {
+        add(&mut items, &mut seen, name, CompletionItemKind::VARIABLE);
+    }
+
     if let Some(module) = parse_ast(src) {
         // Locals first, so they shadow same-named top-level/builtin entries.
         for name in locals_in_scope(&module, offset) {

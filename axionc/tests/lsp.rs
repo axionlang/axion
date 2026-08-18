@@ -157,6 +157,21 @@ fn find_references_is_scope_aware() {
 }
 
 #[test]
+fn completion_survives_a_half_typed_body() {
+    // Mid-edit: the body is incomplete (a trailing `+` with no right operand), which the
+    // AST parser drops. Intra-declaration recovery keeps the clause, so its parameters
+    // are still offered — the case that used to degrade to top-level + builtins only.
+    let src = "helper :: Int -> Int -> Int\nhelper x y = x + \n\nmain :: Int\nmain = 0\n";
+    let at_hole = src.find("x + ").unwrap() + 4; // right after the hole
+    let labels: Vec<String> = completions(src, at_hole).into_iter().map(|c| c.label).collect();
+    assert!(labels.contains(&"x".to_string()), "param `x` offered mid-edit: {labels:?}");
+    assert!(labels.contains(&"y".to_string()), "param `y` offered mid-edit: {labels:?}");
+    // Top-level and builtins are still there too.
+    assert!(labels.contains(&"helper".to_string()));
+    assert!(labels.contains(&"putStrLn".to_string()));
+}
+
+#[test]
 fn cross_file_definition_and_references_follow_imports() {
     // A imports B and uses B's `helper` twice; B defines it. The workspace holds both.
     let a = "/w/A.axi";
