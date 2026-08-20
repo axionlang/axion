@@ -55,10 +55,19 @@ struct Infer<'a> {
     case_uses: Vec<(Ty, Vec<Pat>, Span)>,
     /// uses of constrained functions, for monomorphization.
     spec_obligations: Vec<SpecObl>,
-    /// constrained function → (constraint var, dispatch). The dispatch is the
-    /// param index carrying the constraint var and whether the var is NESTED
-    /// (`Maybe a` → the element is the param's type argument) vs the param itself.
-    constrained_meta: HashMap<String, (String, Option<(usize, bool)>)>,
+    /// constrained function → one entry per constraint `(constraint var, dispatch)`,
+    /// in constraint order. The dispatch is the param index carrying the constraint
+    /// var and whether the var is NESTED (`Maybe a` → the element is the param's
+    /// type argument) vs the param itself. A MULTI-constraint function (a
+    /// `(Show a, Show b) =>` instance) specializes on the whole vector, keyed by the
+    /// joined mangle (`$Int$Bool`); each method use rewrites via its own cvar (see
+    /// `cvar_ivars`). Single-constraint is the length-1 case (unchanged behaviour).
+    constrained_meta: HashMap<String, Vec<(String, Option<(usize, bool)>)>>,
+    /// constrained function → the inference var each constraint var was instantiated
+    /// to while checking its body (constraint order). Used to tell WHICH constraint a
+    /// polymorphic method use dispatches over, so a 2-param instance rewrites each
+    /// field at the right type. Only consulted for multi-constraint functions.
+    cvar_ivars: HashMap<String, Vec<Ty>>,
     /// functions that reference an unspecializable constrained function (constraint
     /// var not a direct parameter) — they cannot be specialized.
     refs_unspec: HashSet<String>,
@@ -279,6 +288,7 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         case_uses: Vec::new(),
         spec_obligations: Vec::new(),
         constrained_meta: HashMap::new(),
+        cvar_ivars: HashMap::new(),
         refs_unspec: HashSet::new(),
         owned_meta: HashMap::new(),
         own_obligations: Vec::new(),
@@ -430,24 +440,33 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         }
     }
 
-    // metadata of the constrained functions: constraint var and
-    // index of the 1st parameter whose type is that var (the specialization "dispatch").
+    // metadata of the constrained functions: for EACH constraint var, the index of
+    // the 1st parameter whose type is (or nests) that var — the specialization
+    // "dispatch". Multiple entries make a `(Show a, Show b) =>` instance specialize
+    // on the whole vector.
     for f in &module.funcs {
-        if let Some((_, cvar)) = f.constraints.first() {
-            let idx = f.sig.as_ref().and_then(|s| {
-                s.param_types().iter().enumerate().find_map(|(i, p)| {
-                    if matches!(p, Type::Var(v) if v == cvar) {
-                        Some((i, false)) // the parameter IS the constraint var
-                    } else if type_contains_var(p, cvar) {
-                        Some((i, true)) // nested, e.g. `Maybe a` / `List a`
-                    } else {
-                        None
-                    }
-                })
-            });
-            inf.constrained_meta
-                .insert(f.name.clone(), (cvar.clone(), idx));
+        if f.constraints.is_empty() {
+            continue;
         }
+        let meta: Vec<(String, Option<(usize, bool)>)> = f
+            .constraints
+            .iter()
+            .map(|(_, cvar)| {
+                let idx = f.sig.as_ref().and_then(|s| {
+                    s.param_types().iter().enumerate().find_map(|(i, p)| {
+                        if matches!(p, Type::Var(v) if v == cvar) {
+                            Some((i, false)) // the parameter IS the constraint var
+                        } else if type_contains_var(p, cvar) {
+                            Some((i, true)) // nested, e.g. `Maybe a` / `List a`
+                        } else {
+                            None
+                        }
+                    })
+                });
+                (cvar.clone(), idx)
+            })
+            .collect();
+        inf.constrained_meta.insert(f.name.clone(), meta);
     }
 
     // metadata of the GENERIC-OWNING functions (Phase B): an unconstrained
@@ -506,6 +525,23 @@ impl Infer<'_> {
         // constraints in scope of this function (to discharge polymorphic uses)
         self.cur_constraints = f.constraints.iter().map(|(c, _)| c.clone()).collect();
         self.cur_fn = f.name.clone();
+        // for a MULTI-constraint function, record which inference var each
+        // constraint var was instantiated to, by walking the signature alongside
+        // the instantiated `declared` type. Lets discharge tell which constraint a
+        // polymorphic method use dispatches over. (Single-constraint doesn't need
+        // it — the sole cvar is index 0 — so skip the work.)
+        if f.constraints.len() > 1 {
+            if let (Some(sig), Some(decl)) = (&f.sig, &declared) {
+                let mut binding = HashMap::new();
+                bind_sig_vars(sig, decl, &mut binding);
+                let ivars = f
+                    .constraints
+                    .iter()
+                    .map(|(_, v)| binding.get(v).cloned().unwrap_or_else(|| self.fresh()))
+                    .collect();
+                self.cvar_ivars.insert(f.name.clone(), ivars);
+            }
+        }
         let inferred = self.infer_func(env, f, expected);
         if let Some(d) = &declared {
             self.unify(&inferred, d, f.span);
@@ -1265,6 +1301,47 @@ fn flatten_app(t: &Type) -> (String, Vec<Type>) {
     }
 }
 
+/// The id of an inference variable, if `t` is one (else `None`).
+fn var_id(t: &Ty) -> Option<u32> {
+    match t {
+        Ty::Var(v) => Some(*v),
+        _ => None,
+    }
+}
+
+/// Walks an AST signature alongside its instantiated inference type, recording the
+/// inference var each named type var maps to (first occurrence wins). Positions
+/// line up because `declared` came from instantiating this same signature.
+fn bind_sig_vars(ast: &Type, ty: &Ty, out: &mut HashMap<String, Ty>) {
+    match ast {
+        Type::Var(n) => {
+            out.entry(n.clone()).or_insert_with(|| ty.clone());
+        }
+        Type::App(..) => {
+            let (_, args) = flatten_app(ast);
+            if let Ty::Con(_, targs) = ty {
+                for (a, t) in args.iter().zip(targs) {
+                    bind_sig_vars(a, t, out);
+                }
+            }
+        }
+        Type::Arrow { from, to, .. } => {
+            if let Ty::Fun(f, t) = ty {
+                bind_sig_vars(from, f, out);
+                bind_sig_vars(to, t, out);
+            }
+        }
+        Type::Tuple(ts) => {
+            if let Ty::Tuple(tts) = ty {
+                for (a, t) in ts.iter().zip(tts) {
+                    bind_sig_vars(a, t, out);
+                }
+            }
+        }
+        Type::Con(_) | Type::Unit => {}
+    }
+}
+
 impl<'a> Infer<'a> {
     fn fresh(&mut self) -> Ty {
         let v = self.counter;
@@ -2009,14 +2086,16 @@ impl<'a> Infer<'a> {
         // impl_base, element_type). Appended to `seeds` so the specialized
         // `impl$Elem` is materialized and the use rewritten to it.
         let mut method_seeds: Vec<(String, Span, String, String)> = Vec::new();
-        // mangle-key → the real substitution type, for specialization keys that
-        // are themselves parametric (`Option$Int` → `Option Int`). Simple keys
-        // (`Int`) are absent and fall back to a nullary `Type::Con`.
-        let mut key_types: HashMap<String, Type> = HashMap::new();
-        // per constrained function: polymorphic method uses (span → method) and
+        // mangle-key → the substitution type(s) for that key, one per constraint
+        // var (a length-1 vector for the single-constraint case; `[Int, Bool]` for a
+        // `(Show a, Show b) =>` instance keyed `$Int$Bool`). A key absent here (a
+        // bare concrete type name) falls back to a single nullary `Type::Con`.
+        let mut key_types: HashMap<String, Vec<Type>> = HashMap::new();
+        // per constrained function: polymorphic method uses (span, method, cvar
+        // index — WHICH constraint the use dispatches over, 0 unless multi) and
         // polymorphic calls to constrained functions (span → function, including
         // self-recursion) — the points specialization rewrites to `$T`.
-        let mut poly_methods: Map<String, Vec<(Span, String)>> = Map::new();
+        let mut poly_methods: Map<String, Vec<(Span, String, usize)>> = Map::new();
         let mut poly_calls: Map<String, Vec<(Span, String)>> = Map::new();
         // data decls by name, and the accumulator of concrete tuple / multi-param
         // shapes the program shows (each synthesized monomorphically post-inference).
@@ -2089,23 +2168,27 @@ impl<'a> Infer<'a> {
                     // even if the native spec turns out invalid.
                     if parametric_inst.contains(&(o.class.clone(), name.clone())) {
                         resolutions.insert((o.func.clone(), o.span), base.clone());
-                        // the element type may itself be parametric (`Option Int`
-                        // in `show (Some (Some 3))`): key on its full mangle
-                        // (`Option$Int`) so the OUTER spec is `show$Option$Option$Int`,
-                        // and remember the real type for the substitution.
-                        if let Some(elem_ast) =
-                            args.first().map(|a| self.apply(a)).and_then(|a| ty_to_ast(&a))
-                        {
-                            // a TUPLE or multi-param-derived element (`show [(1,2)]`,
+                        // seed the impl's specialization over the type's arguments,
+                        // one per constraint var (`Option Int` → `[Int]`; a
+                        // hand-written `Pair a b` instance → `[Int, Bool]`, keyed
+                        // `$Int$Bool`). An arg may itself be parametric (`Option Int`
+                        // in `show (Some (Some 3))`) — its mangle keys the OUTER spec
+                        // and remembers the real type for the substitution.
+                        let comps: Option<Vec<Type>> =
+                            args.iter().map(|a| ty_to_ast(&self.apply(a))).collect();
+                        if let Some(comps) = comps {
+                            // a TUPLE or multi-param-derived arg (`show [(1,2)]`,
                             // `show [Left 1]`) has no directly-usable instance:
-                            // synthesize it so the specialized container impl's
-                            // internal `show` resolves. Guarded so ordinary programs
-                            // are completely unaffected (no redundant seeding).
-                            if o.class == "Show" && type_needs_synth(&elem_ast, &decls) {
-                                show_needs.note_show(&elem_ast, &decls);
+                            // synthesize it so the specialized impl's internal
+                            // `show` resolves. Guarded so ordinary programs are
+                            // completely unaffected.
+                            for c in &comps {
+                                if o.class == "Show" && type_needs_synth(c, &decls) {
+                                    show_needs.note_show(c, &decls);
+                                }
                             }
-                            let key = ty_mangle(&elem_ast);
-                            key_types.insert(key.clone(), elem_ast);
+                            let key = comps.iter().map(ty_mangle).collect::<Vec<_>>().join("$");
+                            key_types.insert(key.clone(), comps);
                             method_seeds.push((o.func.clone(), o.span, base, key));
                         }
                     } else {
@@ -2126,12 +2209,26 @@ impl<'a> Infer<'a> {
                         )),
                     );
                 }
-                // polymorphic covered by a constraint → specializable use.
+                // polymorphic covered by a constraint → specializable use. Record
+                // WHICH constraint it dispatches over (0 unless the enclosing
+                // function is multi-constraint), by matching the dispatch var to the
+                // function's captured `cvar_ivars`.
                 Ty::Var(_) if o.scope.contains(&o.class) => {
+                    let ivars = self.cvar_ivars.get(&o.func).filter(|v| v.len() > 1).cloned();
+                    let cvar_idx = match ivars {
+                        Some(ivars) => {
+                            let d = var_id(&self.resolve(&o.ty));
+                            ivars
+                                .iter()
+                                .position(|iv| d.is_some() && var_id(&self.resolve(iv)) == d)
+                                .unwrap_or(0)
+                        }
+                        None => 0,
+                    };
                     poly_methods
                         .entry(o.func.clone())
                         .or_default()
-                        .push((o.span, o.method.clone()));
+                        .push((o.span, o.method.clone(), cvar_idx));
                 }
                 // built-in Num over an unconstrained (monomorphic) type variable:
                 // default to Int (à la Haskell), so `g x = x + x` is `Int -> Int`.
@@ -2184,7 +2281,7 @@ impl<'a> Infer<'a> {
         // rejected for a not-yet-existing `show$(…)`).
         method_seeds.extend(show_needs.seeds.iter().cloned());
         for (k, t) in &show_needs.key_types {
-            key_types.entry(k.clone()).or_insert_with(|| t.clone());
+            key_types.entry(k.clone()).or_insert_with(|| vec![t.clone()]);
         }
         // a multi-param `Eq`/`Ord` field whose type has no instance of that class:
         // report it (instead of silently mis-dispatching to `==`/`<`).
@@ -2236,26 +2333,37 @@ impl<'a> Infer<'a> {
             }
         }
         while let Some((f, t)) = queue.pop() {
+            // transitive: `(f, T)` pulls `(g, T)` for each constrained call in `f`
+            // (single-constraint / self-recursion → same key; a multi-constraint
+            // function's non-self calls are rejected as unspecializable in validity).
             for (_, g) in poly_calls.get(&f).into_iter().flatten() {
                 let node = (g.clone(), t.clone());
                 if cands.insert(node.clone()) {
                     queue.push(node);
                 }
             }
-            // parametric element type (`Option Int` in `show$Option$Option$Int`):
-            // each method use in `f` at the constraint var dispatches to the
-            // element's OWN parametric instance (`showArg$Option` at `Int`), so
-            // seed that nested spec too. Single-parameter instances only
-            // (`App(Con Head, arg)`), matching the deriving-native subset.
-            if let Some(Type::App(head, arg)) = key_types.get(&t).cloned() {
-                if let Type::Con(hname) = head.as_ref() {
-                    let ak = ty_mangle(&arg);
-                    key_types.entry(ak.clone()).or_insert_with(|| (*arg).clone());
-                    for (_, m) in poly_methods.get(&f).into_iter().flatten() {
-                        if is_builtin_op_method(m) {
-                            continue;
-                        }
-                        let node = (crate::ast::method_impl_name(m, hname), ak.clone());
+            // a parametric ARG type (`Option Int` in `show$Option$Option$Int`, or a
+            // field of a hand-written multi-param instance): each method use at that
+            // constraint var dispatches to the arg's OWN parametric instance
+            // (`showArg$Option` at `Int`), so seed that nested spec too.
+            let types = key_types.get(&t).cloned().unwrap_or_default();
+            let uses: Vec<(String, usize)> = poly_methods
+                .get(&f)
+                .into_iter()
+                .flatten()
+                .map(|(_, m, ci)| (m.clone(), *ci))
+                .collect();
+            for (m, ci) in uses {
+                if is_builtin_op_method(&m) {
+                    continue;
+                }
+                if let Some(Type::App(head, arg)) = types.get(ci) {
+                    if let Type::Con(hname) = head.as_ref() {
+                        let ak = ty_mangle(arg);
+                        key_types
+                            .entry(ak.clone())
+                            .or_insert_with(|| vec![(**arg).clone()]);
+                        let node = (crate::ast::method_impl_name(&m, hname), ak);
                         if cands.insert(node.clone()) {
                             queue.push(node);
                         }
@@ -2274,22 +2382,35 @@ impl<'a> Infer<'a> {
                 if invalid.contains(&(f.clone(), t.clone())) {
                     continue;
                 }
-                let no_spec_var = self
-                    .constrained_meta
-                    .get(f)
-                    .is_none_or(|(_, idx)| idx.is_none());
+                let ncvars = self.constrained_meta.get(f).map_or(0, |v| v.len());
+                let types = key_types
+                    .get(t)
+                    .cloned()
+                    .unwrap_or_else(|| vec![Type::Con(t.clone())]);
+                // can't specialize: no constraint vars, or the key's type vector
+                // doesn't match the arity (a multi-constraint fn we couldn't seed a
+                // full vector for), or a multi-constraint fn makes a non-self
+                // constrained call (whose cvar mapping we don't track).
+                let cannot = ncvars == 0 || ncvars != types.len();
+                let multi_bad_call = ncvars > 1
+                    && poly_calls
+                        .get(f)
+                        .into_iter()
+                        .flatten()
+                        .any(|(_, g)| g != f);
                 let bad = self.refs_unspec.contains(f)
-                    || no_spec_var
-                    || poly_methods.get(f).into_iter().flatten().any(|(_, m)| {
+                    || cannot
+                    || multi_bad_call
+                    || poly_methods.get(f).into_iter().flatten().any(|(_, m, ci)| {
                         // built-in Num operators are always available (Int/Float).
                         if is_builtin_op_method(m) {
                             return false;
                         }
-                        // parametric element (`Option Int`): the method dispatches
-                        // to the element's own parametric instance spec
-                        // (`showArg$Option` at `Int`, a cand) — available unless
-                        // that nested spec is itself invalid.
-                        if let Some(Type::App(head, arg)) = key_types.get(t) {
+                        let cty = types.get(*ci);
+                        // parametric arg (`Option Int`): the method dispatches to the
+                        // arg's own parametric instance spec (`showArg$Option` at
+                        // `Int`, a cand) — available unless that nested spec is invalid.
+                        if let Some(Type::App(head, arg)) = cty {
                             if let Type::Con(hname) = head.as_ref() {
                                 let base = crate::ast::method_impl_name(m, hname);
                                 let ak = ty_mangle(arg);
@@ -2301,7 +2422,8 @@ impl<'a> Infer<'a> {
                                     || cand_ok);
                             }
                         }
-                        let impl_name = crate::ast::method_impl_name(m, t);
+                        let ti = cty.map(ty_mangle).unwrap_or_else(|| t.clone());
+                        let impl_name = crate::ast::method_impl_name(m, &ti);
                         !(func_names.contains(impl_name.as_str())
                             || synth_tuple_names.contains(&impl_name))
                     })
@@ -2327,33 +2449,38 @@ impl<'a> Infer<'a> {
                 continue;
             }
             let name = crate::ast::method_impl_name(f, t);
+            let types = key_types
+                .get(t)
+                .cloned()
+                .unwrap_or_else(|| vec![Type::Con(t.clone())]);
             let mut rewrites: HashMap<Span, String> = HashMap::new();
-            for (sp, m) in poly_methods.get(f).into_iter().flatten() {
+            for (sp, m, ci) in poly_methods.get(f).into_iter().flatten() {
+                // each use rewrites at ITS constraint var's concrete type.
+                let ti = types.get(*ci).map(ty_mangle).unwrap_or_else(|| t.clone());
                 if is_builtin_op_method(m) {
                     // built-in Num: only Float needs a rewrite (`+` → `+.`); the
                     // Int specialization keeps the operator the source already has.
-                    if t == "Float" {
+                    if ti == "Float" {
                         rewrites.insert(*sp, builtin_op_float(m).into());
                     }
                 } else {
-                    rewrites.insert(*sp, crate::ast::method_impl_name(m, t));
+                    rewrites.insert(*sp, crate::ast::method_impl_name(m, &ti));
                 }
             }
             for (sp, g) in poly_calls.get(f).into_iter().flatten() {
+                // only self-recursion / same-cvar calls reach here (validity rejected
+                // the rest) → the callee takes the same key.
                 rewrites.insert(*sp, crate::ast::method_impl_name(g, t));
             }
-            let tyvar = self
+            let cvars: Vec<String> = self
                 .constrained_meta
                 .get(f)
-                .map(|(v, _)| v.clone())
+                .map(|v| v.iter().map(|(cv, _)| cv.clone()).collect())
                 .unwrap_or_default();
             specs.push(SpecPlan {
                 src: f.clone(),
                 name,
-                subs: vec![(
-                    tyvar,
-                    key_types.get(t).cloned().unwrap_or_else(|| Type::Con(t.clone())),
-                )],
+                subs: cvars.into_iter().zip(types).collect(),
                 rewrites,
             });
         }
@@ -2906,8 +3033,17 @@ impl<'a> Infer<'a> {
                     }
                 }
                 // use of a constrained function: collects the specialization
-                // obligation over the type of the constraint var.
-                if let Some((_, disp)) = self.constrained_meta.get(n).cloned() {
+                // obligation over the type of the constraint var. Only for
+                // SINGLE-constraint functions — a multi-constraint one is
+                // specialized only as an instance method (via the parametric-instance
+                // arm over its whole type-arg vector), so a bare call here can't
+                // determine the vector; leave it generic (interp handles it).
+                if let Some(disp) = self
+                    .constrained_meta
+                    .get(n)
+                    .filter(|m| m.len() == 1)
+                    .map(|m| m[0].1)
+                {
                     match disp {
                         Some((i, nested)) => {
                             // the dispatch type is the param (`a`) or, when nested,

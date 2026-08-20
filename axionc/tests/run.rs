@@ -207,6 +207,35 @@ fn eqord_multiparam_run_on_all_backends() {
 }
 
 #[test]
+fn handwritten_multiparam_instances_run_on_all_backends() {
+    // Hand-written (non-derived) `(Show a, Show b) =>` / `(Eq a, Eq b) =>`
+    // instances specialize natively now that the monomorphizer keys on a VECTOR of
+    // constraint vars. Each method use dispatches at its OWN var's type — including
+    // reversed arg order (`Pair Bool Int`) and a parametric field (`List Int`).
+    // interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("handwritten_multiparam.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "handwritten_multiparam should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "<7 | true>\n<false | 42>\n<[1, 2] | true>\ntrue\nfalse\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,
