@@ -255,23 +255,24 @@ stages (`src/cst.rs`, `--features cst`).
   (`token_driven_module_matches_over_all_fixtures`, 205 modules; spans normalised).
   `cst::parse_module_full` exposes it as a drop-in parse entry.
 
-  The **flip** — making it the primary parser — was attempted and reverted: spans
-  are *semantic keys* in the pipeline (the `array_tys`/`makecon_tys` monomorphisation
-  maps are keyed by span, and diagnostics render spans), so structural equivalence
-  isn't enough — the CST lowering must reproduce the recursive-descent parser's span
-  conventions **byte-for-byte**. `node_span` (spans measured from the first to the
-  last non-trivia token) closes most of the gap; the remaining work is matching the
-  handful of productions whose spans run to the *next* token, then extending the
-  differential test to compare spans un-normalised. Until then the pipeline stays on
-  the recursive-descent parser and the token-driven parser powers the CST's LSP
-  features and validates itself against the reference.
+  The **flip** — making it the compiler's primary parser — is **done** (the `cst`
+  feature is on by default). Spans are *semantic keys* in the pipeline (the
+  `array_tys`/`makecon_tys` monomorphisation maps are keyed by span, and diagnostics
+  render spans), so structural equivalence wasn't enough — the CST lowering had to
+  reproduce the recursive-descent parser's span conventions **byte-for-byte**. It now
+  does: `span_to_next_token` for productions whose span runs to the *next* token
+  (clauses, compound/bracketed exprs, applied-constructor and tuple patterns, and the
+  `data`/`class`/`instance`/`foreign` decls), operand-derived App/BinOp spans (so a
+  parenthesised argument is transparent), and a context rule for nullary constructor
+  patterns. `cst::first_span_mismatch` pinpoints any divergence;
+  `token_driven_module_spans_are_byte_exact_over_all_fixtures` asserts there is none
+  over all 205 fixtures, and the oracle confirms a `cst`-built compiler is byte-identical.
 
-It is **additive**: the analysis pipeline still runs on `ast::Module` via the
-recursive-descent parser; the token-driven parser is validated behind the `cst`
-feature and does not drive checking yet. Deferred: extending the token-driven parser
-to the full grammar and flipping the pipeline; structuring type signatures and
-`data`/`class` internals in the derived CST; intra-*declaration* error recovery. A
-full rowan migration is multi-stage by design.
+`parse_source` routes a fully clean parse through `cst::parse_module_full`; a malformed
+file (or a `--no-default-features` build) falls back to the recursive-descent parser for
+declaration-level recovery and parse-error diagnostics. Retiring `parser.rs` entirely
+needs the CST path to lower a *recovered* tree (with `ERROR` nodes) into a partial AST
+plus diagnostics — a follow-up. A full rowan migration is multi-stage by design.
 
 ## Scope & what's deferred
 
@@ -284,12 +285,12 @@ full rowan migration is multi-stage by design.
   negotiated as UTF-16 only (the LSP default); UTF-8/UTF-32 `positionEncoding` is not
   advertised.
 
-Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
-front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
-monomorphisation maps). Intra-declaration recovery (parser-level), completion,
-go-to-definition, find-references, rename (all cross-file, references/rename over the
-whole workspace index), signature help, and the inline ownership / Auto-Drop overlay are
-**done** (above).
+Still deferred: **retiring `parser.rs`** (the CST is the default parser now, but the
+recursive-descent parser is still the recovery/`--no-default-features` fallback — deleting
+it needs recovered-tree → partial-AST lowering with diagnostics), and the WASM playground.
+The token-driven parser *flip*, intra-declaration recovery, completion, go-to-definition,
+find-references, rename (all cross-file, over the whole workspace index), signature help,
+and the inline ownership / Auto-Drop overlay are **done** (above).
 
 ## Internals
 

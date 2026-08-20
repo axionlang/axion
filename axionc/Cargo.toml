@@ -17,12 +17,18 @@ path = "src/bin/lsp_main.rs"
 required-features = ["lsp"]
 
 [features]
+# `cst` is on by default: the token-driven rowan CST is the compiler's PRIMARY
+# parser (see `parse_source` — THE FLIP), proven byte-exact with the recursive-
+# descent parser over every fixture. `rowan` is pure Rust, so the tokio-free
+# `--dev` fast path stays C-toolchain-free. Build `--no-default-features` for the
+# lean recursive-descent-only parser (the CST block is then `cfg`'d out).
+default = ["cst"]
 # The salsa incremental query engine (§8). The LSP pulls it in so the server
 # reuses memoized parses (prelude + unchanged imports) across edits.
 salsa = ["dep:salsa"]
 lsp = ["dep:tokio", "dep:tower-lsp", "salsa", "cst"]
-# Lossless rowan CST (§8) — Stage 1 foundation, additive (does not yet drive
-# analysis). Feature-gated so default/CLI builds stay lean.
+# Lossless rowan CST (§8): the primary parse front-end (default-on) + the whole
+# LSP's structural layer.
 cst = ["dep:rowan"]
 
 [dependencies]
