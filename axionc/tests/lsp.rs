@@ -157,6 +157,28 @@ fn find_references_is_scope_aware() {
 }
 
 #[test]
+fn positions_are_utf16_code_units() {
+    // Non-ASCII before an identifier on the same line: `é` is 2 bytes but 1 UTF-16 unit,
+    // the emoji is 4 bytes but 2 units (a surrogate pair). The reported `character` must
+    // be the UTF-16 column, not the byte column.
+    let src = "g :: Int\ng = 0\n\nmain :: Int\nmain = id \"café😀\" g\n";
+    let at = src.find("g ::").unwrap();
+    let refs = references_of(src, at, true);
+    let use_ref = refs.iter().find(|r| r.start.line == 4).expect("`g` is used on line 4");
+
+    let line = "main = id \"café😀\" g";
+    let g_byte = line.rfind('g').unwrap();
+    let prefix = line.get(..g_byte).unwrap_or("");
+    let expected_u16 = u32::try_from(prefix.encode_utf16().count()).unwrap_or(0);
+    assert_eq!(use_ref.start.character, expected_u16, "reference column must be UTF-16");
+    // The test only means something if the UTF-16 column differs from the byte column.
+    assert!(
+        (expected_u16 as usize) < g_byte,
+        "prefix must contain multi-byte characters to be meaningful"
+    );
+}
+
+#[test]
 fn signature_help_tracks_the_active_parameter() {
     let src = "add :: Int -> Int -> Int\nadd x y = x + y\n\nmain :: Int\nmain = add 1 2\n";
     let ws: std::collections::HashMap<String, String> = std::collections::HashMap::new();

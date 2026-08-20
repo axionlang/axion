@@ -40,20 +40,68 @@ use crate::db::{self, AxionDb};
 use crate::diag::{Diagnostic as AxDiagnostic, Severity};
 use crate::lexer::LineMap;
 
-/// Byte offset → LSP position (0-based) via the line table.
-fn offset_to_position(lines: &LineMap, offset: usize) -> Position {
-    let (line, col) = lines.pos(offset);
-    Position {
-        line: (line.saturating_sub(1)) as u32,
-        character: (col.saturating_sub(1)) as u32,
-    }
+/// UTF-16-aware position mapping over a source buffer. LSP `character` fields count
+/// UTF-16 code units (the default `positionEncoding`), so byte columns are wrong for any
+/// non-ASCII source; this maps through each line's actual UTF-16 width. Wraps `src` with
+/// its byte-based line table.
+struct Positions<'a> {
+    src: &'a str,
+    lines: LineMap,
 }
 
-/// A rowan `TextRange` (byte offsets) → an LSP `Range`.
-fn text_range_to_range(lines: &LineMap, r: rowan::TextRange) -> Range {
-    Range {
-        start: offset_to_position(lines, usize::from(r.start())),
-        end: offset_to_position(lines, usize::from(r.end())),
+impl<'a> Positions<'a> {
+    fn new(src: &'a str) -> Self {
+        Self {
+            src,
+            lines: LineMap::new(src),
+        }
+    }
+
+    /// Byte offset → LSP position: 0-based line, `character` in UTF-16 code units.
+    fn position(&self, offset: usize) -> Position {
+        let (line1, _byte_col) = self.lines.pos(offset);
+        let line0 = line1.saturating_sub(1);
+        let line_start = self.lines.offset(line0 as u32, 0);
+        let character = self
+            .src
+            .get(line_start..offset)
+            .map_or(0, |s| s.encode_utf16().count());
+        Position {
+            line: line0 as u32,
+            character: character as u32,
+        }
+    }
+
+    /// LSP position (UTF-16 `character`) → byte offset. Advances `character` UTF-16 code
+    /// units into the line; clamps to the line's end (before the newline).
+    fn byte(&self, line: u32, character: u32) -> usize {
+        let line_start = self.lines.offset(line, 0);
+        let rest = self.src.get(line_start..).unwrap_or("");
+        let line_text = rest.split('\n').next().unwrap_or(rest);
+        let mut units = 0u32;
+        for (i, ch) in line_text.char_indices() {
+            if units >= character {
+                return line_start + i;
+            }
+            units += ch.len_utf16() as u32;
+        }
+        line_start + line_text.len()
+    }
+
+    /// A rowan `TextRange` (byte offsets) → an LSP `Range`.
+    fn range(&self, r: rowan::TextRange) -> Range {
+        Range {
+            start: self.position(usize::from(r.start())),
+            end: self.position(usize::from(r.end())),
+        }
+    }
+
+    /// A byte span `(start, end)` → an LSP `Range`.
+    fn span(&self, start: usize, end: usize) -> Range {
+        Range {
+            start: self.position(start),
+            end: self.position(end.max(start)),
+        }
     }
 }
 
@@ -95,32 +143,13 @@ pub struct FixEdit {
     pub new_text: String,
 }
 
-/// Byte offset → 0-based LSP position. `LineMap::pos` is 1-based `(line, col)`.
-/// NOTE: LSP counts characters in UTF-16 code units; this uses the column as-is,
-/// which is correct for ASCII source (Axion's today). A UTF-16 remap is a
-/// documented follow-up.
-fn to_position(lines: &LineMap, offset: usize) -> Position {
-    let (line, col) = lines.pos(offset);
-    Position {
-        line: (line.saturating_sub(1)) as u32,
-        character: (col.saturating_sub(1)) as u32,
-    }
-}
-
-fn to_range(lines: &LineMap, start: usize, end: usize) -> Range {
-    Range {
-        start: to_position(lines, start),
-        end: to_position(lines, end.max(start)),
-    }
-}
-
 /// Map one compiler diagnostic to LSP data (diagnostic + optional fix edit),
-/// resolving byte spans against `lines`.
-fn to_analyzed(d: &AxDiagnostic, lines: &LineMap) -> Analyzed {
+/// resolving byte spans against `pos`.
+fn to_analyzed(d: &AxDiagnostic, pos: &Positions) -> Analyzed {
     let range = d
         .labels
         .first()
-        .map_or_else(Range::default, |l| to_range(lines, l.start, l.end));
+        .map_or_else(Range::default, |l| pos.span(l.start, l.end));
     let severity = match d.severity {
         Severity::Error => DiagnosticSeverity::ERROR,
         Severity::Warning => DiagnosticSeverity::WARNING,
@@ -138,7 +167,7 @@ fn to_analyzed(d: &AxDiagnostic, lines: &LineMap) -> Analyzed {
         ..Diagnostic::default()
     };
     let fix = d.fix.as_ref().map(|f| FixEdit {
-        range: to_range(lines, f.start, f.end),
+        range: pos.span(f.start, f.end),
         new_text: f.replacement.clone(),
     });
     Analyzed { diagnostic, fix }
@@ -148,12 +177,12 @@ fn to_analyzed(d: &AxDiagnostic, lines: &LineMap) -> Analyzed {
 /// data. Wrapped in `catch_unwind` so a compiler panic degrades to "no diagnostics"
 /// rather than taking the server down.
 fn analyze_on(db: &AxionDb, file: db::SourceFile, src: &str) -> Vec<Analyzed> {
-    let lines = LineMap::new(src);
+    let pos = Positions::new(src);
     let items = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         db::diagnostics_of(db, file)
     }))
     .unwrap_or_default();
-    items.iter().map(|d| to_analyzed(d, &lines)).collect()
+    items.iter().map(|d| to_analyzed(d, &pos)).collect()
 }
 
 /// The pure core, testable without any async runtime: compile `src` (from `path`,
@@ -200,12 +229,9 @@ pub fn ownership_hints(path: &str, src: &str) -> Vec<OwnershipHint> {
         (analysis, names)
     }))
     .unwrap_or_default();
-    let lines = LineMap::new(src);
+    let pm = Positions::new(src);
     let in_src = |s: crate::ast::Span| s != crate::core::NO_SPAN && s.1 <= src.len();
-    let span_range = |s: crate::ast::Span| Range {
-        start: offset_to_position(&lines, s.0),
-        end: offset_to_position(&lines, s.1),
-    };
+    let span_range = |s: crate::ast::Span| pm.span(s.0, s.1);
 
     let mut hints = Vec::new();
     for d in &analysis.drops {
@@ -504,12 +530,12 @@ impl LanguageServer for Backend {
         let Some(doc) = docs.get(&params.text_document.uri) else {
             return Ok(None);
         };
-        let lines = LineMap::new(&doc.text);
+        let pm = Positions::new(&doc.text);
         let cst = cst::build_cst(&doc.text);
         let ranges = params
             .positions
             .into_iter()
-            .map(|p| selection_at(&cst, &lines, lines.offset(p.line, p.character)))
+            .map(|p| selection_at(&cst, &pm, pm.byte(p.line, p.character)))
             .collect();
         Ok(Some(ranges))
     }
@@ -526,8 +552,7 @@ impl LanguageServer for Backend {
         let Some(doc) = docs.get(&uri) else {
             return Ok(None);
         };
-        let lines = LineMap::new(&doc.text);
-        let offset = lines.offset(pos.position.line, pos.position.character);
+        let offset = Positions::new(&doc.text).byte(pos.position.line, pos.position.character);
         let path = uri_to_path(&uri);
         // Go-to-definition follows FORWARD imports only, so it skips the project scan.
         let ws = build_workspace(&path, &doc.text, &docs, &[]);
@@ -556,7 +581,7 @@ impl LanguageServer for Backend {
         let Some(doc) = docs.get(&pos.text_document.uri) else {
             return Ok(None);
         };
-        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        let offset = Positions::new(&doc.text).byte(pos.position.line, pos.position.character);
         Ok(Some(CompletionResponse::Array(completions(&doc.text, offset))))
     }
 
@@ -570,7 +595,7 @@ impl LanguageServer for Backend {
         let Some(doc) = docs.get(&uri) else {
             return Ok(None);
         };
-        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        let offset = Positions::new(&doc.text).byte(pos.position.line, pos.position.character);
         let path = uri_to_path(&uri);
         let roots = self.effective_roots(&path).await;
         let ws = build_workspace(&path, &doc.text, &docs, &roots);
@@ -598,7 +623,7 @@ impl LanguageServer for Backend {
         let Some(doc) = docs.get(&uri) else {
             return Ok(None);
         };
-        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        let offset = Positions::new(&doc.text).byte(pos.position.line, pos.position.character);
         let path = uri_to_path(&uri);
         let roots = self.effective_roots(&path).await;
         let ws = build_workspace(&path, &doc.text, &docs, &roots);
@@ -669,7 +694,7 @@ impl LanguageServer for Backend {
         let Some(doc) = docs.get(&uri) else {
             return Ok(None);
         };
-        let offset = LineMap::new(&doc.text).offset(pos.position.line, pos.position.character);
+        let offset = Positions::new(&doc.text).byte(pos.position.line, pos.position.character);
         let path = uri_to_path(&uri);
         // Forward imports suffice to find the callee's signature (no project scan).
         let ws = build_workspace(&path, &doc.text, &docs, &[]);
@@ -858,11 +883,7 @@ pub fn definition_at(path: &str, src: &str, offset: usize, ws: &Workspace) -> Op
     } else {
         ws.get(&def.path)?
     };
-    let lines = LineMap::new(text);
-    let range = Range {
-        start: offset_to_position(&lines, def.span.0),
-        end: offset_to_position(&lines, def.span.1),
-    };
+    let range = Positions::new(text).span(def.span.0, def.span.1);
     Some((def.path, range))
 }
 
@@ -902,7 +923,7 @@ pub fn references_at(
     for (fpath, ftext) in &files {
         let fcst = cst::build_cst(ftext);
         let fmodule = parse_ast(ftext);
-        let lines = LineMap::new(ftext);
+        let pm = Positions::new(ftext);
         for r in cst::name_occurrences(&fcst, &name) {
             let span = (usize::from(r.start()), usize::from(r.end()));
             if def_site(fpath, ftext, &fcst, fmodule.as_ref(), &name, span.0, ws).as_ref()
@@ -913,7 +934,7 @@ pub fn references_at(
             if !include_declaration && *fpath == target.path && span == target.span {
                 continue;
             }
-            out.push((fpath.clone(), text_range_to_range(&lines, r)));
+            out.push((fpath.clone(), pm.range(r)));
         }
     }
     out
@@ -1401,11 +1422,11 @@ fn child_exprs(e: &crate::ast::Expr) -> Vec<&crate::ast::Expr> {
 
 /// Document outline: one symbol per top-level declaration of `src`'s CST.
 pub fn outline(src: &str) -> Vec<DocumentSymbol> {
-    let lines = LineMap::new(src);
+    let pm = Positions::new(src);
     cst::document_symbols(&cst::build_cst(src))
         .into_iter()
         .map(|(name, r)| {
-            let range = text_range_to_range(&lines, r);
+            let range = pm.range(r);
             #[allow(deprecated)] // `deprecated` field is required by the struct
             DocumentSymbol {
                 name,
@@ -1423,13 +1444,13 @@ pub fn outline(src: &str) -> Vec<DocumentSymbol> {
 
 /// Folding ranges: each multi-line top-level declaration of `src`'s CST.
 pub fn folds(src: &str) -> Vec<FoldingRange> {
-    let lines = LineMap::new(src);
+    let pm = Positions::new(src);
     cst::build_cst(src)
         .children()
         .filter_map(|decl| content_range(&decl))
         .filter_map(|r| {
-            let start_line = offset_to_position(&lines, usize::from(r.start())).line;
-            let end_line = offset_to_position(&lines, usize::from(r.end())).line;
+            let start_line = pm.position(usize::from(r.start())).line;
+            let end_line = pm.position(usize::from(r.end())).line;
             (end_line > start_line).then_some(FoldingRange {
                 start_line,
                 start_character: None,
@@ -1444,13 +1465,13 @@ pub fn folds(src: &str) -> Vec<FoldingRange> {
 
 /// The expand-selection chain at a byte `offset` in `src` (builds the CST fresh).
 pub fn selection(src: &str, offset: usize) -> SelectionRange {
-    let lines = LineMap::new(src);
-    selection_at(&cst::build_cst(src), &lines, offset)
+    let pm = Positions::new(src);
+    selection_at(&cst::build_cst(src), &pm, offset)
 }
 
 /// Build the nested "expand selection" range at `offset`: the token there, then each
 /// enclosing node, outermost wrapping innermost.
-pub fn selection_at(cst: &SyntaxNode, lines: &LineMap, offset: usize) -> SelectionRange {
+fn selection_at(cst: &SyntaxNode, pm: &Positions, offset: usize) -> SelectionRange {
     let ts = rowan::TextSize::new(u32::try_from(offset).unwrap_or(0));
     let token = cst.token_at_offset(ts).right_biased();
     // innermost → outermost ranges (token, then ancestor nodes), de-duplicating
@@ -1473,7 +1494,7 @@ pub fn selection_at(cst: &SyntaxNode, lines: &LineMap, offset: usize) -> Selecti
     let mut parent: Option<Box<SelectionRange>> = None;
     for r in ranges.into_iter().rev() {
         parent = Some(Box::new(SelectionRange {
-            range: text_range_to_range(lines, r),
+            range: pm.range(r),
             parent,
         }));
     }

@@ -275,9 +275,10 @@ full rowan migration is multi-stage by design.
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
 - Signature help for constructors and builtins (functions with a declared `::` are
-  covered), a UTF-16 position remap (positions are ASCII-correct today), and the WASM
-  playground. The project index re-scans on each references/rename request (no
-  persistent, file-watched index yet — fine at this scale).
+  covered) and the WASM playground. The project index re-scans on each references/rename
+  request (no persistent, file-watched index yet — fine at this scale). Positions are
+  negotiated as UTF-16 only (the LSP default); UTF-8/UTF-32 `positionEncoding` is not
+  advertised.
 
 Also deferred: the token-driven parser *flip* (making the CST the compiler's primary
 front-end — blocked on byte-exact spans, since spans are semantic keys in inference's
@@ -298,3 +299,10 @@ which runs `compile_front` (wrapped in `catch_unwind` for robustness) and maps e
 `Diagnostic` to an LSP diagnostic plus an optional `FixEdit`. The async
 `LanguageServer` impl is a thin shell over it; the unit tests in
 `axionc/tests/lsp.rs` exercise `analyze` directly.
+
+Byte offsets (the compiler's currency) and LSP positions are converted by `Positions`,
+which wraps the source with its line table. LSP `character` fields count **UTF-16 code
+units** (the default `positionEncoding`), so `Positions::position` measures each line's
+prefix with `encode_utf16().count()` and `Positions::byte` walks the line by
+`char::len_utf16` — a `café😀` before a token no longer shifts its reported column
+(`tests/…positions_are_utf16_code_units`).
