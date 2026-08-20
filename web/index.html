@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Axión Playground</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fbfbfa; --fg: #1c1c1a; --panel: #ffffff; --border: #e2e0da;
+      --accent: #6a4cff; --muted: #77746c; --err: #c1281e; --warn: #a6791b;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#1a1a18; --fg:#e7e5df; --panel:#232320; --border:#38362f;
+              --muted:#9a978d; --accent:#a58cff; --err:#ff6a5c; --warn:#e0b64a; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+           font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    header { padding: 14px 20px; border-bottom: 1px solid var(--border);
+             display: flex; align-items: baseline; gap: 12px; }
+    header h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+    header .sub { color: var(--muted); font-size: 13px; }
+    header .run { margin-left: auto; }
+    button { font: inherit; font-weight: 600; color: #fff; background: var(--accent);
+             border: 0; border-radius: 8px; padding: 8px 18px; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+           background: var(--border); height: calc(100vh - 55px); }
+    @media (max-width: 720px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
+    .pane { background: var(--panel); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .pane > .label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                     color: var(--muted); padding: 8px 14px 4px; }
+    textarea { flex: 1; resize: none; border: 0; outline: none; background: transparent;
+               color: var(--fg); font-family: var(--mono); font-size: 13.5px;
+               line-height: 1.6; padding: 6px 14px 14px; tab-size: 2; }
+    #out { flex: 1; overflow: auto; margin: 0; padding: 6px 14px 14px;
+           font-family: var(--mono); font-size: 13.5px; white-space: pre-wrap; }
+    .diags { border-top: 1px solid var(--border); overflow: auto; max-height: 45%; padding: 4px 0; }
+    .diag { padding: 5px 14px; font-family: var(--mono); font-size: 12.5px; display: flex; gap: 8px; }
+    .diag .loc { color: var(--muted); }
+    .diag.error .code { color: var(--err); font-weight: 700; }
+    .diag.warning .code { color: var(--warn); font-weight: 700; }
+    .empty { color: var(--muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Axión Playground</h1>
+    <span class="sub">strict · linear · GC-free — runs in your browser via the interpreter</span>
+    <button id="run" class="run" disabled>Loading…</button>
+  </header>
+  <main>
+    <section class="pane">
+      <div class="label">Program</div>
+      <textarea id="src" spellcheck="false" autocomplete="off"></textarea>
+    </section>
+    <section class="pane">
+      <div class="label">Output</div>
+      <pre id="out"><span class="empty">Press Run (⌘/Ctrl-Enter).</span></pre>
+      <div class="diags" id="diags"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import init, { compile_and_run } from './pkg/axionc.js';
+
+    const SAMPLE = `main :: IO ()
+main = do
+  putStrLn (greet "Axión")
+  putStrLn (show (sum (map double (range 1 5))))
+
+greet :: String -> String
+greet name = strAppend "hello, " name
+
+double :: Int -> Int
+double n = n + n
+`;
+
+    const $src = document.getElementById('src');
+    const $out = document.getElementById('out');
+    const $diags = document.getElementById('diags');
+    const $run = document.getElementById('run');
+    $src.value = SAMPLE;
+
+    function render(json) {
+      const r = JSON.parse(json);
+      $out.textContent = r.output || '';
+      if (r.error) {
+        $out.innerHTML = (r.output ? escapeHtml(r.output) + '\n' : '') +
+          '<span style="color:var(--err)">runtime error: ' + escapeHtml(r.error) + '</span>';
+      } else if (!r.output) {
+        $out.innerHTML = '<span class="empty">(no output)</span>';
+      }
+      $diags.innerHTML = '';
+      for (const d of r.diagnostics) {
+        const el = document.createElement('div');
+        el.className = 'diag ' + d.severity;
+        el.innerHTML = `<span class="code">${d.code}</span>` +
+          `<span class="loc">${d.line}:${d.col}</span>` +
+          `<span>${escapeHtml(d.message)}</span>`;
+        $diags.appendChild(el);
+      }
+    }
+    function escapeHtml(s) {
+      return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    }
+
+    function runProgram() {
+      try {
+        render(compile_and_run($src.value));
+      } catch (e) {
+        $out.innerHTML = '<span style="color:var(--err)">the compiler crashed: ' +
+          escapeHtml(String(e)) + '</span>';
+      }
+    }
+
+    $run.addEventListener('click', runProgram);
+    $src.addEventListener('keydown', e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); runProgram(); }
+    });
+
+    init().then(() => {
+      $run.disabled = false;
+      $run.textContent = 'Run';
+      runProgram();
+    }).catch(err => {
+      $run.textContent = 'Failed to load';
+      $out.innerHTML = '<span style="color:var(--err)">failed to load the wasm module: ' +
+        escapeHtml(String(err)) + '\n\nBuild it first — see web/README.md</span>';
+    });
+  </script>
+</body>
+</html>

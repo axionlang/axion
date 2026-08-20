@@ -8,6 +8,9 @@ publish = false
 [[bin]]
 name = "axionc"
 path = "src/main.rs"
+# The CLI drives the native backends (Cranelift/LLVM) + FFI, none of which build
+# for wasm32; the `native` feature (default-on) carries them.
+required-features = ["native"]
 
 # The Language Server (§8). Gated behind `--features lsp` so the default build
 # — and the tokio-free `--dev` fast path — stay lean.
@@ -22,7 +25,11 @@ required-features = ["lsp"]
 # descent parser over every fixture. `rowan` is pure Rust, so the tokio-free
 # `--dev` fast path stays C-toolchain-free. Build `--no-default-features` for the
 # lean recursive-descent-only parser (the CST block is then `cfg`'d out).
-default = ["cst"]
+default = ["cst", "native"]
+# The native backends (Cranelift `--dev` + LLVM `--release`) and the FFI runtime.
+# Default-on; a `--no-default-features` wasm build drops them (they can't target
+# wasm32) and runs programs through the interpreter instead.
+native = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
 # The salsa incremental query engine (§8). The LSP pulls it in so the server
 # reuses memoized parses (prelude + unchanged imports) across edits.
 salsa = ["dep:salsa"]
@@ -30,6 +37,10 @@ lsp = ["dep:tokio", "dep:tower-lsp", "salsa", "cst"]
 # Lossless rowan CST (§8): the primary parse front-end (default-on) + the whole
 # LSP's structural layer.
 cst = ["dep:rowan"]
+# The browser playground: compile + interpret Axion in wasm (front-end + `interp`
+# only). Build: `cargo build --target wasm32-unknown-unknown --no-default-features
+# --features wasm`, then `wasm-bindgen`. See `web/`.
+wasm = ["cst", "dep:wasm-bindgen"]
 
 [dependencies]
 logos = "0.14"
@@ -46,11 +57,15 @@ salsa = { version = "0.28", optional = true }
 # Lossless CST (optional — `--features cst`).
 rowan = { version = "0.17", optional = true }
 
-# Backend nativo --dev (§11/§18): o «Fast-Path Backend».
-cranelift = "0.116"
-cranelift-jit = "0.116"
-cranelift-module = "0.116"
-cranelift-native = "0.116"
+# Backend nativo --dev (§11/§18): o «Fast-Path Backend». Optional (`native`) so a
+# wasm build can drop them (they don't target wasm32).
+cranelift = { version = "0.116", optional = true }
+cranelift-jit = { version = "0.116", optional = true }
+cranelift-module = { version = "0.116", optional = true }
+cranelift-native = { version = "0.116", optional = true }
+
+# Browser playground (optional — `--features wasm`).
+wasm-bindgen = { version = "0.2", optional = true }
 
 [profile.release]
 opt-level = 2

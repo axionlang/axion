@@ -20,6 +20,10 @@
     test,
     allow(clippy::unwrap_used, clippy::expect_used, clippy::redundant_pub_crate)
 )]
+// A `--no-default-features` (wasm) build compiles out the CLI + native backends, leaving
+// their support code (Emit/Backend, codegen helpers, core IR) legitimately unused. Waive
+// dead-code warnings there; the native/default build keeps full checking.
+#![cfg_attr(not(feature = "native"), allow(dead_code))]
 //! (names + linearity + Auto-Drop) → type inference (HM) → interpreter.
 //! Diagnostics with stable `AXnnnn` codes (§8), as text or JSON.
 //!
@@ -38,6 +42,7 @@
 mod ast;
 mod bigint;
 mod check;
+#[cfg(feature = "native")]
 mod codegen;
 mod core;
 mod delta;
@@ -46,14 +51,18 @@ mod delta;
 // the doc / must-use requirements that only apply now that it is public.
 #[allow(dead_code, missing_docs, clippy::return_self_not_must_use)]
 mod diag;
+#[cfg(feature = "native")]
 mod ffi;
 mod infer;
 mod interp;
 mod layout;
 mod levels;
 mod lexer;
+#[cfg(feature = "native")]
 mod llvm;
 mod parser;
+#[cfg(feature = "wasm")]
+mod wasm;
 
 /// The salsa incremental query engine (§8), gated behind the `salsa` feature.
 #[cfg(feature = "salsa")]
@@ -100,7 +109,9 @@ enum Backend {
 }
 
 /// The `axionc` CLI entry point, living in the library so both the `axionc`
-/// binary and the `axion-lsp` binary can share the whole compiler crate.
+/// binary and the `axion-lsp` binary can share the whole compiler crate. Native
+/// only — it drives the Cranelift/LLVM backends and the FFI runtime.
+#[cfg(feature = "native")]
 pub fn run_cli() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut check_only = false;

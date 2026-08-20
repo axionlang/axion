@@ -161,10 +161,14 @@ fn build_program(module: &Module) -> Program {
     }
 }
 
-/// Compiles the module into a `Program` and runs `main`, executing the resulting IO.
-pub fn run(module: &Module) -> Result<(), RunError> {
-    // FFI (§18): loads the user's libraries into the global symbol space,
-    // so `call_foreign`'s `dlsym(RTLD_DEFAULT)` finds them.
+/// Compiles the module into a `Program`, runs `main`, and RETURNS the program's output
+/// as a string (rather than printing it) — the whole output is reified in the final
+/// `Value` (IO effects concatenate into `Value::Io`), so capturing is exact. Used by the
+/// browser playground; [`run`] is the printing wrapper.
+pub fn run_capture(module: &Module) -> Result<String, RunError> {
+    // FFI (§18): loads the user's libraries into the global symbol space, so
+    // `call_foreign`'s `dlsym(RTLD_DEFAULT)` finds them. No FFI in a wasm build.
+    #[cfg(feature = "native")]
     crate::ffi::load_libs(&module.foreign_libs())?;
     let prog = build_program(module);
     let main = prog
@@ -175,34 +179,25 @@ pub fn run(module: &Module) -> Result<(), RunError> {
     let base = empty_env();
     let v = run_func(&prog, &main, &base, Vec::new())?;
     match v {
-        Value::Io(s) => {
-            print!("{s}");
-            Ok(())
-        }
-        Value::Unit => Ok(()),
-        // 'main :: Int' / 'main :: Bool' — prints the result, just like the
-        // native backend, so the two paths agree.
-        Value::Int(n) => {
-            println!("{n}");
-            Ok(())
-        }
-        Value::Integer(n) => {
-            println!("{n}");
-            Ok(())
-        }
-        Value::Float(f) => {
-            println!("{f}");
-            Ok(())
-        }
-        Value::Bool(b) => {
-            println!("{b}");
-            Ok(())
-        }
+        Value::Io(s) => Ok(s),
+        Value::Unit => Ok(String::new()),
+        // 'main :: Int' / 'main :: Bool' — renders the result, like the native
+        // backend, so the two paths agree.
+        Value::Int(n) => Ok(format!("{n}\n")),
+        Value::Integer(n) => Ok(format!("{n}\n")),
+        Value::Float(f) => Ok(format!("{f}\n")),
+        Value::Bool(b) => Ok(format!("{b}\n")),
         other => Err(format!(
             "'main' should be an IO action (or Int), was {}",
             type_name(&other)
         )),
     }
+}
+
+/// Compiles the module into a `Program` and runs `main`, printing the resulting output.
+pub fn run(module: &Module) -> Result<(), RunError> {
+    print!("{}", run_capture(module)?);
+    Ok(())
 }
 
 fn type_name(v: &Value) -> &'static str {
@@ -595,7 +590,15 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         } => {
             args.push(arg);
             if args.len() >= arity {
-                call_foreign(&name, &args)
+                #[cfg(feature = "native")]
+                {
+                    call_foreign(&name, &args)
+                }
+                #[cfg(not(feature = "native"))]
+                {
+                    let _ = &args;
+                    Err(format!("foreign function '{name}' is not available in the browser"))
+                }
             } else {
                 Ok(Value::Foreign { name, arity, args })
             }
@@ -630,6 +633,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
 
 /// Networking FFI fallback — uses POSIX socket APIs directly (the interpreter
 /// binary links against libc). These replicate `axion_rt.c` networking functions.
+#[cfg(feature = "native")]
 #[allow(unsafe_code)]
 #[allow(clashing_extern_declarations)]
 fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
@@ -778,6 +782,7 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
 }
 
 // FFI (§18): resolves the C symbol via dlsym and calls it with the Int ABI (i64).
+#[cfg(feature = "native")]
 extern "C" {
     fn dlsym(
         handle: *mut std::ffi::c_void,
@@ -785,6 +790,7 @@ extern "C" {
     ) -> *mut std::ffi::c_void;
 }
 
+#[cfg(feature = "native")]
 #[allow(unsafe_code)]
 fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
     let cname = std::ffi::CString::new(name).map_err(|_| "invalid FFI name".to_string())?;
