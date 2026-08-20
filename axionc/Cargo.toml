@@ -5,6 +5,11 @@ edition = "2021"
 description = "Fase 1 — esqueleto ambulante do compilador da Axion (parse → typecheck → correr), de raiz em Rust"
 publish = false
 
+[lib]
+# `cdylib` so the wasm build emits a `.wasm` module (for the playground); `rlib` so
+# the `axionc`/`axion-lsp` bins and the test harness link against the library.
+crate-type = ["cdylib", "rlib"]
+
 [[bin]]
 name = "axionc"
 path = "src/main.rs"
@@ -64,8 +69,9 @@ cranelift-jit = { version = "0.116", optional = true }
 cranelift-module = { version = "0.116", optional = true }
 cranelift-native = { version = "0.116", optional = true }
 
-# Browser playground (optional — `--features wasm`).
-wasm-bindgen = { version = "0.2", optional = true }
+# Browser playground (optional — `--features wasm`). Pinned to match the local
+# `wasm-bindgen` CLI (the crate and CLI versions must agree).
+wasm-bindgen = { version = "=0.2.104", optional = true }
 
 [profile.release]
 opt-level = 2

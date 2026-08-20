@@ -12,3 +12,4 @@ examples/axionc
 bench/axionc
 bench/fib_c
 bench/fib_rs
+web/pkg

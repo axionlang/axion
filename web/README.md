@@ -11,11 +11,15 @@ and runs programs through the interpreter. `foreign` calls report an error in th
 
 ## Build
 
-Prerequisites: the `wasm32-unknown-unknown` target, a wasm linker (`lld` / `rust-lld`),
-and [`wasm-bindgen`](https://github.com/rustwasm/wasm-bindgen) CLI.
+Prerequisites: the `wasm32-unknown-unknown` target, a wasm linker (`lld` — rustc looks
+for `lld` on `PATH` here), and the [`wasm-bindgen`](https://github.com/rustwasm/wasm-bindgen)
+CLI. The `wasm-bindgen` crate is pinned in `Cargo.toml` to match the CLI version (they must
+agree). On NixOS, `lld` is `nix build nixpkgs#lld`.
 
 ```sh
-# from the repo root
+# from the repo root — put lld on PATH (NixOS example)
+export PATH="$(nix build --no-link --print-out-paths nixpkgs#lld)/bin:$PATH"
+
 cargo build --manifest-path axionc/Cargo.toml \
     --target wasm32-unknown-unknown --no-default-features --features wasm --release
 
@@ -23,7 +27,9 @@ wasm-bindgen axionc/target/wasm32-unknown-unknown/release/axionc.wasm \
     --target web --out-dir web/pkg
 ```
 
-That writes `web/pkg/axionc.js` + `axionc_bg.wasm`, which `web/index.html` imports.
+That writes `web/pkg/axionc.js` + `axionc_bg.wasm` (git-ignored), which `web/index.html`
+imports. The lib is a `cdylib` (see `[lib] crate-type` in `Cargo.toml`) so the build emits
+a `.wasm`.
 
 ## Run
 
