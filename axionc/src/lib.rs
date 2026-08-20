@@ -1451,6 +1451,19 @@ instance Ord Float where
   le x y = if x < y then True else x == y
 instance Eq Bool where
   eq x y = if x then y else if y then False else True
+-- Show for lists: `[1, 2, 3]` (bracketed, comma-separated). Elements use
+-- `show` (not showArg) so nested constructors aren't parenthesised inside the
+-- brackets, matching Haskell's `show [Just 1, Nothing]` = `[Just 1, Nothing]`.
+-- showArg is the same as show — brackets are self-delimiting, no outer parens.
+instance Show a => Show (List a) where
+  show xs = strAppend \"[\" (strAppend (showListElems xs) \"]\")
+  showArg xs = strAppend \"[\" (strAppend (showListElems xs) \"]\")
+showListElems :: Show a => List a -> String
+showListElems xs = case xs of
+  Nil -> \"\"
+  Cons y ys -> case ys of
+    Nil -> show y
+    Cons z zs -> strAppend (show y) (strAppend \", \" (showListElems (Cons z zs)))
 maxOr :: Ord a => a -> List a -> a
 maxOr d xs = case xs of
   Nil -> d
@@ -1483,17 +1496,17 @@ rangeFusedSum lo hi acc = if lo > hi then acc
 
 -- standard library v1 -----------------------------------------------------
 
-data Maybe a = Nothing | Just a
+data Maybe a = Nothing | Just a deriving (Show)
 
 data Either a b = Left a | Right b
 
-data Ordering = LT | EQ | GT
+data Ordering = LT | EQ | GT deriving (Show)
 
 -- Trit: the balanced-ternary three-state enum (spec §10.A). An ordinary N=3
 -- sum type (the ternary analogue of `Ordering`): TMinus = -1, TZero = 0,
 -- TPlus = +1.  A value-selecting `case` over it lowers branchless like any
 -- small enum; `observe` (§9) returns it (Closed/Pending/Live → TMinus/TZero/TPlus).
-data Trit = TMinus | TZero | TPlus
+data Trit = TMinus | TZero | TPlus deriving (Show)
 
 not :: Bool -> Bool
 not b = if b then False else True

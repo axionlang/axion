@@ -94,6 +94,34 @@ fn stdlib_list_functions_run_on_all_backends() {
 }
 
 #[test]
+fn show_containers_run_on_all_backends() {
+    // Show for containers: List gets a manual `[1, 2, 3]` instance; Maybe /
+    // Ordering / Trit derive Show. Element `show` keeps nested constructors
+    // unparenthesised inside the brackets; nested lists nest their brackets.
+    // interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("show_containers.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "show_containers should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "[2, 4, 6, 8, 10]\nJust 3\n[Just 1, Nothing]\nLT\nTPlus\n[[1], [2, 3]]\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

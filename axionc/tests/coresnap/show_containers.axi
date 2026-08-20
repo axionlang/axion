@@ -75,7 +75,22 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+                    _ ->
+                _ ->
+            _ ->
         _ ->
+        _ ->
+    _ ->
         (a, b) ->
         (a, b) ->
     (a, b) ->
@@ -85,6 +100,8 @@ any p xs  =
 append xs ys  =
 axion_drop_Array _p  =
 axion_drop_List$Int _p  =
+axion_drop_List$List$Int _p  =
+axion_drop_List$Maybe$Int _p  =
 axion_drop_List$String _p  =
 axion_drop_List _p  =
 axion_drop_Maybe$Int _p  =
@@ -127,19 +144,52 @@ consFst y ab  =
     Cons y ys ->
     Cons y ys ->
     Cons y ys ->
+    Cons y ys ->
+    Cons y ys ->
+    Cons y ys ->
+        Cons z zs ->
+        Cons z zs ->
+        Cons z zs ->
     Cons z zs ->
+double x  =
       drop ab
 drop n xs  =
   drop _t0
   drop _t0
-  drop _t0 : Point
+  drop _t0
+          drop _t0 : String
+          drop _t0 : String
+          drop _t0 : String
           drop _t0 : String
       drop _t0 : String
+      drop _t0 : String
+  drop _t0 : String
+  drop _t0 : String
+  drop _t0 : String
+          drop _t12 : List$Maybe$Int
+          drop _t13 : String
+              drop _t16 : String
+                  drop _t19 : String
+  drop _t1 : List$Int
         drop _t1 : Maybe$Int
-  drop _t1 : Point
           drop _t1 : String
       drop _t1 : String
+      drop _t1 : String
+  drop _t1 : String
+  drop _t1 : String
+  drop _t1 : String
+                      drop _t28 : List$List$Int
+                      drop _t29 : String
+  drop _t2 : List$Int
+          drop _t2 : String
+          drop _t2 : String
+          drop _t2 : String
+          drop _t3 : String
+          drop _t3 : String
+          drop _t3 : String
   drop _t3 : String
+      drop _t5 : Maybe$Int
+      drop _t6 : String
 dropWhile p xs  =
       drop xs
       drop xs
@@ -175,6 +225,10 @@ elem x xs  =
     else
     else
     else
+    else
+    else
+  else
+  else
   else
   else
   else
@@ -211,11 +265,13 @@ isNothing m  =
 isRight e  =
     Just _ ->
     Just _ ->
+    Just a0 ->
     Just i ->
     Just x ->
         Just z ->
 lam$0 [env ]a b  =
 lam$1 [env ]x  =
+lam$2 [env ]eta$1  =
 le$Float x y  =
 le$Int x y  =
     Left _ ->
@@ -225,29 +281,54 @@ length xs  =
         let _d1000000 = call incMaybe _t1  ; Δ{_t1} · makes Maybe$Int
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
   let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
-  let _d1000000 = putStrLn _t3  ; Δ{_t3}
+                      let _d1000000 = putStrLn _t29  ; Δ{_t29}
       let _d1000000 = rtcall axion_strcat s _t1  ; Δ{_t1} · makes String
           let _d1000000 = rtcall axion_strcat s _t1  ; Δ{_t1 s t ts} · makes String
+      let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
+          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
+          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
+          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
+  let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
+  let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
+  let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
   let _dd0 = band _p 1  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
+      let _dd0 = loadraw _p+16  ; Δ{}
+      let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$List$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$Maybe$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$String _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
   let _dd1 = if _dd0 then
+      let _dd2 = loadraw _p+8  ; Δ{}
+      let _dd2 = loadraw _p+8  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
+      let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_Maybe$Int _dd2  ; Δ{}
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
+    let _dd4 = == _tag 1  ; Δ{}
+    let _dd4 = == _tag 1  ; Δ{}
+    let _dd5 = if _dd4 then
+    let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
+  let _dd6 = band _p 1  ; Δ{}
+  let _dd6 = band _p 1  ; Δ{}
+  let _dd7 = if _dd6 then
+  let _dd7 = if _dd6 then
+    let _dfree = rtcall axion_free _p  ; Δ{}
+    let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
@@ -276,11 +357,18 @@ length xs  =
       let _t0 = call null ys  ; Δ{y ys}
       let _t0 = call product ys  ; Δ{}
       let _t0 = call reverse ys  ; Δ{y ys} · moves{ys} · makes List
+          let _t0 = call show$Int y  ; Δ{} · makes String
+          let _t0 = call show$List$Int y  ; Δ{} · makes String
+          let _t0 = call show$Maybe$Int y  ; Δ{} · makes String
+  let _t0 = call showListElems$Int xs  ; Δ{} · makes String
+  let _t0 = call showListElems$List$Int xs  ; Δ{} · makes String
+  let _t0 = call showListElems$Maybe$Int xs  ; Δ{} · makes String
       let _t0 = call sum ys  ; Δ{}
       let _t0 = call unlines ss  ; Δ{} · makes String
           let _t0 = call unwords ss  ; Δ{s ss t ts} · moves{ss} · makes String
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = closure lam$1  ; Δ{} · makes heap
+  let _t0 = closure lam$2  ; Δ{} · makes heap
       let _t0 = con Cons y a  ; Δ{}
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{}
@@ -292,17 +380,31 @@ length xs  =
       let _t0 = < n 1  ; Δ{}
       let _t0 = < n 1  ; Δ{}
   let _t0 = < n 1  ; Δ{}
-  let _t0 = record Point { x = 1 y = 2}  ; Δ{} · makes Point
+      let _t0 = rtcall axion_strcat "Just" " "  ; Δ{} · makes String
       let _t0 = == x y  ; Δ{}
   let _t0 = < x y  ; Δ{}
   let _t0 = <. x y  ; Δ{}
+          let _t10 = con Nil  ; Δ{_t8 _t9} · makes List$Maybe$Int
+          let _t11 = con Cons _t9 _t10  ; Δ{_t10 _t8 _t9} · moves{_t10 _t9} · makes List$Maybe$Int
+          let _t12 = con Cons _t8 _t11  ; Δ{_t11 _t8} · moves{_t11 _t8} · makes List$Maybe$Int
+          let _t13 = call show$List$Maybe$Int _t12  ; Δ{_t12} · makes String
+          let _t14 = putStrLn _t13  ; Δ{_t13}
+              let _t15 = con LT  ; Δ{}
+              let _t16 = call show$Ordering _t15  ; Δ{} · makes String
+              let _t17 = putStrLn _t16  ; Δ{_t16}
+                  let _t18 = con TPlus  ; Δ{}
+                  let _t19 = call show$Trit _t18  ; Δ{} · makes String
         let _t1 = call filter p ys  ; Δ{} · makes List
         let _t1 = call findIndex p ys  ; Δ{} · makes Maybe$Int
         let _t1 = call intersperse sep ys  ; Δ{y ys} · moves{ys} · makes List
       let _t1 = call map f ys  ; Δ{} · makes List
-  let _t1 = call shiftX _t0  ; Δ{_t0} · makes Point
+  let _t1 = call range 1 5  ; Δ{_t0} · makes List$Int
+      let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
         let _t1 = call takeWhile p ys  ; Δ{} · makes List
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
+          let _t1 = con Cons z zs  ; Δ{_t0}
+          let _t1 = con Cons z zs  ; Δ{_t0}
+          let _t1 = con Cons z zs  ; Δ{_t0}
       let _t1 = con Nil  ; Δ{}
       let _t1 = con Nil  ; Δ{}
       let _t1 = con Nil  ; Δ{}
@@ -314,29 +416,56 @@ length xs  =
         let _t1 = - n 1  ; Δ{}
     let _t1 = - n 1  ; Δ{}
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{_t0} · makes String
+  let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
+  let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
+  let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{_t0 s t ts} · makes String
+                  let _t20 = putStrLn _t19  ; Δ{_t19}
+                      let _t21 = con Nil  ; Δ{} · makes List$Int
+                      let _t22 = con Cons 1 _t21  ; Δ{_t21} · moves{_t21} · makes List$Int
+                      let _t23 = con Nil  ; Δ{_t22} · makes List$Int
+                      let _t24 = con Cons 3 _t23  ; Δ{_t22 _t23} · moves{_t23} · makes List$Int
+                      let _t25 = con Cons 2 _t24  ; Δ{_t22 _t24} · moves{_t24} · makes List$Int
+                      let _t26 = con Nil  ; Δ{_t22 _t25} · makes List$List$Int
+                      let _t27 = con Cons _t25 _t26  ; Δ{_t22 _t25 _t26} · moves{_t25 _t26} · makes List$List$Int
+                      let _t28 = con Cons _t22 _t27  ; Δ{_t22 _t27} · moves{_t22 _t27} · makes List$List$Int
+                      let _t29 = call show$List$List$Int _t28  ; Δ{_t28} · makes String
     let _t2 = + acc lo  ; Δ{}
     let _t2 = callclo c lo n  ; Δ{}
       let _t2 = callclo p y  ; Δ{}
+  let _t2 = call map _t0 _t1  ; Δ{_t0 _t1} · makes List$Int
       let _t2 = call partition p ys  ; Δ{}
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
     let _t2 = call replicate _t1 x  ; Δ{} · makes List
+          let _t2 = call showListElems$Int _t1  ; Δ{_t0} · makes String
+          let _t2 = call showListElems$List$Int _t1  ; Δ{_t0} · makes String
+          let _t2 = call showListElems$Maybe$Int _t1  ; Δ{_t0} · makes String
         let _t2 = call take _t1 ys  ; Δ{} · makes List
       let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}
-  let _t2 = field x _t1  ; Δ{_t1}
       let _t2 = if _t0 then
       let _t2 = < n 1  ; Δ{}
           let _t3 = callclo p y  ; Δ{}
-  let _t3 = call show$Int _t2  ; Δ{} · makes String
+  let _t3 = call show$List$Int _t2  ; Δ{_t2} · makes String
         let _t3 = call span p ys  ; Δ{}
         let _t3 = con Nil  ; Δ{}
+          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
+          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
+          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
             let _t4 = con Cons y l  ; Δ{}
         let _t4 = con Cons y ys  ; Δ{}
         let _t4 = con Nil  ; Δ{}
+  let _t4 = putStrLn _t3  ; Δ{_t3}
             let _t5 = con Cons y r  ; Δ{}
         let _t5 = con Cons y ys  ; Δ{}
+      let _t5 = con Just 3  ; Δ{} · makes Maybe$Int
         let _t5 = - n 1  ; Δ{}
+      let _t6 = call show$Maybe$Int _t5  ; Δ{_t5} · makes String
         let _t6 = call splitAt _t5 ys  ; Δ{}
+      let _t7 = putStrLn _t6  ; Δ{_t6}
+          let _t8 = con Just 1  ; Δ{} · makes Maybe$Int
+          let _t9 = con Nothing  ; Δ{_t8} · makes Maybe$Int
+    let _tag = loadraw _p+0  ; Δ{}
+    let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -352,6 +481,12 @@ mapM_ f xs  =
 maybe d f m  =
         Nil ->
         Nil ->
+        Nil ->
+        Nil ->
+        Nil ->
+    Nil ->
+    Nil ->
+    Nil ->
     Nil ->
     Nil ->
     Nil ->
@@ -391,6 +526,7 @@ not b  =
     Nothing ->
     Nothing ->
     Nothing ->
+    Nothing ->
 null xs  =
 or xs  =
 partition p xs  =
@@ -418,6 +554,10 @@ replicate n x  =
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
@@ -427,6 +567,12 @@ replicate n x  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -463,6 +609,7 @@ replicate n x  =
   ret call concat _t0  ; Δ{_t0} · moves{_t0} · makes List
         ret call consFst y _t3  ; Δ{}
         ret call consFst y _t6  ; Δ{}
+  ret call double eta$1  ; Δ{}
         ret call drop _t1 ys  ; Δ{} · makes List
         ret call dropWhile p ys  ; Δ{} · makes List
         ret call elem x ys  ; Δ{}
@@ -475,6 +622,9 @@ replicate n x  =
         ret call or ys  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
+          ret call show$Int y  ; Δ{} · makes String
+          ret call show$List$Int y  ; Δ{} · makes String
+          ret call show$Maybe$Int y  ; Δ{} · makes String
   ret case ab of
   ret case e of
   ret case e of
@@ -487,11 +637,20 @@ replicate n x  =
       ret case p of
       ret case ss of
       ret case _t0 of
+          ret case _t14 of
+              ret case _t17 of
+                  ret case _t20 of
       ret case _t2 of
+  ret case _t4 of
+      ret case _t7 of
   ret case x of
   ret case x of
   ret case x of
   ret case x of
+  ret case x of
+  ret case xs of
+  ret case xs of
+  ret case xs of
   ret case xs of
   ret case xs of
   ret case xs of
@@ -526,6 +685,9 @@ replicate n x  =
   ret case xs of
   ret case xs of
       ret case y of
+      ret case ys of
+      ret case ys of
+      ret case ys of
       ret case ys of
     ret con Cons lo _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
         ret con Cons sep _t1  ; Δ{_t1 y} · moves{_t1}
@@ -566,10 +728,17 @@ replicate n x  =
       ret con Nothing  ; Δ{}
       ret con Nothing  ; Δ{} · makes Maybe$Int
       ret con Nothing  ; Δ{} · makes Maybe$Int
+                      ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{}
-  ret _d1000000  ; Δ{}
+          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
         ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
           ret _d1000000  ; Δ{_d1000000 s t ts} · moves{_d1000000}
       ret d  ; Δ{}
@@ -609,6 +778,7 @@ replicate n x  =
     ret if y then
       ret "LT"  ; Δ{}
       ret "LT"  ; Δ{}
+      ret "Nothing"  ; Δ{}
     ret n  ; Δ{}
       ret putStr ""  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
@@ -636,7 +806,7 @@ replicate n x  =
         ret tuple _t4 _t5  ; Δ{} · makes heap
       ret "TZero"  ; Δ{}
       ret "TZero"  ; Δ{}
-  ret update p { x = 99}  ; Δ{} · makes heap
+  ret + x x  ; Δ{}
     ret == x y  ; Δ{}
     ret ==. x y  ; Δ{}
   ret == x y  ; Δ{}
@@ -651,15 +821,21 @@ replicate n x  =
       ret z  ; Δ{}
       ret ""  ; Δ{}
       ret ""  ; Δ{}
+      ret ""  ; Δ{}
+      ret ""  ; Δ{}
+      ret ""  ; Δ{}
 reverse xs  =
     Right _ ->
     Right _ ->
     Right y ->
-shiftX p  =
 show$Bool x  =
 show$Float x  =
 show$Integer x  =
 show$Int x  =
+show$List$Int xs  =
+show$List$List$Int xs  =
+show$List$Maybe$Int xs  =
+show$Maybe$Int x  =
 show$Ordering x  =
 show$Trit x  =
 showArg$Bool x  =
@@ -668,6 +844,9 @@ showArg$Integer x  =
 showArg$Int x  =
 showArg$Ordering x  =
 showArg$Trit x  =
+showListElems$Int xs  =
+showListElems$List$Int xs  =
+showListElems$Maybe$Int xs  =
 span p xs  =
 splitAt n xs  =
 sum xs  =
@@ -683,6 +862,22 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

@@ -73,6 +73,10 @@
 
 
 
+
+
+
+
         _ ->
         (a, b) ->
         (a, b) ->
@@ -190,6 +194,8 @@ elem x xs  =
   else
   else
   else
+    EQ ->
+    EQ ->
 eq$Bool x y  =
 eq$Float x y  =
 eq$Int x y  =
@@ -199,6 +205,8 @@ find p xs  =
 foldl f z xs  =
 foldr f z xs  =
 fromMaybe d m  =
+    GT ->
+    GT ->
 incMaybe m  =
 intercalate sep xss  =
 intersperse sep xs  =
@@ -347,6 +355,8 @@ length xs  =
 lookup$Int k xs  =
 lookup k xs  =
         (l, r) ->
+    LT ->
+    LT ->
 main  =
 map f xs  =
 mapM_ f xs  =
@@ -492,6 +502,10 @@ replicate n x  =
       ret case ss of
       ret case _t0 of
       ret case _t2 of
+  ret case x of
+  ret case x of
+  ret case x of
+  ret case x of
   ret case xs of
   ret case xs of
   ret case xs of
@@ -573,8 +587,12 @@ replicate n x  =
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
           ret _d1000000  ; Δ{_d1000000 s t ts} · moves{_d1000000}
       ret d  ; Δ{}
+      ret "EQ"  ; Δ{}
+      ret "EQ"  ; Δ{}
     ret "false"  ; Δ{}
     ret "false"  ; Δ{}
+      ret "GT"  ; Δ{}
+      ret "GT"  ; Δ{}
   ret if b then
           ret if _t0 then
           ret if _t0 then
@@ -603,6 +621,8 @@ replicate n x  =
       ret if y then
       ret if y then
     ret if y then
+      ret "LT"  ; Δ{}
+      ret "LT"  ; Δ{}
     ret n  ; Δ{}
       ret putStr ""  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
@@ -614,6 +634,10 @@ replicate n x  =
   ret showInt x  ; Δ{} · makes String
           ret s  ; Δ{s ss} · moves{s}
   ret + _t4 _t8  ; Δ{}
+      ret "TMinus"  ; Δ{}
+      ret "TMinus"  ; Δ{}
+      ret "TPlus"  ; Δ{}
+      ret "TPlus"  ; Δ{}
     ret "true"  ; Δ{}
     ret "true"  ; Δ{}
   ret tuple a b  ; Δ{} · makes heap
@@ -625,6 +649,8 @@ replicate n x  =
         ret tuple _t3 _t4  ; Δ{} · makes heap
             ret tuple _t4 r  ; Δ{} · makes heap
         ret tuple _t4 _t5  ; Δ{} · makes heap
+      ret "TZero"  ; Δ{}
+      ret "TZero"  ; Δ{}
   ret + x x  ; Δ{}
     ret == x y  ; Δ{}
     ret ==. x y  ; Δ{}
@@ -649,20 +675,34 @@ show$Bool x  =
 show$Float x  =
 show$Integer x  =
 show$Int x  =
+show$Ordering x  =
+show$Trit x  =
 showArg$Bool x  =
 showArg$Float x  =
 showArg$Integer x  =
 showArg$Int x  =
+showArg$Ordering x  =
+showArg$Trit x  =
 span p xs  =
 splitAt n xs  =
 sumList xs  =
 sum xs  =
 take n xs  =
 takeWhile p xs  =
+    TMinus ->
+    TMinus ->
+    TPlus ->
+    TPlus ->
+    TZero ->
+    TZero ->
 unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
