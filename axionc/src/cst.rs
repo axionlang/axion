@@ -2134,7 +2134,14 @@ fn assemble_funcs(decls: impl Iterator<Item = SyntaxNode>) -> Option<Vec<Func>> 
                 funcs[i].sig = Some(ty);
                 funcs[i].constraints = constraints;
             }
-            FUN_CLAUSE => funcs[i].clauses.push(lower_clause(&decl)?.1),
+            FUN_CLAUSE => {
+                // `Func.span` mirrors `parser::assemble`: the first clause's span.
+                let clause = lower_clause(&decl)?.1;
+                if funcs[i].span == (0, 0) {
+                    funcs[i].span = clause.span;
+                }
+                funcs[i].clauses.push(clause);
+            }
             _ => {}
         }
     }
@@ -2391,4 +2398,28 @@ pub fn module_matches_parser(src: &str) -> bool {
     zero_module(&mut expected);
 
     got == expected
+}
+
+/// Span-EXACT differential: the token-driven AST vs recursive-descent, spans NOT zeroed.
+/// `None` when byte-identical; otherwise the two `Debug` renderings (for locating the
+/// first differing span). The gate that must pass over every fixture before the flip.
+pub fn module_exact_diff(src: &str) -> Option<(String, String)> {
+    let (cst, full) = parse_module_cst(src);
+    if !full {
+        return Some(("<not full>".to_string(), String::new()));
+    }
+    let Some(got) = lower_module(&cst) else {
+        return Some(("<lower failed>".to_string(), String::new()));
+    };
+    let Ok(raw) = lex(src) else {
+        return Some(("<lex failed>".to_string(), String::new()));
+    };
+    let lines = LineMap::new(src);
+    let lt = layout::layout(&raw, &lines);
+    let (expected, _errs) = crate::parser::parse_module_resilient(&lt);
+    if got == expected {
+        None
+    } else {
+        Some((format!("{got:#?}"), format!("{expected:#?}")))
+    }
 }
