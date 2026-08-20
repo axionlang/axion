@@ -549,10 +549,11 @@ pub fn analyze_module(
     resolve_methods(&mut module, &mono.resolutions);
     rewrite_int_lits(&mut module, &mono.integer_lits);
     materialize_specs(&mut module, &mono.specs);
-    // Synthesized `show$Tuple$…` functions (anonymous tuples have no nominal
-    // instance to clone). Injected after inference/specialization; `insert_drops`
-    // (core lowering) reclaims the tuple cell + heap components.
-    module.funcs.extend(mono.tuple_shows);
+    // Monomorphic `show`/`showArg` synthesized for tuples and multi-param derived
+    // data (no usable nominal instance to specialize). Injected after
+    // inference/specialization; `insert_drops` (core lowering) reclaims the cell +
+    // heap fields.
+    module.funcs.extend(mono.synth_shows);
     analysis.makecon_tys = mono.makecon_tys;
     analysis.array_tys = mono.array_tys;
     analysis.integer_lits = mono.integer_lits;
@@ -1502,7 +1503,7 @@ rangeFusedSum lo hi acc = if lo > hi then acc
 
 data Maybe a = Nothing | Just a deriving (Show)
 
-data Either a b = Left a | Right b
+data Either a b = Left a | Right b deriving (Show)
 
 data Ordering = LT | EQ | GT deriving (Show)
 

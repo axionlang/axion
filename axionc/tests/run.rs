@@ -150,6 +150,34 @@ fn show_tuples_run_on_all_backends() {
 }
 
 #[test]
+fn show_multiparam_run_on_all_backends() {
+    // Show for multi-param derived data (Either + user 2/3-param types): the
+    // compiler synthesizes a monomorphic show$Name$T1$T2 from the data decl, each
+    // field at its own concrete type — fixing the 2-param dispatch bug (`Right
+    // True` used to run showInt on a Bool). interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("show_multiparam.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "show_multiparam should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "Right true\n[Left 1, Right false]\nTri 1 false 2\nBoth 9 true\nPair (Right false) (Just 4)\nPair (1, 2) true\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,
