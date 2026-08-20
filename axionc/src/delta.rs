@@ -1552,12 +1552,12 @@ mod tests {
 
     #[test]
     fn prelude_has_no_unregistered_view_functions() {
-        // View-soundness guard for `core::view_params`. A function that returns a suffix
-        // aliasing a BORROWED list param double-frees natively (the `dropWhile`/`span`/
-        // `splitAt` bug). Lowering any program injects the whole prelude, so this checks
-        // every prelude function: if you add a suffix-returning one without registering it
-        // in `view_params`, this fails and names it — instead of shipping a silent
-        // double-free. (Pure detection; no codegen change.)
+        // View-soundness invariant: after the borrow analysis auto-moves view params
+        // (`compute_borrow_args`), NO borrowed param may still be a view (a function
+        // returning a suffix that aliases a borrowed list — which double-frees natively).
+        // Lowering any program injects the whole prelude, so this checks every prelude
+        // function; it should be empty by construction (the auto-move removes them), so a
+        // failure means the auto-move missed one. (Pure detection; no codegen change.)
         let mut diags = Diagnostics::default();
         let (module, analysis) = crate::compile_front("main :: Int\nmain = 0\n", ".", &mut diags);
         let module = module.expect("front-end must compile");

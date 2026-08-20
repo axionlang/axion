@@ -93,6 +93,30 @@ fn stdlib_list_functions_run_on_all_backends() {
 }
 
 #[test]
+fn user_view_function_auto_moves_and_runs_on_all_backends() {
+    // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
+    // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,
+    // without any manual `view_params` registration. Before the auto-move it aborted on
+    // cranelift/llvm ("double free detected").
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("user_view.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "user view function should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "11\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn integer_bignum_factorial_is_exact() {
     // §Listing 1.4: `Integer` is arbitrary-precision — `factorial 50` (65 digits)
     // overflows i64 but is exact with the bignum, on ALL three executors (interp,

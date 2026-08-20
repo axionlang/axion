@@ -4000,7 +4000,7 @@ pub fn lower_with(
                 .or_insert_with(|| vec![ast::Mult::Many; f.params.len()]);
         }
     }
-    let borrow_args = compute_borrow_args(&out, &param_mults);
+    let borrow_args = compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
 
     let mut all_dty = build_all_drop_ty(&out, makecon_tys);
     let empty = HashMap::new();
@@ -5116,7 +5116,6 @@ fn view_params(name: &str) -> &'static [usize] {
 
 /// For each constructor, the field indices whose type is the SELF-type (the recursive
 /// spine — e.g. field 1 of `Cons a (List a)`). Built from the module's `data` decls.
-#[cfg(test)]
 pub fn con_recursive_fields(
     datas: &[ast::DataDecl],
 ) -> HashMap<String, Vec<usize>> {
@@ -5167,7 +5166,6 @@ pub fn unregistered_views(
 
 /// `true` if `p` is destructured by a `case p of Con(..)` whose RECURSIVE field binder
 /// is embedded into a constructor within the arm — the aliasing view pattern.
-#[cfg(test)]
 fn destructures_and_embeds_recursive(
     p: &str,
     t: &Term,
@@ -5182,7 +5180,6 @@ fn destructures_and_embeds_recursive(
     }
 }
 
-#[cfg(test)]
 fn rhs_view(p: &str, rhs: &Rhs, con_rec: &HashMap<String, Vec<usize>>) -> bool {
     match rhs {
         Rhs::Op(_) => false,
@@ -5206,7 +5203,6 @@ fn rhs_view(p: &str, rhs: &Rhs, con_rec: &HashMap<String, Vec<usize>>) -> bool {
 
 /// `true` if `name` is a direct atom argument of a `MakeCon`/`MakeTuple`/`MakeRecord`
 /// anywhere in `t` — i.e. embedded into a heap value (that may escape).
-#[cfg(test)]
 fn embedded_in_con(name: &str, t: &Term) -> bool {
     match t {
         Term::Let(_, rhs, _, body) => rhs_embeds(name, rhs) || embedded_in_con(name, body),
@@ -5215,7 +5211,6 @@ fn embedded_in_con(name: &str, t: &Term) -> bool {
     }
 }
 
-#[cfg(test)]
 fn rhs_embeds(name: &str, rhs: &Rhs) -> bool {
     match rhs {
         Rhs::Op(op) => op_embeds(name, op),
@@ -5224,7 +5219,6 @@ fn rhs_embeds(name: &str, rhs: &Rhs) -> bool {
     }
 }
 
-#[cfg(test)]
 fn op_embeds(name: &str, op: &Op) -> bool {
     match op {
         Op::MakeCon { args, .. } | Op::MakeTuple(args) => args.iter().any(|a| atom_is(name, a)),
@@ -5501,15 +5495,23 @@ fn splice_value(inner: Term, x: String, sp: Span, cont: Term) -> Term {
 fn compute_borrow_args(
     fns: &[CoreFn],
     param_mults: &HashMap<String, Vec<ast::Mult>>,
+    con_recursive: &HashMap<String, Vec<usize>>,
 ) -> BorrowArgs {
     let mut ba: BorrowArgs = HashMap::new();
     for f in fns {
         let Some(mults) = param_mults.get(&f.name) else {
             continue;
         };
+        // A param that is destructured and whose recursive (spine) field escapes via a
+        // constructor is a VIEW — its result ALIASES the argument, so it must be MOVED,
+        // not borrowed (else caller-drop + result-drop double-free). Auto-detected for
+        // ANY function (`view_params` is a manual override kept for belt-and-suspenders);
+        // see `unregistered_views` and the `view_soundness` docs.
         let set: HashSet<usize> = (0..f.params.len())
             .filter(|&i| {
-                mults.get(i) != Some(&ast::Mult::One) && !view_params(&f.name).contains(&i)
+                mults.get(i) != Some(&ast::Mult::One)
+                    && !view_params(&f.name).contains(&i)
+                    && !destructures_and_embeds_recursive(&f.params[i], &f.body, con_recursive)
             })
             .collect();
         if !set.is_empty() {
