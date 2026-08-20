@@ -102,6 +102,7 @@
 
 
 
+
                     _ ->
                 _ ->
             _ ->
@@ -344,6 +345,7 @@ elem x xs  =
   else
   else
   else
+  else
     EQ ->
     EQ ->
 eq$Bool x y  =
@@ -374,6 +376,7 @@ isRight e  =
         Just z ->
 lam$0 [env ]a b  =
 lam$1 [env ]x  =
+le$Bool x y  =
 le$Float x y  =
 le$Int x y  =
     Left _ ->
@@ -795,6 +798,7 @@ replicate n x  =
     ret 1  ; Δ{}
     ret 1  ; Δ{}
     ret 1  ; Δ{}
+    ret 1  ; Δ{}
     ret acc  ; Δ{}
         ret call all p ys  ; Δ{}
         ret call and ys  ; Δ{}
@@ -1002,6 +1006,7 @@ replicate n x  =
   ret if x then
   ret if x then
   ret if x then
+  ret if x then
       ret if y then
       ret if y then
     ret if y then
@@ -1045,6 +1050,7 @@ replicate n x  =
         ret ys  ; Δ{y ys} · moves{ys}
       ret * y _t0  ; Δ{}
       ret + y _t0  ; Δ{}
+    ret y  ; Δ{}
     ret y  ; Δ{}
       ret z  ; Δ{}
       ret z  ; Δ{}
@@ -1109,6 +1115,7 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

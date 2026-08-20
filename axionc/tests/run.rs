@@ -178,6 +178,35 @@ fn show_multiparam_run_on_all_backends() {
 }
 
 #[test]
+fn eqord_multiparam_run_on_all_backends() {
+    // Eq/Ord over multi-param derived data (Pair, Eit): synthesized monomorphically
+    // per instantiation, each field compared at its own concrete type — fixing the
+    // 2-param dispatch bug (interp errored on Bool `==`; native compared list
+    // pointers). `eq nested1 nested2` = true proves STRUCTURAL (not pointer)
+    // equality. interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("eqord_multiparam.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "eqord_multiparam should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "false\ntrue\nfalse\ntrue\ntrue\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

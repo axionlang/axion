@@ -77,6 +77,7 @@
 
 
 
+
         _ ->
         (a, b) ->
         (a, b) ->
@@ -191,6 +192,7 @@ elem x xs  =
   else
   else
   else
+  else
     EQ ->
     EQ ->
 eq$Bool x y  =
@@ -219,6 +221,7 @@ isRight e  =
 lam$0 [env ]a b  =
 lam$1 [env ]x  =
 lam$2 [env ]a  =
+le$Bool x y  =
 le$Float x y  =
 le$Int x y  =
     Left _ ->
@@ -458,6 +461,7 @@ replicate n x  =
     ret 1  ; Δ{}
     ret 1  ; Δ{}
     ret 1  ; Δ{}
+    ret 1  ; Δ{}
     ret acc  ; Δ{}
   ret call allocN a 100  ; Δ{}
         ret call all p ys  ; Δ{}
@@ -617,6 +621,7 @@ replicate n x  =
   ret if x then
   ret if x then
   ret if x then
+  ret if x then
       ret if y then
       ret if y then
     ret if y then
@@ -659,6 +664,7 @@ replicate n x  =
       ret * y _t0  ; Δ{}
       ret + y _t0  ; Δ{}
     ret y  ; Δ{}
+    ret y  ; Δ{}
       ret z  ; Δ{}
       ret z  ; Δ{}
       ret ""  ; Δ{}
@@ -695,6 +701,7 @@ unwords xs  =
 useCell c  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

@@ -794,21 +794,48 @@ fn subst_type(t: &Type, sub: &HashMap<String, Type>) -> Type {
     }
 }
 
-/// Collects the concrete tuple / multi-param-data shapes a program shows, plus
-/// the extra spec seeds their parametric sub-parts need. Owns its accumulators
-/// (merged into the discharge locals afterward) to stay out of the loop's borrows.
-#[derive(Default)]
-struct ShowNeeds {
-    tuples: Vec<Vec<Type>>,           // tuple shapes → synthesize `show$(…)`
-    datas: Vec<(String, Vec<Type>)>,  // (data, concrete args) → `show$Name$…`
-    seeds: Vec<(String, Span, String, String)>, // extra method_seeds (parametric parts)
-    key_types: Vec<(String, Type)>,   // extra key_types entries
+/// The mangle key of a data instantiation (`Either$Int$Bool`).
+fn data_show_key(name: &str, args: &[Type]) -> String {
+    let parts: Vec<String> = args.iter().map(ty_mangle).collect();
+    format!("{name}${}", parts.join("$"))
 }
 
-impl ShowNeeds {
+/// The applied AST type of a data instantiation (`Either Int Bool`).
+fn applied_ty(name: &str, args: &[Type]) -> Type {
+    args.iter().fold(Type::Con(name.into()), |acc, a| {
+        Type::App(Box::new(acc), Box::new(a.clone()))
+    })
+}
+
+/// The method a derived instance calls on each FIELD: `Show`→`showArg` (nesting
+/// parens), `Eq`→`eq`, `Ord`→`le`.
+fn class_field_method(class: &str) -> &'static str {
+    match class {
+        "Eq" => "eq",
+        "Ord" => "le",
+        _ => "showArg",
+    }
+}
+
+/// Collects the concrete tuple / multi-param-data shapes a program derives
+/// `Show`/`Eq`/`Ord` over, plus the extra spec seeds their parametric sub-parts
+/// need. Owns its accumulators (merged into the discharge locals afterward) to
+/// stay out of the loop's borrows. Tuples are `Show`-only (no tuple Eq/Ord).
+#[derive(Default)]
+struct SynthNeeds {
+    tuples: Vec<Vec<Type>>,                    // tuple shapes → `show$(…)`
+    datas: Vec<(String, String, Vec<Type>)>,   // (class, data, args) → `<m>$Name$…`
+    seeds: Vec<(String, Span, String, String)>, // extra method_seeds (parametric parts)
+    key_types: Vec<(String, Type)>,            // extra key_types entries
+    missing: Vec<(String, Type, Span)>,        // (class, field type, span) → AX0404
+}
+
+impl SynthNeeds {
+    // --- Show (tuples + multi-param data; container-composition aware) --------
+
     /// Ensure `show`/`showArg` for `ty` (and everything it transitively needs)
     /// will exist after synthesis + specialization.
-    fn note(&mut self, ty: &Type, decls: &HashMap<&str, &DataDecl>) {
+    fn note_show(&mut self, ty: &Type, decls: &HashMap<&str, &DataDecl>) {
         if let Type::Tuple(inner) = ty {
             self.note_tuple(inner, decls);
             return;
@@ -819,7 +846,7 @@ impl ShowNeeds {
             return; // nullary `Con` (Int/Bool/…): `show$Con` already exists.
         }
         if is_multi_derived_show(h, args.len(), decls) {
-            self.note_data(h, &args, decls);
+            self.note_show_data(h, &args, decls);
             return;
         }
         // 1-param parametric container (`List a`/`Maybe a`): seed its
@@ -835,7 +862,7 @@ impl ShowNeeds {
                 let base = crate::ast::method_impl_name(m, h);
                 self.seeds.push(("$show_synth_seed".into(), (0, 0), base, ak.clone()));
             }
-            self.note(arg, decls);
+            self.note_show(arg, decls);
         }
     }
 
@@ -845,29 +872,115 @@ impl ShowNeeds {
         }
         self.tuples.push(comps.to_vec());
         for c in comps {
-            self.note(c, decls);
+            self.note_show(c, decls);
         }
     }
 
-    fn note_data(&mut self, name: &str, args: &[Type], decls: &HashMap<&str, &DataDecl>) {
-        if self.datas.iter().any(|(n, a)| n == name && a == args) {
+    fn note_show_data(&mut self, name: &str, args: &[Type], decls: &HashMap<&str, &DataDecl>) {
+        if self.has_data("Show", name, args) {
             return;
         }
-        self.datas.push((name.to_string(), args.to_vec()));
+        self.datas.push(("Show".into(), name.to_string(), args.to_vec()));
         if let Some(d) = decls.get(name) {
-            let sub: HashMap<String, Type> =
-                d.params.iter().cloned().zip(args.iter().cloned()).collect();
+            let sub = data_subst(d, args);
             for con in &d.cons {
                 for f in &con.fields {
-                    self.note(&subst_type(&f.ty, &sub), decls);
+                    self.note_show(&subst_type(&f.ty, &sub), decls);
                 }
             }
         }
     }
 
-    /// Names every synthesized function will exist under (`show$…` + `showArg$…`
-    /// for each tuple/data shape). The spec-validity check consults these because
-    /// the functions are injected AFTER inference (not in `func_names`).
+    // --- Eq / Ord (multi-param data; every field must have the instance) ------
+
+    /// Ensure `eq`/`le` for a multi-param derived `class` instantiation exists.
+    /// Returns whether it is synthesizable (every field has the instance) — a
+    /// missing field is recorded for an AX0404, and nothing is synthesized.
+    fn note_eqord_data(
+        &mut self,
+        class: &str,
+        name: &str,
+        args: &[Type],
+        span: Span,
+        decls: &HashMap<&str, &DataDecl>,
+        instances: &std::collections::HashSet<(String, String)>,
+    ) -> bool {
+        if self.has_data(class, name, args) {
+            return true; // already validated (also breaks recursive-type cycles)
+        }
+        let Some(d) = decls.get(name) else {
+            return false;
+        };
+        // optimistic insert so a recursive field re-enters as already-known.
+        self.datas.push((class.into(), name.to_string(), args.to_vec()));
+        let sub = data_subst(d, args);
+        let mut ok = true;
+        for con in &d.cons {
+            for f in &con.fields {
+                if !self.note_eqord_field(class, &subst_type(&f.ty, &sub), span, decls, instances) {
+                    ok = false;
+                }
+            }
+        }
+        if !ok {
+            self.datas.retain(|(c, n, a)| !(c == class && n == name && a == args));
+        }
+        ok
+    }
+
+    /// Whether `class`'s method exists for a field of type `ty`, seeding any
+    /// parametric spec it needs. A field with no instance is recorded (AX0404).
+    fn note_eqord_field(
+        &mut self,
+        class: &str,
+        ty: &Type,
+        span: Span,
+        decls: &HashMap<&str, &DataDecl>,
+        instances: &std::collections::HashSet<(String, String)>,
+    ) -> bool {
+        let (head, args) = flatten_app_ty(ty);
+        let Some(h) = head else {
+            // a tuple (or bare var): no Eq/Ord instance exists for it.
+            self.missing.push((class.into(), ty.clone(), span));
+            return false;
+        };
+        if !instances.contains(&(class.into(), h.to_string())) {
+            self.missing.push((class.into(), ty.clone(), span));
+            return false;
+        }
+        if args.is_empty() {
+            return true; // base con with instance (`eq$Int`, `le$Bool`, …).
+        }
+        if is_multi_derived_show(h, args.len(), decls) {
+            return self.note_eqord_data(class, h, &args, span, decls, instances);
+        }
+        // 1-param parametric WITH the instance (`Opt a` derives Eq): seed its
+        // spec at the element key, then validate the element too.
+        let m = class_field_method(class);
+        let mut ok = true;
+        for arg in &args {
+            let ak = ty_mangle(arg);
+            if matches!(arg, Type::App(..) | Type::Tuple(_)) {
+                self.key_types.push((ak.clone(), arg.clone()));
+            }
+            let base = crate::ast::method_impl_name(m, h);
+            self.seeds.push(("$eqord_synth_seed".into(), (0, 0), base, ak.clone()));
+            if !self.note_eqord_field(class, arg, span, decls, instances) {
+                ok = false;
+            }
+        }
+        ok
+    }
+
+    fn has_data(&self, class: &str, name: &str, args: &[Type]) -> bool {
+        self.datas
+            .iter()
+            .any(|(c, n, a)| c == class && n == name && a == args)
+    }
+
+    /// Names every synthesized function will exist under. The spec-validity check
+    /// consults these (the functions are injected AFTER inference, so
+    /// `func_names` doesn't list them).
     fn names(&self) -> std::collections::HashSet<String> {
         let mut s = std::collections::HashSet::new();
         for c in &self.tuples {
@@ -875,43 +988,48 @@ impl ShowNeeds {
             s.insert(format!("show${k}"));
             s.insert(format!("showArg${k}"));
         }
-        for (n, a) in &self.datas {
+        for (class, n, a) in &self.datas {
             let k = data_show_key(n, a);
-            s.insert(format!("show${k}"));
-            s.insert(format!("showArg${k}"));
+            if class == "Show" {
+                s.insert(format!("show${k}"));
+                s.insert(format!("showArg${k}"));
+            } else {
+                s.insert(format!("{}${k}", class_field_method(class)));
+            }
         }
         s
     }
 }
 
-/// The mangle key of a data instantiation (`Either$Int$Bool`).
-fn data_show_key(name: &str, args: &[Type]) -> String {
-    let parts: Vec<String> = args.iter().map(ty_mangle).collect();
-    format!("{name}${}", parts.join("$"))
+fn data_subst(d: &DataDecl, args: &[Type]) -> HashMap<String, Type> {
+    d.params.iter().cloned().zip(args.iter().cloned()).collect()
 }
 
-/// Builds every synthesized `ast::Func`: two (`show$…` / `showArg$…`) per tuple
-/// shape and per multi-param data instantiation, with each component/field call
-/// already resolved to its concrete `<method>$<mangle>` impl.
-fn synth_show_funcs(needs: &ShowNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec<Func> {
+/// Builds every synthesized `ast::Func`: `show`/`showArg` per tuple shape and per
+/// multi-param `Show` data, and `eq`/`le` per multi-param `Eq`/`Ord` data — each
+/// component/field call already resolved to its concrete `<method>$<mangle>` impl.
+fn synth_show_funcs(needs: &SynthNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec<Func> {
     const SP: Span = (0, 0);
     let sapp = |f: Expr, a: Expr| Expr::App(Box::new(f), Box::new(a), SP);
-    let strcat = move |a: Expr, b: Expr| sapp(sapp(Expr::Var("strAppend".into(), SP), a), b);
-    let mk = |name: String, param: &str, from: Type, body: Expr| Func {
+    let sapp2 = move |f: &str, a: Expr, b: Expr| sapp(sapp(Expr::Var(f.into(), SP), a), b);
+    let strcat = move |a: Expr, b: Expr| sapp2("strAppend", a, b);
+    let var = |n: &str| Expr::Var(n.into(), SP);
+    let mk = |name: String, params: Vec<&str>, sig: Type, body: Expr| Func {
         name,
-        sig: Some(Type::Arrow {
-            mult: Mult::Many,
-            from: Box::new(from),
-            to: Box::new(Type::Con("String".into())),
-        }),
+        sig: Some(sig),
         clauses: vec![Clause {
-            pats: vec![Pat::Var(param.into(), SP)],
+            pats: params.iter().map(|p| Pat::Var((*p).into(), SP)).collect(),
             body: Body::Plain(body),
             wher: Vec::new(),
             span: SP,
         }],
         span: SP,
         constraints: Vec::new(),
+    };
+    let arrow = |from: Type, to: Type| Type::Arrow {
+        mult: Mult::Many,
+        from: Box::new(from),
+        to: Box::new(to),
     };
     let mut out = Vec::new();
 
@@ -921,7 +1039,7 @@ fn synth_show_funcs(needs: &ShowNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec<
         let mut body = Expr::Str(")".into(), SP);
         for i in (0..comps.len()).rev() {
             // components use `show` (not showArg): no extra parens inside a tuple.
-            let comp = sapp(Expr::Var(show_impl_name("show", &comps[i]), SP), Expr::Var(vars[i].clone(), SP));
+            let comp = sapp(var(&show_impl_name("show", &comps[i])), var(&vars[i]));
             body = strcat(comp, body);
             if i > 0 {
                 body = strcat(Expr::Str(", ".into(), SP), body);
@@ -929,56 +1047,128 @@ fn synth_show_funcs(needs: &ShowNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec<
         }
         body = strcat(Expr::Str("(".into(), SP), body);
         let tuple_pat = Pat::Tuple(vars.iter().map(|v| Pat::Var(v.clone(), SP)).collect(), SP);
-        let case = Expr::Case(Box::new(Expr::Var("p".into(), SP)), vec![(tuple_pat, body)], SP);
+        let case = Expr::Case(Box::new(var("p")), vec![(tuple_pat, body)], SP);
         let from = Type::Tuple(comps.clone());
+        let sig = arrow(from.clone(), Type::Con("String".into()));
         let k = ty_mangle(&from);
         // a tuple is always parenthesised → show == showArg (same body).
-        out.push(mk(format!("show${k}"), "p", from.clone(), case.clone()));
-        out.push(mk(format!("showArg${k}"), "p", from, case));
+        out.push(mk(format!("show${k}"), vec!["p"], sig.clone(), case.clone()));
+        out.push(mk(format!("showArg${k}"), vec!["p"], sig, case));
     }
 
-    // multi-param data: re-derive `show` monomorphically from the data decl, with
-    // each field shown at its concrete type. `showArg` wraps a non-nullary
-    // constructor in parens (matching the derived instance).
-    for (name, args) in &needs.datas {
+    // multi-param data, re-derived monomorphically from the data decl with each
+    // field's method call resolved at its concrete type.
+    for (class, name, args) in &needs.datas {
         let Some(d) = decls.get(name.as_str()) else {
             continue;
         };
-        let sub: HashMap<String, Type> =
-            d.params.iter().cloned().zip(args.iter().cloned()).collect();
-        let arm = |wrap: bool| -> Vec<(Pat, Expr)> {
-            d.cons
-                .iter()
-                .map(|con| {
-                    let vs: Vec<String> = (0..con.fields.len()).map(|i| format!("a{i}")).collect();
-                    let pat = Pat::Con(
-                        con.name.clone(),
-                        vs.iter().map(|v| Pat::Var(v.clone(), SP)).collect(),
-                        SP,
-                    );
-                    // `"Con" ++ " " ++ showArg a0 ++ " " ++ …` (fields use showArg).
-                    let mut body = Expr::Str(con.name.clone(), SP);
-                    for (f, v) in con.fields.iter().zip(&vs) {
-                        let fty = subst_type(&f.ty, &sub);
-                        let call =
-                            sapp(Expr::Var(show_impl_name("showArg", &fty), SP), Expr::Var(v.clone(), SP));
-                        body = strcat(strcat(body, Expr::Str(" ".into(), SP)), call);
-                    }
-                    // showArg parenthesises a constructor WITH fields (atoms don't).
-                    if wrap && !con.fields.is_empty() {
-                        body = strcat(strcat(Expr::Str("(".into(), SP), body), Expr::Str(")".into(), SP));
-                    }
-                    (pat, body)
-                })
-                .collect()
-        };
+        let sub = data_subst(d, args);
         let key = data_show_key(name, args);
-        let from = args
-            .iter()
-            .fold(Type::Con(name.clone()), |acc, a| Type::App(Box::new(acc), Box::new(a.clone())));
-        let mk_case = |wrap: bool| Expr::Case(Box::new(Expr::Var("x".into(), SP)), arm(wrap), SP);
-        out.push(mk(format!("show${key}"), "x", from.clone(), mk_case(false)));
-        out.push(mk(format!("showArg${key}"), "x", from, mk_case(true)));
+        let from = applied_ty(name, args);
+        // field vars + concrete field types for a constructor, prefixed a/b.
+        let con_fields = |con: &ConDecl, prefix: &str| -> (Vec<String>, Vec<Type>) {
+            let vs = (0..con.fields.len()).map(|i| format!("{prefix}{i}")).collect();
+            let ts = con.fields.iter().map(|f| subst_type(&f.ty, &sub)).collect();
+            (vs, ts)
+        };
+        let con_pat = |con: &ConDecl, vs: &[String]| {
+            Pat::Con(con.name.clone(), vs.iter().map(|v| Pat::Var(v.clone(), SP)).collect(), SP)
+        };
+        let wild_pat = |con: &ConDecl| {
+            Pat::Con(con.name.clone(), con.fields.iter().map(|_| Pat::Wild(SP)).collect(), SP)
+        };
+
+        match class.as_str() {
+            "Show" => {
+                let arm = |wrap: bool| -> Vec<(Pat, Expr)> {
+                    d.cons
+                        .iter()
+                        .map(|con| {
+                            let (vs, ts) = con_fields(con, "a");
+                            let mut body = Expr::Str(con.name.clone(), SP);
+                            for (v, ft) in vs.iter().zip(&ts) {
+                                let call = sapp(var(&show_impl_name("showArg", ft)), var(v));
+                                body = strcat(strcat(body, Expr::Str(" ".into(), SP)), call);
+                            }
+                            if wrap && !con.fields.is_empty() {
+                                body = strcat(strcat(Expr::Str("(".into(), SP), body), Expr::Str(")".into(), SP));
+                            }
+                            (con_pat(con, &vs), body)
+                        })
+                        .collect()
+                };
+                let sig = arrow(from.clone(), Type::Con("String".into()));
+                let mk_case = |wrap: bool| Expr::Case(Box::new(var("x")), arm(wrap), SP);
+                out.push(mk(format!("show${key}"), vec!["x"], sig.clone(), mk_case(false)));
+                out.push(mk(format!("showArg${key}"), vec!["x"], sig, mk_case(true)));
+            }
+            // `eq x y = case x of Con a.. -> case y of Con b.. -> eq a0 b0 && …
+            //                                          [_ -> False]`.
+            "Eq" => {
+                let multi = d.cons.len() > 1;
+                let arms: Vec<(Pat, Expr)> = d
+                    .cons
+                    .iter()
+                    .map(|con| {
+                        let (avs, ts) = con_fields(con, "a");
+                        let (bvs, _) = con_fields(con, "b");
+                        let mut conj = Expr::Con("True".into(), SP);
+                        for k in (0..con.fields.len()).rev() {
+                            let call = sapp2(&show_impl_name("eq", &ts[k]), var(&avs[k]), var(&bvs[k]));
+                            conj = if k == con.fields.len() - 1 {
+                                call
+                            } else {
+                                Expr::If(Box::new(call), Box::new(conj), Box::new(Expr::Con("False".into(), SP)), SP)
+                            };
+                        }
+                        let mut inner = vec![(con_pat(con, &bvs), conj)];
+                        if multi {
+                            inner.push((Pat::Wild(SP), Expr::Con("False".into(), SP)));
+                        }
+                        (con_pat(con, &avs), Expr::Case(Box::new(var("y")), inner, SP))
+                    })
+                    .collect();
+                let sig = arrow(from.clone(), arrow(from, Type::Con("Bool".into())));
+                let body = Expr::Case(Box::new(var("x")), arms, SP);
+                out.push(mk(format!("eq${key}"), vec!["x", "y"], sig, body));
+            }
+            // `le x y` — lexicographic ≤ (constructors by declaration order).
+            "Ord" => {
+                let arms: Vec<(Pat, Expr)> = d
+                    .cons
+                    .iter()
+                    .enumerate()
+                    .map(|(i, con)| {
+                        let (avs, ts) = con_fields(con, "a");
+                        let (bvs, _) = con_fields(con, "b");
+                        let mut inner: Vec<(Pat, Expr)> = d
+                            .cons
+                            .iter()
+                            .take(i)
+                            .map(|cj| (wild_pat(cj), Expr::Con("False".into(), SP)))
+                            .collect();
+                        let mut lexi = Expr::Con("True".into(), SP);
+                        for k in (0..con.fields.len()).rev() {
+                            let le_ab = sapp2(&show_impl_name("le", &ts[k]), var(&avs[k]), var(&bvs[k]));
+                            lexi = if k == con.fields.len() - 1 {
+                                le_ab
+                            } else {
+                                let le_ba = sapp2(&show_impl_name("le", &ts[k]), var(&bvs[k]), var(&avs[k]));
+                                let inner_if = Expr::If(Box::new(le_ba), Box::new(lexi), Box::new(Expr::Con("True".into(), SP)), SP);
+                                Expr::If(Box::new(le_ab), Box::new(inner_if), Box::new(Expr::Con("False".into(), SP)), SP)
+                            };
+                        }
+                        inner.push((con_pat(con, &bvs), lexi));
+                        inner.push((Pat::Wild(SP), Expr::Con("True".into(), SP)));
+                        (con_pat(con, &avs), Expr::Case(Box::new(var("y")), inner, SP))
+                    })
+                    .collect();
+                let sig = arrow(from.clone(), arrow(from, Type::Con("Bool".into())));
+                let body = Expr::Case(Box::new(var("x")), arms, SP);
+                out.push(mk(format!("le${key}"), vec!["x", "y"], sig, body));
+            }
+            _ => {}
+        }
     }
     out
 }
@@ -1832,7 +2022,7 @@ impl<'a> Infer<'a> {
         // shapes the program shows (each synthesized monomorphically post-inference).
         let decls: HashMap<&str, &DataDecl> =
             module.datas.iter().map(|d| (d.name.as_str(), d)).collect();
-        let mut show_needs = ShowNeeds::default();
+        let mut show_needs = SynthNeeds::default();
 
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
@@ -1859,23 +2049,35 @@ impl<'a> Infer<'a> {
                         .insert((o.func.clone(), o.span), builtin_op_integer(&o.method).into());
                 }
                 Ty::Con(name, _) if is_integral_method(&o.method) && name == "Int" => {}
-                // MULTI-PARAM derived `Show` (`Either Int Bool`): the single-`t`
-                // machinery only substitutes the FIRST constraint var, so it
-                // mis-dispatches the rest. Synthesize a monomorphic
-                // `show$Either$Int$Bool` from the data decl instead (each field at
-                // its concrete type — the same tactic as tuples).
+                // MULTI-PARAM derived `Show`/`Eq`/`Ord` (`Either Int Bool`): the
+                // single-`t` machinery only substitutes the FIRST constraint var,
+                // so it mis-dispatches the rest (`show (Right True)` → showInt on a
+                // Bool; `eq` compares list pointers with `==`). Synthesize a
+                // monomorphic `<method>$Either$Int$Bool` from the data decl instead,
+                // each field at its concrete type.
                 Ty::Con(name, args)
-                    if o.class == "Show"
+                    if matches!(o.class.as_str(), "Show" | "Eq" | "Ord")
                         && is_multi_derived_show(&name, args.len(), &decls)
                         && instances.contains(&(o.class.clone(), name.clone())) =>
                 {
                     let comps: Option<Vec<Type>> =
                         args.iter().map(|a| ty_to_ast(&self.apply(a))).collect();
                     if let Some(comps) = comps {
-                        let key = data_show_key(&name, &comps);
-                        resolutions
-                            .insert((o.func.clone(), o.span), format!("{}${key}", o.method));
-                        show_needs.note_data(&name, &comps, &decls);
+                        // Show composes into containers unconditionally; Eq/Ord need
+                        // every field to have the instance (else AX0404, no synth).
+                        let ok = if o.class == "Show" {
+                            show_needs.note_show_data(&name, &comps, &decls);
+                            true
+                        } else {
+                            show_needs.note_eqord_data(
+                                &o.class, &name, &comps, o.span, &decls, &instances,
+                            )
+                        };
+                        if ok {
+                            let key = data_show_key(&name, &comps);
+                            resolutions
+                                .insert((o.func.clone(), o.span), format!("{}${key}", o.method));
+                        }
                     }
                 }
                 // concrete type WITH instance → resolves to the direct impl.
@@ -1900,7 +2102,7 @@ impl<'a> Infer<'a> {
                             // internal `show` resolves. Guarded so ordinary programs
                             // are completely unaffected (no redundant seeding).
                             if o.class == "Show" && type_needs_synth(&elem_ast, &decls) {
-                                show_needs.note(&elem_ast, &decls);
+                                show_needs.note_show(&elem_ast, &decls);
                             }
                             let key = ty_mangle(&elem_ast);
                             key_types.insert(key.clone(), elem_ast);
@@ -1983,6 +2185,22 @@ impl<'a> Infer<'a> {
         method_seeds.extend(show_needs.seeds.iter().cloned());
         for (k, t) in &show_needs.key_types {
             key_types.entry(k.clone()).or_insert_with(|| t.clone());
+        }
+        // a multi-param `Eq`/`Ord` field whose type has no instance of that class:
+        // report it (instead of silently mis-dispatching to `==`/`<`).
+        for (class, ty, span) in std::mem::take(&mut show_needs.missing) {
+            let name = flatten_app_ty(&ty).0.unwrap_or("?");
+            self.diags.push(
+                Diagnostic::error(
+                    "AX0404",
+                    format!("no instance of `{class}` for `{name}`"),
+                )
+                .label(span.0, span.1, "derived here, over a field of this type")
+                .with_help(format!(
+                    "a field of a `deriving ({class})` type needs `{class} {name}` \
+                     — declare it, or drop `{class}` from the deriving clause.",
+                )),
+            );
         }
         let synth_tuple_names: Set<String> = show_needs.names();
 

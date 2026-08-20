@@ -1456,6 +1456,8 @@ instance Ord Float where
   le x y = if x < y then True else x == y
 instance Eq Bool where
   eq x y = if x then y else if y then False else True
+instance Ord Bool where
+  le x y = if x then y else True
 -- Show for lists: `[1, 2, 3]` (bracketed, comma-separated). Elements use
 -- `show` (not showArg) so nested constructors aren't parenthesised inside the
 -- brackets, matching Haskell's `show [Just 1, Nothing]` = `[Just 1, Nothing]`.
