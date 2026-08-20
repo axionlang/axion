@@ -1,0 +1,9 @@
+# `src/` (generated parser.c + json) IS committed so `hx --grammar build` and other
+# consumers work without running `tree-sitter generate` (which needs node).
+/build/
+/target/
+node_modules/
+*.wasm
+*.so
+*.dylib
+*.o

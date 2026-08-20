@@ -1,0 +1,64 @@
+================================================================================
+signature and equation
+================================================================================
+
+double :: Int -> Int
+double n = n + n
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_signature
+    name: (variable)
+    (type_constructor)
+    (arrow)
+    (type_constructor))
+  (function_equation
+    name: (variable)
+    (variable)
+    (application
+      (variable))
+    (operator)
+    (application
+      (variable))))
+
+================================================================================
+data declaration with constructors
+================================================================================
+
+data Sig = Neg | Zero | Pos Int deriving (Eq, Ord)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_declaration
+    name: (type_constructor)
+    (data_constructor name: (constructor))
+    (data_constructor name: (constructor))
+    (data_constructor
+      name: (constructor)
+      (type_constructor))
+    (deriving (type_constructor) (type_constructor))))
+
+================================================================================
+case expression
+================================================================================
+
+val s = case s of
+  Neg -> 0
+  Pos n -> n
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_equation
+    name: (variable)
+    (variable)
+    (case_expression
+      (application (variable))
+      (case_alternative
+        (constructor)
+        (application (integer)))
+      (case_alternative
+        (constructor_pattern (constructor) (variable))
+        (application (variable))))))
