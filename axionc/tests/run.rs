@@ -66,6 +66,32 @@ fn over_application_runs_on_all_backends() {
 }
 
 #[test]
+fn stdlib_list_functions_run_on_all_backends() {
+    // The stdlib-growth batch — takeWhile, span, splitAt, concatMap, product, and, or,
+    // lookup, findIndex — produces identical output on interp, cranelift and llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("stdlib_list.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "stdlib_list should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "720\n10\n21\n21\n12\ntrue\nfalse\n20\n2\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn integer_bignum_factorial_is_exact() {
     // §Listing 1.4: `Integer` is arbitrary-precision — `factorial 50` (65 digits)
     // overflows i64 but is exact with the bignum, on ALL three executors (interp,

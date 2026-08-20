@@ -2078,16 +2078,17 @@ mod tests {
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
-                "== verdicts: 58 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 71 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
-        // 6 owned params agree: makeAndDrop + `unwords` + the generic pure-escape
-        // consumers `append`/`reverse`/`concat`/`intersperse` — all coherent with the
-        // front-end (`%1` synthesized before the linear checker runs).
+        // Owned params agree: makeAndDrop + `unwords` + the generic pure-escape
+        // consumers `append`/`reverse`/`concat`/`intersperse`/… — all coherent with the
+        // front-end (`%1` synthesized before the linear checker runs). The count tracks
+        // the prelude's owned-`%1` params and grows as the prelude does.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 6/6 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 7/7 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2110,11 +2111,12 @@ mod tests {
         // `owned`) — so it is NOT never-used, and coherence counts it as used
         let v = delta_view(OWNED_POLY);
         assert!(!v.contains("never-used %1:"), "got:\n{v}");
-        // 6 owned params (fixture `sum` + prelude `unwords`/`append`/`reverse`/
-        // `concat`/`intersperse`) all agree with the front-end DropPoints.
+        // The owned params (fixture `sum` + prelude consumers like `append`/`reverse`/
+        // `concat`/`intersperse`/`unwords`/`span`) all agree with the front-end DropPoints.
+        // The count tracks the prelude's owned-`%1` params; it grows as the prelude does.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 6/6 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 7/7 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2158,11 +2160,11 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 57 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 70 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(
-            v.contains("== coherence (Δ-3, move 2): 5/6 `%1` params agree"),
+            v.contains("== coherence (Δ-3, move 2): 6/7 `%1` params agree"),
             "got:\n{v}"
         );
     }

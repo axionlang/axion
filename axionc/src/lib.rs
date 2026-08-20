@@ -1585,6 +1585,59 @@ intersperse sep xs = case xs of
 
 intercalate :: List a -> List (List a) -> List a
 intercalate sep xss = concat (intersperse sep xss)
+
+takeWhile :: (a -> Bool) -> List a -> List a
+takeWhile p xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if p y then Cons y (takeWhile p ys) else Nil
+
+consFst :: a -> (List a, List a) -> (List a, List a)
+consFst y ab = case ab of
+  (a, b) -> (Cons y a, b)
+
+span :: (a -> Bool) -> List a -> (List a, List a)
+span p xs = case xs of
+  Nil -> (Nil, Nil)
+  Cons y ys -> if p y then consFst y (span p ys) else (Nil, Cons y ys)
+
+splitAt :: Int -> List a -> (List a, List a)
+splitAt n xs = case xs of
+  Nil -> (Nil, Nil)
+  Cons y ys -> if n < 1 then (Nil, Cons y ys) else consFst y (splitAt (n - 1) ys)
+
+concatMap :: (a -> List b) -> List a -> List b
+concatMap f xs = concat (map f xs)
+
+product :: List Int -> Int
+product xs = case xs of
+  Nil -> 1
+  Cons y ys -> y * product ys
+
+and :: List Bool -> Bool
+and xs = case xs of
+  Nil -> True
+  Cons y ys -> if y then and ys else False
+
+or :: List Bool -> Bool
+or xs = case xs of
+  Nil -> False
+  Cons y ys -> if y then True else or ys
+
+lookup :: Eq k => k -> List (k, v) -> Maybe v
+lookup k xs = case xs of
+  Nil -> Nothing
+  Cons p ps -> case p of
+    (a, b) -> if a == k then Just b else lookup k ps
+
+incMaybe :: Maybe Int -> Maybe Int
+incMaybe m = case m of
+  Nothing -> Nothing
+  Just i -> Just (i + 1)
+
+findIndex :: (a -> Bool) -> List a -> Maybe Int
+findIndex p xs = case xs of
+  Nil -> Nothing
+  Cons y ys -> if p y then Just 0 else incMaybe (findIndex p ys)
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`
