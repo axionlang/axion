@@ -210,6 +210,24 @@ fn signature_help_tracks_the_active_parameter() {
 }
 
 #[test]
+fn signature_help_covers_constructors_and_builtins() {
+    let ws: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // A prelude data constructor: its arrow type is built from the field types.
+    let cons_src = "main :: List Int\nmain = Cons 1 Nil\n";
+    let at = cons_src.find("Cons 1").unwrap() + 5; // just after "Cons "
+    let sh = signature_help("t.axi", cons_src, at, &ws).expect("constructor sig help");
+    assert_eq!(sh.signatures[0].label, "Cons :: a -> List a -> List a");
+
+    // A prelude (built-in) function.
+    let map_src = "main :: List Int\nmain = map f Nil\n";
+    let at = map_src.find("map f").unwrap() + 4;
+    let sh = signature_help("t.axi", map_src, at, &ws).expect("builtin sig help");
+    assert_eq!(sh.signatures[0].label, "map :: (a -> b) -> List a -> List b");
+    assert_eq!(sh.signatures[0].parameters.as_ref().unwrap().len(), 2);
+}
+
+#[test]
 fn completion_survives_a_half_typed_body() {
     // Mid-edit: the body is incomplete (a trailing `+` with no right operand), which the
     // AST parser drops. Intra-declaration recovery keeps the clause, so its parameters

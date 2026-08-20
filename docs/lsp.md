@@ -58,8 +58,11 @@ promises in §8 — with unchanged work memoized across edits.
   keyword, `=`, `,`, or the enclosing `(`), and a trailing space advances to the next
   parameter. The signature is the function's declared type (`Func.sig`), found in this
   file or an imported one; the label reuses the source-like type formatting
-  (`(a -> b) -> List a -> List b`). Functions with an explicit `::` signature only
-  (constructors and builtins are not yet covered).
+  (`(a -> b) -> List a -> List b`). Covers functions and `foreign`s with a declared type,
+  **data constructors** (the arrow type is built from the field types — `Cons :: a ->
+  List a -> List b`), and the built-in **prelude** functions and constructors (`map`,
+  `length`, `Just`, …). The few true primitives whose types live only in inference (e.g.
+  `putStrLn`) are the remaining gap.
 - **Ownership overlay** (`textDocument/inlayHint`) — §8's "draw the graph inline": the
   Auto-Drop / ownership topology the compiler already computes, shown *inline* at each
   source span. Every linear resource's inserted `free` — `⌫ drop x: Ty`, with a tooltip
@@ -274,8 +277,9 @@ full rowan migration is multi-stage by design.
 
 - **Whole-module still** (re-run on any edit): the session/`bound`/instance checks,
   and inference of unannotated functions (the residual).
-- Signature help for constructors and builtins (functions with a declared `::` are
-  covered) and the WASM playground. The project index re-scans on each references/rename
+- Signature help for the few true primitives whose types live only in inference
+  (`putStrLn`, arithmetic) — functions, `foreign`s, constructors, and prelude built-ins
+  are covered — and the WASM playground. The project index re-scans on each references/rename
   request (no persistent, file-watched index yet — fine at this scale). Positions are
   negotiated as UTF-16 only (the LSP default); UTF-8/UTF-32 `positionEncoding` is not
   advertised.

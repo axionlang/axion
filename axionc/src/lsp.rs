@@ -1038,30 +1038,57 @@ fn call_context(src: &str, offset: usize) -> Option<(String, usize)> {
     Some((head, active))
 }
 
-/// The declared type of the top-level function `name`, looked up in `src` then in each
-/// imported file present in `ws`. Only functions with an explicit `::` signature.
+/// The signature `name` denotes in `module`: a function's or `foreign`'s declared type,
+/// or a data constructor's arrow type (built from its field types to the data type).
+fn module_sig(module: &crate::ast::Module, name: &str) -> Option<crate::ast::Type> {
+    use crate::ast::Type;
+    if let Some(f) = module.funcs.iter().find(|f| f.name == name) {
+        if let Some(t) = &f.sig {
+            return Some(t.clone());
+        }
+    }
+    if let Some(fo) = module.foreigns.iter().find(|f| f.name == name) {
+        return Some(fo.sig.clone());
+    }
+    // A constructor: `Cons :: a -> List a -> List a`, i.e. its fields → its data type.
+    for d in &module.datas {
+        if let Some(c) = d.cons.iter().find(|c| c.name == name) {
+            let result = d.params.iter().fold(Type::Con(d.name.clone()), |acc, p| {
+                Type::App(Box::new(acc), Box::new(Type::Var(p.clone())))
+            });
+            let ty = c.fields.iter().rev().fold(result, |to, field| Type::Arrow {
+                mult: field.mult,
+                from: Box::new(field.ty.clone()),
+                to: Box::new(to),
+            });
+            return Some(ty);
+        }
+    }
+    None
+}
+
+/// The signature `name` denotes: a function/`foreign`/constructor in `src`, then in an
+/// imported file present in `ws`, then in the built-in **prelude** (so `map`, `length`,
+/// `Cons`, `Just`, … are covered). Constructors and prelude functions included.
 fn lookup_sig(name: &str, path: &str, src: &str, ws: &Workspace) -> Option<crate::ast::Type> {
-    let sig_in = |text: &str| -> Option<crate::ast::Type> {
-        parse_ast(text)?
-            .funcs
-            .iter()
-            .find(|f| f.name == name)
-            .and_then(|f| f.sig.clone())
-    };
-    if let Some(t) = sig_in(src) {
-        return Some(t);
+    if let Some(m) = parse_ast(src) {
+        if let Some(t) = module_sig(&m, name) {
+            return Some(t);
+        }
     }
     let dir = dir_of(path);
     for import in crate::module_imports(src) {
         let target = crate::import_target_path(&dir, &import);
         let Some(tpath) = target.to_str() else { continue };
         if let Some(text) = ws.get(tpath) {
-            if let Some(t) = sig_in(text) {
-                return Some(t);
+            if let Some(m) = parse_ast(text) {
+                if let Some(t) = module_sig(&m, name) {
+                    return Some(t);
+                }
             }
         }
     }
-    None
+    module_sig(crate::prelude_module(), name)
 }
 
 /// Signature help at byte `offset`: the signature of the function being applied, with the
