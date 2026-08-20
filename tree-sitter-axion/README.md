@@ -42,15 +42,29 @@ name = "axion"
 source = { path = "/home/sorath/Axion/tree-sitter-axion" }
 ```
 
-The existing `[[language]] name = "axion"` block picks up the grammar by name (see the
-Helix setup in `../docs/lsp.md`). Then build the grammar and install the queries:
+The existing `[[language]] name = "axion"` block picks up the grammar by name. Install the
+compiled parser and the queries into Helix's runtime:
 
 ```sh
-hx --grammar build
+# 1. the compiled grammar → runtime/grammars/axion.so
+mkdir -p ~/.config/helix/runtime/grammars
+clang -O2 -shared -fPIC \
+  -I /home/sorath/Axion/tree-sitter-axion/src \
+  /home/sorath/Axion/tree-sitter-axion/src/parser.c \
+  -o ~/.config/helix/runtime/grammars/axion.so
+
+# 2. the highlight queries → runtime/queries/axion/
 mkdir -p ~/.config/helix/runtime/queries/axion
 ln -sf /home/sorath/Axion/tree-sitter-axion/queries/highlights.scm \
        ~/.config/helix/runtime/queries/axion/highlights.scm
 ```
 
-Open an `.axi` file — it should be coloured, and `hx --health axion` should no longer warn
-about a missing highlight configuration.
+Compiling `axion.so` directly (the grammar has no external scanner, so it's just
+`parser.c`) is the recommended path. `hx --grammar build` also works **once
+`runtime/grammars/` exists** — but it rebuilds Helix's entire declared grammar set, so it
+prints failures for every other grammar whose source you haven't `hx --grammar fetch`ed;
+those are unrelated to Axión.
+
+Check with `hx --health axion` — "Tree-sitter parser" and "Highlight queries" should both
+be ✓. (Textobject/Indent stay ✘ — highlighting-grade has no layout scanner.) Open an
+`.axi` file and it's coloured.
