@@ -75,6 +75,7 @@
 
 
 
+
         _ ->
         _ ->
         _ ->
@@ -139,6 +140,7 @@ consFst y ab  =
     Cons y ys ->
     Cons y ys ->
     Cons y ys ->
+    Cons y ys ->
     Cons z zs ->
       drop ab
 drop n xs  =
@@ -153,6 +155,7 @@ drop n xs  =
       drop _t1 : String
       drop _t1 : String
   drop _t2 : String
+dropWhile p xs  =
       drop xs
       drop xs
       drop xs
@@ -168,6 +171,7 @@ elem x xs  =
           else
           else
           else
+      else
       else
       else
       else
@@ -288,6 +292,7 @@ length xs  =
       let _t0 = callclo p y  ; Δ{}
       let _t0 = callclo p y  ; Δ{}
       let _t0 = callclo p y  ; Δ{}
+      let _t0 = callclo p y  ; Δ{}
       let _t0 = call concat ys  ; Δ{y ys} · moves{ys} · makes List
       let _t0 = call foldr f z ys  ; Δ{}
   let _t0 = call intersperse sep xss  ; Δ{} · makes List
@@ -372,6 +377,7 @@ mapM_ f xs  =
 maybe d f m  =
         Nil ->
         Nil ->
+    Nil ->
     Nil ->
     Nil ->
     Nil ->
@@ -512,6 +518,7 @@ replicate n x  =
         ret call consFst y _t3  ; Δ{}
         ret call consFst y _t6  ; Δ{}
         ret call drop _t1 ys  ; Δ{} · makes List
+        ret call dropWhile p ys  ; Δ{} · makes List
         ret call elem x ys  ; Δ{}
         ret call filter p ys  ; Δ{} · makes List
         ret call find p ys  ; Δ{} · makes Maybe
@@ -572,6 +579,7 @@ replicate n x  =
   ret case xs of
   ret case xs of
   ret case xs of
+  ret case xs of
       ret case y of
       ret case y of
       ret case y of
@@ -590,6 +598,7 @@ replicate n x  =
         ret con Cons y _t2  ; Δ{_t2} · moves{_t2}
       ret con Cons y _t2  ; Δ{y} · moves{y}
         ret con Cons y ys  ; Δ{}
+        ret con Cons y ys  ; Δ{}
           ret con Cons z _t0  ; Δ{_t0} · moves{_t0}
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
         ret con Just 0  ; Δ{} · makes Maybe$Int
@@ -600,6 +609,7 @@ replicate n x  =
           ret con Nil  ; Δ{}
         ret con Nil  ; Δ{}
         ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
@@ -632,6 +642,7 @@ replicate n x  =
   ret if b then
           ret if _t0 then
           ret if _t0 then
+      ret if _t0 then
       ret if _t0 then
       ret if _t0 then
       ret if _t0 then
@@ -719,6 +730,8 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

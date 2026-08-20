@@ -1,7 +1,7 @@
 -- Exercises the prelude list functions added in the stdlib-growth batch:
--- takeWhile, span, splitAt, concatMap, product, and, or, lookup, findIndex.
+-- takeWhile, dropWhile, span, splitAt, concatMap, product, and, or, lookup, findIndex.
 -- Expected output (interp == cranelift == llvm):
---   720 / 10 / 21 / 21 / 12 / True / False / 20 / 2
+--   720 / 10 / 11 / 21 / 21 / 12 / True / False / 20 / 2
 lt5 :: Int -> Bool
 lt5 n = n < 5
 
@@ -16,6 +16,7 @@ main :: IO ()
 main = do
   putStrLn (show (product (range 1 6)))
   putStrLn (show (sum (takeWhile lt5 (range 1 10))))
+  putStrLn (show (sum (dropWhile lt5 (range 1 6))))
   putStrLn (show (sumPair (span lt5 (range 1 6))))
   putStrLn (show (sumPair (splitAt 2 (range 1 6))))
   putStrLn (show (sum (concatMap dup (range 1 3))))

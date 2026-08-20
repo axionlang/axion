@@ -78,6 +78,9 @@
 
 
 
+
+
+                                    _ ->
                                 _ ->
                             _ ->
                         _ ->
@@ -140,6 +143,7 @@ consFst y ab  =
     Cons y ys ->
     Cons y ys ->
     Cons y ys ->
+    Cons y ys ->
     Cons z zs ->
       drop ab
 drop n xs  =
@@ -149,33 +153,35 @@ drop n xs  =
           drop _t0 : String
       drop _t0 : String
           drop _t10
-          drop _t11 : List$Int
+          drop _t12 : List$Int
           drop _t14 : String
-              drop _t16 : List$Int
-              drop _t19 : String
+              drop _t16
         drop _t1 : Maybe$Int
           drop _t1 : String
       drop _t1 : String
-                  drop _t21
-                  drop _t22 : List$Int
-                  drop _t23 : List$Int
+              drop _t20 : String
                   drop _t25 : String
+                      drop _t27
+                      drop _t28 : List$Int
+                      drop _t29 : List$Int
   drop _t2 : String
-                      drop _t31 : List$Bool
-                      drop _t33 : String
-                          drop _t39 : List$Bool
+                      drop _t31 : String
+                          drop _t37 : List$Bool
+                          drop _t39 : String
       drop _t4
-                          drop _t41 : String
-                              drop _t47 : List$tuple$Int$Int
-                              drop _t48 : Maybe$Int
-                              drop _t50 : String
-                                  drop _t52
-                                  drop _t56 : List$Int
-                                  drop _t57 : Maybe$Int
-                                  drop _t59 : String
+                              drop _t45 : List$Bool
+                              drop _t47 : String
+                                  drop _t53 : List$tuple$Int$Int
+                                  drop _t54 : Maybe$Int
+                                  drop _t56 : String
+                                      drop _t58
       drop _t5 : List$Int
+                                      drop _t62 : List$Int
+                                      drop _t63 : Maybe$Int
+                                      drop _t65 : String
       drop _t6 : List$Int
       drop _t8 : String
+dropWhile p xs  =
       drop xs
       drop xs
       drop xs
@@ -192,6 +198,7 @@ elem x xs  =
           else
           else
           else
+      else
       else
       else
       else
@@ -255,6 +262,7 @@ lam$2 [env ]eta$1  =
 lam$3 [env ]eta$3  =
 lam$4 [env ]eta$5  =
 lam$5 [env ]eta$7  =
+lam$6 [env ]eta$9  =
 le$Float x y  =
 le$Int x y  =
     Left _ ->
@@ -264,7 +272,7 @@ length xs  =
         let _d1000000 = call incMaybe _t1  ; Δ{_t1} · makes Maybe$Int
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
   let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
-                                  let _d1000000 = putStrLn _t59  ; Δ{_t59}
+                                      let _d1000000 = putStrLn _t65  ; Δ{_t65}
       let _d1000000 = rtcall axion_strcat s _t1  ; Δ{_t1} · makes String
           let _d1000000 = rtcall axion_strcat s _t1  ; Δ{_t1 s t ts} · makes String
   let _dd0 = band _p 1  ; Δ{}
@@ -320,6 +328,7 @@ length xs  =
       let _t0 = callclo p y  ; Δ{}
       let _t0 = callclo p y  ; Δ{}
       let _t0 = callclo p y  ; Δ{}
+      let _t0 = callclo p y  ; Δ{}
       let _t0 = call concat ys  ; Δ{y ys} · moves{ys} · makes List
       let _t0 = call foldr f z ys  ; Δ{}
   let _t0 = call intersperse sep xss  ; Δ{} · makes List
@@ -352,14 +361,14 @@ length xs  =
   let _t0 = <. x y  ; Δ{}
           let _t10 = closure lam$3  ; Δ{} · makes heap
           let _t11 = call range 1 6  ; Δ{_t10} · makes List$Int
-          let _t12 = call span _t10 _t11  ; Δ{_t10 _t11}
-          let _t13 = call sumPair _t12  ; Δ{}
+          let _t12 = call dropWhile _t10 _t11  ; Δ{_t10 _t11} · moves{_t11} · makes List$Int
+          let _t13 = call sum _t12  ; Δ{_t12}
           let _t14 = call show$Int _t13  ; Δ{} · makes String
           let _t15 = putStrLn _t14  ; Δ{_t14}
-              let _t16 = call range 1 6  ; Δ{} · makes List$Int
-              let _t17 = call splitAt 2 _t16  ; Δ{_t16}
-              let _t18 = call sumPair _t17  ; Δ{}
-              let _t19 = call show$Int _t18  ; Δ{} · makes String
+              let _t16 = closure lam$4  ; Δ{} · makes heap
+              let _t17 = call range 1 6  ; Δ{_t16} · makes List$Int
+              let _t18 = call span _t16 _t17  ; Δ{_t16 _t17} · moves{_t17}
+              let _t19 = call sumPair _t18  ; Δ{}
         let _t1 = call filter p ys  ; Δ{} · makes List
         let _t1 = call findIndex p ys  ; Δ{} · makes Maybe$Int
         let _t1 = call intersperse sep ys  ; Δ{y ys} · moves{ys} · makes List
@@ -381,16 +390,16 @@ length xs  =
     let _t1 = - n 1  ; Δ{}
       let _t1 = rtcall axion_strcat "\n" _t0  ; Δ{_t0} · makes String
           let _t1 = rtcall axion_strcat " " _t0  ; Δ{_t0 s t ts} · makes String
-              let _t20 = putStrLn _t19  ; Δ{_t19}
-                  let _t21 = closure lam$4  ; Δ{} · makes heap
-                  let _t22 = call range 1 3  ; Δ{_t21} · makes List$Int
-                  let _t23 = call concatMap _t21 _t22  ; Δ{_t21 _t22} · makes List$Int
-                  let _t24 = call sum _t23  ; Δ{_t23}
+              let _t20 = call show$Int _t19  ; Δ{} · makes String
+              let _t21 = putStrLn _t20  ; Δ{_t20}
+                  let _t22 = call range 1 6  ; Δ{} · makes List$Int
+                  let _t23 = call splitAt 2 _t22  ; Δ{_t22} · moves{_t22}
+                  let _t24 = call sumPair _t23  ; Δ{}
                   let _t25 = call show$Int _t24  ; Δ{} · makes String
                   let _t26 = putStrLn _t25  ; Δ{_t25}
-                      let _t27 = 1  ; Δ{}
-                      let _t28 = 1  ; Δ{}
-                      let _t29 = con Nil  ; Δ{} · makes List$Bool
+                      let _t27 = closure lam$5  ; Δ{} · makes heap
+                      let _t28 = call range 1 3  ; Δ{_t27} · makes List$Int
+                      let _t29 = call concatMap _t27 _t28  ; Δ{_t27 _t28} · makes List$Int
     let _t2 = + acc lo  ; Δ{}
     let _t2 = callclo c lo n  ; Δ{}
       let _t2 = callclo p y  ; Δ{}
@@ -402,48 +411,54 @@ length xs  =
       let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}
       let _t2 = if _t0 then
       let _t2 = < n 1  ; Δ{}
-                      let _t30 = con Cons _t28 _t29  ; Δ{_t29} · moves{_t29} · makes List$Bool
-                      let _t31 = con Cons _t27 _t30  ; Δ{_t30} · moves{_t30} · makes List$Bool
-                      let _t32 = call and _t31  ; Δ{_t31}
-                      let _t33 = call show$Bool _t32  ; Δ{} · makes String
-                      let _t34 = putStrLn _t33  ; Δ{_t33}
-                          let _t35 = 0  ; Δ{}
-                          let _t36 = 0  ; Δ{}
-                          let _t37 = con Nil  ; Δ{} · makes List$Bool
-                          let _t38 = con Cons _t36 _t37  ; Δ{_t37} · moves{_t37} · makes List$Bool
-                          let _t39 = con Cons _t35 _t38  ; Δ{_t38} · moves{_t38} · makes List$Bool
+                      let _t30 = call sum _t29  ; Δ{_t29}
+                      let _t31 = call show$Int _t30  ; Δ{} · makes String
+                      let _t32 = putStrLn _t31  ; Δ{_t31}
+                          let _t33 = 1  ; Δ{}
+                          let _t34 = 1  ; Δ{}
+                          let _t35 = con Nil  ; Δ{} · makes List$Bool
+                          let _t36 = con Cons _t34 _t35  ; Δ{_t35} · moves{_t35} · makes List$Bool
+                          let _t37 = con Cons _t33 _t36  ; Δ{_t36} · moves{_t36} · makes List$Bool
+                          let _t38 = call and _t37  ; Δ{_t37}
+                          let _t39 = call show$Bool _t38  ; Δ{} · makes String
           let _t3 = callclo p y  ; Δ{}
         let _t3 = call span p ys  ; Δ{}
         let _t3 = con Nil  ; Δ{}
   let _t3 = putStrLn _t2  ; Δ{_t2}
-                          let _t40 = call or _t39  ; Δ{_t39}
-                          let _t41 = call show$Bool _t40  ; Δ{} · makes String
-                          let _t42 = putStrLn _t41  ; Δ{_t41}
-                              let _t43 = tuple 1 10  ; Δ{} · makes heap
-                              let _t44 = tuple 2 20  ; Δ{_t43} · makes heap
-                              let _t45 = con Nil  ; Δ{_t43 _t44} · makes List$tuple$Int$Int
-                              let _t46 = con Cons _t44 _t45  ; Δ{_t43 _t44 _t45} · moves{_t44 _t45} · makes List$tuple$Int$Int
-                              let _t47 = con Cons _t43 _t46  ; Δ{_t43 _t46} · moves{_t43 _t46} · makes List$tuple$Int$Int
-                              let _t48 = call lookup$Int 2 _t47  ; Δ{_t47} · makes Maybe$Int
-                              let _t49 = call fromMaybe 99 _t48  ; Δ{_t48}
+                          let _t40 = putStrLn _t39  ; Δ{_t39}
+                              let _t41 = 0  ; Δ{}
+                              let _t42 = 0  ; Δ{}
+                              let _t43 = con Nil  ; Δ{} · makes List$Bool
+                              let _t44 = con Cons _t42 _t43  ; Δ{_t43} · moves{_t43} · makes List$Bool
+                              let _t45 = con Cons _t41 _t44  ; Δ{_t44} · moves{_t44} · makes List$Bool
+                              let _t46 = call or _t45  ; Δ{_t45}
+                              let _t47 = call show$Bool _t46  ; Δ{} · makes String
+                              let _t48 = putStrLn _t47  ; Δ{_t47}
+                                  let _t49 = tuple 1 10  ; Δ{} · makes heap
       let _t4 = closure lam$2  ; Δ{} · makes heap
             let _t4 = con Cons y l  ; Δ{}
         let _t4 = con Cons y ys  ; Δ{}
         let _t4 = con Nil  ; Δ{}
-                              let _t50 = call show$Int _t49  ; Δ{} · makes String
-                              let _t51 = putStrLn _t50  ; Δ{_t50}
-                                  let _t52 = closure lam$5  ; Δ{} · makes heap
-                                  let _t53 = con Nil  ; Δ{_t52} · makes List$Int
-                                  let _t54 = con Cons 2 _t53  ; Δ{_t52 _t53} · moves{_t53} · makes List$Int
-                                  let _t55 = con Cons 8 _t54  ; Δ{_t52 _t54} · moves{_t54} · makes List$Int
-                                  let _t56 = con Cons 9 _t55  ; Δ{_t52 _t55} · moves{_t55} · makes List$Int
-                                  let _t57 = call findIndex _t52 _t56  ; Δ{_t52 _t56} · makes Maybe$Int
-                                  let _t58 = call fromMaybe 99 _t57  ; Δ{_t57}
-                                  let _t59 = call show$Int _t58  ; Δ{} · makes String
+                                  let _t50 = tuple 2 20  ; Δ{_t49} · makes heap
+                                  let _t51 = con Nil  ; Δ{_t49 _t50} · makes List$tuple$Int$Int
+                                  let _t52 = con Cons _t50 _t51  ; Δ{_t49 _t50 _t51} · moves{_t50 _t51} · makes List$tuple$Int$Int
+                                  let _t53 = con Cons _t49 _t52  ; Δ{_t49 _t52} · moves{_t49 _t52} · makes List$tuple$Int$Int
+                                  let _t54 = call lookup$Int 2 _t53  ; Δ{_t53} · makes Maybe$Int
+                                  let _t55 = call fromMaybe 99 _t54  ; Δ{_t54}
+                                  let _t56 = call show$Int _t55  ; Δ{} · makes String
+                                  let _t57 = putStrLn _t56  ; Δ{_t56}
+                                      let _t58 = closure lam$6  ; Δ{} · makes heap
+                                      let _t59 = con Nil  ; Δ{_t58} · makes List$Int
       let _t5 = call range 1 10  ; Δ{_t4} · makes List$Int
             let _t5 = con Cons y r  ; Δ{}
         let _t5 = con Cons y ys  ; Δ{}
         let _t5 = - n 1  ; Δ{}
+                                      let _t60 = con Cons 2 _t59  ; Δ{_t58 _t59} · moves{_t59} · makes List$Int
+                                      let _t61 = con Cons 8 _t60  ; Δ{_t58 _t60} · moves{_t60} · makes List$Int
+                                      let _t62 = con Cons 9 _t61  ; Δ{_t58 _t61} · moves{_t61} · makes List$Int
+                                      let _t63 = call findIndex _t58 _t62  ; Δ{_t58 _t62} · makes Maybe$Int
+                                      let _t64 = call fromMaybe 99 _t63  ; Δ{_t63}
+                                      let _t65 = call show$Int _t64  ; Δ{} · makes String
         let _t6 = call splitAt _t5 ys  ; Δ{}
       let _t6 = call takeWhile _t4 _t5  ; Δ{_t4 _t5} · makes List$Int
       let _t7 = call sum _t6  ; Δ{_t6}
@@ -465,6 +480,7 @@ mapM_ f xs  =
 maybe d f m  =
         Nil ->
         Nil ->
+    Nil ->
     Nil ->
     Nil ->
     Nil ->
@@ -586,7 +602,8 @@ replicate n x  =
         ret call consFst y _t3  ; Δ{}
         ret call consFst y _t6  ; Δ{}
         ret call drop _t1 ys  ; Δ{} · makes List
-  ret call dup eta$5  ; Δ{} · makes List$Int
+        ret call dropWhile p ys  ; Δ{} · makes List
+  ret call dup eta$7  ; Δ{} · makes List$Int
         ret call elem x ys  ; Δ{}
         ret call filter p ys  ; Δ{} · makes List
         ret call find p ys  ; Δ{} · makes Maybe
@@ -595,7 +612,8 @@ replicate n x  =
             ret call lookup$Int k ps  ; Δ{} · makes Maybe
   ret call lt5 eta$1  ; Δ{}
   ret call lt5 eta$3  ; Δ{}
-  ret call lt5 eta$7  ; Δ{}
+  ret call lt5 eta$5  ; Δ{}
+  ret call lt5 eta$9  ; Δ{}
           ret call mapM_ f ys  ; Δ{}
         ret call or ys  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
@@ -614,14 +632,16 @@ replicate n x  =
       ret case ss of
       ret case _t0 of
           ret case _t15 of
-              ret case _t20 of
+              ret case _t21 of
                   ret case _t26 of
       ret case _t2 of
-                      ret case _t34 of
+                      ret case _t32 of
   ret case _t3 of
-                          ret case _t42 of
-                              ret case _t51 of
+                          ret case _t40 of
+                              ret case _t48 of
+                                  ret case _t57 of
       ret case _t9 of
+  ret case xs of
   ret case xs of
   ret case xs of
   ret case xs of
@@ -667,6 +687,7 @@ replicate n x  =
         ret con Cons y _t2  ; Δ{_t2} · moves{_t2}
       ret con Cons y _t2  ; Δ{y} · moves{y}
         ret con Cons y ys  ; Δ{}
+        ret con Cons y ys  ; Δ{}
           ret con Cons z _t0  ; Δ{_t0} · moves{_t0}
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
         ret con Just 0  ; Δ{} · makes Maybe$Int
@@ -687,6 +708,7 @@ replicate n x  =
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
     ret con Nil  ; Δ{}
     ret con Nil  ; Δ{} · makes List$Int
       ret con Nothing  ; Δ{}
@@ -694,7 +716,7 @@ replicate n x  =
       ret con Nothing  ; Δ{}
       ret con Nothing  ; Δ{} · makes Maybe$Int
       ret con Nothing  ; Δ{} · makes Maybe$Int
-                                  ret _d1000000  ; Δ{}
+                                      ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{}
         ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -706,6 +728,7 @@ replicate n x  =
   ret if b then
           ret if _t0 then
           ret if _t0 then
+      ret if _t0 then
       ret if _t0 then
       ret if _t0 then
       ret if _t0 then
@@ -789,6 +812,9 @@ unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

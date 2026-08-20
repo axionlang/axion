@@ -5089,7 +5089,12 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
 /// appears in the recursive call, so `occurs_nonborrow` already moves it.
 fn view_params(name: &str) -> &'static [usize] {
     match name {
-        "drop" => &[1],
+        // Functions whose result ALIASES a suffix (spine cells) of their list argument:
+        // `case xs of Cons y ys -> … Cons y ys …` returns the extracted tail directly, so
+        // the caller must MOVE the list (give up ownership) rather than borrow-and-drop it
+        // — otherwise the result and the argument share cells and both get freed
+        // (double-free on the native backends). Their list is param index 1.
+        "drop" | "dropWhile" | "span" | "splitAt" => &[1],
         _ => &[],
     }
 }

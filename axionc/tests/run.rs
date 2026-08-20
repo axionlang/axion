@@ -67,8 +67,9 @@ fn over_application_runs_on_all_backends() {
 
 #[test]
 fn stdlib_list_functions_run_on_all_backends() {
-    // The stdlib-growth batch — takeWhile, span, splitAt, concatMap, product, and, or,
-    // lookup, findIndex — produces identical output on interp, cranelift and llvm.
+    // The stdlib-growth batch — takeWhile, dropWhile, span, splitAt, concatMap, product,
+    // and, or, lookup, findIndex — produces identical output on interp, cranelift and llvm.
+    // (`dropWhile`/`span`/`splitAt` are VIEW functions — see `core::view_params`.)
     for backend in [
         vec!["--backend", "interp"],
         vec!["--backend", "cranelift"],
@@ -85,7 +86,7 @@ fn stdlib_list_functions_run_on_all_backends() {
         );
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
-            "720\n10\n21\n21\n12\ntrue\nfalse\n20\n2\n",
+            "720\n10\n11\n21\n21\n12\ntrue\nfalse\n20\n2\n",
             "{backend:?}"
         );
     }

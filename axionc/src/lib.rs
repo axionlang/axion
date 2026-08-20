@@ -1591,6 +1591,11 @@ takeWhile p xs = case xs of
   Nil -> Nil
   Cons y ys -> if p y then Cons y (takeWhile p ys) else Nil
 
+dropWhile :: (a -> Bool) -> List a -> List a
+dropWhile p xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if p y then dropWhile p ys else Cons y ys
+
 consFst :: a -> (List a, List a) -> (List a, List a)
 consFst y ab = case ab of
   (a, b) -> (Cons y a, b)
