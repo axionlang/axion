@@ -5099,6 +5099,140 @@ fn view_params(name: &str) -> &'static [usize] {
     }
 }
 
+// --- view-soundness check (guards the `view_params` registry) -------------------
+//
+// A "view" returns a suffix that ALIASES its list argument's spine (`case xs of
+// Cons y ys -> … Cons y ys …`). If such a param is BORROWED rather than moved, the
+// result and the argument share cells and both get freed → double-free (the bug that
+// hit `dropWhile`/`span`/`splitAt` before they were registered in `view_params`).
+//
+// This is a pure DETECTOR — it changes no codegen — so it cannot regress a working
+// program. It reports any function with a BORROWED param (per `compute_borrow_args`,
+// which already excludes `view_params`) that embeds a RECURSIVE (self-type) field of
+// that param into a constructor: an unregistered view. A test asserts the prelude has
+// none, so forgetting to register a new suffix-returning function fails loudly instead
+// of shipping a silent double-free. Precise: `filter` passes the tail to a *call* (not
+// embedded) and only embeds the non-recursive *element*, so it is NOT flagged.
+
+/// For each constructor, the field indices whose type is the SELF-type (the recursive
+/// spine — e.g. field 1 of `Cons a (List a)`). Built from the module's `data` decls.
+#[cfg(test)]
+pub fn con_recursive_fields(
+    datas: &[ast::DataDecl],
+) -> HashMap<String, Vec<usize>> {
+    let mut out = HashMap::new();
+    for d in datas {
+        for c in &d.cons {
+            let recs: Vec<usize> = c
+                .fields
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.ty.head_con() == Some(d.name.as_str()))
+                .map(|(i, _)| i)
+                .collect();
+            if !recs.is_empty() {
+                out.insert(c.name.clone(), recs);
+            }
+        }
+    }
+    out
+}
+
+/// Names of functions that are unregistered VIEWS: a borrowed param whose recursive
+/// (spine) field is embedded into a constructor → a latent double-free. Empty is the
+/// invariant `view_params` must maintain.
+#[cfg(test)]
+pub fn unregistered_views(
+    fns: &[CoreFn],
+    borrow_args: &BorrowArgs,
+    con_recursive: &HashMap<String, Vec<usize>>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for f in fns {
+        let Some(borrowed) = borrow_args.get(&f.name) else {
+            continue;
+        };
+        let is_view = borrowed.iter().any(|&i| {
+            f.params
+                .get(i)
+                .is_some_and(|p| destructures_and_embeds_recursive(p, &f.body, con_recursive))
+        });
+        if is_view {
+            out.push(f.name.clone());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `true` if `p` is destructured by a `case p of Con(..)` whose RECURSIVE field binder
+/// is embedded into a constructor within the arm — the aliasing view pattern.
+#[cfg(test)]
+fn destructures_and_embeds_recursive(
+    p: &str,
+    t: &Term,
+    con_rec: &HashMap<String, Vec<usize>>,
+) -> bool {
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            rhs_view(p, rhs, con_rec) || destructures_and_embeds_recursive(p, body, con_rec)
+        }
+        Term::Drop(_, _, _, _, body) => destructures_and_embeds_recursive(p, body, con_rec),
+        Term::Ret(rhs, _) => rhs_view(p, rhs, con_rec),
+    }
+}
+
+#[cfg(test)]
+fn rhs_view(p: &str, rhs: &Rhs, con_rec: &HashMap<String, Vec<usize>>) -> bool {
+    match rhs {
+        Rhs::Op(_) => false,
+        Rhs::If(_, t, e) => {
+            destructures_and_embeds_recursive(p, t, con_rec)
+                || destructures_and_embeds_recursive(p, e, con_rec)
+        }
+        Rhs::Case(scrut, arms) if atom_is(p, scrut) => arms.iter().any(|(pat, body)| {
+            let CPat::Con(con, subs) = pat else { return false };
+            con_rec.get(con).is_some_and(|recs| {
+                recs.iter().any(|&r| {
+                    matches!(subs.get(r), Some(CPat::Var(f)) if embedded_in_con(f, body))
+                })
+            })
+        }),
+        Rhs::Case(_, arms) => arms
+            .iter()
+            .any(|(_, b)| destructures_and_embeds_recursive(p, b, con_rec)),
+    }
+}
+
+/// `true` if `name` is a direct atom argument of a `MakeCon`/`MakeTuple`/`MakeRecord`
+/// anywhere in `t` — i.e. embedded into a heap value (that may escape).
+#[cfg(test)]
+fn embedded_in_con(name: &str, t: &Term) -> bool {
+    match t {
+        Term::Let(_, rhs, _, body) => rhs_embeds(name, rhs) || embedded_in_con(name, body),
+        Term::Drop(_, _, _, _, body) => embedded_in_con(name, body),
+        Term::Ret(rhs, _) => rhs_embeds(name, rhs),
+    }
+}
+
+#[cfg(test)]
+fn rhs_embeds(name: &str, rhs: &Rhs) -> bool {
+    match rhs {
+        Rhs::Op(op) => op_embeds(name, op),
+        Rhs::If(_, t, e) => embedded_in_con(name, t) || embedded_in_con(name, e),
+        Rhs::Case(_, arms) => arms.iter().any(|(_, b)| embedded_in_con(name, b)),
+    }
+}
+
+#[cfg(test)]
+fn op_embeds(name: &str, op: &Op) -> bool {
+    match op {
+        Op::MakeCon { args, .. } | Op::MakeTuple(args) => args.iter().any(|a| atom_is(name, a)),
+        Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(name, a)),
+        _ => false,
+    }
+}
+
 // --- uniquify: alpha-rename shadowed local bindings (unique-binding invariant) ---
 //
 // Runs right after lowering, before every reclamation analysis. Shadow-only: a

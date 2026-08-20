@@ -1550,6 +1550,36 @@ mod tests {
     use crate::core::lower_with;
     use crate::diag::Diagnostics;
 
+    #[test]
+    fn prelude_has_no_unregistered_view_functions() {
+        // View-soundness guard for `core::view_params`. A function that returns a suffix
+        // aliasing a BORROWED list param double-frees natively (the `dropWhile`/`span`/
+        // `splitAt` bug). Lowering any program injects the whole prelude, so this checks
+        // every prelude function: if you add a suffix-returning one without registering it
+        // in `view_params`, this fails and names it — instead of shipping a silent
+        // double-free. (Pure detection; no codegen change.)
+        let mut diags = Diagnostics::default();
+        let (module, analysis) = crate::compile_front("main :: Int\nmain = 0\n", ".", &mut diags);
+        let module = module.expect("front-end must compile");
+        let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
+        let l = lower_with(
+            &module,
+            &inplace,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+            &analysis.consume_native_exempt,
+            false,
+        );
+        let con_rec = crate::core::con_recursive_fields(&module.datas);
+        let unregistered = crate::core::unregistered_views(&l.fns, &l.borrow_args, &con_rec);
+        assert!(
+            unregistered.is_empty(),
+            "unregistered VIEW functions (aliased-suffix return on a borrowed param → \
+             native double-free) — register them in `core::view_params`: {unregistered:?}"
+        );
+    }
+
     /// Front-end (lex → layout → parse → check → infer) + Core lowering.
     pub(super) fn pipeline(src: &str) -> crate::core::Lowered {
         let mut diags = Diagnostics::default();
