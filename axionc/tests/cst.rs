@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use axionc::cst::{
-    binders_in_decl, build_cst, document_symbols, expr_matches_parser, module_matches_parser,
-    parse_recover, SyntaxKind, SyntaxNode,
+    binders_in_decl, build_cst, document_symbols, expr_matches_parser, first_span_mismatch,
+    module_matches_parser, parse_recover, SyntaxKind, SyntaxNode,
 };
 
 fn has_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
@@ -277,6 +277,43 @@ fn token_driven_module_matches_over_all_fixtures() {
         failures.is_empty(),
         "{} / {checked} modules diverge from the reference: {failures:?}",
         failures.len()
+    );
+}
+
+#[test]
+fn token_driven_module_spans_are_byte_exact_over_all_fixtures() {
+    // The stronger flip gate: not just structurally equal, but BYTE-EXACT spans — the
+    // token-driven AST's spans must match recursive-descent's exactly, because spans are
+    // semantic keys downstream (infer's `array_tys`/`makecon_tys` mono maps). This is what
+    // blocked the flip; it must stay at zero.
+    let mut failures = Vec::new();
+    let mut checked = 0;
+    for base in ["tests/fixtures", "../examples"] {
+        let dir = format!("{}/{base}", env!("CARGO_MANIFEST_DIR"));
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("axi") {
+                continue;
+            }
+            if path.file_name().unwrap() == "recover_partial.axi" {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            checked += 1;
+            if let Some(diff) = first_span_mismatch(&src) {
+                failures.push(format!("{}: {diff}", path.file_name().unwrap().to_string_lossy()));
+            }
+        }
+    }
+    assert!(checked > 20, "expected many fixtures, got {checked}");
+    assert!(
+        failures.is_empty(),
+        "{} / {checked} modules have a span mismatch:\n{}",
+        failures.len(),
+        failures.join("\n")
     );
 }
 

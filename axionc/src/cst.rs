@@ -1552,6 +1552,34 @@ fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
 /// The span of a node measured from its first to its last NON-trivia token — so
 /// leading/trailing whitespace woven into the node doesn't shift the offsets. This
 /// matches the recursive-descent parser, whose spans start/end on real tokens.
+/// Like [`node_span`] but the END is the start of the next non-trivia token in the source
+/// (or the node's last-token end at end-of-input) — matching `parser.rs`'s
+/// `span_here().0` convention, where a node's span runs up to the *next* token and so
+/// includes the trailing whitespace/newlines. Used for productions whose recursive-descent
+/// span ends that way (clauses, applied-constructor and tuple patterns).
+fn span_to_next_token(node: &SyntaxNode) -> Span {
+    let (start, last_end) = node_span(node);
+    let last_tok = node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !is_trivia(t.kind()))
+        .last();
+    let end = match last_tok {
+        Some(t) => {
+            let mut next = t.next_token();
+            while let Some(tok) = &next {
+                if !is_trivia(tok.kind()) {
+                    break;
+                }
+                next = tok.next_token();
+            }
+            next.map_or(last_end, |tok| usize::from(tok.text_range().start()))
+        }
+        None => last_end,
+    };
+    (start, end)
+}
+
 fn node_span(node: &SyntaxNode) -> Span {
     let mut toks = node
         .descendants_with_tokens()
@@ -1620,7 +1648,13 @@ fn binop_operator(node: &SyntaxNode) -> Option<String> {
 /// Lower a CST expression node to `ast::Expr`, re-lexing literal/name leaves for
 /// their values and applying the same desugarings as the recursive-descent parser.
 fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
-    let sp = node_span(node);
+    // Compound/block forms and bracketed forms end at the NEXT token (parser.rs uses
+    // `(s, span_here().0)` for them); atoms and App/BinOp derive their span otherwise.
+    let sp = match node.kind() {
+        IF_EXPR | LAMBDA_EXPR | TUPLE_EXPR | RECORD_EXPR | CASE_EXPR | LET_EXPR | DO_EXPR
+        | LIST_EXPR | SECTION_EXPR => span_to_next_token(node),
+        _ => node_span(node),
+    };
     match node.kind() {
         LITERAL_EXPR => {
             let text = head_token(node)?.text().to_string();
@@ -1650,6 +1684,9 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             let mut kids = node.children();
             let f = lower_expr(&kids.next()?)?;
             let a = lower_expr(&kids.next()?)?;
+            // `parser.rs`: App span = (f.start, arg.end), so a parenthesized argument
+            // contributes its *inner* span (parens are transparent).
+            let sp = (f.span().0, a.span().1);
             Some(Expr::App(Box::new(f), Box::new(a), sp))
         }
         BINOP_EXPR => {
@@ -1657,6 +1694,8 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             let mut kids = node.children();
             let l = lower_expr(&kids.next()?)?;
             let rhs = lower_expr(&kids.next()?)?;
+            // `parser.rs`: BinOp span = (lhs.start, rhs.end) — operand-derived.
+            let sp = (l.span().0, rhs.span().1);
             // The same desugarings as `parser.rs`: `:`→`Cons`, `.`→`compose`, `$`→app.
             Some(match op.as_str() {
                 ":" => app2(Expr::Con("Cons".into(), sp), l, rhs, sp),
@@ -1822,8 +1861,19 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
         }
         CON_PAT => {
             let name = head_token(node)?.text().to_string();
-            let args: Option<Vec<Pat>> = node.children().map(|c| lower_pat(&c)).collect();
-            Some(Pat::Con(name, args?, sp))
+            let args: Vec<Pat> = node.children().map(|c| lower_pat(&c)).collect::<Option<_>>()?;
+            // `parser.rs`: an APPLIED constructor (only produced by `parse_pat`) spans to
+            // the next token. A NULLARY constructor spans to the next token only in
+            // *pattern* position (a `case` arm or a tuple element, both `parse_pat`); as a
+            // clause/lambda parameter or a constructor argument (`parse_apat`) it is just
+            // its token.
+            let pattern_pos = matches!(node.parent().map(|p| p.kind()), Some(CASE_EXPR | TUPLE_PAT));
+            let sp = if args.is_empty() && !pattern_pos {
+                node_span(node)
+            } else {
+                span_to_next_token(node)
+            };
+            Some(Pat::Con(name, args, sp))
         }
         TUPLE_PAT => {
             let mut ps: Vec<Pat> = node
@@ -1833,7 +1883,7 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
             if ps.len() == 1 {
                 ps.pop()
             } else {
-                Some(Pat::Tuple(ps, sp))
+                Some(Pat::Tuple(ps, span_to_next_token(node)))
             }
         }
         _ => None,
@@ -2056,7 +2106,7 @@ fn lower_sig(node: &SyntaxNode) -> Option<SigParts> {
 }
 
 fn lower_clause(node: &SyntaxNode) -> Option<(String, Clause)> {
-    let sp = node_span(node);
+    let sp = span_to_next_token(node);
     let name = node
         .children_with_tokens()
         .filter_map(|e| e.into_token())
@@ -2398,6 +2448,163 @@ pub fn module_matches_parser(src: &str) -> bool {
     zero_module(&mut expected);
 
     got == expected
+}
+
+/// Collect every AST node's `(kind, span)` in pre-order (same traversal for both parsers,
+/// so the two lists align since the trees are structurally identical). Used to pinpoint
+/// the first span that differs between the token-driven and recursive-descent ASTs.
+fn collect_module_spans(m: &crate::ast::Module) -> Vec<(&'static str, crate::ast::Span)> {
+    let mut out = Vec::new();
+    for f in &m.funcs {
+        for c in &f.clauses {
+            collect_clause_spans(c, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_clause_spans(c: &crate::ast::Clause, out: &mut Vec<(&'static str, crate::ast::Span)>) {
+    for p in &c.pats {
+        collect_pat_spans(p, out);
+    }
+    out.push(("Clause", c.span));
+    match &c.body {
+        crate::ast::Body::Plain(e) => collect_expr_spans(e, out),
+        crate::ast::Body::Guarded(arms) => {
+            for (g, r) in arms {
+                collect_expr_spans(g, out);
+                collect_expr_spans(r, out);
+            }
+        }
+    }
+    for w in &c.wher {
+        for wc in &w.clauses {
+            collect_clause_spans(wc, out);
+        }
+    }
+}
+
+fn collect_pat_spans(p: &crate::ast::Pat, out: &mut Vec<(&'static str, crate::ast::Span)>) {
+    use crate::ast::Pat;
+    match p {
+        Pat::Wild(s) => out.push(("Wild", *s)),
+        Pat::Var(_, s) => out.push(("PatVar", *s)),
+        Pat::Int(_, s) => out.push(("PatInt", *s)),
+        Pat::Con(_, ps, s) => {
+            out.push(("PatCon", *s));
+            for sub in ps {
+                collect_pat_spans(sub, out);
+            }
+        }
+        Pat::Tuple(ps, s) => {
+            out.push(("PatTuple", *s));
+            for sub in ps {
+                collect_pat_spans(sub, out);
+            }
+        }
+    }
+}
+
+fn collect_expr_spans(e: &crate::ast::Expr, out: &mut Vec<(&'static str, crate::ast::Span)>) {
+    use crate::ast::Expr;
+    match e {
+        Expr::Int(_, s) => out.push(("Int", *s)),
+        Expr::Float(_, s) => out.push(("Float", *s)),
+        Expr::Str(_, s) => out.push(("Str", *s)),
+        Expr::Var(_, s) => out.push(("Var", *s)),
+        Expr::Con(_, s) => out.push(("Con", *s)),
+        Expr::App(f, x, s) => {
+            out.push(("App", *s));
+            collect_expr_spans(f, out);
+            collect_expr_spans(x, out);
+        }
+        Expr::BinOp(_, a, b, s) => {
+            out.push(("BinOp", *s));
+            collect_expr_spans(a, out);
+            collect_expr_spans(b, out);
+        }
+        Expr::If(c, t, el, s) => {
+            out.push(("If", *s));
+            collect_expr_spans(c, out);
+            collect_expr_spans(t, out);
+            collect_expr_spans(el, out);
+        }
+        Expr::Let(funcs, body, s) => {
+            out.push(("Let", *s));
+            for f in funcs {
+                for c in &f.clauses {
+                    collect_clause_spans(c, out);
+                }
+            }
+            collect_expr_spans(body, out);
+        }
+        Expr::Case(scrut, arms, s) => {
+            out.push(("Case", *s));
+            collect_expr_spans(scrut, out);
+            for (p, r) in arms {
+                collect_pat_spans(p, out);
+                collect_expr_spans(r, out);
+            }
+        }
+        Expr::Tuple(es, s) => {
+            out.push(("Tuple", *s));
+            for e in es {
+                collect_expr_spans(e, out);
+            }
+        }
+        Expr::RecordCon(_, fields, s) => {
+            out.push(("RecordCon", *s));
+            for (_, e) in fields {
+                collect_expr_spans(e, out);
+            }
+        }
+        Expr::RecordUpd(base, fields, s) => {
+            out.push(("RecordUpd", *s));
+            collect_expr_spans(base, out);
+            for (_, e) in fields {
+                collect_expr_spans(e, out);
+            }
+        }
+        Expr::Lam(ps, body, s) => {
+            out.push(("Lam", *s));
+            for p in ps {
+                collect_pat_spans(p, out);
+            }
+            collect_expr_spans(body, out);
+        }
+    }
+}
+
+/// The first node whose span differs between the token-driven and recursive-descent
+/// ASTs, rendered as `kind got(a,b)="text" exp(c,d)="text"` — the precise target for a
+/// span fix. `None` when the two are byte-identical (the flip gate). Diagnostic helper.
+pub fn first_span_mismatch(src: &str) -> Option<String> {
+    let (cst, full) = parse_module_cst(src);
+    if !full {
+        return Some("<not full>".to_string());
+    }
+    let got = lower_module(&cst)?;
+    let Ok(raw) = lex(src) else { return None };
+    let lines = LineMap::new(src);
+    let lt = layout::layout(&raw, &lines);
+    let (expected, _errs) = crate::parser::parse_module_resilient(&lt);
+    let gs = collect_module_spans(&got);
+    let es = collect_module_spans(&expected);
+    let text = |sp: (usize, usize)| src.get(sp.0..sp.1).unwrap_or("<oob>").to_string();
+    for (i, (gk, gsp)) in gs.iter().enumerate() {
+        match es.get(i) {
+            Some((_, esp)) if gsp == esp => {}
+            Some((ek, esp)) => {
+                return Some(format!(
+                    "{gk}/{ek} got{gsp:?}={:?} exp{esp:?}={:?}",
+                    text(*gsp),
+                    text(*esp)
+                ));
+            }
+            None => return Some(format!("{gk}/<none> got{gsp:?}={:?}", text(*gsp))),
+        }
+    }
+    None
 }
 
 /// Span-EXACT differential: the token-driven AST vs recursive-descent, spans NOT zeroed.
