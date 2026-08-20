@@ -467,6 +467,19 @@ pub fn compile_front(
 /// scan + ceiling check. Depends only on `src`, so the salsa `parse` query can
 /// memoize it per file text. Returns `None` (with a diagnostic) on lex/parse error.
 pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
+    // THE FLIP (§8): the token-driven rowan CST parser is the primary front-end. It is
+    // proven BYTE-EXACT with the recursive-descent parser over every fixture — spans
+    // included (spans are semantic keys downstream: `array_tys`/`makecon_tys` mono maps,
+    // diagnostic rendering), which is what previously blocked the flip. A fully clean
+    // parse routes through it; a malformed file (or a build without the `cst` feature)
+    // falls through to the recursive-descent parser for declaration-level recovery and
+    // parse-error diagnostics.
+    #[cfg(feature = "cst")]
+    if let Some(mut module) = cst::parse_module_full(src) {
+        module.level_ceiling = scan_level_pragma(src, diags);
+        levels::check_levels(&module, diags);
+        return Some(module);
+    }
     let tokens = match lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {

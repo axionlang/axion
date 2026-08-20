@@ -2259,7 +2259,7 @@ fn lower_data(node: &SyntaxNode) -> Option<crate::ast::DataDecl> {
         params,
         cons: cons?,
         deriving,
-        span: (0, 0),
+        span: span_to_next_token(node),
     })
 }
 
@@ -2301,7 +2301,7 @@ fn lower_class(node: &SyntaxNode) -> Option<crate::ast::ClassDecl> {
         name,
         tyvar,
         methods: methods?,
-        span: (0, 0),
+        span: span_to_next_token(node),
     })
 }
 
@@ -2322,7 +2322,7 @@ fn lower_instance(node: &SyntaxNode) -> Option<crate::ast::InstanceDecl> {
         head_ty,
         constraints,
         methods,
-        span: (0, 0),
+        span: span_to_next_token(node),
     })
 }
 
@@ -2339,7 +2339,7 @@ fn lower_foreign(node: &SyntaxNode) -> Option<crate::ast::Foreign> {
         name,
         sig,
         lib,
-        span: (0, 0),
+        span: span_to_next_token(node),
     })
 }
 
@@ -2459,6 +2459,25 @@ fn collect_module_spans(m: &crate::ast::Module) -> Vec<(&'static str, crate::ast
         for c in &f.clauses {
             collect_clause_spans(c, &mut out);
         }
+    }
+    // Declaration-level spans are semantic too (diagnostics render them — e.g. AX0400 on
+    // an instance), so the exactness gate must cover them.
+    for d in &m.datas {
+        out.push(("Data", d.span));
+    }
+    for c in &m.classes {
+        out.push(("Class", c.span));
+    }
+    for i in &m.instances {
+        out.push(("Instance", i.span));
+        for meth in &i.methods {
+            for c in &meth.clauses {
+                collect_clause_spans(c, &mut out);
+            }
+        }
+    }
+    for fo in &m.foreigns {
+        out.push(("Foreign", fo.span));
     }
     out
 }
