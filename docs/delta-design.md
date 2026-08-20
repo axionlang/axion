@@ -101,8 +101,9 @@ Facts that make the judgment decidable:
 - **Multiplicity is explicit and precomputed.** `ast::Field.mult` (`%1`) for
   record fields (ast.rs:139); `compute_borrow_args` (`core.rs:2989`) for call
   positions (borrowed = non-`%1` position read only locally — except view
-  positions like `drop`'s list, `core.rs::view_params`, whose result shares
-  the argument's cells and is therefore moved, §9-7); `owned_params` /
+  positions like `drop`'s list, whose result shares the argument's cells and is
+  therefore moved — auto-detected by `core.rs::destructures_and_embeds_recursive`,
+  §9-7); `owned_params` /
   `owned_drop_ty` for function parameters (core.rs:190/194). The judgment reads
   *exactly this* — no re-derivation.
 - **Drop-type keys are annotated** (Phase A′): `CallDirect(.., Option<String>)`,
@@ -372,8 +373,10 @@ The checker is *not* tuned per-fixture.
 7. **View parameters are never pure borrows** — `drop n xs` returns cells
    shared with `xs` (the `n < 1` arm returns `Cons y ys`, reusing the input),
    so freeing the input at the call site double-frees the shared suffix with
-   the result's destructor. The fix: `core.rs::view_params` forces such
-   positions to be **moved** at the call (the caller relinquishes the value —
+   the result's destructor. The fix: `compute_borrow_args` auto-detects such
+   "view" params (`destructures_and_embeds_recursive` — a destructured param whose
+   recursive spine field is embedded into a constructor) and forces them to be
+   **moved** at the call (the caller relinquishes the value —
    the reclamation side then never frees it), leaving the checker's Δ
    unchanged in spirit (`moves` for non-`%1` args is not linearity-tracked;
    later reads of the arg are still accepted). The result's destructor

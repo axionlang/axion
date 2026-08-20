@@ -69,7 +69,8 @@ fn over_application_runs_on_all_backends() {
 fn stdlib_list_functions_run_on_all_backends() {
     // The stdlib-growth batch — takeWhile, dropWhile, span, splitAt, concatMap, product,
     // and, or, lookup, findIndex — produces identical output on interp, cranelift and llvm.
-    // (`dropWhile`/`span`/`splitAt` are VIEW functions — see `core::view_params`.)
+    // (`dropWhile`/`span`/`splitAt` are VIEW functions — their list arg is auto-moved by
+    // the borrow analysis so the aliased suffix isn't double-freed.)
     for backend in [
         vec!["--backend", "interp"],
         vec!["--backend", "cranelift"],
@@ -96,7 +97,7 @@ fn stdlib_list_functions_run_on_all_backends() {
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,
-    // without any manual `view_params` registration. Before the auto-move it aborted on
+    // without any manual registration. Before the auto-move it aborted on
     // cranelift/llvm ("double free detected").
     for backend in [
         vec!["--backend", "interp"],

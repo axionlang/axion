@@ -1551,7 +1551,7 @@ mod tests {
     use crate::diag::Diagnostics;
 
     #[test]
-    fn prelude_has_no_unregistered_view_functions() {
+    fn all_prelude_view_functions_are_auto_moved() {
         // View-soundness invariant: after the borrow analysis auto-moves view params
         // (`compute_borrow_args`), NO borrowed param may still be a view (a function
         // returning a suffix that aliases a borrowed list — which double-frees natively).
@@ -1572,11 +1572,12 @@ mod tests {
             false,
         );
         let con_rec = crate::core::con_recursive_fields(&module.datas);
-        let unregistered = crate::core::unregistered_views(&l.fns, &l.borrow_args, &con_rec);
+        let still_borrowed = crate::core::unregistered_views(&l.fns, &l.borrow_args, &con_rec);
         assert!(
-            unregistered.is_empty(),
-            "unregistered VIEW functions (aliased-suffix return on a borrowed param → \
-             native double-free) — register them in `core::view_params`: {unregistered:?}"
+            still_borrowed.is_empty(),
+            "borrowed VIEW functions (aliased-suffix return on a BORROWED param → native \
+             double-free) — the auto-move in `compute_borrow_args` should have moved these: \
+             {still_borrowed:?}"
         );
     }
 

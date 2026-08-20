@@ -1,4 +1,4 @@
--- A USER-defined VIEW function (not a prelude builtin, not in `core::view_params`):
+-- A USER-defined VIEW function (not a prelude builtin, no manual registration):
 -- `myDropWhile` returns a suffix that aliases its list argument's spine. The borrow
 -- analysis auto-detects this (the recursive `ys` field escapes via `Cons y ys`) and
 -- MOVES the list, so it doesn't double-free natively — the same treatment `drop`

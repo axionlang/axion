@@ -5079,40 +5079,21 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
     }
 }
 
-/// Parameter indices of a prelude function whose RESULT shares cells with the
-/// parameter (a "view" — `drop n xs` returns the input's tail from the
-/// `n < 1` arm). A view parameter is never a pure borrow: the call moves it
-/// (the caller relinquishes the value, so the reclamation side never frees
-/// it) and the RESULT's destructor reclaims the shared suffix, while cells
-/// the result never reaches (the dropped prefix) leak conservatively. This
-/// mirrors how `append`'s second list already behaves — its `ys` param
-/// appears in the recursive call, so `occurs_nonborrow` already moves it.
-fn view_params(name: &str) -> &'static [usize] {
-    match name {
-        // Functions whose result ALIASES a suffix (spine cells) of their list argument:
-        // `case xs of Cons y ys -> … Cons y ys …` returns the extracted tail directly, so
-        // the caller must MOVE the list (give up ownership) rather than borrow-and-drop it
-        // — otherwise the result and the argument share cells and both get freed
-        // (double-free on the native backends). Their list is param index 1.
-        "drop" | "dropWhile" | "span" | "splitAt" => &[1],
-        _ => &[],
-    }
-}
-
-// --- view-soundness check (guards the `view_params` registry) -------------------
+// --- view detection (spine-aliasing suffix returns) -----------------------------
 //
 // A "view" returns a suffix that ALIASES its list argument's spine (`case xs of
-// Cons y ys -> … Cons y ys …`). If such a param is BORROWED rather than moved, the
-// result and the argument share cells and both get freed → double-free (the bug that
-// hit `dropWhile`/`span`/`splitAt` before they were registered in `view_params`).
+// Cons y ys -> … Cons y ys …`, e.g. `drop`/`dropWhile`/`span`/`splitAt` and any user
+// function shaped like them). If such a param is BORROWED rather than moved, the result
+// and the argument share cells and both get freed → double-free on the native backends.
 //
-// This is a pure DETECTOR — it changes no codegen — so it cannot regress a working
-// program. It reports any function with a BORROWED param (per `compute_borrow_args`,
-// which already excludes `view_params`) that embeds a RECURSIVE (self-type) field of
-// that param into a constructor: an unregistered view. A test asserts the prelude has
-// none, so forgetting to register a new suffix-returning function fails loudly instead
-// of shipping a silent double-free. Precise: `filter` passes the tail to a *call* (not
-// embedded) and only embeds the non-recursive *element*, so it is NOT flagged.
+// `compute_borrow_args` calls `destructures_and_embeds_recursive` to detect this and
+// MOVE the param instead — automatically, for ANY function (no manual registry). Sound:
+// embedding a borrowed-extracted spine field is unconditionally unsound-to-borrow, so the
+// move is always correct (a would-be runtime double-free becomes a compile-time move; a
+// caller that reused the input was already buggy). Precise: `filter` passes the tail to a
+// *call* (not embedded) and only embeds the non-recursive *element*, so it is NOT a view.
+// `unregistered_views` + its test guard the auto-move's completeness (it must move every
+// view, so no borrowed param may still be one).
 
 /// For each constructor, the field indices whose type is the SELF-type (the recursive
 /// spine — e.g. field 1 of `Cons a (List a)`). Built from the module's `data` decls.
@@ -5137,9 +5118,10 @@ pub fn con_recursive_fields(
     out
 }
 
-/// Names of functions that are unregistered VIEWS: a borrowed param whose recursive
+/// Names of functions that are STILL borrowed VIEWS: a borrowed param whose recursive
 /// (spine) field is embedded into a constructor → a latent double-free. Empty is the
-/// invariant `view_params` must maintain.
+/// invariant the auto-move in `compute_borrow_args` must maintain (it should have moved
+/// every view). A non-empty result means the auto-move missed one.
 #[cfg(test)]
 pub fn unregistered_views(
     fns: &[CoreFn],
@@ -5505,12 +5487,10 @@ fn compute_borrow_args(
         // A param that is destructured and whose recursive (spine) field escapes via a
         // constructor is a VIEW — its result ALIASES the argument, so it must be MOVED,
         // not borrowed (else caller-drop + result-drop double-free). Auto-detected for
-        // ANY function (`view_params` is a manual override kept for belt-and-suspenders);
-        // see `unregistered_views` and the `view_soundness` docs.
+        // ANY function; see `destructures_and_embeds_recursive` and the view-soundness docs.
         let set: HashSet<usize> = (0..f.params.len())
             .filter(|&i| {
                 mults.get(i) != Some(&ast::Mult::One)
-                    && !view_params(&f.name).contains(&i)
                     && !destructures_and_embeds_recursive(&f.params[i], &f.body, con_recursive)
             })
             .collect();
