@@ -122,6 +122,34 @@ fn show_containers_run_on_all_backends() {
 }
 
 #[test]
+fn show_tuples_run_on_all_backends() {
+    // Show for tuples: the compiler synthesizes a monomorphic `show$(…)` per
+    // concrete tuple shape (components shown at their own concrete types, so no
+    // 2-param typeclass machinery). Covers constructor / list components and
+    // tuples nested in a list / Maybe / another tuple. interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("show_tuples.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "show_tuples should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "(1, 2)\n(1, 2, 3)\n(Just 5, 7)\n(1, [2, 3])\n[(1, 2), (3, 4)]\nJust (1, 2)\n((1, 2), (3, 4))\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

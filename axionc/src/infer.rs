@@ -141,6 +141,13 @@ pub struct Mono {
     pub array_tys: HashMap<Span, Type>,
     /// Phase 1b: integer-literal spans that resolved to `Integer` (rewritten `fromInt n`).
     pub integer_lits: std::collections::HashSet<Span>,
+    /// Synthesized `show`/`showArg` functions for the concrete TUPLE types the
+    /// program shows (`show$Tuple$Int$Int`). Tuples are anonymous, so there is no
+    /// nominal instance to clone; each is generated fresh at its call sites and
+    /// injected after inference (see `analyze_module`). Each component is shown at
+    /// its OWN concrete type, so the single-`t` monomorphizer never has to hold two
+    /// type vars at once — the reason this sidesteps the 2-param dispatch limit.
+    pub tuple_shows: Vec<Func>,
 }
 
 /// Instruction to clone `src` into a monomorphic function `name`, substituting
@@ -717,6 +724,143 @@ fn ty_mangle(t: &Type) -> String {
         ),
         _ => String::new(),
     }
+}
+
+// --- tuple `Show` synthesis (see `Mono::tuple_shows`) ------------------------
+
+/// The synthesized `show` function name for a tuple type. Uses [`ty_mangle`]
+/// (`(Int,Int)` → `show$(Int,Int)`) so it MATCHES the name the specialization
+/// machinery rewrites an internal `show` to when a tuple is a container element
+/// (`show$List$(Int,Int)`'s body calls `show$(Int,Int)`) — that's what makes
+/// `show [(1,2)]` / `show (Just (1,2))` connect to the synthesized function.
+fn tuple_show_fn(comps: &[Type]) -> String {
+    format!("show${}", ty_mangle(&Type::Tuple(comps.to_vec())))
+}
+
+/// The impl to call for a tuple COMPONENT. Components use `show` (not `showArg`),
+/// so a constructor isn't parenthesised inside the tuple — matching Haskell's
+/// `show (Just 5, 7)` = `(Just 5, 7)`.
+fn comp_show_impl(t: &Type) -> String {
+    match t {
+        Type::Tuple(inner) => tuple_show_fn(inner),
+        other => format!("show${}", ty_mangle(other)),
+    }
+}
+
+/// Records a tuple shape (and its nested tuples) as needing synthesis, and seeds
+/// the specialization of any PARAMETRIC component (`List Int` → materialize
+/// `show$List$Int`) via `method_seeds` — exactly as a real method use would.
+fn note_tuple_show(
+    comps: &[Type],
+    needed: &mut Vec<Vec<Type>>,
+    method_seeds: &mut Vec<(String, Span, String, String)>,
+    key_types: &mut HashMap<String, Type>,
+) {
+    if needed.iter().any(|c| c == comps) {
+        return; // already recorded (dedup by shape)
+    }
+    needed.push(comps.to_vec());
+    for c in comps {
+        note_tuple_component(c, needed, method_seeds, key_types);
+    }
+}
+
+/// Seeds whatever a single tuple component's `show` needs: nested tuples recurse;
+/// a parametric `App(Con(H), arg)` (List/Maybe …) materializes `show$H$<arg>`.
+fn note_tuple_component(
+    c: &Type,
+    needed: &mut Vec<Vec<Type>>,
+    method_seeds: &mut Vec<(String, Span, String, String)>,
+    key_types: &mut HashMap<String, Type>,
+) {
+    match c {
+        Type::Tuple(inner) => note_tuple_show(inner, needed, method_seeds, key_types),
+        // parametric `App(Con(H), arg)`: materialize `show$H$<arg>`. The bogus
+        // caller/span is harmless — it only forces the spec; no real call site is
+        // rewritten to it. Recurse into `arg` so `List (Int, Int)` also synthesizes
+        // its element tuple.
+        Type::App(head, arg) => {
+            if let Type::Con(h) = head.as_ref() {
+                let base = crate::ast::method_impl_name("show", h);
+                let ak = ty_mangle(arg);
+                if matches!(arg.as_ref(), Type::App(..) | Type::Tuple(_)) {
+                    key_types.entry(ak.clone()).or_insert_with(|| (**arg).clone());
+                }
+                method_seeds.push(("$tuple_show_seed".into(), (0, 0), base, ak));
+            }
+            note_tuple_component(arg, needed, method_seeds, key_types);
+        }
+        _ => {} // nullary `Con` (Int/Bool/…): `show$Con` already exists.
+    }
+}
+
+/// Whether a type mentions a tuple anywhere (so a container element needs
+/// tuple-`show` synthesis). Keeps non-tuple programs off the synthesis path.
+fn type_has_tuple(t: &Type) -> bool {
+    match t {
+        Type::Tuple(_) => true,
+        Type::App(f, a) => type_has_tuple(f) || type_has_tuple(a),
+        _ => false,
+    }
+}
+
+/// The two impl names a tuple shape must exist under: `show$(…)` and
+/// `showArg$(…)`. A tuple is always parenthesised, so both are the same body —
+/// but a derived instance's field call uses `showArg`, a list element uses
+/// `show`, so both names get referenced.
+fn tuple_show_names(comps: &[Type]) -> [String; 2] {
+    let key = ty_mangle(&Type::Tuple(comps.to_vec()));
+    [format!("show${key}"), format!("showArg${key}")]
+}
+
+/// Builds the synthesized `ast::Func`s for the recorded tuple shapes: two per
+/// shape (`show$(…)` and `showArg$(…)`, identical bodies), each
+/// `f p = case p of (c0, c1, …) -> "(" ++ show c0 ++ ", " ++ … ++ ")"`, with
+/// every component call already resolved to its concrete impl name.
+fn tuple_show_funcs(needed: &[Vec<Type>]) -> Vec<Func> {
+    const SP: Span = (0, 0);
+    let sapp = |f: Expr, a: Expr| Expr::App(Box::new(f), Box::new(a), SP);
+    let strcat = |a: Expr, b: Expr| sapp(sapp(Expr::Var("strAppend".into(), SP), a), b);
+    let mut out = Vec::new();
+    for comps in needed {
+        let vars: Vec<String> = (0..comps.len()).map(|i| format!("c{i}")).collect();
+        // build `"(" ++ c0 ++ ", " ++ c1 ++ … ++ ")"` right-to-left from `")"`.
+        let mut body = Expr::Str(")".into(), SP);
+        for i in (0..comps.len()).rev() {
+            let comp = sapp(
+                Expr::Var(comp_show_impl(&comps[i]), SP),
+                Expr::Var(vars[i].clone(), SP),
+            );
+            body = strcat(comp, body);
+            if i > 0 {
+                body = strcat(Expr::Str(", ".into(), SP), body);
+            }
+        }
+        let body = strcat(Expr::Str("(".into(), SP), body);
+        let tuple_pat = Pat::Tuple(vars.iter().map(|v| Pat::Var(v.clone(), SP)).collect(), SP);
+        let case = Expr::Case(Box::new(Expr::Var("p".into(), SP)), vec![(tuple_pat, body)], SP);
+        let sig = Type::Arrow {
+            mult: Mult::Many,
+            from: Box::new(Type::Tuple(comps.clone())),
+            to: Box::new(Type::Con("String".into())),
+        };
+        let mk = |name: String| Func {
+            name,
+            sig: Some(sig.clone()),
+            clauses: vec![Clause {
+                pats: vec![Pat::Var("p".into(), SP)],
+                body: Body::Plain(case.clone()),
+                wher: Vec::new(),
+                span: SP,
+            }],
+            span: SP,
+            constraints: Vec::new(),
+        };
+        let [show_n, show_arg_n] = tuple_show_names(comps);
+        out.push(mk(show_n));
+        out.push(mk(show_arg_n));
+    }
+    out
 }
 
 /// The `idx`-th parameter type of an arrow chain (`a -> b -> c` @ 1 → b).
@@ -1564,6 +1708,10 @@ impl<'a> Infer<'a> {
         // self-recursion) — the points specialization rewrites to `$T`.
         let mut poly_methods: Map<String, Vec<(Span, String)>> = Map::new();
         let mut poly_calls: Map<String, Vec<(Span, String)>> = Map::new();
+        // concrete tuple types the program `show`s — one synthesized
+        // `show$Tuple$…` per distinct shape (deduped by mangle key, closed over
+        // nested tuples in `note_tuple_show`).
+        let mut needed_tuple_shows: Vec<Vec<Type>> = Vec::new();
 
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
@@ -1606,6 +1754,19 @@ impl<'a> Infer<'a> {
                         if let Some(elem_ast) =
                             args.first().map(|a| self.apply(a)).and_then(|a| ty_to_ast(&a))
                         {
+                            // a TUPLE element (`show [(1,2)]`) has no nominal
+                            // instance: synthesize its `show$(…)` so the specialized
+                            // container impl's internal `show` resolves. Guarded on
+                            // actually-contains-a-tuple so non-tuple programs are
+                            // completely unaffected (no redundant seeding).
+                            if o.class == "Show" && type_has_tuple(&elem_ast) {
+                                note_tuple_component(
+                                    &elem_ast,
+                                    &mut needed_tuple_shows,
+                                    &mut method_seeds,
+                                    &mut key_types,
+                                );
+                            }
                             let key = ty_mangle(&elem_ast);
                             key_types.insert(key.clone(), elem_ast);
                             method_seeds.push((o.func.clone(), o.span, base, key));
@@ -1661,9 +1822,34 @@ impl<'a> Infer<'a> {
                         )),
                     );
                 }
+                // `show`/`showArg` over a TUPLE → synthesize a monomorphic
+                // `show$Tuple$…` for the concrete component types. Both `show` and
+                // `showArg` map to the same impl (a tuple is always parenthesised).
+                Ty::Tuple(ts) if o.class == "Show" => {
+                    let comps: Option<Vec<Type>> =
+                        ts.iter().map(|t| ty_to_ast(&self.apply(t))).collect();
+                    if let Some(comps) = comps {
+                        resolutions.insert((o.func.clone(), o.span), tuple_show_fn(&comps));
+                        note_tuple_show(
+                            &comps,
+                            &mut needed_tuple_shows,
+                            &mut method_seeds,
+                            &mut key_types,
+                        );
+                    }
+                }
                 _ => {}
             }
         }
+
+        // names of the tuple `show` functions that WILL be synthesized (injected
+        // post-inference, so `func_names` doesn't list them). The specialization
+        // validity check consults this so a container-of-tuple spec
+        // (`show$List$(Int,Int)`) isn't rejected for a not-yet-existing `show$(…)`.
+        let synth_tuple_names: Set<String> = needed_tuple_shows
+            .iter()
+            .flat_map(|c| tuple_show_names(c))
+            .collect();
 
         // uses of constrained functions → specialization seeds (concrete)
         // and polymorphic calls (transitive, for the constraint var).
@@ -1757,10 +1943,14 @@ impl<'a> Infer<'a> {
                                 let full = crate::ast::method_impl_name(&base, &ak);
                                 let cand_ok = cands.contains(&(base.clone(), ak.clone()))
                                     && !invalid.contains(&(base, ak));
-                                return !(func_names.contains(full.as_str()) || cand_ok);
+                                return !(func_names.contains(full.as_str())
+                                    || synth_tuple_names.contains(&full)
+                                    || cand_ok);
                             }
                         }
-                        !func_names.contains(crate::ast::method_impl_name(m, t).as_str())
+                        let impl_name = crate::ast::method_impl_name(m, t);
+                        !(func_names.contains(impl_name.as_str())
+                            || synth_tuple_names.contains(&impl_name))
                     })
                     || poly_calls
                         .get(f)
@@ -1838,6 +2028,7 @@ impl<'a> Infer<'a> {
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
             integer_lits: std::collections::HashSet::new(),
+            tuple_shows: tuple_show_funcs(&needed_tuple_shows),
         }
     }
 
@@ -1973,6 +2164,7 @@ impl<'a> Infer<'a> {
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
             integer_lits: std::collections::HashSet::new(),
+            tuple_shows: Vec::new(),
         }
     }
 

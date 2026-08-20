@@ -549,6 +549,10 @@ pub fn analyze_module(
     resolve_methods(&mut module, &mono.resolutions);
     rewrite_int_lits(&mut module, &mono.integer_lits);
     materialize_specs(&mut module, &mono.specs);
+    // Synthesized `show$Tuple$…` functions (anonymous tuples have no nominal
+    // instance to clone). Injected after inference/specialization; `insert_drops`
+    // (core lowering) reclaims the tuple cell + heap components.
+    module.funcs.extend(mono.tuple_shows);
     analysis.makecon_tys = mono.makecon_tys;
     analysis.array_tys = mono.array_tys;
     analysis.integer_lits = mono.integer_lits;
