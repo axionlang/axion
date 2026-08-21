@@ -318,6 +318,29 @@ fn strings_text_run_on_all_backends() {
 }
 
 #[test]
+fn list_heap_reclaim_runs_on_all_backends() {
+    // A List of HEAP elements (substr strings; nested lists) is deep-dropped by its
+    // specialized destructor (axion_str_drop / the inner destructor) — leak-free.
+    // interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("list_heap_reclaim.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "list_heap_reclaim should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "25\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

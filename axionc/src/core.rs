@@ -4313,6 +4313,11 @@ fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term
                 args: vec![Atom::Var(fp.clone())],
                 returns: false,
             },
+            DropWay::Str => Op::RtCall {
+                func: "axion_str_drop".into(),
+                args: vec![Atom::Var(fp.clone())],
+                returns: false,
+            },
             // non-heap fields are filtered out before this point; skip defensively
             // so a stray `None` never emits a wild `free`.
             DropWay::None => continue,
@@ -4421,7 +4426,8 @@ enum PolyDrop {
 enum DropWay {
     Flat,         // heap object with no owned heap fields → a flat `free`
     Deep(String), // needs the destructor `axion_drop_<key>`
-    None,         // not a heap object (Int/String/function/tuple) → nothing to do
+    Str,          // a `String` field → `axion_str_drop` (frees a heap string, skips a literal)
+    None,         // not a heap object (Int/function/tuple) → nothing to do
 }
 
 /// How to drop a (concrete) field type; pushes any parametric instantiation it
@@ -4436,8 +4442,14 @@ fn drop_way(
     let Some(head) = head else {
         return DropWay::None;
     };
+    // a `String` field owns a heap C-string (or a static literal) → the tagged
+    // `axion_str_drop` reclaims it. Otherwise a `List String` / record-of-String
+    // frees its spine but leaks the elements.
+    if head == "String" {
+        return DropWay::Str;
+    }
     if recinfo.type_cons(head).is_none() {
-        return DropWay::None; // not a `data` type (Int/String/Buffer/function/tuple)
+        return DropWay::None; // not a `data` type (Int/Buffer/function/tuple)
     }
     // a PARAMETRIC data type instantiated with a concrete arg (List P) → the
     // specialized destructor (and it may reference further instantiations).
@@ -4749,6 +4761,11 @@ fn gen_tuple_destructors(seeds: &[Type], recinfo: &RecordInfo) -> Vec<CoreFn> {
                     ),
                     DropWay::Flat => Op::RtCall {
                         func: "axion_free".into(),
+                        args: vec![Atom::Var(fp.clone())],
+                        returns: false,
+                    },
+                    DropWay::Str => Op::RtCall {
+                        func: "axion_str_drop".into(),
                         args: vec![Atom::Var(fp.clone())],
                         returns: false,
                     },
