@@ -4,6 +4,7 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
   drop r2
+  drop r : Rec
   drop t
     else
   else
@@ -15,7 +16,7 @@ axion_drop_List _p  =
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
-  let r2 = update r { g = 5}  ; Δ{r} · moves{r} · makes heap
+  let r2 = update r { g = 5}  ; Δ{r} · makes heap
   let r = record Rec { f = 3 g = 4}  ; Δ{} · makes Rec
     let _tag = loadraw _p+0  ; Δ{}
   let t = tuple 1 2  ; Δ{} · makes heap

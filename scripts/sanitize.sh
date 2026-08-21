@@ -106,16 +106,13 @@ NATIVE=(
 #     reclaiming it would be unsound: native_closure, lambda_hof.
 #   · `drop n xs` is a view — the caller relinquishes `xs` at the call (the
 #     result shares its tail), so the dropped prefix leaks: drop_view.
-#   · a NON-in-place `record { f = … }` update allocates a fresh block but does
-#     not free the consumed source record — a pre-existing native reclamation gap,
-#     latent until DCE let this fixture compile natively: land_tuple_upd.
 LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
   nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec
   poly_payload_drop poly_payload_tco poly_payload_borrow_alias
   poly_payload_generic_drop poly_payload_generic_nested poly_payload_generic_compose poly_payload_gap
-  land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned land_owned_poly
+  land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned land_tuple_upd land_owned_poly
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap

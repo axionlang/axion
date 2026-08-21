@@ -140,10 +140,17 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 slot: None,
             });
         }
-        Op::UpdateRecord { base, fields, .. } => {
-            // ownership transfer: the base dies here (its resources move into
-            // the new record); inplace is a codegen choice, same Δ
-            e.moves.push(base);
+        Op::UpdateRecord { base, fields, inplace } => {
+            // IN-PLACE: the base's block BECOMES the result — its resources move into
+            // the returned record (no separate free). BY-COPY: the base is READ to
+            // copy its (non-linear, so safely aliased) fields into a FRESH block, so
+            // it is BORROWED here and freed at its own death point — otherwise the
+            // source record (and the OLD values of any updated heap slots) leak.
+            if *inplace {
+                e.moves.push(base);
+            } else {
+                e.borrows.push(base);
+            }
             e.moves.extend(fields.iter().map(|(_, a)| a));
             e.produces = Some(Res {
                 key: None,
