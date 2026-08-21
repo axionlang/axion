@@ -236,7 +236,8 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "join" | "strAppend" | "divInteger" | "modInteger" => 2,
+        "substr" => 3,
+        "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" => 2,
         _ => 1,
     }
 }
@@ -481,6 +482,18 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "strAppend" => Ok(Value::Builtin {
             name: "strAppend",
+            args: Vec::new(),
+        }),
+        "strLen" => Ok(Value::Builtin {
+            name: "strLen",
+            args: Vec::new(),
+        }),
+        "charAt" => Ok(Value::Builtin {
+            name: "charAt",
+            args: Vec::new(),
+        }),
+        "substr" => Ok(Value::Builtin {
+            name: "substr",
             args: Vec::new(),
         }),
         "toFloat" => Ok(Value::Builtin {
@@ -1037,6 +1050,28 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
             .map(|(_, r)| Value::Integer(r))
             .ok_or_else(|| "modInteger: divide by zero".to_string()),
         ("strAppend", [Value::Str(x), Value::Str(y)]) => Ok(Value::Str(format!("{x}{y}"))),
+        // char-level string primitives (§text). Byte-oriented, to agree with the
+        // native (C/Rust) runtime exactly; ASCII in practice.
+        ("strLen", [Value::Str(s)]) => Ok(Value::Int(s.len() as i64)),
+        ("charAt", [Value::Int(i), Value::Str(s)]) => {
+            let b = s.as_bytes();
+            Ok(Value::Int(
+                if *i < 0 || *i as usize >= b.len() {
+                    -1
+                } else {
+                    i64::from(b[*i as usize])
+                },
+            ))
+        }
+        ("substr", [Value::Int(start), Value::Int(len), Value::Str(s)]) => {
+            let b = s.as_bytes();
+            let start = (*start).clamp(0, b.len() as i64) as usize;
+            let avail = b.len() - start;
+            let take = if *len < 0 { 0 } else { (*len as usize).min(avail) };
+            Ok(Value::Str(
+                String::from_utf8_lossy(&b[start..start + take]).into_owned(),
+            ))
+        }
         // split divides into a pair of shared-read halves (they share the
         // value); join recombines — trivial semantics in the interpreter.
         ("split", [v]) => Ok(Value::Tuple(vec![v.clone(), v.clone()])),

@@ -198,6 +198,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             if func == "axion_strcat"
                 || func == "axion_show_float"
                 || func == "axion_bignum_to_string"
+                || func == "axion_substr"
             {
                 e.borrows.extend(args.iter());
                 e.produces = Some(Res {
@@ -245,6 +246,9 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_i8_len"
                 || func == "axion_i32_get"
                 || func == "axion_i32_len"
+                // char-level string reads: BORROW the string, return a scalar Int.
+                || func == "axion_str_len"
+                || func == "axion_str_at"
             {
                 e.borrows.extend(args.iter());
                 return e;

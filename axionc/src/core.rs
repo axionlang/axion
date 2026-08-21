@@ -364,6 +364,9 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "modInteger" => ("axion_bignum_mod", 2),
         "showFloat" => ("axion_show_float", 1),
         "strAppend" => ("axion_strcat", 2),
+        "strLen" => ("axion_str_len", 1),
+        "charAt" => ("axion_str_at", 2),
+        "substr" => ("axion_substr", 3),
         _ => return None,
     })
 }
@@ -1172,6 +1175,9 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "divInteger",
         "modInteger",
         "bignumFromStr",
+        "strLen",
+        "charAt",
+        "substr",
     ] {
         g.insert(b.to_string());
     }
@@ -1464,6 +1470,16 @@ impl Lower<'_> {
         }
         if name == "strAppend" && args.len() == 2 {
             return self.rtcall("axion_strcat", &args, true, buf);
+        }
+        // char-level string primitives (§text)
+        if name == "strLen" && args.len() == 1 {
+            return self.rtcall("axion_str_len", &args, true, buf);
+        }
+        if name == "charAt" && args.len() == 2 {
+            return self.rtcall("axion_str_at", &args, true, buf);
+        }
+        if name == "substr" && args.len() == 3 {
+            return self.rtcall("axion_substr", &args, true, buf);
         }
         if name == "toFloat" && args.len() == 1 {
             return Op::IntToFloat(self.atom(args[0], buf));
@@ -4863,7 +4879,8 @@ impl Op {
             Op::RtCall { func, .. }
                 if func == "axion_strcat"
                     || func == "axion_show_float"
-                    || func == "axion_bignum_to_string" =>
+                    || func == "axion_bignum_to_string"
+                    || func == "axion_substr" =>
             {
                 Some("String".into())
             }

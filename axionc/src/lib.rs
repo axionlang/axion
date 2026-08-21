@@ -1571,6 +1571,41 @@ unwords xs = case xs of
   Cons s ss -> case ss of
     Nil -> s
     Cons t ts -> s ++ \" \" ++ unwords ss
+-- char-level string processing (§text), on the byte primitives strLen/charAt/
+-- substr. `isSpace`/char codes are bytes (ASCII): 32 space, 9 tab, 10 \\n, 13 \\r.
+isSpace :: Int -> Bool
+isSpace c = if c == 32 then True else if c == 9 then True else if c == 10 then True else c == 13
+-- index of the first `c` at/after `i` (or `n` if none).
+findChar :: Int -> String -> Int -> Int -> Int
+findChar c s i n = if i < n then (if charAt i s == c then i else findChar c s (i + 1) n) else n
+-- splitOn: break on every occurrence of char `c` (empty fields kept), the
+-- inverse of `intercalate`. `splitOn 44 \"a,,b\"` = [\"a\", \"\", \"b\"].
+splitOn :: Int -> String -> List String
+splitOn c s = splitFrom c s 0 (strLen s)
+splitFrom :: Int -> String -> Int -> Int -> List String
+splitFrom c s i n = consSplit c s i n (findChar c s i n)
+consSplit :: Int -> String -> Int -> Int -> Int -> List String
+consSplit c s i n j = Cons (substr i (j - i) s) (if j < n then splitFrom c s (j + 1) n else Nil)
+-- lines: split on \\n; a trailing newline does NOT yield a trailing empty
+-- (`lines \"a\\nb\\n\"` = [\"a\", \"b\"]), and `lines \"\"` = [].
+lines :: String -> List String
+lines s = linesFrom s 0 (strLen s)
+linesFrom :: String -> Int -> Int -> List String
+linesFrom s i n = if i < n then consLine s i n (findChar 10 s i n) else Nil
+consLine :: String -> Int -> Int -> Int -> List String
+consLine s i n j = Cons (substr i (j - i) s) (linesFrom s (j + 1) n)
+-- words: split on runs of whitespace, dropping empty fields
+-- (`words \"  a  b \"` = [\"a\", \"b\"], `words \"\"` = []).
+words :: String -> List String
+words s = wordsFrom s 0 (strLen s)
+wordsFrom :: String -> Int -> Int -> List String
+wordsFrom s i n = if i < n then wordsStep s i n else Nil
+wordsStep :: String -> Int -> Int -> List String
+wordsStep s i n = if isSpace (charAt i s) then wordsFrom s (i + 1) n else consWord s i n (wordEnd s i n)
+consWord :: String -> Int -> Int -> Int -> List String
+consWord s i n j = Cons (substr i (j - i) s) (wordsFrom s j n)
+wordEnd :: String -> Int -> Int -> Int
+wordEnd s i n = if i < n then (if isSpace (charAt i s) then i else wordEnd s (i + 1) n) else i
 class Eq a where
   eq :: a -> a -> Bool
 class Ord a where
@@ -1590,6 +1625,11 @@ instance Show Integer where
 instance Show Bool where
   show x = if x then \"true\" else \"false\"
   showArg x = if x then \"true\" else \"false\"
+-- Show for String: wrap in double quotes (so `show [\"a\", \"b\"]` = `[\"a\", \"b\"]`).
+-- No escaping of inner quotes/newlines (ASCII, best-effort — matches the rest of §text).
+instance Show String where
+  show s = strAppend \"\\\"\" (strAppend s \"\\\"\")
+  showArg s = strAppend \"\\\"\" (strAppend s \"\\\"\")
 instance Eq Int where
   eq x y = x == y
 instance Ord Int where

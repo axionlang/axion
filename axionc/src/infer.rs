@@ -15,6 +15,10 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Diagnostics};
 use std::collections::{HashMap, HashSet};
 
+/// Per constrained function, one `(constraint var, dispatch)` entry per constraint
+/// — the dispatch is `(param index, nested?)` or `None` if no param carries the var.
+type ConstraintMeta = HashMap<String, Vec<(String, Option<(usize, bool)>)>>;
+
 #[derive(Clone, Debug)]
 enum Ty {
     Var(u32),
@@ -62,7 +66,7 @@ struct Infer<'a> {
     /// `(Show a, Show b) =>` instance) specializes on the whole vector, keyed by the
     /// joined mangle (`$Int$Bool`); each method use rewrites via its own cvar (see
     /// `cvar_ivars`). Single-constraint is the length-1 case (unchanged behaviour).
-    constrained_meta: HashMap<String, Vec<(String, Option<(usize, bool)>)>>,
+    constrained_meta: ConstraintMeta,
     /// constrained function → the inference var each constraint var was instantiated
     /// to while checking its body (constraint order). Used to tell WHICH constraint a
     /// polymorphic method use dispatches over, so a 2-param instance rewrites each
@@ -1367,7 +1371,7 @@ fn con_method_target(
 
 /// The constraint-var names of a constrained function, in order (empty if none).
 fn cvar_names(
-    meta: &HashMap<String, Vec<(String, Option<(usize, bool)>)>>,
+    meta: &ConstraintMeta,
     f: &str,
 ) -> Vec<String> {
     meta.get(f)
@@ -1498,6 +1502,32 @@ impl<'a> Infer<'a> {
             mono(Ty::Fun(
                 Box::new(string()),
                 Box::new(Ty::Fun(Box::new(string()), Box::new(string()))),
+            )),
+        );
+        // char-level string primitives (§text). Indices/chars are byte offsets and
+        // byte codepoints (Int); ASCII-oriented. `charAt` returns -1 out of bounds.
+        //   strLen :: String -> Int
+        //   charAt :: Int -> String -> Int
+        //   substr :: Int -> Int -> String -> String   (start, len)
+        env.insert(
+            "strLen".into(),
+            mono(Ty::Fun(Box::new(string()), Box::new(int()))),
+        );
+        env.insert(
+            "charAt".into(),
+            mono(Ty::Fun(
+                Box::new(int()),
+                Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
+            )),
+        );
+        env.insert(
+            "substr".into(),
+            mono(Ty::Fun(
+                Box::new(int()),
+                Box::new(Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(Box::new(string()), Box::new(string()))),
+                )),
             )),
         );
         env.insert("True".into(), mono(bool()));

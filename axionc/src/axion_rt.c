@@ -317,6 +317,36 @@ long axion_strcat(long a, long b) {
   return (long)buf;
 }
 
+/* --- char-level string primitives (§text). Byte-oriented (ASCII); a String is a
+ * NUL-terminated C-string. `strLen`/`charAt` READ the string; `substr` allocates a
+ * fresh heap String (reclaimed by axion_str_drop). --- */
+/* strLen :: String -> Int */
+long axion_str_len(long s) { return (long)strlen((const char *)s); }
+/* charAt :: Int -> String -> Int — the byte at index `i`, or -1 out of bounds. */
+long axion_str_at(long i, long s) {
+  const char *x = (const char *)s;
+  long n = (long)strlen(x);
+  if (i < 0 || i >= n)
+    return -1;
+  return (long)(unsigned char)x[i];
+}
+/* substr :: Int -> Int -> String -> String — `len` bytes from `start`, both
+ * clamped to the string's bounds; a fresh NUL-terminated heap String. */
+long axion_substr(long start, long len, long s) {
+  const char *x = (const char *)s;
+  long n = (long)strlen(x);
+  if (start < 0)
+    start = 0;
+  if (start > n)
+    start = n;
+  long avail = n - start;
+  long take = len < 0 ? 0 : (len > avail ? avail : len);
+  char *buf = (char *)axion_alloc(take + 1);
+  memcpy(buf, x + start, take);
+  buf[take] = 0;
+  return (long)buf;
+}
+
 /* --- arenas (§3): bump-allocator over fixed chunks (stable pointers) --- */
 #define ARENA_CHUNK (64 * 1024)
 typedef struct Chunk {

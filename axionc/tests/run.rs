@@ -291,6 +291,33 @@ fn list_deconstruct_runs_on_all_backends() {
 }
 
 #[test]
+fn strings_text_run_on_all_backends() {
+    // Char-level string processing: strLen/charAt/substr primitives + words/lines/
+    // splitOn + Show String. Byte-oriented; charAt returns the byte codepoint (-1
+    // out of bounds). interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("strings_text.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "strings_text should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "5\n101\n-1\nworld\n[\"the\", \"quick\", \"brown\"]\n[\"a\", \"b\", \"c\"]\n[\"x\", \"\", \"y\"]\nround trip\n4\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

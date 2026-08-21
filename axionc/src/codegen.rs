@@ -166,6 +166,36 @@ extern "C" fn axion_strcat(a: *const u8, b: *const u8) -> *const u8 {
     axion_str_alloc(&s)
 }
 
+/// `strLen :: String -> Int` — byte length. Borrows the string.
+extern "C" fn axion_str_len(s: *const u8) -> i64 {
+    // SAFETY: caller passed a valid NUL-terminated C-string.
+    unsafe { std::ffi::CStr::from_ptr(s as *const std::ffi::c_char) }
+        .to_bytes()
+        .len() as i64
+}
+
+/// `charAt :: Int -> String -> Int` — the byte at index `i`, or -1 out of bounds.
+extern "C" fn axion_str_at(i: i64, s: *const u8) -> i64 {
+    // SAFETY: caller passed a valid NUL-terminated C-string.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(s as *const std::ffi::c_char) }.to_bytes();
+    if i < 0 || i as usize >= bytes.len() {
+        -1
+    } else {
+        i64::from(bytes[i as usize])
+    }
+}
+
+/// `substr :: Int -> Int -> String -> String` — `len` bytes from `start` (both
+/// clamped to bounds), as a fresh reclaimable heap String.
+extern "C" fn axion_substr(start: i64, len: i64, s: *const u8) -> *const u8 {
+    // SAFETY: caller passed a valid NUL-terminated C-string.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(s as *const std::ffi::c_char) }.to_bytes();
+    let start = start.clamp(0, bytes.len() as i64) as usize;
+    let avail = bytes.len() - start;
+    let take = if len < 0 { 0 } else { (len as usize).min(avail) };
+    axion_str_alloc(&bytes[start..start + take])
+}
+
 // Heap counters (§13): how many allocations and frees occurred. With
 // `AXION_HEAP_STATS=1` the `run` prints them at the end — evidence that Auto-Drop
 // actually reclaims (not just static analysis).
@@ -1512,6 +1542,9 @@ impl Cg {
         builder.symbol("axion_show_int", axion_show_int as *const u8);
         builder.symbol("axion_show_float", axion_show_float as *const u8);
         builder.symbol("axion_strcat", axion_strcat as *const u8);
+        builder.symbol("axion_str_len", axion_str_len as *const u8);
+        builder.symbol("axion_str_at", axion_str_at as *const u8);
+        builder.symbol("axion_substr", axion_substr as *const u8);
         builder.symbol("axion_str_drop", axion_str_drop as *const u8);
         builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
         builder.symbol("axion_bignum_from_str", axion_bignum_from_str as *const u8);
@@ -1664,6 +1697,10 @@ impl Cg {
             // Show/String builtins (§tc): showFloat and strAppend
             ("axion_show_float", 1, true),
             ("axion_strcat", 2, true),
+            // char-level string primitives (§text)
+            ("axion_str_len", 1, true),
+            ("axion_str_at", 2, true),
+            ("axion_substr", 3, true),
             // drops a String: frees a heap string, skips a static literal (§tc)
             ("axion_str_drop", 1, false),
             ("axion_bignum_from_i64", 1, true),
