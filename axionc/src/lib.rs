@@ -1397,6 +1397,31 @@ null :: List a -> Bool
 null xs = case xs of
   Nil -> True
   Cons y ys -> False
+-- Safe list deconstruction. The linear way to peel a list: `uncons` yields the
+-- head AND the rest, so nothing is aliased or double-freed; `head`/`tail`/`last`
+-- drop the part they don't return. The list arg is consumed (inferred `%1`).
+-- (Scalar element types across all backends; a heap element type — a list OF
+-- lists/strings — hits the poly-payload native limitation, like other generic
+-- element-returning functions. The dropped remainder leaks conservatively, like
+-- `drop`.)
+uncons :: List a -> Maybe (a, List a)
+uncons xs = case xs of
+  Nil -> Nothing
+  Cons y ys -> Just (y, ys)
+head :: List a -> Maybe a
+head xs = case xs of
+  Nil -> Nothing
+  Cons y ys -> Just y
+tail :: List a -> Maybe (List a)
+tail xs = case xs of
+  Nil -> Nothing
+  Cons y ys -> Just ys
+last :: List a -> Maybe a
+last xs = case xs of
+  Nil -> Nothing
+  Cons y ys -> case ys of
+    Nil -> Just y
+    Cons z zs -> last (Cons z zs)
 sum :: List Int -> Int
 sum xs = case xs of
   Nil -> 0

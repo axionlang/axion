@@ -76,6 +76,10 @@
 
 
 
+
+
+
+
         _ ->
         (a, b) ->
         (a, b) ->
@@ -127,6 +131,11 @@ consFst y ab  =
     Cons y ys ->
     Cons y ys ->
     Cons y ys ->
+    Cons y ys ->
+    Cons y ys ->
+    Cons y ys ->
+    Cons y ys ->
+        Cons z zs ->
     Cons z zs ->
       drop ab
   drop b : Box
@@ -139,6 +148,8 @@ drop n xs  =
           drop _t1 : String
       drop _t1 : String
 dropWhile p xs  =
+      drop xs
+      drop xs
       drop xs
       drop xs
       drop xs
@@ -200,6 +211,7 @@ foldr f z xs  =
 fromMaybe d m  =
     GT ->
     GT ->
+head xs  =
 incMaybe m  =
 intercalate sep xss  =
 intersperse sep xs  =
@@ -214,6 +226,7 @@ isRight e  =
         Just z ->
 lam$0 [env ]a b  =
 lam$1 [env ]x  =
+last xs  =
 le$Bool x y  =
 le$Float x y  =
 le$Int x y  =
@@ -282,6 +295,7 @@ length xs  =
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = closure lam$1  ; Δ{} · makes heap
       let _t0 = con Cons y a  ; Δ{}
+          let _t0 = con Cons z zs  ; Δ{}
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{}
@@ -291,6 +305,7 @@ length xs  =
   let _t0 = > lo hi  ; Δ{}
       let _t0 = < n 1  ; Δ{}
   let _t0 = < n 1  ; Δ{}
+      let _t0 = tuple y ys  ; Δ{y ys} · moves{y ys} · makes heap
       let _t0 = == x y  ; Δ{}
   let _t0 = < x y  ; Δ{}
   let _t0 = <. x y  ; Δ{}
@@ -346,6 +361,11 @@ mapM_ f xs  =
 maybe d f m  =
         Nil ->
         Nil ->
+        Nil ->
+    Nil ->
+    Nil ->
+    Nil ->
+    Nil ->
     Nil ->
     Nil ->
     Nil ->
@@ -463,6 +483,7 @@ replicate n x  =
         ret call filter p ys  ; Δ{} · makes List
         ret call find p ys  ; Δ{} · makes Maybe
       ret call foldl f _t0 ys  ; Δ{}
+          ret call last _t0  ; Δ{} · makes Maybe
             ret call lookup$Int k ps  ; Δ{} · makes Maybe
             ret call lookup$Int k ps  ; Δ{} · makes Maybe
           ret call mapM_ f ys  ; Δ{}
@@ -519,7 +540,12 @@ replicate n x  =
   ret case xs of
   ret case xs of
   ret case xs of
+  ret case xs of
+  ret case xs of
+  ret case xs of
+  ret case xs of
       ret case y of
+      ret case ys of
       ret case ys of
     ret con Cons lo _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
         ret con Cons sep _t1  ; Δ{_t1 y} · moves{_t1}
@@ -537,7 +563,11 @@ replicate n x  =
             ret con Just b  ; Δ{}
             ret con Just b  ; Δ{}
       ret con Just _t0  ; Δ{} · makes Maybe$Int
+      ret con Just _t0  ; Δ{_t0} · moves{_t0}
+      ret con Just ys  ; Δ{}
+          ret con Just y  ; Δ{}
         ret con Just y  ; Δ{}
+      ret con Just y  ; Δ{}
           ret con Nil  ; Δ{}
         ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
@@ -552,6 +582,10 @@ replicate n x  =
       ret con Nil  ; Δ{}
     ret con Nil  ; Δ{}
     ret con Nil  ; Δ{} · makes List$Int
+      ret con Nothing  ; Δ{}
+      ret con Nothing  ; Δ{}
+      ret con Nothing  ; Δ{}
+      ret con Nothing  ; Δ{}
       ret con Nothing  ; Δ{}
       ret con Nothing  ; Δ{}
       ret con Nothing  ; Δ{}
@@ -662,6 +696,7 @@ showArg$Trit x  =
 span p xs  =
 splitAt n xs  =
 sum xs  =
+tail xs  =
 take b  =
 takeWhile p xs  =
     TMinus ->
@@ -670,10 +705,16 @@ takeWhile p xs  =
     TPlus ->
     TZero ->
     TZero ->
+uncons xs  =
 unlines xs  =
 unwords xs  =
 zipWith f xs ys  =
 zip xs ys  =
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

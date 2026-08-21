@@ -264,6 +264,33 @@ fn recursive_instances_run_on_all_backends() {
 }
 
 #[test]
+fn list_deconstruct_runs_on_all_backends() {
+    // Safe list deconstruction: uncons/head/tail/last. `uncons` yields head + rest
+    // (nothing aliased); head/tail/last drop the unreturned part (`%1`-inferred);
+    // `Nothing` on empty; composes with drop/map. interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("list_deconstruct.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "list_deconstruct should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "Just (1, [2, 3])\nJust 7\nJust [8, 9]\nJust 6\nNothing\nJust 8\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

@@ -2109,7 +2109,7 @@ mod tests {
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         assert!(
             v.contains(
-                "== verdicts: 77 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 81 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
@@ -2119,7 +2119,7 @@ mod tests {
         // the prelude's owned-`%1` params and grows as the prelude does.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 7/7 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 8/8 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2147,7 +2147,7 @@ mod tests {
         // The count tracks the prelude's owned-`%1` params; it grows as the prelude does.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 7/7 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 8/8 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2191,11 +2191,11 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 76 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 80 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(
-            v.contains("== coherence (Δ-3, move 2): 6/7 `%1` params agree"),
+            v.contains("== coherence (Δ-3, move 2): 7/8 `%1` params agree"),
             "got:\n{v}"
         );
     }
