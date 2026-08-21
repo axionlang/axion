@@ -236,6 +236,34 @@ fn handwritten_multiparam_instances_run_on_all_backends() {
 }
 
 #[test]
+fn recursive_instances_run_on_all_backends() {
+    // Recursive hand-written instances that recurse via a direct method call on
+    // their own type (`show t` where `t : Bin a`) now specialize natively —
+    // including multi-param (`Two a b`) and recursion THROUGH a container (rose
+    // tree). Previously interp-only. interp == cranelift == llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("recursive_instances.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "recursive_instances should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "((.1.)2(.3.))\ntrue\nL1-trueL2\n1[2[], 3[4[]]]\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

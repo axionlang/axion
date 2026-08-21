@@ -525,12 +525,12 @@ impl Infer<'_> {
         // constraints in scope of this function (to discharge polymorphic uses)
         self.cur_constraints = f.constraints.iter().map(|(c, _)| c.clone()).collect();
         self.cur_fn = f.name.clone();
-        // for a MULTI-constraint function, record which inference var each
-        // constraint var was instantiated to, by walking the signature alongside
-        // the instantiated `declared` type. Lets discharge tell which constraint a
-        // polymorphic method use dispatches over. (Single-constraint doesn't need
-        // it — the sole cvar is index 0 — so skip the work.)
-        if f.constraints.len() > 1 {
+        // record which inference var each constraint var was instantiated to, by
+        // walking the signature alongside the instantiated `declared` type. Lets
+        // discharge tell which constraint a polymorphic method use dispatches over
+        // (multi-constraint), and spot a method use over a type BUILT from the cvars
+        // (`show xs` where `xs : Lst a` — a recursive/parametric-field use).
+        if !f.constraints.is_empty() {
             if let (Some(sig), Some(decl)) = (&f.sig, &declared) {
                 let mut binding = HashMap::new();
                 bind_sig_vars(sig, decl, &mut binding);
@@ -545,6 +545,47 @@ impl Infer<'_> {
         let inferred = self.infer_func(env, f, expected);
         if let Some(d) = &declared {
             self.unify(&inferred, d, f.span);
+        }
+    }
+
+    /// For constrained function `f`, the map from each constraint var's inference-var
+    /// id to its source NAME (`a`, `b`) — from `constrained_meta` (names, in order)
+    /// and `cvar_ivars` (ivars, in order). `None` if `f` isn't constrained.
+    fn cvar_name_map(&self, f: &str) -> Option<HashMap<u32, String>> {
+        let meta = self.constrained_meta.get(f)?;
+        let ivars = self.cvar_ivars.get(f)?;
+        let mut m = HashMap::new();
+        for ((name, _), iv) in meta.iter().zip(ivars) {
+            if let Some(id) = var_id(&self.resolve(iv)) {
+                m.insert(id, name.clone());
+            }
+        }
+        Some(m)
+    }
+
+    /// Converts an inference type to an AST type, mapping each inference var to its
+    /// constraint-var NAME via `names`. Returns `None` if a var isn't a known cvar
+    /// (so a use isn't a pure cvar-built type) or the type contains a function.
+    fn ty_to_cvar_ast(&self, ty: &Ty, names: &HashMap<u32, String>) -> Option<Type> {
+        match self.resolve(ty) {
+            Ty::Var(id) => names.get(&id).map(|n| Type::Var(n.clone())),
+            Ty::Con(n, args) => {
+                let aargs = args
+                    .iter()
+                    .map(|a| self.ty_to_cvar_ast(a, names))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(
+                    aargs
+                        .into_iter()
+                        .fold(Type::Con(n), |acc, a| Type::App(Box::new(acc), Box::new(a))),
+                )
+            }
+            Ty::Tuple(ts) => Some(Type::Tuple(
+                ts.iter()
+                    .map(|t| self.ty_to_cvar_ast(t, names))
+                    .collect::<Option<Vec<_>>>()?,
+            )),
+            Ty::Fun(..) => None,
         }
     }
 
@@ -1298,6 +1339,50 @@ fn flatten_app(t: &Type) -> (String, Vec<Type>) {
         }
         Type::Con(n) => (n.clone(), Vec::new()),
         _ => ("?".to_string(), Vec::new()),
+    }
+}
+
+/// For a cvar-built method use (`show kids : List (Rose a)`) under a specialization
+/// whose cvars (`cnames`) take concrete `types`: the impl to call and the spec that
+/// must exist — `(base, key, args)` where the full impl is `method_impl_name(base,
+/// key)` and `args` is what `key_types[key]` should hold. `None` if the substituted
+/// type isn't an applied constructor (e.g. still generic, or a bare/tuple type).
+fn con_method_target(
+    method: &str,
+    tast: &Type,
+    cnames: &[String],
+    types: &[Type],
+) -> Option<(String, String, Vec<Type>)> {
+    let subst: HashMap<String, Type> =
+        cnames.iter().cloned().zip(types.iter().cloned()).collect();
+    let ct = subst_type(tast, &subst);
+    let (cn, cargs) = flatten_app_ty(&ct);
+    let cn = cn?;
+    if cargs.is_empty() {
+        return None;
+    }
+    let key = cargs.iter().map(ty_mangle).collect::<Vec<_>>().join("$");
+    Some((crate::ast::method_impl_name(method, cn), key, cargs))
+}
+
+/// The constraint-var names of a constrained function, in order (empty if none).
+fn cvar_names(
+    meta: &HashMap<String, Vec<(String, Option<(usize, bool)>)>>,
+    f: &str,
+) -> Vec<String> {
+    meta.get(f)
+        .map(|v| v.iter().map(|(n, _)| n.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Whether an AST type mentions any type variable.
+fn type_has_any_var(t: &Type) -> bool {
+    match t {
+        Type::Var(_) => true,
+        Type::App(f, a) => type_has_any_var(f) || type_has_any_var(a),
+        Type::Arrow { from, to, .. } => type_has_any_var(from) || type_has_any_var(to),
+        Type::Tuple(ts) => ts.iter().any(type_has_any_var),
+        Type::Con(_) | Type::Unit => false,
     }
 }
 
@@ -2096,6 +2181,14 @@ impl<'a> Infer<'a> {
         // polymorphic calls to constrained functions (span → function, including
         // self-recursion) — the points specialization rewrites to `$T`.
         let mut poly_methods: Map<String, Vec<(Span, String, usize)>> = Map::new();
+        // per constrained function: method uses over a type BUILT from its cvars,
+        // stored as `(span, method, dispatch type in cvar-NAME form)`. `show xs`
+        // where `xs : Lst a` records `(_, "show", Lst a)`; `show kids : List (Rose a)`
+        // records `List (Rose a)`. Under specialization the cvar names are
+        // substituted → a concrete type → `m$<mangle>` (often the self / a sibling
+        // spec). This is what makes a RECURSIVE hand-written instance — including
+        // recursion THROUGH a container — specialize natively.
+        let mut poly_con_methods: Map<String, Vec<(Span, String, Type)>> = Map::new();
         let mut poly_calls: Map<String, Vec<(Span, String)>> = Map::new();
         // data decls by name, and the accumulator of concrete tuple / multi-param
         // shapes the program shows (each synthesized monomorphically post-inference).
@@ -2162,11 +2255,26 @@ impl<'a> Infer<'a> {
                 // concrete type WITH instance → resolves to the direct impl.
                 Ty::Con(name, args) if instances.contains(&(o.class.clone(), name.clone())) => {
                     let base = crate::ast::method_impl_name(&o.method, &name);
-                    // parametric instance: resolve to the element-specialized impl
-                    // (`eq$Maybe` → `eq$Maybe$Int`) and seed that specialization.
-                    // The fallback resolution (base) keeps the interpreter working
-                    // even if the native spec turns out invalid.
-                    if parametric_inst.contains(&(o.class.clone(), name.clone())) {
+                    // a use over a type built from the enclosing function's
+                    // constraint vars (`show xs` : Lst a; `show kids` : List (Rose a)):
+                    // can't resolve to a concrete impl now, but under `f`'s
+                    // specialization the cvars become concrete → record the dispatch
+                    // type in cvar-NAME form to rewrite per-spec. The recursive /
+                    // parametric-field case a hand-written instance needs.
+                    let cvar_ast = self.cvar_name_map(&o.func).and_then(|names| {
+                        let t = self.ty_to_cvar_ast(&Ty::Con(name.clone(), args.clone()), &names)?;
+                        type_has_any_var(&t).then_some(t)
+                    });
+                    if let Some(tast) = cvar_ast {
+                        poly_con_methods.entry(o.func.clone()).or_default().push((
+                            o.span,
+                            o.method.clone(),
+                            tast,
+                        ));
+                        // interp uses the generic parametric impl (dynamic dispatch
+                        // inside); native gets the per-spec rewrite.
+                        resolutions.insert((o.func.clone(), o.span), base);
+                    } else if parametric_inst.contains(&(o.class.clone(), name.clone())) {
                         resolutions.insert((o.func.clone(), o.span), base.clone());
                         // seed the impl's specialization over the type's arguments,
                         // one per constraint var (`Option Int` → `[Int]`; a
@@ -2370,6 +2478,25 @@ impl<'a> Infer<'a> {
                     }
                 }
             }
+            // method uses over a cvar-built type (`show xs` : Lst a, `show kids` :
+            // List (Rose a)): each maps to `m$<substituted type>` — the recursive /
+            // through-container spec. Seed it (the self case dedups against `(f, t)`).
+            let cnames = cvar_names(&self.constrained_meta, &f);
+            let con_uses: Vec<(String, Type)> = poly_con_methods
+                .get(&f)
+                .into_iter()
+                .flatten()
+                .map(|(_, m, ta)| (m.clone(), ta.clone()))
+                .collect();
+            for (m, ta) in con_uses {
+                if let Some((base, key, args)) = con_method_target(&m, &ta, &cnames, &types) {
+                    key_types.entry(key.clone()).or_insert(args);
+                    let node = (base, key);
+                    if cands.insert(node.clone()) {
+                        queue.push(node);
+                    }
+                }
+            }
         }
 
         // fixpoint validity: `(f, T)` is valid unless `f` is
@@ -2431,7 +2558,26 @@ impl<'a> Infer<'a> {
                         .get(f)
                         .into_iter()
                         .flatten()
-                        .any(|(_, g)| invalid.contains(&(g.clone(), t.clone())));
+                        .any(|(_, g)| invalid.contains(&(g.clone(), t.clone())))
+                    // a cvar-built method use (`show xs` : Lst a) needs its
+                    // `m$<substituted type>` spec available (a cand — often the self
+                    // spec — a real func, or a synthesized one).
+                    || {
+                        let cnames = cvar_names(&self.constrained_meta, f);
+                        poly_con_methods.get(f).into_iter().flatten().any(|(_, m, ta)| {
+                            let Some((base, key, _)) =
+                                con_method_target(m, ta, &cnames, &types)
+                            else {
+                                return false; // still generic — not required here
+                            };
+                            let full = crate::ast::method_impl_name(&base, &key);
+                            let cand_ok = cands.contains(&(base.clone(), key.clone()))
+                                && !invalid.contains(&(base, key));
+                            !(func_names.contains(full.as_str())
+                                || synth_tuple_names.contains(&full)
+                                || cand_ok)
+                        })
+                    };
                 if bad {
                     invalid.insert((f.clone(), t.clone()));
                     changed = true;
@@ -2471,6 +2617,14 @@ impl<'a> Infer<'a> {
                 // only self-recursion / same-cvar calls reach here (validity rejected
                 // the rest) → the callee takes the same key.
                 rewrites.insert(*sp, crate::ast::method_impl_name(g, t));
+            }
+            let cnames = cvar_names(&self.constrained_meta, f);
+            for (sp, m, ta) in poly_con_methods.get(f).into_iter().flatten() {
+                // `show xs` : Lst a → `show$Lst$Int`; `show kids` : List (Rose a) →
+                // `show$List$Rose$Int`.
+                if let Some((base, key, _)) = con_method_target(m, ta, &cnames, &types) {
+                    rewrites.insert(*sp, crate::ast::method_impl_name(&base, &key));
+                }
             }
             let cvars: Vec<String> = self
                 .constrained_meta
