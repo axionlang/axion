@@ -1929,25 +1929,36 @@ mod tests {
 
     #[test]
     fn annotated_dump_locks_format() {
-        let l = pipeline(DROP_OK);
+        // a program that REACHES the `reverse` kernel (DCE keeps only what's used,
+        // and it monomorphizes to `reverse$Int` here) — a body rich in the move/Δ
+        // annotations whose PLACEMENT this test locks. The oracle sorts lines, so it
+        // cannot see an annotation on the wrong line; this asserts the invariant
+        // directly: annotations ride `let`/`ret` value lines, never `drop`s or headers.
+        let l = pipeline("main :: Int\nmain = sum (reverse (range 1 3))\n");
         let d1 = super::dump_annotated(&l.fns, &l.borrow_args, &l.recinfo);
         let d2 = super::dump_annotated(&l.fns, &l.borrow_args, &l.recinfo);
         assert_eq!(d1, d2, "dump_annotated must be deterministic");
-        // the reverse kernel: the recursive `reverse` consumes the tail (`%1`)…
-        assert!(d1.contains("      let _t0 = call reverse ys  ; Δ{y ys} · moves{ys} · makes List\n"));
-        // …an embedding moves its payload out of Δ…
-        assert!(d1.contains("      let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}\n"));
-        // …and the tail `append` consumes the carried suffix (aliased result)
-        assert!(d1.contains("      ret call append _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List\n"));
-        // drop lines stay unannotated — `reverse` now OWNS `xs` and shell-frees it
-        assert!(d1.contains("      drop xs\n"));
+        // the move/Δ annotations the reverse kernel produces are present…
+        assert!(d1.contains("· moves{"), "got:\n{d1}");
+        assert!(d1.contains("· makes List"), "got:\n{d1}");
         assert!(
-            !d1.lines()
-                .any(|l| l.trim_start().starts_with("drop ") && l.contains("; Δ")),
-            "drop lines must not carry annotations"
+            d1.contains("call reverse$Int ys") && d1.contains("con Cons y"),
+            "got:\n{d1}"
         );
-        // headers stay unannotated
-        assert!(d1.contains("reverse xs  =\n"));
+        // …and they land ONLY on value lines: never on a `drop` or a header (`… =`),
+        // the exact thing the line-sorting oracle gate cannot catch.
+        for line in d1.lines() {
+            let t = line.trim_start();
+            assert!(
+                !(t.starts_with("drop ") && line.contains("; Δ")),
+                "drop line carries an annotation: {line:?}"
+            );
+            assert!(
+                !(line.trim_end().ends_with('=') && line.contains("; Δ")),
+                "header carries an annotation: {line:?}"
+            );
+        }
+        assert!(d1.contains("reverse$Int xs  =\n"), "got:\n{d1}");
     }
 
     // --- Δ-3, move 2: the coherence cross-check against the front-end's
@@ -2103,23 +2114,20 @@ mod tests {
             v.contains("makeAndDrop b = ok — drops: b\n"),
             "got:\n{v}"
         );
-        // `reverse` is now a generic pure-escape consumer (`%1`): it OWNS `xs` and
-        // shell-frees each spine cell (one drop per arm) instead of borrowing.
-        assert!(v.contains("reverse xs = ok — drops: xs xs\n"), "got:\n{v}");
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
+        // Since DCE, the view holds only what `drop_ok.axi` reaches (its user fn +
+        // the destructors it needs) — NOT the whole prelude, so the counts are small
+        // and stable across prelude growth.
         assert!(
             v.contains(
-                "== verdicts: 81 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
+                "== verdicts: 3 ok · 0 with violations · 0 skipped (hand-managed generated)\n"
             ),
             "got:\n{v}"
         );
-        // Owned params agree: makeAndDrop + `unwords` + the generic pure-escape
-        // consumers `append`/`reverse`/`concat`/`intersperse`/… — all coherent with the
-        // front-end (`%1` synthesized before the linear checker runs). The count tracks
-        // the prelude's owned-`%1` params and grows as the prelude does.
+        // `makeAndDrop`'s owned `%1` param agrees with the front-end DropPoints.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 8/8 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 1/1 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2142,12 +2150,12 @@ mod tests {
         // `owned`) — so it is NOT never-used, and coherence counts it as used
         let v = delta_view(OWNED_POLY);
         assert!(!v.contains("never-used %1:"), "got:\n{v}");
-        // The owned params (fixture `sum` + prelude consumers like `append`/`reverse`/
-        // `concat`/`intersperse`/`unwords`/`span`) all agree with the front-end DropPoints.
-        // The count tracks the prelude's owned-`%1` params; it grows as the prelude does.
+        // Since DCE, the owned-`%1` count tracks only the functions this fixture
+        // reaches (its own consumer) — not the whole prelude — so it is small and
+        // stable; all agree with the front-end DropPoints.
         assert!(
             v.contains(
-                "== coherence (Δ-3, move 2): 8/8 `%1` params agree with the front-end DropPoints\n"
+                "== coherence (Δ-3, move 2): 1/1 `%1` params agree with the front-end DropPoints\n"
             ),
             "got:\n{v}"
         );
@@ -2191,11 +2199,11 @@ mod tests {
             "got:\n{v}"
         );
         assert!(
-            v.contains("== verdicts: 80 ok · 1 with violations · 0 skipped"),
+            v.contains("== verdicts: 2 ok · 1 with violations · 0 skipped"),
             "got:\n{v}"
         );
         assert!(
-            v.contains("== coherence (Δ-3, move 2): 7/8 `%1` params agree"),
+            v.contains("== coherence (Δ-3, move 2): 0/1 `%1` params agree"),
             "got:\n{v}"
         );
     }

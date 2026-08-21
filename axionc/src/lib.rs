@@ -538,6 +538,11 @@ pub fn analyze_module(
     path: &str,
     diags: &mut Diagnostics,
 ) -> (ast::Module, check::Analysis) {
+    // the user's own top-level functions — the DCE roots. Captured BEFORE the
+    // prelude is injected, so everything the prelude/deriving/specialization adds is
+    // kept only if reachable from user code.
+    let user_fns: std::collections::HashSet<String> =
+        module.funcs.iter().map(|f| f.name.clone()).collect();
     let (mut module, consume_exempt) = prepare_for_check(module, path, diags);
     let mut analysis = check::check(&module, diags);
     analysis.consume_native_exempt = consume_exempt;
@@ -557,7 +562,121 @@ pub fn analyze_module(
     analysis.makecon_tys = mono.makecon_tys;
     analysis.array_tys = mono.array_tys;
     analysis.integer_lits = mono.integer_lits;
+    // Dead-code elimination: drop prelude / generated functions the program never
+    // reaches. Runs LAST, so the graph is final (methods resolved, specs + synth
+    // materialized, `deriving` lowered). Keeps the emitted Core — and the oracle /
+    // Δ-view — to what a program actually uses, so adding an unused prelude function
+    // no longer perturbs every fixture.
+    dce_functions(&mut module, &user_fns);
     (module, analysis)
+}
+
+/// Removes functions unreachable from the user's own top-level functions
+/// (`roots`). References are the `Var`s and infix operators in every kept
+/// function's body (`++` → `append`; a backtick-infix's operator IS the callee).
+/// If `range` survives, the always-on stream-fusion pass may introduce
+/// `rangeFused`/`rangeFusedSum` at lowering time, so those are kept too.
+fn dce_functions(module: &mut ast::Module, roots: &std::collections::HashSet<String>) {
+    use std::collections::HashSet;
+    let present: HashSet<&str> = module.funcs.iter().map(|f| f.name.as_str()).collect();
+    let refs_of: std::collections::HashMap<String, HashSet<String>> = module
+        .funcs
+        .iter()
+        .map(|f| {
+            let mut s = HashSet::new();
+            collect_func_refs(f, &mut s);
+            (f.name.clone(), s)
+        })
+        .collect();
+    // fixpoint reachability from the roots.
+    let mut reachable: HashSet<String> =
+        roots.iter().filter(|r| present.contains(r.as_str())).cloned().collect();
+    let mut queue: Vec<String> = reachable.iter().cloned().collect();
+    // fusion targets become reachable the moment `range` is (see doc comment).
+    let mut fusion_added = false;
+    while let Some(n) = queue.pop() {
+        if let Some(rs) = refs_of.get(&n) {
+            for r in rs {
+                if reachable.insert(r.clone()) {
+                    queue.push(r.clone());
+                }
+            }
+        }
+        if !fusion_added && reachable.contains("range") {
+            fusion_added = true;
+            for t in ["rangeFused", "rangeFusedSum"] {
+                if present.contains(t) && reachable.insert(t.into()) {
+                    queue.push(t.into());
+                }
+            }
+        }
+    }
+    module.funcs.retain(|f| reachable.contains(&f.name));
+}
+
+/// Collects the top-level function names a function's body references — walking
+/// its clauses, guards, `where`/`let` bindings, lambdas and `case` arms. `Var`s
+/// and the callee of an infix application (`++` lowers to `append`).
+fn collect_func_refs(f: &ast::Func, out: &mut std::collections::HashSet<String>) {
+    for c in &f.clauses {
+        match &c.body {
+            ast::Body::Plain(e) => collect_expr_refs(e, out),
+            ast::Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    collect_expr_refs(g, out);
+                    collect_expr_refs(r, out);
+                }
+            }
+        }
+        for w in &c.wher {
+            collect_func_refs(w, out);
+        }
+    }
+}
+
+fn collect_expr_refs(e: &ast::Expr, out: &mut std::collections::HashSet<String>) {
+    use ast::Expr::{App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var};
+    match e {
+        Var(n, _) => {
+            out.insert(n.clone());
+        }
+        BinOp(op, l, r, _) => {
+            // a backtick-infix's operator is its callee; `++` lowers to `append`.
+            // builtin operators (`+`, `==`, …) simply match no function name.
+            out.insert(if op == "++" { "append".into() } else { op.clone() });
+            collect_expr_refs(l, out);
+            collect_expr_refs(r, out);
+        }
+        App(a, b, _) => {
+            collect_expr_refs(a, out);
+            collect_expr_refs(b, out);
+        }
+        If(c, t, e2, _) => {
+            collect_expr_refs(c, out);
+            collect_expr_refs(t, out);
+            collect_expr_refs(e2, out);
+        }
+        Let(fns, body, _) => {
+            for f in fns {
+                collect_func_refs(f, out);
+            }
+            collect_expr_refs(body, out);
+        }
+        Case(scrut, arms, _) => {
+            collect_expr_refs(scrut, out);
+            for (_, arm) in arms {
+                collect_expr_refs(arm, out);
+            }
+        }
+        Tuple(es, _) => es.iter().for_each(|x| collect_expr_refs(x, out)),
+        RecordCon(_, fields, _) => fields.iter().for_each(|(_, x)| collect_expr_refs(x, out)),
+        RecordUpd(base, fields, _) => {
+            collect_expr_refs(base, out);
+            fields.iter().for_each(|(_, x)| collect_expr_refs(x, out));
+        }
+        Lam(_, body, _) => collect_expr_refs(body, out),
+        Int(..) | Float(..) | Str(..) | Con(..) => {}
+    }
 }
 
 /// The stages that turn a freshly-parsed module into the one the checker sees:
