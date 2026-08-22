@@ -1267,7 +1267,7 @@ impl<'a> Parser<'a> {
                         Some(LTok::Tok(Tok::VarId(_)))
                     ) =>
                 {
-                    self.pos += 3 // ` name `
+                    self.pos += 3; // ` name `
                 }
                 _ => break,
             }
