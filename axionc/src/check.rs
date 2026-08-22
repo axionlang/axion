@@ -1462,12 +1462,21 @@ fn check_contraction(
                     }
                 }
                 // a plain `let name = rhs` (no params) whose RHS is a heap value:
-                // `name` aliases/owns it, so a double consume double-frees.
+                // `name` aliases/owns it, so a double consume double-frees. Count
+                // consumes across the SIBLING bindings' RHS too, not just `body` —
+                // `let x = …; a = W x; b = W x` aliases `x` into two records there.
                 if let [c] = f.clauses.as_slice() {
                     if c.pats.is_empty() {
                         if let Body::Plain(rhs) = &c.body {
                             if rhs_is_heap(rhs, &heap, ctx, locals) {
-                                let n = analyze(body, &f.name, Mode::Consume, ctx).0;
+                                let mut n = analyze(body, &f.name, Mode::Consume, ctx).0;
+                                for g in binds {
+                                    if g.name != f.name {
+                                        for gc in &g.clauses {
+                                            n += analyze_clause(gc, &f.name, ctx).0;
+                                        }
+                                    }
+                                }
                                 if n > 1 {
                                     push_contraction(&f.name, rhs.span(), n, diags);
                                 }
@@ -2196,12 +2205,14 @@ fn binds_var(pats: &[Pat], x: &str) -> bool {
 }
 
 fn analyze_assigns(assigns: &[(String, Expr)], x: &str, ctx: &Ctx) -> Uses {
+    // a record constructor (like any constructor — see the `App`/`is_ctor` case)
+    // takes OWNERSHIP of every field: the value is deep-dropped with the record, so
+    // storing it CONSUMES it. Counting a `Many`-field store as a mere borrow let
+    // `B { f = x }; B { f = x }` alias a heap `x` into two owned records → native
+    // double-free.
     assigns
         .iter()
-        .map(|(fname, e)| {
-            let m = arg_mode(ctx.field_mults.get(fname));
-            analyze(e, x, m, ctx)
-        })
+        .map(|(_, e)| analyze(e, x, Mode::Consume, ctx))
         .fold((0, 0), add)
 }
 

@@ -1117,6 +1117,20 @@ fn records_construct_update_and_select() {
 }
 
 #[test]
+fn heap_alias_into_two_records_is_rejected_ax0001() {
+    // aliasing a heap value into two owned positions (`let x = …; a = W x; b = W x`)
+    // is a contraction — deep-dropping both would double-free. Rejected at compile
+    // time (AX0001), so native never runs it.
+    let out = axionc()
+        .args(["--check", &fixture("heap_alias_rejected.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0001"), "expected AX0001, output: {text}");
+}
+
+#[test]
 fn linear_record_used_twice_is_rejected_ax0001() {
     let out = axionc()
         .args(["--check", &fixture("record_use_twice.axi")])
