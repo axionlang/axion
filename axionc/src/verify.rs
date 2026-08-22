@@ -87,22 +87,78 @@ struct Val {
 
 type State = HashMap<String, Val>;
 
+/// Per-function alias summary: parameter indices whose INTERIOR the function's return
+/// holds a pointer into — a PURE interior alias (`grab w = inner w` → `{0}`). A whole-value
+/// passthrough (`append xs ys = … ret ys …`) is NOT recorded: it returns ownership, not a
+/// borrow, so the caller frees the result once. Consumed at call sites to make a call's
+/// result inherit the aliasing of its arguments — the INTERPROCEDURAL alias-escape (`grab`)
+/// the per-function analysis can't see alone.
+type Summaries = HashMap<String, HashSet<usize>>;
+
+fn is_generated(name: &str) -> bool {
+    name.starts_with("axion_drop_")
+}
+
 /// Verify every function of a lowered module; returns all findings (corruption + leak).
 pub fn verify(lowered: &Lowered) -> Vec<Finding> {
+    let summaries = compute_summaries(lowered);
     let mut out = Vec::new();
     for f in &lowered.fns {
-        // generated destructors (`axion_drop_*`) manage memory BY HAND (raw `LoadRaw` +
-        // explicit `free`/`axion_drop` calls) — they are not produced by Auto-Drop and do
-        // not follow the linear-resource discipline, so the verifier does not judge them.
-        if f.name.starts_with("axion_drop_") {
+        if is_generated(&f.name) {
             continue;
         }
-        verify_fn(f, &lowered.borrow_args, &lowered.recinfo, &mut out);
+        run_fn(f, &lowered.borrow_args, &lowered.recinfo, &summaries, Some(&mut out));
     }
     out
 }
 
-fn verify_fn(f: &CoreFn, ba: &BorrowArgs, recinfo: &RecordInfo, out: &mut Vec<Finding>) {
+/// Fixpoint over the call graph: a function returns a PURE interior alias of param `i` when
+/// its `ret` is an interior pointer (`owned == false`) that borrows `i` — which may flow
+/// through a call to another alias-returning function, so it iterates to a fixed point
+/// (findings suppressed during this dry run).
+fn compute_summaries(lowered: &Lowered) -> Summaries {
+    let mut sums: Summaries = HashMap::new();
+    loop {
+        let mut changed = false;
+        for f in &lowered.fns {
+            if is_generated(&f.name) {
+                continue;
+            }
+            let rv = run_fn(f, &lowered.borrow_args, &lowered.recinfo, &sums, None);
+            // only a PURE interior alias (not owned) exposes an outliving borrow; an owned
+            // result (fresh allocation OR whole-value ownership passthrough) is the caller's
+            // to free once, so it records no aliased parameter.
+            let params: HashSet<usize> = if rv.owned {
+                HashSet::new()
+            } else {
+                f.params
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| rv.borrows.contains(p.as_str()))
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            if sums.get(&f.name) != Some(&params) {
+                sums.insert(f.name.clone(), params);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    sums
+}
+
+/// Verify one function against the summaries; returns the resource classification of its
+/// return value. `out = None` runs it silently (for summary computation).
+fn run_fn(
+    f: &CoreFn,
+    ba: &BorrowArgs,
+    recinfo: &RecordInfo,
+    summaries: &Summaries,
+    out: Option<&mut Vec<Finding>>,
+) -> Val {
     let mut st = State::new();
     let mut owned: HashSet<&String> = f.owned_params.iter().collect();
     // a param DROPPED anywhere in the body is owned by this function (dropping proves
@@ -116,14 +172,25 @@ fn verify_fn(f: &CoreFn, ba: &BorrowArgs, recinfo: &RecordInfo, out: &mut Vec<Fi
     }
     let borrowed = ba.get(&f.name);
     for (i, p) in f.params.iter().enumerate() {
-        // an owned heap param is a live resource; a borrow-arg param and scalars are the
-        // caller's to free — untracked (using them is fine, freeing them would be a bug).
         if owned.contains(p) && !borrowed.is_some_and(|s| s.contains(&i)) {
+            // an owned heap param is a live resource this fn must free.
             st.insert(p.clone(), Val { owned: true, ..Default::default() });
+        } else {
+            // a borrowed/scalar param: present (so a `Field` read of it is tracked as an
+            // interior alias — needed to detect `grab`-style return-of-a-field), owning and
+            // borrowing nothing, so using it is always fine.
+            st.insert(p.clone(), Val::default());
         }
     }
-    let mut v = Verifier { f: &f.name, ba, recinfo, out };
-    v.term(&f.body, &mut st);
+    let mut sink = Vec::new();
+    let mut v = Verifier {
+        f: &f.name,
+        ba,
+        recinfo,
+        summaries,
+        out: out.unwrap_or(&mut sink),
+    };
+    v.term(&f.body, &mut st)
 }
 
 /// Every variable named by a `Drop` node anywhere in the term.
@@ -160,6 +227,7 @@ struct Verifier<'a> {
     f: &'a str,
     ba: &'a BorrowArgs,
     recinfo: &'a RecordInfo,
+    summaries: &'a Summaries,
     out: &'a mut Vec<Finding>,
 }
 
@@ -197,7 +265,7 @@ impl Verifier<'_> {
             Rhs::Op(op) => self.bind_op(x, op, sp, st),
             Rhs::If(c, th, el) => {
                 self.use_atom(c, sp, st);
-                let val = self.branches(&[th, el], sp, st);
+                let val = self.branches(&[th.as_ref(), el.as_ref()], sp, st);
                 if val.owned || !val.borrows.is_empty() {
                     st.insert(x.to_string(), val); // a resource only if the branches yield one
                 }
@@ -224,11 +292,11 @@ impl Verifier<'_> {
         }
         let val = self.classify(op, st);
         if let Some(Atom::Var(src)) = e.alias {
-            self.kill(src, Cat::UseAfterFree, st);
+            Self::kill(src, Cat::UseAfterFree, st);
         }
         for a in &e.moves {
             if let Atom::Var(v) = a {
-                self.kill(v, Cat::UseAfterFree, st);
+                Self::kill(v, Cat::UseAfterFree, st);
             }
         }
         if val.owned || !val.borrows.is_empty() {
@@ -242,6 +310,21 @@ impl Verifier<'_> {
     /// field projection borrows its operand; everything else (a scalar `Prim`, a call
     /// returning an immediate/enum) is untracked.
     fn classify(&self, op: &Op, st: &State) -> Val {
+        // a call to a function whose SUMMARY says its return is a pure interior alias of
+        // some parameters: the result borrows those arguments' interiors (the `grab` class).
+        if let Op::CallDirect(g, args, _) = op {
+            if let Some(params) = self.summaries.get(g).filter(|p| !p.is_empty()) {
+                let borrows: HashSet<String> = params
+                    .iter()
+                    .filter_map(|&i| args.get(i))
+                    .filter_map(|a| match a {
+                        Atom::Var(v) => Some(v.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                return Val { owned: false, borrows, dead: None };
+            }
+        }
         let e = op_delta_effect(op, self.ba);
         if let Some(Atom::Var(src)) = e.alias {
             return st.get(src).cloned().unwrap_or_default();
@@ -305,12 +388,12 @@ impl Verifier<'_> {
                 }
                 let ret_val = self.classify(op, st);
                 if let Some(Atom::Var(src)) = e.alias {
-                    self.kill(src, Cat::UseAfterFree, st);
+                    Self::kill(src, Cat::UseAfterFree, st);
                 }
                 // returned resource escapes → mark moved so it isn't reported as a leak.
                 for a in &e.moves {
                     if let Atom::Var(v) = a {
-                        self.kill(v, Cat::UseAfterFree, st);
+                        Self::kill(v, Cat::UseAfterFree, st);
                     }
                 }
                 self.leak_check(sp, st);
@@ -318,7 +401,7 @@ impl Verifier<'_> {
             }
             Rhs::If(c, th, el) => {
                 self.use_atom(c, sp, st);
-                self.branches(&[th, el], sp, st)
+                self.branches(&[th.as_ref(), el.as_ref()], sp, st)
             }
             Rhs::Case(scrut, arms) => self.case(scrut, arms, sp, st),
         }
@@ -327,7 +410,7 @@ impl Verifier<'_> {
     /// Verify each branch on a clone of `st`, reconcile the live-owned sets at the join
     /// (leaving the merged state in `st`), and return the MERGED classification of the value
     /// the branches yield — owned/alias only if a branch actually returns a resource.
-    fn branches(&mut self, arms: &[&Box<Term>], sp: Span, st: &mut State) -> Val {
+    fn branches(&mut self, arms: &[&Term], sp: Span, st: &mut State) -> Val {
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
         let mut rets: Vec<Val> = Vec::new();
@@ -446,9 +529,12 @@ impl Verifier<'_> {
         }
     }
 
-    fn kill(&mut self, v: &str, cat: Cat, st: &mut State) {
+    /// Mark `v` moved-out/consumed. Only an OWNED resource dies on a move — a scalar is
+    /// COPIED and an interior alias is a shared pointer (copying it is fine; its target
+    /// still governs its validity), so neither is killed.
+    fn kill(v: &str, cat: Cat, st: &mut State) {
         if let Some(val) = st.get_mut(v) {
-            if val.dead.is_none() {
+            if val.owned && val.dead.is_none() {
                 val.dead = Some(cat);
             }
         }

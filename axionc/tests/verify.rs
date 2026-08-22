@@ -32,6 +32,11 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             if path.file_name().unwrap() == "recover_partial.axi" {
                 continue;
             }
+            // known-bad by design: an interprocedural field-alias return (`grab w = inner w`)
+            // that the verifier is SUPPOSED to flag — asserted separately below.
+            if path.file_name().unwrap() == "field_alias_return.axi" {
+                continue;
+            }
             let out = axionc()
                 .args(["--emit", "verify", path.to_str().unwrap()])
                 .output()
@@ -65,5 +70,41 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
          (false positives, or a real regression):\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The interprocedural class the summaries exist for: `grab w = inner w` returns a heap
+/// alias of a borrowed param, which the caller then frees (double free at runtime). The
+/// per-function analysis can't see it — the call SUMMARIES must. Assert the verifier flags
+/// it (`--emit verify` reports a corruption finding) AND the default-on gate refuses to
+/// compile it to native code (`--release` exits non-zero with AX0910). Without this test the
+/// summaries could silently regress and the last undefended UAF would reopen.
+#[test]
+fn verifier_flags_interprocedural_field_alias_return() {
+    let path = format!(
+        "{}/tests/fixtures/field_alias_return.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+
+    let verify = axionc()
+        .args(["--emit", "verify", &path])
+        .output()
+        .unwrap();
+    let vstdout = String::from_utf8_lossy(&verify.stdout);
+    assert!(
+        vstdout.contains("FAIL:") && vstdout.contains("Alias"),
+        "verifier should flag the interprocedural field-alias return as a DropOfAlias, got:\n{vstdout}"
+    );
+
+    let gate = axionc().args(["--release", &path]).output().unwrap();
+    assert!(
+        !gate.status.success(),
+        "the default-on gate must refuse to compile the field-alias return to native code"
+    );
+    let gstderr = String::from_utf8_lossy(&gate.stderr);
+    let gstdout = String::from_utf8_lossy(&gate.stdout);
+    assert!(
+        gstderr.contains("AX0910") || gstdout.contains("AX0910"),
+        "the gate should abort with AX0910, got stderr:\n{gstderr}\nstdout:\n{gstdout}"
     );
 }
