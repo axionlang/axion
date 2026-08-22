@@ -89,6 +89,9 @@ pub enum SyntaxKind {
     // it can name a function in a `(<+>) x y = …` definition head. Appended last to keep
     // the `repr(u16)` discriminants (and the `KINDS` table) stable.
     OPER,
+    // a fixity declaration node (`infixl 6 <+>`) — structurally represented but dropped by
+    // `lower_module` (fixities are pre-scanned into the fixity table). Appended last.
+    FIXITY_DECL,
 }
 
 use SyntaxKind::{
@@ -97,7 +100,7 @@ use SyntaxKind::{
     FUN_CLAUSE, GUARD, IMPORT_DECL, INSTANCE_DECL, LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL,
     LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, PAREN_EXPR, PUNCT,
     RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON,
-    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT, OPER,
+    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT, OPER, FIXITY_DECL,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -169,6 +172,7 @@ impl Language for AxionLang {
             IMPORT_DECL,
             MODULE_HEADER,
             OPER,
+            FIXITY_DECL,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -626,6 +630,9 @@ struct ExprParser<'a> {
     cursor: usize,
     b: GreenNodeBuilder<'static>,
     ok: bool,
+    /// Module-wide operator fixities (from `infix*` declarations), pre-scanned — shared
+    /// with the recursive-descent parser via [`crate::parser::op_fixity`].
+    fixities: crate::parser::FixityTable,
 }
 
 impl ExprParser<'_> {
@@ -835,7 +842,7 @@ impl ExprParser<'_> {
     /// `f $ x` (right-assoc, lowest precedence).
     fn dollar(&mut self) {
         let cp = self.b.checkpoint();
-        self.cmp();
+        self.ops(0);
         if matches!(self.cur(), Some(Tok::Dollar)) {
             self.b.start_node_at(cp, BINOP_EXPR.into());
             self.bump();
@@ -844,93 +851,93 @@ impl ExprParser<'_> {
         }
     }
 
-    fn cmp(&mut self) {
+    /// The whole binary-operator layer, resolved by precedence climbing over
+    /// [`crate::parser::op_fixity`] — the same table the recursive-descent parser uses, so
+    /// the two stay byte-exact. Application is the tightest primary; `$` is handled by
+    /// `dollar`. Built-in operators keep the historical ladder; user operators use the
+    /// module's `infix*` declarations. Left/right associativity falls out of the
+    /// checkpoint-at-start plus `next_min` recursion.
+    fn ops(&mut self, min_prec: u8) {
         let cp = self.b.checkpoint();
-        self.cons();
-        while matches!(
-            self.cur(),
-            Some(Tok::EqEq | Tok::Lt | Tok::Gt | Tok::EqEqDot | Tok::LtDot | Tok::GtDot)
-        ) {
+        self.app();
+        while let Some((name, width)) = self.peek_infix_op() {
+            let (prec, assoc) = crate::parser::op_fixity(&name, &self.fixities);
+            if prec < min_prec {
+                break;
+            }
             self.b.start_node_at(cp, BINOP_EXPR.into());
-            self.bump();
-            self.cons();
+            for _ in 0..width {
+                self.bump(); // the operator (a symbolic token, or ` name ` = 3 tokens)
+            }
+            let next_min = if assoc == crate::parser::Assoc::Right {
+                prec
+            } else {
+                prec + 1
+            };
+            self.ops(next_min);
             self.b.finish_node();
         }
     }
 
-    /// `x : xs` and `xs ++ ys` (right-assoc).
-    fn cons(&mut self) {
-        let cp = self.b.checkpoint();
-        self.add();
-        if matches!(self.cur(), Some(Tok::Colon | Tok::PlusPlus)) {
-            self.b.start_node_at(cp, BINOP_EXPR.into());
-            self.bump();
-            self.cons();
-            self.b.finish_node();
-        }
+    /// The infix operator at the cursor and its token width (`` ` name ` `` = 3), without
+    /// consuming. Mirrors `parser::peek_infix_op`; `$` is excluded (handled by `dollar`).
+    fn peek_infix_op(&self) -> Option<(String, usize)> {
+        let name = match self.cur()? {
+            Tok::Dot => ".",
+            Tok::Star => "*",
+            Tok::StarDot => "*.",
+            Tok::SlashDot => "/.",
+            Tok::Plus => "+",
+            Tok::Minus => "-",
+            Tok::PlusDot => "+.",
+            Tok::MinusDot => "-.",
+            Tok::Colon => ":",
+            Tok::PlusPlus => "++",
+            Tok::EqEq => "==",
+            Tok::Lt => "<",
+            Tok::Gt => ">",
+            Tok::EqEqDot => "==.",
+            Tok::LtDot => "<.",
+            Tok::GtDot => ">.",
+            Tok::Op(s) => return Some((s.clone(), 1)),
+            Tok::Backtick => {
+                return match self.peek_tok(1) {
+                    Some(Tok::VarId(n)) => Some((n.clone(), 3)),
+                    _ => None,
+                };
+            }
+            _ => return None,
+        };
+        Some((name.to_string(), 1))
     }
 
-    fn add(&mut self) {
-        let cp = self.b.checkpoint();
-        self.mul();
-        while matches!(
-            self.cur(),
-            Some(Tok::Plus | Tok::Minus | Tok::PlusDot | Tok::MinusDot)
-        ) {
-            self.b.start_node_at(cp, BINOP_EXPR.into());
-            self.bump();
-            self.mul();
-            self.b.finish_node();
-        }
-    }
-
-    fn mul(&mut self) {
-        let cp = self.b.checkpoint();
-        self.compose();
+    /// Consume a fixity declaration `infix[l|r] <prec> <op>[, <op>]*` into a `FIXITY_DECL`
+    /// node (dropped by `lower_module`; the table is pre-scanned).
+    fn fixity_decl(&mut self) {
+        self.b.start_node(FIXITY_DECL.into());
+        self.bump(); // infixl / infixr / infix
+        self.bump(); // precedence integer
         loop {
-            if matches!(self.cur(), Some(Tok::Star | Tok::StarDot | Tok::SlashDot)) {
-                self.b.start_node_at(cp, BINOP_EXPR.into());
-                self.bump();
-                self.compose();
-                self.b.finish_node();
-            } else if matches!(self.cur(), Some(Tok::Backtick)) {
-                self.b.start_node_at(cp, BINOP_EXPR.into());
-                self.bump(); // `
-                if matches!(self.cur(), Some(Tok::VarId(_))) {
-                    self.bump(); // operator name
-                } else {
-                    self.ok = false;
-                }
-                if matches!(self.cur(), Some(Tok::Backtick)) {
+            match self.cur() {
+                Some(Tok::Op(_)) => self.bump(),
+                Some(Tok::Backtick) if matches!(self.peek_tok(1), Some(Tok::VarId(_))) => {
                     self.bump(); // `
-                } else {
-                    self.ok = false;
+                    self.bump(); // name
+                    if matches!(self.cur(), Some(Tok::Backtick)) {
+                        self.bump(); // `
+                    } else {
+                        self.ok = false;
+                    }
                 }
-                self.compose();
-                self.b.finish_node();
-            } else if matches!(self.cur(), Some(Tok::Op(_))) {
-                // user-defined symbolic operator `a <+> b`; same precedence as the
-                // backtick-infix above (mirrors `parser::parse_mul`).
-                self.b.start_node_at(cp, BINOP_EXPR.into());
-                self.bump(); // the operator token
-                self.compose();
-                self.b.finish_node();
+                _ => break,
+            }
+            if matches!(self.cur(), Some(Tok::Comma)) {
+                self.bump();
             } else {
                 break;
             }
         }
-    }
-
-    /// `f . g` → `compose f g` (right-assoc).
-    fn compose(&mut self) {
-        let cp = self.b.checkpoint();
-        self.app();
-        if matches!(self.cur(), Some(Tok::Dot)) {
-            self.b.start_node_at(cp, BINOP_EXPR.into());
-            self.bump();
-            self.compose();
-            self.b.finish_node();
-        }
+        self.b.finish_node();
     }
 
     fn app(&mut self) {
@@ -1172,6 +1179,13 @@ impl ExprParser<'_> {
             Some(Tok::Module) => return self.module_header(),
             Some(Tok::Import) => return self.import_decl(),
             _ => {}
+        }
+        // fixity declaration `infixl 6 <+>` — a keyword-like VarId then an integer prec
+        // (guards against a user function actually named `infixl`).
+        if matches!(self.cur(), Some(Tok::VarId(kw)) if matches!(kw.as_str(), "infixl" | "infixr" | "infix"))
+            && matches!(self.peek_tok(1), Some(Tok::Int(IntLit::Small(_))))
+        {
+            return self.fixity_decl();
         }
         let cp = self.b.checkpoint();
         if matches!(self.cur(), Some(Tok::VarId(_))) {
@@ -1550,6 +1564,7 @@ fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
         cursor: 0,
         b: GreenNodeBuilder::new(),
         ok: true,
+        fixities: crate::parser::scan_fixities(&toks),
     };
     p.b.start_node(MODULE.into());
     p.eat_v(&LTok::VLBrace); // outer module block
@@ -2424,6 +2439,7 @@ fn parse_module_cst(src: &str) -> (SyntaxNode, bool) {
         cursor: 0,
         b: GreenNodeBuilder::new(),
         ok: true,
+        fixities: crate::parser::scan_fixities(&toks),
     };
     p.b.start_node(MODULE.into());
     p.block(ExprParser::top_decl);

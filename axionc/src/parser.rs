@@ -12,13 +12,108 @@ use crate::ast::{
 };
 use crate::diag::Diagnostic;
 use crate::layout::{LSpanned, LTok};
-use crate::lexer::Tok;
+use crate::lexer::{IntLit, Tok};
+use std::collections::HashMap;
+
+/// Operator associativity for infix resolution (`infixl`/`infixr`/`infix`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Assoc {
+    Left,
+    Right,
+    /// `infix N` — non-associative; treated left-grouping here (no chaining error yet).
+    Non,
+}
+
+/// A module's user-declared operator fixities: operator/backtick-name → (precedence 0–9,
+/// associativity). Built-in operators are NOT stored here (they are fixed in [`op_fixity`]).
+pub type FixityTable = HashMap<String, (u8, Assoc)>;
+
+/// The (precedence, associativity) of a binary operator, driving the precedence-climbing
+/// expression parser shared by both front ends. Built-in operators keep the historical
+/// ladder (`.`=9r, `*`=7l, `+`=6l, `:`/`++`=5r, comparisons=4l); a user operator or
+/// backtick function uses the module's `infix*` declarations, defaulting to `infixl 9`
+/// for a symbolic operator and `infixl 7` for an (undeclared) backtick name — the level
+/// backtick infix has always had, so existing code is unaffected. `$` (0r) is parsed
+/// separately (its rhs is a full expression, so `f $ \x -> …` works).
+pub fn op_fixity(op: &str, user: &FixityTable) -> (u8, Assoc) {
+    match op {
+        "." => (9, Assoc::Right),
+        "*" | "*." | "/." => (7, Assoc::Left),
+        "+" | "-" | "+." | "-." => (6, Assoc::Left),
+        ":" | "++" => (5, Assoc::Right),
+        "==" | "<" | ">" | "==." | "<." | ">." => (4, Assoc::Left),
+        _ => user.get(op).copied().unwrap_or_else(|| {
+            let symbolic = op.chars().next().is_some_and(|c| !c.is_alphabetic() && c != '_');
+            if symbolic {
+                (9, Assoc::Left)
+            } else {
+                (7, Assoc::Left)
+            }
+        }),
+    }
+}
+
+/// Pre-scan the laid-out token stream for `infixl`/`infixr`/`infix N op[, op…]`
+/// declarations, building the module's fixity table. A pre-scan (rather than
+/// threading state through the parse) mirrors Haskell: a fixity declaration applies
+/// module-wide regardless of where it appears relative to the operator's uses.
+pub fn scan_fixities(toks: &[LSpanned]) -> FixityTable {
+    let mut table = FixityTable::new();
+    let mut i = 0;
+    while i < toks.len() {
+        let assoc = match &toks[i].tok {
+            LTok::Tok(Tok::VarId(kw)) => match kw.as_str() {
+                "infixl" => Some(Assoc::Left),
+                "infixr" => Some(Assoc::Right),
+                "infix" => Some(Assoc::Non),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(assoc) = assoc else {
+            i += 1;
+            continue;
+        };
+        let Some(LTok::Tok(Tok::Int(IntLit::Small(p)))) = toks.get(i + 1).map(|s| &s.tok) else {
+            i += 1;
+            continue;
+        };
+        let prec = (*p).clamp(0, 9) as u8;
+        let mut j = i + 2;
+        loop {
+            match toks.get(j).map(|s| &s.tok) {
+                Some(LTok::Tok(Tok::Op(o))) => {
+                    table.insert(o.clone(), (prec, assoc));
+                    j += 1;
+                }
+                Some(LTok::Tok(Tok::Backtick)) => {
+                    if let Some(LTok::Tok(Tok::VarId(n))) = toks.get(j + 1).map(|s| &s.tok) {
+                        table.insert(n.clone(), (prec, assoc));
+                        j += 3; // ` name `
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+            if matches!(toks.get(j).map(|s| &s.tok), Some(LTok::Tok(Tok::Comma))) {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        i = j;
+    }
+    table
+}
 
 pub struct Parser<'a> {
     toks: &'a [LSpanned],
     pos: usize,
     /// Errors recovered at declaration boundaries (resilient parse only).
     errors: Vec<Diagnostic>,
+    /// Module-wide operator fixities (from `infix*` declarations), pre-scanned.
+    fixities: FixityTable,
 }
 
 type PResult<T> = Result<T, Diagnostic>;
@@ -52,6 +147,7 @@ pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
         toks,
         pos: 0,
         errors: Vec::new(),
+        fixities: scan_fixities(toks),
     };
     let items = p.block(Parser::top_item)?;
     Ok(build_module(items))
@@ -66,6 +162,7 @@ pub fn parse_module_resilient(toks: &[LSpanned]) -> (Module, Vec<Diagnostic>) {
         toks,
         pos: 0,
         errors: Vec::new(),
+        fixities: scan_fixities(toks),
     };
     let items = p.block_recover(Parser::top_item);
     let errors = std::mem::take(&mut p.errors);
@@ -81,6 +178,9 @@ enum TopItem {
     Foreign(Foreign),
     Class(ClassDecl),
     Instance(InstanceDecl),
+    /// A fixity declaration (`infixl 6 <+>`) — consumed so it isn't mis-parsed as a
+    /// function; the actual table is built by the [`scan_fixities`] pre-scan.
+    Fixity,
 }
 
 #[derive(Default)]
@@ -99,7 +199,7 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for it in items {
         match it {
-            TopItem::ModuleName(_) | TopItem::Import(_) => {} // collected in parse_module
+            TopItem::ModuleName(_) | TopItem::Import(_) | TopItem::Fixity => {} // collected/ignored
             TopItem::Foreign(f) => asm.foreigns.push(f),
             TopItem::Data(d) => asm.datas.push(d),
             TopItem::Class(c) => asm.classes.push(c),
@@ -364,6 +464,21 @@ impl<'a> Parser<'a> {
                 lib,
                 span: (start, end),
             }));
+        }
+        // fixity declaration: `infixl 6 <+>` / `infixr 5 <>, <|>`. Recognized by a
+        // keyword-like leading `VarId` immediately followed by an integer precedence (so a
+        // user function named `infixl` is not shadowed). Consumed and ignored — the table
+        // was already built by the `scan_fixities` pre-scan.
+        if let Some(LTok::Tok(Tok::VarId(kw))) = self.cur() {
+            if matches!(kw.as_str(), "infixl" | "infixr" | "infix")
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|t| &t.tok),
+                    Some(LTok::Tok(Tok::Int(IntLit::Small(_))))
+                )
+            {
+                self.parse_fixity_decl();
+                return Ok(TopItem::Fixity);
+            }
         }
         // a parenthesized operator names a function: `(<+>) :: …` / `(<+>) x y = …`.
         let (name, start) = match self.paren_op_name() {
@@ -852,7 +967,7 @@ impl<'a> Parser<'a> {
 
     /// `f $ x` = `f x` — low-precedence application, right-associative.
     fn parse_dollar(&mut self) -> PResult<Expr> {
-        let lhs = self.parse_cmp()?;
+        let lhs = self.parse_ops(0)?;
         if self.at(&Tok::Dollar) {
             self.bump();
             let rhs = self.parse_expr()?;
@@ -957,125 +1072,60 @@ impl<'a> Parser<'a> {
         Ok(Expr::Case(Box::new(scrut), arms, (s, end)))
     }
 
-    fn parse_cmp(&mut self) -> PResult<Expr> {
-        let mut lhs = self.parse_cons()?;
-        while let Some(op) = self.cmp_op() {
-            let rhs = self.parse_cons()?;
-            let sp = (lhs.span().0, rhs.span().1);
-            lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
-        }
-        Ok(lhs)
-    }
-
-    /// Cons `x : xs` and concatenation `xs ++ ys` (both infixr 5, between `==` and
-    /// `+`) → `Cons x xs` / `BinOp "++"`. `++` is polymorphic: lists (append) and
-    /// strings (concat) — ver `interp`/`core`.
-    fn parse_cons(&mut self) -> PResult<Expr> {
-        let lhs = self.parse_add()?;
-        if self.at(&Tok::Colon) {
-            self.pos += 1;
-            let rhs = self.parse_cons()?; // right-associative
-            let sp = (lhs.span().0, rhs.span().1);
-            Ok(cons_expr(lhs, rhs, sp))
-        } else if self.at(&Tok::PlusPlus) {
-            self.pos += 1;
-            let rhs = self.parse_cons()?; // right-associative
-            let sp = (lhs.span().0, rhs.span().1);
-            Ok(Expr::BinOp(
-                "++".to_string(),
-                Box::new(lhs),
-                Box::new(rhs),
-                sp,
-            ))
-        } else {
-            Ok(lhs)
-        }
-    }
-
-    fn cmp_op(&mut self) -> Option<String> {
-        let op = match self.cur() {
-            Some(LTok::Tok(Tok::EqEq)) => "==",
-            Some(LTok::Tok(Tok::Lt)) => "<",
-            Some(LTok::Tok(Tok::Gt)) => ">",
-            Some(LTok::Tok(Tok::EqEqDot)) => "==.",
-            Some(LTok::Tok(Tok::LtDot)) => "<.",
-            Some(LTok::Tok(Tok::GtDot)) => ">.",
-            _ => return None,
-        };
-        self.pos += 1;
-        Some(op.to_string())
-    }
-
-    fn parse_add(&mut self) -> PResult<Expr> {
-        let mut lhs = self.parse_mul()?;
-        loop {
-            let op = if self.at(&Tok::Plus) {
-                "+"
-            } else if self.at(&Tok::Minus) {
-                "-"
-            } else if self.at(&Tok::PlusDot) {
-                "+."
-            } else if self.at(&Tok::MinusDot) {
-                "-."
-            } else {
-                break;
-            };
-            self.pos += 1;
-            let rhs = self.parse_mul()?;
-            let sp = (lhs.span().0, rhs.span().1);
-            lhs = Expr::BinOp(op.to_string(), Box::new(lhs), Box::new(rhs), sp);
-        }
-        Ok(lhs)
-    }
-
-    fn parse_mul(&mut self) -> PResult<Expr> {
-        let mut lhs = self.parse_compose()?;
-        loop {
-            if self.at(&Tok::Star) {
-                self.pos += 1;
-                let rhs = self.parse_compose()?;
-                let sp = (lhs.span().0, rhs.span().1);
-                lhs = Expr::BinOp("*".to_string(), Box::new(lhs), Box::new(rhs), sp);
-            } else if self.at(&Tok::StarDot) || self.at(&Tok::SlashDot) {
-                let op = if self.at(&Tok::StarDot) { "*." } else { "/." };
-                self.pos += 1;
-                let rhs = self.parse_compose()?;
-                let sp = (lhs.span().0, rhs.span().1);
-                lhs = Expr::BinOp(op.to_string(), Box::new(lhs), Box::new(rhs), sp);
-            } else if self.at_v(&LTok::Tok(Tok::Backtick)) {
-                self.pos += 1;
-                let (op, _) = self.var_name("infix operator")?;
-                self.expect(&Tok::Backtick, "closing '`'")?;
-                let rhs = self.parse_compose()?;
-                let sp = (lhs.span().0, rhs.span().1);
-                lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
-            } else if let Some(LTok::Tok(Tok::Op(op))) = self.cur() {
-                // user-defined symbolic operator `a <+> b` ≡ `(<+>) a b`; lowered
-                // like a backtick-infix call. Fixed precedence (this level, left-assoc).
-                let op = op.clone();
-                self.pos += 1;
-                let rhs = self.parse_compose()?;
-                let sp = (lhs.span().0, rhs.span().1);
-                lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
-            } else {
+    /// The whole binary-operator layer (everything between `$` and application),
+    /// resolved by precedence climbing over [`op_fixity`] — built-in operators keep the
+    /// historical ladder and user operators use the module's `infix*` declarations. Cons
+    /// `:` and compose `.` desugar exactly as before; `++`/arithmetic/comparison stay
+    /// `BinOp`. Application is the tightest primary; `$` is handled above (in
+    /// `parse_dollar`) so its right-hand side can be a full expression.
+    fn parse_ops(&mut self, min_prec: u8) -> PResult<Expr> {
+        let mut lhs = self.parse_app()?;
+        while let Some((op, width)) = self.peek_infix_op() {
+            let (prec, assoc) = op_fixity(&op, &self.fixities);
+            if prec < min_prec {
                 break;
             }
+            self.pos += width;
+            let next_min = if assoc == Assoc::Right { prec } else { prec + 1 };
+            let rhs = self.parse_ops(next_min)?;
+            let sp = (lhs.span().0, rhs.span().1);
+            lhs = make_binop(op, lhs, rhs, sp);
         }
         Ok(lhs)
     }
 
-    /// Function composition `f . g` (infixr, almost as tight as application)
-    /// → `compose f g`.
-    fn parse_compose(&mut self) -> PResult<Expr> {
-        let lhs = self.parse_app()?;
-        if self.at(&Tok::Dot) {
-            self.pos += 1;
-            let rhs = self.parse_compose()?; // right-associative
-            let sp = (lhs.span().0, rhs.span().1);
-            Ok(app2(Expr::Var("compose".to_string(), sp), lhs, rhs, sp))
-        } else {
-            Ok(lhs)
-        }
+    /// The infix operator at the cursor (built-in symbolic token, user `Op`, or a
+    /// `` `name` `` backtick function) and how many tokens it spans — without consuming.
+    /// `.`/`$` note: `$` is intentionally excluded (parsed in `parse_dollar`); `.` (Dot)
+    /// is the compose operator.
+    fn peek_infix_op(&self) -> Option<(String, usize)> {
+        let name = match self.cur()? {
+            LTok::Tok(Tok::Dot) => ".",
+            LTok::Tok(Tok::Star) => "*",
+            LTok::Tok(Tok::StarDot) => "*.",
+            LTok::Tok(Tok::SlashDot) => "/.",
+            LTok::Tok(Tok::Plus) => "+",
+            LTok::Tok(Tok::Minus) => "-",
+            LTok::Tok(Tok::PlusDot) => "+.",
+            LTok::Tok(Tok::MinusDot) => "-.",
+            LTok::Tok(Tok::Colon) => ":",
+            LTok::Tok(Tok::PlusPlus) => "++",
+            LTok::Tok(Tok::EqEq) => "==",
+            LTok::Tok(Tok::Lt) => "<",
+            LTok::Tok(Tok::Gt) => ">",
+            LTok::Tok(Tok::EqEqDot) => "==.",
+            LTok::Tok(Tok::LtDot) => "<.",
+            LTok::Tok(Tok::GtDot) => ">.",
+            LTok::Tok(Tok::Op(s)) => return Some((s.clone(), 1)),
+            LTok::Tok(Tok::Backtick) => {
+                return match self.toks.get(self.pos + 1).map(|t| &t.tok) {
+                    Some(LTok::Tok(Tok::VarId(n))) => Some((n.clone(), 3)), // ` name `
+                    _ => None,
+                };
+            }
+            _ => return None,
+        };
+        Some((name.to_string(), 1))
     }
 
     fn parse_app(&mut self) -> PResult<Expr> {
@@ -1192,6 +1242,32 @@ impl<'a> Parser<'a> {
             Some((op, start))
         } else {
             None
+        }
+    }
+
+    /// Consume a fixity declaration `infix[l|r] <prec> <op>[, <op>]*` (the operators are
+    /// `Op` tokens or `` `name` `` backtick names). The data was captured by the pre-scan,
+    /// so this only advances past the tokens; mirrors [`scan_fixities`]'s consumption.
+    fn parse_fixity_decl(&mut self) {
+        self.pos += 2; // keyword + precedence int
+        loop {
+            match self.toks.get(self.pos).map(|t| &t.tok) {
+                Some(LTok::Tok(Tok::Op(_))) => self.pos += 1,
+                Some(LTok::Tok(Tok::Backtick))
+                    if matches!(
+                        self.toks.get(self.pos + 1).map(|t| &t.tok),
+                        Some(LTok::Tok(Tok::VarId(_)))
+                    ) =>
+                {
+                    self.pos += 3 // ` name `
+                }
+                _ => break,
+            }
+            if matches!(self.cur(), Some(LTok::Tok(Tok::Comma))) {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
     }
 
@@ -1313,6 +1389,17 @@ fn app2(head: Expr, a: Expr, b: Expr, sp: Span) -> Expr {
 /// `x : xs` → `Cons x xs`.
 fn cons_expr(x: Expr, xs: Expr, sp: Span) -> Expr {
     app2(Expr::Con("Cons".to_string(), sp), x, xs, sp)
+}
+
+/// Combine an infix operator with its operands, applying the same desugars the fixed
+/// ladder used: `:` → `Cons`, `.` → `compose`, everything else (`++`, arithmetic,
+/// comparisons, user operators, backtick functions) → `BinOp`. `$` never reaches here.
+fn make_binop(op: String, l: Expr, r: Expr, sp: Span) -> Expr {
+    match op.as_str() {
+        ":" => cons_expr(l, r, sp),
+        "." => app2(Expr::Var("compose".to_string(), sp), l, r, sp),
+        _ => Expr::BinOp(op, Box::new(l), Box::new(r), sp),
+    }
 }
 
 fn parse_mult(s: &str) -> Mult {

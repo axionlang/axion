@@ -388,6 +388,30 @@ fn user_operator_runs_on_all_backends() {
 }
 
 #[test]
+fn operator_fixity_runs_on_all_backends() {
+    // `infixl 6 <+>` / `infixr 5 <>` declarations drive precedence + associativity in the
+    // shared precedence climber: `1 <> 2 <+> 3` groups as `1 <> (2 <+> 3)` and
+    // `10 <> 3 <> 2` as `10 <> (3 <> 2)` — result 5 (the default infixl-9 parse would give
+    // 7). All three backends agree.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("operator_fixity.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "operator_fixity should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn undefined_operator_is_rejected_ax0101() {
     // A symbolic operator with no definition is an unbound name — the scope check
     // reports AX0101 at compile time (not a runtime "name not found").
