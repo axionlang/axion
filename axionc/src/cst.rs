@@ -901,8 +901,11 @@ impl ExprParser<'_> {
             Tok::GtDot => ">.",
             Tok::Op(s) => return Some((s.clone(), 1)),
             Tok::Backtick => {
-                return match self.peek_tok(1) {
-                    Some(Tok::VarId(n)) => Some((n.clone(), 3)),
+                // ` name ` — require the CLOSING backtick; a missing close is malformed, so
+                // return `None` and leave the stray ` unconsumed (the old `mul()` flagged
+                // it via `ok = false`) rather than blindly bumping the operand as width-3.
+                return match (self.peek_tok(1), self.peek_tok(2)) {
+                    (Some(Tok::VarId(n)), Some(Tok::Backtick)) => Some((n.clone(), 3)),
                     _ => None,
                 };
             }

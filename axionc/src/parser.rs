@@ -1118,8 +1118,16 @@ impl<'a> Parser<'a> {
             LTok::Tok(Tok::GtDot) => ">.",
             LTok::Tok(Tok::Op(s)) => return Some((s.clone(), 1)),
             LTok::Tok(Tok::Backtick) => {
-                return match self.toks.get(self.pos + 1).map(|t| &t.tok) {
-                    Some(LTok::Tok(Tok::VarId(n))) => Some((n.clone(), 3)), // ` name `
+                // ` name ` — require the CLOSING backtick, else this is malformed: return
+                // `None` so the climber leaves the stray ` for the surrounding parser to
+                // flag (the fixed ladder used to set `ok`/error on a missing close).
+                return match (
+                    self.toks.get(self.pos + 1).map(|t| &t.tok),
+                    self.toks.get(self.pos + 2).map(|t| &t.tok),
+                ) {
+                    (Some(LTok::Tok(Tok::VarId(n))), Some(LTok::Tok(Tok::Backtick))) => {
+                        Some((n.clone(), 3))
+                    }
                     _ => None,
                 };
             }

@@ -388,6 +388,28 @@ fn user_operator_runs_on_all_backends() {
 }
 
 #[test]
+fn operator_with_dollar_runs_on_all_backends() {
+    // An operator may contain `$` (the `<$>` functor-map family), while a bare `$` still
+    // lexes as the application operator. `inc <$> (inc $ 40)` = inc (inc 40) = 42.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("operator_dollar.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "operator_dollar should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn operator_fixity_runs_on_all_backends() {
     // `infixl 6 <+>` / `infixr 5 <>` declarations drive precedence + associativity in the
     // shared precedence climber: `1 <> 2 <+> 3` groups as `1 <> (2 <+> 3)` and
