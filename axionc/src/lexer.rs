@@ -135,6 +135,13 @@ pub enum Tok {
     Lt,
     #[token(">")]
     Gt,
+    // user-defined symbolic operators (`<+>`, `>>>`, `|>`, `<>`, …): a run of
+    // operator chars that isn't one of the built-in tokens above. Logos gives the
+    // literal tokens higher priority, so `+`/`==`/`->`/… still win; a multi-char run
+    // with no matching token becomes an `Op`. (`--…` is a comment, so operators may
+    // not start with `--`.) Lowered like a backtick-infix call: `a <+> b` ≡ `(<+>) a b`.
+    #[regex(r"[<>=+\-*/&|!?^~]+", |lex| lex.slice().to_string(), priority = 1)]
+    Op(String),
 
     // literals (decimal and hexadecimal `0x…`; logos picks the longest
     // match, so `0x5A` matches the hex, not `0`). A `Float` needs a fractional

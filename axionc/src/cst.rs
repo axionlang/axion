@@ -85,6 +85,10 @@ pub enum SyntaxKind {
     FOREIGN_DECL,
     IMPORT_DECL,
     MODULE_HEADER,
+    // a user-defined symbolic operator token (`<+>`, `|>`, …) — distinct from PUNCT so
+    // it can name a function in a `(<+>) x y = …` definition head. Appended last to keep
+    // the `repr(u16)` discriminants (and the `KINDS` table) stable.
+    OPER,
 }
 
 use SyntaxKind::{
@@ -93,7 +97,7 @@ use SyntaxKind::{
     FUN_CLAUSE, GUARD, IMPORT_DECL, INSTANCE_DECL, LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL,
     LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, PAREN_EXPR, PUNCT,
     RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON,
-    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
+    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT, OPER,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -164,6 +168,7 @@ impl Language for AxionLang {
             FOREIGN_DECL,
             IMPORT_DECL,
             MODULE_HEADER,
+            OPER,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -181,6 +186,7 @@ fn token_kind(t: &Tok) -> SyntaxKind {
     match t {
         Tok::VarId(_) => IDENT,
         Tok::ConId(_) => CONID,
+        Tok::Op(_) => OPER,
         Tok::Int(_) | Tok::Float(_) | Tok::Str(_) => LITERAL,
         Tok::Where
         | Tok::Let
@@ -902,6 +908,13 @@ impl ExprParser<'_> {
                 }
                 self.compose();
                 self.b.finish_node();
+            } else if matches!(self.cur(), Some(Tok::Op(_))) {
+                // user-defined symbolic operator `a <+> b`; same precedence as the
+                // backtick-infix above (mirrors `parser::parse_mul`).
+                self.b.start_node_at(cp, BINOP_EXPR.into());
+                self.bump(); // the operator token
+                self.compose();
+                self.b.finish_node();
             } else {
                 break;
             }
@@ -984,7 +997,7 @@ impl ExprParser<'_> {
     fn section_op(&self) -> bool {
         let is_op = matches!(
             self.cur(),
-            Some(Tok::Plus | Tok::Minus | Tok::Star | Tok::EqEq | Tok::Lt | Tok::Gt)
+            Some(Tok::Plus | Tok::Minus | Tok::Star | Tok::EqEq | Tok::Lt | Tok::Gt | Tok::Op(_))
         );
         is_op && matches!(self.peek_tok(1), Some(Tok::RParen))
     }
@@ -1163,6 +1176,14 @@ impl ExprParser<'_> {
         let cp = self.b.checkpoint();
         if matches!(self.cur(), Some(Tok::VarId(_))) {
             self.bump(); // name
+        } else if matches!(self.cur(), Some(Tok::LParen))
+            && matches!(self.peek_tok(1), Some(Tok::Op(_)))
+            && matches!(self.peek_tok(2), Some(Tok::RParen))
+        {
+            // a parenthesized operator names the function: `(<+>) x y = …`
+            self.bump(); // (
+            self.bump(); // operator
+            self.bump(); // )
         } else {
             self.ok = false;
             return;
@@ -2092,7 +2113,7 @@ fn lower_sig(node: &SyntaxNode) -> Option<SigParts> {
     let name = node
         .children_with_tokens()
         .filter_map(|e| e.into_token())
-        .find(|t| t.kind() == IDENT)?
+        .find(|t| matches!(t.kind(), IDENT | OPER))?
         .text()
         .to_string();
     let constraints = node
@@ -2110,7 +2131,7 @@ fn lower_clause(node: &SyntaxNode) -> Option<(String, Clause)> {
     let name = node
         .children_with_tokens()
         .filter_map(|e| e.into_token())
-        .find(|t| t.kind() == IDENT)?
+        .find(|t| matches!(t.kind(), IDENT | OPER))?
         .text()
         .to_string();
     let mut pats = Vec::new();

@@ -365,7 +365,11 @@ impl<'a> Parser<'a> {
                 span: (start, end),
             }));
         }
-        let (name, start) = self.var_name("function name")?;
+        // a parenthesized operator names a function: `(<+>) :: …` / `(<+>) x y = …`.
+        let (name, start) = match self.paren_op_name() {
+            Some(nm) => nm,
+            None => self.var_name("function name")?,
+        };
         if self.eat(&Tok::ColonColon) {
             let (constraints, ty) = self.parse_qualified_type()?;
             Ok(TopItem::Sig(name, constraints, ty))
@@ -1045,6 +1049,14 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_compose()?;
                 let sp = (lhs.span().0, rhs.span().1);
                 lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
+            } else if let Some(LTok::Tok(Tok::Op(op))) = self.cur() {
+                // user-defined symbolic operator `a <+> b` ≡ `(<+>) a b`; lowered
+                // like a backtick-infix call. Fixed precedence (this level, left-assoc).
+                let op = op.clone();
+                self.pos += 1;
+                let rhs = self.parse_compose()?;
+                let sp = (lhs.span().0, rhs.span().1);
+                lhs = Expr::BinOp(op, Box::new(lhs), Box::new(rhs), sp);
             } else {
                 break;
             }
@@ -1127,24 +1139,57 @@ impl<'a> Parser<'a> {
         Ok((name, value))
     }
 
+    /// The operator name if the token at `self.pos + off` is an operator — a
+    /// built-in symbolic token or a user-defined `Op` (`<+>`, `>>>`, …) — without
+    /// consuming anything. The single source of truth for "which tokens are operators".
+    fn peek_operator(&self, off: usize) -> Option<String> {
+        match self.toks.get(self.pos + off).map(|t| &t.tok) {
+            Some(LTok::Tok(Tok::Plus)) => Some("+".into()),
+            Some(LTok::Tok(Tok::Minus)) => Some("-".into()),
+            Some(LTok::Tok(Tok::Star)) => Some("*".into()),
+            Some(LTok::Tok(Tok::EqEq)) => Some("==".into()),
+            Some(LTok::Tok(Tok::Lt)) => Some("<".into()),
+            Some(LTok::Tok(Tok::Gt)) => Some(">".into()),
+            Some(LTok::Tok(Tok::Op(s))) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
     /// Recognizes an operator section `(op)` — if the current token is an
     /// operator followed by `)`, consumes both and returns the operator name.
     fn op_section(&mut self) -> Option<String> {
-        let op = match self.cur() {
-            Some(LTok::Tok(Tok::Plus)) => "+",
-            Some(LTok::Tok(Tok::Minus)) => "-",
-            Some(LTok::Tok(Tok::Star)) => "*",
-            Some(LTok::Tok(Tok::EqEq)) => "==",
-            Some(LTok::Tok(Tok::Lt)) => "<",
-            Some(LTok::Tok(Tok::Gt)) => ">",
-            _ => return None,
-        };
+        let op = self.peek_operator(0)?;
         if matches!(
             self.toks.get(self.pos + 1).map(|t| &t.tok),
             Some(LTok::Tok(Tok::RParen))
         ) {
             self.pos += 2; // op + ')'
-            Some(op.to_string())
+            Some(op)
+        } else {
+            None
+        }
+    }
+
+    /// A parenthesized operator used as a name — the head of an operator
+    /// definition or signature: `(<+>) :: …` / `(<+>) x y = …`. Consumes `( op )`.
+    fn paren_op_name(&mut self) -> Option<(String, usize)> {
+        let start = self.span_here().0;
+        if !self.at_v(&LTok::Tok(Tok::LParen)) {
+            return None;
+        }
+        // only USER operators name a definition (`(<+>) x y = …`); the built-in
+        // operators (`+`, `<`, …) are reserved, so they aren't accepted here (this
+        // mirrors the CST parser's `top_decl`, keeping the two parsers in lock-step).
+        let op = match self.toks.get(self.pos + 1).map(|t| &t.tok) {
+            Some(LTok::Tok(Tok::Op(s))) => s.clone(),
+            _ => return None,
+        };
+        if matches!(
+            self.toks.get(self.pos + 2).map(|t| &t.tok),
+            Some(LTok::Tok(Tok::RParen))
+        ) {
+            self.pos += 3; // '(' op ')'
+            Some((op, start))
         } else {
             None
         }

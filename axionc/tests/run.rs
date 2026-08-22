@@ -363,6 +363,44 @@ fn data_heap_field_runs_on_all_backends() {
 }
 
 #[test]
+fn user_operator_runs_on_all_backends() {
+    // A user-defined symbolic operator (`(<+>) a b = …`) used infix (`a <+> b`)
+    // lowers to a plain function call — like a backtick-infix — so all three backends
+    // handle it identically. Exercises an infix chain (left-assoc), a second custom
+    // operator (`|>`), and the operator as a first-class value (`applyOp (<+>) …`).
+    // `main` = 70.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("user_operator.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "user_operator should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "70\n", "{backend:?}");
+    }
+}
+
+#[test]
+fn undefined_operator_is_rejected_ax0101() {
+    // A symbolic operator with no definition is an unbound name — the scope check
+    // reports AX0101 at compile time (not a runtime "name not found").
+    let out = axionc()
+        .args(["--check", &fixture("undefined_operator.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("AX0101"), "expected AX0101, output: {text}");
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

@@ -1837,7 +1837,34 @@ fn resolve_expr(
             resolve_expr(f, scope, globals, diags);
             resolve_expr(x, scope, globals, diags);
         }
-        Expr::BinOp(_, l, r, _) => {
+        Expr::BinOp(op, l, r, sp) => {
+            // A user operator (`a <+> b`) or backtick function (`` a `f` b ``) names a
+            // plain function that must be in scope — resolve it like a `Var`. The
+            // built-in symbolic operators are lowered directly by codegen, so they are
+            // always valid and skipped here. (`:`/`.`/`$` never reach `BinOp` — the
+            // parser desugars them to `Cons`/`compose`/application.)
+            const BUILTIN_OPS: &[&str] = &[
+                "+", "-", "*", "==", "<", ">", "++", "+.", "-.", "*.", "/.", "==.", "<.", ">.",
+            ];
+            // Only SYMBOLIC operators (`<+>`) are resolved: an alphabetic backtick name
+            // (`` `mod` ``, `` `div` ``) may be a builtin that lives outside `globals`, so
+            // it keeps its prior (unchecked) treatment rather than a false positive.
+            let symbolic = op.chars().next().is_some_and(|c| !c.is_alphabetic() && c != '_');
+            if symbolic
+                && !BUILTIN_OPS.contains(&op.as_str())
+                && !scope.contains(op)
+                && !globals.contains(op)
+            {
+                let mut d = Diagnostic::error("AX0101", format!("name not found: '{op}'"))
+                    .label(sp.0, sp.1, "operator not in scope");
+                d = match nearest_name(op, scope, globals) {
+                    Some(best) => d.with_help(format!("did you mean `{best}`?")),
+                    None => d.with_help(
+                        "define it — `(<op>) x y = …` — or import it, or check the spelling.",
+                    ),
+                };
+                diags.push(d);
+            }
             resolve_expr(l, scope, globals, diags);
             resolve_expr(r, scope, globals, diags);
         }
