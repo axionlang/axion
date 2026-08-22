@@ -409,6 +409,35 @@ fn record_update_chain_runs_on_all_backends() {
 }
 
 #[test]
+fn record_update_escape_runs_on_all_backends() {
+    // An ESCAPING by-copy update result (embedded in a list) shares a heap field with its
+    // base. Both would deep-drop it → double free (pre-fix, native). The fix hands the
+    // shared field to the escaped result and skip-drops the base. Two cases: base dead
+    // (=5) and base still read after the update (=3). Leak-free (sanitize.sh).
+    for (fx_name, expect) in [
+        ("record_update_escape.axi", "5\n"),
+        ("record_update_escape_read.axi", "3\n"),
+    ] {
+        for backend in [
+            vec!["--backend", "interp"],
+            vec!["--backend", "cranelift"],
+            vec!["--release"],
+        ] {
+            let fx = fixture(fx_name);
+            let mut args = backend.clone();
+            args.push(&fx);
+            let out = axionc().args(&args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{fx_name} should run ({backend:?}): {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&out.stdout), expect, "{fx_name} {backend:?}");
+        }
+    }
+}
+
+#[test]
 fn data_heap_field_runs_on_all_backends() {
     // A data type with a field whose type has heap elements (List String) deep-drops
     // those elements via the mono destructor (axion_drop_List$String) — leak-free.

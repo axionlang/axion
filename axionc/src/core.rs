@@ -5960,19 +5960,34 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
 
 /// Inserts the `drop`s into a function (structural Drop + cross-function reclamation).
 /// `drop_ty` maps each droppable to its `data`-type name (for the deep-drop).
-/// For each by-copy `UpdateRecord` result, the `(type, non-updated field indices)` that
-/// lets its drop be reclaimed by a skip-destructor. A by-copy update shallow-copies the
-/// record: the non-updated fields ALIAS the base (freed by the base's own drop), while the
-/// updated fields hold genuinely-owned new values (freed here). Dropping only the updated
-/// heap slots — i.e. skipping the non-updated ones — reclaims the owned new value without
-/// double-freeing the aliased fields. `inplace` updates mutate the base in place (no copy,
-/// no alias) so their result is dropped normally. Indices are sorted (the destructor name
-/// is order-sensitive — see `gen_skip_destructors` vs `emit_drop`).
-fn collect_update_skips(t: &Term, recinfo: &RecordInfo) -> HashMap<String, (String, Vec<usize>)> {
+/// Maps a variable to the `(type, non-updated field indices)` skip-destructor that
+/// reclaims a by-copy `UpdateRecord` leak-free. A by-copy update shallow-copies: the
+/// non-updated fields ALIAS the base while the updated fields are genuinely-owned new
+/// values. The shared (non-updated) fields must be freed exactly once — by whichever of
+/// {result, base} outlives the other:
+///   · result DROPPED-as-whole (`v ∈ drp`)  → the RESULT skip-drops (skip non-updated):
+///     it frees its owned new values; the base deep-drops the shared fields.
+///   · result ESCAPES (`v ∉ drp`, e.g. `Cons v …`) → the BASE skip-drops (skip
+///     non-updated): the shared fields now belong to the escaped result (freed by whatever
+///     contains it), and the base frees only the updated fields' OLD values + its shell.
+///     Without this the base's deep-drop AND the container's deep-drop of the escaped
+///     result both free the shared field → double free.
+/// `inplace` updates mutate the base (no copy, no alias). Indices are sorted (the
+/// destructor name is order-sensitive — see `gen_skip_destructors` vs `emit_drop`).
+fn collect_update_skips(
+    t: &Term,
+    recinfo: &RecordInfo,
+    drp: &HashSet<String>,
+) -> HashMap<String, (String, Vec<usize>)> {
     let mut out = HashMap::new();
-    fn walk(t: &Term, recinfo: &RecordInfo, out: &mut HashMap<String, (String, Vec<usize>)>) {
+    fn walk(
+        t: &Term,
+        recinfo: &RecordInfo,
+        drp: &HashSet<String>,
+        out: &mut HashMap<String, (String, Vec<usize>)>,
+    ) {
         match t {
-            Term::Let(v, Rhs::Op(Op::UpdateRecord { fields, inplace: false, .. }), _, body) => {
+            Term::Let(v, Rhs::Op(Op::UpdateRecord { base, fields, inplace: false }), _, body) => {
                 if let Some((name0, _)) = fields.first() {
                     if let (Some((_, all_fields)), Some((con, _))) =
                         (recinfo.field(name0), recinfo.named_field_slot(name0))
@@ -5986,31 +6001,46 @@ fn collect_update_skips(t: &Term, recinfo: &RecordInfo) -> HashMap<String, (Stri
                                 .filter(|i| !updated.contains(i))
                                 .collect();
                             non_updated.sort_unstable();
-                            out.insert(v.clone(), (ty.to_string(), non_updated));
+                            // whichever side survives owns (and frees) the shared fields.
+                            let owner = if drp.contains(v) {
+                                Some(v.clone()) // result dropped as a whole → result skips
+                            } else if let Atom::Var(b) = base {
+                                drp.contains(b).then(|| b.clone()) // result escaped → base skips
+                            } else {
+                                None
+                            };
+                            if let Some(owner) = owner {
+                                out.insert(owner, (ty.to_string(), non_updated));
+                            }
                         }
                     }
                 }
-                walk(body, recinfo, out);
+                walk(body, recinfo, drp, out);
             }
             Term::Let(_, rhs, _, body) => {
-                walk_rhs(rhs, recinfo, out);
-                walk(body, recinfo, out);
+                walk_rhs(rhs, recinfo, drp, out);
+                walk(body, recinfo, drp, out);
             }
-            Term::Drop(_, _, _, _, body) => walk(body, recinfo, out),
-            Term::Ret(rhs, _) => walk_rhs(rhs, recinfo, out),
+            Term::Drop(_, _, _, _, body) => walk(body, recinfo, drp, out),
+            Term::Ret(rhs, _) => walk_rhs(rhs, recinfo, drp, out),
         }
     }
-    fn walk_rhs(rhs: &Rhs, recinfo: &RecordInfo, out: &mut HashMap<String, (String, Vec<usize>)>) {
+    fn walk_rhs(
+        rhs: &Rhs,
+        recinfo: &RecordInfo,
+        drp: &HashSet<String>,
+        out: &mut HashMap<String, (String, Vec<usize>)>,
+    ) {
         match rhs {
             Rhs::Op(_) => {}
             Rhs::If(_, th, el) => {
-                walk(th, recinfo, out);
-                walk(el, recinfo, out);
+                walk(th, recinfo, drp, out);
+                walk(el, recinfo, drp, out);
             }
-            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, recinfo, out)),
+            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, recinfo, drp, out)),
         }
     }
-    walk(t, recinfo, &mut out);
+    walk(t, recinfo, drp, &mut out);
     out
 }
 
@@ -6024,7 +6054,7 @@ fn insert_drops(
     if drp.is_empty() {
         return (f, Vec::new());
     }
-    let update_skip = collect_update_skips(&f.body, recinfo);
+    let update_skip = collect_update_skips(&f.body, recinfo, &drp);
     let mut e = Elab {
         drp,
         tmp: 1_000_000,

@@ -35,6 +35,8 @@ NATIVE=(
   axionc/tests/fixtures/record_update_reclaim.axi
   axionc/tests/fixtures/record_update_multi.axi
   axionc/tests/fixtures/record_update_chain.axi
+  axionc/tests/fixtures/record_update_escape.axi
+  axionc/tests/fixtures/record_update_escape_read.axi
   axionc/tests/fixtures/strings_text.axi
   axionc/tests/fixtures/heap_loop.axi
   axionc/tests/fixtures/linear_move.axi
@@ -123,6 +125,7 @@ LEAKFREE=(
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field
   record_update_reclaim record_update_multi record_update_chain
+  record_update_escape record_update_escape_read
 )
 is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 
