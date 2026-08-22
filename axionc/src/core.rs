@@ -678,6 +678,12 @@ impl RecordInfo {
             .and_then(|(_, t)| mono_key(t).or_else(|| t.head_con().map(str::to_string)))
     }
 
+    /// The name of the `data` type a constructor belongs to (`Bar` → `Foo` for
+    /// `data Foo = Bar {…}`; for the common single-constructor record they coincide).
+    pub fn con_type_name(&self, con: &str) -> Option<&str> {
+        self.con_type.get(con).map(String::as_str)
+    }
+
     /// `Some((con, idx))` for the named field `name` (its owning constructor),
     /// or the field's index — used to resolve an `Op::Field` read to its slot.
     pub fn named_field_slot(&self, name: &str) -> Option<(String, usize)> {
@@ -5954,6 +5960,60 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
 
 /// Inserts the `drop`s into a function (structural Drop + cross-function reclamation).
 /// `drop_ty` maps each droppable to its `data`-type name (for the deep-drop).
+/// For each by-copy `UpdateRecord` result, the `(type, non-updated field indices)` that
+/// lets its drop be reclaimed by a skip-destructor. A by-copy update shallow-copies the
+/// record: the non-updated fields ALIAS the base (freed by the base's own drop), while the
+/// updated fields hold genuinely-owned new values (freed here). Dropping only the updated
+/// heap slots — i.e. skipping the non-updated ones — reclaims the owned new value without
+/// double-freeing the aliased fields. `inplace` updates mutate the base in place (no copy,
+/// no alias) so their result is dropped normally. Indices are sorted (the destructor name
+/// is order-sensitive — see `gen_skip_destructors` vs `emit_drop`).
+fn collect_update_skips(t: &Term, recinfo: &RecordInfo) -> HashMap<String, (String, Vec<usize>)> {
+    let mut out = HashMap::new();
+    fn walk(t: &Term, recinfo: &RecordInfo, out: &mut HashMap<String, (String, Vec<usize>)>) {
+        match t {
+            Term::Let(v, Rhs::Op(Op::UpdateRecord { fields, inplace: false, .. }), _, body) => {
+                if let Some((name0, _)) = fields.first() {
+                    if let (Some((_, all_fields)), Some((con, _))) =
+                        (recinfo.field(name0), recinfo.named_field_slot(name0))
+                    {
+                        if let Some(ty) = recinfo.con_type_name(&con) {
+                            let updated: HashSet<usize> = fields
+                                .iter()
+                                .filter_map(|(n, _)| all_fields.iter().position(|f| f == n))
+                                .collect();
+                            let mut non_updated: Vec<usize> = (0..all_fields.len())
+                                .filter(|i| !updated.contains(i))
+                                .collect();
+                            non_updated.sort_unstable();
+                            out.insert(v.clone(), (ty.to_string(), non_updated));
+                        }
+                    }
+                }
+                walk(body, recinfo, out);
+            }
+            Term::Let(_, rhs, _, body) => {
+                walk_rhs(rhs, recinfo, out);
+                walk(body, recinfo, out);
+            }
+            Term::Drop(_, _, _, _, body) => walk(body, recinfo, out),
+            Term::Ret(rhs, _) => walk_rhs(rhs, recinfo, out),
+        }
+    }
+    fn walk_rhs(rhs: &Rhs, recinfo: &RecordInfo, out: &mut HashMap<String, (String, Vec<usize>)>) {
+        match rhs {
+            Rhs::Op(_) => {}
+            Rhs::If(_, th, el) => {
+                walk(th, recinfo, out);
+                walk(el, recinfo, out);
+            }
+            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, recinfo, out)),
+        }
+    }
+    walk(t, recinfo, &mut out);
+    out
+}
+
 fn insert_drops(
     mut f: CoreFn,
     ba: &BorrowArgs,
@@ -5964,6 +6024,7 @@ fn insert_drops(
     if drp.is_empty() {
         return (f, Vec::new());
     }
+    let update_skip = collect_update_skips(&f.body, recinfo);
     let mut e = Elab {
         drp,
         tmp: 1_000_000,
@@ -5971,6 +6032,7 @@ fn insert_drops(
         drop_ty,
         recinfo,
         skip_seeds: Vec::new(),
+        update_skip,
     };
     let body = std::mem::replace(
         &mut f.body,
@@ -6000,8 +6062,12 @@ struct Elab<'a> {
     drop_ty: &'a HashMap<String, Option<String>>,
     recinfo: &'a RecordInfo,
     /// F-3 skip-variant destructors to generate: `(type_key, skip_slots)`.
-    /// Populated by `case_arms` for each remainder drop.
+    /// Populated by `case_arms` for each remainder drop and by `drop_target` for each
+    /// by-copy record-update result.
     skip_seeds: Vec<(String, Vec<usize>)>,
+    /// By-copy `UpdateRecord` result → `(type, non-updated field indices)`: its drop
+    /// reclaims only the genuinely-owned updated heap slots (see `collect_update_skips`).
+    update_skip: HashMap<String, (String, Vec<usize>)>,
 }
 
 /// `true` if any tail exit of `t` yields a value that could be a HEAP pointer
@@ -6190,6 +6256,24 @@ impl Elab<'_> {
         self.drop_ty.get(v).cloned().flatten()
     }
 
+    /// The `(type_key, skip_slots)` for dropping `v`. A by-copy record-update RESULT is
+    /// reclaimed by a skip-destructor (`axion_drop_T_skip_N`) that frees only its owned
+    /// updated heap slots — the non-updated fields alias the base and are freed by the
+    /// base's own drop. Seeds the skip-destructor's generation. Any other value uses its
+    /// plain deep/flat destructor. (An empty skip = every field updated, so the whole
+    /// value is genuinely owned → its normal deep destructor.)
+    fn drop_target(&mut self, v: &str) -> (Option<String>, Vec<usize>) {
+        if let Some((ty, skip)) = self.update_skip.get(v) {
+            let (ty, skip) = (ty.clone(), skip.clone());
+            if !skip.is_empty() {
+                self.skip_seeds.push((ty.clone(), skip.clone()));
+                return (Some(ty), skip);
+            }
+            return (Some(ty), Vec::new());
+        }
+        (self.dty(v), Vec::new())
+    }
+
     /// Places the deep drop of the scrutinee `s` just before each tail `Ret`.
     /// Every `let`/`drop` in the spine precedes the drop, so any borrowed field
     /// read (`a y`) or payload-aliasing local (`inner y`) is used before `s` is
@@ -6348,8 +6432,8 @@ impl Elab<'_> {
                     let tmp = self.fresh();
                     let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))), sp);
                     for v in dying {
-                        let ty = self.dty(&v);
-                        inner = Term::Drop(v, ty, Vec::new(), term_span(&inner), Box::new(inner));
+                        let (ty, skip) = self.drop_target(&v);
+                        inner = Term::Drop(v, ty, skip, term_span(&inner), Box::new(inner));
                     }
                     Term::Let(tmp, Rhs::Op(op), sp, Box::new(inner))
                 }
@@ -6379,8 +6463,8 @@ impl Elab<'_> {
                     }
                     let mut inner = body2;
                     for v in dying {
-                        let ty = self.dty(&v);
-                        inner = Term::Drop(v, ty, Vec::new(), term_span(&inner), Box::new(inner));
+                        let (ty, skip) = self.drop_target(&v);
+                        inner = Term::Drop(v, ty, skip, term_span(&inner), Box::new(inner));
                     }
                     Term::Let(x, Rhs::Op(op), sp, Box::new(inner))
                 }
@@ -6423,13 +6507,15 @@ impl Elab<'_> {
         for v in fth.difference(&fel) {
             if !live_out.contains(v) {
                 let sp = term_span(&el2);
-                el2 = Term::Drop(v.clone(), self.dty(v), Vec::new(), sp, Box::new(el2));
+                let (ty, skip) = self.drop_target(v);
+                el2 = Term::Drop(v.clone(), ty, skip, sp, Box::new(el2));
             }
         }
         for v in fel.difference(&fth) {
             if !live_out.contains(v) {
                 let sp = term_span(&th2);
-                th2 = Term::Drop(v.clone(), self.dty(v), Vec::new(), sp, Box::new(th2));
+                let (ty, skip) = self.drop_target(v);
+                th2 = Term::Drop(v.clone(), ty, skip, sp, Box::new(th2));
             }
         }
         (th2, el2)
@@ -6576,7 +6662,8 @@ impl Elab<'_> {
             for v in union.difference(&fvs[i]) {
                 if !live_out.contains(v) {
                     let sp = term_span(&b);
-                    b = Term::Drop(v.clone(), self.dty(v), Vec::new(), sp, Box::new(b));
+                    let (ty, skip) = self.drop_target(v);
+                    b = Term::Drop(v.clone(), ty, skip, sp, Box::new(b));
                 }
             }
             out.push((pat, b));

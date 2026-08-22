@@ -3,7 +3,7 @@
 
 axion_drop_Array _p  =
 axion_drop_List _p  =
-  drop r2
+  drop r2 : Rec skip{0}
   drop r : Rec
   drop t
     else
@@ -26,7 +26,7 @@ main  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret _d1000000  ; Δ{}
+  ret _d1000000  ; Δ{r2}
   ret rtcall axion_array_free _p  ; Δ{}
   ; Δ{}
   ; Δ{}

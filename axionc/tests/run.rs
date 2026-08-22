@@ -341,6 +341,30 @@ fn list_heap_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn record_update_reclaim_runs_on_all_backends() {
+    // A by-copy record update's RESULT is reclaimed by a skip-destructor: the updated
+    // heap slot (owned new value) is freed, the non-updated slot (aliases the base) is
+    // skipped. Leak-free + no double-free (see scripts/sanitize.sh). interp == cranelift
+    // == llvm, result 6.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("record_update_reclaim.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "record_update_reclaim should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn data_heap_field_runs_on_all_backends() {
     // A data type with a field whose type has heap elements (List String) deep-drops
     // those elements via the mono destructor (axion_drop_List$String) — leak-free.
