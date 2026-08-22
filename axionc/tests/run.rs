@@ -341,6 +341,30 @@ fn list_heap_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn accum_field_alias_is_corruption_free_on_all_backends() {
+    // Regression (review finding #1): a heap accumulator projecting a field alias
+    // (`items acc`) into the recursive value must NOT deep-drop `acc` — that would free
+    // the escaped alias (UAF). The reclamation keeps a param only across FRESH-producing
+    // ops; a `Field` may alias, so `acc` conservatively leaks (safe). Result 5.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("accum_field_alias.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "accum_field_alias should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn integer_accumulator_runs_on_all_backends() {
     // Path-sensitive reclamation: a conditionally-escaping OWNED Integer accumulator
     // (returned in the base arm, used-then-dead in the recursive arm) is now dropped on

@@ -39,6 +39,7 @@ NATIVE=(
   axionc/tests/fixtures/record_update_escape_read.axi
   axionc/tests/fixtures/integer_reclaim.axi
   axionc/tests/fixtures/integer_accumulator.axi
+  axionc/tests/fixtures/accum_field_alias.axi
   axionc/tests/fixtures/strings_text.axi
   axionc/tests/fixtures/heap_loop.axi
   axionc/tests/fixtures/linear_move.axi

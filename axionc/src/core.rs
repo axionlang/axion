@@ -369,6 +369,21 @@ pub fn is_bignum_producer(func: &str) -> bool {
     )
 }
 
+/// `true` if the op returns a value that CANNOT alias its (heap) operands — a fresh
+/// scalar or a freshly-allocated result. Used by `reclaim_cond_escape` to decide whether
+/// an owned param stays reclaimable across a binding that reads it: a fresh-producing op
+/// (bignum arithmetic/comparison, scalar `Prim`/`PrimF`) is safe; a `Field`/`get`/call may
+/// return a pointer INTO the operand (an escaping interior alias), so it is NOT fresh and
+/// the param must leave the owned set (else its drop frees a value the alias still uses).
+fn op_is_fresh_wrt_args(op: &Op) -> bool {
+    match op {
+        Op::Prim(..) | Op::PrimF(..) => true,
+        // bignum arith → a fresh `Integer`; bignum comparison → a scalar `Bool`.
+        Op::RtCall { func, .. } => is_bignum_borrower(func),
+        _ => false,
+    }
+}
+
 /// A bignum runtime call that BORROWS its heap operand(s) (reads without freeing), so
 /// the operand stays owned by the caller. The arithmetic/comparison ops (heap `Integer`
 /// args) and `from_str` (a `String` arg); NOT `from_i64` (a scalar `Int`). `to_string`
@@ -5907,7 +5922,20 @@ fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &Bo
             };
             let mut owned: Vec<_> = owned
                 .into_iter()
-                .filter(|(v, _)| v != &x && !rhs_moves(v, &rhs, ba))
+                .filter(|(v, _)| {
+                    if v == &x || rhs_moves(v, &rhs, ba) {
+                        return false; // moved/consumed here, or its name rebound
+                    }
+                    // a binding that READS v must produce a FRESH value to keep v
+                    // reclaimable — a `Field`/`get`/call may return a pointer INTO v (an
+                    // escaping interior alias), and dropping v later would free it.
+                    match &rhs {
+                        Rhs::Op(op) if op_mentions_any(op, &HashSet::from([v.clone()])) => {
+                            op_is_fresh_wrt_args(op)
+                        }
+                        _ => true,
+                    }
+                })
                 .collect();
             if let Some(key) = alias_key {
                 owned.push((x.clone(), key));
