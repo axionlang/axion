@@ -122,6 +122,7 @@ pub fn run_cli() -> ExitCode {
     let mut emit = Emit::Text;
     let mut path: Option<String> = None;
     let mut fuse = false;
+    let mut no_verify = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -129,6 +130,7 @@ pub fn run_cli() -> ExitCode {
             "--check" => check_only = true,
             "--check-delta" => check_delta = true,
             "--fuse" => fuse = true,
+            "--no-verify" => no_verify = true,
             "--release" => backend = Backend::Llvm,
             "--backend" => {
                 i += 1;
@@ -358,6 +360,51 @@ pub fn run_cli() -> ExitCode {
             )
         );
         return ExitCode::SUCCESS;
+    }
+
+    // Drop-balance verifier (default-on, translation validation): before ANY native
+    // backend emits code, prove the Auto-Drop output frees each heap resource exactly once
+    // and never after free. A corruption finding is a soundness violation in the
+    // reclamation pass — refuse to emit rather than produce a double-free / use-after-free.
+    // `--no-verify` bypasses it (an escape hatch for a suspected false positive; it does
+    // NOT make the program safe, it only silences the gate). Interp is not gated — it does
+    // no manual reclamation. The `--emit core/drops/delta/verify` inspection modes returned
+    // earlier, so they are unaffected.
+    if !no_verify
+        && (emit == Emit::Clif
+            || emit == Emit::Llvm
+            || backend == Backend::Cranelift
+            || backend == Backend::Llvm)
+    {
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            fuse,
+        );
+        let findings: Vec<_> = verify::verify(&lowered)
+            .into_iter()
+            .filter(|f| f.cat.is_corruption())
+            .collect();
+        if !findings.is_empty() {
+            for f in &findings {
+                let d = Diagnostic::error(
+                    "AX0910",
+                    format!("unsound reclamation: {:?} of `{}` in `{}`", f.cat, f.var, f.func),
+                )
+                .label(f.span.0, f.span.1, "the Auto-Drop-inserted `free`s are not balanced here")
+                .with_help(
+                    "the drop-balance verifier proved the emitted native code would \
+                     double-free or use-after-free (a compiler soundness check). This is \
+                     an Auto-Drop bug; pass --no-verify to emit anyway.",
+                );
+                eprint!("{}", d.render(&path, &src, &lines));
+            }
+            return ExitCode::FAILURE;
+        }
     }
 
     // --- native --dev backend (Cranelift): IR dump or JIT+run main::Int ---
@@ -2662,6 +2709,7 @@ fn print_usage() {
          axionc --emit llvm <file>      LLVM IR of the Int core (--release backend)\n  \
          axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \
          axionc --release <file>        compile with clang -O2 and run (--release)\n  \
+         axionc --no-verify <file>      skip the default-on drop-balance safety gate\n  \
          axionc --explain AX0001        explain an error code"
     );
 }

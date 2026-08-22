@@ -33,6 +33,16 @@ fn alias_target<'a>(op: &'a Op, recinfo: &RecordInfo) -> Option<&'a Atom> {
     }
 }
 
+/// The classification of a value produced on EITHER branch of an `if`/`case`: a resource
+/// (owned, or holding interior pointers) iff some branch yields one; the borrow sets union.
+fn merge_vals(rets: &[Val]) -> Val {
+    Val {
+        owned: rets.iter().any(|v| v.owned),
+        borrows: rets.iter().flat_map(|v| v.borrows.iter().cloned()).collect(),
+        dead: None,
+    }
+}
+
 /// A verifier finding. The corruption categories are the hard guarantee; `Leak` is soft.
 #[derive(Clone, Debug)]
 pub struct Finding {
@@ -163,17 +173,19 @@ impl Verifier<'_> {
         });
     }
 
-    /// Verify a term against the incoming state, mutating `st` to the state at its `ret`.
-    /// (A term ends in a `ret`; branches merge into the continuation via `st`.)
-    fn term(&mut self, t: &Term, st: &mut State) {
+    /// Verify a term against the incoming state (mutated to the state at its `ret`), and
+    /// return the resource classification of the VALUE the term yields at its `ret` — so a
+    /// `let`-bound `if`/`case` binder is a resource only when its branches actually return
+    /// one (a branch returning a scalar `Int` is not tracked).
+    fn term(&mut self, t: &Term, st: &mut State) -> Val {
         match t {
             Term::Let(x, rhs, sp, body) => {
                 self.bind(x, rhs, *sp, st);
-                self.term(body, st);
+                self.term(body, st)
             }
             Term::Drop(x, _key, _skip, sp, body) => {
                 self.do_drop(x, *sp, st);
-                self.term(body, st);
+                self.term(body, st)
             }
             Term::Ret(rhs, sp) => self.ret(rhs, *sp, st),
         }
@@ -186,68 +198,75 @@ impl Verifier<'_> {
             Rhs::If(c, th, el) => {
                 self.use_atom(c, sp, st);
                 let val = self.branches(&[th, el], sp, st);
-                st.insert(x.to_string(), val);
+                if val.owned || !val.borrows.is_empty() {
+                    st.insert(x.to_string(), val); // a resource only if the branches yield one
+                }
             }
             Rhs::Case(scrut, arms) => {
                 let val = self.case(scrut, arms, sp, st);
-                st.insert(x.to_string(), val);
+                if val.owned || !val.borrows.is_empty() {
+                    st.insert(x.to_string(), val);
+                }
             }
         }
     }
 
-    /// The effect of an `Op` on `st`, and the resource classification of its result `x`.
+    /// A `let x = op`: check operand liveness, classify the result, then apply the operands'
+    /// escapes (moved/aliased operands leave the state). `x` is tracked only if it is a
+    /// resource (owns an allocation or holds an interior pointer into one).
     fn bind_op(&mut self, x: &str, op: &Op, sp: Span, st: &mut State) {
         let e = op_delta_effect(op, self.ba);
-        // borrows: read positions — the operand (and anything it borrows) must be live.
-        for a in &e.borrows {
+        for a in e.borrows.iter().chain(e.moves.iter()) {
             self.use_atom(a, sp, st);
         }
-        // Op::Atom `let x = src`: whole-value alias — src escapes, x inherits its resource.
-        if let Some(Atom::Var(src)) = e.alias {
-            self.use_atom(&Atom::Var(src.clone()), sp, st);
-            let inherited = st.get(src).cloned().unwrap_or_default();
-            if let Some(v) = st.get_mut(src) {
-                v.dead = Some(Cat::UseAfterFree);
-            }
-            let mut nv = inherited;
-            nv.dead = None;
-            if nv.owned || !nv.borrows.is_empty() {
-                st.insert(x.to_string(), nv);
-            }
-            return;
+        if let Some(a) = e.alias {
+            self.use_atom(a, sp, st);
         }
-        // moves: the operand's ownership transfers into the produced object / callee. The
-        // result INHERITS whatever those operands borrowed (interior pointers flow in — the
-        // `build`/`grab` class: a field alias embedded in a fresh record).
-        // moved operands transfer out; the result INHERITS the interior pointers they
-        // held (a field alias embedded in a fresh record — the `build`/`grab` class).
+        let val = self.classify(op, st);
+        if let Some(Atom::Var(src)) = e.alias {
+            self.kill(src, Cat::UseAfterFree, st);
+        }
+        for a in &e.moves {
+            if let Atom::Var(v) = a {
+                self.kill(v, Cat::UseAfterFree, st);
+            }
+        }
+        if val.owned || !val.borrows.is_empty() {
+            st.insert(x.to_string(), val);
+        }
+    }
+
+    /// The resource classification of an `Op`'s result (NO state mutation): a whole-value
+    /// alias (`let y = x`) inherits its source; a fresh producer is `owned`, inheriting the
+    /// interior pointers of its moved-in operands (the `build`/`grab` class); a direct HEAP
+    /// field projection borrows its operand; everything else (a scalar `Prim`, a call
+    /// returning an immediate/enum) is untracked.
+    fn classify(&self, op: &Op, st: &State) -> Val {
+        let e = op_delta_effect(op, self.ba);
+        if let Some(Atom::Var(src)) = e.alias {
+            return st.get(src).cloned().unwrap_or_default();
+        }
         let mut inherited: HashSet<String> = HashSet::new();
         for a in &e.moves {
-            self.use_atom(a, sp, st);
             if let Atom::Var(v) = a {
                 if let Some(val) = st.get(v) {
                     inherited.extend(val.borrows.iter().cloned());
                     if !val.owned {
-                        // a pure interior alias moved into `x`: `x` now borrows its target.
                         inherited.insert(v.clone());
                     }
                 }
-                self.kill(v, Cat::UseAfterFree, st);
             }
         }
         if let Some(Atom::Var(w)) = alias_target(op, self.recinfo) {
-            // a DIRECT interior projection (`Field`/`LoadRaw`/`*_get`) aliases its operand;
-            // `x` owns nothing and borrows `w`. (A call is NOT an alias — a view MOVES its
-            // arg instead, handled above.)
             if st.contains_key(w.as_str()) {
-                let mut borrows = inherited;
-                borrows.insert(w.clone());
-                st.insert(x.to_string(), Val { owned: false, borrows, dead: None });
+                inherited.insert(w.clone());
+                return Val { owned: false, borrows: inherited, dead: None };
             }
-        } else if e.produces.is_some() {
-            st.insert(x.to_string(), Val { owned: true, borrows: inherited, dead: None });
         }
-        // else: a fresh scalar / immediate (Prim, a call returning an enum, …) → untracked.
+        if e.produces.is_some() {
+            return Val { owned: true, borrows: inherited, dead: None };
+        }
+        Val::default()
     }
 
     /// `drop x`: `x` must be a live OWNED resource.
@@ -272,16 +291,20 @@ impl Verifier<'_> {
         }
     }
 
-    /// A `ret`: the returned value escapes; verify remaining live resources (soft leak).
-    fn ret(&mut self, rhs: &Rhs, sp: Span, st: &mut State) {
+    /// A `ret`: the returned value escapes. Returns its resource classification (so a
+    /// `let`-bound `if`/`case` learns whether its value is a resource).
+    fn ret(&mut self, rhs: &Rhs, sp: Span, st: &mut State) -> Val {
         match rhs {
             Rhs::Op(op) => {
                 let e = op_delta_effect(op, self.ba);
                 for a in e.borrows.iter().chain(e.moves.iter()) {
                     self.use_atom(a, sp, st);
                 }
+                if let Some(a) = e.alias {
+                    self.use_atom(a, sp, st);
+                }
+                let ret_val = self.classify(op, st);
                 if let Some(Atom::Var(src)) = e.alias {
-                    self.use_atom(&Atom::Var(src.clone()), sp, st);
                     self.kill(src, Cat::UseAfterFree, st);
                 }
                 // returned resource escapes → mark moved so it isn't reported as a leak.
@@ -291,30 +314,30 @@ impl Verifier<'_> {
                     }
                 }
                 self.leak_check(sp, st);
+                ret_val
             }
             Rhs::If(c, th, el) => {
                 self.use_atom(c, sp, st);
-                self.branches(&[th, el], sp, st);
+                self.branches(&[th, el], sp, st)
             }
-            Rhs::Case(scrut, arms) => {
-                self.case(scrut, arms, sp, st);
-            }
+            Rhs::Case(scrut, arms) => self.case(scrut, arms, sp, st),
         }
     }
 
-    /// Verify each branch on a clone of `st`, reconcile the live-owned sets at the join,
-    /// and leave the merged state in `st`. Returns the resource classification the branch
-    /// value contributes to a `let`-binder (owned if any branch yields an owned value).
+    /// Verify each branch on a clone of `st`, reconcile the live-owned sets at the join
+    /// (leaving the merged state in `st`), and return the MERGED classification of the value
+    /// the branches yield — owned/alias only if a branch actually returns a resource.
     fn branches(&mut self, arms: &[&Box<Term>], sp: Span, st: &mut State) -> Val {
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
+        let mut rets: Vec<Val> = Vec::new();
         for a in arms {
             let mut s = st.clone();
-            self.term(a, &mut s);
+            rets.push(self.term(a, &mut s));
             exits.push(s);
         }
         self.merge(&outer, &exits, sp, st);
-        Val { owned: true, ..Default::default() }
+        merge_vals(&rets)
     }
 
     fn case(&mut self, scrut: &Atom, arms: &[(CPat, Term)], sp: Span, st: &mut State) -> Val {
@@ -325,14 +348,15 @@ impl Verifier<'_> {
         let scrut_owned = matches!(scrut, Atom::Var(n) if st.get(n).is_some_and(|v| v.owned && v.dead.is_none()));
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
+        let mut rets: Vec<Val> = Vec::new();
         for (pat, body) in arms {
             let mut s = st.clone();
             self.bind_pattern(pat, scrut_owned, &mut s);
-            self.term(body, &mut s);
+            rets.push(self.term(body, &mut s));
             exits.push(s);
         }
         self.merge(&outer, &exits, sp, st);
-        Val { owned: true, ..Default::default() }
+        merge_vals(&rets)
     }
 
     /// Bind a `case` pattern's field variables: a heap field the pattern names is either a
