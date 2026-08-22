@@ -108,6 +108,16 @@ static BigNum *bn_norm(BigNum *b) {
   if (b->len == 0) b->neg = 0;
   return b;
 }
+/* Reclaim a boxed Integer: the BigNum struct and its (separately malloc'd) limbs.
+ * Two plain `free`s — bn_make uses raw malloc (no 8-byte header), so `axion_free`
+ * (which subtracts 8) must NOT be used here. A 0 pointer is a no-op. */
+void axion_bignum_free(long p) {
+  if (!p)
+    return;
+  BigNum *b = (BigNum *)p;
+  free(b->limbs);
+  free(b);
+}
 long axion_bignum_from_i64(long n) {
   int neg = n < 0;
   unsigned long v = neg ? -(unsigned long)n : (unsigned long)n; /* handles LONG_MIN */

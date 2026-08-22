@@ -208,6 +208,37 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 });
                 return e;
             }
+            // Integer (bignum) arithmetic READS its operands (no free) and returns a
+            // fresh heap Integer the caller reclaims via `axion_bignum_free`. So the
+            // args are BORROWED and the result PRODUCES an owned `Integer`. `from_i64`
+            // takes a scalar `Int` (nothing to borrow); `from_str` borrows its String.
+            if func == "axion_bignum_add"
+                || func == "axion_bignum_sub"
+                || func == "axion_bignum_mul"
+                || func == "axion_bignum_div"
+                || func == "axion_bignum_mod"
+                || func == "axion_bignum_from_str"
+                || func == "axion_bignum_from_i64"
+            {
+                if func != "axion_bignum_from_i64" {
+                    e.borrows.extend(args.iter());
+                }
+                e.produces = Some(Res {
+                    key: Some("Integer".into()),
+                    parent: None,
+                    slot: None,
+                });
+                return e;
+            }
+            // Integer comparisons READ both operands and return a scalar `Bool` — they
+            // BORROW their args (the owner still Auto-Drops them) and produce nothing.
+            if func == "axion_bignum_eq"
+                || func == "axion_bignum_lt"
+                || func == "axion_bignum_gt"
+            {
+                e.borrows.extend(args.iter());
+                return e;
+            }
             // tritDot (§10) READS both the packed vec and the activation array and
             // returns a scalar Int — it BORROWS both (the caller still Auto-Drops
             // them), and produces no heap resource.

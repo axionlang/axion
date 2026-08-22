@@ -150,6 +150,17 @@ extern "C" fn axion_bignum_gt(a: i64, b: i64) -> i64 {
 extern "C" fn axion_bignum_to_string(a: i64) -> *const u8 {
     axion_str_alloc(bignum(a).to_string().as_bytes())
 }
+/// Reclaim a boxed Integer produced by a bignum runtime fn (Box::into_raw of a BigInt).
+/// Dropping the Box frees the BigInt and its limbs. A 0 pointer is a no-op.
+extern "C" fn axion_bignum_free(p: i64) {
+    if p != 0 {
+        // SAFETY: `p` is a pointer from `bignum_box` (Box::into_raw), dropped exactly once
+        // (the linearity/Auto-Drop pass inserts one drop at the value's death).
+        unsafe {
+            drop(Box::from_raw(p as *mut crate::bigint::BigInt));
+        }
+    }
+}
 
 /// String concatenation `a ++ b` into a fresh reclaimable heap C-string. Backs
 /// `strAppend`. Reads (borrows) both operands; the caller still owns/drops them.
@@ -1557,6 +1568,7 @@ impl Cg {
         builder.symbol("axion_bignum_lt", axion_bignum_lt as *const u8);
         builder.symbol("axion_bignum_gt", axion_bignum_gt as *const u8);
         builder.symbol("axion_bignum_to_string", axion_bignum_to_string as *const u8);
+        builder.symbol("axion_bignum_free", axion_bignum_free as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
         builder.symbol("axion_free", axion_free as *const u8);
         builder.symbol("axion_arena_new", axion_arena_new as *const u8);
@@ -1716,6 +1728,7 @@ impl Cg {
             ("axion_bignum_to_string", 1, true),
             // used by the generated destructors (deep-drop) via RtCall
             ("axion_free", 1, false),
+            ("axion_bignum_free", 1, false),
             // cooperative session scheduler (§11)
             ("axion_sess_new", 0, true),
             ("axion_sess_channel", 1, true),
@@ -2000,6 +2013,14 @@ impl Fx<'_, '_> {
         // `axion_free`, which would free a literal's rodata.
         if ty == Some("String") {
             let (id, _) = self.rt_fns["axion_str_drop"];
+            let callee = self.module.declare_func_in_func(id, self.builder.func);
+            self.builder.ins().call(callee, &[ptr]);
+            return Ok(());
+        }
+        // an Integer is a boxed BigNum → `axion_bignum_free` (frees struct + limbs);
+        // never the plain `axion_free`, which would leak the limb allocation.
+        if ty == Some("Integer") {
+            let (id, _) = self.rt_fns["axion_bignum_free"];
             let callee = self.module.declare_func_in_func(id, self.builder.func);
             self.builder.ins().call(callee, &[ptr]);
             return Ok(());

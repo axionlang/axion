@@ -353,6 +353,41 @@ pub fn integer_op_rt(op: &str) -> Option<&'static str> {
     })
 }
 
+/// A bignum runtime call that allocates and returns a fresh owned `Integer` (the
+/// result the caller must reclaim via `axion_bignum_free`). Comparisons
+/// (`eq`/`lt`/`gt`) and `to_string` are NOT producers (they return a scalar/String).
+pub fn is_bignum_producer(func: &str) -> bool {
+    matches!(
+        func,
+        "axion_bignum_add"
+            | "axion_bignum_sub"
+            | "axion_bignum_mul"
+            | "axion_bignum_div"
+            | "axion_bignum_mod"
+            | "axion_bignum_from_i64"
+            | "axion_bignum_from_str"
+    )
+}
+
+/// A bignum runtime call that BORROWS its heap operand(s) (reads without freeing), so
+/// the operand stays owned by the caller. The arithmetic/comparison ops (heap `Integer`
+/// args) and `from_str` (a `String` arg); NOT `from_i64` (a scalar `Int`). `to_string`
+/// also borrows but is handled explicitly alongside the other String producers.
+pub fn is_bignum_borrower(func: &str) -> bool {
+    matches!(
+        func,
+        "axion_bignum_add"
+            | "axion_bignum_sub"
+            | "axion_bignum_mul"
+            | "axion_bignum_div"
+            | "axion_bignum_mod"
+            | "axion_bignum_eq"
+            | "axion_bignum_lt"
+            | "axion_bignum_gt"
+            | "axion_bignum_from_str"
+    )
+}
+
 /// Runtime builtins usable in a session worker's value position (compute between
 /// channel ops): name → (runtime function, arity). Mirrors the normal `app`
 /// lowering for the builtins that are plain `RtCall`s.
@@ -3626,6 +3661,10 @@ pub fn lower_with(
                 // caller reclaims via the tagged `axion_str_drop` (§tc): frees a
                 // heap string, skips a static literal (zero size-header).
                 Some((f.name.clone(), "String".to_string()))
+            } else if h == "Integer" {
+                // a function returning Integer yields an owned boxed BigNum the caller
+                // reclaims via `axion_bignum_free` (frees the struct + limbs).
+                Some((f.name.clone(), "Integer".to_string()))
             } else if boxed.contains(h) {
                 let key = mono_key(rt).unwrap_or_else(|| h.to_string());
                 Some((f.name.clone(), key))
@@ -4328,6 +4367,11 @@ fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term
                 args: vec![Atom::Var(fp.clone())],
                 returns: false,
             },
+            DropWay::Bignum => Op::RtCall {
+                func: "axion_bignum_free".into(),
+                args: vec![Atom::Var(fp.clone())],
+                returns: false,
+            },
             // non-heap fields are filtered out before this point; skip defensively
             // so a stray `None` never emits a wild `free`.
             DropWay::None => continue,
@@ -4437,6 +4481,7 @@ enum DropWay {
     Flat,         // heap object with no owned heap fields → a flat `free`
     Deep(String), // needs the destructor `axion_drop_<key>`
     Str,          // a `String` field → `axion_str_drop` (frees a heap string, skips a literal)
+    Bignum,       // an `Integer` field → `axion_bignum_free` (frees the boxed BigNum + limbs)
     None,         // not a heap object (Int/function/tuple) → nothing to do
 }
 
@@ -4457,6 +4502,11 @@ fn drop_way(
     // frees its spine but leaks the elements.
     if head == "String" {
         return DropWay::Str;
+    }
+    // an `Integer` field owns a boxed BigNum → the tagged `axion_bignum_free` reclaims it
+    // (so a `List Integer` / record-of-Integer frees its elements, not just the spine).
+    if head == "Integer" {
+        return DropWay::Bignum;
     }
     if recinfo.type_cons(head).is_none() {
         return DropWay::None; // not a `data` type (Int/Buffer/function/tuple)
@@ -4779,6 +4829,11 @@ fn gen_tuple_destructors(seeds: &[Type], recinfo: &RecordInfo) -> Vec<CoreFn> {
                         args: vec![Atom::Var(fp.clone())],
                         returns: false,
                     },
+                    DropWay::Bignum => Op::RtCall {
+                        func: "axion_bignum_free".into(),
+                        args: vec![Atom::Var(fp.clone())],
+                        returns: false,
+                    },
                     DropWay::None => continue,
                 };
                 body = Term::Let(
@@ -4912,6 +4967,10 @@ impl Op {
             {
                 Some("String".into())
             }
+            // Integer producers → reclaimed by `axion_bignum_free` (frees the boxed
+            // BigNum struct + its limbs). Args are borrowed (see `delta`), so an Integer
+            // value's owner drops it at its death.
+            Op::RtCall { func, .. } if is_bignum_producer(func) => Some("Integer".into()),
             Op::RtCall { func, .. } if func == "axion_array_new" => Some("Array".into()),
             // in-place setters return the SAME owned resource (threaded handle) —
             // it carries the resource type so a flat-scope final binding is dropped
@@ -5114,6 +5173,9 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         {
             false
         }
+        // Integer arithmetic/comparison READS its Integer/String operands — borrows,
+        // like the String builtins (kept in sync with `op_moves`/delta).
+        Op::RtCall { func, .. } if is_bignum_borrower(func) => false,
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
         Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => atom_is(v, a),
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => atom_is(v, a),
@@ -5651,6 +5713,11 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         {
             false
         }
+        // Integer arithmetic/comparison READS its operands (borrows) and returns a
+        // fresh Integer/Bool — the operands stay owned by the caller (matches
+        // `delta::op_delta_effect`), so a read-only Integer param is a borrow-arg the
+        // caller reclaims. Keeps `op_moves` in sync with the bignum borrow effect.
+        Op::RtCall { func, .. } if is_bignum_borrower(func) => false,
         // --- the rest mirrors `occurs_nonborrow`'s `op_nonborrow` exactly ---
         Op::Field { .. }
         | Op::FuncAddr(_)

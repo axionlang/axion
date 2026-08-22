@@ -48,6 +48,7 @@ declare i64 @axion_bignum_to_string(i64)
 declare i64 @axion_alloc(i64)
 declare void @axion_free(i64)
 declare void @axion_str_drop(i64)
+declare void @axion_bignum_free(i64)
 declare i64 @axion_arena_new()
 declare i64 @axion_arena_alloc(i64, i64)
 declare void @axion_arena_reset(i64)
@@ -595,6 +596,11 @@ impl Emit<'_> {
                 // the plain `axion_free`, which would free a literal's rodata.
                 if ty.as_deref() == Some("String") {
                     self.rt("axion_str_drop", false, &[v]);
+                    return self.term(body);
+                }
+                // an Integer is a boxed BigNum → `axion_bignum_free` (struct + limbs).
+                if ty.as_deref() == Some("Integer") {
+                    self.rt("axion_bignum_free", false, &[v]);
                     return self.term(body);
                 }
                 let key = ty.as_deref().map(|t| {

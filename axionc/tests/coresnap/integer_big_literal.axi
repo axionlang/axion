@@ -4,6 +4,9 @@
 
 axion_drop_Array _p  =
 axion_drop_List _p  =
+  drop _t0 : Integer
+  drop _t1 : Integer
+  drop _t2 : Integer
   drop _t3 : String
     else
   else
@@ -15,10 +18,10 @@ axion_drop_List _p  =
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
-  let _t0 = rtcall axion_bignum_from_str "12345678901234567890"  ; Δ{}
-  let _t1 = rtcall axion_bignum_from_str "12345678901234567890"  ; Δ{}
-  let _t2 = rtcall axion_bignum_mul _t0 _t1  ; Δ{}
-  let _t3 = call show$Integer _t2  ; Δ{} · makes String
+  let _t0 = rtcall axion_bignum_from_str "12345678901234567890"  ; Δ{} · makes Integer
+  let _t1 = rtcall axion_bignum_from_str "12345678901234567890"  ; Δ{_t0} · makes Integer
+  let _t2 = rtcall axion_bignum_mul _t0 _t1  ; Δ{_t0 _t1} · makes Integer
+  let _t3 = call show$Integer _t2  ; Δ{_t2} · makes String
     let _tag = loadraw _p+0  ; Δ{}
 main  =
       ret 0  ; Δ{}
