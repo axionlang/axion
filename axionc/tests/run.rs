@@ -365,6 +365,50 @@ fn record_update_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn record_update_multi_field_runs_on_all_backends() {
+    // Updating two non-adjacent heap fields yields a MULTI-ELEMENT skip set {0,2} — the
+    // order-sensitive skip-destructor name must be sorted. Leak-free (sanitize.sh). = 2.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("record_update_multi.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "record_update_multi should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n", "{backend:?}");
+    }
+}
+
+#[test]
+fn record_update_chain_runs_on_all_backends() {
+    // A chain of by-copy updates: ownership of each heap field ends up split across the
+    // chain, every list freed exactly once. Leak-free (sanitize.sh). = 5.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("record_update_chain.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "record_update_chain should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn data_heap_field_runs_on_all_backends() {
     // A data type with a field whose type has heap elements (List String) deep-drops
     // those elements via the mono destructor (axion_drop_List$String) — leak-free.
