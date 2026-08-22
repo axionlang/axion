@@ -341,6 +341,28 @@ fn list_heap_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn data_heap_field_runs_on_all_backends() {
+    // A data type with a field whose type has heap elements (List String) deep-drops
+    // those elements via the mono destructor (axion_drop_List$String) — leak-free.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("data_heap_field.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "data_heap_field should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "10\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn user_view_function_auto_moves_and_runs_on_all_backends() {
     // A USER-defined view function (returns a suffix aliasing its list) is auto-detected
     // by the borrow analysis and its list is MOVED — so it doesn't double-free natively,

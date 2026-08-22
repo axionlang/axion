@@ -415,7 +415,7 @@ pub struct RecordInfo {
     type_arity: HashMap<String, usize>, // type → number of type parameters (`List a` → 1)
     /// constructor → `data`-typed fields it **owns**: (offset, type name).
     /// They are separate allocations that a flat `free` doesn't reclaim → deep-drop.
-    con_drop_slots: HashMap<String, Vec<(i32, String)>>,
+    con_drop_slots: HashMap<String, Vec<(i32, Type)>>,
     /// types that own (somewhere) a `data`-typed field → need a destructor.
     needs_deep: HashSet<String>,
     /// unboxed enum types (all constructors nullary): values are immediate tags.
@@ -485,7 +485,12 @@ impl RecordInfo {
                     // non-heap (Int/String/Buffer/function) are left out (see docs).
                     if let Some(h) = f.ty.head_con() {
                         if data_names.contains(h) {
-                            slots.push((r.field_offset(&c.name, i), h.to_string()));
+                            // store the FULL field type (not just the head), so the
+                            // destructor generator can key a parametric field on its
+                            // mono key (`List String` → `axion_drop_List$String`,
+                            // which deep-drops the heap elements — the head-only
+                            // `axion_drop_List` frees the spine and leaks them).
+                            slots.push((r.field_offset(&c.name, i), f.ty.clone()));
                         }
                     } else if matches!(f.ty, Type::Var(_)) {
                         // a bare type variable: possibly-heap once instantiated.
@@ -552,7 +557,7 @@ impl RecordInfo {
     }
 
     /// `data`-typed fields a constructor owns: (offset, type name).
-    pub fn drop_slots(&self, con: &str) -> &[(i32, String)] {
+    pub fn drop_slots(&self, con: &str) -> &[(i32, Type)] {
         self.con_drop_slots.get(con).map_or(&[], Vec::as_slice)
     }
 
@@ -662,14 +667,15 @@ impl RecordInfo {
             .is_some_and(|s| s.contains(&i))
     }
 
-    /// The drop slot of field `i` of `con`, if it is a `data`-typed heap field:
-    /// `Some((type name))` — the key the deep-drop destructor uses for it.
-    pub fn field_drop_slot(&self, con: &str, i: usize) -> Option<&str> {
+    /// The drop key of field `i` of `con`, if it is a `data`-typed heap field —
+    /// the MONO key its deep-drop destructor uses (`List String` →
+    /// `List$String`, so extracting/dropping it reclaims the heap elements too).
+    pub fn field_drop_slot(&self, con: &str, i: usize) -> Option<String> {
         let off = self.field_offset(con, i);
         self.drop_slots(con)
             .iter()
             .find(|(o, _)| *o == off)
-            .map(|(_, t)| t.as_str())
+            .and_then(|(_, t)| mono_key(t).or_else(|| t.head_con().map(str::to_string)))
     }
 
     /// `Some((con, idx))` for the named field `name` (its owning constructor),
@@ -4096,7 +4102,16 @@ pub fn lower_with(
     }
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
-    result.extend(gen_destructors(&recinfo));
+    result.extend(gen_destructors(&recinfo, &parametric_data, &mut mono_seeds));
+    // F-3 skip-variant destructors (`axion_drop_T_skip_0`) — before the mono
+    // generation below, so a skipped remainder's parametric field (`List String`)
+    // seeds and gets its `axion_drop_List$String`.
+    result.extend(gen_skip_destructors(
+        &skip_seeds,
+        &recinfo,
+        &parametric_data,
+        &mut mono_seeds,
+    ));
     // Phase 2a array destructor: calls axion_array_free (generic, no per-element deep drop)
     result.push(CoreFn {
         name: "axion_drop_Array".into(),
@@ -4153,9 +4168,6 @@ pub fn lower_with(
             &parametric_data,
         ));
     }
-    // F-3 skip-variant destructors: `axion_drop_T_skip_0` — reclaim all slots
-    // except the listed ones (transferred `%1` fields).
-    result.extend(gen_skip_destructors(&skip_seeds, &recinfo));
     // native session state machines (§11): also hand-managed (task states live in
     // the scheduler's nursery arena), so they bypass the drop analysis too.
     result.extend(session);
@@ -4173,27 +4185,28 @@ pub fn lower_with(
 /// heap (deep-drop, §2): frees the owned `data`-typed fields (via their
 /// destructor, or `free` if they are leaves) and then the block itself;
 /// sum types dispatch on the tag.
-fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
+fn gen_destructors(
+    recinfo: &RecordInfo,
+    parametric_data: &HashSet<String>,
+    mono_seeds: &mut Vec<Type>,
+) -> Vec<CoreFn> {
     let mut out = Vec::new();
     for ty in recinfo.deep_drop_types() {
         let p = "_p".to_string();
         let mut ctr = 0u32;
         // each constructor's tag and the (offset, way) of the heap fields it owns:
         // a concrete `data` field with heap → its destructor, else a flat free.
-        let cons: Vec<(i64, Vec<(i32, DropWay)>)> = recinfo
-            .type_cons(&ty)
-            .unwrap_or(&[])
-            .iter()
-            .map(|con| {
-                let tag = recinfo.tag(con).unwrap_or(0) as i64;
-                let slots = recinfo
-                    .drop_slots(con)
-                    .iter()
-                    .map(|(off, f)| (*off, drop_way_named(f, recinfo)))
-                    .collect();
-                (tag, slots)
-            })
-            .collect();
+        // `drop_way` keys a parametric field on its mono destructor (`List String`
+        // → `axion_drop_List$String`) and seeds it, so the heap ELEMENTS are freed.
+        let mut cons: Vec<(i64, Vec<(i32, DropWay)>)> = Vec::new();
+        for con in recinfo.type_cons(&ty).unwrap_or(&[]) {
+            let tag = recinfo.tag(con).unwrap_or(0) as i64;
+            let mut slots = Vec::new();
+            for (off, fty) in recinfo.drop_slots(con) {
+                slots.push((*off, drop_way(fty, recinfo, parametric_data, mono_seeds)));
+            }
+            cons.push((tag, slots));
+        }
         let single = cons.len() <= 1;
         let body = destructor_body(&cons, single, recinfo.is_mixed_type(&ty), &p, &mut ctr);
         out.push(CoreFn {
@@ -4209,15 +4222,6 @@ fn gen_destructors(recinfo: &RecordInfo) -> Vec<CoreFn> {
     out
 }
 
-/// The drop way of a concrete `data`-typed field: its own destructor when the
-/// type owns heap fields, otherwise a flat `free`.
-fn drop_way_named(tyname: &str, recinfo: &RecordInfo) -> DropWay {
-    if recinfo.needs_deep_drop(tyname) {
-        DropWay::Deep(tyname.to_string())
-    } else {
-        DropWay::Flat
-    }
-}
 
 /// The shared destructor-body shape (generic `gen_destructors` and monomorphized
 /// `gen_mono_destructors` differ only in how they resolve each field's `DropWay`).
@@ -4804,7 +4808,12 @@ fn gen_tuple_destructors(seeds: &[Type], recinfo: &RecordInfo) -> Vec<CoreFn> {
 /// the tag (same body shape as `gen_destructors`) but fires only the
 /// non-skipped field drops.  A seed whose skip covers all heap slots is
 /// dropped — the remaining work is just a shell free (flat).
-fn gen_skip_destructors(seeds: &[(String, Vec<usize>)], recinfo: &RecordInfo) -> Vec<CoreFn> {
+fn gen_skip_destructors(
+    seeds: &[(String, Vec<usize>)],
+    recinfo: &RecordInfo,
+    parametric_data: &HashSet<String>,
+    mono_seeds: &mut Vec<Type>,
+) -> Vec<CoreFn> {
     let mut out = Vec::new();
     let mut seen: HashSet<(String, Vec<usize>)> = HashSet::new();
     for (ty, skip) in seeds {
@@ -4815,25 +4824,21 @@ fn gen_skip_destructors(seeds: &[(String, Vec<usize>)], recinfo: &RecordInfo) ->
             continue;
         }
         // collect skipped field OFFSETS per constructor
-        let cons: Vec<(i64, Vec<(i32, DropWay)>)> = recinfo
-            .type_cons(ty)
-            .unwrap_or(&[])
-            .iter()
-            .map(|con| {
-                let tag = recinfo.tag(con).unwrap_or(0) as i64;
-                let skip_offs: HashSet<i32> = sorted_skip
-                    .iter()
-                    .map(|&i| recinfo.field_offset(con, i))
-                    .collect();
-                let remaining: Vec<(i32, DropWay)> = recinfo
-                    .drop_slots(con)
-                    .iter()
-                    .filter(|(off, _)| !skip_offs.contains(off))
-                    .map(|(off, f)| (*off, drop_way_named(f, recinfo)))
-                    .collect();
-                (tag, remaining)
-            })
-            .collect();
+        let mut cons: Vec<(i64, Vec<(i32, DropWay)>)> = Vec::new();
+        for con in recinfo.type_cons(ty).unwrap_or(&[]) {
+            let tag = recinfo.tag(con).unwrap_or(0) as i64;
+            let skip_offs: HashSet<i32> = sorted_skip
+                .iter()
+                .map(|&i| recinfo.field_offset(con, i))
+                .collect();
+            let mut remaining: Vec<(i32, DropWay)> = Vec::new();
+            for (off, fty) in recinfo.drop_slots(con) {
+                if !skip_offs.contains(off) {
+                    remaining.push((*off, drop_way(fty, recinfo, parametric_data, mono_seeds)));
+                }
+            }
+            cons.push((tag, remaining));
+        }
         // if every constructor has zero remaining slots → pure shell free,
         // same as flat `drop` — skip the destructor
         if cons.iter().all(|(_, s)| s.is_empty()) {
@@ -6473,7 +6478,7 @@ impl Elab<'_> {
                             self.drp.insert(n.clone());
                             if !term_mentions_any(&body, &[n.clone()].into_iter().collect()) {
                                 let key =
-                                    self.recinfo.field_drop_slot(con, fi).map(|t| t.to_string());
+                                    self.recinfo.field_drop_slot(con, fi);
                                 unused.push((n.clone(), key));
                             }
                         }
@@ -6602,8 +6607,10 @@ impl Elab<'_> {
                 // key (`Lst$Box`) so the ELEMENTS are reclaimed, not the leaky generic
                 // head (`Lst`). An absent mono destructor routes to a flat free (safe).
                 match elab.dty(s) {
-                    Some(sk) if sk.contains('$') && sk.split('$').next() == Some(k) => Some(sk),
-                    _ => Some(k.to_string()),
+                    Some(sk) if sk.contains('$') && sk.split('$').next() == Some(k.as_str()) => {
+                        Some(sk)
+                    }
+                    _ => Some(k),
                 }
             } else {
                 // polymorphic field (`a`): resolve the element's concrete reclamation

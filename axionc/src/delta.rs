@@ -849,7 +849,7 @@ impl Ck<'_> {
                     if let CPat::Var(n) = p {
                         let payload = if self.recinfo.field_transfers_heap(con, i) {
                             let key = if self.recinfo.field_is_owned(con, i) {
-                                self.recinfo.field_drop_slot(con, i).map(|t| t.to_string())
+                                self.recinfo.field_drop_slot(con, i)
                             } else {
                                 None
                             };
@@ -1314,8 +1314,7 @@ impl Ck<'_> {
                         self.transfers.insert(name.clone());
                         let key = self
                             .recinfo
-                            .field_drop_slot(&con, idx)
-                            .map(|t| t.to_string());
+                            .field_drop_slot(&con, idx);
                         return Some(Res {
                             key,
                             parent: Some(rn.clone()),
