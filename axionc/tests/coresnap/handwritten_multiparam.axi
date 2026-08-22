@@ -20,6 +20,7 @@
 
 
 
+
                 _ ->
             _ ->
         _ ->
@@ -32,10 +33,11 @@ axion_drop_Pair$Int$Bool _p  =
 axion_drop_Pair$List$Int$Bool _p  =
 bi  =
     Cons y ys ->
-        Cons z zs ->
+    Cons z zs ->
 diff  =
   drop _t0 : Pair$Int$Bool
-          drop _t0 : String
+      drop _t0 : String
+      drop _t0 : String
       drop _t0 : String
       drop _t0 : String
       drop _t0 : String
@@ -48,14 +50,15 @@ diff  =
       drop _t1 : String
       drop _t1 : String
       drop _t1 : String
+      drop _t1 : String
+      drop _t1 : String
   drop _t1 : String
   drop _t1 : String
-          drop _t2 : String
+      drop _t2 : String
       drop _t2 : String
       drop _t2 : String
       drop _t2 : String
       drop _t3 : Pair$Bool$Int
-          drop _t3 : String
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
@@ -79,8 +82,9 @@ eq$Int x y  =
 eq$Pair$Int$Bool p q  =
 ib  =
                   let _d1000000 = putStrLn _t17  ; Δ{_t17}
-          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
+      let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
+      let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
       let _d1000000 = rtcall axion_strcat _t4 ">"  ; Δ{_t4} · makes String
       let _d1000000 = rtcall axion_strcat _t4 ">"  ; Δ{_t4} · makes String
       let _d1000000 = rtcall axion_strcat _t4 ">"  ; Δ{_t4} · makes String
@@ -111,7 +115,8 @@ ib  =
   let _t0 = call ib  ; Δ{} · makes Pair$Int$Bool
       let _t0 = call show$Bool x  ; Δ{} · makes String
       let _t0 = call show$Int x  ; Δ{} · makes String
-          let _t0 = call show$Int y  ; Δ{} · makes String
+      let _t0 = call show$Int y  ; Δ{} · makes String
+      let _t0 = call show$Int z  ; Δ{} · makes String
       let _t0 = call show$List$Int x  ; Δ{} · makes String
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
   let _t0 = con Nil  ; Δ{} · makes List$Int
@@ -124,8 +129,9 @@ ib  =
                   let _t16 = call eq$Pair$Int$Bool _t14 _t15  ; Δ{_t14 _t15}
                   let _t17 = call show$Bool _t16  ; Δ{} · makes String
   let _t1 = call show$Pair$Int$Bool _t0  ; Δ{_t0} · makes String
+      let _t1 = call showListRest$Int ys  ; Δ{_t0} · makes String
+      let _t1 = call showListRest$Int zs  ; Δ{_t0} · makes String
   let _t1 = con Cons 2 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
-          let _t1 = con Cons z zs  ; Δ{_t0}
       let _t1 = rtcall axion_strcat "<" _t0  ; Δ{_t0} · makes String
       let _t1 = rtcall axion_strcat "<" _t0  ; Δ{_t0} · makes String
       let _t1 = rtcall axion_strcat "<" _t0  ; Δ{_t0} · makes String
@@ -133,12 +139,11 @@ ib  =
       let _t2 = call show$Bool y  ; Δ{_t1} · makes String
       let _t2 = call show$Bool y  ; Δ{_t1} · makes String
       let _t2 = call show$Int y  ; Δ{_t1} · makes String
-          let _t2 = call showListElems$Int _t1  ; Δ{_t0} · makes String
   let _t2 = con Cons 1 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
   let _t2 = putStrLn _t1  ; Δ{_t1}
+      let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
   let _t3 = 1  ; Δ{_t2}
       let _t3 = call bi  ; Δ{} · makes Pair$Bool$Int
-          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat " | " _t2  ; Δ{_t1 _t2} · makes String
       let _t3 = rtcall axion_strcat " | " _t2  ; Δ{_t1 _t2} · makes String
       let _t3 = rtcall axion_strcat " | " _t2  ; Δ{_t1 _t2} · makes String
@@ -154,7 +159,7 @@ ib  =
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
-        Nil ->
+    Nil ->
     Nil ->
     Pair x1 y1 ->
         Pair x2 y2 ->
@@ -178,7 +183,6 @@ main  =
   ret 0  ; Δ{}
       ret 1  ; Δ{}
             ret call eq$Bool y1 y2  ; Δ{}
-          ret call show$Int y  ; Δ{} · makes String
   ret case p of
   ret case p of
   ret case p of
@@ -189,14 +193,15 @@ main  =
       ret case _t5 of
           ret case _t8 of
   ret case xs of
-      ret case ys of
+  ret case ys of
   ret con Pair 7 _t0  ; Δ{} · makes Pair$Int$Bool
   ret con Pair 7 _t0  ; Δ{} · makes Pair$Int$Bool
   ret con Pair 7 _t0  ; Δ{} · makes Pair$Int$Bool
   ret con Pair _t0 42  ; Δ{} · makes Pair$Bool$Int
   ret con Pair _t2 _t3  ; Δ{_t2} · moves{_t2} · makes Pair$List$Int$Bool
                   ret _d1000000  ; Δ{}
-          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -212,6 +217,7 @@ main  =
   ret == x y  ; Δ{}
     ret y  ; Δ{}
       ret ""  ; Δ{}
+      ret ""  ; Δ{}
 same  =
 show$Bool x  =
 show$Int x  =
@@ -220,6 +226,7 @@ show$Pair$Bool$Int p  =
 show$Pair$Int$Bool p  =
 show$Pair$List$Int$Bool p  =
 showListElems$Int xs  =
+showListRest$Int ys  =
 withList  =
   ; Δ{}
   ; Δ{}

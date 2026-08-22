@@ -27,6 +27,7 @@
 
 
 
+
                     _ ->
                 _ ->
             _ ->
@@ -45,9 +46,10 @@ both  =
     Both a0 a1 ->
     (c0, c1) ->
     Cons y ys ->
-        Cons z zs ->
+    Cons z zs ->
   drop _t0 : Either$Int$Bool
-          drop _t0 : String
+      drop _t0 : String
+      drop _t0 : String
       drop _t0 : String
       drop _t0 : String
       drop _t0 : String
@@ -70,9 +72,11 @@ both  =
       drop _t1 : String
       drop _t1 : String
       drop _t1 : String
+      drop _t1 : String
+      drop _t1 : String
   drop _t1 : String
   drop _t1 : String
-          drop _t2 : String
+      drop _t2 : String
       drop _t2 : String
       drop _t2 : String
       drop _t2 : String
@@ -82,7 +86,6 @@ both  =
       drop _t2 : String
       drop _t2 : String
       drop _t3 : List$Either$Int$Bool
-          drop _t3 : String
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
@@ -124,8 +127,9 @@ inList  =
                       let _d1000000 = putStrLn _t16  ; Δ{_t16}
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
-          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
+      let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
+      let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
       let _d1000000 = rtcall axion_strcat _t3 _t4  ; Δ{_t3 _t4} · makes String
       let _d1000000 = rtcall axion_strcat _t3 _t4  ; Δ{_t3 _t4} · makes String
       let _d1000000 = rtcall axion_strcat _t3 ")"  ; Δ{_t3} · makes String
@@ -169,7 +173,8 @@ inList  =
   let _t0 = 1  ; Δ{}
   let _t0 = 1  ; Δ{}
   let _t0 = call rgt  ; Δ{} · makes Either$Int$Bool
-          let _t0 = call show$Either$Int$Bool y  ; Δ{} · makes String
+      let _t0 = call show$Either$Int$Bool y  ; Δ{} · makes String
+      let _t0 = call show$Either$Int$Bool z  ; Δ{} · makes String
       let _t0 = call show$Int c0  ; Δ{} · makes String
   let _t0 = call showListElems$Either$Int$Bool xs  ; Δ{} · makes String
   let _t0 = con Left 1  ; Δ{} · makes Either$Int$Bool
@@ -199,14 +204,15 @@ inList  =
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t1 = call showArg$(Int,Int) a0  ; Δ{_t0} · makes String
-          let _t1 = con Cons z zs  ; Δ{_t0}
+      let _t1 = call showListRest$Either$Int$Bool ys  ; Δ{_t0} · makes String
+      let _t1 = call showListRest$Either$Int$Bool zs  ; Δ{_t0} · makes String
   let _t1 = con Right _t0  ; Δ{} · makes Either$Int$Bool
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
-          let _t2 = call showListElems$Either$Int$Bool _t1  ; Δ{_t0} · makes String
   let _t2 = con Just 4  ; Δ{_t1} · makes Maybe$Int
   let _t2 = con Right _t1  ; Δ{_t0} · makes Either$Int$Bool
   let _t2 = putStrLn _t1  ; Δ{_t1}
       let _t2 = rtcall axion_strcat "Right" " "  ; Δ{} · makes String
+      let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
@@ -218,7 +224,6 @@ inList  =
       let _t3 = call showArg$Bool a0  ; Δ{_t2} · makes String
       let _t3 = call showArg$Bool a0  ; Δ{_t2} · makes String
   let _t3 = con Nil  ; Δ{_t0 _t2} · makes List$Either$Int$Bool
-          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat "(" _t2  ; Δ{_t2} · makes String
       let _t3 = rtcall axion_strcat "(" _t2  ; Δ{_t2} · makes String
@@ -255,7 +260,7 @@ inList  =
   let _tag = loadraw _p+0  ; Δ{}
 main  =
 nested  =
-        Nil ->
+    Nil ->
     Nil ->
     Nothing ->
     Pair a0 a1 ->
@@ -278,7 +283,6 @@ nested  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-          ret call show$Either$Int$Bool y  ; Δ{} · makes String
   ret case p of
               ret case _t11 of
                   ret case _t14 of
@@ -293,7 +297,7 @@ nested  =
   ret case x of
   ret case x of
   ret case xs of
-      ret case ys of
+  ret case ys of
   ret con Both 9 _t0  ; Δ{} · makes These$Int$Bool
   ret con Cons _t0 _t4  ; Δ{_t0 _t4} · moves{_t0 _t4} · makes List$Either$Int$Bool
   ret con Pair _t0 _t1  ; Δ{_t0} · moves{_t0} · makes Pair$tuple$Int$Int$Bool
@@ -301,7 +305,8 @@ nested  =
   ret con Right _t0  ; Δ{} · makes Either$Int$Bool
   ret con Tri 1 _t0 2  ; Δ{} · makes Tri$Int$Bool$Int
                       ret _d1000000  ; Δ{}
-          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -323,6 +328,7 @@ nested  =
   ret showInt x  ; Δ{} · makes String
     ret "true"  ; Δ{}
       ret ""  ; Δ{}
+      ret ""  ; Δ{}
 rgt  =
     Right a0 ->
     Right a0 ->
@@ -339,6 +345,7 @@ showArg$(Int,Int) p  =
 showArg$Int x  =
 showArg$Maybe$Int x  =
 showListElems$Either$Int$Bool xs  =
+showListRest$Either$Int$Bool ys  =
     That a0 ->
     This a0 ->
 tri  =

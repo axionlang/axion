@@ -1565,12 +1565,18 @@ unlines :: List String -> String
 unlines xs = case xs of
   Nil -> \"\"
   Cons s ss -> s ++ \"\\n\" ++ unlines ss
+-- first word with no leading space; `unwordsRest` prefixes \" \" before each of
+-- the rest. Split so neither re-uses a cased tail nor binds unused elements — that
+-- left the extracted (heap) strings live-and-undropped at the return (a leak with
+-- substr-built strings; invisible with literals, whose str_drop skips them).
 unwords :: List String -> String
 unwords xs = case xs of
   Nil -> \"\"
-  Cons s ss -> case ss of
-    Nil -> s
-    Cons t ts -> s ++ \" \" ++ unwords ss
+  Cons s ss -> s ++ unwordsRest ss
+unwordsRest :: List String -> String
+unwordsRest ss = case ss of
+  Nil -> \"\"
+  Cons t ts -> \" \" ++ t ++ unwordsRest ts
 -- char-level string processing (§text), on the byte primitives strLen/charAt/
 -- substr. `isSpace`/char codes are bytes (ASCII): 32 space, 9 tab, 10 \\n, 13 \\r.
 isSpace :: Int -> Bool
@@ -1649,12 +1655,17 @@ instance Ord Bool where
 instance Show a => Show (List a) where
   show xs = strAppend \"[\" (strAppend (showListElems xs) \"]\")
   showArg xs = strAppend \"[\" (strAppend (showListElems xs) \"]\")
+-- first element with no leading comma; `showListRest` prefixes \", \" before each
+-- remaining one. Split this way so neither reconstructs a `Cons` cell (a
+-- `showListElems (Cons z zs)` rebuild leaked one cell per element).
 showListElems :: Show a => List a -> String
 showListElems xs = case xs of
   Nil -> \"\"
-  Cons y ys -> case ys of
-    Nil -> show y
-    Cons z zs -> strAppend (show y) (strAppend \", \" (showListElems (Cons z zs)))
+  Cons y ys -> strAppend (show y) (showListRest ys)
+showListRest :: Show a => List a -> String
+showListRest ys = case ys of
+  Nil -> \"\"
+  Cons z zs -> strAppend \", \" (strAppend (show z) (showListRest zs))
 maxOr :: Ord a => a -> List a -> a
 maxOr d xs = case xs of
   Nil -> d

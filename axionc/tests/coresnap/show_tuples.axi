@@ -19,6 +19,8 @@
 
 
 
+
+
                         _ ->
                     _ ->
                 _ ->
@@ -39,11 +41,13 @@ axion_drop_Maybe$tuple$Int$Int _p  =
     (c0, c1, c2) ->
     Cons y ys ->
     Cons y ys ->
-        Cons z zs ->
-        Cons z zs ->
+    Cons z zs ->
+    Cons z zs ->
   drop _t0
-          drop _t0 : String
-          drop _t0 : String
+      drop _t0 : String
+      drop _t0 : String
+      drop _t0 : String
+      drop _t0 : String
       drop _t0 : String
       drop _t0 : String
       drop _t0 : String
@@ -64,6 +68,10 @@ axion_drop_Maybe$tuple$Int$Int _p  =
       drop _t1 : String
       drop _t1 : String
       drop _t1 : String
+      drop _t1 : String
+      drop _t1 : String
+      drop _t1 : String
+      drop _t1 : String
   drop _t1 : String
   drop _t1 : String
   drop _t1 : String
@@ -72,8 +80,8 @@ axion_drop_Maybe$tuple$Int$Int _p  =
                       drop _t24 : Maybe$tuple$Int$Int
                       drop _t25 : String
                           drop _t29
-          drop _t2 : String
-          drop _t2 : String
+      drop _t2 : String
+      drop _t2 : String
       drop _t2 : String
       drop _t2 : String
       drop _t2 : String
@@ -82,8 +90,6 @@ axion_drop_Maybe$tuple$Int$Int _p  =
       drop _t2 : String
       drop _t3
                           drop _t30 : String
-          drop _t3 : String
-          drop _t3 : String
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
@@ -115,10 +121,12 @@ axion_drop_Maybe$tuple$Int$Int _p  =
                           let _d1000000 = putStrLn _t30  ; Δ{_t30}
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
-          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
-          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
+      let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
+      let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
+      let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
+      let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
       let _d1000000 = rtcall axion_strcat "(" _t4  ; Δ{_t4} · makes String
       let _d1000000 = rtcall axion_strcat "(" _t4  ; Δ{_t4} · makes String
       let _d1000000 = rtcall axion_strcat "(" _t4  ; Δ{_t4} · makes String
@@ -157,8 +165,10 @@ axion_drop_Maybe$tuple$Int$Int _p  =
       let _t0 = call show$Int c0  ; Δ{} · makes String
       let _t0 = call show$Int c0  ; Δ{} · makes String
       let _t0 = call show$(Int,Int) c0  ; Δ{} · makes String
-          let _t0 = call show$(Int,Int) y  ; Δ{} · makes String
-          let _t0 = call show$Int y  ; Δ{} · makes String
+      let _t0 = call show$(Int,Int) y  ; Δ{} · makes String
+      let _t0 = call show$(Int,Int) z  ; Δ{} · makes String
+      let _t0 = call show$Int y  ; Δ{} · makes String
+      let _t0 = call show$Int z  ; Δ{} · makes String
       let _t0 = call show$Maybe$Int c0  ; Δ{} · makes String
   let _t0 = call showListElems$(Int,Int) xs  ; Δ{} · makes String
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
@@ -184,8 +194,10 @@ axion_drop_Maybe$tuple$Int$Int _p  =
       let _t1 = call show$List$Int c1  ; Δ{_t0} · makes String
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t1 = call showArg$(Int,Int) a0  ; Δ{_t0} · makes String
-          let _t1 = con Cons z zs  ; Δ{_t0}
-          let _t1 = con Cons z zs  ; Δ{_t0}
+      let _t1 = call showListRest$(Int,Int) ys  ; Δ{_t0} · makes String
+      let _t1 = call showListRest$(Int,Int) zs  ; Δ{_t0} · makes String
+      let _t1 = call showListRest$Int ys  ; Δ{_t0} · makes String
+      let _t1 = call showListRest$Int zs  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
                   let _t20 = con Cons _t16 _t19  ; Δ{_t16 _t19} · moves{_t16 _t19} · makes List$tuple$Int$Int
@@ -199,9 +211,9 @@ axion_drop_Maybe$tuple$Int$Int _p  =
                           let _t28 = tuple 3 4  ; Δ{_t27} · makes heap
                           let _t29 = tuple _t27 _t28  ; Δ{_t27 _t28} · moves{_t27 _t28} · makes heap
       let _t2 = call show$Int c2  ; Δ{_t0 _t1} · makes String
-          let _t2 = call showListElems$(Int,Int) _t1  ; Δ{_t0} · makes String
-          let _t2 = call showListElems$Int _t1  ; Δ{_t0} · makes String
   let _t2 = putStrLn _t1  ; Δ{_t1}
+      let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
+      let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t1 ")"  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t1 ")"  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t1 ")"  ; Δ{_t0 _t1} · makes String
@@ -209,8 +221,6 @@ axion_drop_Maybe$tuple$Int$Int _p  =
       let _t2 = rtcall axion_strcat _t1 ")"  ; Δ{_t0 _t1} · makes String
                           let _t30 = call show$((Int,Int),(Int,Int)) _t29  ; Δ{_t29} · makes String
       let _t3 = rtcall axion_strcat _t2 ")"  ; Δ{_t0 _t1 _t2} · makes String
-          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
-          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
@@ -238,8 +248,8 @@ axion_drop_Maybe$tuple$Int$Int _p  =
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
-        Nil ->
-        Nil ->
+    Nil ->
+    Nil ->
     Nil ->
     Nil ->
     Nothing ->
@@ -265,8 +275,6 @@ main  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-          ret call show$(Int,Int) y  ; Δ{} · makes String
-          ret call show$Int y  ; Δ{} · makes String
   ret case p of
   ret case p of
   ret case p of
@@ -283,11 +291,13 @@ main  =
   ret case x of
   ret case xs of
   ret case xs of
-      ret case ys of
-      ret case ys of
+  ret case ys of
+  ret case ys of
                           ret _d1000000  ; Δ{}
-          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
-          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -305,6 +315,8 @@ main  =
   ret showInt x  ; Δ{} · makes String
       ret ""  ; Δ{}
       ret ""  ; Δ{}
+      ret ""  ; Δ{}
+      ret ""  ; Δ{}
 show$((Int,Int),(Int,Int)) p  =
 show$(Int,Int,Int) p  =
 show$(Int,Int) p  =
@@ -319,6 +331,8 @@ showArg$(Int,Int) p  =
 showArg$Int x  =
 showListElems$(Int,Int) xs  =
 showListElems$Int xs  =
+showListRest$(Int,Int) ys  =
+showListRest$Int ys  =
   ; Δ{}
   ; Δ{}
   ; Δ{}

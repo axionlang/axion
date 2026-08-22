@@ -23,6 +23,7 @@
 
 
 
+
             _ ->
         _ ->
     _ ->
@@ -38,9 +39,10 @@ axion_drop_Two _p  =
 bin  =
 binEq  =
     Cons y ys ->
-        Cons z zs ->
+    Cons z zs ->
   drop _t0 : Bin$Int
-          drop _t0 : String
+      drop _t0 : String
+      drop _t0 : String
       drop _t0 : String
       drop _t0 : String
       drop _t0 : String
@@ -50,13 +52,14 @@ binEq  =
       drop _t1 : String
       drop _t1 : String
       drop _t1 : String
+      drop _t1 : String
+      drop _t1 : String
   drop _t1 : String
   drop _t1 : String
-          drop _t2 : String
+      drop _t2 : String
       drop _t2 : String
       drop _t2 : String
       drop _t3 : Bin$Int
-          drop _t3 : String
       drop _t3 : String
       drop _t3 : String
       drop _t4 : Bin$Int
@@ -88,8 +91,9 @@ eq$Int x y  =
               let _d1000000 = putStrLn _t12  ; Δ{_t12}
       let _d1000000 = rtcall axion_strcat "L" _t0  ; Δ{_t0} · makes String
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
-          let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
+      let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
+      let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
       let _d1000000 = rtcall axion_strcat _t5 ")"  ; Δ{_t5} · makes String
       let _d1000001 = rtcall axion_strcat _t1 _t5  ; Δ{_t1 _t5} · makes String
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -149,7 +153,8 @@ eq$Int x y  =
   let _t0 = call bin  ; Δ{} · makes Bin$Int
           let _t0 = call eq$Int v1 v2  ; Δ{}
       let _t0 = call show$Bin$Int l  ; Δ{} · makes String
-          let _t0 = call show$Rose$Int y  ; Δ{} · makes String
+      let _t0 = call show$Rose$Int y  ; Δ{} · makes String
+      let _t0 = call show$Rose$Int z  ; Δ{} · makes String
       let _t0 = call showArg$Int x  ; Δ{} · makes String
       let _t0 = call showArg$Int x  ; Δ{} · makes String
   let _t0 = call showListElems$Rose$Int xs  ; Δ{} · makes String
@@ -165,7 +170,8 @@ eq$Int x y  =
   let _t1 = call show$Bin$Int _t0  ; Δ{_t0} · makes String
       let _t1 = call show$List$Rose$Int kids  ; Δ{_t0} · makes String
       let _t1 = call showArg$Two$Int$Bool l  ; Δ{} · makes String
-          let _t1 = con Cons z zs  ; Δ{_t0}
+      let _t1 = call showListRest$Rose$Int ys  ; Δ{_t0} · makes String
+      let _t1 = call showListRest$Rose$Int zs  ; Δ{_t0} · makes String
   let _t1 = con Rose 2 _t0  ; Δ{_t0} · moves{_t0} · makes Rose$Int
   let _t1 = con Tip  ; Δ{_t0} · makes Bin$Int
   let _t1 = con Tip  ; Δ{_t0} · makes Bin$Int
@@ -173,18 +179,17 @@ eq$Int x y  =
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
       let _t2 = call showArg$Bool v  ; Δ{_t1} · makes String
       let _t2 = call showArg$Int v  ; Δ{_t1} · makes String
-          let _t2 = call showListElems$Rose$Int _t1  ; Δ{_t0} · makes String
   let _t2 = con Leaf 2  ; Δ{_t0} · makes Two$Int$Bool
   let _t2 = con Nil  ; Δ{_t1} · makes List$Rose$Int
   let _t2 = con Node _t0 1 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes Bin$Int
   let _t2 = con Node _t0 1 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes Bin$Int
   let _t2 = putStrLn _t1  ; Δ{_t1}
+      let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t3 = call bin  ; Δ{} · makes Bin$Int
       let _t3 = call show$Bin$Int r  ; Δ{_t1 _t2} · makes String
   let _t3 = con Rose 4 _t2  ; Δ{_t1 _t2} · moves{_t2} · makes Rose$Int
   let _t3 = con Tip  ; Δ{_t2} · makes Bin$Int
   let _t3 = con Tip  ; Δ{_t2} · makes Bin$Int
-          let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat "-" _t2  ; Δ{_t1 _t2} · makes String
       let _t4 = call binEq  ; Δ{_t3} · makes Bin$Int
       let _t4 = call showArg$Two$Int$Bool r  ; Δ{_t1 _t3} · makes String
@@ -213,7 +218,7 @@ eq$Int x y  =
   let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
 main  =
-        Nil ->
+    Nil ->
     Nil ->
     Node l1 v1 r1 ->
         Node l2 v2 r2 ->
@@ -253,7 +258,6 @@ main  =
   ret 0  ; Δ{}
           ret 1  ; Δ{}
               ret call eq$Bin$Int r1 r2  ; Δ{}
-          ret call show$Rose$Int y  ; Δ{} · makes String
   ret call show$Two$Int$Bool t  ; Δ{} · makes String
   ret case r of
   ret case s of
@@ -265,13 +269,14 @@ main  =
   ret case t of
   ret case t of
   ret case xs of
-      ret case ys of
+  ret case ys of
   ret con Fork _t0 _t1 _t2  ; Δ{_t0 _t2} · moves{_t0 _t2} · makes Two$Int$Bool
   ret con Node _t2 2 _t5  ; Δ{_t2 _t5} · moves{_t2 _t5} · makes Bin$Int
   ret con Node _t2 2 _t5  ; Δ{_t2 _t5} · moves{_t2 _t5} · makes Bin$Int
   ret con Rose 1 _t9  ; Δ{_t9} · moves{_t9} · makes Rose$Int
               ret _d1000000  ; Δ{}
-          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -289,6 +294,7 @@ main  =
     ret "true"  ; Δ{}
   ret == x y  ; Δ{}
       ret ""  ; Δ{}
+      ret ""  ; Δ{}
       ret "."  ; Δ{}
 rose  =
     Rose x kids ->
@@ -301,6 +307,7 @@ showArg$Bool x  =
 showArg$Int x  =
 showArg$Two$Int$Bool t  =
 showListElems$Rose$Int xs  =
+showListRest$Rose$Int ys  =
         Tip ->
         Tip ->
     Tip ->
