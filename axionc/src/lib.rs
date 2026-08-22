@@ -46,6 +46,7 @@ mod check;
 mod codegen;
 mod core;
 mod delta;
+mod verify;
 // `Diagnostic` is re-exported (public API of the engine); its fields carry inline
 // comments rather than rustdoc, and its builder methods are used fluently, so waive
 // the doc / must-use requirements that only apply now that it is public.
@@ -97,6 +98,7 @@ enum Emit {
     Arenas,
     Core,
     Delta,
+    Verify,
     Clif,
     Llvm,
 }
@@ -149,6 +151,7 @@ pub fn run_cli() -> ExitCode {
                     Some("arenas") => emit = Emit::Arenas,
                     Some("core") => emit = Emit::Core,
                     Some("delta") => emit = Emit::Delta,
+                    Some("verify") => emit = Emit::Verify,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
@@ -296,6 +299,37 @@ pub fn run_cli() -> ExitCode {
             delta::dump_annotated(&lowered.fns, &lowered.borrow_args, &lowered.recinfo)
         );
         return ExitCode::SUCCESS;
+    }
+
+    if emit == Emit::Verify {
+        // Drop-balance verifier (translation validation): re-derives the linear-resource
+        // discipline over the FINAL drop-inserted Core and reports any double-free /
+        // use-after-free / unbalanced / leak. A soundness net under Auto-Drop.
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            fuse,
+        );
+        let findings = verify::verify(&lowered);
+        let corruption = findings.iter().filter(|f| f.cat.is_corruption()).count();
+        let leaks = findings.len() - corruption;
+        for f in &findings {
+            println!("{:?}: `{}` in `{}` @{}..{}", f.cat, f.var, f.func, f.span.0, f.span.1);
+        }
+        if corruption == 0 {
+            println!("ok: no corruption findings ({leaks} leak note(s))");
+        } else {
+            println!("FAIL: {corruption} corruption finding(s)");
+        }
+        return if corruption == 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     }
 
     if emit == Emit::Delta {
@@ -2623,6 +2657,7 @@ fn print_usage() {
          axionc --emit inplace <file>   in-place updates (Linear Elision)\n  \
          axionc --emit arenas <file>    NLL reset points of sub-arenas (static)\n  \
          axionc --emit core <file>      Axion Core IR (ANF) — the shared lowering\n  \
+         axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
          axionc --emit clif <file>      Cranelift IR of the Int core (--dev backend)\n  \
          axionc --emit llvm <file>      LLVM IR of the Int core (--release backend)\n  \
          axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \
