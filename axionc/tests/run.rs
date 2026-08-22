@@ -341,6 +341,29 @@ fn list_heap_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn integer_accumulator_runs_on_all_backends() {
+    // Path-sensitive reclamation: a conditionally-escaping OWNED Integer accumulator
+    // (returned in the base arm, used-then-dead in the recursive arm) is now dropped on
+    // the path where it dies. Leak-free (sanitize.sh). countDown 8 (1) = 256 → 1.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("integer_accumulator.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "integer_accumulator should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn integer_reclaim_runs_on_all_backends() {
     // Transient Integers (bignum) are reclaimed via `axion_bignum_free`: fromInt
     // producers, arithmetic intermediates, an Integer function result, a borrowed

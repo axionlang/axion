@@ -4125,21 +4125,36 @@ pub fn lower_with(
                 .iter()
                 .zip(ptys)
                 .enumerate()
-                // a heap `data`/tuple (NOT a scalar — `is_heap_shaped` is true for
-                // Int, which would free a raw integer), a concrete monomorphic key
-                // (so its destructor exists), NOT a borrow-arg (the caller moves it
-                // in → this fn owns it), and NOT already reclaimed by `insert_drops`.
+                // a heap `data`/tuple with a concrete monomorphic key (so its destructor
+                // exists), or a boxed `Integer` (reclaimed by `axion_bignum_free`) — NOT a
+                // scalar (`is_heap_shaped` is true for Int, which would free a raw integer);
+                // NOT a borrow-arg (the caller moves it in → this fn owns it); and NOT
+                // already reclaimed by `insert_drops`.
                 .filter(|(i, (name, ty))| {
-                    heap_ty(ty, &data_types)
+                    // a real heap POINTER (a boxed `data`/tuple with a concrete
+                    // destructor, or a boxed `Integer`) — NOT a pure enum, whose values
+                    // are unboxed immediate tags with no destructor (freeing one corrupts).
+                    let is_enum = ty.head_con().is_some_and(|h| recinfo.is_enum_type(h));
+                    let reclaimable = (heap_ty(ty, &data_types)
                         && mono_key(ty).is_some()
+                        && !is_enum)
+                        || ty.head_con() == Some("Integer");
+                    reclaimable
                         && !ba_set.is_some_and(|s| s.contains(i))
                         && !drp.contains(name.as_str())
                 })
-                .map(|(_, (name, ty))| (name.clone(), mono_key(ty)))
+                .map(|(_, (name, ty))| {
+                    let key = if ty.head_con() == Some("Integer") {
+                        Some("Integer".to_string())
+                    } else {
+                        mono_key(ty)
+                    };
+                    (name.clone(), key)
+                })
                 .collect();
             if !owned.is_empty() {
                 let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
-                f.body = reclaim_cond_escape(body, owned);
+                f.body = reclaim_cond_escape(body, owned, &borrow_args);
             }
         }
         result.push(f);
@@ -5864,31 +5879,53 @@ fn droppable_vars(f: &CoreFn, ba: &BorrowArgs) -> HashSet<String> {
 /// leak). Descends past leading `let`/`drop`, dropping a param from the working set
 /// as soon as a binding mentions it (it may be consumed before the case → then we
 /// conservatively leave it to leak rather than risk a double free).
-fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>) -> Term {
-    let drop_if_absent = |mut arm: Term, skip: Option<&str>| -> Term {
-        for (v, key) in &owned {
-            if Some(v.as_str()) == skip {
-                continue;
-            }
-            if !term_mentions_any(&arm, &HashSet::from([v.clone()])) {
-                let sp = term_span(&arm);
-                arm = Term::Drop(v.clone(), key.clone(), Vec::new(), sp, Box::new(arm));
-            }
-        }
-        arm
-    };
+/// Branch-sensitive reclamation of conditionally-escaping OWNED params (heap or Integer):
+/// a param may be returned/embedded (escape) on ONE control path yet be dead on another.
+/// A single liveness walk carrying the still-owned params:
+///   · `let x = rhs`: a param the binding MOVES/consumes leaves the owned set (it escapes
+///     or is transferred here); a param only BORROWED stays live into the continuation.
+///     A pure alias `let x = ownedParam` with the source dead afterwards TRANSFERS
+///     ownership to `x` (the multi-clause lowering renames the param to its clause var).
+///   · `if`/`case`: recurse per branch/arm (each drops the params dead on its path) —
+///     the scrutinee/condition is a scalar/borrow, and the scrutinee + pattern-bound names
+///     are excluded. Exactly one branch runs, so a param is freed once per path.
+///   · tail `ret op`: drop every carried param the op does NOT mention (dead here); one it
+///     MOVES is the result (escapes → keep), one it merely BORROWS would need a post-`ret`
+///     drop we don't synthesize (left conservative → a residual leak, never a double free).
+/// Only ever ADDS a drop for a param proven dead on that path and never moved past it, so
+/// it cannot double-free; `insert_drops` never dropped these (they are excluded from `drp`).
+fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &BorrowArgs) -> Term {
     match body {
         Term::Let(x, rhs, sp, b) => {
-            let owned: Vec<_> = owned
+            // pure alias `let x = ownedParam`, source unused afterwards → transfer to `x`.
+            let alias_key = if let Rhs::Op(Op::Atom(Atom::Var(src))) = &rhs {
+                (x != *src && !term_mentions_any(&b, &HashSet::from([src.clone()])))
+                    .then(|| owned.iter().find(|(v, _)| v == src).map(|(_, k)| k.clone()))
+                    .flatten()
+            } else {
+                None
+            };
+            let mut owned: Vec<_> = owned
                 .into_iter()
-                .filter(|(v, _)| v != &x && !rhs_mentions_any(&rhs, &HashSet::from([v.clone()])))
+                .filter(|(v, _)| v != &x && !rhs_moves(v, &rhs, ba))
                 .collect();
-            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned)))
+            if let Some(key) = alias_key {
+                owned.push((x.clone(), key));
+            }
+            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned, ba)))
         }
         Term::Drop(v, k, sk, sp, b) => {
             let owned: Vec<_> = owned.into_iter().filter(|(n, _)| n != &v).collect();
-            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned)))
+            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned, ba)))
         }
+        Term::Ret(Rhs::If(c, th, el), sp) => Term::Ret(
+            Rhs::If(
+                c,
+                Box::new(reclaim_cond_escape(*th, owned.clone(), ba)),
+                Box::new(reclaim_cond_escape(*el, owned, ba)),
+            ),
+            sp,
+        ),
         Term::Ret(Rhs::Case(scrut, arms), sp) => {
             let scrut_name = match &scrut {
                 Atom::Var(n) => Some(n.clone()),
@@ -5901,39 +5938,26 @@ fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>) -> Term
                     // param the pattern re-binds (shadowed).
                     let owned_arm: Vec<_> = owned
                         .iter()
-                        .filter(|(v, _)| {
-                            Some(v) != scrut_name.as_ref() && !cpat_binds(&pat, v)
-                        })
+                        .filter(|(v, _)| Some(v) != scrut_name.as_ref() && !cpat_binds(&pat, v))
                         .cloned()
                         .collect();
-                    let arm = reclaim_cond_escape_arm(arm, &owned_arm);
-                    (pat, arm)
+                    (pat, reclaim_cond_escape(arm, owned_arm, ba))
                 })
                 .collect();
             Term::Ret(Rhs::Case(scrut, arms), sp)
         }
-        Term::Ret(Rhs::If(c, th, el), sp) => Term::Ret(
-            Rhs::If(
-                c,
-                Box::new(drop_if_absent(*th, None)),
-                Box::new(drop_if_absent(*el, None)),
-            ),
-            sp,
-        ),
-        other => other,
-    }
-}
-
-/// Drops each `owned` param at the head of `arm` when its name is absent from the
-/// arm (so it is dead there — see `reclaim_cond_escape`).
-fn reclaim_cond_escape_arm(mut arm: Term, owned: &[(String, Option<String>)]) -> Term {
-    for (v, key) in owned {
-        if !term_mentions_any(&arm, &HashSet::from([v.clone()])) {
-            let sp = term_span(&arm);
-            arm = Term::Drop(v.clone(), key.clone(), Vec::new(), sp, Box::new(arm));
+        Term::Ret(Rhs::Op(op), sp) => {
+            let dead: Vec<_> = owned
+                .into_iter()
+                .filter(|(v, _)| !op_mentions_any(&op, &HashSet::from([v.clone()])))
+                .collect();
+            let mut t = Term::Ret(Rhs::Op(op), sp);
+            for (v, key) in dead {
+                t = Term::Drop(v, key, Vec::new(), sp, Box::new(t));
+            }
+            t
         }
     }
-    arm
 }
 
 /// `true` if the Core pattern binds `name` (so it shadows an outer binder).

@@ -9,6 +9,11 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 classify n  =
+    drop m : Integer
+      drop n : Integer
+    drop n : Integer
+      drop _p0 : Integer
+    drop _p0 : Integer
   drop _t0 : Integer
           drop _t10 : String
   drop _t1 : Integer
