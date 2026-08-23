@@ -216,6 +216,10 @@ long axion_bignum_gt(long a, long b) { return bn_cmp((BigNum *)a, (BigNum *)b) >
 /* truncated (quotient toward zero, remainder with dividend's sign) — matches
  * src/bigint.rs; long division base 1e9, each quotient digit by binary search. */
 static void bn_divmod(BigNum *a, BigNum *bb, BigNum **quo, BigNum **rem) {
+  /* The bignum ops below each RETURN a fresh BigNum and BORROW their inputs (the runtime
+   * convention), so every intermediate must be freed here or it leaks — historically this
+   * routine freed none, leaking ~one BigNum per binary-search step (rsa_modexp / div/mod).
+   * Only the returned `*quo`/`*rem` and the borrowed inputs `a`/`bb` are left alive. */
   BigNum *babs = bn_make(bb->len); /* |divisor| */
   for (long i = 0; i < bb->len; i++) babs->limbs[i] = bb->limbs[i];
   if (bn_cmp_mag(a, babs) < 0) {
@@ -224,22 +228,41 @@ static void bn_divmod(BigNum *a, BigNum *bb, BigNum **quo, BigNum **rem) {
     for (long i = 0; i < a->len; i++) r->limbs[i] = a->limbs[i];
     r->neg = a->neg;
     *rem = bn_norm(r);
+    axion_bignum_free((long)babs);
     return;
   }
   long base = axion_bignum_from_i64(BN_BASE);
   unsigned int *q = (unsigned int *)axion_xmalloc((size_t)a->len * sizeof(unsigned int));
   long r = axion_bignum_from_i64(0);
   for (long i = a->len - 1; i >= 0; i--) {
-    r = axion_bignum_add(axion_bignum_mul(r, base), axion_bignum_from_i64((long)a->limbs[i]));
+    /* r = r*base + a->limbs[i] */
+    long rb = axion_bignum_mul(r, base);
+    long digit = axion_bignum_from_i64((long)a->limbs[i]);
+    long nr = axion_bignum_add(rb, digit);
+    axion_bignum_free(rb);
+    axion_bignum_free(digit);
+    axion_bignum_free(r);
+    r = nr;
     long lo = 0, hi = BN_BASE - 1, d = 0;
     while (lo <= hi) {
       long mid = lo + (hi - lo) / 2;
-      long prod = axion_bignum_mul((long)babs, axion_bignum_from_i64(mid));
-      if (bn_cmp((BigNum *)prod, (BigNum *)r) <= 0) { d = mid; lo = mid + 1; }
+      long fm = axion_bignum_from_i64(mid);
+      long prod = axion_bignum_mul((long)babs, fm);
+      int le = bn_cmp((BigNum *)prod, (BigNum *)r) <= 0;
+      axion_bignum_free(fm);
+      axion_bignum_free(prod);
+      if (le) { d = mid; lo = mid + 1; }
       else { hi = mid - 1; }
     }
     q[i] = (unsigned int)d;
-    r = axion_bignum_sub(r, axion_bignum_mul((long)babs, axion_bignum_from_i64(d)));
+    /* r -= babs * d */
+    long fd = axion_bignum_from_i64(d);
+    long md = axion_bignum_mul((long)babs, fd);
+    long r2 = axion_bignum_sub(r, md);
+    axion_bignum_free(fd);
+    axion_bignum_free(md);
+    axion_bignum_free(r);
+    r = r2;
   }
   BigNum *quot = bn_make(a->len);
   for (long i = 0; i < a->len; i++) quot->limbs[i] = q[i];
@@ -247,17 +270,22 @@ static void bn_divmod(BigNum *a, BigNum *bb, BigNum **quo, BigNum **rem) {
   *quo = bn_norm(quot);
   ((BigNum *)r)->neg = a->neg;
   *rem = bn_norm((BigNum *)r);
+  free(q);
+  axion_bignum_free(base);
+  axion_bignum_free((long)babs);
 }
 long axion_bignum_div(long a, long b) {
   if (((BigNum *)b)->len == 0) { fprintf(stderr, "Integer: divide by zero\n"); exit(1); }
   BigNum *q, *r;
   bn_divmod((BigNum *)a, (BigNum *)b, &q, &r);
+  axion_bignum_free((long)r); /* remainder unused by `div` */
   return (long)q;
 }
 long axion_bignum_mod(long a, long b) {
   if (((BigNum *)b)->len == 0) { fprintf(stderr, "Integer: divide by zero\n"); exit(1); }
   BigNum *q, *r;
   bn_divmod((BigNum *)a, (BigNum *)b, &q, &r);
+  axion_bignum_free((long)q); /* quotient unused by `mod` */
   return (long)r;
 }
 long axion_bignum_to_string(long p) {
