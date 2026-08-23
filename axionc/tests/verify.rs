@@ -18,6 +18,7 @@ fn axionc() -> Command {
 fn verifier_reports_no_corruption_over_all_fixtures() {
     let mut checked = 0;
     let mut failures = Vec::new();
+    let mut leak_fps = Vec::new();
     for base in ["tests/fixtures", "../examples"] {
         let dir = format!("{}/{base}", env!("CARGO_MANIFEST_DIR"));
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -61,6 +62,17 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             if stdout.contains("ok:") {
                 checked += 1; // only count fixtures that actually lowered + verified
             }
+            // LEAK precision: every leak the verifier reports over the (LSan-clean) corpus
+            // must be WHITELISTED (a synthetic session/parmap `*$step` worker — the
+            // documented conservative class). A leak in ordinary code would be a gate-worthy
+            // false positive (the leak analysis is precise, cross-checked by scripts/
+            // sanitize.sh). `Leak: `var` in `func` @span`.
+            for l in stdout.lines().filter(|l| l.trim_start().starts_with("Leak:")) {
+                let func = l.split(" in `").nth(1).and_then(|s| s.split('`').next()).unwrap_or("");
+                if !func.ends_with("$step") {
+                    leak_fps.push(format!("{}: {}", path.file_name().unwrap().to_string_lossy(), l.trim()));
+                }
+            }
         }
     }
     assert!(checked > 100, "expected many fixtures, verified {checked}");
@@ -71,6 +83,37 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
         failures.len(),
         failures.join("\n")
     );
+    assert!(
+        leak_fps.is_empty(),
+        "the drop-balance verifier reported {} GATE-WORTHY leak(s) on the corpus (leak \
+         false-positives, or a real Auto-Drop regression — cross-check scripts/sanitize.sh):\n{}",
+        leak_fps.len(),
+        leak_fps.join("\n")
+    );
+}
+
+/// The leak gate whitelists compiler-synthesized session/parmap workers: `session_parmap_
+/// integer` genuinely leaks (LSan-confirmed, 296 bytes) but entirely inside its `worker$step`
+/// state machine (hand-rolled memory, the documented conservative class). The leak gate must
+/// run, detect it, and WHITELIST it — so `--release` still compiles. If the `$step` whitelist
+/// regresses, this fixture would start failing AX0911; guards that boundary.
+#[test]
+fn leak_gate_whitelists_synthetic_worker() {
+    let path = format!(
+        "{}/tests/fixtures/session_parmap_integer.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let out = axionc().args(["--release", &path]).output().unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !combined.contains("AX0911"),
+        "the leak gate must whitelist the synthetic worker's leak, got:\n{combined}"
+    );
+    assert!(out.status.success(), "session_parmap_integer should still compile+run:\n{combined}");
 }
 
 /// Regions/lifetimes: a borrow-returning function (`grab w = inner w`, an interior heap

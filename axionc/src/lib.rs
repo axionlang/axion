@@ -123,6 +123,7 @@ pub fn run_cli() -> ExitCode {
     let mut path: Option<String> = None;
     let mut fuse = false;
     let mut no_verify = false;
+    let mut allow_leaks = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -131,6 +132,7 @@ pub fn run_cli() -> ExitCode {
             "--check-delta" => check_delta = true,
             "--fuse" => fuse = true,
             "--no-verify" => no_verify = true,
+            "--allow-leaks" => allow_leaks = true,
             "--release" => backend = Backend::Llvm,
             "--backend" => {
                 i += 1;
@@ -385,12 +387,10 @@ pub fn run_cli() -> ExitCode {
             &analysis.consume_native_exempt,
             fuse,
         );
-        let findings: Vec<_> = verify::verify(&lowered)
-            .into_iter()
-            .filter(|f| f.cat.is_corruption())
-            .collect();
-        if !findings.is_empty() {
-            for f in &findings {
+        let all = verify::verify(&lowered);
+        let corruption: Vec<_> = all.iter().filter(|f| f.cat.is_corruption()).collect();
+        if !corruption.is_empty() {
+            for f in &corruption {
                 let d = Diagnostic::error(
                     "AX0910",
                     format!("unsound reclamation: {:?} of `{}` in `{}`", f.cat, f.var, f.func),
@@ -400,6 +400,27 @@ pub fn run_cli() -> ExitCode {
                     "the drop-balance verifier proved the emitted native code would \
                      double-free or use-after-free (a compiler soundness check). This is \
                      an Auto-Drop bug; pass --no-verify to emit anyway.",
+                );
+                eprint!("{}", d.render(&path, &src, &lines));
+            }
+            return ExitCode::FAILURE;
+        }
+        // Leak gate (second hard guarantee): a heap resource Auto-Drop never frees. Gated
+        // unless `--allow-leaks` (keeps corruption checking) or `--no-verify` (bypasses all).
+        // Whitelisted synthetic sites (session/parmap `*$step`, polymorphic elements) are
+        // excluded by `verify::leak_gates` — those are the documented conservative leaks.
+        let leaks: Vec<_> = all.iter().filter(|f| verify::leak_gates(f)).collect();
+        if !allow_leaks && !leaks.is_empty() {
+            for f in &leaks {
+                let d = Diagnostic::error(
+                    "AX0911",
+                    format!("memory leak: `{}` in `{}` is never freed", f.var, f.func),
+                )
+                .label(f.span.0, f.span.1, "this heap resource escapes every path without being reclaimed")
+                .with_help(
+                    "the drop-balance verifier proved the emitted native code leaks this \
+                     allocation (an Auto-Drop gap). Pass --allow-leaks to emit anyway (still \
+                     checks for corruption), or --no-verify to bypass the verifier entirely.",
                 );
                 eprint!("{}", d.render(&path, &src, &lines));
             }
@@ -2710,6 +2731,7 @@ fn print_usage() {
          axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \
          axionc --release <file>        compile with clang -O2 and run (--release)\n  \
          axionc --no-verify <file>      skip the default-on drop-balance safety gate\n  \
+         axionc --allow-leaks <file>    permit leaks (AX0911); still gate on corruption\n  \
          axionc --explain AX0001        explain an error code"
     );
 }

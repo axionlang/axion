@@ -73,6 +73,16 @@ impl Cat {
     }
 }
 
+/// `true` if a leak finding should GATE native compilation — a genuine unintended leak in
+/// Auto-Drop-governed code. EXEMPT: compiler-synthesized session/parmap state machines
+/// (`*$step`), whose memory is hand-rolled (NOT Auto-Drop-driven) and whose residual leaks
+/// are the documented conservative session/parmap class — the same rationale as the skipped
+/// `axion_drop_*` destructors. (Polymorphic-element leaks are already suppressed upstream via
+/// `leak_exempt`, so they never reach here.)
+pub fn leak_gates(f: &Finding) -> bool {
+    f.cat == Cat::Leak && !f.func.ends_with("$step")
+}
+
 /// Per-variable resource state.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 struct Val {
@@ -205,8 +215,13 @@ fn run_fn(
         recinfo,
         summaries,
         out: out.unwrap_or(&mut sink),
+        children: HashMap::new(),
+        leak_exempt: HashSet::new(),
     };
-    v.term(&f.body, &mut st)
+    // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
+    // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
+    // VALUE position (bound to the let), not an exit — see `bind`/`term`.
+    v.term(&f.body, &mut st, true)
 }
 
 /// Every variable named by a `Drop` node anywhere in the term.
@@ -245,6 +260,17 @@ struct Verifier<'a> {
     recinfo: &'a RecordInfo,
     summaries: &'a Summaries,
     out: &'a mut Vec<Finding>,
+    /// scrutinee var → the (extracted-field var, slot index) pairs a `case` bound from it.
+    /// A DEEP `drop` of the scrutinee frees these fields transitively, so they must NOT be
+    /// reported as separately-leaked (and dropping one after the parent's deep drop is a
+    /// double free). Populated by `bind_pattern`, consumed by `do_drop`.
+    children: HashMap<String, Vec<(String, usize)>>,
+    /// extracted fields whose heap-ness is POLYMORPHIC (a type variable, no concrete drop
+    /// slot): heap once instantiated to a `data` type, scalar once instantiated to `Int`.
+    /// The verifier can't tell which without the monomorphic type, so it still tracks them
+    /// as owned (double-free stays sound) but EXEMPTS them from leak reporting — a poly
+    /// element leak is exactly Axión's documented conservative-leak class (not gated).
+    leak_exempt: HashSet<String>,
 }
 
 impl Verifier<'_> {
@@ -261,17 +287,17 @@ impl Verifier<'_> {
     /// return the resource classification of the VALUE the term yields at its `ret` — so a
     /// `let`-bound `if`/`case` binder is a resource only when its branches actually return
     /// one (a branch returning a scalar `Int` is not tracked).
-    fn term(&mut self, t: &Term, st: &mut State) -> Val {
+    fn term(&mut self, t: &Term, st: &mut State, tail: bool) -> Val {
         match t {
             Term::Let(x, rhs, sp, body) => {
                 self.bind(x, rhs, *sp, st);
-                self.term(body, st)
+                self.term(body, st, tail)
             }
-            Term::Drop(x, _key, _skip, sp, body) => {
-                self.do_drop(x, *sp, st);
-                self.term(body, st)
+            Term::Drop(x, key, skip, sp, body) => {
+                self.do_drop(x, key.as_ref(), skip, *sp, st);
+                self.term(body, st, tail)
             }
-            Term::Ret(rhs, sp) => self.ret(rhs, *sp, st),
+            Term::Ret(rhs, sp) => self.ret(rhs, *sp, st, tail),
         }
     }
 
@@ -281,13 +307,15 @@ impl Verifier<'_> {
             Rhs::Op(op) => self.bind_op(x, op, sp, st),
             Rhs::If(c, th, el) => {
                 self.use_atom(c, sp, st);
-                let val = self.branches(&[th.as_ref(), el.as_ref()], sp, st);
+                // value position (bound to `x`), NOT a function exit → no leak check in the
+                // arms: a resource consumed AFTER the join is still live here, not leaked.
+                let val = self.branches(&[th.as_ref(), el.as_ref()], sp, st, false);
                 if val.owned || !val.borrows.is_empty() {
                     st.insert(x.to_string(), val); // a resource only if the branches yield one
                 }
             }
             Rhs::Case(scrut, arms) => {
-                let val = self.case(scrut, arms, sp, st);
+                let val = self.case(scrut, arms, sp, st, false);
                 if val.owned || !val.borrows.is_empty() {
                     st.insert(x.to_string(), val);
                 }
@@ -300,7 +328,7 @@ impl Verifier<'_> {
     /// resource (owns an allocation or holds an interior pointer into one).
     fn bind_op(&mut self, x: &str, op: &Op, sp: Span, st: &mut State) {
         let e = op_delta_effect(op, self.ba);
-        for a in e.borrows.iter().chain(e.moves.iter()) {
+        for a in e.borrows.iter().chain(e.moves.iter()).chain(e.nonstrict.iter()) {
             self.use_atom(a, sp, st);
         }
         if let Some(a) = e.alias {
@@ -310,7 +338,9 @@ impl Verifier<'_> {
         if let Some(Atom::Var(src)) = e.alias {
             Self::kill(src, Cat::UseAfterFree, st);
         }
-        for a in &e.moves {
+        // moved operands AND the `nonstrict` closure receiver of an indirect call escape
+        // (the call consumes them) — same as `scan_op_escapes` in Auto-Drop.
+        for a in e.moves.iter().chain(e.nonstrict.iter()) {
             if let Atom::Var(v) = a {
                 Self::kill(v, Cat::UseAfterFree, st);
             }
@@ -368,8 +398,11 @@ impl Verifier<'_> {
         Val::default()
     }
 
-    /// `drop x`: `x` must be a live OWNED resource.
-    fn do_drop(&mut self, x: &str, sp: Span, st: &mut State) {
+    /// `drop x`: `x` must be a live OWNED resource. `key` is the destructor type (`Some` =
+    /// a DEEP drop that recurses into `x`'s fields; `None` = a SHELL free of just the cell,
+    /// used when the fields were moved out and reused). `skip` lists the slots a deep drop
+    /// does NOT free (moved out via a skip-destructor).
+    fn do_drop(&mut self, x: &str, key: Option<&String>, skip: &[usize], sp: Span, st: &mut State) {
         match st.get(x) {
             Some(v) if v.dead == Some(Cat::DoubleFree) || v.dead.is_some() => {
                 let cat = if v.dead == Some(Cat::UseAfterFree) {
@@ -385,6 +418,22 @@ impl Verifier<'_> {
                 if let Some(v) = st.get_mut(x) {
                     v.dead = Some(Cat::DoubleFree);
                 }
+                // a DEEP drop of `x` (has a destructor key) frees its extracted fields
+                // transitively: mark every still-live child whose slot is NOT skipped as
+                // freed-via-parent, so it is neither reported as a leak nor droppable again
+                // (a later `drop` of it would now be a DoubleFree — a strengthening). A SHELL
+                // free (`key = None`) frees only the cell — the fields were moved out and
+                // reused (`append`'s `Cons z zs -> drop xs; …`), so it frees no child.
+                let kids = key.and(self.children.get(x)).cloned().unwrap_or_default();
+                for (child, slot) in kids {
+                    if !skip.contains(&slot) {
+                        if let Some(cv) = st.get_mut(&child) {
+                            if cv.owned && cv.dead.is_none() {
+                                cv.dead = Some(Cat::DoubleFree);
+                            }
+                        }
+                    }
+                }
             }
             None => {} // dropping an untracked value (a flat free of a non-resource) — inert
         }
@@ -392,11 +441,11 @@ impl Verifier<'_> {
 
     /// A `ret`: the returned value escapes. Returns its resource classification (so a
     /// `let`-bound `if`/`case` learns whether its value is a resource).
-    fn ret(&mut self, rhs: &Rhs, sp: Span, st: &mut State) -> Val {
+    fn ret(&mut self, rhs: &Rhs, sp: Span, st: &mut State, tail: bool) -> Val {
         match rhs {
             Rhs::Op(op) => {
                 let e = op_delta_effect(op, self.ba);
-                for a in e.borrows.iter().chain(e.moves.iter()) {
+                for a in e.borrows.iter().chain(e.moves.iter()).chain(e.nonstrict.iter()) {
                     self.use_atom(a, sp, st);
                 }
                 if let Some(a) = e.alias {
@@ -406,52 +455,61 @@ impl Verifier<'_> {
                 if let Some(Atom::Var(src)) = e.alias {
                     Self::kill(src, Cat::UseAfterFree, st);
                 }
-                // returned resource escapes → mark moved so it isn't reported as a leak.
-                for a in &e.moves {
+                // returned/consumed resources escape → mark moved so they aren't leaks: the
+                // moved operands and the `nonstrict` closure receiver of an indirect call.
+                for a in e.moves.iter().chain(e.nonstrict.iter()) {
                     if let Atom::Var(v) = a {
                         Self::kill(v, Cat::UseAfterFree, st);
                     }
                 }
-                self.leak_check(sp, st);
+                // a leak is only meaningful at a real function EXIT — an internal branch-ret
+                // (the value of a let-bound `if`/`case`) has a continuation that may still
+                // consume the resource, so it is not a leak point.
+                if tail {
+                    self.leak_check(sp, st);
+                }
                 ret_val
             }
             Rhs::If(c, th, el) => {
                 self.use_atom(c, sp, st);
-                self.branches(&[th.as_ref(), el.as_ref()], sp, st)
+                self.branches(&[th.as_ref(), el.as_ref()], sp, st, tail)
             }
-            Rhs::Case(scrut, arms) => self.case(scrut, arms, sp, st),
+            Rhs::Case(scrut, arms) => self.case(scrut, arms, sp, st, tail),
         }
     }
 
     /// Verify each branch on a clone of `st`, reconcile the live-owned sets at the join
     /// (leaving the merged state in `st`), and return the MERGED classification of the value
     /// the branches yield — owned/alias only if a branch actually returns a resource.
-    fn branches(&mut self, arms: &[&Term], sp: Span, st: &mut State) -> Val {
+    fn branches(&mut self, arms: &[&Term], sp: Span, st: &mut State, tail: bool) -> Val {
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
         let mut rets: Vec<Val> = Vec::new();
         for a in arms {
             let mut s = st.clone();
-            rets.push(self.term(a, &mut s));
+            rets.push(self.term(a, &mut s, tail));
             exits.push(s);
         }
         self.merge(&outer, &exits, sp, st);
         merge_vals(&rets)
     }
 
-    fn case(&mut self, scrut: &Atom, arms: &[(CPat, Term)], sp: Span, st: &mut State) -> Val {
+    fn case(&mut self, scrut: &Atom, arms: &[(CPat, Term)], sp: Span, st: &mut State, tail: bool) -> Val {
         self.use_atom(scrut, sp, st);
         // extracted fields are owned iff the scrutinee is an owned resource (consumed) —
         // the reclamation transfers them out; if the scrutinee is BORROWED, the owner keeps
         // the whole structure, so the fields are borrowed too (untracked).
-        let scrut_owned = matches!(scrut, Atom::Var(n) if st.get(n).is_some_and(|v| v.owned && v.dead.is_none()));
+        let scrut_var = match scrut {
+            Atom::Var(n) if st.get(n).is_some_and(|v| v.owned && v.dead.is_none()) => Some(n.clone()),
+            _ => None,
+        };
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
         let mut rets: Vec<Val> = Vec::new();
         for (pat, body) in arms {
             let mut s = st.clone();
-            self.bind_pattern(pat, scrut_owned, &mut s);
-            rets.push(self.term(body, &mut s));
+            self.bind_pattern(pat, scrut_var.as_deref(), &mut s);
+            rets.push(self.term(body, &mut s, tail));
             exits.push(s);
         }
         self.merge(&outer, &exits, sp, st);
@@ -461,19 +519,30 @@ impl Verifier<'_> {
     /// Bind a `case` pattern's field variables: a heap field the pattern names is either a
     /// `%1`-owned slot transferred OUT of the scrutinee (an owned resource) or a borrowed
     /// interior alias of the scrutinee.
-    fn bind_pattern(&mut self, pat: &CPat, scrut_owned: bool, st: &mut State) {
+    fn bind_pattern(&mut self, pat: &CPat, scrut_var: Option<&str>, st: &mut State) {
         // only when the scrutinee is CONSUMED does a heap field transfer out as an owned
-        // resource; a borrowed scrutinee keeps its fields (untracked). v1 does not model a
-        // scrutinee DEEP-drop of an extracted field as an alias — a v2 refinement (needs
-        // the scrutinee's drop-kind + slot set); it can only miss a bug, never false-flag.
-        if !scrut_owned {
+        // resource; a borrowed scrutinee keeps its fields (untracked).
+        let Some(scrut) = scrut_var else {
             return;
-        }
+        };
         if let CPat::Con(con, subs) = pat {
             for (i, sp) in subs.iter().enumerate() {
                 if let CPat::Var(n) = sp {
                     if self.recinfo.field_transfers_heap(con, i) {
                         st.insert(n.clone(), Val { owned: true, ..Default::default() });
+                        // record the field as a CHILD of its scrutinee at slot `i`: a DEEP
+                        // `drop` of the scrutinee frees it transitively (see `do_drop`), so it
+                        // is not a separate leak unless the arm moves it out first.
+                        self.children
+                            .entry(scrut.to_string())
+                            .or_default()
+                            .push((n.clone(), i));
+                        // a POLYMORPHIC field (transfers heap but has NO concrete drop slot —
+                        // a bare type variable) may instantiate to a scalar, so exempt it from
+                        // leak reporting (see `leak_exempt`); it stays owned for double-free.
+                        if self.recinfo.field_drop_slot(con, i).is_none() {
+                            self.leak_exempt.insert(n.clone());
+                        }
                     }
                 }
             }
@@ -513,10 +582,12 @@ impl Verifier<'_> {
         }
     }
 
-    /// Any owned resource still live at a `ret` (and not the returned value) is a leak.
+    /// Any owned resource still live at a `ret` (and not the returned value) is a leak —
+    /// EXCEPT a polymorphic extracted field, whose heap-ness is unresolved here (see
+    /// `leak_exempt`); reporting it would false-flag a scalar instantiation.
     fn leak_check(&mut self, sp: Span, st: &State) {
         for (name, v) in st {
-            if v.owned && v.dead.is_none() {
+            if v.owned && v.dead.is_none() && !self.leak_exempt.contains(name) {
                 self.out.push(Finding {
                     cat: Cat::Leak,
                     func: self.f.to_string(),
@@ -656,5 +727,41 @@ mod tests {
             !fs.iter().any(|f| f.cat.is_corruption()),
             "unexpected corruption finding: {fs:?}"
         );
+    }
+
+    /// The verifier CATCHES a leak (an owned resource live at the exit, never freed nor
+    /// returned) and it is GATE-WORTHY (`leak_gates`) in ordinary code.
+    #[test]
+    fn flags_gate_worthy_leak() {
+        // let x = (1, 2);  ret 0     -- x allocated, never dropped, not returned → leak
+        let body = Term::Let(
+            "x".into(),
+            Rhs::Op(Op::MakeTuple(vec![Atom::Int(1), Atom::Int(2)])),
+            (0, 0),
+            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), (0, 0))),
+        );
+        let fs = one(fn_body(body));
+        let leak = fs.iter().find(|f| f.cat == Cat::Leak);
+        assert!(leak.is_some(), "expected a Leak finding, got {fs:?}");
+        assert!(leak_gates(leak.unwrap()), "the leak should gate native compilation");
+    }
+
+    /// A leak inside a compiler-synthesized session/parmap state machine (`*$step`) is NOT
+    /// gate-worthy — its memory is hand-rolled (not Auto-Drop-driven) and its residual leaks
+    /// are the documented conservative class (see `leak_gates`).
+    #[test]
+    fn synthetic_worker_leak_is_whitelisted() {
+        let body = Term::Let(
+            "x".into(),
+            Rhs::Op(Op::MakeTuple(vec![Atom::Int(1), Atom::Int(2)])),
+            (0, 0),
+            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), (0, 0))),
+        );
+        let mut f = fn_body(body);
+        f.name = "worker$step".into();
+        let fs = one(f);
+        let leak = fs.iter().find(|f| f.cat == Cat::Leak);
+        assert!(leak.is_some(), "the leak is still detected/reported");
+        assert!(!leak_gates(leak.unwrap()), "a $step worker leak must not gate");
     }
 }
