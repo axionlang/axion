@@ -1,11 +1,12 @@
--- Known-bad (the last undefended memory-safety class): a function returns an INTERIOR
--- HEAP ALIAS of a parameter. `grab w = inner w` hands back a pointer into `w`'s `inner`
--- field; the value is not a fresh allocation, yet the caller treats it as owned and frees
--- it, while `w`'s own deep-drop ALSO frees `inner` — a double free (native; interp fine).
--- This is INTERPROCEDURAL (the alias crosses the grab→useW→main boundary), so the
--- per-function analysis can't see it; the drop-balance verifier's call SUMMARIES catch it
--- (`grab` returns an alias of param 0 → `useW`'s drop of that result is a DropOfAlias).
--- The default-on gate therefore REFUSES to compile this (AX0910). `--no-verify` bypasses.
+-- Regions/lifetimes: a function may RETURN A BORROW of a parameter — an interior heap
+-- pointer into it, not a fresh allocation. `grab w = inner w` hands back `w`'s `inner`
+-- field. The compiler infers this is a borrow-returning function (its result is, on every
+-- path, a pure interior alias of a param) and nulls the ownership of every call to it, so
+-- the caller does NOT free the result: the argument's owner (`main`, which built the `W`)
+-- frees it exactly once via the record's deep-drop. Both `inner` and `other` are reclaimed;
+-- no leak, no double free. Before regions this was the last undefended class — a caller
+-- freeing the borrow while the owner's drop freed the same field (the drop-balance verifier
+-- flagged it; now the lowering makes it sound and the verifier confirms). Result: 2.
 data W = W { inner :: List Int, other :: List Int }
 
 grab :: W -> List Int

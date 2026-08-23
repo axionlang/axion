@@ -32,9 +32,9 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             if path.file_name().unwrap() == "recover_partial.axi" {
                 continue;
             }
-            // known-bad by design: an interprocedural field-alias return (`grab w = inner w`)
+            // known-bad by design: a borrow of a LOCAL that escapes (a dangling reference)
             // that the verifier is SUPPOSED to flag — asserted separately below.
-            if path.file_name().unwrap() == "field_alias_return.axi" {
+            if path.file_name().unwrap() == "escape_local_borrow.axi" {
                 continue;
             }
             let out = axionc()
@@ -73,38 +73,57 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
     );
 }
 
-/// The interprocedural class the summaries exist for: `grab w = inner w` returns a heap
-/// alias of a borrowed param, which the caller then frees (double free at runtime). The
-/// per-function analysis can't see it — the call SUMMARIES must. Assert the verifier flags
-/// it (`--emit verify` reports a corruption finding) AND the default-on gate refuses to
-/// compile it to native code (`--release` exits non-zero with AX0910). Without this test the
-/// summaries could silently regress and the last undefended UAF would reopen.
+/// Regions/lifetimes: a borrow-returning function (`grab w = inner w`, an interior heap
+/// alias of a param) is now compiled SOUNDLY — the caller does not free the borrow, the
+/// argument's owner does. This was the last undefended double-free class; the fix makes it
+/// legal instead of merely rejected. Assert the verifier reports NO corruption on it (it is
+/// clean, not flagged). Its runtime correctness (output 2, ASan-clean on every backend) is
+/// covered by the run oracle + sanitize.sh; this guards the verifier's view of the fix.
 #[test]
-fn verifier_flags_interprocedural_field_alias_return() {
+fn borrow_returning_function_verifies_clean() {
     let path = format!(
         "{}/tests/fixtures/field_alias_return.axi",
         env!("CARGO_MANIFEST_DIR")
     );
-
-    let verify = axionc()
-        .args(["--emit", "verify", &path])
-        .output()
-        .unwrap();
+    let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
     let vstdout = String::from_utf8_lossy(&verify.stdout);
     assert!(
-        vstdout.contains("FAIL:") && vstdout.contains("Alias"),
-        "verifier should flag the interprocedural field-alias return as a DropOfAlias, got:\n{vstdout}"
+        vstdout.contains("ok:") && !vstdout.contains("FAIL:"),
+        "the borrow-returning `grab` should verify clean now that lowering makes it sound, got:\n{vstdout}"
+    );
+}
+
+/// The dual of the above and the escape case regions must keep rejecting: a function
+/// returning a BORROW OF A LOCAL (`mkGrab n = inner (W {...})`) dangles — the local is freed
+/// at exit. The borrow-return inference is PRECISE (it nulls ownership only for aliases of a
+/// PARAMETER, never a local), so the result stays owned and the verifier flags the escaping
+/// use-after-free AND the gate refuses (AX0910). Guards against the fix over-nulling.
+#[test]
+fn verifier_flags_escaping_local_borrow() {
+    let path = format!(
+        "{}/tests/fixtures/escape_local_borrow.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+
+    let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    let vstdout = String::from_utf8_lossy(&verify.stdout);
+    assert!(
+        vstdout.contains("FAIL:") && vstdout.contains("Free"),
+        "verifier should flag the escaping borrow of a local as a use-after-free, got:\n{vstdout}"
     );
 
     let gate = axionc().args(["--release", &path]).output().unwrap();
     assert!(
         !gate.status.success(),
-        "the default-on gate must refuse to compile the field-alias return to native code"
+        "the default-on gate must refuse to compile the escaping-local-borrow to native code"
     );
-    let gstderr = String::from_utf8_lossy(&gate.stderr);
-    let gstdout = String::from_utf8_lossy(&gate.stdout);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&gate.stdout),
+        String::from_utf8_lossy(&gate.stderr)
+    );
     assert!(
-        gstderr.contains("AX0910") || gstdout.contains("AX0910"),
-        "the gate should abort with AX0910, got stderr:\n{gstderr}\nstdout:\n{gstdout}"
+        combined.contains("AX0910"),
+        "the gate should abort with AX0910, got:\n{combined}"
     );
 }

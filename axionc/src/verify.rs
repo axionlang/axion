@@ -101,7 +101,7 @@ fn is_generated(name: &str) -> bool {
 
 /// Verify every function of a lowered module; returns all findings (corruption + leak).
 pub fn verify(lowered: &Lowered) -> Vec<Finding> {
-    let summaries = compute_summaries(lowered);
+    let summaries = compute_summaries(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
     let mut out = Vec::new();
     for f in &lowered.fns {
         if is_generated(&f.name) {
@@ -112,19 +112,35 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
     out
 }
 
+/// The interprocedural alias summary as a REUSABLE analysis over ANY Core (pre- or
+/// post-drop — a function's return classification is drop-independent), keyed to the
+/// functions that actually return a borrow (non-empty entries only). The lowering pass
+/// consumes this to null the ownership annotation on calls to a borrow-returning function,
+/// so Auto-Drop stops freeing a borrowed result (the `grab w = inner w` class); the
+/// verifier then re-derives its own summary from the emitted Core and CHECKS the outcome.
+pub fn borrow_return_summary(
+    fns: &[CoreFn],
+    ba: &BorrowArgs,
+    recinfo: &RecordInfo,
+) -> Summaries {
+    let mut sums = compute_summaries(fns, ba, recinfo);
+    sums.retain(|_, params| !params.is_empty());
+    sums
+}
+
 /// Fixpoint over the call graph: a function returns a PURE interior alias of param `i` when
 /// its `ret` is an interior pointer (`owned == false`) that borrows `i` — which may flow
 /// through a call to another alias-returning function, so it iterates to a fixed point
 /// (findings suppressed during this dry run).
-fn compute_summaries(lowered: &Lowered) -> Summaries {
+fn compute_summaries(fns: &[CoreFn], ba: &BorrowArgs, recinfo: &RecordInfo) -> Summaries {
     let mut sums: Summaries = HashMap::new();
     loop {
         let mut changed = false;
-        for f in &lowered.fns {
+        for f in fns {
             if is_generated(&f.name) {
                 continue;
             }
-            let rv = run_fn(f, &lowered.borrow_args, &lowered.recinfo, &sums, None);
+            let rv = run_fn(f, ba, recinfo, &sums, None);
             // only a PURE interior alias (not owned) exposes an outliving borrow; an owned
             // result (fresh allocation OR whole-value ownership passthrough) is the caller's
             // to free once, so it records no aliased parameter.

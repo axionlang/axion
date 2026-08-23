@@ -435,6 +435,31 @@ fn record_update_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn borrow_returning_function_runs_on_all_backends() {
+    // Regions/lifetimes: `grab w = inner w` RETURNS A BORROW of a parameter (an interior
+    // heap pointer, not a fresh allocation). The lowering infers this and does not free the
+    // borrowed result at the caller — the argument's owner (`main`) frees the whole `W`
+    // once, reclaiming both `inner` and `other`. No leak, no double free (see sanitize.sh);
+    // the drop-balance verifier confirms it clean. interp == cranelift == llvm, result 2.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("field_alias_return.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "field_alias_return should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn record_update_multi_field_runs_on_all_backends() {
     // Updating two non-adjacent heap fields yields a MULTI-ELEMENT skip set {0,2} — the
     // order-sensitive skip-destructor name must be sorted. Leak-free (sanitize.sh). = 2.

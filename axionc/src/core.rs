@@ -4084,6 +4084,21 @@ pub fn lower_with(
     }
     let borrow_args = compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
 
+    // Regions/lifetimes (§): a function whose return is, on EVERY path, a pure interior heap
+    // alias of a (borrowed) parameter (`grab w = inner w`) hands back a BORROW, not a fresh
+    // allocation. Null the ownership annotation on every call to one so Auto-Drop does not
+    // free the borrowed result — the argument's owner frees it once. This makes the
+    // interprocedural field-alias-return SOUND (previously the verifier could only reject
+    // it). Reuses the drop-balance verifier's alias summary (return classification is
+    // drop-independent); the verifier then re-derives it from the emitted Core and checks
+    // the drops. Idempotent + a no-op for programs with no borrow-returning function.
+    let borrow_ret = crate::verify::borrow_return_summary(&out, &borrow_args, &recinfo);
+    if !borrow_ret.is_empty() {
+        for f in &mut out {
+            null_borrow_result_keys(&mut f.body, &borrow_ret);
+        }
+    }
+
     let mut all_dty = build_all_drop_ty(&out, makecon_tys);
     let empty = HashMap::new();
 
@@ -6161,6 +6176,40 @@ fn collect_update_skips(
     }
     walk(t, recinfo, drp, &mut out);
     out
+}
+
+/// Regions/lifetimes (§): null the ownership annotation on every `CallDirect` to a
+/// BORROW-RETURNING function (one whose result is a pure interior heap alias of a
+/// parameter — `grab w = inner w`). Its result is a BORROW, not a fresh allocation, so the
+/// caller must not free it; the argument's owner frees it exactly once. Turns the
+/// interprocedural field-alias-return from a double free into sound code. The callee's own
+/// destructor is unaffected (nulling a call's result key changes only who reclaims THAT
+/// result, not the type universe), so the argument's deep-drop still frees the shared field.
+fn null_borrow_result_keys(t: &mut Term, borrow_ret: &HashMap<String, HashSet<usize>>) {
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            null_borrow_result_in_rhs(rhs, borrow_ret);
+            null_borrow_result_keys(body, borrow_ret);
+        }
+        Term::Drop(_, _, _, _, body) => null_borrow_result_keys(body, borrow_ret),
+        Term::Ret(rhs, _) => null_borrow_result_in_rhs(rhs, borrow_ret),
+    }
+}
+
+fn null_borrow_result_in_rhs(rhs: &mut Rhs, borrow_ret: &HashMap<String, HashSet<usize>>) {
+    match rhs {
+        Rhs::Op(Op::CallDirect(g, _, key)) if borrow_ret.contains_key(g) => *key = None,
+        Rhs::Op(_) => {}
+        Rhs::If(_, th, el) => {
+            null_borrow_result_keys(th, borrow_ret);
+            null_borrow_result_keys(el, borrow_ret);
+        }
+        Rhs::Case(_, arms) => {
+            for (_, b) in arms {
+                null_borrow_result_keys(b, borrow_ret);
+            }
+        }
+    }
 }
 
 fn insert_drops(
