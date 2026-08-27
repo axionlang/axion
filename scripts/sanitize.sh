@@ -41,6 +41,7 @@ NATIVE=(
   axionc/tests/fixtures/integer_accumulator.axi
   axionc/tests/fixtures/integer_divmod.axi
   axionc/tests/fixtures/rsa_modexp.axi
+  axionc/tests/fixtures/integer_first_class.axi
   axionc/tests/fixtures/accum_field_alias.axi
   axionc/tests/fixtures/field_alias_return.axi
   axionc/tests/fixtures/strings_text.axi
@@ -123,6 +124,12 @@ NATIVE=(
 #     reclaiming it would be unsound: native_closure, lambda_hof.
 #   · `drop n xs` is a view — the caller relinquishes `xs` at the call (the
 #     result shares its tail), so the dropped prefix leaks: drop_view.
+#   · a heap value flowing THROUGH an opaque closure (`callclo f y acc`) — the
+#     closure's per-arg ownership (does `f` consume or borrow `acc`? alias it
+#     into the result?) is not statically resolvable, so the fold's accumulator
+#     intermediates leak: integer_first_class. Same class as native_closure /
+#     lambda_hof; a sound fix needs closure-argument linearity (see the
+#     axion-integer-bignum memo). ASan-corruption-clean; result 385 on all 3.
 LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
