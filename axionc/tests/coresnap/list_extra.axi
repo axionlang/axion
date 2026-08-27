@@ -33,7 +33,7 @@ concat$Int xs  =
     Cons y ys ->
     Cons z zs ->
     Cons z zs ->
-  drop eta$1 : tuple$Int$Int
+      drop p
   drop _t0
   drop _t19 : List$Int
   drop _t22
@@ -64,7 +64,6 @@ concat$Int xs  =
 lam$0 [env ]a b  =
 lam$1 [env ]a b  =
 lam$2 [env ]eta$1  =
-  let _d1000000 = call snd eta$1  ; Δ{}
   let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -189,6 +188,7 @@ map f xs  =
   ret * a b  ; Δ{}
       ret b  ; Δ{}
       ret call append$Int y _t0  ; Δ{_t0 y} · moves{_t0 y} · makes List$Int
+  ret call snd eta$1  ; Δ{}
   ret case p of
   ret case xs of
   ret case xs of
@@ -205,7 +205,6 @@ map f xs  =
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
-  ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret rtcall axion_array_free _p  ; Δ{}
   ret + _t34 _t44  ; Δ{}

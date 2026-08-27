@@ -887,6 +887,21 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
             con_field_heap.insert(c.name.clone(), flags);
         }
     }
+    // data types that CARRY a heap payload: some constructor has a heap field. Distinguishes
+    // `List` / a record with heap fields (a real reclamation need) from `Box Int` (a heap shell
+    // wrapping only scalars — a scalar accessor's arg is a borrow, never consumed).
+    let heap_payload_data: HashSet<String> = module
+        .datas
+        .iter()
+        .filter(|d| {
+            d.cons.iter().any(|c| {
+                con_field_heap
+                    .get(&c.name)
+                    .is_some_and(|fs| fs.iter().any(|&h| h))
+            })
+        })
+        .map(|d| d.name.clone())
+        .collect();
     // `consuming[fn]` = parameter indices that are (or become) `%1`. Seeded from the
     // hand-written `%1`, then grown by Rule A (concrete consumers) and Rule B (generic
     // pure-escape). It is the authority the pure-escape fixpoint consults to decide
@@ -947,8 +962,17 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
                     continue;
                 }
                 let ty = *ty;
-                if !(core::is_heap_shaped(ty) && core::ty_has_var(ty)) {
-                    continue; // generic heap params only
+                // A pure-escape candidate: a GENERIC heap param (`List a` — element may be heap)
+                // OR a CONCRETE param that CARRIES a heap payload (`List Integer`, `List Box`).
+                // The concrete case covers a monomorphic HOF fed element-by-element into a
+                // closure: it must shell-free the spine and move each element into the consuming
+                // closure — if it stayed borrowed, the lifted lambda's drop of the element would
+                // double-free against the caller's drop of the list. A concrete heap param with
+                // NO heap payload (`Box Int` — a scalar accessor's arg) must NOT qualify: it is a
+                // borrow, and consuming it would double-free a value its owner still frees.
+                if !(core::is_heap_shaped(ty) && (core::ty_has_var(ty) || carries_heap_payload(ty, &heap_payload_data)))
+                {
+                    continue;
                 }
                 // Optimistically assume this param is consuming, verify, and undo on
                 // failure — insert-in-place instead of cloning the whole map per
@@ -975,6 +999,24 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
         }
     }
     exempt
+}
+
+/// `true` if `ty` transitively carries a reclaimable heap payload: a tuple with a heap/var
+/// element, or a `data` type one of whose constructors has a heap field (`heap_payload_data`).
+/// A heap SHELL wrapping only scalars (`Box Int`) does NOT carry a payload — reading it is a
+/// borrow, so its owning param must not be consumed.
+fn carries_heap_payload(
+    ty: &ast::Type,
+    heap_payload_data: &std::collections::HashSet<String>,
+) -> bool {
+    match ty {
+        ast::Type::Tuple(ts) => ts
+            .iter()
+            .any(|t| core::is_heap_shaped(t) || core::ty_has_var(t)),
+        _ => ty
+            .head_con()
+            .is_some_and(|h| heap_payload_data.contains(h)),
+    }
 }
 
 /// A constructor field that carries a separately-allocated heap payload once

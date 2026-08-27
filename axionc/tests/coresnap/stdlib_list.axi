@@ -37,6 +37,7 @@
 
 
 
+
                                     _ ->
                                 _ ->
                             _ ->
@@ -57,6 +58,7 @@ axion_drop_List$Int _p  =
 axion_drop_List$tuple$Int$Int _p  =
 axion_drop_List _p  =
 axion_drop_Maybe$Int _p  =
+axion_drop_tuple$List$Int$List$Int _p  =
 concatMap f xs  =
 concat xs  =
 consFst y ab  =
@@ -74,6 +76,7 @@ consFst y ab  =
     Cons y ys ->
     Cons z zs ->
       drop ab
+      drop ab : tuple$List$Int$List$Int
       drop m
       drop m
   drop _t0
@@ -150,15 +153,19 @@ lam$5 [env ]eta$9  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List$Bool _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$tuple$Int$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
+  let _dd1 = call axion_drop_List _dd0  ; Δ{}
   let _dd1 = if _dd0 then
+  let _dd2 = loadraw _p+0  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
+  let _dd3 = call axion_drop_List _dd2  ; Δ{}
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
@@ -176,6 +183,7 @@ lam$5 [env ]eta$9  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
           let _t0 = == a k  ; Δ{}
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
       let _t0 = callclo f y  ; Δ{y ys} · moves{y}
@@ -186,7 +194,7 @@ lam$5 [env ]eta$9  =
   let _t0 = call map f xs  ; Δ{} · makes List
       let _t0 = call product ys  ; Δ{}
   let _t0 = call range 1 6  ; Δ{} · makes List$Int
-      let _t0 = call sum a  ; Δ{}
+      let _t0 = call sum a  ; Δ{ab}
       let _t0 = call sum ys  ; Δ{}
   let _t0 = closure lam$0  ; Δ{} · makes heap
       let _t0 = con Cons y a  ; Δ{}
@@ -210,7 +218,7 @@ lam$5 [env ]eta$9  =
         let _t1 = call findIndex p ys  ; Δ{} · makes Maybe$Int
       let _t1 = call map f ys  ; Δ{ys} · moves{ys} · makes List
   let _t1 = call product _t0  ; Δ{_t0}
-      let _t1 = call sum b  ; Δ{}
+      let _t1 = call sum b  ; Δ{ab}
         let _t1 = call takeWhile p ys  ; Δ{} · makes List
   let _t1 = con Cons n _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
       let _t1 = con Nil  ; Δ{}
@@ -335,6 +343,7 @@ range lo hi  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

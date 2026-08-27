@@ -357,6 +357,10 @@ fn closure_linearity_adversarial_runs_on_all_backends() {
         ("closure_consume_lambda.axi", "15\n"),
         ("closure_acc_return.axi", "0\n"),
         ("closure_data_elem.axi", "15\n"),
+        // closure_mono_hof — a MONOMORPHIC HOF over a concrete `List Integer` (Rule-A
+        // territory). Its elements go into a closure, so it must consume the list too;
+        // otherwise the lifted lambda's element drop double-frees the caller's list. 15.
+        ("closure_mono_hof.axi", "15\n"),
     ] {
         for backend in [
             vec!["--backend", "interp"],
