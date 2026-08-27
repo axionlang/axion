@@ -27,6 +27,7 @@ axion_drop_List _p  =
   drop _t4 : List$Int
   drop _t5 : List$Integer
   drop _t6 : List$Integer
+  drop _t7 : Integer
   drop _t8 : String
     else
     else
@@ -84,8 +85,8 @@ lam$2 [env ]eta$6  =
   let _t4 = call range 1 10  ; Δ{_t0 _t1 _t2 _t3} · makes List$Int
   let _t5 = call map _t3 _t4  ; Δ{_t0 _t1 _t2 _t3 _t4} · makes List$Integer
   let _t6 = call map _t2 _t5  ; Δ{_t0 _t1 _t2 _t5} · makes List$Integer
-  let _t7 = call foldr _t0 _t1 _t6  ; Δ{_t0 _t1 _t6} · moves{_t1}
-  let _t8 = call show$Integer _t7  ; Δ{} · makes String
+  let _t7 = call foldr _t0 _t1 _t6  ; Δ{_t0 _t1 _t6} · moves{_t1} · makes Integer
+  let _t8 = call show$Integer _t7  ; Δ{_t7} · makes String
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}

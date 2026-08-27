@@ -72,7 +72,7 @@ e  =
   else
   else
   else
-    let _d1000000 = call modInverse$loop m newt _t5 newr _t7  ; Δ{_t5 _t7} · moves{_t5}
+    let _d1000000 = call modInverse$loop m newt _t5 newr _t7  ; Δ{_t5 _t7} · moves{_t5} · makes Integer
   let _d1000000 = call modInverse _t0 _t1  ; Δ{_t0 _t1} · makes Integer
               let _d1000000 = putStrLn _t18  ; Δ{_t18}
       let _d1000000 = rtcall axion_bignum_mod _t8 m  ; Δ{_t8} · makes Integer
@@ -155,13 +155,13 @@ q  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call modInverse$loop m _t0 _t1 m a  ; Δ{_t0 _t1} · moves{_t0 _t1}
+  ret call modInverse$loop m _t0 _t1 m a  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes Integer
           ret case _t10 of
   ret case _t4 of
       ret case _t7 of
               ret _d1000000  ; Δ{}
-    ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}

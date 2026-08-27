@@ -20,6 +20,7 @@ axion_drop_List _p  =
     drop _t3 : Integer
     drop _t4 : Integer
   drop _t4 : List$Integer
+  drop _t5 : Integer
   drop _t6 : String
     else
     else
@@ -71,8 +72,8 @@ lam$0 [env ]eta$1 eta$2  =
   let _t3 = &worker$step  ; Δ{_t0 _t1 _t2}
     let _t4 = call factorial _t3  ; Δ{_t3} · makes Integer
   let _t4 = rtcall axion_par_map _t3 48 16 _t2  ; Δ{_t0 _t1 _t2} · moves{_t2} · makes List
-  let _t5 = call foldr _t0 _t1 _t4  ; Δ{_t0 _t1 _t4} · moves{_t1}
-  let _t6 = rtcall axion_bignum_to_string _t5  ; Δ{} · makes String
+  let _t5 = call foldr _t0 _t1 _t4  ; Δ{_t0 _t1 _t4} · moves{_t1} · makes Integer
+  let _t6 = rtcall axion_bignum_to_string _t5  ; Δ{_t5} · makes String
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}

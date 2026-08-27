@@ -1748,6 +1748,15 @@ impl Lower<'_> {
                         self.mono_seeds.push(ty.clone());
                         *key = Some(mk);
                     }
+                } else if key.is_none() && head == Some("Integer") {
+                    // A POLYMORPHIC callee (declared return a type-variable `b`, so no
+                    // `fn_ret_ty` key) instantiated at a SCALAR heap type at THIS call
+                    // site — `foldr addI 0 xs :: Integer`. Key the result at the concrete
+                    // type so Auto-Drop reclaims the returned bignum; without this a
+                    // poly-heap call result leaks (integer_first_class `_t7`). Safe: the
+                    // callee returns a fresh/owned value here — an alias-returning callee
+                    // has its key nulled downstream by `null_borrow_result_keys`.
+                    *key = Some("Integer".to_string());
                 }
             }
         }
