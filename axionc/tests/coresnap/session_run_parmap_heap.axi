@@ -16,9 +16,11 @@ axion_drop_List$List$Int _p  =
 axion_drop_List _p  =
     Cons y ys ->
     Cons y ys ->
+  drop eta$1 : List$Int
   drop _t0
-  drop _t3 : List$List$Int
   drop _t4 : List$Int
+      drop xs
+      drop xs : List$List$Int
     else
     else
     else
@@ -30,6 +32,7 @@ axion_drop_List _p  =
   else
   else
 lam$0 [env ]eta$1  =
+  let _d1000000 = call sum eta$1  ; Δ{}
   let _d1000000 = call sum _t4  ; Δ{_t4}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -54,14 +57,14 @@ lam$0 [env ]eta$1  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = callclo f y  ; Δ{}
+      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t0 = call sum ys  ; Δ{}
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = < n 1  ; Δ{}
-      let _t1 = call map f ys  ; Δ{} · makes List
+      let _t1 = call map$List$Int f ys  ; Δ{ys} · moves{ys} · makes List
   let _t1 = call replicate 3 5  ; Δ{_t0} · makes List$Int
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
@@ -73,12 +76,12 @@ lam$0 [env ]eta$1  =
     let _t2 = call replicate _t1 x  ; Δ{} · makes List
   let _t2 = &worker$step  ; Δ{_t0 _t1}
   let _t3 = rtcall axion_par_map _t2 48 16 _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List
-  let _t4 = call map _t0 _t3  ; Δ{_t0 _t3} · makes List$Int
+  let _t4 = call map$List$Int _t0 _t3  ; Δ{_t0 _t3} · moves{_t3} · makes List$Int
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
-map f xs  =
+map$List$Int f xs  =
     Nil ->
     Nil ->
 rangeFused lo hi c n  =
@@ -104,7 +107,6 @@ replicate n x  =
     ret acc  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
-  ret call sum eta$1  ; Δ{}
   ret case xs of
   ret case xs of
     ret con Cons lo _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
@@ -113,6 +115,7 @@ replicate n x  =
       ret con Nil  ; Δ{}
     ret con Nil  ; Δ{}
     ret con Nil  ; Δ{} · makes List$Int
+  ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{}
   ret if _t0 then
   ret if _t0 then

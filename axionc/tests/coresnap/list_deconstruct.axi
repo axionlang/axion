@@ -78,7 +78,6 @@ drop n xs  =
       drop _t2 : String
                   drop _t30 : String
                       drop _t32
-                      drop _t33 : List$Int
                       drop _t34 : List$Int
                       drop _t35 : Maybe$Int
                       drop _t36 : String
@@ -88,6 +87,8 @@ drop n xs  =
   drop _t5 : String
       drop _t9 : List$Int
       drop xs
+      drop xs
+      drop xs : List$Int
       drop xs : List$Int
       else
     else
@@ -143,7 +144,7 @@ last xs  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = callclo f y  ; Δ{}
+      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t0 = call show$Int c0  ; Δ{} · makes String
       let _t0 = call show$Int y  ; Δ{} · makes String
       let _t0 = call show$Int z  ; Δ{} · makes String
@@ -169,7 +170,7 @@ last xs  =
           let _t17 = call tail _t16  ; Δ{_t16} · moves{_t16} · makes Maybe$List$Int
           let _t18 = call show$Maybe$List$Int _t17  ; Δ{_t17} · makes String
           let _t19 = putStrLn _t18  ; Δ{_t18}
-      let _t1 = call map f ys  ; Δ{} · makes List
+      let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
       let _t1 = call show$List$Int c1  ; Δ{_t0} · makes String
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t1 = call showArg$(Int,List$Int) a0  ; Δ{_t0} · makes String
@@ -203,7 +204,7 @@ last xs  =
                   let _t31 = putStrLn _t30  ; Δ{_t30}
                       let _t32 = closure lam$0  ; Δ{} · makes heap
                       let _t33 = call range 1 4  ; Δ{_t32} · makes List$Int
-                      let _t34 = call map _t32 _t33  ; Δ{_t32 _t33} · makes List$Int
+                      let _t34 = call map$Int _t32 _t33  ; Δ{_t32 _t33} · moves{_t33} · makes List$Int
                       let _t35 = call last _t34  ; Δ{_t34} · makes Maybe$Int
                       let _t36 = call show$Maybe$Int _t35  ; Δ{_t35} · makes String
   let _t3 = con Cons 1 _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
@@ -221,7 +222,7 @@ last xs  =
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
-map f xs  =
+map$Int f xs  =
         Nil ->
     Nil ->
     Nil ->

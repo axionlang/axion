@@ -2078,6 +2078,81 @@ fn pat_irrefutable(p: &Pat, single_con: &HashSet<String>) -> bool {
     }
 }
 
+/// The drop key for a heap-typed value of `t` — Integer / boxed `data` / tuple, the
+/// types with a destructor. Mirrors the owned-`%1` key logic in `lower_func`, extended
+/// with `Integer` (its own `axion_bignum_free`, not a `heap_ty`). None for a scalar /
+/// function / non-owned type. Pushes a mono-seed for a parametric instantiation so its
+/// specialized destructor is generated. (String is intentionally excluded: its runtime
+/// C-string is a documented conservative leak, not reclaimed through closures.)
+fn heap_drop_key(
+    t: &Type,
+    data_types: &HashSet<String>,
+    parametric_data: &HashSet<String>,
+    mono_seeds: &mut Vec<Type>,
+) -> Option<String> {
+    if matches!(t, Type::Tuple(_)) {
+        let k = mono_key(t);
+        if k.is_some() {
+            mono_seeds.push(t.clone());
+        }
+        return k;
+    }
+    match t.head_con() {
+        Some("Integer") => Some("Integer".to_string()),
+        Some(h) if parametric_data.contains(h) => {
+            mono_key(t).inspect(|_| mono_seeds.push(t.clone()))
+        }
+        Some(h) if data_types.contains(h) => Some(h.to_string()),
+        _ => None,
+    }
+}
+
+/// Owned heap params of a LIFTED eta-lambda under the closure consume-ABI: a closure
+/// owns every heap arg passed to it (`callclo` moves them in — delta.rs), so an
+/// eta-lambda `\v.. -> base v..` owns each `v` whose type (the wrapped callable's
+/// corresponding param) is a heap type. `droppable_vars`/Auto-Drop then drops exactly
+/// those the body does NOT move out (a borrowing wrapped call → dropped here; a
+/// consuming call or a `Con` result → moved out, not dropped). Types come from the
+/// wrapped function's signature; the eta vars are the trailing args of the body's
+/// application spine, so arg position `i` aligns with the callable's param `i`.
+fn lifted_lambda_owned(
+    pats: &[Pat],
+    body: &Expr,
+    fn_param_types: &HashMap<String, Vec<Type>>,
+    data_types: &HashSet<String>,
+    parametric_data: &HashSet<String>,
+    mono_seeds: &mut Vec<Type>,
+) -> (Vec<String>, Vec<(String, Option<String>)>) {
+    let param_names: HashSet<&str> = pats
+        .iter()
+        .filter_map(|p| match p {
+            Pat::Var(n, _) => Some(n.as_str()),
+            _ => None,
+        })
+        .collect();
+    let (head, args) = spine(body);
+    let Expr::Var(base, _) = head else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(ptypes) = fn_param_types.get(base) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut owned = Vec::new();
+    let mut owned_drop_ty = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        let Expr::Var(n, _) = a else { continue };
+        if !param_names.contains(n.as_str()) {
+            continue;
+        }
+        let Some(t) = ptypes.get(i) else { continue };
+        if let Some(key) = heap_drop_key(t, data_types, parametric_data, mono_seeds) {
+            owned.push(n.clone());
+            owned_drop_ty.push((n.clone(), Some(key)));
+        }
+    }
+    (owned, owned_drop_ty)
+}
+
 /// Lowers a function (top-level or `where`), returning `(params, body,
 /// owned-params)`. Single-clause functions with only variable/`_` patterns
 /// name the parameters directly (without the redundant alias `let n = _p0`),
@@ -3697,6 +3772,18 @@ pub fn lower_with(
             }
         })
         .collect();
+    // Phase B (closure-linearity): function → its declared param types. A lifted
+    // eta-lambda `\v.. -> base v..` owns each heap-typed `v` (the closure consume-ABI
+    // — `callclo` moves its args in); its drop keys come from the WRAPPED callable's
+    // signature (the eta vars are the trailing args of the body's application spine).
+    let fn_param_types: HashMap<String, Vec<Type>> = module
+        .funcs
+        .iter()
+        .filter_map(|f| {
+            let ps = f.sig.as_ref()?.param_types();
+            Some((f.name.clone(), ps.into_iter().cloned().collect()))
+        })
+        .collect();
     // parametric data types (`data List a = …`): a dropped CONCRETE instantiation
     // (`List P`) routes to a specialized destructor. Shared by the lowering
     // (owned `%1` param keys) and the destructor generation.
@@ -3998,6 +4085,16 @@ pub fn lower_with(
         let mut local_names: HashSet<String> = params.iter().cloned().collect();
         local_names.extend(captures.iter().cloned());
         collect_bound_names(body, &mut local_names);
+        // Phase B: the lambda owns its heap params (consume-ABI); Auto-Drop reclaims
+        // those the body does not move out. Keys from the wrapped callable's signature.
+        let (lam_owned, lam_owned_dty) = lifted_lambda_owned(
+            pats,
+            body,
+            &fn_param_types,
+            &data_types,
+            &parametric_data,
+            &mut mono_seeds,
+        );
         let mut lw = Lower {
             globals: &globals,
             fields: &fields,
@@ -4023,8 +4120,8 @@ pub fn lower_with(
             params,
             captures,
             is_closure: true,
-            owned_params: Vec::new(),
-            owned_drop_ty: Vec::new(),
+            owned_params: lam_owned,
+            owned_drop_ty: lam_owned_dty,
             body: lw.term(body),
         });
     }

@@ -124,13 +124,11 @@ NATIVE=(
 #     reclaiming it would be unsound: native_closure, lambda_hof.
 #   · `drop n xs` is a view — the caller relinquishes `xs` at the call (the
 #     result shares its tail), so the dropped prefix leaks: drop_view.
-#   · a heap value flowing THROUGH an opaque closure (`callclo f y acc`) — the
-#     closure's per-arg ownership (does `f` consume or borrow `acc`? alias it
-#     into the result?) is not statically resolvable, so the fold's accumulator
-#     intermediates leak: integer_first_class. Same class as native_closure /
-#     lambda_hof; a sound fix needs closure-argument linearity (see the
-#     axion-integer-bignum memo). ASan-corruption-clean; result 385 on all 3.
+# (integer_first_class — a heap value flowing through a closure in map/foldr — is now
+# leak-free, closed by the closure-linearity arc: consuming HOFs own their list and the
+# lifted lambda reclaims its owned heap params. It is in the LEAKFREE set below.)
 LEAKFREE=(
+  integer_first_class
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
   nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec

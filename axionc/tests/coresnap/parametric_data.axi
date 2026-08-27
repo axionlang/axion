@@ -8,9 +8,9 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_Maybe$Int _p  =
+      drop m
+      drop m
   drop _t0
-  drop _t0 : Maybe$Int
-  drop _t2 : Maybe$Int
     else
   else
   else
@@ -30,9 +30,9 @@ lam$0 [env ]x  =
     let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = con Just 42  ; Δ{} · makes Maybe$Int
-  let _t1 = call fromMaybe 0 _t0  ; Δ{_t0}
+  let _t1 = call fromMaybe 0 _t0  ; Δ{_t0} · moves{_t0}
   let _t2 = con Nothing  ; Δ{} · makes Maybe$Int
-  let _t3 = call fromMaybe 7 _t2  ; Δ{_t2}
+  let _t3 = call fromMaybe 7 _t2  ; Δ{_t2} · moves{_t2}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
@@ -46,7 +46,7 @@ maybe d f m  =
     ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-      ret callclo f x  ; Δ{}
+      ret callclo f x  ; Δ{x} · moves{x}
   ret case m of
   ret _d1000000  ; Δ{}
       ret d  ; Δ{}

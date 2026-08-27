@@ -14,7 +14,8 @@ axion_drop_List$Int _p  =
 axion_drop_List _p  =
     Cons y ys ->
   drop _t0
-  drop _t3 : List$Int
+      drop xs
+      drop xs
     else
     else
   else
@@ -25,9 +26,9 @@ axion_drop_List _p  =
   else
   else
 fib n  =
-foldr f z xs  =
+foldr$Int f z xs  =
 lam$0 [env ]eta$1 eta$2  =
-  let _d1000000 = call foldr _t0 0 _t3  ; Δ{_t0 _t3}
+  let _d1000000 = call foldr$Int _t0 0 _t3  ; Δ{_t0 _t3} · moves{_t3}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
@@ -43,7 +44,7 @@ lam$0 [env ]eta$1 eta$2  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = < a b  ; Δ{}
-      let _t0 = call foldr f z ys  ; Δ{}
+      let _t0 = call foldr$Int f z ys  ; Δ{y ys} · moves{ys}
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
@@ -83,7 +84,7 @@ range lo hi  =
     ret acc  ; Δ{}
     ret a  ; Δ{}
     ret b  ; Δ{}
-      ret callclo f y _t0  ; Δ{}
+      ret callclo f y _t0  ; Δ{y} · moves{y}
   ret call maxOf eta$1 eta$2  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}

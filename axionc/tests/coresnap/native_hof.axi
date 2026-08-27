@@ -18,10 +18,12 @@ axion_drop_List _p  =
     Cons y ys ->
   drop _t0
   drop _t1
-  drop _t10 : List$Int
-  drop _t11 : List$Int
   drop _t2
   drop _t9 : List$Int
+      drop xs
+      drop xs
+      drop xs
+      drop xs : List$Int
       else
     else
     else
@@ -29,11 +31,11 @@ axion_drop_List _p  =
   else
 evenN n  =
 filter p xs  =
-foldr f z xs  =
+foldr$Int f z xs  =
 lam$0 [env ]x a  =
 lam$1 [env ]eta$1  =
 lam$2 [env ]eta$3  =
-  let _d1000000 = call foldr _t0 0 _t11  ; Δ{_t0 _t11}
+  let _d1000000 = call foldr$Int _t0 0 _t11  ; Δ{_t0 _t11} · moves{_t11}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
@@ -48,15 +50,15 @@ lam$2 [env ]eta$3  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = callclo f y  ; Δ{}
+      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t0 = callclo p y  ; Δ{}
-      let _t0 = call foldr f z ys  ; Δ{}
+      let _t0 = call foldr$Int f z ys  ; Δ{y ys} · moves{ys}
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = mod n 2  ; Δ{}
   let _t10 = call filter _t2 _t9  ; Δ{_t0 _t1 _t2 _t9} · makes List$Int
-  let _t11 = call map _t1 _t10  ; Δ{_t0 _t1 _t10} · makes List$Int
+  let _t11 = call map$Int _t1 _t10  ; Δ{_t0 _t1 _t10} · moves{_t10} · makes List$Int
         let _t1 = call filter p ys  ; Δ{} · makes List
-      let _t1 = call map f ys  ; Δ{} · makes List
+      let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
   let _t1 = closure lam$1  ; Δ{_t0} · makes heap
   let _t2 = closure lam$2  ; Δ{_t0 _t1} · makes heap
   let _t3 = con Nil  ; Δ{_t0 _t1 _t2} · makes List$Int
@@ -69,7 +71,7 @@ lam$2 [env ]eta$3  =
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
-map f xs  =
+map$Int f xs  =
     Nil ->
     Nil ->
     Nil ->
@@ -83,7 +85,7 @@ map f xs  =
     ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-      ret callclo f y _t0  ; Δ{}
+      ret callclo f y _t0  ; Δ{y} · moves{y}
   ret call evenN eta$3  ; Δ{}
         ret call filter p ys  ; Δ{} · makes List
   ret call sq eta$1  ; Δ{}

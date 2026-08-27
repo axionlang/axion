@@ -59,7 +59,6 @@ double x  =
           drop _t13 : String
               drop _t16 : String
                   drop _t19 : String
-  drop _t1 : List$Int
       drop _t1 : String
       drop _t1 : String
       drop _t1 : String
@@ -79,6 +78,8 @@ double x  =
   drop _t3 : String
       drop _t5 : Maybe$Int
       drop _t6 : String
+      drop xs
+      drop xs : List$Int
     else
     else
     else
@@ -141,7 +142,7 @@ lam$0 [env ]eta$1  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = callclo f y  ; Δ{}
+      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t0 = call show$Int y  ; Δ{} · makes String
       let _t0 = call show$Int z  ; Δ{} · makes String
       let _t0 = call show$List$Int y  ; Δ{} · makes String
@@ -166,7 +167,7 @@ lam$0 [env ]eta$1  =
               let _t17 = putStrLn _t16  ; Δ{_t16}
                   let _t18 = con TPlus  ; Δ{}
                   let _t19 = call show$Trit _t18  ; Δ{} · makes String
-      let _t1 = call map f ys  ; Δ{} · makes List
+      let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
   let _t1 = call range 1 5  ; Δ{_t0} · makes List$Int
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t1 = call showListRest$Int ys  ; Δ{_t0} · makes String
@@ -193,7 +194,7 @@ lam$0 [env ]eta$1  =
                       let _t29 = call show$List$List$Int _t28  ; Δ{_t28} · makes String
     let _t2 = + acc lo  ; Δ{}
     let _t2 = callclo c lo n  ; Δ{}
-  let _t2 = call map _t0 _t1  ; Δ{_t0 _t1} · makes List$Int
+  let _t2 = call map$Int _t0 _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List$Int
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
@@ -212,7 +213,7 @@ lam$0 [env ]eta$1  =
     let _tag = loadraw _p+0  ; Δ{}
     LT ->
 main  =
-map f xs  =
+map$Int f xs  =
     Nil ->
     Nil ->
     Nil ->

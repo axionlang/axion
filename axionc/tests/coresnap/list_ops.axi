@@ -17,8 +17,9 @@ axion_drop_List _p  =
 dbl x  =
   drop _t3 : List$Int
   drop _t5
-  drop _t6 : List$Int
   drop _t7 : List$Int
+      drop xs
+      drop xs : List$Int
     else
     else
   else
@@ -41,13 +42,13 @@ lam$0 [env ]eta$1  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = callclo f y  ; Δ{}
+      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t0 = call sumList ys  ; Δ{}
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
-      let _t1 = call map f ys  ; Δ{} · makes List
+      let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
   let _t1 = con Cons 3 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
@@ -60,12 +61,12 @@ lam$0 [env ]eta$1  =
   let _t4 = call sumList _t3  ; Δ{_t3}
   let _t5 = closure lam$0  ; Δ{} · makes heap
   let _t6 = call range 1 4  ; Δ{_t5} · makes List$Int
-  let _t7 = call map _t5 _t6  ; Δ{_t5 _t6} · makes List$Int
+  let _t7 = call map$Int _t5 _t6  ; Δ{_t5 _t6} · moves{_t6} · makes List$Int
   let _t8 = call sumList _t7  ; Δ{_t7}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
-map f xs  =
+map$Int f xs  =
     Nil ->
     Nil ->
 rangeFused lo hi c n  =

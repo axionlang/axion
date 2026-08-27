@@ -38,9 +38,7 @@ drop n xs  =
   drop _t12 : List$Int
   drop _t19 : List$Int
   drop _t22
-  drop _t26 : List$Int
   drop _t29
-  drop _t33 : List$Int
   drop _t39 : List$Int
   drop _t40 : List$Int
   drop _t47 : List$Int
@@ -49,6 +47,10 @@ drop n xs  =
   drop _t57 : List$Int
   drop _t58 : List$Int
   drop _t68 : List$Int
+      drop xs
+      drop xs
+      drop xs
+      drop xs
       drop xs
       drop xs
       drop xs
@@ -65,8 +67,8 @@ elem x xs  =
   else
 evenN n  =
 filter p xs  =
-foldl f z xs  =
-foldr f z xs  =
+foldl$Int f z xs  =
+foldr$Int f z xs  =
 lam$0 [env ]x a  =
 lam$1 [env ]a x  =
 lam$2 [env ]eta$1  =
@@ -86,9 +88,9 @@ length xs  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
-      let _t0 = callclo f z y  ; Δ{}
+      let _t0 = callclo f z y  ; Δ{y ys} · moves{y}
       let _t0 = callclo p y  ; Δ{}
-      let _t0 = call foldr f z ys  ; Δ{}
+      let _t0 = call foldr$Int f z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call reverse$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
       let _t0 = call sum ys  ; Δ{}
@@ -119,7 +121,7 @@ length xs  =
   let _t24 = con Cons 3 _t23  ; Δ{_t22 _t23} · moves{_t23} · makes List$Int
   let _t25 = con Cons 2 _t24  ; Δ{_t22 _t24} · moves{_t24} · makes List$Int
   let _t26 = con Cons 1 _t25  ; Δ{_t22 _t25} · moves{_t25} · makes List$Int
-  let _t27 = call foldr _t22 0 _t26  ; Δ{_t22 _t26}
+  let _t27 = call foldr$Int _t22 0 _t26  ; Δ{_t22 _t26} · moves{_t26}
   let _t28 = + _t21 _t27  ; Δ{}
   let _t29 = closure lam$1  ; Δ{} · makes heap
         let _t2 = call take _t1 ys  ; Δ{} · makes List
@@ -129,7 +131,7 @@ length xs  =
   let _t31 = con Cons 6 _t30  ; Δ{_t29 _t30} · moves{_t30} · makes List$Int
   let _t32 = con Cons 5 _t31  ; Δ{_t29 _t31} · moves{_t31} · makes List$Int
   let _t33 = con Cons 4 _t32  ; Δ{_t29 _t32} · moves{_t32} · makes List$Int
-  let _t34 = call foldl _t29 0 _t33  ; Δ{_t29 _t33}
+  let _t34 = call foldl$Int _t29 0 _t33  ; Δ{_t29 _t33} · moves{_t33}
   let _t35 = + _t28 _t34  ; Δ{}
   let _t36 = con Nil  ; Δ{} · makes List$Int
   let _t37 = con Cons 300 _t36  ; Δ{_t36} · moves{_t36} · makes List$Int
@@ -209,12 +211,12 @@ null xs  =
     ret 1  ; Δ{}
   ret + a x  ; Δ{}
       ret call append$Int _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List$Int
-      ret callclo f y _t0  ; Δ{}
+      ret callclo f y _t0  ; Δ{y} · moves{y}
         ret call drop _t1 ys  ; Δ{} · makes List
         ret call elem x ys  ; Δ{}
   ret call evenN eta$1  ; Δ{}
         ret call filter p ys  ; Δ{} · makes List
-      ret call foldl f _t0 ys  ; Δ{}
+      ret call foldl$Int f _t0 ys  ; Δ{ys} · moves{ys}
   ret case xs of
   ret case xs of
   ret case xs of

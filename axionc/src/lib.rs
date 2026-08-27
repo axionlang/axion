@@ -1201,6 +1201,40 @@ fn moved_into_consuming(
     }
 }
 
+/// `true` if `name` is moved as an argument into a CLOSURE application — a spine whose
+/// head is a function-typed local (`closures`), i.e. a higher-order parameter like
+/// foldr's combiner `f` in `f y acc`. Under the closure consume-ABI the closure OWNS
+/// (and reclaims — the lifted lambda's Auto-Drop) the arg, so the field escapes the
+/// enclosing function exactly as a return would. Sound because linearity forbids a
+/// second use of a consumed value, so the list this element came from is never read
+/// again after the consuming HOF.
+fn moved_into_closure(
+    name: &str,
+    e: &ast::Expr,
+    closures: &std::collections::HashSet<String>,
+) -> bool {
+    match e {
+        ast::Expr::App(_, _, _) => {
+            let (head, args) = core::spine(e);
+            let here = matches!(head, ast::Expr::Var(g, _) if closures.contains(g))
+                && args.iter().any(|a| is_var_named(a, name));
+            here || args.iter().any(|a| moved_into_closure(name, a, closures))
+        }
+        ast::Expr::If(_, t, el, _) => {
+            moved_into_closure(name, t, closures) || moved_into_closure(name, el, closures)
+        }
+        ast::Expr::Case(_, arms, _) => arms
+            .iter()
+            .any(|(_, b)| moved_into_closure(name, b, closures)),
+        ast::Expr::Let(_, body, _) => moved_into_closure(name, body, closures),
+        ast::Expr::Tuple(es, _) => es.iter().any(|x| moved_into_closure(name, x, closures)),
+        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => {
+            fs.iter().any(|(_, x)| moved_into_closure(name, x, closures))
+        }
+        _ => false,
+    }
+}
+
 /// `true` if `name` escapes on EVERY control-flow path of `e` — returned/embedded or
 /// moved into a consuming call at every `if`/`case` leaf. Distinct from
 /// `escapes_via_result`'s "escapes on SOME branch": a PARTIAL consumer (`filter`'s
@@ -1210,16 +1244,25 @@ fn escapes_every_path(
     name: &str,
     e: &ast::Expr,
     consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    closures: &std::collections::HashSet<String>,
 ) -> bool {
     match e {
         ast::Expr::If(_, t, el, _) => {
-            escapes_every_path(name, t, consuming) && escapes_every_path(name, el, consuming)
+            escapes_every_path(name, t, consuming, closures)
+                && escapes_every_path(name, el, consuming, closures)
         }
         ast::Expr::Case(_, arms, _) => {
-            !arms.is_empty() && arms.iter().all(|(_, b)| escapes_every_path(name, b, consuming))
+            !arms.is_empty()
+                && arms
+                    .iter()
+                    .all(|(_, b)| escapes_every_path(name, b, consuming, closures))
         }
-        ast::Expr::Let(_, body, _) => escapes_every_path(name, body, consuming),
-        _ => escapes_via_result(name, e) || moved_into_consuming(name, e, consuming),
+        ast::Expr::Let(_, body, _) => escapes_every_path(name, body, consuming, closures),
+        _ => {
+            escapes_via_result(name, e)
+                || moved_into_consuming(name, e, consuming)
+                || moved_into_closure(name, e, closures)
+        }
     }
 }
 
@@ -1233,6 +1276,9 @@ fn param_is_pure_escape(
     con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
     consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
 ) -> bool {
+    // function-typed params of `f` are the closures its elements may be consumed by
+    // (foldr's combiner `f`): an element moved into `f y` escapes into that closure.
+    let closures = arrow_typed_params(f);
     let mut saw = false;
     for clause in &f.clauses {
         let bodies: Vec<&ast::Expr> = match &clause.body {
@@ -1242,7 +1288,7 @@ fn param_is_pure_escape(
         match clause.pats.get(idx) {
             Some(ast::Pat::Var(p, _)) => {
                 for body in &bodies {
-                    if !p_path_ok(p, body, false, con_field_heap, consuming, &mut saw) {
+                    if !p_path_ok(p, body, false, con_field_heap, consuming, &closures, &mut saw) {
                         return false;
                     }
                 }
@@ -1250,7 +1296,14 @@ fn param_is_pure_escape(
             // clause-head destructuring: `f (Cons b ..) = <b escapes>`
             Some(ast::Pat::Con(con, subs, _)) => {
                 for body in &bodies {
-                    if !arm_heap_escape_every_path(con, subs, body, con_field_heap, consuming) {
+                    if !arm_heap_escape_every_path(
+                        con,
+                        subs,
+                        body,
+                        con_field_heap,
+                        consuming,
+                        &closures,
+                    ) {
                         return false;
                     }
                 }
@@ -1260,6 +1313,28 @@ fn param_is_pure_escape(
         }
     }
     saw
+}
+
+/// The parameter names of `f` whose signature type is a function (arrow) — the
+/// higher-order params. Aggregated across clauses (a clause may bind a different name
+/// at the same position). Empty when `f` has no signature.
+fn arrow_typed_params(f: &ast::Func) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let Some(sig) = &f.sig else { return out };
+    let ptypes = sig.param_types();
+    for clause in &f.clauses {
+        for (i, p) in clause.pats.iter().enumerate() {
+            if let ast::Pat::Var(n, _) = p {
+                if ptypes
+                    .get(i)
+                    .is_some_and(|t| matches!(t, ast::Type::Arrow { .. }))
+                {
+                    out.insert(n.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Flow check for the owned param `p` along one body: on EVERY path, `p` must be
@@ -1273,6 +1348,7 @@ fn p_path_ok(
     consumed: bool,
     cfh: &std::collections::HashMap<String, Vec<bool>>,
     consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    closures: &std::collections::HashSet<String>,
     saw: &mut bool,
 ) -> bool {
     match e {
@@ -1282,26 +1358,31 @@ fn p_path_ok(
             !arms.is_empty()
                 && arms.iter().all(|(pat, body)| match pat {
                     ast::Pat::Con(con, subs, _) => {
-                        arm_heap_escape_every_path(con, subs, body, cfh, consuming)
-                            && p_path_ok(p, body, true, cfh, consuming, saw)
+                        arm_heap_escape_every_path(con, subs, body, cfh, consuming, closures)
+                            && p_path_ok(p, body, true, cfh, consuming, closures, saw)
                     }
-                    _ => p_path_ok(p, body, true, cfh, consuming, saw),
+                    _ => p_path_ok(p, body, true, cfh, consuming, closures, saw),
                 })
         }
         ast::Expr::If(_, t, el, _) => {
-            p_path_ok(p, t, consumed, cfh, consuming, saw)
-                && p_path_ok(p, el, consumed, cfh, consuming, saw)
+            p_path_ok(p, t, consumed, cfh, consuming, closures, saw)
+                && p_path_ok(p, el, consumed, cfh, consuming, closures, saw)
         }
         // a `case` on something OTHER than `p`: `p` must be handled in every arm.
         ast::Expr::Case(_, arms, _) => {
             !arms.is_empty()
                 && arms
                     .iter()
-                    .all(|(_, body)| p_path_ok(p, body, consumed, cfh, consuming, saw))
+                    .all(|(_, body)| p_path_ok(p, body, consumed, cfh, consuming, closures, saw))
         }
-        ast::Expr::Let(_, body, _) => p_path_ok(p, body, consumed, cfh, consuming, saw),
+        ast::Expr::Let(_, body, _) => p_path_ok(p, body, consumed, cfh, consuming, closures, saw),
         // a tail: OK iff `p` was already consumed upstream, or escapes whole here.
-        _ => consumed || escapes_via_result(p, e) || moved_into_consuming(p, e, consuming),
+        _ => {
+            consumed
+                || escapes_via_result(p, e)
+                || moved_into_consuming(p, e, consuming)
+                || moved_into_closure(p, e, closures)
+        }
     }
 }
 
@@ -1313,6 +1394,7 @@ fn arm_heap_escape_every_path(
     body: &ast::Expr,
     cfh: &std::collections::HashMap<String, Vec<bool>>,
     consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    closures: &std::collections::HashSet<String>,
 ) -> bool {
     let Some(heaps) = cfh.get(con) else {
         return false;
@@ -1322,7 +1404,7 @@ fn arm_heap_escape_every_path(
             // A heap field must escape on every path — AND its binder must not be
             // shadowed inside the arm (the escape analysis is name-based; a nested
             // binder reusing the name would make a DROPPED field look escaped).
-            matches!(sp, ast::Pat::Var(b, _) if escapes_every_path(b, body, consuming)
+            matches!(sp, ast::Pat::Var(b, _) if escapes_every_path(b, body, consuming, closures)
                 && !is_rebound(b, body))
         } else {
             true

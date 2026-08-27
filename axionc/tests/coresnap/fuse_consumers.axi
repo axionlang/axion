@@ -13,7 +13,6 @@
 
 
 
-
 axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List _p  =
@@ -22,9 +21,11 @@ axion_drop_List _p  =
     Cons y ys ->
     Cons y ys ->
   drop fuse$0_clo
+  drop fuse$1_clo
   drop fuse$2_clo
-  drop fuse$3_clo
   drop _t2
+      drop xs
+      drop xs
     else
     else
   else
@@ -34,11 +35,10 @@ axion_drop_List _p  =
   else
   else
   else
-foldr f z xs  =
+foldr$Int f z xs  =
 fuse$0 [env ]x acc  =
 fuse$1 [env ]x acc  =
 fuse$2 [env ]x acc  =
-fuse$3 [env ]x acc  =
 lam$0 [env ]x acc  =
 length xs  =
   let a = call rangeFusedSum 1 11 0  ; Δ{}
@@ -58,12 +58,12 @@ length xs  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
   let fuse$0_clo = closure fuse$0  ; Δ{} · makes heap
+  let fuse$1_clo = closure fuse$1  ; Δ{} · makes heap
   let fuse$2_clo = closure fuse$2  ; Δ{} · makes heap
-  let fuse$3_clo = closure fuse$3  ; Δ{} · makes heap
-  let g = call rangeFused 1 6 _t2 1  ; Δ{_t2}
+  let g = call foldr$Int _t2 1 _t3  ; Δ{_t2 _t3} · moves{_t3}
   let h = if _t5 then
   let i = if _t7 then
-      let _t0 = call foldr f z ys  ; Δ{}
+      let _t0 = call foldr$Int f z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
@@ -77,8 +77,9 @@ length xs  =
     let _t2 = callclo c lo n  ; Δ{}
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
   let _t2 = closure lam$0  ; Δ{} · makes heap
-  let _t5 = call rangeFused 1 0 fuse$2_clo 1  ; Δ{fuse$2_clo}
-  let _t7 = call rangeFused 1 1 fuse$3_clo 1  ; Δ{fuse$3_clo}
+  let _t3 = call range 1 6  ; Δ{_t2} · makes List$Int
+  let _t5 = call rangeFused 1 0 fuse$1_clo 1  ; Δ{fuse$1_clo}
+  let _t7 = call rangeFused 1 1 fuse$2_clo 1  ; Δ{fuse$2_clo}
   let _t8 = + a c  ; Δ{}
   let _t9 = + _t8 g  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -109,14 +110,13 @@ range lo hi  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret 0  ; Δ{}
   ret + 1 acc  ; Δ{}
       ret + 1 _t0  ; Δ{}
       ret 1  ; Δ{}
     ret 7  ; Δ{}
     ret 7  ; Δ{}
     ret acc  ; Δ{}
-      ret callclo f y _t0  ; Δ{}
+      ret callclo f y _t0  ; Δ{y} · moves{y}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret case xs of
