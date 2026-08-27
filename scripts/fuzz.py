@@ -54,6 +54,10 @@ single :: Integer -> List Integer
 single n = Cons n Nil
 sumL :: List Integer -> Integer
 sumL xs = foldr addI 0 xs
+mapSq :: List Integer -> List Integer
+mapSq xs = map sq xs
+revL :: List Integer -> List Integer
+revL xs = reverse xs
 dbl :: Int -> Int
 dbl x = x + x
 gt2i :: Int -> Bool
@@ -68,7 +72,10 @@ MAP = {
                 ("map single (%s)", "LInt")],
     "R":       [("map getV (%s)", "Integer")],
     "Pair":    [("map fstT (%s)", "Integer")],
-    "LInt":    [("map sumL (%s)", "Integer")],
+    # nested lists (element = List Integer): inner map/reverse go THROUGH two closure
+    # layers (map (map sq)); `map sumL` collapses a level back to Integer.
+    "LInt":    [("map mapSq (%s)", "LInt"), ("map revL (%s)", "LInt"),
+                ("map sumL (%s)", "Integer")],
     "Int":     [("map dbl (%s)", "Int")],
 }
 # same-type transformers (apply to any state). filter/take/takeWhile over a HEAP element
@@ -84,7 +91,21 @@ SAME = {
 TO_INTEGER = {"Integer": "%s", "R": "map getV (%s)", "Pair": "map fstT (%s)",
               "LInt": "map sumL (%s)", "Int": "map fromInt (%s)"}
 
+def gen_array(rng):
+    # functional Array combinators (native heap resource): each term reduces to Int, so a
+    # sum of them prints and exercises Array allocation + reclamation (axion_array_free).
+    terms = []
+    for _ in range(rng.randint(1, 4)):
+        k = rng.randint(1, 12)
+        terms.append(rng.choice([
+            f"arraySum (arrayIota {k})",
+            f"arrayDot (arrayIota {k}) (arrayIota {k})",
+        ]))
+    return PREAMBLE + "\nmain :: Int\nmain = " + " + ".join(terms) + "\n"
+
 def gen(rng):
+    if rng.random() < 0.2:              # array mode (a distinct heap-resource surface)
+        return gen_array(rng)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:
@@ -122,10 +143,38 @@ def run(args, want_bin=None):
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
 
+def asan_run(src, work, oracle_out):
+    """Compile --release + ASan/LSan and run. `oracle_out` is the interpreter's stdout to
+    compare against, or None for a native-only program (arrays: no interp oracle → skip the
+    divergence check, only hunt corruption/leak)."""
+    rl, ol, el = run([AXIONC, "--emit", "llvm", str(src)])
+    if rl != 0:
+        return ("ok", None)
+    (work / "ir.ll").write_text(ol)
+    rcc, _, _ = run([CLANG, "-fsanitize=address,leak", "-pthread", "-O1", "-w",
+                     str(work / "ir.ll"), RT, "-o", str(work / "p")])
+    if rcc != 0:
+        return ("ok", None)
+    rr, orr, err = run([str(work / "p")])
+    if "use-after-free" in err or "double-free" in err or "invalid pointer" in err:
+        return ("corruption", err[-600:])
+    if "detected memory leaks" in err:
+        return ("leak", None)              # LSan `_exit`s without flushing stdout
+    if oracle_out is not None and rr == 0 and orr.strip() != oracle_out.strip():
+        return ("divergence", f"interp={oracle_out!r} llvm+asan={orr!r}\n{err[-300:]}")
+    return ("ok", None)
+
 def check(prog, work):
     src = work / "p.axi"
     src.write_text(prog)
     ri, oi, ei = run([AXIONC, str(src)])
+    # arrays are native-only (interp lacks arraySum/arrayIota → runtime "name not found");
+    # there is no interp oracle, so ASan-check the native build for corruption/leak only.
+    if "name not found at runtime" in (oi + ei):
+        rc, oc, ec = run([AXIONC, "--backend", "cranelift", str(src)])
+        if rc != 0:
+            return ("ax0912", None) if "AX0912" in ec else ("verdict", f"native-only prog rejected:\n{ec[-400:]}")
+        return asan_run(src, work, None)
     rc, oc, ec = run([AXIONC, "--backend", "cranelift", str(src)])
     # verdict divergence
     if ri == 0 and rc != 0:
@@ -136,28 +185,10 @@ def check(prog, work):
         return ("verdict", f"cranelift ran but interp rejected:\n{ei[-400:]}")
     if ri != 0 and rc != 0:
         return ("reject", None)                # both reject (type error / guard) — consistent
-    # both ran: output divergence
+    # both ran: output divergence (cranelift has no sanitizer-flush hazard)
     if oi != oc:
         return ("divergence", f"interp={oi!r} cranelift={oc!r}")
-    # ASan/LSan on --release
-    rl, ol, el = run([AXIONC, "--emit", "llvm", str(src)])
-    if rl != 0:
-        return ("ok", None)
-    (work / "ir.ll").write_text(ol)
-    rcc, _, ecc = run([CLANG, "-fsanitize=address,leak", "-pthread", "-O1", "-w",
-                       str(work / "ir.ll"), RT, "-o", str(work / "p")])
-    if rcc != 0:
-        return ("ok", None)                    # clang couldn't build — skip
-    rr, orr, err = run([str(work / "p")])
-    if "use-after-free" in err or "double-free" in err or "invalid pointer" in err:
-        return ("corruption", err[-600:])
-    if "detected memory leaks" in err:
-        return ("leak", None)                  # LSan `_exit`s without flushing stdout
-    # stdout is only reliable on a clean exit (cranelift already validated the result
-    # above, which has no sanitizer-flush hazard); compare llvm output only then.
-    if rr == 0 and orr.strip() != oi.strip():
-        return ("divergence", f"interp={oi!r} llvm+asan={orr!r}\n{err[-300:]}")
-    return ("ok", None)
+    return asan_run(src, work, oi)
 
 def main():
     ap = argparse.ArgumentParser()
