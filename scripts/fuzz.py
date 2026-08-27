@@ -107,7 +107,10 @@ def gen_arena(rng):
 # (heap reclamation across channels — where a residual leak once lived).
 SESSION_INT_COMP = {"sq": "x * x", "incr": "x + fromInt 1", "idI": "x", "dblI": "x + x"}
 def gen_session(rng):
-    if rng.random() < 0.6:
+    r = rng.random()
+    if r < 0.35:
+        return gen_session_offer(rng)        # branching Offer/select protocols
+    if r < 0.7:
         comp = rng.choice(list(SESSION_INT_COMP))
         n, m = rng.randint(1, 6), rng.randint(1, 20)
         pre = "".join(f"{c} :: Integer -> Integer\n{c} x = {b}\n" for c, b in SESSION_INT_COMP.items())
@@ -125,6 +128,44 @@ def gen_session(rng):
     main = ("main :: Int\nmain = bound $ do\n  c <- spawn worker\n"
             f"  c2 <- send c {v}\n  (r, c3) <- recv c2\n  close c3\n  r\n")
     return worker + main
+
+def gen_session_offer(rng):
+    # a branching Offer/select protocol: `data Resp` branches must match the worker's Offer
+    # type EXACTLY, and the client follows the DUAL of the branch it selects (worker Recv ⇒
+    # client Send, worker Send ⇒ client Recv). Generated as a matched worker+client pair so
+    # it is well-typed by construction. Runs on interp too → full differential.
+    # every Offer MUST end with a `Closed` branch (the label Linear Unwinding sends on
+    # cancel — T5), continuation End. Plus 1–2 other branches with random continuations.
+    k = rng.randint(1, 2)
+    names = ["BrA", "BrB"][:k] + ["Closed"]
+    conts = [rng.choice(["end", "recv", "send"]) for _ in range(k)] + ["end"]
+    # compound session types must be PARENTHESISED inside `Ep`/`Offer` (else `Ep Send Int
+    # End` parses as `Ep` applied to three args).
+    styp = {"end": "End", "recv": "(Recv Int End)", "send": "(Send Int End)"}
+    def wbody(ct):
+        if ct == "end":  return "close d2"
+        if ct == "recv": return "do\n    (n, d3) <- recv d2\n    close d3"
+        return f"do\n    d3 <- send d2 {rng.randint(1, 9)}\n    close d3"
+    data = "data Resp = " + " | ".join(f"{n} (Ep {styp[c]})" for n, c in zip(names, conts)) + "\n"
+    offer_ty = "Offer " + " ".join(f"({n} {styp[c]})" for n, c in zip(names, conts))
+    worker = f"worker :: Ep ({offer_ty}) %1 -> IO ()\nworker d = case offer d of\n"
+    worker += "".join(f"  {n} d2 -> {wbody(c)}\n" for n, c in zip(names, conts))
+    # client: a small chance to CANCEL (reclaim the channel un-selected); else select one
+    # branch and run its dual to completion, returning an Int.
+    if rng.random() < 0.2:
+        client = "main :: Int\nmain = bound $ do\n  c <- spawn worker\n  cancel c\n  0\n"
+        return data + worker + client
+    j = rng.randrange(k)
+    ct = conts[j]
+    if ct == "end":
+        cbody = "  close c2\n  0"
+    elif ct == "recv":     # worker receives ⇒ client sends
+        cbody = f"  c3 <- send c2 {rng.randint(1, 9)}\n  close c3\n  0"
+    else:                  # worker sends ⇒ client receives
+        cbody = "  (r, c3) <- recv c2\n  close c3\n  r"
+    client = ("main :: Int\nmain = bound $ do\n  c <- spawn worker\n"
+              f"  c2 <- select {names[j]} c\n{cbody}\n")
+    return data + worker + client
 
 def gen_array(rng):
     # functional Array combinators (native heap resource): each term reduces to Int, so a
