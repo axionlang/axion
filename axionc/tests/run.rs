@@ -361,6 +361,14 @@ fn closure_linearity_adversarial_runs_on_all_backends() {
         // territory). Its elements go into a closure, so it must consume the list too;
         // otherwise the lifted lambda's element drop double-frees the caller's list. 15.
         ("closure_mono_hof.axi", "15\n"),
+        // Adversarial-sweep survivors — heap-through-closure shapes that came back clean
+        // and are pinned so a future reclamation change can't silently corrupt them:
+        ("closure_foldl.axi", "15\n"),              // accumulator on the left
+        ("closure_record_elem.axi", "15\n"),        // records with a heap field
+        ("closure_nested_list.axi", "15\n"),        // List (List Integer)
+        ("closure_alias_combiner.axi", "5\n"),      // combiner returns one arg by alias
+        ("closure_discard_combiner.axi", "0\n"),    // combiner discards BOTH args
+        ("closure_heaplist_combiner.axi", "15\n"),  // combiner allocates a fresh list
     ] {
         for backend in [
             vec!["--backend", "interp"],

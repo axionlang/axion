@@ -46,6 +46,12 @@ NATIVE=(
   axionc/tests/fixtures/closure_data_elem.axi
   axionc/tests/fixtures/closure_acc_return.axi
   axionc/tests/fixtures/closure_mono_hof.axi
+  axionc/tests/fixtures/closure_foldl.axi
+  axionc/tests/fixtures/closure_record_elem.axi
+  axionc/tests/fixtures/closure_nested_list.axi
+  axionc/tests/fixtures/closure_alias_combiner.axi
+  axionc/tests/fixtures/closure_discard_combiner.axi
+  axionc/tests/fixtures/closure_heaplist_combiner.axi
   axionc/tests/fixtures/accum_field_alias.axi
   axionc/tests/fixtures/field_alias_return.axi
   axionc/tests/fixtures/strings_text.axi
@@ -135,6 +141,7 @@ NATIVE=(
 # inferred at the `Pat::Var` span for a user lambda like `\x acc -> acc`). In LEAKFREE.)
 LEAKFREE=(
   integer_first_class closure_consume_lambda closure_data_elem closure_acc_return closure_mono_hof
+  closure_foldl closure_record_elem closure_nested_list closure_alias_combiner closure_discard_combiner closure_heaplist_combiner
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
   nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec
