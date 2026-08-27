@@ -18,7 +18,11 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 d  =
       drop h : Integer
+      drop newt : Integer
+      drop newt : Integer
     drop q : Integer
+  drop _t0 : Integer
+  drop _t0 : Integer
   drop _t0 : Integer
   drop _t0 : Integer
   drop _t0 : Integer
@@ -34,6 +38,8 @@ d  =
               drop _t16 : Integer
               drop _t17 : Integer
               drop _t18 : String
+  drop _t1 : Integer
+  drop _t1 : Integer
   drop _t1 : Integer
   drop _t1 : Integer
     drop _t2 : Integer
@@ -52,10 +58,13 @@ d  =
     drop _t6 : Integer
       drop _t6 : String
       drop _t7 : Integer
+    drop _t7 : Integer
           drop _t8 : Integer
       drop _t8 : Integer
       drop _t9 : Integer
           drop _t9 : String
+      drop t : Integer
+    drop t : Integer
 e  =
     else
     else
@@ -63,6 +72,8 @@ e  =
   else
   else
   else
+    let _d1000000 = call modInverse$loop m newt _t5 newr _t7  ; Δ{_t5 _t7} · moves{_t5}
+  let _d1000000 = call modInverse _t0 _t1  ; Δ{_t0 _t1} · makes Integer
               let _d1000000 = putStrLn _t18  ; Δ{_t18}
       let _d1000000 = rtcall axion_bignum_mod _t8 m  ; Δ{_t8} · makes Integer
   let _d1000000 = rtcall axion_bignum_mul _t0 _t1  ; Δ{_t0 _t1} · makes Integer
@@ -77,6 +88,7 @@ e  =
     let _dfree = rtcall axion_free _p  ; Δ{}
       let h = call powMod b _t7 m  ; Δ{_t7} · makes Integer
     let q = rtcall axion_bignum_div r newr  ; Δ{} · makes Integer
+      let _rcl2000000 = rtcall axion_bignum_add t m  ; Δ{} · makes Integer
   let _t0 = call e  ; Δ{} · makes Integer
   let _t0 = call p  ; Δ{} · makes Integer
   let _t0 = call p  ; Δ{} · makes Integer
@@ -103,7 +115,7 @@ e  =
   let _t1 = rtcall axion_bignum_from_i64 1  ; Δ{_t0} · makes Integer
   let _t1 = rtcall axion_bignum_from_i64 1  ; Δ{_t0} · makes Integer
   let _t1 = rtcall axion_bignum_from_i64 3120  ; Δ{_t0} · makes Integer
-  let _t2 = call modInverse _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes Integer
+  let _t2 = call modInverse _t0 _t1  ; Δ{_t0 _t1} · makes Integer
     let _t2 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
     let _t2 = rtcall axion_bignum_from_i64 2  ; Δ{} · makes Integer
   let _t2 = rtcall axion_bignum_sub _t0 _t1  ; Δ{_t0 _t1} · makes Integer
@@ -143,14 +155,14 @@ q  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
   ret 0  ; Δ{}
-    ret call modInverse$loop m newt _t5 newr _t7  ; Δ{_t5 _t7} · moves{_t5 _t7}
   ret call modInverse$loop m _t0 _t1 m a  ; Δ{_t0 _t1} · moves{_t0 _t1}
-  ret call modInverse _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes Integer
           ret case _t10 of
   ret case _t4 of
       ret case _t7 of
               ret _d1000000  ; Δ{}
+    ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
@@ -158,8 +170,8 @@ q  =
   ret if _t1 then
     ret if _t3 then
     ret if _t5 then
+      ret _rcl2000000  ; Δ{_rcl2000000} · moves{_rcl2000000}
   ret rtcall axion_array_free _p  ; Δ{}
-      ret rtcall axion_bignum_add t m  ; Δ{} · makes Integer
   ret rtcall axion_bignum_from_i64 1000000007  ; Δ{} · makes Integer
   ret rtcall axion_bignum_from_i64 1000000009  ; Δ{} · makes Integer
     ret rtcall axion_bignum_from_i64 1  ; Δ{} · makes Integer

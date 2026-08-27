@@ -4060,10 +4060,14 @@ pub fn lower_with(
     // it (leak). Register each lifted local with all-`Many` params so the fixpoint
     // analyzes it: a param it genuinely moves is dropped from the borrow set, and a
     // param it only borrows lets the parent reclaim the argument after the call.
-    // GUARD: only when the local's result is provably non-heap — a heap result may
-    // ALIAS the borrowed argument (return an element of it), and then the parent
-    // reclaiming it would double-free (borrowed-argument reclamation does not track
-    // that aliasing; it is a pre-existing limitation for top-level borrows too).
+    // GUARD: only when the local's result is not an INTERIOR ALIAS of a parameter — such a
+    // result (return a heap field of a borrowed arg, `grab w = inner w`) would double-free
+    // if the parent reclaimed it. This used to exclude ALL heap-returning where-locals
+    // (`!result_may_be_heap`), which needlessly starved accumulator-style tail-recursive
+    // locals (`modInverse`'s Euclid `loop`) of borrow analysis → they leaked their threaded
+    // Integers, unlike their leak-free top-level equivalents. Now only the genuine
+    // interior-alias class is excluded (the regions `null_borrow_result_keys` pass, below,
+    // additionally nulls a call's ownership when the callee returns a param alias).
     let where_names: HashSet<String> = module
         .funcs
         .iter()
@@ -4076,7 +4080,7 @@ pub fn lower_with(
         })
         .collect();
     for f in &out {
-        if where_names.contains(&f.name) && !result_may_be_heap(&f.body, &recinfo) {
+        if where_names.contains(&f.name) && !returns_param_interior_alias(f, &recinfo) {
             param_mults
                 .entry(f.name.clone())
                 .or_insert_with(|| vec![ast::Mult::Many; f.params.len()]);
@@ -4147,11 +4151,12 @@ pub fn lower_with(
         // Guard: only when the Core params line up 1:1 with the signature arrows
         // (a captured/synthetic param would otherwise pick the WRONG destructor key
         // for a slot and free a differently-shaped value → heap corruption).
-        if let Some(ptys) = param_types.get(&f.name).filter(|p| p.len() == f.params.len()) {
+        let owned: Vec<(String, Option<String>)> = if let Some(ptys) =
+            param_types.get(&f.name).filter(|p| p.len() == f.params.len())
+        {
             let ba_set = borrow_args.get(&f.name);
             let drp = droppable_vars(&f, &borrow_args);
-            let owned: Vec<(String, Option<String>)> = f
-                .params
+            f.params
                 .iter()
                 .zip(ptys)
                 .enumerate()
@@ -4181,11 +4186,33 @@ pub fn lower_with(
                     };
                     (name.clone(), key)
                 })
-                .collect();
-            if !owned.is_empty() {
-                let body = std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
-                f.body = reclaim_cond_escape(body, owned, &borrow_args);
-            }
+                .collect()
+        } else if where_names.contains(&f.name) {
+            // A signature-less `where`-local: reclaim its owned Integer accumulators (the
+            // Euclid `loop` of `modInverse`). The "Integer" key is uniform, so the slot
+            // misalignment that guards the type-keyed branch above does not apply. Integer
+            // params are inferred from usage (`where_integer_params`); an owned one is a param
+            // the caller MOVES in (not in `borrow_args`) that `insert_drops` did not reclaim.
+            let ba_set = borrow_args.get(&f.name);
+            let drp = droppable_vars(&f, &borrow_args);
+            let ints = where_integer_params(&f);
+            f.params
+                .iter()
+                .enumerate()
+                .filter(|(i, name)| {
+                    ints.contains(name.as_str())
+                        && !ba_set.is_some_and(|s| s.contains(i))
+                        && !drp.contains(name.as_str())
+                })
+                .map(|(_, name)| (name.clone(), Some("Integer".to_string())))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if !owned.is_empty() {
+            let body =
+                std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
+            f.body = reclaim_cond_escape(body, owned, &borrow_args);
         }
         result.push(f);
         skip_seeds.extend(seeds);
@@ -5924,6 +5951,52 @@ fn droppable_vars(f: &CoreFn, ba: &BorrowArgs) -> HashSet<String> {
 ///     drop we don't synthesize (left conservative → a residual leak, never a double free).
 /// Only ever ADDS a drop for a param proven dead on that path and never moved past it, so
 /// it cannot double-free; `insert_drops` never dropped these (they are excluded from `drp`).
+/// The parameters of a (signature-less) `where`-local that are Integer-typed, inferred from
+/// usage: a param appearing as an operand of a bignum arithmetic/comparison rtcall (which
+/// borrow heap `Integer` operands). Lets `reclaim_cond_escape` reclaim a where-local's owned
+/// Integer accumulators — their drop key is uniformly "Integer", so no signature/param-slot
+/// alignment is needed (that alignment is exactly why the type-keyed reclaim is guarded to
+/// signatured functions: a captured/synthetic param would misalign a `data` destructor key).
+fn where_integer_params(f: &CoreFn) -> HashSet<String> {
+    let params: HashSet<&str> = f.params.iter().map(String::as_str).collect();
+    let mut out = HashSet::new();
+    fn go(t: &Term, params: &HashSet<&str>, out: &mut HashSet<String>) {
+        match t {
+            Term::Let(_, r, _, b) => {
+                rhs(r, params, out);
+                go(b, params, out);
+            }
+            Term::Drop(_, _, _, _, b) => go(b, params, out),
+            Term::Ret(r, _) => rhs(r, params, out),
+        }
+    }
+    fn rhs(r: &Rhs, params: &HashSet<&str>, out: &mut HashSet<String>) {
+        match r {
+            Rhs::Op(Op::RtCall { func, args, .. }) if is_bignum_borrower(func) => {
+                for a in args {
+                    if let Atom::Var(v) = a {
+                        if params.contains(v.as_str()) {
+                            out.insert(v.clone());
+                        }
+                    }
+                }
+            }
+            Rhs::Op(_) => {}
+            Rhs::If(_, t, e) => {
+                go(t, params, out);
+                go(e, params, out);
+            }
+            Rhs::Case(_, arms) => {
+                for (_, b) in arms {
+                    go(b, params, out);
+                }
+            }
+        }
+    }
+    go(&f.body, &params, &mut out);
+    out
+}
+
 fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &BorrowArgs) -> Term {
     match body {
         Term::Let(x, rhs, sp, b) => {
@@ -5990,18 +6063,61 @@ fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &Bo
             Term::Ret(Rhs::Case(scrut, arms), sp)
         }
         Term::Ret(Rhs::Op(op), sp) => {
-            let dead: Vec<_> = owned
-                .into_iter()
-                .filter(|(v, _)| !op_mentions_any(&op, &HashSet::from([v.clone()])))
+            // An owned param dies at this tail `ret` in one of two ways:
+            //   · the op does NOT mention it → dead already → drop BEFORE the ret.
+            //   · the op BORROWS it (mentions but does not move it out) and the op's result
+            //     is FRESH (does not alias it) → dead AFTER the op runs → synthesize a
+            //     post-`ret` drop via a temp: `let t = op; drop v…; ret t`. This closes the
+            //     tail-op-borrows-param leak (`ret add t newt`, the Euclid accumulators).
+            // A param the op MOVES out escapes (the result), and one a NON-fresh op mentions
+            // may be aliased by the result (a `Field`/`get` view) — both are kept (the latter
+            // a conservative leak, never a double free).
+            let e = crate::delta::op_delta_effect(&op, ba);
+            let moved: HashSet<String> = e
+                .moves
+                .iter()
+                .chain(e.alias.iter())
+                .chain(e.nonstrict.iter())
+                .filter_map(|a| match a {
+                    Atom::Var(v) => Some(v.clone()),
+                    _ => None,
+                })
                 .collect();
-            let mut t = Term::Ret(Rhs::Op(op), sp);
-            for (v, key) in dead {
+            let fresh = op_is_fresh_wrt_args(&op);
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for (v, key) in owned {
+                if !op_mentions_any(&op, &HashSet::from([v.clone()])) {
+                    before.push((v, key));
+                } else if fresh && !moved.contains(&v) {
+                    after.push((v, key));
+                }
+                // else: escapes (moved) or alias-risk (non-fresh op) → keep, conservative.
+            }
+            let mut t = if after.is_empty() {
+                Term::Ret(Rhs::Op(op), sp)
+            } else {
+                let tmp = format!(
+                    "_rcl{}",
+                    RECL_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                let mut inner = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp.clone()))), sp);
+                for (v, key) in after {
+                    inner = Term::Drop(v, key, Vec::new(), sp, Box::new(inner));
+                }
+                Term::Let(tmp, Rhs::Op(op), sp, Box::new(inner))
+            };
+            for (v, key) in before {
                 t = Term::Drop(v, key, Vec::new(), sp, Box::new(t));
             }
             t
         }
     }
 }
+
+/// Unique-temp counter for `reclaim_cond_escape`'s post-`ret` drops. Based at 2_000_000 to
+/// stay clear of `insert_drops`' 1_000_000 range; global monotonic → no name collisions.
+static RECL_TMP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2_000_000);
 
 /// `true` if the Core pattern binds `name` (so it shadows an outer binder).
 fn cpat_binds(pat: &CPat, name: &str) -> bool {
@@ -6288,6 +6404,107 @@ fn result_may_be_heap(t: &Term, recinfo: &RecordInfo) -> bool {
             result_may_be_heap(body, recinfo)
         }
     }
+}
+
+/// `true` if some tail return of `f` yields an INTERIOR HEAP ALIAS of a parameter — a
+/// `Field`-of-a-heap-field read rooted at a param (`grab w = inner w`), possibly through
+/// pure renames. This is the ONLY heap-result shape that is unsafe to borrow-analyze: the
+/// caller reclaiming such a result would double-free the parameter it aliases (the regions
+/// `borrow_return_summary` handles that class at call sites). A whole-parameter passthrough
+/// (`ret t`) or a fresh producer (`ret t+m`) is NOT an alias, so an accumulator-style
+/// `where`-local registers for borrow analysis and reclaims its threaded state like its
+/// leak-free top-level twin. Deliberately conservative: a missed alias is backstopped by the
+/// `null_borrow_result_keys` regions pass + the drop-balance verifier.
+fn returns_param_interior_alias(f: &CoreFn, recinfo: &RecordInfo) -> bool {
+    let params: HashSet<&str> = f.params.iter().map(String::as_str).collect();
+    fn atom_is_alias(a: &Atom, params: &HashSet<&str>, aliases: &HashSet<String>) -> bool {
+        matches!(a, Atom::Var(v) if params.contains(v.as_str()) || aliases.contains(v))
+    }
+    // The interior-alias binders a `case` arm introduces: matching `Con(con, subs)` against
+    // a param/alias scrutinee extracts each heap field `subs[i]` as an interior pointer INTO
+    // the scrutinee — so a `Cons b rest -> ret b` (return a case-extracted heap element) is
+    // just as much an interior alias as `grab w = inner w` (a `Field` read). Seed those
+    // binders so the tail-return check sees them.
+    fn arm_aliases(
+        scrut: &Atom,
+        pat: &CPat,
+        params: &HashSet<&str>,
+        aliases: &HashSet<String>,
+        recinfo: &RecordInfo,
+        out: &mut HashSet<String>,
+    ) {
+        if !atom_is_alias(scrut, params, aliases) {
+            return;
+        }
+        if let CPat::Con(con, subs) = pat {
+            for (i, sp) in subs.iter().enumerate() {
+                if let CPat::Var(v) = sp {
+                    if recinfo.field_transfers_heap(con, i) {
+                        out.insert(v.clone());
+                    }
+                }
+            }
+        }
+    }
+    // `true` if some tail return of `t` is a param interior alias; `aliases` carries the
+    // interior-alias vars in scope (cloned into branches — these functions are small).
+    fn walk(
+        t: &Term,
+        params: &HashSet<&str>,
+        mut aliases: HashSet<String>,
+        recinfo: &RecordInfo,
+    ) -> bool {
+        match t {
+            Term::Let(x, rhs, _, body) => {
+                match rhs {
+                    Rhs::Op(Op::Field { name, rec })
+                        if recinfo.named_field_is_heap(name)
+                            && atom_is_alias(rec, params, &aliases) =>
+                    {
+                        aliases.insert(x.clone());
+                    }
+                    Rhs::Op(Op::Atom(Atom::Var(v))) if aliases.contains(v) => {
+                        aliases.insert(x.clone());
+                    }
+                    Rhs::If(_, th, el)
+                        if walk(th, params, aliases.clone(), recinfo)
+                            || walk(el, params, aliases.clone(), recinfo) =>
+                    {
+                        aliases.insert(x.clone());
+                    }
+                    Rhs::Case(scrut, arms)
+                        if arms.iter().any(|(pat, b)| {
+                            let mut a = aliases.clone();
+                            arm_aliases(scrut, pat, params, &aliases, recinfo, &mut a);
+                            walk(b, params, a, recinfo)
+                        }) =>
+                    {
+                        aliases.insert(x.clone());
+                    }
+                    _ => {}
+                }
+                walk(body, params, aliases, recinfo)
+            }
+            Term::Drop(_, _, _, _, body) => walk(body, params, aliases, recinfo),
+            Term::Ret(rhs, _) => match rhs {
+                Rhs::Op(Op::Field { name, rec }) => {
+                    recinfo.named_field_is_heap(name) && atom_is_alias(rec, params, &aliases)
+                }
+                Rhs::Op(Op::Atom(Atom::Var(v))) => aliases.contains(v),
+                Rhs::Op(_) => false,
+                Rhs::If(_, th, el) => {
+                    walk(th, params, aliases.clone(), recinfo)
+                        || walk(el, params, aliases, recinfo)
+                }
+                Rhs::Case(scrut, arms) => arms.iter().any(|(pat, b)| {
+                    let mut a = aliases.clone();
+                    arm_aliases(scrut, pat, params, &aliases, recinfo, &mut a);
+                    walk(b, params, a, recinfo)
+                }),
+            },
+        }
+    }
+    walk(&f.body, &params, HashSet::new(), recinfo)
 }
 
 /// `true` if any variable in `set` appears as an operand of `op`. Exhaustive
