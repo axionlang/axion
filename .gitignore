@@ -16,3 +16,4 @@ web/pkg
 
 # Differential fuzzer repros (scripts/fuzz.py)
 fuzz-fail/
+__pycache__/
