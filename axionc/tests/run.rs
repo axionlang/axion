@@ -341,6 +341,43 @@ fn list_heap_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn closure_linearity_adversarial_runs_on_all_backends() {
+    // Regression guard for the closure-linearity arc (consuming HOFs + lifted-lambda
+    // reclamation). Three adversarial shapes that a naive drop would corrupt:
+    //   · closure_consume_lambda — `\x -> Box x` moves the element INTO the result, so
+    //     the lambda must NOT drop it (else double-free vs. the Box). Sum 1..5 = 15.
+    //   · closure_acc_return — `\x acc -> acc` returns the accumulator by alias; it must
+    //     never be dropped inside the fold (the original witnessed-drop unsoundness).
+    //     Result 0 (base); the discarded elements leak by the documented user-lambda gap.
+    //   · closure_data_elem — heap `data` elements reclaimed through a closure via the
+    //     GENERATED destructor (the non-Integer path). Sum 1..5 = 15.
+    // The memory-safety (ASan/LSan) side lives in scripts/sanitize.sh; here we pin the
+    // cross-backend RESULTS so a miscompile of the new ownership flow is caught.
+    for (name, want) in [
+        ("closure_consume_lambda.axi", "15\n"),
+        ("closure_acc_return.axi", "0\n"),
+        ("closure_data_elem.axi", "15\n"),
+    ] {
+        for backend in [
+            vec!["--backend", "interp"],
+            vec!["--backend", "cranelift"],
+            vec!["--release"],
+        ] {
+            let fx = fixture(name);
+            let mut args = backend.clone();
+            args.push(&fx);
+            let out = axionc().args(&args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{name} should run ({backend:?}): {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{name} {backend:?}");
+        }
+    }
+}
+
+#[test]
 fn accum_field_alias_is_corruption_free_on_all_backends() {
     // Regression (review finding #1): a heap accumulator projecting a field alias
     // (`items acc`) into the recursive value must NOT deep-drop `acc` — that would free

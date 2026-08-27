@@ -42,6 +42,9 @@ NATIVE=(
   axionc/tests/fixtures/integer_divmod.axi
   axionc/tests/fixtures/rsa_modexp.axi
   axionc/tests/fixtures/integer_first_class.axi
+  axionc/tests/fixtures/closure_consume_lambda.axi
+  axionc/tests/fixtures/closure_data_elem.axi
+  axionc/tests/fixtures/closure_acc_return.axi
   axionc/tests/fixtures/accum_field_alias.axi
   axionc/tests/fixtures/field_alias_return.axi
   axionc/tests/fixtures/strings_text.axi
@@ -124,11 +127,16 @@ NATIVE=(
 #     reclaiming it would be unsound: native_closure, lambda_hof.
 #   · `drop n xs` is a view — the caller relinquishes `xs` at the call (the
 #     result shares its tail), so the dropped prefix leaks: drop_view.
-# (integer_first_class — a heap value flowing through a closure in map/foldr — is now
-# leak-free, closed by the closure-linearity arc: consuming HOFs own their list and the
-# lifted lambda reclaims its owned heap params. It is in the LEAKFREE set below.)
+#   · a USER (non-eta) lambda's params are not yet keyed for reclamation, so an
+#     element it discards leaks (`foldr (\x acc -> acc)`): closure_acc_return — a
+#     documented follow-on of the closure-linearity arc. Corruption-free (no double-
+#     free of the threaded accumulator), which is what its gate entry proves.
+# (integer_first_class + closure_consume_lambda + closure_data_elem — heap values flowing
+# through a closure in map/foldr — are leak-free, closed by the closure-linearity arc:
+# consuming HOFs own their list and the lifted eta-lambda reclaims its owned heap params.
+# They are in the LEAKFREE set below.)
 LEAKFREE=(
-  integer_first_class
+  integer_first_class closure_consume_lambda closure_data_elem
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
   nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec
