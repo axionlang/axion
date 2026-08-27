@@ -341,6 +341,27 @@ fn list_heap_reclaim_runs_on_all_backends() {
 }
 
 #[test]
+fn filter_over_heap_is_rejected_natively_but_runs_on_interp() {
+    // Interim soundness guard (AX0912): `filter`/`take`/`takeWhile` alias their kept input
+    // elements into the output; over a heap element type that is a native double-free, so
+    // the native backends REJECT it (a clean error, not a silent UAF) while the interpreter
+    // runs it safely. Pins both halves. (Removed once arrow-ownership makes these consume.)
+    let fx = fixture("filter_heap_reject.axi");
+    for backend in [vec!["--backend", "cranelift"], vec!["--release"]] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(!out.status.success(), "{backend:?} should REJECT filter-over-heap");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("AX0912"), "{backend:?}: expected AX0912, got: {err}");
+    }
+    // the interpreter reclaims via Rust Drop — no aliasing hazard, so it runs.
+    let out = axionc().arg(&fx).output().unwrap();
+    assert!(out.status.success(), "interp should run: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n");
+}
+
+#[test]
 fn closure_linearity_adversarial_runs_on_all_backends() {
     // Regression guard for the closure-linearity arc (consuming HOFs + lifted-lambda
     // reclamation). Three adversarial shapes that a naive drop would corrupt:

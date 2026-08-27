@@ -378,6 +378,35 @@ pub fn run_cli() -> ExitCode {
             || backend == Backend::Cranelift
             || backend == Backend::Llvm)
     {
+        // Interim guard (pending the arrow-ownership arc): reject an element-aliasing
+        // borrower (`filter`/`take`/…) instantiated at a HEAP element type — the native
+        // backend would double-free the shared element. Sound-by-construction: a clean
+        // rejection instead of a silent UAF. Interp is not gated (it reclaims via Rust
+        // Drop, no aliasing hazard).
+        let heap_alias = heap_alias_violations(&module, &analysis.makecon_tys);
+        if !heap_alias.is_empty() {
+            for (name, span) in &heap_alias {
+                let d = Diagnostic::error(
+                    "AX0912",
+                    format!("`{name}` cannot be compiled soundly over a heap element type"),
+                )
+                .label(
+                    span.0,
+                    span.1,
+                    "this list function aliases its input's elements into its output",
+                )
+                .with_help(
+                    "`filter`/`take`/`takeWhile`/… share input elements with their result; \
+                     over a heap element type (Integer, String, a record, a nested list) the \
+                     shared element would be freed twice natively. Use it over a scalar element \
+                     type, or run on the interpreter (`axionc <file>`), which reclaims safely. \
+                     The general fix (consuming these functions) is the pending arrow-ownership \
+                     work.",
+                );
+                eprint!("{}", d.render(&path, &src, &lines));
+            }
+            return ExitCode::FAILURE;
+        }
         let lowered = core::lower_with(
             &module,
             &inplace,
@@ -1017,6 +1046,113 @@ fn carries_heap_payload(
             .head_con()
             .is_some_and(|h| heap_payload_data.contains(h)),
     }
+}
+
+/// Interim soundness guard (until the arrow-ownership arc lands). An "element-aliasing
+/// borrower" is a list function that EMBEDS a case-extracted input element into its
+/// returned list (the result shares elements with the input) yet does NOT own (`%1`) that
+/// input — `filter`, `take`, `takeWhile`, `span`, `splitAt`, `drop`, `dropWhile`, and any
+/// user function of that shape. Over a SCALAR element type this is harmless; over a HEAP
+/// element type the shared element is freed by BOTH the input's and the output's deep-drop
+/// → a native double-free (a pre-existing UAF the corpus never exercised). `map` is immune
+/// (it stores a FRESH `f y`, never the element itself); genuine consumers (`reverse`,
+/// `append`) are `%1` and reclaim soundly. Until arrow-ownership makes these consume their
+/// input, `heap_alias_violations` REJECTS such a call at a heap element type (native only).
+fn alias_borrowers(module: &ast::Module) -> std::collections::HashSet<String> {
+    use std::collections::{HashMap, HashSet};
+    let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
+    // Only NON-RECURSIVE heap fields (the ELEMENT, `a` in `Cons a (List a)`) count — a
+    // recursive/spine field (`List a`) returned directly is a VIEW (`tail`/`drop`'s tail),
+    // reclaimed by leaking the dropped prefix, NOT a double-free. The hazard is embedding
+    // the borrowed ELEMENT into a freshly-built output list (`filter`/`take`: `Cons y …`).
+    let mut con_field_elem_heap: HashMap<String, Vec<bool>> = HashMap::new();
+    for d in &module.datas {
+        for c in &d.cons {
+            let flags = c
+                .fields
+                .iter()
+                .map(|f| {
+                    is_heap_field_ty(&f.ty, &data_names) && f.ty.head_con() != Some(d.name.as_str())
+                })
+                .collect();
+            con_field_elem_heap.insert(c.name.clone(), flags);
+        }
+    }
+    let mut out = HashSet::new();
+    for f in &module.funcs {
+        let Some(sig) = &f.sig else { continue };
+        let mults = sig.param_mults();
+        // a param whose extracted ELEMENT escapes via the RESULT, but which is NOT `%1`
+        // (so the input is borrowed and its elements aliased into the output).
+        for i in consumed_params(f, &con_field_elem_heap) {
+            if mults.get(i) != Some(&ast::Mult::One) {
+                out.insert(f.name.clone());
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// `true` if `ty` is a container (`List a`, …) whose ELEMENT type is heap — Integer /
+/// String / a tuple / a nested container / a user `data` — as opposed to a scalar
+/// primitive (`Int`/`Float`/`Bool`/`Char`) or an unresolved type variable.
+fn container_elem_is_heap(ty: &ast::Type) -> bool {
+    let ast::Type::App(_, elem) = ty else {
+        return false;
+    };
+    match elem.as_ref() {
+        ast::Type::Tuple(_) | ast::Type::App(_, _) => true,
+        ast::Type::Con(h) => !matches!(h.as_str(), "Int" | "Float" | "Bool" | "Char"),
+        _ => false,
+    }
+}
+
+/// Every call to an element-aliasing borrower whose instantiated result is a container
+/// with a HEAP element — the calls the native backend cannot compile without a
+/// double-free. Returns `(function, call span)` for each. Empty ⇒ nothing to reject.
+fn heap_alias_violations(
+    module: &ast::Module,
+    makecon_tys: &std::collections::HashMap<ast::Span, ast::Type>,
+) -> Vec<(String, ast::Span)> {
+    let borrowers = alias_borrowers(module);
+    let mut out = Vec::new();
+    if borrowers.is_empty() {
+        return out;
+    }
+    fn visit(
+        e: &ast::Expr,
+        borrowers: &std::collections::HashSet<String>,
+        mk: &std::collections::HashMap<ast::Span, ast::Type>,
+        out: &mut Vec<(String, ast::Span)>,
+    ) {
+        if let ast::Expr::App(_, _, span) = e {
+            if let ast::Expr::Var(g, _) = core::spine(e).0 {
+                if borrowers.contains(g) {
+                    if let Some(ty) = mk.get(span) {
+                        if container_elem_is_heap(ty) {
+                            out.push((g.clone(), *span));
+                        }
+                    }
+                }
+            }
+        }
+        for_each_subexpr(e, &mut |sub| visit(sub, borrowers, mk, out));
+    }
+    for f in &module.funcs {
+        for c in &f.clauses {
+            match &c.body {
+                ast::Body::Plain(e) => visit(e, &borrowers, makecon_tys, &mut out),
+                ast::Body::Guarded(arms) => {
+                    for (g, r) in arms {
+                        visit(g, &borrowers, makecon_tys, &mut out);
+                        visit(r, &borrowers, makecon_tys, &mut out);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A constructor field that carries a separately-allocated heap payload once
