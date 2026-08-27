@@ -30,7 +30,7 @@ required-features = ["lsp"]
 # descent parser over every fixture. `rowan` is pure Rust, so the tokio-free
 # `--dev` fast path stays C-toolchain-free. Build `--no-default-features` for the
 # lean recursive-descent-only parser (the CST block is then `cfg`'d out).
-default = ["cst", "native"]
+default = ["cst", "native", "lsp"]
 # The native backends (Cranelift `--dev` + LLVM `--release`) and the FFI runtime.
 # Default-on; a `--no-default-features` wasm build drops them (they can't target
 # wasm32) and runs programs through the interpreter instead.
