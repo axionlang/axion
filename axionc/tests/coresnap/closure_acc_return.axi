@@ -22,6 +22,7 @@ axion_drop_List _p  =
   drop _t2
   drop _t5 : Integer
   drop _t6 : String
+  drop x : Integer
       drop xs
       drop xs
       drop xs

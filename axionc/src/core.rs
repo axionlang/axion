@@ -2107,44 +2107,44 @@ fn heap_drop_key(
     }
 }
 
-/// Owned heap params of a LIFTED eta-lambda under the closure consume-ABI: a closure
-/// owns every heap arg passed to it (`callclo` moves them in — delta.rs), so an
-/// eta-lambda `\v.. -> base v..` owns each `v` whose type (the wrapped callable's
-/// corresponding param) is a heap type. `droppable_vars`/Auto-Drop then drops exactly
+/// Owned heap params of a LIFTED lambda under the closure consume-ABI: a closure owns
+/// every heap arg passed to it (`callclo` moves them in — delta.rs), so the lambda owns
+/// each param whose type is a heap type. `droppable_vars`/Auto-Drop then drops exactly
 /// those the body does NOT move out (a borrowing wrapped call → dropped here; a
-/// consuming call or a `Con` result → moved out, not dropped). Types come from the
-/// wrapped function's signature; the eta vars are the trailing args of the body's
-/// application spine, so arg position `i` aligns with the callable's param `i`.
+/// consuming call or a `Con` result → moved out, not dropped). Param types come from two
+/// sources: a USER lambda's params carry an inferred type in `makecon_tys` (keyed by the
+/// `Pat::Var` span); an ETA lambda `\v.. -> base v..` (synthesized post-inference, so its
+/// params are absent from `makecon_tys`) instead reads the WRAPPED callable's signature,
+/// aligning arg position `i` of the body's application spine with the callable's param `i`.
 fn lifted_lambda_owned(
     pats: &[Pat],
     body: &Expr,
     fn_param_types: &HashMap<String, Vec<Type>>,
+    makecon_tys: &HashMap<Span, Type>,
     data_types: &HashSet<String>,
     parametric_data: &HashSet<String>,
     mono_seeds: &mut Vec<Type>,
 ) -> (Vec<String>, Vec<(String, Option<String>)>) {
-    let param_names: HashSet<&str> = pats
-        .iter()
-        .filter_map(|p| match p {
-            Pat::Var(n, _) => Some(n.as_str()),
-            _ => None,
-        })
-        .collect();
+    // eta-lambda source: the wrapped callable's signature, aligned by the body's spine.
+    let mut spine_ty: HashMap<&str, &Type> = HashMap::new();
     let (head, args) = spine(body);
-    let Expr::Var(base, _) = head else {
-        return (Vec::new(), Vec::new());
-    };
-    let Some(ptypes) = fn_param_types.get(base) else {
-        return (Vec::new(), Vec::new());
-    };
+    if let Expr::Var(base, _) = head {
+        if let Some(ptypes) = fn_param_types.get(base) {
+            for (i, a) in args.iter().enumerate() {
+                if let (Expr::Var(n, _), Some(t)) = (a, ptypes.get(i)) {
+                    spine_ty.insert(n.as_str(), t);
+                }
+            }
+        }
+    }
     let mut owned = Vec::new();
     let mut owned_drop_ty = Vec::new();
-    for (i, a) in args.iter().enumerate() {
-        let Expr::Var(n, _) = a else { continue };
-        if !param_names.contains(n.as_str()) {
+    for p in pats {
+        let Pat::Var(n, sp) = p else { continue };
+        // user-lambda inferred type (makecon_tys) takes precedence; else the eta spine type.
+        let Some(t) = makecon_tys.get(sp).or_else(|| spine_ty.get(n.as_str()).copied()) else {
             continue;
-        }
-        let Some(t) = ptypes.get(i) else { continue };
+        };
         if let Some(key) = heap_drop_key(t, data_types, parametric_data, mono_seeds) {
             owned.push(n.clone());
             owned_drop_ty.push((n.clone(), Some(key)));
@@ -4091,6 +4091,7 @@ pub fn lower_with(
             pats,
             body,
             &fn_param_types,
+            makecon_tys,
             &data_types,
             &parametric_data,
             &mut mono_seeds,

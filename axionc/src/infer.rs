@@ -97,6 +97,11 @@ struct Infer<'a> {
     /// Phase 4: result type at each application span (for the concrete drop key of
     /// a call/rtcall-bound local of a parametric heap type).
     call_ret_tys: HashMap<Span, Ty>,
+    /// Closure-linearity: each USER lambda's param type keyed by the param's `Pat::Var`
+    /// span, so the lifted lambda's owned-heap params get a concrete drop key (an eta
+    /// lambda instead derives them from the wrapped callable's signature). Merged into
+    /// `makecon_tys`; param spans are disjoint from call/con/array spans.
+    lam_param_tys: HashMap<Span, Ty>,
     /// Phase 1b: each integer-literal expression's fresh type var (span → var), so a
     /// literal resolved to `Integer` by context is rewritten `fromInt n`, and an
     /// unconstrained one defaults to `Int`.
@@ -301,6 +306,7 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         con_ret_tys: HashMap::new(),
         array_ret_tys: HashMap::new(),
         call_ret_tys: HashMap::new(),
+        lam_param_tys: HashMap::new(),
         int_lit_vars: Vec::new(),
     };
     let mut env: Env = inf.base_env();
@@ -645,6 +651,16 @@ impl Infer<'_> {
     // for a `CallDirect`'s concrete drop key.
     let call_tys = std::mem::take(&mut inf.call_ret_tys);
     for (sp, ty) in call_tys {
+        let resolved = inf.apply(&ty);
+        if let Some(ast) = ty_to_ast(&resolved) {
+            mono.makecon_tys.entry(sp).or_insert(ast);
+        }
+    }
+    // Closure-linearity: merge USER-lambda param types (keyed by the param's `Pat::Var`
+    // span, disjoint from the above). Only CONCRETE types survive `ty_to_ast` — a param
+    // that stays a bare type variable is skipped (no static drop key; Phase D residual).
+    let lam_tys = std::mem::take(&mut inf.lam_param_tys);
+    for (sp, ty) in lam_tys {
         let resolved = inf.apply(&ty);
         if let Some(ast) = ty_to_ast(&resolved) {
             mono.makecon_tys.entry(sp).or_insert(ast);
@@ -3422,6 +3438,13 @@ impl<'a> Infer<'a> {
             Expr::Lam(pats, body, _) => {
                 let mut local = env.clone();
                 let params: Vec<Ty> = pats.iter().map(|p| self.infer_pat(&mut local, p)).collect();
+                // closure-linearity: record each param's type by its `Pat::Var` span so
+                // the lifted lambda can key its owned heap params for reclamation.
+                for (p, t) in pats.iter().zip(&params) {
+                    if let Pat::Var(_, sp) = p {
+                        self.lam_param_tys.insert(*sp, t.clone());
+                    }
+                }
                 let mut ty = self.infer_expr(&local, body);
                 for p in params.into_iter().rev() {
                     ty = Ty::Fun(Box::new(p), Box::new(ty));
