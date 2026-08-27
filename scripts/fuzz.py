@@ -223,11 +223,17 @@ def run(args, want_bin=None):
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
+    except (FileNotFoundError, OSError) as e:
+        return 127, "", str(e)          # executable missing (e.g. no clang) — caller skips
+
+CLANG_OK = run([CLANG, "--version"])[0] == 0
 
 def asan_run(src, work, oracle_out):
     """Compile --release + ASan/LSan and run. `oracle_out` is the interpreter's stdout to
     compare against, or None for a native-only program (arrays: no interp oracle → skip the
     divergence check, only hunt corruption/leak)."""
+    if not CLANG_OK:
+        return ("ok", None)             # no clang → skip ASan (differential still ran)
     rl, ol, el = run([AXIONC, "--emit", "llvm", str(src)])
     if rl != 0:
         return ("ok", None)
