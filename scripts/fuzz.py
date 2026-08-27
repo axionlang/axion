@@ -91,6 +91,41 @@ SAME = {
 TO_INTEGER = {"Integer": "%s", "R": "map getV (%s)", "Pair": "map fstT (%s)",
               "LInt": "map sumL (%s)", "Int": "map fromInt (%s)"}
 
+def gen_arena(rng):
+    # §3 arenas (native-only: interp lacks `withArena` → routed to native-only ASan). A
+    # loop allocates N cells in an arena that is reset/released at the `withArena` boundary.
+    body = ("useCell :: Cell -> Int\nuseCell c = 0\n"
+            "allocN :: Arena -> Int -> Int\nallocN a 0 = 0\n"
+            "allocN a n =\n  let c = allocateCell a in\n  let u = useCell c in\n"
+            "  1 + allocN a (n - 1)\n")
+    terms = [f"withArena (\\a -> allocN a {rng.randint(1, 60)})" for _ in range(rng.randint(1, 3))]
+    return body + "main :: Int\nmain = " + " + ".join(terms) + "\n"
+
+# session-typed workers: FIXED protocol templates with payload/computation holes (a random
+# session protocol would rarely be dual-correct). Sessions run on the interp too → full
+# differential. The parMap template carries an INTEGER payload across the M:N worker boundary
+# (heap reclamation across channels — where a residual leak once lived).
+SESSION_INT_COMP = {"sq": "x * x", "incr": "x + fromInt 1", "idI": "x", "dblI": "x + x"}
+def gen_session(rng):
+    if rng.random() < 0.6:
+        comp = rng.choice(list(SESSION_INT_COMP))
+        n, m = rng.randint(1, 6), rng.randint(1, 20)
+        pre = "".join(f"{c} :: Integer -> Integer\n{c} x = {b}\n" for c, b in SESSION_INT_COMP.items())
+        pre += "addI :: Integer -> Integer -> Integer\naddI a b = a + b\n"
+        worker = ("worker :: Ep (Recv Int (Send Integer End)) %1 -> IO ()\n"
+                  "worker d = do\n  (n, d2) <- recv d\n"
+                  f"  d3 <- send d2 ({comp} (fromInt n))\n  close d3\n")
+        main = ("main :: IO ()\nmain = putStrLn (showInteger (foldr addI 0 "
+                f"(parMap worker (replicate {n} {m}))))\n")
+        return pre + worker + main
+    comp = rng.choice(["n + n", "n + 1", "n * 2"])
+    v = rng.randint(1, 100)
+    worker = ("worker :: Ep (Recv Int (Send Int End)) %1 -> IO ()\n"
+              f"worker d = do\n  (n, d2) <- recv d\n  d3 <- send d2 ({comp})\n  close d3\n")
+    main = ("main :: Int\nmain = bound $ do\n  c <- spawn worker\n"
+            f"  c2 <- send c {v}\n  (r, c3) <- recv c2\n  close c3\n  r\n")
+    return worker + main
+
 def gen_array(rng):
     # functional Array combinators (native heap resource): each term reduces to Int, so a
     # sum of them prints and exercises Array allocation + reclamation (axion_array_free).
@@ -104,8 +139,13 @@ def gen_array(rng):
     return PREAMBLE + "\nmain :: Int\nmain = " + " + ".join(terms) + "\n"
 
 def gen(rng):
-    if rng.random() < 0.2:              # array mode (a distinct heap-resource surface)
-        return gen_array(rng)
+    r = rng.random()                    # distinct heap-resource surfaces
+    if r < 0.12:
+        return gen_arena(rng)           # native-only
+    if r < 0.30:
+        return gen_session(rng)         # full differential (interp supports sessions)
+    if r < 0.44:
+        return gen_array(rng)           # native-only
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:
