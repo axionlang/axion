@@ -13,3 +13,6 @@ bench/axionc
 bench/fib_c
 bench/fib_rs
 web/pkg
+
+# Differential fuzzer repros (scripts/fuzz.py)
+fuzz-fail/
