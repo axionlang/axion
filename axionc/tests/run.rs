@@ -2085,6 +2085,10 @@ fn deep_drop_reclaims_nested_objects() {
         // DISCARDS the second — the discarded heap element is reclaimed (not leaked),
         // freed alongside the tuple shell.
         ("tuple_discard_owned.axi", "7\n", "3 allocs, 3 frees"),
+        // notion-2: a `%1` list of tuples mapped to the first element, discarding the
+        // second — the tuple flows into an inner `case` and is made owned so that case
+        // reclaims the discarded element + shell (mapFst). Every alloc reclaimed.
+        ("tuple_elem_discard.axi", "2\n", "10 allocs, 10 frees"),
     ] {
         let out = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])

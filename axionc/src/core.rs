@@ -6494,7 +6494,7 @@ fn insert_drops(
         drp,
         tmp: 1_000_000,
         ba,
-        drop_ty,
+        drop_ty: drop_ty.clone(),
         recinfo,
         skip_seeds: Vec::new(),
         update_skip,
@@ -6524,7 +6524,10 @@ struct Elab<'a> {
     drp: HashSet<String>,
     tmp: u32,
     ba: &'a BorrowArgs,
-    drop_ty: &'a HashMap<String, Option<String>>,
+    /// Owned (not borrowed) so `case_arms` can REGISTER the resolved element key of a
+    /// consumed-scrutinee heap field it makes droppable (a `case`-pattern binder that
+    /// the pre-built map does not cover) — the notion-2 reclamation of `mapFst`'s `t`.
+    drop_ty: HashMap<String, Option<String>>,
     recinfo: &'a RecordInfo,
     /// F-3 skip-variant destructors to generate: `(type_key, skip_slots)`.
     /// Populated by `case_arms` for each remainder drop and by `drop_target` for each
@@ -6764,6 +6767,29 @@ fn transfers_heap_field(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
         })
     } else {
         false
+    }
+}
+
+/// `true` if `n` is used as the SCRUTINEE of a `case` anywhere in `t` (`case n of …`).
+/// A heap field flowing into an inner `case` is CONSUMED by it (the inner case
+/// deep/shell-frees the value + moves its fields out), so — for a consumed outer
+/// scrutinee — that field must be owned/droppable for the inner case to reclaim it
+/// (`mapFst`'s `t`). See the notion-2 pass in `case_arms`.
+fn flows_into_inner_case(n: &str, t: &Term) -> bool {
+    fn in_rhs(n: &str, rhs: &Rhs) -> bool {
+        match rhs {
+            Rhs::Op(_) => false,
+            Rhs::If(_, a, b) => flows_into_inner_case(n, a) || flows_into_inner_case(n, b),
+            Rhs::Case(scrut, arms) => {
+                matches!(scrut, Atom::Var(s) if s == n)
+                    || arms.iter().any(|(_, b)| flows_into_inner_case(n, b))
+            }
+        }
+    }
+    match t {
+        Term::Let(_, rhs, _, body) => in_rhs(n, rhs) || flows_into_inner_case(n, body),
+        Term::Drop(_, _, _, _, body) => flows_into_inner_case(n, body),
+        Term::Ret(rhs, _) => in_rhs(n, rhs),
     }
 }
 
@@ -7138,6 +7164,31 @@ impl Elab<'_> {
                 }
             }
 
+            // notion-2: a heap field of a CONSUMED scrutinee that flows into an INNER
+            // `case` (`mapFst xs = case xs of Cons t ts -> case t of (a,b) -> …`) is
+            // reclaimed by NOTHING today — the outer scrutinee drop excludes it (it
+            // "escaped" into the inner case, per `occurs_nonborrow`) and the inner case
+            // cannot free it unless it is owned. Make such a field droppable with its
+            // resolved concrete element key so the inner case reclaims it. Restricted to
+            // inner-`case` flow so it never double-frees a field the scrutinee drop already
+            // reclaims (an unmentioned discard) or one moved into the result.
+            if let (Some(_), CPat::Con(con, subs), Atom::Var(sname)) = (&scrut_drop, &pat, scrut) {
+                for (fi, sp) in subs.iter().enumerate() {
+                    if let CPat::Var(n) = sp {
+                        if self.recinfo.field_transfers_heap(con, fi)
+                            && !self.recinfo.field_is_owned(con, fi)
+                            && !self.drp.contains(n)
+                            && flows_into_inner_case(n, &body)
+                        {
+                            if let Some(key) = self.consumed_elem_key(con, fi, sname) {
+                                self.drp.insert(n.clone());
+                                self.drop_ty.insert(n.clone(), key);
+                            }
+                        }
+                    }
+                }
+            }
+
             let result_heap = result_may_be_heap(&body, self.recinfo);
             // the set of non-`%1` heap field bindings that are actually USED
             // (mentioned) in the arm body.  Only these need alias protection;
@@ -7247,6 +7298,34 @@ impl Elab<'_> {
             out.push((pat, b));
         }
         out
+    }
+
+    /// The concrete drop key of a heap field `fi` of `con` extracted from a consumed
+    /// scrutinee `scrut` (mono key `dty(scrut)`), for the notion-2 reclamation. Outer
+    /// `None` = do NOT make it droppable (a scalar/shallow-data/unresolvable element —
+    /// leave the prior behaviour, never a wrong free); `Some(key)` = make it droppable
+    /// with `key` (`Some("Integer")`/tuple/nested-container mono / deep-data destructor).
+    fn consumed_elem_key(&self, con: &str, fi: usize, scrut: &str) -> Option<Option<String>> {
+        // a concrete `data`-typed field carries its own destructor key; for the
+        // recursive SPINE of a parametric container resolve to the scrutinee's mono key.
+        if let Some(k) = self.recinfo.field_drop_slot(con, fi) {
+            return Some(match self.dty(scrut) {
+                Some(sk) if sk.contains('$') && sk.split('$').next() == Some(k.as_str()) => Some(sk),
+                _ => Some(k),
+            });
+        }
+        // polymorphic field: resolve the concrete element from the scrutinee mono key
+        // (`List$tuple$Integer$Integer` → `tuple$Integer$Integer`; `List$Integer` →
+        // `Integer`). Only classify to a DEFINITE heap key — scalar/shallow/unknown bail.
+        let sk = self.dty(scrut)?;
+        let (_, elem) = sk.split_once('$')?;
+        match elem {
+            "Integer" => Some(Some("Integer".into())),
+            "String" => Some(Some("String".into())),
+            _ if elem.contains('$') => Some(Some(elem.to_string())), // tuple / nested container mono
+            _ if self.recinfo.needs_deep_drop(elem) => Some(Some(elem.to_string())), // deep data
+            _ => None, // scalar / shallow data / unknown → leave as-is (conservative)
+        }
     }
 
     /// Frees the DISCARDED heap elements of a `%1`-consumed TUPLE scrutinee `s`,
