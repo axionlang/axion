@@ -569,7 +569,18 @@ impl Verifier<'_> {
             let mut merged = vals[0].clone();
             merged.borrows = vals.iter().flat_map(|v| v.borrows.iter().cloned()).collect();
             if any_live && !all_live {
-                self.finding(Cat::Unbalanced, name, sp);
+                // A POLYMORPHIC extracted field (heap-ness unresolved → `leak_exempt`) that is
+                // owned on one path and moved out on another can only LEAK on the still-live
+                // path — never a double-free (the `dead` marker below still catches a later
+                // use/drop as UAF/DoubleFree). Its heap-ness is unknown here, exactly as at
+                // `leak_check`, so a branch imbalance of such a field is a (possibly-scalar)
+                // leak, not corruption: suppress the Unbalanced report to match the leak-exempt
+                // policy (a `%1`-consumed `filter`/`keepFirst` discards its poly element on the
+                // else path — reclamation can't drop a bare type variable without a witness, so
+                // the imbalance is the expected poly-drop gap, not unsafe code).
+                if !self.leak_exempt.contains(name) {
+                    self.finding(Cat::Unbalanced, name, sp);
+                }
                 merged.dead = Some(Cat::Unbalanced); // conservative: catch a later use/drop
             } else if !any_live {
                 merged.owned = false;
