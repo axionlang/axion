@@ -2081,6 +2081,10 @@ fn deep_drop_reclaims_nested_objects() {
         // Tuple-owned %1: a `%1` tuple param with heap elements — the generated
         // `axion_drop_tuple$Box$Box` destructor reclaims them.
         ("tuple_owned.axi", "4\n", "3 allocs, 3 frees"),
+        // Tuple-discard %1: `case t of (a,b) -> a` returns the first element and
+        // DISCARDS the second — the discarded heap element is reclaimed (not leaked),
+        // freed alongside the tuple shell.
+        ("tuple_discard_owned.axi", "7\n", "3 allocs, 3 frees"),
     ] {
         let out = axionc()
             .args(["--backend", "cranelift", &fixture(fx)])

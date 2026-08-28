@@ -606,6 +606,37 @@ impl RecordInfo {
         }
     }
 
+    /// For a concrete tuple mono-key (`tuple$Integer$Integer`) of `arity` elements,
+    /// the per-element reclamation of a `%1`-consumed tuple: `None` = no drop (a
+    /// scalar/unboxed element); `Some(k)` = a `Term::Drop` with key `k` (`k = None` →
+    /// a flat `axion_free`, `Some` → the keyed destructor / `axion_bignum_free`).
+    /// Returns `None` overall unless the key is a FLAT tuple of `arity` single-token
+    /// elements — a nested element (`tuple$List$Int`) makes the `$`-split ambiguous, so
+    /// bail to the conservative shell-only free (the prior tuple-discard leak).
+    pub fn tuple_elem_drops(&self, key: &str, arity: usize) -> Option<Vec<Option<Option<String>>>> {
+        let mut it = key.split('$');
+        if it.next() != Some("tuple") {
+            return None;
+        }
+        let toks: Vec<&str> = it.collect();
+        if toks.len() != arity {
+            return None; // nested/ambiguous element → conservative bail
+        }
+        Some(toks.iter().map(|el| self.classify_tuple_elem(el)).collect())
+    }
+
+    /// Classifies one flat tuple element name for reclamation (see `tuple_elem_drops`).
+    fn classify_tuple_elem(&self, el: &str) -> Option<Option<String>> {
+        match el {
+            "Integer" => Some(Some("Integer".into())), // bignum → axion_bignum_free
+            "String" => Some(Some("String".into())),   // heap string → axion_str_drop
+            _ if self.needs_deep_drop(el) => Some(Some(el.to_string())), // deep data destructor
+            _ if self.enum_types.contains(el) => None,  // unboxed enum immediate → no drop
+            _ if self.type_arity.contains_key(el) => Some(None), // boxed data, no heap → flat free
+            _ => None,                                  // Int/Float/Bool/unknown → no drop
+        }
+    }
+
     /// `data`-typed fields a constructor owns: (offset, type name).
     pub fn drop_slots(&self, con: &str) -> &[(i32, Type)] {
         self.con_drop_slots.get(con).map_or(&[], Vec::as_slice)
@@ -7131,6 +7162,17 @@ impl Elab<'_> {
 
             if let Some(s) = &scrut_drop {
                 let deep_safe = !info.non_owning && !result_heap;
+                // A `%1`-consumed TUPLE scrutinee whose result IS heap (`!deep_safe`): a
+                // field escaped into the result, so the whole-tuple deep-drop of the `Deep`
+                // path would double-free it. The per-field paths key off `CPat::Con`, so
+                // handle the tuple here — free each dead-discarded heap element (from the
+                // tuple mono-key) then shell-free the cell, closing the tuple-discard leak.
+                // The `deep_safe` tuple case (nothing escapes into a heap result) falls
+                // through to `Deep`, which reclaims the whole tuple correctly.
+                if let (false, CPat::Tuple(subs)) = (deep_safe, &pat) {
+                    b = self.tuple_discard_drops(b, subs, s);
+                    b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
+                } else {
                 let decision = scrut_decision(deep_safe, info);
                 match decision {
                     ScrutDrop::Remainder { skip } => {
@@ -7192,6 +7234,7 @@ impl Elab<'_> {
                         b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                     }
                 }
+                }
             }
 
             for v in union.difference(&fvs[i]) {
@@ -7204,6 +7247,41 @@ impl Elab<'_> {
             out.push((pat, b));
         }
         out
+    }
+
+    /// Frees the DISCARDED heap elements of a `%1`-consumed TUPLE scrutinee `s`,
+    /// before the already-elaborated arm body `b`. An element MENTIONED in the body
+    /// (moved into the result or borrowed by it) is skipped — it is owned by the
+    /// result, or a narrower borrowed-then-dead residual; only a completely-unused
+    /// element is a dead discard freed here. Keys come from the tuple mono-key
+    /// (`tuple$Integer$Integer`); a non-flat/nested tuple bails (shell-only free —
+    /// the prior conservative tuple-discard leak). The tuple SHELL is freed by the
+    /// caller (the `Term::Drop(s, None, …)` this wraps).
+    fn tuple_discard_drops(&self, b: Term, subs: &[CPat], s: &str) -> Term {
+        let Some(key) = self.dty(s) else {
+            return b;
+        };
+        let Some(elems) = self.recinfo.tuple_elem_drops(&key, subs.len()) else {
+            return b;
+        };
+        let mentioned: HashSet<String> = subs
+            .iter()
+            .filter_map(|p| match p {
+                CPat::Var(n) if term_mentions_any(&b, &HashSet::from([n.clone()])) => Some(n.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut b = b;
+        for (i, sp) in subs.iter().enumerate() {
+            let CPat::Var(n) = sp else { continue };
+            if mentioned.contains(n) {
+                continue; // used by the body → not a dead discard
+            }
+            if let Some(Some(k)) = elems.get(i) {
+                b = Term::Drop(n.clone(), k.clone(), Vec::new(), term_span(&b), Box::new(b));
+            }
+        }
+        b
     }
 
     /// Emits inline per-field deep drops for non-skipped heap slots of `pat`.
