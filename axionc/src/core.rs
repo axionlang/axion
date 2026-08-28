@@ -5913,9 +5913,13 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         | Op::ArenaAlloc(a)
         | Op::ArenaMark(a)
         | Op::ArenaRelease(a) => atom_is(v, a),
-        Op::StoreRaw(a, _, b) | Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::Promote(a, b) => {
-            atom_is(v, a) || atom_is(v, b)
-        }
+        // `Prim`/`PrimF` (arithmetic/comparison) READ their operands and return a fresh
+        // scalar — they BORROW, matching `delta::op_delta_effect`. Treating them as a MOVE
+        // (the old behavior) made any `f x = x <op> …` drop `x` from its borrow set, so a
+        // caller passing an OWNED value that is then reused (a `%1` list element used by a
+        // predicate AND embedded in the output) was flagged as a double-move by the verifier.
+        Op::Prim(_, _, _) | Op::PrimF(_, _, _) => false,
+        Op::StoreRaw(a, _, b) | Op::Promote(a, b) => atom_is(v, a) || atom_is(v, b),
         Op::CallClosure(_, xs)
         | Op::MakeTuple(xs)
         | Op::MakeCon { args: xs, .. }
