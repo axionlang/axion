@@ -7460,14 +7460,26 @@ impl Elab<'_> {
                 // from the scrutinee's instantiation key. A blind flat `free` here
                 // corrupts a non-heap element (`List Int`) or shallow-frees a deep
                 // one (`List Expr`), so resolve when we can and skip when unsure.
-                match elab
-                    .dty(s)
-                    .and_then(|sk| elab.recinfo.poly_elem_drop(con, &sk))
-                {
-                    Some(PolyDrop::Skip) => continue,   // non-heap — nothing to free
-                    Some(PolyDrop::Flat) => None,       // shallow heap → flat `free`
-                    Some(PolyDrop::Deep(k)) => Some(k), // deep → its destructor
-                    None => None,                       // unresolved → prior flat `free`
+                //
+                // `Integer`/`String` elements need their TAGGED reclaimer
+                // (`axion_bignum_free` / `axion_str_drop`, routed by the `Some("Integer")`/
+                // `Some("String")` drop key) — `poly_elem_drop` does not model them and
+                // returns `Skip`, silently LEAKING a discarded `Integer` element
+                // (`len :: List Integer %1`, `Cons y ys -> 1 + len ys`). Resolve those
+                // directly off the scrutinee mono key, then fall back to `poly_elem_drop`.
+                let elem = elab.dty(s).and_then(|sk| sk.split_once('$').map(|(_, e)| e.to_string()));
+                match elem.as_deref() {
+                    Some("Integer") => Some("Integer".to_string()),
+                    Some("String") => Some("String".to_string()),
+                    _ => match elab
+                        .dty(s)
+                        .and_then(|sk| elab.recinfo.poly_elem_drop(con, &sk))
+                    {
+                        Some(PolyDrop::Skip) => continue, // non-heap — nothing to free
+                        Some(PolyDrop::Flat) => None,     // shallow heap → flat `free`
+                        Some(PolyDrop::Deep(k)) => Some(k), // deep → its destructor
+                        None => None,                     // unresolved → prior flat `free`
+                    },
                 }
             };
             let off = elab.recinfo.field_offset(con, fi);
