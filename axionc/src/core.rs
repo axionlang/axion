@@ -4356,7 +4356,7 @@ pub fn lower_with(
         if !owned.is_empty() {
             let body =
                 std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
-            f.body = reclaim_cond_escape(body, owned, &borrow_args);
+            f.body = reclaim_cond_escape(body, owned, &borrow_args, &borrow_ret);
         }
         result.push(f);
         skip_seeds.extend(seeds);
@@ -5321,6 +5321,30 @@ pub fn atom_is(v: &str, a: &Atom) -> bool {
     matches!(a, Atom::Var(n) if n == v)
 }
 
+/// `true` if `v` is MOVED (consumed) by some op in `t`, per the single authority
+/// (`delta::op_delta_effect`, which is `ba`-aware). A borrowing call (`addI z y` where `addI`
+/// borrows both) is NOT a move — unlike the purely-syntactic `occurs_nonborrow`, which counts
+/// every call argument as an escape. Used to recognise a heap value passed only to BORROWING
+/// calls (a `foldl`/`sumV` accumulator or element) as borrowed-then-dead, hence reclaimable.
+fn body_moves_var(v: &str, t: &Term, ba: &BorrowArgs) -> bool {
+    fn op_moves_v(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
+        let e = crate::delta::op_delta_effect(op, ba);
+        e.moves.iter().chain(e.nonstrict.iter()).chain(e.alias.iter()).any(|a| atom_is(v, a))
+    }
+    fn in_rhs(v: &str, rhs: &Rhs, ba: &BorrowArgs) -> bool {
+        match rhs {
+            Rhs::Op(op) => op_moves_v(v, op, ba),
+            Rhs::If(_, a, b) => body_moves_var(v, a, ba) || body_moves_var(v, b, ba),
+            Rhs::Case(_, arms) => arms.iter().any(|(_, b)| body_moves_var(v, b, ba)),
+        }
+    }
+    match t {
+        Term::Let(_, rhs, _, body) => in_rhs(v, rhs, ba) || body_moves_var(v, body, ba),
+        Term::Drop(_, _, _, _, body) => body_moves_var(v, body, ba),
+        Term::Ret(rhs, _) => in_rhs(v, rhs, ba),
+    }
+}
+
 /// `true` if `v` appears in some position that is **not** a local read inside
 /// of `t` — i.e. it escapes the callee (returned, embedded, aliased, or passed to
 /// a call). A `Many` parameter for which this is `false` is a pure borrow.
@@ -6154,7 +6178,12 @@ fn where_integer_params(f: &CoreFn) -> HashSet<String> {
     out
 }
 
-fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &BorrowArgs) -> Term {
+fn reclaim_cond_escape(
+    body: Term,
+    owned: Vec<(String, Option<String>)>,
+    ba: &BorrowArgs,
+    br: &HashMap<String, HashSet<usize>>,
+) -> Term {
     match body {
         Term::Let(x, rhs, sp, b) => {
             // pure alias `let x = ownedParam`, source unused afterwards → transfer to `x`.
@@ -6173,10 +6202,16 @@ fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &Bo
                     }
                     // a binding that READS v must produce a FRESH value to keep v
                     // reclaimable — a `Field`/`get`/call may return a pointer INTO v (an
-                    // escaping interior alias), and dropping v later would free it.
+                    // escaping interior alias), and dropping v later would free it. A direct
+                    // call to a function that returns NO interior alias of its params (absent
+                    // from the `borrow_return_summary` `br`) is fresh w.r.t. v, so v (borrowed
+                    // by the call — `rhs_moves` was false above) stays owned and is reclaimed at
+                    // its death point: the `foldl` accumulator `addI z y` where `addI` returns a
+                    // fresh `Integer`.
                     match &rhs {
                         Rhs::Op(op) if op_mentions_any(op, &HashSet::from([v.clone()])) => {
                             op_is_fresh_wrt_args(op)
+                                || matches!(op, Op::CallDirect(g, _, _) if !br.contains_key(g))
                         }
                         _ => true,
                     }
@@ -6185,17 +6220,17 @@ fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &Bo
             if let Some(key) = alias_key {
                 owned.push((x.clone(), key));
             }
-            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned, ba)))
+            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br)))
         }
         Term::Drop(v, k, sk, sp, b) => {
             let owned: Vec<_> = owned.into_iter().filter(|(n, _)| n != &v).collect();
-            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned, ba)))
+            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br)))
         }
         Term::Ret(Rhs::If(c, th, el), sp) => Term::Ret(
             Rhs::If(
                 c,
-                Box::new(reclaim_cond_escape(*th, owned.clone(), ba)),
-                Box::new(reclaim_cond_escape(*el, owned, ba)),
+                Box::new(reclaim_cond_escape(*th, owned.clone(), ba, br)),
+                Box::new(reclaim_cond_escape(*el, owned, ba, br)),
             ),
             sp,
         ),
@@ -6214,7 +6249,7 @@ fn reclaim_cond_escape(body: Term, owned: Vec<(String, Option<String>)>, ba: &Bo
                         .filter(|(v, _)| Some(v) != scrut_name.as_ref() && !cpat_binds(&pat, v))
                         .cloned()
                         .collect();
-                    (pat, reclaim_cond_escape(arm, owned_arm, ba))
+                    (pat, reclaim_cond_escape(arm, owned_arm, ba, br))
                 })
                 .collect();
             Term::Ret(Rhs::Case(scrut, arms), sp)
@@ -7223,11 +7258,13 @@ impl Elab<'_> {
                 for (fi, sp) in subs.iter().enumerate() {
                     if let CPat::Var(n) = sp {
                         let mentioned = term_mentions_any(&body, &HashSet::from([n.clone()]));
-                        // borrowed-then-dead: read only in non-moving positions AND not via a
-                        // heap-field projection (which would return an interior alias of `n`,
-                        // so `n` is not dead — the `firstInner`/`grab` interior-alias class).
+                        // borrowed-then-dead: used but never MOVED out (a borrowing call like
+                        // `addI z y` is not a move — `body_moves_var` is `ba`-aware, unlike the
+                        // syntactic `occurs_nonborrow` which counts every call arg as an escape),
+                        // AND not read via a heap-field projection (which would return an interior
+                        // alias of `n`, so `n` is not dead — the `firstInner`/`grab` class).
                         let borrowed_dead = mentioned
-                            && !occurs_nonborrow(n, &body)
+                            && !body_moves_var(n, &body, self.ba)
                             && !reads_heap_field(n, &body, self.recinfo);
                         if self.recinfo.field_transfers_heap(con, fi)
                             && !self.recinfo.field_is_owned(con, fi)
