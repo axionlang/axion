@@ -41,6 +41,41 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn hof_specialization_matches_generic_on_all_backends() {
+    // Higher-order specialization (opt-in, AXION_SPECIALIZE=1): `foldr addI`/`map sq` are
+    // cloned per closure into direct-call `foldr$$addI`/`map$$sq`. The result must equal the
+    // generic (default) path on interp AND cranelift, and the specialized Core must actually
+    // contain the clones (so the pass is exercised, not silently skipped).
+    let fx = fixture("hof_specialize.axi");
+    let generic = axionc().arg(&fx).output().unwrap();
+    assert!(generic.status.success());
+    assert_eq!(String::from_utf8_lossy(&generic.stdout), "55\n");
+    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx.clone()]] {
+        let out = axionc()
+            .args(&backend)
+            .env("AXION_SPECIALIZE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "specialized run failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "55\n", "{backend:?}");
+    }
+    let core = axionc()
+        .args(["--emit", "core", &fx])
+        .env("AXION_SPECIALIZE", "1")
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    assert!(
+        core.contains("foldr$$addI") && core.contains("map$$sq"),
+        "specialization did not clone the HOFs"
+    );
+}
+
+#[test]
 fn over_application_runs_on_all_backends() {
     // applying a function beyond its arity (`(f a…) b…`) — a function returning a
     // function that is then applied, for both top-level functions and a `where`-local.

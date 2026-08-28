@@ -820,21 +820,44 @@ pub fn prepare_for_check(
     path: &str,
     diags: &mut Diagnostics,
 ) -> (ast::Module, std::collections::HashSet<String>) {
-    prepare_for_check_with(module, path, diags, &disk_import_resolver)
+    // The batch (codegen) path may SPECIALIZE higher-order functions (`foldr addI` →
+    // `foldr$$addI`), turning `callclo` into a direct call so the existing per-callee ownership
+    // analysis computes per-closure reclamation. GATED OFF by default (`AXION_SPECIALIZE=1`):
+    // the mechanism is validated for provably-fresh closures over non-partial-consumer HOFs,
+    // but sound DEFAULT-ON landing needs the closure-argument-linearity work — a specialized
+    // direct call uses the closure's real (borrow) convention, unlike the generic `callclo`'s
+    // Route-C move, so an arg the HOF assumed the closure CONSUMED (a `foldl` accumulator, an
+    // element) is now merely borrowed and leaks/dangles unless the HOF reclaims it. See the arc.
+    let specialize = std::env::var_os("AXION_SPECIALIZE").is_some();
+    prepare_for_check_with(module, path, diags, &disk_import_resolver, specialize)
 }
 
 /// [`prepare_for_check`] with a custom import resolver (the salsa engine passes one
 /// backed by tracked inputs, so a dependent is invalidated when an import changes).
+///
+/// `specialize`: run higher-order specialization (a whole-module codegen transform that ADDS
+/// clone declarations). The batch path passes `true`; the salsa/LSP path passes `false` — it
+/// only needs diagnostics/inference over the GENERIC module, and adding clones would defeat the
+/// per-declaration incremental caching (a body edit would re-infer every declaration).
 pub fn prepare_for_check_with(
     mut module: ast::Module,
     path: &str,
     diags: &mut Diagnostics,
     resolve: &ImportResolver,
+    specialize: bool,
 ) -> (ast::Module, std::collections::HashSet<String>) {
     resolve_imports_with(&mut module, path, diags, resolve);
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
+    // Higher-order specialization: clone each HOF per its statically-known top-level-function
+    // closure argument (`foldr addI` → `foldr$$addI`), so the dynamic `callclo` becomes a
+    // direct call and the existing per-callee ownership analysis computes the correct
+    // per-closure reclamation. Runs BEFORE consume-inference so the clones are analyzed as
+    // ordinary direct-call functions (the whole downstream pipeline is unchanged).
+    if specialize {
+        specialize_hofs(&mut module);
+    }
     // Infer `%1` (consumed) ownership for a signature param whose extracted heap
     // element escapes via the result (`head`/`append`/`reverse`). Runs BEFORE the
     // linear checker and inference so the whole pipeline (owned_meta / Phase-B
@@ -886,6 +909,550 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
         new_funcs.push(clone);
     }
     module.funcs.extend(new_funcs);
+}
+
+/// Higher-order specialization (defunctionalization). Clones a HOF per statically-known
+/// top-level-function closure argument — `foldr addI` → `foldr$$addI` — turning the dynamic
+/// `callclo` into a direct call. Everything downstream (consume-inference, borrow analysis,
+/// concrete-type Auto-Drop, the drop-balance verifier) then computes the correct per-closure
+/// ownership with NO new machinery, because the specialized body is ordinary direct-call code.
+///
+/// MVP scope (additive + conservative — the generic HOF is kept, so unresolved call sites and
+/// non-matching shapes fall back to Route C + AX0912): a HOF with EXACTLY ONE arrow-typed
+/// parameter, a single clause, and `Pat::Var` parameters; specialized only at call sites whose
+/// arrow argument is a bare TOP-LEVEL function name. A fixpoint handles recursion (a clone's
+/// self-call redirects to the clone) and nested HOFs (a clone that calls another HOF with a
+/// known closure spawns its demand).
+fn specialize_hofs(module: &mut ast::Module) {
+    use std::collections::{HashMap, HashSet};
+    let fn_names: HashSet<String> = module.funcs.iter().map(|f| f.name.clone()).collect();
+    // per-constructor ELEMENT-heap flags (non-recursive heap field), for `consumed_params`.
+    let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
+    let mut con_field_heap: HashMap<String, Vec<bool>> = HashMap::new();
+    for d in &module.datas {
+        for c in &d.cons {
+            let flags = c
+                .fields
+                .iter()
+                .map(|f| {
+                    is_heap_field_ty(&f.ty, &data_names) && f.ty.head_con() != Some(d.name.as_str())
+                })
+                .collect();
+            con_field_heap.insert(c.name.clone(), flags);
+        }
+    }
+    // HOF → the single arrow-param index (MVP: exactly one). EXCLUDE partial-consumer / view
+    // HOFs (`filter`/`take`/`takeWhile` — a HOF that EMBEDS an extracted element into its
+    // result, `consumed_params` non-empty): specializing them yields a concrete direct-call
+    // function the verifier rejects (`takeWhile$$gt2i`: `Unbalanced` spine) or that double-frees
+    // the aliased element — the AX0912 class. They stay generic (Route C + AX0912).
+    let mut hof_arrow: HashMap<String, usize> = HashMap::new();
+    for f in &module.funcs {
+        if let Some(k) = single_arrow_param(f) {
+            if consumed_params(f, &con_field_heap).is_empty() {
+                hof_arrow.insert(f.name.clone(), k);
+            }
+        }
+    }
+    if hof_arrow.is_empty() {
+        return;
+    }
+    let by_name: HashMap<String, ast::Func> =
+        module.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
+    // Closures UNSAFE to specialize: one that EMBEDS a parameter into a returned container
+    // (`pairUp n = (n, …)`, `single n = Cons n Nil`). The generic `callclo` is sound because
+    // Route C assumes the closure MOVES its arg; a direct call uses the closure's real
+    // convention (it borrows the embedded param) — so the HOF would borrow its list while the
+    // result aliases the elements → dangling once the caller frees the list. These fall back
+    // to the generic HOF (Route C + AX0912), which stays sound. (A later consume-inference
+    // extension — a whole heap param embedded into the result is `%1` — would lift this guard.)
+    let unsafe_clos: HashSet<String> = by_name
+        .values()
+        .filter(|f| closure_unsafe_to_specialize(f))
+        .map(|f| f.name.clone())
+        .collect();
+
+    // Fixpoint: collect demands from every body (incl. clones already added), generate the
+    // missing clones, then rewrite every call site; repeat until no new clone is generated.
+    let mut generated: HashSet<(String, String)> = HashSet::new();
+    // DETERMINISTIC per-call span-offset counter: a global one would give a clone different
+    // spans on each run of `specialize_hofs`, so the salsa `processed_module` output would
+    // differ across edits and invalidate every declaration (not just the edited one).
+    let mut span_base: usize = 0;
+    loop {
+        let mut demands: HashSet<(String, String)> = HashSet::new();
+        for f in &module.funcs {
+            for_each_func_expr(f, &mut |e| collect_hof_demands(e, &hof_arrow, &fn_names, &mut demands));
+        }
+        demands.retain(|(_, clos)| !unsafe_clos.contains(clos));
+        let fresh: Vec<(String, String)> =
+            demands.difference(&generated).cloned().collect();
+        if fresh.is_empty() {
+            break;
+        }
+        for (hof, clos) in &fresh {
+            generated.insert((hof.clone(), clos.clone()));
+            if let Some(src) = by_name.get(hof) {
+                let clos_sig = by_name.get(clos).and_then(|f| f.sig.as_ref());
+                span_base += 1;
+                let delta = span_base * 10_000_000;
+                if let Some(clone) = make_hof_spec(src, hof_arrow[hof], clos, clos_sig, delta) {
+                    module.funcs.push(clone);
+                }
+            }
+        }
+        // rewrite ALL call sites (generic bodies + clones) to the specialized names.
+        for f in &mut module.funcs {
+            for_each_func_expr_mut(f, &mut |e| {
+                rewrite_hof_calls(e, &generated, &hof_arrow, &fn_names)
+            });
+        }
+    }
+}
+
+/// `Some(k)` if `f` is an MVP-eligible HOF: a signature with EXACTLY ONE arrow-typed
+/// parameter (at index `k`), a single clause, and all-`Pat::Var` parameters.
+fn single_arrow_param(f: &ast::Func) -> Option<usize> {
+    let sig = f.sig.as_ref()?;
+    if f.clauses.len() != 1 {
+        return None;
+    }
+    if !f.clauses[0].pats.iter().all(|p| matches!(p, ast::Pat::Var(..))) {
+        return None;
+    }
+    let arrows: Vec<usize> = sig
+        .param_types()
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| matches!(t, ast::Type::Arrow { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    (arrows.len() == 1).then(|| arrows[0])
+}
+
+/// `true` if `f` is UNSAFE to specialize — the complement of a PROVABLY-fresh producer.
+///
+/// A specialized direct call uses the closure's real convention (it may BORROW its arg), unlike
+/// the generic `callclo` which is sound because Route C assumes a MOVE. So specialization is
+/// sound only for a closure whose result CANNOT alias its argument. Detecting that in general
+/// needs the post-lowering alias/consume analysis (a `case`-extracted element, a param embedded
+/// in a container, a call to a consuming/aliasing function — `pairUp`, `fstT`, `reverse`,
+/// `sumL` — all alias or consume in ways a syntactic scan can't safely clear).
+///
+/// The MVP allows only a provably-fresh SCALAR producer: the body is built solely from
+/// arithmetic/comparison `BinOp`s over parameters and literals (`If` branches allowed), and its
+/// tail is such a `BinOp` — a FRESH `Int`/`Integer`/`Bool`/`Float`, never the argument itself.
+/// `sq x = x*x`, `addI a b = a+b`, `dbl x = x+x`, `gt2i n = n>2` qualify; anything with a call,
+/// constructor, tuple, record, `case`, lambda, `let`, or a bare-variable tail does not — those
+/// fall back to the sound generic HOF (Route C + AX0912). Widening this is the closure-argument
+/// linearity arc (consume-inference `%1` for aliasing closures, or closing the verifier's
+/// borrow-alias false-negative so unsound specializations are caught).
+fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
+    // pure = every sub-expression is a variable / literal / arithmetic BinOp / If.
+    fn pure_arith(e: &ast::Expr) -> bool {
+        match e {
+            ast::Expr::Var(..) | ast::Expr::Int(..) | ast::Expr::Float(..) | ast::Expr::Str(..) => {
+                true
+            }
+            ast::Expr::BinOp(_, a, b, _) => pure_arith(a) && pure_arith(b),
+            ast::Expr::If(c, t, el, _) => pure_arith(c) && pure_arith(t) && pure_arith(el),
+            _ => false,
+        }
+    }
+    // tail (the returned value) must be a fresh BinOp on every path — never a bare variable
+    // (which could be the argument, an alias) or anything heap-aliasing.
+    fn fresh_tail(e: &ast::Expr) -> bool {
+        match e {
+            ast::Expr::BinOp(..) => true,
+            ast::Expr::If(_, t, el, _) => fresh_tail(t) && fresh_tail(el),
+            _ => false,
+        }
+    }
+    let safe = f.clauses.len() == 1
+        && f.clauses[0].pats.iter().all(|p| matches!(p, ast::Pat::Var(..)))
+        && f.clauses[0].wher.is_empty()
+        && matches!(&f.clauses[0].body, ast::Body::Plain(e) if pure_arith(e) && fresh_tail(e));
+    !safe
+}
+
+/// Applies `g` to every ROOT expression of a function's clauses (plain/guarded bodies).
+/// `g` is responsible for descending into sub-expressions (`where`/lambdas included) itself.
+fn for_each_func_expr(f: &ast::Func, g: &mut dyn FnMut(&ast::Expr)) {
+    for c in &f.clauses {
+        match &c.body {
+            ast::Body::Plain(e) => g(e),
+            ast::Body::Guarded(arms) => arms.iter().for_each(|(gd, r)| {
+                g(gd);
+                g(r);
+            }),
+        }
+        for w in &c.wher {
+            for_each_func_expr(w, g);
+        }
+    }
+}
+
+fn for_each_func_expr_mut(f: &mut ast::Func, g: &mut dyn FnMut(&mut ast::Expr)) {
+    for c in &mut f.clauses {
+        match &mut c.body {
+            ast::Body::Plain(e) => g(e),
+            ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(gd, r)| {
+                g(gd);
+                g(r);
+            }),
+        }
+        for w in &mut c.wher {
+            for_each_func_expr_mut(w, g);
+        }
+    }
+}
+
+/// Mutable analogue of `for_each_subexpr`: applies `g` to each DIRECT child expression.
+fn for_each_subexpr_mut(e: &mut ast::Expr, g: &mut dyn FnMut(&mut ast::Expr)) {
+    match e {
+        ast::Expr::App(a, b, _) | ast::Expr::BinOp(_, a, b, _) => {
+            g(a);
+            g(b);
+        }
+        ast::Expr::If(c, t, el, _) => {
+            g(c);
+            g(t);
+            g(el);
+        }
+        ast::Expr::Case(s, arms, _) => {
+            g(s);
+            arms.iter_mut().for_each(|(_, b)| g(b));
+        }
+        ast::Expr::Let(binds, body, _) => {
+            for f in binds {
+                for_each_func_expr_mut(f, g);
+            }
+            g(body);
+        }
+        ast::Expr::Tuple(es, _) => es.iter_mut().for_each(g),
+        ast::Expr::RecordCon(_, fs, _) => fs.iter_mut().for_each(|(_, x)| g(x)),
+        ast::Expr::RecordUpd(b, fs, _) => {
+            g(b);
+            fs.iter_mut().for_each(|(_, x)| g(x));
+        }
+        ast::Expr::Lam(_, body, _) => g(body),
+        _ => {}
+    }
+}
+
+/// Peels a curried application `((f a0) a1) …` into its head expr and left→right args.
+fn app_spine(e: &ast::Expr) -> (&ast::Expr, Vec<&ast::Expr>) {
+    let mut args = Vec::new();
+    let mut cur = e;
+    while let ast::Expr::App(f, a, _) = cur {
+        args.push(a.as_ref());
+        cur = f;
+    }
+    args.reverse();
+    (cur, args)
+}
+
+/// Records a `(hof, closure)` demand for each application of an MVP HOF whose arrow argument
+/// is a bare top-level function name. Recurses into every sub-expression.
+fn collect_hof_demands(
+    e: &ast::Expr,
+    hof_arrow: &std::collections::HashMap<String, usize>,
+    fn_names: &std::collections::HashSet<String>,
+    out: &mut std::collections::HashSet<(String, String)>,
+) {
+    if let ast::Expr::App(..) = e {
+        let (head, args) = app_spine(e);
+        if let ast::Expr::Var(h, _) = head {
+            if let Some(&k) = hof_arrow.get(h) {
+                if let Some(ast::Expr::Var(g, _)) = args.get(k) {
+                    if fn_names.contains(g) {
+                        out.insert((h.clone(), g.clone()));
+                    }
+                }
+            }
+        }
+    }
+    for_each_subexpr(e, &mut |c| collect_hof_demands(c, hof_arrow, fn_names, out));
+}
+
+/// Rewrites `hof … g …` (g the resolved closure at the arrow slot) to `hof$$g …` (arrow arg
+/// dropped) wherever `(hof, g)` was generated. Bottom-up so nested/curried spines resolve.
+fn rewrite_hof_calls(
+    e: &mut ast::Expr,
+    generated: &std::collections::HashSet<(String, String)>,
+    hof_arrow: &std::collections::HashMap<String, usize>,
+    fn_names: &std::collections::HashSet<String>,
+) {
+    for_each_subexpr_mut(e, &mut |c| rewrite_hof_calls(c, generated, hof_arrow, fn_names));
+    if !matches!(e, ast::Expr::App(..)) {
+        return;
+    }
+    let (head, args) = app_spine(e);
+    let ast::Expr::Var(h, hspan) = head else {
+        return;
+    };
+    let (h, hspan) = (h.clone(), *hspan);
+    let Some(&k) = hof_arrow.get(&h) else {
+        return;
+    };
+    let Some(ast::Expr::Var(g, _)) = args.get(k) else {
+        return;
+    };
+    if !fn_names.contains(g) || !generated.contains(&(h.clone(), g.clone())) {
+        return;
+    }
+    let mangled = format!("{h}$${g}");
+    let span = e.span();
+    let new_args: Vec<ast::Expr> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != k)
+        .map(|(_, a)| (*a).clone())
+        .collect();
+    let mut out = ast::Expr::Var(mangled, hspan);
+    for a in new_args {
+        out = ast::Expr::App(Box::new(out), Box::new(a), span);
+    }
+    *e = out;
+}
+
+/// Builds the specialized clone `hof$$clos`: drops the arrow parameter (signature + pattern),
+/// and renames the closure parameter to the concrete function name throughout the body (so
+/// `f x…` becomes `clos x…`). Recursive self-calls and nested HOF calls are redirected by the
+/// driver's global `rewrite_hof_calls` pass afterward.
+fn make_hof_spec(
+    src: &ast::Func,
+    k: usize,
+    clos: &str,
+    clos_sig: Option<&ast::Type>,
+    delta: usize,
+) -> Option<ast::Func> {
+    let mut clone = src.clone();
+    clone.name = format!("{}$${clos}", src.name);
+    // shift the clone's spans into a unique (deterministic) range so its inference keys don't
+    // collide with the source's or another clone's (see `span_base` in `specialize_hofs`).
+    offset_func_spans(&mut clone, delta);
+    // the closure parameter's name (MVP guarantees a single clause, all-Var pats).
+    let ast::Pat::Var(param, _) = clone.clauses[0].pats.get(k)?.clone() else {
+        return None;
+    };
+    // drop the arrow parameter from the signature, then SPECIALIZE the remaining type
+    // variables to the concrete types bound by the closure. Matching the HOF's arrow-param
+    // type (`a -> b`) against the closure's signature (`Integer -> (Integer,Integer)`) binds
+    // `a`/`b`, so the clone's `List a -> List b` becomes `List Integer -> List (Integer,
+    // Integer)` — WITHOUT this the call-site result carries an unresolved generic mono key
+    // (`List` not `List$tuple$Integer$Integer`), and the concrete-element reclamation reads a
+    // garbage size → heap corruption (`map pairUp`/`map fstT`).
+    if let Some(sig) = &clone.sig {
+        let mut dropped = drop_arrow_param(sig, k);
+        if let (Some(arrow_ty), Some(cs)) = (sig.param_types().get(k).copied(), clos_sig) {
+            let mut subst = std::collections::HashMap::new();
+            if match_type(arrow_ty, cs, &mut subst) {
+                dropped = subst_type(&dropped, &subst);
+            }
+        }
+        clone.sig = Some(dropped);
+    }
+    clone.clauses[0].pats.remove(k);
+    // rename the closure param → the concrete function name throughout the clause.
+    let cl = &mut clone.clauses[0];
+    match &mut cl.body {
+        ast::Body::Plain(e) => rename_var(e, &param, clos),
+        ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+            rename_var(g, &param, clos);
+            rename_var(r, &param, clos);
+        }),
+    }
+    for w in &mut cl.wher {
+        for_each_func_expr_mut(w, &mut |e| rename_var(e, &param, clos));
+    }
+    Some(clone)
+}
+
+/// Removes the `k`-th top-level arrow (parameter) from a function signature.
+fn drop_arrow_param(sig: &ast::Type, k: usize) -> ast::Type {
+    match sig {
+        ast::Type::Arrow { mult, from, to } => {
+            if k == 0 {
+                (**to).clone()
+            } else {
+                ast::Type::Arrow {
+                    mult: *mult,
+                    from: from.clone(),
+                    to: Box::new(drop_arrow_param(to, k - 1)),
+                }
+            }
+        }
+        _ => sig.clone(),
+    }
+}
+
+/// Per-clone span offset: a generated HOF clone is a copy of its source and thus shares its
+/// byte SPANS. Inference keys `makecon_tys`/`con_ret_tys`/`call_ret_tys` globally by span, so
+/// two clones of the same HOF (`map$$pairUp`, `map$$getFst`) would COLLIDE — the last inferred
+/// overwrites the others' result types → wrong mono keys → heap corruption. Shift every span in
+/// a clone into a unique high range so its nodes key distinctly. The offset comes from a
+/// DETERMINISTIC per-`specialize_hofs`-call counter (not a global) so the same module always
+/// produces the same clone spans — otherwise the salsa `processed_module` output would vary
+/// across edits and invalidate every declaration. Spans then no longer point at real source,
+/// but a synthesized clone never surfaces a diagnostic (its bodies are correct by construction).
+fn offset_span(s: &mut ast::Span, d: usize) {
+    s.0 += d;
+    s.1 += d;
+}
+
+fn offset_pat(p: &mut ast::Pat, d: usize) {
+    match p {
+        ast::Pat::Wild(s) | ast::Pat::Var(_, s) | ast::Pat::Int(_, s) => offset_span(s, d),
+        ast::Pat::Con(_, ps, s) | ast::Pat::Tuple(ps, s) => {
+            offset_span(s, d);
+            ps.iter_mut().for_each(|p| offset_pat(p, d));
+        }
+    }
+}
+
+fn offset_expr(e: &mut ast::Expr, d: usize) {
+    use ast::Expr::{
+        App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+    };
+    match e {
+        Int(_, s) | Float(_, s) | Str(_, s) | Var(_, s) | Con(_, s) => offset_span(s, d),
+        App(a, b, s) | BinOp(_, a, b, s) => {
+            offset_span(s, d);
+            offset_expr(a, d);
+            offset_expr(b, d);
+        }
+        If(c, t, el, s) => {
+            offset_span(s, d);
+            offset_expr(c, d);
+            offset_expr(t, d);
+            offset_expr(el, d);
+        }
+        Let(binds, body, s) => {
+            offset_span(s, d);
+            binds.iter_mut().for_each(|f| offset_func_spans(f, d));
+            offset_expr(body, d);
+        }
+        Case(scrut, arms, s) => {
+            offset_span(s, d);
+            offset_expr(scrut, d);
+            for (p, b) in arms {
+                offset_pat(p, d);
+                offset_expr(b, d);
+            }
+        }
+        Tuple(es, s) => {
+            offset_span(s, d);
+            es.iter_mut().for_each(|x| offset_expr(x, d));
+        }
+        RecordCon(_, fs, s) => {
+            offset_span(s, d);
+            fs.iter_mut().for_each(|(_, x)| offset_expr(x, d));
+        }
+        RecordUpd(b, fs, s) => {
+            offset_span(s, d);
+            offset_expr(b, d);
+            fs.iter_mut().for_each(|(_, x)| offset_expr(x, d));
+        }
+        Lam(ps, body, s) => {
+            offset_span(s, d);
+            ps.iter_mut().for_each(|p| offset_pat(p, d));
+            offset_expr(body, d);
+        }
+    }
+}
+
+fn offset_func_spans(f: &mut ast::Func, d: usize) {
+    offset_span(&mut f.span, d);
+    for c in &mut f.clauses {
+        offset_span(&mut c.span, d);
+        c.pats.iter_mut().for_each(|p| offset_pat(p, d));
+        match &mut c.body {
+            ast::Body::Plain(e) => offset_expr(e, d),
+            ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+                offset_expr(g, d);
+                offset_expr(r, d);
+            }),
+        }
+        c.wher.iter_mut().for_each(|w| offset_func_spans(w, d));
+    }
+}
+
+/// One-directional structural match: binds each type VARIABLE in `pat` (the HOF's arrow-param
+/// type) to the corresponding concrete sub-type of `concrete` (the closure's signature).
+/// Returns `false` on a structural mismatch or an inconsistent binding (caller falls back to
+/// the generic — un-substituted — signature).
+fn match_type(
+    pat: &ast::Type,
+    concrete: &ast::Type,
+    subst: &mut std::collections::HashMap<String, ast::Type>,
+) -> bool {
+    use ast::Type::{App, Arrow, Con, Tuple, Unit, Var};
+    match (pat, concrete) {
+        (Var(v), _) => match subst.get(v) {
+            Some(prev) => types_equal(prev, concrete),
+            None => {
+                subst.insert(v.clone(), concrete.clone());
+                true
+            }
+        },
+        (Con(a), Con(b)) => a == b,
+        (App(f1, a1), App(f2, a2)) => match_type(f1, f2, subst) && match_type(a1, a2, subst),
+        (Arrow { from: f1, to: t1, .. }, Arrow { from: f2, to: t2, .. }) => {
+            match_type(f1, f2, subst) && match_type(t1, t2, subst)
+        }
+        (Tuple(xs), Tuple(ys)) if xs.len() == ys.len() => {
+            xs.iter().zip(ys).all(|(x, y)| match_type(x, y, subst))
+        }
+        (Unit, Unit) => true,
+        _ => false,
+    }
+}
+
+/// Structural type equality (used for the `match_type` consistency check; avoids depending on
+/// a `PartialEq` derive that is gated behind optional features).
+fn types_equal(a: &ast::Type, b: &ast::Type) -> bool {
+    use ast::Type::{App, Arrow, Con, Tuple, Unit, Var};
+    match (a, b) {
+        (Var(x), Var(y)) | (Con(x), Con(y)) => x == y,
+        (App(f1, a1), App(f2, a2)) => types_equal(f1, f2) && types_equal(a1, a2),
+        (Arrow { from: f1, to: t1, .. }, Arrow { from: f2, to: t2, .. }) => {
+            types_equal(f1, f2) && types_equal(t1, t2)
+        }
+        (Tuple(xs), Tuple(ys)) if xs.len() == ys.len() => {
+            xs.iter().zip(ys).all(|(x, y)| types_equal(x, y))
+        }
+        (Unit, Unit) => true,
+        _ => false,
+    }
+}
+
+/// Applies a type-variable substitution to a type.
+fn subst_type(t: &ast::Type, subst: &std::collections::HashMap<String, ast::Type>) -> ast::Type {
+    use ast::Type::{App, Arrow, Con, Tuple, Unit, Var};
+    match t {
+        Var(v) => subst.get(v).cloned().unwrap_or_else(|| t.clone()),
+        Con(_) | Unit => t.clone(),
+        App(f, a) => App(Box::new(subst_type(f, subst)), Box::new(subst_type(a, subst))),
+        Arrow { mult, from, to } => Arrow {
+            mult: *mult,
+            from: Box::new(subst_type(from, subst)),
+            to: Box::new(subst_type(to, subst)),
+        },
+        Tuple(xs) => Tuple(xs.iter().map(|x| subst_type(x, subst)).collect()),
+    }
+}
+
+/// Renames every free `Var(from)` to `Var(to)` in an expression tree (MVP: ignores rebinding
+/// shadows — a parameter name reused by an inner binder is vanishingly rare and caught by the net).
+fn rename_var(e: &mut ast::Expr, from: &str, to: &str) {
+    if let ast::Expr::Var(n, _) = e {
+        if n == from {
+            *n = to.to_string();
+        }
+        return;
+    }
+    for_each_subexpr_mut(e, &mut |c| rename_var(c, from, to));
 }
 
 /// Rewrites the monomorphic method uses to direct calls to the instance

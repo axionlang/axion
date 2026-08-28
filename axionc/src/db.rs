@@ -231,8 +231,11 @@ pub fn processed_module(db: &dyn salsa::Database, file: SourceFile) -> Option<as
         let module = crate::parse_import_text(&text, import, diags)?;
         Some((module, path))
     };
+    // The salsa/LSP path works on the GENERIC module (no higher-order specialization): it only
+    // needs diagnostics + per-declaration inference, and clone declarations would break the
+    // per-decl incremental caching. Specialization is a codegen-only transform (batch path).
     let (module, _exempt) =
-        crate::prepare_for_check_with(parsed, file.path(db), &mut diags, &resolve);
+        crate::prepare_for_check_with(parsed, file.path(db), &mut diags, &resolve, false);
     for d in diags.items {
         Diag(d).accumulate(db);
     }
