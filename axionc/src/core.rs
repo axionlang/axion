@@ -666,6 +666,12 @@ impl RecordInfo {
         self.enum_types.contains(ty)
     }
 
+    /// `true` if `ty` is a BOXED `data` type with no owned heap fields — a heap value
+    /// reclaimed by a flat `axion_free` (not a scalar, not an unboxed enum, not deep).
+    pub fn is_shallow_boxed_data(&self, ty: &str) -> bool {
+        self.type_arity.contains_key(ty) && !self.enum_types.contains(ty) && !self.needs_deep.contains(ty)
+    }
+
     /// The constructor index within its type (its immediate value when unboxed).
     pub fn con_index(&self, con: &str) -> i32 {
         self.con_tag.get(con).copied().unwrap_or(0)
@@ -6770,6 +6776,31 @@ fn transfers_heap_field(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> bool {
     }
 }
 
+/// `true` if `v` is read via a HEAP-field projection (`field <heapfield> v`) anywhere in
+/// `t` — the one borrow position that yields an INTERIOR ALIAS of `v` (the result points
+/// into `v`'s payload, e.g. `inner y`), so `v` is NOT dead after it and must not be dropped.
+/// A SCALAR-field read (`field v h`, `v :: Int`) is a value copy (safe), and every other
+/// use of `v` in a borrow position (bignum/string readers) yields a fresh value.
+fn reads_heap_field(v: &str, t: &Term, recinfo: &RecordInfo) -> bool {
+    fn op_reads(v: &str, op: &Op, recinfo: &RecordInfo) -> bool {
+        matches!(op, Op::Field { name, rec: Atom::Var(r) } if r == v && recinfo.named_field_is_heap(name))
+    }
+    fn in_rhs(v: &str, rhs: &Rhs, recinfo: &RecordInfo) -> bool {
+        match rhs {
+            Rhs::Op(op) => op_reads(v, op, recinfo),
+            Rhs::If(_, a, b) => reads_heap_field(v, a, recinfo) || reads_heap_field(v, b, recinfo),
+            Rhs::Case(_, arms) => arms.iter().any(|(_, b)| reads_heap_field(v, b, recinfo)),
+        }
+    }
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            in_rhs(v, rhs, recinfo) || reads_heap_field(v, body, recinfo)
+        }
+        Term::Drop(_, _, _, _, body) => reads_heap_field(v, body, recinfo),
+        Term::Ret(rhs, _) => in_rhs(v, rhs, recinfo),
+    }
+}
+
 /// `true` if `n` is used as the SCRUTINEE of a `case` anywhere in `t` (`case n of …`).
 /// A heap field flowing into an inner `case` is CONSUMED by it (the inner case
 /// deep/shell-frees the value + moves its fields out), so — for a consumed outer
@@ -7164,21 +7195,44 @@ impl Elab<'_> {
                 }
             }
 
-            // notion-2: a heap field of a CONSUMED scrutinee that flows into an INNER
-            // `case` (`mapFst xs = case xs of Cons t ts -> case t of (a,b) -> …`) is
-            // reclaimed by NOTHING today — the outer scrutinee drop excludes it (it
-            // "escaped" into the inner case, per `occurs_nonborrow`) and the inner case
-            // cannot free it unless it is owned. Make such a field droppable with its
-            // resolved concrete element key so the inner case reclaims it. Restricted to
-            // inner-`case` flow so it never double-frees a field the scrutinee drop already
-            // reclaims (an unmentioned discard) or one moved into the result.
-            if let (Some(_), CPat::Con(con, subs), Atom::Var(sname)) = (&scrut_drop, &pat, scrut) {
+            // notion-2: a heap field of a CONSUMED scrutinee that is used but NOT moved out
+            // is reclaimed by NOTHING today, so make it droppable (with its resolved concrete
+            // element key) and let `go` / the inner case reclaim it at its death point. Two
+            // shapes, both currently leaked or mis-dropped:
+            //   · BORROWED-then-dead — read via a `Field`/borrowing call then dead (`sumV xs =
+            //     case xs of Cons h t -> v h + sumV t`). Auto-Drop must drop `h` AFTER the
+            //     read; the scrutinee `Inline` drop instead frees it BEFORE → `UseAfterFree`.
+            //   · CONSUMED-BY-INNER-`case` (`mapFst`'s `t = case t of (a,b) -> …`). The outer
+            //     drop excludes it (it "escaped" into the inner case) and the inner case can
+            //     only free it once owned.
+            // A field MOVED into the result or a consuming call (`occurs_nonborrow` but not an
+            // inner-`case` scrutinee) escapes — it is NOT made droppable (the result/callee
+            // owns it). Unmentioned dead discards stay with the scrutinee drop. So this never
+            // double-frees.
+            //
+            // GUARD: only when the scrutinee drop is NON-deep (`Inline`/`Shallow`, i.e. the
+            // arm is NOT `deep_safe`). A `deep_safe` arm deep-drops the WHOLE scrutinee
+            // (`axion_drop_List$P`), reclaiming every element — making the element droppable
+            // too would double-free it (`firstOr xs = case xs of Cons y ys -> a y`, tail
+            // ignored → whole-list deep drop). The non-deep paths (a spine escapes, or a heap
+            // result) shell-free the scrutinee and leave the element for us.
+            let deep_safe0 = !info.non_owning && !result_may_be_heap(&body, self.recinfo);
+            if let (false, Some(_), CPat::Con(con, subs), Atom::Var(sname)) =
+                (deep_safe0, &scrut_drop, &pat, scrut)
+            {
                 for (fi, sp) in subs.iter().enumerate() {
                     if let CPat::Var(n) = sp {
+                        let mentioned = term_mentions_any(&body, &HashSet::from([n.clone()]));
+                        // borrowed-then-dead: read only in non-moving positions AND not via a
+                        // heap-field projection (which would return an interior alias of `n`,
+                        // so `n` is not dead — the `firstInner`/`grab` interior-alias class).
+                        let borrowed_dead = mentioned
+                            && !occurs_nonborrow(n, &body)
+                            && !reads_heap_field(n, &body, self.recinfo);
                         if self.recinfo.field_transfers_heap(con, fi)
                             && !self.recinfo.field_is_owned(con, fi)
                             && !self.drp.contains(n)
-                            && flows_into_inner_case(n, &body)
+                            && (borrowed_dead || flows_into_inner_case(n, &body))
                         {
                             if let Some(key) = self.consumed_elem_key(con, fi, sname) {
                                 self.drp.insert(n.clone());
@@ -7194,6 +7248,7 @@ impl Elab<'_> {
             // (mentioned) in the arm body.  Only these need alias protection;
             // unused bindings can be safely deep-dropped.
             let mut mentioned_heap: HashSet<String> = HashSet::new();
+            let mut mentioned_slots: HashSet<usize> = HashSet::new();
             if let CPat::Con(con, subs) = &pat {
                 for (fi, sp) in subs.iter().enumerate() {
                     if let CPat::Var(n) = sp {
@@ -7202,6 +7257,7 @@ impl Elab<'_> {
                             && term_mentions_any(&body, &HashSet::from([n.clone()]))
                         {
                             mentioned_heap.insert(n.clone());
+                            mentioned_slots.insert(fi);
                         }
                     }
                 }
@@ -7252,7 +7308,14 @@ impl Elab<'_> {
                     }
                     ScrutDrop::Inline { non_own } => {
                         if let CPat::Con(con, subs) = &pat {
-                            b = Self::emit_per_field_drops(b, con, subs, s, non_own, self);
+                            // Skip every MENTIONED heap field, not only the escaping (`non_own`)
+                            // ones: a mentioned field is either moved out (escapes), reclaimed
+                            // by `go`/the inner case (notion-2, now in `drp`), or a borrowed-
+                            // then-dead conservative leak — dropping it here (before the body
+                            // that USES it) is the `sumV` `UseAfterFree`. Only UNMENTIONED dead
+                            // discards are reclaimed by the scrutinee drop. (Matches `Shallow`.)
+                            let skip: HashSet<usize> = non_own.union(&mentioned_slots).copied().collect();
+                            b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
                             b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                         }
                     }
@@ -7324,7 +7387,8 @@ impl Elab<'_> {
             "String" => Some(Some("String".into())),
             _ if elem.contains('$') => Some(Some(elem.to_string())), // tuple / nested container mono
             _ if self.recinfo.needs_deep_drop(elem) => Some(Some(elem.to_string())), // deep data
-            _ => None, // scalar / shallow data / unknown → leave as-is (conservative)
+            _ if self.recinfo.is_shallow_boxed_data(elem) => Some(None), // boxed data → flat free
+            _ => None, // scalar / unknown → leave as-is (conservative)
         }
     }
 
