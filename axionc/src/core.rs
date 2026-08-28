@@ -5298,9 +5298,18 @@ fn occurs_nonborrow(v: &str, t: &Term) -> bool {
 fn rhs_nonborrow(v: &str, rhs: &Rhs) -> bool {
     match rhs {
         Rhs::Op(op) => op_nonborrow(v, op),
-        // `if` condition / `case` scrutinee are local reads (borrow)
+        // an `if` CONDITION is a scalar read (borrow); a `case` SCRUTINEE, however,
+        // is a consuming use of a heap value — the inner `case` deep/shell-frees it and
+        // moves its fields out. So a heap field of a consumed scrutinee that flows into
+        // an inner `case` ESCAPES (into that case), and the parent must NOT reclaim it as
+        // part of its own scrutinee drop (that would free it before the inner case reads
+        // it — the `mapFst … case t of (a,b) -> …` UAF). Counting it as a nonborrow use
+        // excludes it from the parent's deep-drop (worst case a conservative leak, never a
+        // double-free); the inner case owns and reclaims it.
         Rhs::If(_, t, e) => occurs_nonborrow(v, t) || occurs_nonborrow(v, e),
-        Rhs::Case(_, arms) => arms.iter().any(|(_, b)| occurs_nonborrow(v, b)),
+        Rhs::Case(scrut, arms) => {
+            atom_is(v, scrut) || arms.iter().any(|(_, b)| occurs_nonborrow(v, b))
+        }
     }
 }
 
