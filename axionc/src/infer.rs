@@ -213,6 +213,41 @@ pub fn infer_partial(module: &Module, funcs: &[&Func], diags: &mut Diagnostics) 
     let _ = inf.finish(module);
 }
 
+/// Infer a CONCRETE signature for each UNSIGNED top-level function, so higher-order
+/// specialization (`specialize_hofs`) can recover the type of an unsigned or lambda-lifted
+/// closure passed to a HOF — the type-directed safety check + the clone's element type both
+/// need it. Runs a throwaway inference (its diagnostics are discarded; the real pipeline
+/// re-infers and reports). Returns ONLY functions whose principal type is fully concrete
+/// (`ty_to_ast` succeeds): a genuinely polymorphic closure (`\x -> x`) stays unsigned and
+/// falls back to the generic HOF (Route C + AX0912) — correct. Attaching a concrete sig
+/// restricts nothing, since a concrete principal type means the function is already used at
+/// exactly that single monomorphic type.
+pub fn infer_unsigned_sigs(module: &Module) -> HashMap<String, Type> {
+    let mut diags = Diagnostics::new();
+    let (mut inf, env) = setup(module, &mut diags);
+    for f in &module.funcs {
+        inf.check_body(&env, f);
+    }
+    // `finish` defaults numeric literals + discharges the instance obligations (e.g. `Ord`
+    // on `x > fromInt 2` → `x : Integer`), completing the substitution — without it a
+    // closure's element type stays an unresolved var and `ty_to_ast` fails. It borrows
+    // `&mut self` (does not consume `inf`), so the resolved substitution is available after.
+    let _ = inf.finish(module);
+    let mut out = HashMap::new();
+    for f in &module.funcs {
+        if f.sig.is_some() {
+            continue;
+        }
+        if let Some(scheme) = env.get(&f.name) {
+            let resolved = inf.apply(&scheme.ty);
+            if let Some(ast) = ty_to_ast_sig(&resolved) {
+                out.insert(f.name.clone(), ast);
+            }
+        }
+    }
+    out
+}
+
 /// Top-level functions WITHOUT a signature. In inference these get a monomorphic
 /// placeholder var shared across the whole module, so any function that references
 /// one has its inference tied to that function's body — the reason such callers are
@@ -805,6 +840,22 @@ fn ty_to_ast(t: &Ty) -> Option<Type> {
             ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
         )),
         Ty::Var(_) | Ty::Fun(..) => None,
+    }
+}
+
+/// Like [`ty_to_ast`] but ALSO converts function types to AST `Arrow`s — for recovering a
+/// full concrete SIGNATURE (a closure's type) rather than a mono-key element type. Every
+/// recovered arrow gets the default `Mult::Many`; consume-inference re-derives `%1` from the
+/// body afterward, so the multiplicity here is only a starting point. Still `None` on any
+/// residual type variable (a polymorphic closure is left unsigned → the generic HOF).
+fn ty_to_ast_sig(t: &Ty) -> Option<Type> {
+    match t {
+        Ty::Fun(from, to) => Some(Type::Arrow {
+            mult: Mult::Many,
+            from: Box::new(ty_to_ast_sig(from)?),
+            to: Box::new(ty_to_ast_sig(to)?),
+        }),
+        _ => ty_to_ast(t),
     }
 }
 

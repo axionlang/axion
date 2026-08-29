@@ -961,6 +961,33 @@ fn specialize_hofs(module: &mut ast::Module) {
     if hof_arrow.is_empty() {
         return;
     }
+    // Recover a CONCRETE signature for every UNSIGNED closure passed to a HOF (an unsigned
+    // named fn, or a lambda lifted to one) so the type-directed specialization can proceed:
+    // `closure_unsafe_to_specialize` and the clone's element-type concretization both need
+    // the closure's type. Without this an unsigned/lambda closure is conservatively rejected
+    // (no sig → unsafe) → the generic HOF → AX0912 over a heap element type. Only fns whose
+    // principal type is fully CONCRETE are signed (a polymorphic closure stays generic).
+    let mut demand_pairs: HashSet<(String, String)> = HashSet::new();
+    for f in &module.funcs {
+        collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demand_pairs);
+    }
+    let unsigned: HashSet<String> =
+        module.funcs.iter().filter(|f| f.sig.is_none()).map(|f| f.name.clone()).collect();
+    let unsigned_closures: HashSet<String> = demand_pairs
+        .iter()
+        .map(|(_, clos)| clos.clone())
+        .filter(|c| unsigned.contains(c))
+        .collect();
+    if !unsigned_closures.is_empty() {
+        let inferred = infer::infer_unsigned_sigs(module);
+        for f in &mut module.funcs {
+            if unsigned_closures.contains(&f.name) && f.sig.is_none() {
+                if let Some(ty) = inferred.get(&f.name) {
+                    f.sig = Some(ty.clone());
+                }
+            }
+        }
+    }
     let by_name: HashMap<String, ast::Func> =
         module.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
     // Closures UNSAFE to specialize: one that EMBEDS a parameter into a returned container

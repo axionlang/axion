@@ -208,3 +208,38 @@ fn case_extracted_local_field_escape_is_reclaimed_in_order() {
         }
     }
 }
+
+/// Closure-argument linearity for an UNSIGNED closure: a predicate with no user signature
+/// passed to `filter` over a heap element type (`List Integer`). Specialization recovers the
+/// closure's concrete type via inference (`infer_unsigned_sigs`), signs it, and specializes
+/// `filter$$isBig` — so the element-aliasing double-free (AX0912) cannot arise. Before this
+/// the unsigned closure had no type for the type-directed specialization → AX0912-rejected.
+/// Asserts the gate now ACCEPTS it (no AX0912) and every backend agrees (= 2).
+#[test]
+fn unsigned_closure_over_heap_specializes_not_rejected() {
+    let path = format!(
+        "{}/tests/fixtures/hof_unsigned_closure.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let gate = axionc().args(["--release", &path]).output().unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&gate.stdout),
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    assert!(
+        !combined.contains("AX0912"),
+        "an unsigned closure over a heap type should specialize, not hit AX0912:\n{combined}"
+    );
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "2",
+            "{backend}: filter isBig should keep 2 elements"
+        );
+    }
+}
