@@ -457,6 +457,44 @@ fn filter_over_heap_is_rejected_natively_but_runs_on_interp() {
 }
 
 #[test]
+fn ax0912_and_specialization_interact_soundly() {
+    // Under AXION_SPECIALIZE, the two partial-consumer classes diverge SOUNDLY:
+    //   · `filter` is SPINE-CONSUMING → specialized to a `%1`-consuming `filter$$gt` → the
+    //     element-aliasing is gone → it COMPILES over a heap element type (was AX0912). The
+    //     specialization rewrites the call, so the generic alias-borrower call — and thus
+    //     AX0912 — simply vanishes; no AX0912 change was needed.
+    //   · `take` is SPINE-DISCARDING → NOT specializable → stays generic → AX0912 still fires
+    //     (its kept elements would double-free over heap). Interp runs both.
+    let filt = fixture("filter_heap_reject.axi");
+    let out = axionc()
+        .args(["--backend", "cranelift", &filt])
+        .env("AXION_SPECIALIZE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "specialized filter-over-heap must COMPILE (AX0912 lifted): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n");
+
+    let tk = fixture("take_heap_reject.axi");
+    let out = axionc()
+        .args(["--backend", "cranelift", &tk])
+        .env("AXION_SPECIALIZE", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "specialized take-over-heap must STILL be AX0912-rejected");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("AX0912"),
+        "expected AX0912 for take-over-heap under specialization"
+    );
+    // interp reclaims via Rust Drop → runs either way.
+    let out = axionc().arg(&tk).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n");
+}
+
+#[test]
 fn closure_linearity_adversarial_runs_on_all_backends() {
     // Regression guard for the closure-linearity arc (consuming HOFs + lifted-lambda
     // reclamation). Three adversarial shapes that a naive drop would corrupt:
