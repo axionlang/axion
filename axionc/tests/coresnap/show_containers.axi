@@ -24,7 +24,6 @@
 
 
 
-
                     _ ->
                 _ ->
             _ ->
@@ -44,7 +43,6 @@ axion_drop_Maybe$Int _p  =
     Cons z zs ->
     Cons z zs ->
 double x  =
-  drop _t0
       drop _t0 : String
       drop _t0 : String
       drop _t0 : String
@@ -55,10 +53,11 @@ double x  =
   drop _t0 : String
   drop _t0 : String
   drop _t0 : String
-          drop _t12 : List$Maybe$Int
-          drop _t13 : String
-              drop _t16 : String
-                  drop _t19 : String
+          drop _t11 : List$Maybe$Int
+          drop _t12 : String
+              drop _t15 : String
+                  drop _t18 : String
+  drop _t1 : List$Int
       drop _t1 : String
       drop _t1 : String
       drop _t1 : String
@@ -69,17 +68,16 @@ double x  =
   drop _t1 : String
   drop _t1 : String
   drop _t1 : String
-                      drop _t28 : List$List$Int
-                      drop _t29 : String
-  drop _t2 : List$Int
+                      drop _t27 : List$List$Int
+                      drop _t28 : String
       drop _t2 : String
       drop _t2 : String
       drop _t2 : String
-  drop _t3 : String
-      drop _t5 : Maybe$Int
-      drop _t6 : String
+  drop _t2 : String
+      drop _t4 : Maybe$Int
+      drop _t5 : String
       drop xs
-      drop xs : List$Int
+      drop xs
     else
     else
     else
@@ -95,8 +93,7 @@ double x  =
     EQ ->
     GT ->
     Just a0 ->
-lam$0 [env ]eta$1  =
-                      let _d1000000 = putStrLn _t29  ; Δ{_t29}
+                      let _d1000000 = putStrLn _t28  ; Δ{_t28}
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _d1000000 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
@@ -142,7 +139,8 @@ lam$0 [env ]eta$1  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
+      let _t0 = call double y  ; Δ{y ys}
+  let _t0 = call range 1 5  ; Δ{} · makes List$Int
       let _t0 = call show$Int y  ; Δ{} · makes String
       let _t0 = call show$Int z  ; Δ{} · makes String
       let _t0 = call show$List$Int y  ; Δ{} · makes String
@@ -152,23 +150,22 @@ lam$0 [env ]eta$1  =
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
   let _t0 = call showListElems$List$Int xs  ; Δ{} · makes String
   let _t0 = call showListElems$Maybe$Int xs  ; Δ{} · makes String
-  let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
       let _t0 = rtcall axion_strcat "Just" " "  ; Δ{} · makes String
-          let _t10 = con Nil  ; Δ{_t8 _t9} · makes List$Maybe$Int
-          let _t11 = con Cons _t9 _t10  ; Δ{_t10 _t8 _t9} · moves{_t10 _t9} · makes List$Maybe$Int
-          let _t12 = con Cons _t8 _t11  ; Δ{_t11 _t8} · moves{_t11 _t8} · makes List$Maybe$Int
-          let _t13 = call show$List$Maybe$Int _t12  ; Δ{_t12} · makes String
-          let _t14 = putStrLn _t13  ; Δ{_t13}
-              let _t15 = con LT  ; Δ{}
-              let _t16 = call show$Ordering _t15  ; Δ{} · makes String
-              let _t17 = putStrLn _t16  ; Δ{_t16}
-                  let _t18 = con TPlus  ; Δ{}
-                  let _t19 = call show$Trit _t18  ; Δ{} · makes String
-      let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
-  let _t1 = call range 1 5  ; Δ{_t0} · makes List$Int
+          let _t10 = con Cons _t8 _t9  ; Δ{_t7 _t8 _t9} · moves{_t8 _t9} · makes List$Maybe$Int
+          let _t11 = con Cons _t7 _t10  ; Δ{_t10 _t7} · moves{_t10 _t7} · makes List$Maybe$Int
+          let _t12 = call show$List$Maybe$Int _t11  ; Δ{_t11} · makes String
+          let _t13 = putStrLn _t12  ; Δ{_t12}
+              let _t14 = con LT  ; Δ{}
+              let _t15 = call show$Ordering _t14  ; Δ{} · makes String
+              let _t16 = putStrLn _t15  ; Δ{_t15}
+                  let _t17 = con TPlus  ; Δ{}
+                  let _t18 = call show$Trit _t17  ; Δ{} · makes String
+                  let _t19 = putStrLn _t18  ; Δ{_t18}
+  let _t1 = call map$$double _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
+      let _t1 = call map$$double ys  ; Δ{y ys} · moves{ys} · makes List$Int
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t1 = call showListRest$Int ys  ; Δ{_t0} · makes String
       let _t1 = call showListRest$Int zs  ; Δ{_t0} · makes String
@@ -182,30 +179,29 @@ lam$0 [env ]eta$1  =
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
-                  let _t20 = putStrLn _t19  ; Δ{_t19}
-                      let _t21 = con Nil  ; Δ{} · makes List$Int
-                      let _t22 = con Cons 1 _t21  ; Δ{_t21} · moves{_t21} · makes List$Int
-                      let _t23 = con Nil  ; Δ{_t22} · makes List$Int
-                      let _t24 = con Cons 3 _t23  ; Δ{_t22 _t23} · moves{_t23} · makes List$Int
-                      let _t25 = con Cons 2 _t24  ; Δ{_t22 _t24} · moves{_t24} · makes List$Int
-                      let _t26 = con Nil  ; Δ{_t22 _t25} · makes List$List$Int
-                      let _t27 = con Cons _t25 _t26  ; Δ{_t22 _t25 _t26} · moves{_t25 _t26} · makes List$List$Int
-                      let _t28 = con Cons _t22 _t27  ; Δ{_t22 _t27} · moves{_t22 _t27} · makes List$List$Int
-                      let _t29 = call show$List$List$Int _t28  ; Δ{_t28} · makes String
+                      let _t20 = con Nil  ; Δ{} · makes List$Int
+                      let _t21 = con Cons 1 _t20  ; Δ{_t20} · moves{_t20} · makes List$Int
+                      let _t22 = con Nil  ; Δ{_t21} · makes List$Int
+                      let _t23 = con Cons 3 _t22  ; Δ{_t21 _t22} · moves{_t22} · makes List$Int
+                      let _t24 = con Cons 2 _t23  ; Δ{_t21 _t23} · moves{_t23} · makes List$Int
+                      let _t25 = con Nil  ; Δ{_t21 _t24} · makes List$List$Int
+                      let _t26 = con Cons _t24 _t25  ; Δ{_t21 _t24 _t25} · moves{_t24 _t25} · makes List$List$Int
+                      let _t27 = con Cons _t21 _t26  ; Δ{_t21 _t26} · moves{_t21 _t26} · makes List$List$Int
+                      let _t28 = call show$List$List$Int _t27  ; Δ{_t27} · makes String
     let _t2 = + acc lo  ; Δ{}
     let _t2 = callclo c lo n  ; Δ{}
-  let _t2 = call map$Int _t0 _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List$Int
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
+  let _t2 = call show$List$Int _t1  ; Δ{_t1} · makes String
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
-  let _t3 = call show$List$Int _t2  ; Δ{_t2} · makes String
-  let _t4 = putStrLn _t3  ; Δ{_t3}
-      let _t5 = con Just 3  ; Δ{} · makes Maybe$Int
-      let _t6 = call show$Maybe$Int _t5  ; Δ{_t5} · makes String
-      let _t7 = putStrLn _t6  ; Δ{_t6}
-          let _t8 = con Just 1  ; Δ{} · makes Maybe$Int
-          let _t9 = con Nothing  ; Δ{_t8} · makes Maybe$Int
+  let _t3 = putStrLn _t2  ; Δ{_t2}
+      let _t4 = con Just 3  ; Δ{} · makes Maybe$Int
+      let _t5 = call show$Maybe$Int _t4  ; Δ{_t4} · makes String
+      let _t6 = putStrLn _t5  ; Δ{_t5}
+          let _t7 = con Just 1  ; Δ{} · makes Maybe$Int
+          let _t8 = con Nothing  ; Δ{_t7} · makes Maybe$Int
+          let _t9 = con Nil  ; Δ{_t7 _t8} · makes List$Maybe$Int
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -213,7 +209,7 @@ lam$0 [env ]eta$1  =
     let _tag = loadraw _p+0  ; Δ{}
     LT ->
 main  =
-map$Int f xs  =
+map$$double xs  =
     Nil ->
     Nil ->
     Nil ->
@@ -249,14 +245,13 @@ range lo hi  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
     ret acc  ; Δ{}
-  ret call double eta$1  ; Δ{}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
-          ret case _t14 of
-              ret case _t17 of
-                  ret case _t20 of
-  ret case _t4 of
-      ret case _t7 of
+          ret case _t13 of
+              ret case _t16 of
+                  ret case _t19 of
+  ret case _t3 of
+      ret case _t6 of
   ret case x of
   ret case x of
   ret case x of
@@ -268,8 +263,8 @@ range lo hi  =
   ret case ys of
   ret case ys of
     ret con Cons lo _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
-      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
-      ret con Nil  ; Δ{}
+      ret con Cons _t0 _t1  ; Δ{_t1 y} · moves{_t1} · makes List$Int
+      ret con Nil  ; Δ{} · makes List$Int
     ret con Nil  ; Δ{} · makes List$Int
                       ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}

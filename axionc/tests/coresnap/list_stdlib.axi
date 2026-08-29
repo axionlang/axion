@@ -17,7 +17,6 @@
 
 
 
-
 append$Int xs ys  =
 axion_drop_Array _p  =
 axion_drop_List$Int _p  =
@@ -43,10 +42,10 @@ drop n xs  =
   drop _t40 : List$Int
   drop _t47 : List$Int
   drop _t4 : List$Int
-  drop _t50
   drop _t57 : List$Int
-  drop _t58 : List$Int
-  drop _t68 : List$Int
+  drop _t67 : List$Int
+      drop xs
+      drop xs
       drop xs
       drop xs
       drop xs
@@ -66,12 +65,11 @@ elem x xs  =
   else
   else
 evenN n  =
-filter p xs  =
+filter$$evenN xs  =
 foldl$Int f z xs  =
 foldr$Int f z xs  =
 lam$0 [env ]x a  =
 lam$1 [env ]a x  =
-lam$2 [env ]eta$1  =
 length xs  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -89,7 +87,7 @@ length xs  =
     let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = callclo f z y  ; Δ{y ys} · moves{y}
-      let _t0 = callclo p y  ; Δ{}
+      let _t0 = call evenN y  ; Δ{y ys}
       let _t0 = call foldr$Int f z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call reverse$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
@@ -109,7 +107,7 @@ length xs  =
   let _t17 = con Cons 20 _t16  ; Δ{_t16} · moves{_t16} · makes List$Int
   let _t18 = con Cons 10 _t17  ; Δ{_t17} · moves{_t17} · makes List$Int
   let _t19 = call reverse$Int _t18  ; Δ{_t18} · moves{_t18} · makes List$Int
-        let _t1 = call filter p ys  ; Δ{} · makes List
+        let _t1 = call filter$$evenN ys  ; Δ{y ys} · moves{ys} · makes List$Int
   let _t1 = con Cons 4 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
       let _t1 = con Nil  ; Δ{_t0 y}
         let _t1 = - n 1  ; Δ{}
@@ -149,29 +147,28 @@ length xs  =
   let _t48 = call sum _t47  ; Δ{_t47}
   let _t49 = + _t42 _t48  ; Δ{}
   let _t4 = con Cons 1 _t3  ; Δ{_t3} · moves{_t3} · makes List$Int
-  let _t50 = closure lam$2  ; Δ{} · makes heap
-  let _t51 = con Nil  ; Δ{_t50} · makes List$Int
-  let _t52 = con Cons 6 _t51  ; Δ{_t50 _t51} · moves{_t51} · makes List$Int
-  let _t53 = con Cons 5 _t52  ; Δ{_t50 _t52} · moves{_t52} · makes List$Int
-  let _t54 = con Cons 4 _t53  ; Δ{_t50 _t53} · moves{_t53} · makes List$Int
-  let _t55 = con Cons 3 _t54  ; Δ{_t50 _t54} · moves{_t54} · makes List$Int
-  let _t56 = con Cons 2 _t55  ; Δ{_t50 _t55} · moves{_t55} · makes List$Int
-  let _t57 = con Cons 1 _t56  ; Δ{_t50 _t56} · moves{_t56} · makes List$Int
-  let _t58 = call filter _t50 _t57  ; Δ{_t50 _t57} · makes List$Int
-  let _t59 = call sum _t58  ; Δ{_t58}
+  let _t50 = con Nil  ; Δ{} · makes List$Int
+  let _t51 = con Cons 6 _t50  ; Δ{_t50} · moves{_t50} · makes List$Int
+  let _t52 = con Cons 5 _t51  ; Δ{_t51} · moves{_t51} · makes List$Int
+  let _t53 = con Cons 4 _t52  ; Δ{_t52} · moves{_t52} · makes List$Int
+  let _t54 = con Cons 3 _t53  ; Δ{_t53} · moves{_t53} · makes List$Int
+  let _t55 = con Cons 2 _t54  ; Δ{_t54} · moves{_t54} · makes List$Int
+  let _t56 = con Cons 1 _t55  ; Δ{_t55} · moves{_t55} · makes List$Int
+  let _t57 = call filter$$evenN _t56  ; Δ{_t56} · moves{_t56} · makes List$Int
+  let _t58 = call sum _t57  ; Δ{_t57}
+  let _t59 = + _t49 _t58  ; Δ{}
   let _t5 = call length _t4  ; Δ{_t4}
-  let _t60 = + _t49 _t59  ; Δ{}
-  let _t61 = con Nil  ; Δ{}
-  let _t62 = call null _t61  ; Δ{}
-  let _t63 = call b2i _t62  ; Δ{}
-  let _t64 = + _t60 _t63  ; Δ{}
-  let _t65 = con Nil  ; Δ{} · makes List$Int
-  let _t66 = con Cons 3 _t65  ; Δ{_t65} · moves{_t65} · makes List$Int
-  let _t67 = con Cons 2 _t66  ; Δ{_t66} · moves{_t66} · makes List$Int
-  let _t68 = con Cons 1 _t67  ; Δ{_t67} · moves{_t67} · makes List$Int
-  let _t69 = call elem 3 _t68  ; Δ{_t68}
+  let _t60 = con Nil  ; Δ{}
+  let _t61 = call null _t60  ; Δ{}
+  let _t62 = call b2i _t61  ; Δ{}
+  let _t63 = + _t59 _t62  ; Δ{}
+  let _t64 = con Nil  ; Δ{} · makes List$Int
+  let _t65 = con Cons 3 _t64  ; Δ{_t64} · moves{_t64} · makes List$Int
+  let _t66 = con Cons 2 _t65  ; Δ{_t65} · moves{_t65} · makes List$Int
+  let _t67 = con Cons 1 _t66  ; Δ{_t66} · moves{_t66} · makes List$Int
+  let _t68 = call elem 3 _t67  ; Δ{_t67}
+  let _t69 = call b2i _t68  ; Δ{}
   let _t6 = con Nil  ; Δ{} · makes List$Int
-  let _t70 = call b2i _t69  ; Δ{}
   let _t7 = con Cons 2 _t6  ; Δ{_t6} · moves{_t6} · makes List$Int
   let _t8 = con Cons 1 _t7  ; Δ{_t7} · moves{_t7} · makes List$Int
   let _t9 = con Nil  ; Δ{_t8} · makes List$Int
@@ -214,8 +211,7 @@ null xs  =
       ret callclo f y _t0  ; Δ{y} · moves{y}
         ret call drop _t1 ys  ; Δ{} · makes List
         ret call elem x ys  ; Δ{}
-  ret call evenN eta$1  ; Δ{}
-        ret call filter p ys  ; Δ{} · makes List
+        ret call filter$$evenN ys  ; Δ{y ys} · moves{ys} · makes List$Int
       ret call foldl$Int f _t0 ys  ; Δ{ys} · moves{ys}
   ret case xs of
   ret case xs of
@@ -228,7 +224,7 @@ null xs  =
   ret case xs of
   ret case xs of
   ret case xs of
-        ret con Cons y _t1  ; Δ{_t1} · moves{_t1}
+        ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Int
         ret con Cons y _t2  ; Δ{_t2} · moves{_t2}
         ret con Cons y ys  ; Δ{}
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
@@ -236,7 +232,7 @@ null xs  =
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
-      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{} · makes List$Int
   ret if b then
       ret if _t0 then
       ret if _t0 then
@@ -244,7 +240,7 @@ null xs  =
       ret if _t0 then
   ret rtcall axion_array_free _p  ; Δ{}
   ret == _t0 0  ; Δ{}
-  ret + _t64 _t70  ; Δ{}
+  ret + _t63 _t69  ; Δ{}
   ret + x a  ; Δ{}
       ret ys  ; Δ{}
       ret + y _t0  ; Δ{}
@@ -272,4 +268,4 @@ take n xs  =
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  ; Δ{}
+  ; Δ{y ys}

@@ -15,7 +15,6 @@
 
 
 
-
     (a, b) ->
 append$Int xs ys  =
 append xs ys  =
@@ -40,10 +39,9 @@ concat$Int xs  =
   drop _t26 : List$Int
   drop _t31 : List$Int
   drop _t32 : List$Int
-  drop _t35
-  drop _t38 : List$Int
-  drop _t41 : List$Int
-  drop _t43 : List$Int
+  drop _t37 : List$Int
+  drop _t40 : List$Int
+  drop _t42 : List$Int
   drop _t9 : List
       drop xs
       drop xs
@@ -63,7 +61,6 @@ concat$Int xs  =
   else
 lam$0 [env ]a b  =
 lam$1 [env ]a b  =
-lam$2 [env ]eta$1  =
   let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -99,8 +96,8 @@ lam$2 [env ]eta$1  =
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
           let _t0 = callclo f a b  ; Δ{}
-      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t0 = call concat$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
+      let _t0 = call snd y  ; Δ{y ys} · moves{y}
       let _t0 = call sum ys  ; Δ{}
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = con Nil  ; Δ{} · makes List$Int
@@ -114,7 +111,7 @@ lam$2 [env ]eta$1  =
   let _t17 = con Cons _t15 _t16  ; Δ{_t12 _t15 _t16} · moves{_t15 _t16} · makes List$List$Int
   let _t18 = con Cons _t12 _t17  ; Δ{_t12 _t17} · moves{_t12 _t17} · makes List$List$Int
   let _t19 = call concat$Int _t18  ; Δ{_t18} · moves{_t18} · makes List$Int
-      let _t1 = call map f ys  ; Δ{ys} · moves{ys} · makes List
+      let _t1 = call map$$snd ys  ; Δ{ys} · moves{ys} · makes List$Int
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
   let _t1 = con Cons 2 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   let _t20 = call sum _t19  ; Δ{_t19}
@@ -133,17 +130,16 @@ lam$2 [env ]eta$1  =
   let _t32 = call zipWith _t22 _t26 _t31  ; Δ{_t22 _t26 _t31} · makes List$Int
   let _t33 = call sum _t32  ; Δ{_t32}
   let _t34 = + _t21 _t33  ; Δ{}
-  let _t35 = closure lam$2  ; Δ{} · makes heap
-  let _t36 = con Nil  ; Δ{_t35} · makes List$Int
-  let _t37 = con Cons 2 _t36  ; Δ{_t35 _t36} · moves{_t36} · makes List$Int
-  let _t38 = con Cons 1 _t37  ; Δ{_t35 _t37} · moves{_t37} · makes List$Int
-  let _t39 = con Nil  ; Δ{_t35 _t38} · makes List$Int
+  let _t35 = con Nil  ; Δ{} · makes List$Int
+  let _t36 = con Cons 2 _t35  ; Δ{_t35} · moves{_t35} · makes List$Int
+  let _t37 = con Cons 1 _t36  ; Δ{_t36} · moves{_t36} · makes List$Int
+  let _t38 = con Nil  ; Δ{_t37} · makes List$Int
+  let _t39 = con Cons 6 _t38  ; Δ{_t37 _t38} · moves{_t38} · makes List$Int
   let _t3 = con Nil  ; Δ{_t2} · makes List$Int
-  let _t40 = con Cons 6 _t39  ; Δ{_t35 _t38 _t39} · moves{_t39} · makes List$Int
-  let _t41 = con Cons 5 _t40  ; Δ{_t35 _t38 _t40} · moves{_t40} · makes List$Int
-  let _t42 = call zip _t38 _t41  ; Δ{_t35 _t38 _t41} · makes List$tuple$Int$Int
-  let _t43 = call map _t35 _t42  ; Δ{_t35 _t42} · moves{_t42} · makes List$Int
-  let _t44 = call sum _t43  ; Δ{_t43}
+  let _t40 = con Cons 5 _t39  ; Δ{_t37 _t39} · moves{_t39} · makes List$Int
+  let _t41 = call zip _t37 _t40  ; Δ{_t37 _t40} · makes List$tuple$Int$Int
+  let _t42 = call map$$snd _t41  ; Δ{_t41} · moves{_t41} · makes List$Int
+  let _t43 = call sum _t42  ; Δ{_t42}
   let _t4 = con Cons 4 _t3  ; Δ{_t2 _t3} · moves{_t3} · makes List$Int
   let _t5 = con Cons 3 _t4  ; Δ{_t2 _t4} · moves{_t4} · makes List$Int
   let _t6 = con Nil  ; Δ{_t2 _t5} · makes List$Int
@@ -155,7 +151,7 @@ lam$2 [env ]eta$1  =
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
-map f xs  =
+map$$snd xs  =
         Nil ->
     Nil ->
     Nil ->
@@ -188,7 +184,6 @@ map f xs  =
   ret * a b  ; Δ{}
       ret b  ; Δ{}
       ret call append$Int y _t0  ; Δ{_t0 y} · moves{_t0 y} · makes List$Int
-  ret call snd eta$1  ; Δ{}
   ret case p of
   ret case xs of
   ret case xs of
@@ -198,16 +193,16 @@ map f xs  =
   ret case xs of
       ret case ys of
           ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
-      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
+      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
           ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
-      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{} · makes List$Int
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret rtcall axion_array_free _p  ; Δ{}
-  ret + _t34 _t44  ; Δ{}
+  ret + _t34 _t43  ; Δ{}
   ret tuple a b  ; Δ{} · makes heap
       ret ys  ; Δ{}
       ret ys  ; Δ{}
