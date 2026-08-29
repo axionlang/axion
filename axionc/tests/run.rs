@@ -456,6 +456,24 @@ fn filter_over_heap_specializes_and_runs_on_all_backends() {
 }
 
 #[test]
+fn array_out_of_bounds_index_aborts_not_reads_garbage() {
+    // Bounds safety: an out-of-bounds `getArray` must be a CONTROLLED abort (the runtime
+    // bounds-check), never a silent OOB read returning garbage (UB). Asserts the process does
+    // NOT exit 0 with a value — it aborts. Guards codegen against inlining an unchecked load.
+    let fx = fixture("array_oob_abort.axi");
+    let out = axionc().args(["--backend", "cranelift", &fx]).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "OOB index must abort, not succeed — got stdout {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "OOB index must not return a (garbage) value"
+    );
+}
+
+#[test]
 fn ax0912_and_specialization_interact_soundly() {
     // Under AXION_SPECIALIZE, the two partial-consumer classes diverge SOUNDLY:
     //   · `filter` is SPINE-CONSUMING → specialized to a `%1`-consuming `filter$$gt` → the
