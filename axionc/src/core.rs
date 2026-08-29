@@ -7354,6 +7354,37 @@ impl Elab<'_> {
                 }
             }
 
+            // notion-2 for a TUPLE scrutinee: a BORROWED-then-dead heap tuple FIELD (`getFst t =
+            // case t of (a,b) -> a + b` — `a`/`b` are read by `+` then dead) is reclaimed by
+            // NOTHING (`tuple_discard_drops` frees only the UNMENTIONED fields + shell). Make it
+            // droppable with its element key from the tuple mono-key so `go` frees it at its
+            // death point. Same guards as the `Con` case: only non-`deep_safe`, borrowed (not
+            // moved out), not a heap-field interior alias; scalar/poly fields resolve to no-drop.
+            if let (false, Some(_), CPat::Tuple(subs), Atom::Var(sname)) =
+                (deep_safe0, &scrut_drop, &pat, scrut)
+            {
+                if let Some(keys) = self
+                    .dty(sname)
+                    .and_then(|k| self.recinfo.tuple_elem_drops(&k, subs.len()))
+                {
+                    for (fi, sp) in subs.iter().enumerate() {
+                        if let CPat::Var(n) = sp {
+                            let mentioned =
+                                term_mentions_any(&body, &HashSet::from([n.clone()]));
+                            let borrowed_dead = mentioned
+                                && !body_moves_var(n, &body, self.ba)
+                                && !reads_heap_field(n, &body, self.recinfo);
+                            if borrowed_dead && !self.drp.contains(n) {
+                                if let Some(Some(key)) = keys.get(fi) {
+                                    self.drp.insert(n.clone());
+                                    self.drop_ty.insert(n.clone(), key.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let result_heap = result_may_be_heap(&body, self.recinfo);
             // the set of non-`%1` heap field bindings that are actually USED
             // (mentioned) in the arm body.  Only these need alias protection;
