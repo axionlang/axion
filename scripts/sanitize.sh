@@ -115,6 +115,7 @@ NATIVE=(
   axionc/tests/fixtures/list_integer_discard.axi
   axionc/tests/fixtures/list_foldl_accum.axi
   axionc/tests/fixtures/embed_param_consume.axi
+  axionc/tests/fixtures/filter_discard_reclaim.axi
   axionc/tests/fixtures/land_tuple_upd.axi
   axionc/tests/fixtures/land_owned_poly.axi
   axionc/tests/fixtures/session_run_pingpong.axi
@@ -153,7 +154,7 @@ LEAKFREE=(
   nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec
   poly_payload_drop poly_payload_tco poly_payload_borrow_alias
   poly_payload_generic_drop poly_payload_generic_nested poly_payload_generic_compose poly_payload_gap
-  land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned tuple_discard_owned tuple_elem_discard list_elem_borrow_reclaim list_integer_discard list_foldl_accum embed_param_consume land_tuple_upd land_owned_poly
+  land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned tuple_discard_owned tuple_elem_discard list_elem_borrow_reclaim list_integer_discard list_foldl_accum embed_param_consume filter_discard_reclaim land_tuple_upd land_owned_poly
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field

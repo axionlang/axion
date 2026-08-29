@@ -4353,10 +4353,13 @@ pub fn lower_with(
         } else {
             Vec::new()
         };
-        if !owned.is_empty() {
+        // Always run: even with no owned PARAM to carry, the pass DISCOVERS conditionally-
+        // escaping case-extracted heap elements (`filter`/`keepBig`) and reclaims them
+        // branch-sensitively. A no-op when there is nothing to reclaim.
+        {
             let body =
                 std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
-            f.body = reclaim_cond_escape(body, owned, &borrow_args, &borrow_ret);
+            f.body = reclaim_cond_escape(body, owned, &borrow_args, &borrow_ret, &recinfo, dty);
         }
         result.push(f);
         skip_seeds.extend(seeds);
@@ -6178,11 +6181,55 @@ fn where_integer_params(f: &CoreFn) -> HashSet<String> {
     out
 }
 
+/// The concrete drop key of a heap field `fi` of `con` extracted from a scrutinee whose mono
+/// key is `scrut_key` — the free-function twin of `Elab::consumed_elem_key`, for
+/// `reclaim_cond_escape`. Outer `None` = do NOT reclaim (scalar / unresolvable — poly leak,
+/// exempt); `Some(k)` = reclaim with key `k` (`None` inner = flat free, `Some` = keyed).
+fn cond_elem_key(
+    con: &str,
+    fi: usize,
+    scrut_key: Option<&str>,
+    recinfo: &RecordInfo,
+) -> Option<Option<String>> {
+    if let Some(k) = recinfo.field_drop_slot(con, fi) {
+        return Some(match scrut_key {
+            Some(sk) if sk.contains('$') && sk.split('$').next() == Some(k.as_str()) => {
+                Some(sk.to_string())
+            }
+            _ => Some(k),
+        });
+    }
+    let (_, elem) = scrut_key?.split_once('$')?;
+    match elem {
+        "Integer" => Some(Some("Integer".into())),
+        "String" => Some(Some("String".into())),
+        _ if elem.contains('$') => Some(Some(elem.to_string())),
+        _ if recinfo.needs_deep_drop(elem) => Some(Some(elem.to_string())),
+        _ if recinfo.is_shallow_boxed_data(elem) => Some(None),
+        _ => None,
+    }
+}
+
+/// `true` if `t`'s leading `let`/`drop` spine (NOT descending into `if`/`case` branches)
+/// SHELL-frees `scrut` — a `Drop(scrut, None, …)` (no destructor key). A shell free reclaims
+/// only the cell and TRANSFERS the fields out (they become owned here); a DEEP drop
+/// (`Drop(scrut, Some(k), …)`) instead reclaims the fields transitively, so they must NOT be
+/// discovered as owned (that would double-free — `firstOr`'s deep-dropped tail).
+fn arm_shell_frees_scrut(scrut: &str, t: &Term) -> bool {
+    match t {
+        Term::Drop(v, key, _, _, b) => (v == scrut && key.is_none()) || arm_shell_frees_scrut(scrut, b),
+        Term::Let(_, _, _, b) => arm_shell_frees_scrut(scrut, b),
+        Term::Ret(_, _) => false,
+    }
+}
+
 fn reclaim_cond_escape(
     body: Term,
     owned: Vec<(String, Option<String>)>,
     ba: &BorrowArgs,
     br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+    dty: &HashMap<String, Option<String>>,
 ) -> Term {
     match body {
         Term::Let(x, rhs, sp, b) => {
@@ -6220,17 +6267,17 @@ fn reclaim_cond_escape(
             if let Some(key) = alias_key {
                 owned.push((x.clone(), key));
             }
-            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br)))
+            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br, recinfo, dty)))
         }
         Term::Drop(v, k, sk, sp, b) => {
             let owned: Vec<_> = owned.into_iter().filter(|(n, _)| n != &v).collect();
-            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br)))
+            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br, recinfo, dty)))
         }
         Term::Ret(Rhs::If(c, th, el), sp) => Term::Ret(
             Rhs::If(
                 c,
-                Box::new(reclaim_cond_escape(*th, owned.clone(), ba, br)),
-                Box::new(reclaim_cond_escape(*el, owned, ba, br)),
+                Box::new(reclaim_cond_escape(*th, owned.clone(), ba, br, recinfo, dty)),
+                Box::new(reclaim_cond_escape(*el, owned, ba, br, recinfo, dty)),
             ),
             sp,
         ),
@@ -6239,17 +6286,44 @@ fn reclaim_cond_escape(
                 Atom::Var(n) => Some(n.clone()),
                 _ => None,
             };
+            let scrut_key = scrut_name.as_deref().and_then(|s| dty.get(s).cloned().flatten());
             let arms = arms
                 .into_iter()
                 .map(|(pat, arm)| {
                     // exclude the scrutinee (reclaimed by the scrutinee drop) and any
                     // param the pattern re-binds (shadowed).
-                    let owned_arm: Vec<_> = owned
+                    let mut owned_arm: Vec<_> = owned
                         .iter()
                         .filter(|(v, _)| Some(v) != scrut_name.as_ref() && !cpat_binds(&pat, v))
                         .cloned()
                         .collect();
-                    (pat, reclaim_cond_escape(arm, owned_arm, ba, br))
+                    // DISCOVER case-extracted OWNED heap elements: when this arm CONSUMES the
+                    // scrutinee (shell-frees it), its heap fields are transferred out and owned.
+                    // Add each with its resolved CONCRETE element key so the branch-sensitive
+                    // logic below frees it on paths where it is DEAD and keeps it where it is
+                    // moved out (`filter`/`keepBig`: `y` dropped on the else, kept in `Cons y`).
+                    // This is the branch-sensitive twin of the notion-2 pass, which cannot handle
+                    // a CONDITIONALLY-moved element (`go`'s borrow-only liveness would drop it
+                    // before its move). Poly/scalar elements do not resolve → left (exempt leak).
+                    if let (Some(s), CPat::Con(con, subs)) = (scrut_name.as_deref(), &pat) {
+                        if arm_shell_frees_scrut(s, &arm) {
+                            for (fi, sp) in subs.iter().enumerate() {
+                                if let CPat::Var(n) = sp {
+                                    if recinfo.field_transfers_heap(con, fi)
+                                        && !recinfo.field_is_owned(con, fi)
+                                        && !owned_arm.iter().any(|(v, _)| v == n)
+                                    {
+                                        if let Some(key) =
+                                            cond_elem_key(con, fi, scrut_key.as_deref(), recinfo)
+                                        {
+                                            owned_arm.push((n.clone(), key));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (pat, reclaim_cond_escape(arm, owned_arm, ba, br, recinfo, dty))
                 })
                 .collect();
             Term::Ret(Rhs::Case(scrut, arms), sp)
