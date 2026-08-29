@@ -7569,8 +7569,13 @@ impl Elab<'_> {
                             // that USES it) is the `sumV` `UseAfterFree`. Only UNMENTIONED dead
                             // discards are reclaimed by the scrutinee drop. (Matches `Shallow`.)
                             let skip: HashSet<usize> = non_own.union(&mentioned_slots).copied().collect();
-                            b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
+                            // shell-free the cell FIRST in construction so it runs LAST — a
+                            // wildcard-discarded heap field is reclaimed via `loadraw s+off`,
+                            // which must read `s` while it is still live. Building the shell
+                            // drop innermost puts the loads (and their drops) ahead of it in
+                            // execution order (the `grabBox`/case-extraction-escape UAF).
                             b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
+                            b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
                         }
                     }
                     ScrutDrop::Shallow => {
@@ -7597,9 +7602,13 @@ impl Elab<'_> {
                                     }
                                 })
                                 .collect();
+                            // same ordering as `Inline`: shell-free constructed innermost so
+                            // it runs after any `loadraw s+off` of a wildcard-discarded field.
+                            b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                             b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
+                        } else {
+                            b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                         }
-                        b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                     }
                 }
                 }

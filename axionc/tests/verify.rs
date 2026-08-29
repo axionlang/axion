@@ -171,3 +171,40 @@ fn escaping_local_field_is_moved_out_not_rejected() {
         );
     }
 }
+
+/// The case-extraction dual of the move-out: a fn that case-extracts a heap field of a
+/// FRESH LOCAL scrutinee and returns it, while a SIBLING field is a dead heap discard
+/// (`grabBox n = case Box (Cons n Nil) (Cons 9 Nil) of Box x _ -> x`). This was a real
+/// reclaim bug — the non-deep arm freed the discarded sibling with `loadraw s+off` but
+/// emitted the scrutinee's shell-free BEFORE the load (reading the freed cell → UAF, the
+/// gate refused). The fix orders the shell-free LAST so every discarded-field load reads a
+/// live scrutinee. Asserts it now verifies clean and runs leak-free (= 1) on every backend.
+#[test]
+fn case_extracted_local_field_escape_is_reclaimed_in_order() {
+    for fixture in ["case_extract_escape", "tuple_extract_escape"] {
+        let path = format!("{}/tests/fixtures/{fixture}.axi", env!("CARGO_MANIFEST_DIR"));
+        let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
+        let vstdout = String::from_utf8_lossy(&verify.stdout);
+        assert!(
+            vstdout.contains("ok:") && !vstdout.contains("FAIL:"),
+            "{fixture}: the case-extraction move-out should verify clean, got:\n{vstdout}"
+        );
+        for backend in ["interp", "cranelift", "llvm"] {
+            let run = axionc()
+                .args(["run", "--backend", backend, &path])
+                .output()
+                .unwrap();
+            assert!(
+                run.status.success(),
+                "{fixture}/{backend}: should compile and run, got:\n{}{}",
+                String::from_utf8_lossy(&run.stdout),
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&run.stdout).trim(),
+                "1",
+                "{fixture}/{backend}: the moved-out field length should be 1"
+            );
+        }
+    }
+}
