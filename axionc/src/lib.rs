@@ -820,15 +820,14 @@ pub fn prepare_for_check(
     path: &str,
     diags: &mut Diagnostics,
 ) -> (ast::Module, std::collections::HashSet<String>) {
-    // The batch (codegen) path may SPECIALIZE higher-order functions (`foldr addI` →
-    // `foldr$$addI`), turning `callclo` into a direct call so the existing per-callee ownership
-    // analysis computes per-closure reclamation. GATED OFF by default (`AXION_SPECIALIZE=1`):
-    // the mechanism is validated for provably-fresh closures over non-partial-consumer HOFs,
-    // but sound DEFAULT-ON landing needs the closure-argument-linearity work — a specialized
-    // direct call uses the closure's real (borrow) convention, unlike the generic `callclo`'s
-    // Route-C move, so an arg the HOF assumed the closure CONSUMED (a `foldl` accumulator, an
-    // element) is now merely borrowed and leaks/dangles unless the HOF reclaims it. See the arc.
-    let specialize = std::env::var_os("AXION_SPECIALIZE").is_some();
+    // The batch (codegen) path SPECIALIZES higher-order functions (`foldr addI` → `foldr$$addI`,
+    // `filter gt2` → `filter$$gt2`), turning `callclo` into a direct call so the existing
+    // per-callee ownership analysis computes per-closure reclamation. DEFAULT-ON: the guards
+    // admit only closures/HOFs whose specialization is sound (fresh-producing OR `%1`-consuming
+    // closures; full or spine-consuming HOFs), and everything else falls back to the generic
+    // `callclo` + AX0912 — validated corruption- and leak-free over the corpus + ~9000 fuzzed
+    // programs. `AXION_NO_SPECIALIZE=1` disables it (debugging / the pre-flip generic path).
+    let specialize = std::env::var_os("AXION_NO_SPECIALIZE").is_none();
     prepare_for_check_with(module, path, diags, &disk_import_resolver, specialize)
 }
 
@@ -987,7 +986,7 @@ fn specialize_hofs(module: &mut ast::Module) {
     loop {
         let mut demands: HashSet<(String, String)> = HashSet::new();
         for f in &module.funcs {
-            for_each_func_expr(f, &mut |e| collect_hof_demands(e, &hof_arrow, &fn_names, &mut demands));
+            collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demands);
         }
         demands.retain(|(_, clos)| !unsafe_clos.contains(clos));
         let fresh: Vec<(String, String)> =
@@ -1008,9 +1007,56 @@ fn specialize_hofs(module: &mut ast::Module) {
         }
         // rewrite ALL call sites (generic bodies + clones) to the specialized names.
         for f in &mut module.funcs {
-            for_each_func_expr_mut(f, &mut |e| {
-                rewrite_hof_calls(e, &generated, &hof_arrow, &fn_names)
-            });
+            rewrite_func_calls(f, &generated, &hof_arrow, &fn_names, &HashSet::new());
+        }
+    }
+}
+
+/// Scope-aware demand collection over a whole function: seeds the `bound` set with the clause
+/// parameters (and recurses into `where`-locals, which also see the enclosing params).
+fn collect_func_demands(
+    f: &ast::Func,
+    hof_arrow: &std::collections::HashMap<String, usize>,
+    fn_names: &std::collections::HashSet<String>,
+    outer_bound: &std::collections::HashSet<String>,
+    out: &mut std::collections::HashSet<(String, String)>,
+) {
+    for c in &f.clauses {
+        let mut b = outer_bound.clone();
+        c.pats.iter().for_each(|p| pat_bound(p, &mut b));
+        match &c.body {
+            ast::Body::Plain(e) => collect_hof_demands(e, hof_arrow, fn_names, &b, out),
+            ast::Body::Guarded(arms) => arms.iter().for_each(|(g, r)| {
+                collect_hof_demands(g, hof_arrow, fn_names, &b, out);
+                collect_hof_demands(r, hof_arrow, fn_names, &b, out);
+            }),
+        }
+        for w in &c.wher {
+            collect_func_demands(w, hof_arrow, fn_names, &b, out);
+        }
+    }
+}
+
+/// Scope-aware call rewriting over a whole function (mirrors `collect_func_demands`).
+fn rewrite_func_calls(
+    f: &mut ast::Func,
+    generated: &std::collections::HashSet<(String, String)>,
+    hof_arrow: &std::collections::HashMap<String, usize>,
+    fn_names: &std::collections::HashSet<String>,
+    outer_bound: &std::collections::HashSet<String>,
+) {
+    for c in &mut f.clauses {
+        let mut b = outer_bound.clone();
+        c.pats.iter().for_each(|p| pat_bound(p, &mut b));
+        match &mut c.body {
+            ast::Body::Plain(e) => rewrite_hof_calls(e, generated, hof_arrow, fn_names, &b),
+            ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+                rewrite_hof_calls(g, generated, hof_arrow, fn_names, &b);
+                rewrite_hof_calls(r, generated, hof_arrow, fn_names, &b);
+            }),
+        }
+        for w in &mut c.wher {
+            rewrite_func_calls(w, generated, hof_arrow, fn_names, &b);
         }
     }
 }
@@ -1188,23 +1234,6 @@ fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
     !all_safe
 }
 
-/// Applies `g` to every ROOT expression of a function's clauses (plain/guarded bodies).
-/// `g` is responsible for descending into sub-expressions (`where`/lambdas included) itself.
-fn for_each_func_expr(f: &ast::Func, g: &mut dyn FnMut(&ast::Expr)) {
-    for c in &f.clauses {
-        match &c.body {
-            ast::Body::Plain(e) => g(e),
-            ast::Body::Guarded(arms) => arms.iter().for_each(|(gd, r)| {
-                g(gd);
-                g(r);
-            }),
-        }
-        for w in &c.wher {
-            for_each_func_expr(w, g);
-        }
-    }
-}
-
 fn for_each_func_expr_mut(f: &mut ast::Func, g: &mut dyn FnMut(&mut ast::Expr)) {
     for c in &mut f.clauses {
         match &mut c.body {
@@ -1267,36 +1296,184 @@ fn app_spine(e: &ast::Expr) -> (&ast::Expr, Vec<&ast::Expr>) {
 
 /// Records a `(hof, closure)` demand for each application of an MVP HOF whose arrow argument
 /// is a bare top-level function name. Recurses into every sub-expression.
+/// The variables a pattern binds (recursively through `Con`/`Tuple`).
+fn pat_bound(pat: &ast::Pat, out: &mut std::collections::HashSet<String>) {
+    match pat {
+        ast::Pat::Var(n, _) => {
+            out.insert(n.clone());
+        }
+        ast::Pat::Con(_, subs, _) | ast::Pat::Tuple(subs, _) => {
+            subs.iter().for_each(|p| pat_bound(p, out));
+        }
+        _ => {}
+    }
+}
+
+/// SCOPE-AWARE demand collection: records `(hof, closure)` for an application of an MVP HOF
+/// whose arrow argument is a bare TOP-LEVEL function name that is NOT locally shadowed. Without
+/// the `bound` set a local predicate parameter named `p` (the prelude's `any p …`, `filter p …`)
+/// would be mis-resolved to a same-named top-level CAF (`rsa_modexp`'s prime `p`) → a nonsense
+/// `any$$p` clone that binds an `Integer` where a function is expected.
 fn collect_hof_demands(
     e: &ast::Expr,
     hof_arrow: &std::collections::HashMap<String, usize>,
     fn_names: &std::collections::HashSet<String>,
+    bound: &std::collections::HashSet<String>,
     out: &mut std::collections::HashSet<(String, String)>,
 ) {
     if let ast::Expr::App(..) = e {
         let (head, args) = app_spine(e);
         if let ast::Expr::Var(h, _) = head {
-            if let Some(&k) = hof_arrow.get(h) {
-                if let Some(ast::Expr::Var(g, _)) = args.get(k) {
-                    if fn_names.contains(g) {
-                        out.insert((h.clone(), g.clone()));
+            if !bound.contains(h) {
+                if let Some(&k) = hof_arrow.get(h) {
+                    if let Some(ast::Expr::Var(g, _)) = args.get(k) {
+                        if fn_names.contains(g) && !bound.contains(g) {
+                            out.insert((h.clone(), g.clone()));
+                        }
                     }
                 }
             }
         }
     }
-    for_each_subexpr(e, &mut |c| collect_hof_demands(c, hof_arrow, fn_names, out));
+    for_each_subexpr_scoped(e, bound, &mut |c, b| {
+        collect_hof_demands(c, hof_arrow, fn_names, b, out);
+    });
+}
+
+/// Applies `g` to each DIRECT child expression together with the variables in scope THERE
+/// (`bound` extended by any binders the enclosing form introduces — `case` pattern vars,
+/// `let`-bound names + their clause params, lambda params). The mutable twin is
+/// `for_each_subexpr_scoped_mut`.
+fn for_each_subexpr_scoped(
+    e: &ast::Expr,
+    bound: &std::collections::HashSet<String>,
+    g: &mut dyn FnMut(&ast::Expr, &std::collections::HashSet<String>),
+) {
+    match e {
+        ast::Expr::App(a, b, _) | ast::Expr::BinOp(_, a, b, _) => {
+            g(a, bound);
+            g(b, bound);
+        }
+        ast::Expr::If(c, t, el, _) => {
+            g(c, bound);
+            g(t, bound);
+            g(el, bound);
+        }
+        ast::Expr::Case(s, arms, _) => {
+            g(s, bound);
+            for (pat, body) in arms {
+                let mut b = bound.clone();
+                pat_bound(pat, &mut b);
+                g(body, &b);
+            }
+        }
+        ast::Expr::Let(binds, body, _) => {
+            let mut b = bound.clone();
+            for f in binds {
+                b.insert(f.name.clone());
+            }
+            for f in binds {
+                for c in &f.clauses {
+                    let mut b2 = b.clone();
+                    c.pats.iter().for_each(|p| pat_bound(p, &mut b2));
+                    match &c.body {
+                        ast::Body::Plain(be) => g(be, &b2),
+                        ast::Body::Guarded(arms) => arms.iter().for_each(|(gg, r)| {
+                            g(gg, &b2);
+                            g(r, &b2);
+                        }),
+                    }
+                }
+            }
+            g(body, &b);
+        }
+        ast::Expr::Tuple(es, _) => es.iter().for_each(|x| g(x, bound)),
+        ast::Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| g(x, bound)),
+        ast::Expr::RecordUpd(b, fs, _) => {
+            g(b, bound);
+            fs.iter().for_each(|(_, x)| g(x, bound));
+        }
+        ast::Expr::Lam(pats, body, _) => {
+            let mut b = bound.clone();
+            pats.iter().for_each(|p| pat_bound(p, &mut b));
+            g(body, &b);
+        }
+        _ => {}
+    }
+}
+
+fn for_each_subexpr_scoped_mut(
+    e: &mut ast::Expr,
+    bound: &std::collections::HashSet<String>,
+    g: &mut dyn FnMut(&mut ast::Expr, &std::collections::HashSet<String>),
+) {
+    match e {
+        ast::Expr::App(a, b, _) | ast::Expr::BinOp(_, a, b, _) => {
+            g(a, bound);
+            g(b, bound);
+        }
+        ast::Expr::If(c, t, el, _) => {
+            g(c, bound);
+            g(t, bound);
+            g(el, bound);
+        }
+        ast::Expr::Case(s, arms, _) => {
+            g(s, bound);
+            for (pat, body) in arms {
+                let mut b = bound.clone();
+                pat_bound(pat, &mut b);
+                g(body, &b);
+            }
+        }
+        ast::Expr::Let(binds, body, _) => {
+            let mut b = bound.clone();
+            for f in binds.iter() {
+                b.insert(f.name.clone());
+            }
+            for f in binds.iter_mut() {
+                for c in &mut f.clauses {
+                    let mut b2 = b.clone();
+                    c.pats.iter().for_each(|p| pat_bound(p, &mut b2));
+                    match &mut c.body {
+                        ast::Body::Plain(be) => g(be, &b2),
+                        ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(gg, r)| {
+                            g(gg, &b2);
+                            g(r, &b2);
+                        }),
+                    }
+                }
+            }
+            g(body, &b);
+        }
+        ast::Expr::Tuple(es, _) => es.iter_mut().for_each(|x| g(x, bound)),
+        ast::Expr::RecordCon(_, fs, _) => fs.iter_mut().for_each(|(_, x)| g(x, bound)),
+        ast::Expr::RecordUpd(b, fs, _) => {
+            g(b, bound);
+            fs.iter_mut().for_each(|(_, x)| g(x, bound));
+        }
+        ast::Expr::Lam(pats, body, _) => {
+            let mut b = bound.clone();
+            pats.iter().for_each(|p| pat_bound(p, &mut b));
+            g(body, &b);
+        }
+        _ => {}
+    }
 }
 
 /// Rewrites `hof … g …` (g the resolved closure at the arrow slot) to `hof$$g …` (arrow arg
 /// dropped) wherever `(hof, g)` was generated. Bottom-up so nested/curried spines resolve.
+/// SCOPE-AWARE (`bound`): a locally-shadowed `hof`/`g` is left alone (a local `filter p` where
+/// `p` is a bound predicate must NOT be rewritten to a top-level `filter$$p`).
 fn rewrite_hof_calls(
     e: &mut ast::Expr,
     generated: &std::collections::HashSet<(String, String)>,
     hof_arrow: &std::collections::HashMap<String, usize>,
     fn_names: &std::collections::HashSet<String>,
+    bound: &std::collections::HashSet<String>,
 ) {
-    for_each_subexpr_mut(e, &mut |c| rewrite_hof_calls(c, generated, hof_arrow, fn_names));
+    for_each_subexpr_scoped_mut(e, bound, &mut |c, b| {
+        rewrite_hof_calls(c, generated, hof_arrow, fn_names, b);
+    });
     if !matches!(e, ast::Expr::App(..)) {
         return;
     }
@@ -1305,13 +1482,19 @@ fn rewrite_hof_calls(
         return;
     };
     let (h, hspan) = (h.clone(), *hspan);
+    if bound.contains(&h) {
+        return;
+    }
     let Some(&k) = hof_arrow.get(&h) else {
         return;
     };
     let Some(ast::Expr::Var(g, _)) = args.get(k) else {
         return;
     };
-    if !fn_names.contains(g) || !generated.contains(&(h.clone(), g.clone())) {
+    if !fn_names.contains(g)
+        || bound.contains(g)
+        || !generated.contains(&(h.clone(), g.clone()))
+    {
         return;
     }
     let mangled = format!("{h}$${g}");
