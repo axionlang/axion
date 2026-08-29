@@ -961,12 +961,21 @@ fn specialize_hofs(module: &mut ast::Module) {
     if hof_arrow.is_empty() {
         return;
     }
-    // Recover a CONCRETE signature for every UNSIGNED closure passed to a HOF (an unsigned
-    // named fn, or a lambda lifted to one) so the type-directed specialization can proceed:
-    // `closure_unsafe_to_specialize` and the clone's element-type concretization both need
-    // the closure's type. Without this an unsigned/lambda closure is conservatively rejected
-    // (no sig → unsafe) → the generic HOF → AX0912 over a heap element type. Only fns whose
-    // principal type is fully CONCRETE are signed (a polymorphic closure stays generic).
+    let mut fn_names = fn_names;
+    // A NON-CAPTURING lambda literal at a HOF's arrow slot (`filter (\x -> x > fromInt 2) xs`)
+    // is a candidate to lift to a fresh top-level function so the closure becomes a NAME the
+    // rest of specialization resolves. Add the candidate `hoflam<N>` bodies as UNREFERENCED
+    // functions (the call sites keep the lambda for now) so inference types each one in
+    // ISOLATION — a MONOMORPHIC lambda (`\x -> x > fromInt 2 : Integer -> Bool`) gets a
+    // concrete type and is committed; a POLYMORPHIC one (`\x -> x` in `fromMaybe`) would, if
+    // lifted to an unsigned fn, become a single monomorphic shared placeholder and
+    // over-constrain its callers — so it is dropped and stays inline (the generic HOF).
+    let candidates = build_lambda_candidates(module, &hof_arrow);
+    // Recover a CONCRETE signature for every UNSIGNED closure passed to a HOF (a lambda
+    // candidate, or an unsigned named fn): `closure_unsafe_to_specialize` and the clone's
+    // element-type concretization both need the closure's type. Without it an unsigned/lambda
+    // closure is conservatively rejected (no sig → unsafe) → the generic HOF → AX0912 over a
+    // heap element type. Only fns whose principal type is fully CONCRETE are signed.
     let mut demand_pairs: HashSet<(String, String)> = HashSet::new();
     for f in &module.funcs {
         collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demand_pairs);
@@ -978,8 +987,9 @@ fn specialize_hofs(module: &mut ast::Module) {
         .map(|(_, clos)| clos.clone())
         .filter(|c| unsigned.contains(c))
         .collect();
-    if !unsigned_closures.is_empty() {
+    if !unsigned_closures.is_empty() || !candidates.is_empty() {
         let inferred = infer::infer_unsigned_sigs(module);
+        // sign the unsigned NAMED closures that inference resolved to a concrete type.
         for f in &mut module.funcs {
             if unsigned_closures.contains(&f.name) && f.sig.is_none() {
                 if let Some(ty) = inferred.get(&f.name) {
@@ -987,6 +997,10 @@ fn specialize_hofs(module: &mut ast::Module) {
                 }
             }
         }
+        // commit the lambda lifts whose candidate got a CONCRETE signature: sign the hoflam
+        // and rewrite its call site (lambda → the hoflam name). Drop the rest (poly lambdas).
+        let committed = commit_lambda_lifts(module, &candidates, &inferred);
+        fn_names.extend(committed);
     }
     let by_name: HashMap<String, ast::Func> =
         module.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
@@ -1037,6 +1051,168 @@ fn specialize_hofs(module: &mut ast::Module) {
             rewrite_func_calls(f, &generated, &hof_arrow, &fn_names, &HashSet::new());
         }
     }
+}
+
+/// Pass 1 of lambda lifting: for every NON-CAPTURING lambda literal at a HOF's arrow slot,
+/// add an UNREFERENCED top-level function `hoflam<N>` holding its body (the call sites keep
+/// the lambda). Returns `(hoflam name, lambda span)` per candidate — the span identifies the
+/// exact lambda to rewrite in pass 2 (`commit_lambda_lifts`) if inference gives the hoflam a
+/// concrete type. Adding them unreferenced lets inference type each in ISOLATION, so a
+/// polymorphic lambda (`\x -> x`) is detectable (non-concrete) and left inline. A CAPTURING
+/// lambda is skipped entirely — it needs its captures threaded as params (not done); it
+/// falls back to the generic HOF (Route C + AX0912), the correct conservative floor.
+fn build_lambda_candidates(
+    module: &mut ast::Module,
+    hof_arrow: &std::collections::HashMap<String, usize>,
+) -> Vec<(String, ast::Span)> {
+    let mut candidates: Vec<(String, ast::Span)> = Vec::new();
+    let mut new_funcs: Vec<ast::Func> = Vec::new();
+    let mut counter: usize = 0;
+    fn walk_func(
+        f: &ast::Func,
+        outer_bound: &std::collections::HashSet<String>,
+        hof_arrow: &std::collections::HashMap<String, usize>,
+        candidates: &mut Vec<(String, ast::Span)>,
+        new_funcs: &mut Vec<ast::Func>,
+        counter: &mut usize,
+    ) {
+        for c in &f.clauses {
+            let mut b = outer_bound.clone();
+            c.pats.iter().for_each(|p| pat_bound(p, &mut b));
+            match &c.body {
+                ast::Body::Plain(e) => walk_expr(e, &b, hof_arrow, candidates, new_funcs, counter),
+                ast::Body::Guarded(arms) => arms.iter().for_each(|(g, r)| {
+                    walk_expr(g, &b, hof_arrow, candidates, new_funcs, counter);
+                    walk_expr(r, &b, hof_arrow, candidates, new_funcs, counter);
+                }),
+            }
+            for w in &c.wher {
+                walk_func(w, &b, hof_arrow, candidates, new_funcs, counter);
+            }
+        }
+    }
+    fn walk_expr(
+        e: &ast::Expr,
+        bound: &std::collections::HashSet<String>,
+        hof_arrow: &std::collections::HashMap<String, usize>,
+        candidates: &mut Vec<(String, ast::Span)>,
+        new_funcs: &mut Vec<ast::Func>,
+        counter: &mut usize,
+    ) {
+        if let ast::Expr::App(..) = e {
+            let (head, args) = app_spine(e);
+            if let ast::Expr::Var(h, _) = head {
+                if !bound.contains(h) {
+                    if let Some(&k) = hof_arrow.get(h) {
+                        if let Some(ast::Expr::Lam(pats, body, lspan)) = args.get(k) {
+                            if !lambda_captures_local(pats, body, bound) {
+                                let name = format!("hoflam{}", *counter);
+                                *counter += 1;
+                                new_funcs.push(ast::Func {
+                                    name: name.clone(),
+                                    sig: None,
+                                    clauses: vec![ast::Clause {
+                                        pats: pats.clone(),
+                                        body: ast::Body::Plain((**body).clone()),
+                                        wher: Vec::new(),
+                                        span: *lspan,
+                                    }],
+                                    span: *lspan,
+                                    constraints: Vec::new(),
+                                });
+                                candidates.push((name, *lspan));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for_each_subexpr_scoped(e, bound, &mut |c, b| {
+            walk_expr(c, b, hof_arrow, candidates, new_funcs, counter);
+        });
+    }
+    for f in &module.funcs {
+        walk_func(f, &std::collections::HashSet::new(), hof_arrow, &mut candidates, &mut new_funcs, &mut counter);
+    }
+    module.funcs.extend(new_funcs);
+    candidates
+}
+
+/// Pass 2 of lambda lifting. For each candidate whose `hoflam` inference resolved to a
+/// CONCRETE type (`inferred`), sign it and rewrite its call site — replace the lambda at the
+/// matching span (a HOF arrow slot) with the `hoflam` name. Candidates without a concrete
+/// type (a polymorphic lambda) are DROPPED: their unreferenced `hoflam` func is removed and
+/// the lambda stays inline. Returns the committed `hoflam` names.
+fn commit_lambda_lifts(
+    module: &mut ast::Module,
+    candidates: &[(String, ast::Span)],
+    inferred: &std::collections::HashMap<String, ast::Type>,
+) -> std::collections::HashSet<String> {
+    use std::collections::{HashMap, HashSet};
+    // span → hoflam name, for the concrete-typed candidates only.
+    let commit: HashMap<ast::Span, String> = candidates
+        .iter()
+        .filter(|(name, _)| inferred.contains_key(name))
+        .map(|(name, span)| (*span, name.clone()))
+        .collect();
+    let committed: HashSet<String> = commit.values().cloned().collect();
+    let keep: HashSet<String> = committed.clone();
+    // remove the dropped candidates' unreferenced hoflam funcs; sign the committed ones.
+    let cand_names: HashSet<String> = candidates.iter().map(|(n, _)| n.clone()).collect();
+    module.funcs.retain(|f| !cand_names.contains(&f.name) || keep.contains(&f.name));
+    for f in &mut module.funcs {
+        if let Some(ty) = keep.contains(&f.name).then(|| inferred.get(&f.name)).flatten() {
+            f.sig = Some(ty.clone());
+        }
+    }
+    if !commit.is_empty() {
+        for f in &mut module.funcs {
+            rewrite_lambda_site(f, &commit);
+        }
+    }
+    committed
+}
+
+/// Replaces a lambda literal at the recorded span with `Var(hoflam)` throughout a function
+/// (the lambda occupies a HOF arrow slot; `specialize_hofs` then resolves the name normally).
+fn rewrite_lambda_site(f: &mut ast::Func, commit: &std::collections::HashMap<ast::Span, String>) {
+    fn go(e: &mut ast::Expr, commit: &std::collections::HashMap<ast::Span, String>) {
+        if let ast::Expr::Lam(_, _, lspan) = e {
+            if let Some(name) = commit.get(lspan) {
+                *e = ast::Expr::Var(name.clone(), *lspan);
+                return;
+            }
+        }
+        for_each_subexpr_mut(e, &mut |c| go(c, commit));
+    }
+    for c in &mut f.clauses {
+        match &mut c.body {
+            ast::Body::Plain(e) => go(e, commit),
+            ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+                go(g, commit);
+                go(r, commit);
+            }),
+        }
+        for w in &mut c.wher {
+            rewrite_lambda_site(w, commit);
+        }
+    }
+}
+
+/// `true` if the lambda `\pats -> body` references an ENCLOSING local (a name in `bound` that
+/// is not one of its own parameters) — i.e. it CAPTURES. Conservative: `collect_expr_refs`
+/// does not subtract the body's inner binders, so a shadowed local only makes MORE lambdas
+/// look capturing (fewer lifts) — never an unsound lift.
+fn lambda_captures_local(
+    pats: &[ast::Pat],
+    body: &ast::Expr,
+    bound: &std::collections::HashSet<String>,
+) -> bool {
+    let mut refs = std::collections::HashSet::new();
+    collect_expr_refs(body, &mut refs);
+    let mut lam_bound = std::collections::HashSet::new();
+    pats.iter().for_each(|p| pat_bound(p, &mut lam_bound));
+    refs.iter().any(|r| bound.contains(r) && !lam_bound.contains(r))
 }
 
 /// Scope-aware demand collection over a whole function: seeds the `bound` set with the clause

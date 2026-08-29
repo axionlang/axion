@@ -15,6 +15,7 @@
 
 
 
+
 addI a b  =
 axion_drop_Array _p  =
 axion_drop_List$Box _p  =
@@ -53,8 +54,9 @@ axion_drop_List _p  =
   else
   else
 foldr$$addI z xs  =
-lam$0 [env ]x  =
-lam$1 [env ]eta$1  =
+hoflam6 x  =
+lam$0 [env ]eta$1  =
+lam$1 [env ]eta$3  =
       let _d1000000 = call addI y _t0  ; Δ{_t0 y} · makes Integer
   let _d1000000 = putStrLn _t8  ; Δ{_t8}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -150,6 +152,7 @@ range lo hi  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
     ret acc  ; Δ{}
+  ret call hoflam6 eta$1  ; Δ{} · makes Box
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret case b of
@@ -175,7 +178,7 @@ range lo hi  =
     ret n  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_bignum_add a b  ; Δ{} · makes Integer
-  ret rtcall axion_bignum_from_i64 eta$1  ; Δ{} · makes Integer
+  ret rtcall axion_bignum_from_i64 eta$3  ; Δ{} · makes Integer
       ret z  ; Δ{}
 unbox b  =
   ; Δ{}

@@ -23,7 +23,6 @@ axion_drop_List _p  =
   drop fuse$0_clo
   drop fuse$1_clo
   drop fuse$2_clo
-  drop _t2
       drop xs
       drop xs
     else
@@ -35,11 +34,11 @@ axion_drop_List _p  =
   else
   else
   else
-foldr$Int f z xs  =
+foldr$$hoflam7 z xs  =
 fuse$0 [env ]x acc  =
 fuse$1 [env ]x acc  =
 fuse$2 [env ]x acc  =
-lam$0 [env ]x acc  =
+hoflam7 x acc  =
 length xs  =
   let a = call rangeFusedSum 1 11 0  ; Δ{}
   let c = call rangeFused 1 11 fuse$0_clo 0  ; Δ{fuse$0_clo}
@@ -60,28 +59,27 @@ length xs  =
   let fuse$0_clo = closure fuse$0  ; Δ{} · makes heap
   let fuse$1_clo = closure fuse$1  ; Δ{} · makes heap
   let fuse$2_clo = closure fuse$2  ; Δ{} · makes heap
-  let g = call foldr$Int _t2 1 _t3  ; Δ{_t2 _t3} · moves{_t3}
-  let h = if _t5 then
-  let i = if _t7 then
-      let _t0 = call foldr$Int f z ys  ; Δ{y ys} · moves{ys}
+  let g = call foldr$$hoflam7 1 _t2  ; Δ{_t2} · moves{_t2}
+  let h = if _t4 then
+  let i = if _t6 then
+      let _t0 = call foldr$$hoflam7 z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
-  let _t10 = + _t9 h  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t2 = + acc lo  ; Δ{}
     let _t2 = callclo c lo n  ; Δ{}
+  let _t2 = call range 1 6  ; Δ{} · makes List$Int
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
-  let _t2 = closure lam$0  ; Δ{} · makes heap
-  let _t3 = call range 1 6  ; Δ{_t2} · makes List$Int
-  let _t5 = call rangeFused 1 0 fuse$1_clo 1  ; Δ{fuse$1_clo}
-  let _t7 = call rangeFused 1 1 fuse$2_clo 1  ; Δ{fuse$2_clo}
-  let _t8 = + a c  ; Δ{}
-  let _t9 = + _t8 g  ; Δ{}
+  let _t4 = call rangeFused 1 0 fuse$1_clo 1  ; Δ{fuse$1_clo}
+  let _t6 = call rangeFused 1 1 fuse$2_clo 1  ; Δ{fuse$2_clo}
+  let _t7 = + a c  ; Δ{}
+  let _t8 = + _t7 g  ; Δ{}
+  let _t9 = + _t8 h  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
@@ -116,7 +114,7 @@ range lo hi  =
     ret 7  ; Δ{}
     ret 7  ; Δ{}
     ret acc  ; Δ{}
-      ret callclo f y _t0  ; Δ{y} · moves{y}
+      ret call hoflam7 y _t0  ; Δ{y}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret case xs of
@@ -130,7 +128,7 @@ range lo hi  =
   ret if _t0 then
     ret n  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
-  ret + _t10 i  ; Δ{}
+  ret + _t9 i  ; Δ{}
   ret * x acc  ; Δ{}
       ret + y _t0  ; Δ{}
       ret z  ; Δ{}

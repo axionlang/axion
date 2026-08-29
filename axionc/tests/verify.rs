@@ -243,3 +243,38 @@ fn unsigned_closure_over_heap_specializes_not_rejected() {
         );
     }
 }
+
+/// Closure-argument linearity for a LAMBDA-LITERAL closure: a non-capturing lambda predicate
+/// passed to `filter` over a heap element type. Specialization LIFTS the lambda to a
+/// top-level function (only if MONOMORPHIC — a polymorphic lambda stays inline to keep
+/// generalizing), recovers its type, and specializes `filter$$hoflam<N>` — so AX0912 cannot
+/// arise. Before this a lambda closure over a heap type was AX0912-rejected. Asserts the gate
+/// accepts it (no AX0912) and every backend agrees (= 2, the elements > 2 of {1,5,9}).
+#[test]
+fn lambda_closure_over_heap_specializes_not_rejected() {
+    let path = format!(
+        "{}/tests/fixtures/hof_lambda_closure.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let gate = axionc().args(["--release", &path]).output().unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&gate.stdout),
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    assert!(
+        !combined.contains("AX0912"),
+        "a lambda closure over a heap type should specialize, not hit AX0912:\n{combined}"
+    );
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "2",
+            "{backend}: filter (\\x -> x > 2) should keep 2 elements"
+        );
+    }
+}
