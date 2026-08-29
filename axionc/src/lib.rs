@@ -1537,6 +1537,32 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
                 apply.push((idx, i));
             }
         }
+        // Rule A′ — WHOLE-PARAM EMBED: a `Pat::Var` heap param placed DIRECTLY into a returned
+        // container (`pairUp n = (n, 0)`, `single n = Cons n Nil`, `wrap x = Just x`) aliases
+        // into the fresh result, so the fn must OWN it (`%1`) — a borrowed embed shares the
+        // element with the caller and a deep-drop of both double-frees it. CONCRETE + genuinely
+        // heap only (`is_heap_shaped && !ty_has_var && !is_bare_scalar` — a bare `Int` is COPIED,
+        // a var-typed embed like `single :: a -> List a` is the generic case, left to Route C).
+        // Kept SEPARATE from `consumed_params` (which feeds `alias_borrowers`/AX0912) so a fn
+        // that embeds a FRESH value copying a scalar arg (`build … Cons (P{a=n}) …`) is not
+        // mis-flagged as an element-aliasing borrower.
+        for (i, (p, t)) in f.clauses.first().map_or(&[][..], |c| &c.pats[..]).iter().zip(&ptypes).enumerate() {
+            if let ast::Pat::Var(n, _) = p {
+                let embeds = f.clauses.iter().any(|c| match &c.body {
+                    ast::Body::Plain(e) => embedded_in_ctor(n, e),
+                    ast::Body::Guarded(arms) => arms.iter().any(|(_, r)| embedded_in_ctor(n, r)),
+                });
+                if embeds
+                    && core::is_heap_shaped(t)
+                    && !core::ty_has_var(t)
+                    && !is_bare_scalar(t)
+                    && !consuming.get(&f.name).is_some_and(|s| s.contains(&i))
+                {
+                    consuming.entry(f.name.clone()).or_default().insert(i);
+                    apply.push((idx, i));
+                }
+            }
+        }
     }
     // Rule B — GENERIC pure-escape: a var-carrying param where EVERY extracted heap
     // field escapes (returned/embedded OR moved into a consuming call) and NONE is
@@ -1720,6 +1746,15 @@ fn heap_alias_violations(
         }
     }
     out
+}
+
+/// `true` if `ty` is a bare SCALAR primitive (`Int`/`Float`/`Bool`/`Char`) — an unboxed
+/// immediate that is COPYABLE and needs no reclamation, so it is never `%1`. Distinct from a
+/// container over it (`List Int` is an `App`, not a `Con`) and from a boxed scalar (`Integer`).
+/// Excludes such a param from the embed-consume rule: `dup n = (n, n)` over `Int` copies `n`,
+/// it does not alias it.
+fn is_bare_scalar(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Con(h) if matches!(h.as_str(), "Int" | "Float" | "Bool" | "Char"))
 }
 
 /// A constructor field that carries a separately-allocated heap payload once

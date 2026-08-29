@@ -2124,6 +2124,9 @@ fn deep_drop_reclaims_nested_objects() {
         // second — the tuple flows into an inner `case` and is made owned so that case
         // reclaims the discarded element + shell (mapFst). Every alloc reclaimed.
         ("tuple_elem_discard.axi", "2\n", "10 allocs, 10 frees"),
+        // Whole-heap-param embed marked %1 (Rule A'): the caller MOVES the Box into `wrap`,
+        // single owner, freed once through the tuple consumer (no borrow-alias double-free).
+        ("embed_param_consume.axi", "12\n", "2 allocs, 2 frees"),
         // Borrowed-then-dead list element: `sumV` reads a heap record's scalar field
         // then discards the element and recurses — Auto-Drop drops each Box AFTER the
         // read (the non-deep `Inline` path), fixing a pre-existing UseAfterFree.
