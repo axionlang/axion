@@ -217,6 +217,7 @@ fn run_fn(
         out: out.unwrap_or(&mut sink),
         children: HashMap::new(),
         leak_exempt: HashSet::new(),
+        projections: HashMap::new(),
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -271,6 +272,13 @@ struct Verifier<'a> {
     /// as owned (double-free stays sound) but EXEMPTS them from leak reporting — a poly
     /// element leak is exactly Axión's documented conservative-leak class (not gated).
     leak_exempt: HashSet<String>,
+    /// projected-field var → (source record var, slot). A direct heap `field` projection
+    /// (`let d = field <fld> src`) records the exact slot it aliases, so a MOVE-OUT
+    /// skip-destructor of the source (`drop src : T skip{slot}`, §move-out) can transfer
+    /// ownership of that slot to `d` — promoting the borrow to an owned value that outlives
+    /// the source's shell free, rather than dangling it. Populated by `bind_op`, consumed by
+    /// `do_drop`'s skip handling.
+    projections: HashMap<String, (String, usize)>,
 }
 
 impl Verifier<'_> {
@@ -346,6 +354,15 @@ impl Verifier<'_> {
             }
         }
         if val.owned || !val.borrows.is_empty() {
+            // record a direct heap field projection's exact slot, so a move-out skip-drop
+            // of the source can transfer that slot's ownership to `x` (§move-out).
+            if let Op::Field { name, rec: Atom::Var(src) } = op {
+                if self.recinfo.named_field_is_heap(name) {
+                    if let Some((_, slot)) = self.recinfo.named_field_slot(name) {
+                        self.projections.insert(x.to_string(), (src.clone(), slot));
+                    }
+                }
+            }
             st.insert(x.to_string(), val);
         }
     }
@@ -430,6 +447,26 @@ impl Verifier<'_> {
                         if let Some(cv) = st.get_mut(&child) {
                             if cv.owned && cv.dead.is_none() {
                                 cv.dead = Some(Cat::DoubleFree);
+                            }
+                        }
+                    }
+                }
+                // §move-out: a skipped slot's heap field is MOVED OUT to whoever projected
+                // it — transfer ownership so the projection outlives `x`'s shell free (it no
+                // longer borrows the now-freed cell; it owns the moved field). Without this
+                // the projection would dangle on `x`'s death (a false UseAfterFree).
+                if !skip.is_empty() {
+                    let promote: Vec<String> = self
+                        .projections
+                        .iter()
+                        .filter(|(_, (src, slot))| src == x && skip.contains(slot))
+                        .map(|(pv, _)| pv.clone())
+                        .collect();
+                    for pv in promote {
+                        if let Some(pval) = st.get_mut(&pv) {
+                            if pval.dead.is_none() {
+                                pval.owned = true;
+                                pval.borrows.remove(x);
                             }
                         }
                     }

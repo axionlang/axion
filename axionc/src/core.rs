@@ -6560,6 +6560,100 @@ fn collect_update_skips(
     out
 }
 
+/// Regions/lifetimes (§move-out): make a projected heap field of a fresh OWNED local
+/// escape by MOVE. When `let d = field <fld> <src>` reads a heap field of a local `src`
+/// that this frame deep-drops (`src ∈ drp`) and `d` is subsequently **moved** (returned,
+/// embedded into a returned structure, or handed to a consuming callee — anything that
+/// transfers ownership out of the frame), `src`'s destructor must NOT free that slot: some
+/// other owner now frees `d`. Otherwise the two owners double-free (the `mkGrab n = inner
+/// (W {..})` shape — the projected `inner` escapes while the local `W` is deep-dropped).
+///
+/// The fix reuses the skip-destructor machinery: record `src → (typeName, skip{slot(fld)})`
+/// so `drop_target(src)` emits `drop src : T skip{fld_slot}` — freeing the siblings + shell
+/// but moving the projected field out, owned. This is the LOCAL-interior dual of
+/// `borrow_return_summary` (which handles PARAM-interior borrow-returns): a param alias
+/// outlives the frame and stays a borrow, but a fresh LOCAL's field cannot be borrowed past
+/// the frame — it must be MOVED out, and its siblings reclaimed here.
+///
+/// Only fires when `d` is genuinely moved (`body_moves`, Prim-reads excluded): a
+/// borrowed-then-dead projection leaves `src` the sole owner, which correctly frees the
+/// whole record — no skip.
+fn collect_projection_skips(
+    t: &Term,
+    recinfo: &RecordInfo,
+    drp: &HashSet<String>,
+    ba: &BorrowArgs,
+) -> HashMap<String, (String, Vec<usize>)> {
+    use std::collections::BTreeSet;
+    let mut acc: HashMap<String, (String, BTreeSet<usize>)> = HashMap::new();
+    fn walk(
+        t: &Term,
+        recinfo: &RecordInfo,
+        drp: &HashSet<String>,
+        ba: &BorrowArgs,
+        acc: &mut HashMap<String, (String, BTreeSet<usize>)>,
+    ) {
+        match t {
+            Term::Let(d, Rhs::Op(Op::Field { name, rec: Atom::Var(src) }), _, body) => {
+                if drp.contains(src)
+                    && recinfo.named_field_is_heap(name)
+                    && body_moves(d, body, ba)
+                {
+                    if let Some((con, slot)) = recinfo.named_field_slot(name) {
+                        if let Some(ty) = recinfo.con_type_name(&con) {
+                            acc.entry(src.clone())
+                                .or_insert_with(|| (ty.to_string(), BTreeSet::new()))
+                                .1
+                                .insert(slot);
+                        }
+                    }
+                }
+                walk(body, recinfo, drp, ba, acc);
+            }
+            Term::Let(_, rhs, _, body) => {
+                walk_rhs(rhs, recinfo, drp, ba, acc);
+                walk(body, recinfo, drp, ba, acc);
+            }
+            Term::Drop(_, _, _, _, body) => walk(body, recinfo, drp, ba, acc),
+            // a projected heap field returned directly IS the move-out (the Elab binds it
+            // to a temp and deep-drops `src` before the tail — so `src` must skip it).
+            Term::Ret(Rhs::Op(Op::Field { name, rec: Atom::Var(src) }), _) => {
+                if drp.contains(src) && recinfo.named_field_is_heap(name) {
+                    if let Some((con, slot)) = recinfo.named_field_slot(name) {
+                        if let Some(ty) = recinfo.con_type_name(&con) {
+                            acc.entry(src.clone())
+                                .or_insert_with(|| (ty.to_string(), BTreeSet::new()))
+                                .1
+                                .insert(slot);
+                        }
+                    }
+                }
+            }
+            Term::Ret(rhs, _) => walk_rhs(rhs, recinfo, drp, ba, acc),
+        }
+    }
+    fn walk_rhs(
+        rhs: &Rhs,
+        recinfo: &RecordInfo,
+        drp: &HashSet<String>,
+        ba: &BorrowArgs,
+        acc: &mut HashMap<String, (String, BTreeSet<usize>)>,
+    ) {
+        match rhs {
+            Rhs::Op(_) => {}
+            Rhs::If(_, th, el) => {
+                walk(th, recinfo, drp, ba, acc);
+                walk(el, recinfo, drp, ba, acc);
+            }
+            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, recinfo, drp, ba, acc)),
+        }
+    }
+    walk(t, recinfo, drp, ba, &mut acc);
+    acc.into_iter()
+        .map(|(k, (ty, slots))| (k, (ty, slots.into_iter().collect())))
+        .collect()
+}
+
 /// Regions/lifetimes (§): null the ownership annotation on every `CallDirect` to a
 /// BORROW-RETURNING function (one whose result is a pure interior heap alias of a
 /// parameter — `grab w = inner w`). Its result is a BORROW, not a fresh allocation, so the
@@ -6604,7 +6698,25 @@ fn insert_drops(
     if drp.is_empty() {
         return (f, Vec::new());
     }
-    let update_skip = collect_update_skips(&f.body, recinfo, &drp);
+    let mut update_skip = collect_update_skips(&f.body, recinfo, &drp);
+    // §move-out: fold in projected-heap-field escapes (a fresh local's field moved out
+    // while the local is deep-dropped → the local's destructor skips that slot). Union
+    // slots when a var already carries update skips.
+    for (src, (ty, slots)) in collect_projection_skips(&f.body, recinfo, &drp, ba) {
+        match update_skip.get_mut(&src) {
+            Some((_, existing)) => {
+                for s in slots {
+                    if !existing.contains(&s) {
+                        existing.push(s);
+                    }
+                }
+                existing.sort_unstable();
+            }
+            None => {
+                update_skip.insert(src, (ty, slots));
+            }
+        }
+    }
     let mut e = Elab {
         drp,
         tmp: 1_000_000,

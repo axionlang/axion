@@ -5,13 +5,15 @@
 
 
 
+
 axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List _p  =
 axion_drop_W _p  =
+axion_drop_W_skip_0 _p  =
     Cons y ys ->
   drop _t0 : List$Int
-  drop _t3 : W
+  drop _t3 : W skip{0}
     else
     else
   else
@@ -22,7 +24,9 @@ length xs  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
   let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
   let _dd2 = loadraw _p+0  ; Δ{}
@@ -37,6 +41,7 @@ length xs  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call length ys  ; Δ{}
   let _t0 = call mkGrab 7  ; Δ{} · makes List$Int
@@ -61,10 +66,11 @@ mkGrab n  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
+  ret 0  ; Δ{}
       ret + 1 _t0  ; Δ{}
   ret case xs of
   ret _d1000000  ; Δ{}
-  ret _d1000000  ; Δ{}
+  ret _d1000000  ; Δ{_t3}
   ret rtcall axion_array_free _p  ; Δ{}
   ; Δ{}
   ; Δ{}

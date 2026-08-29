@@ -33,11 +33,6 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             if path.file_name().unwrap() == "recover_partial.axi" {
                 continue;
             }
-            // known-bad by design: a borrow of a LOCAL that escapes (a dangling reference)
-            // that the verifier is SUPPOSED to flag — asserted separately below.
-            if path.file_name().unwrap() == "escape_local_borrow.axi" {
-                continue;
-            }
             let out = axionc()
                 .args(["--emit", "verify", path.to_str().unwrap()])
                 .output()
@@ -136,13 +131,15 @@ fn borrow_returning_function_verifies_clean() {
     );
 }
 
-/// The dual of the above and the escape case regions must keep rejecting: a function
-/// returning a BORROW OF A LOCAL (`mkGrab n = inner (W {...})`) dangles — the local is freed
-/// at exit. The borrow-return inference is PRECISE (it nulls ownership only for aliases of a
-/// PARAMETER, never a local), so the result stays owned and the verifier flags the escaping
-/// use-after-free AND the gate refuses (AX0910). Guards against the fix over-nulling.
+/// The dual of the param-borrow-return `grab`: a function projecting a heap field of a
+/// FRESH LOCAL and returning it (`mkGrab n = inner (W {..})`) cannot return a borrow (the
+/// local dies at exit) — so regions MOVE the projected field out instead. The local's
+/// destructor skips the moved-out slot (`drop W skip{inner}`), reclaiming the siblings +
+/// shell while the returned field escapes owned. The verifier models the move-out (promotes
+/// the skipped-slot projection to owned) and reports clean; the default-on gate compiles it;
+/// and it runs leak-free (`main = length (mkGrab 7) = 1`) on every backend.
 #[test]
-fn verifier_flags_escaping_local_borrow() {
+fn escaping_local_field_is_moved_out_not_rejected() {
     let path = format!(
         "{}/tests/fixtures/escape_local_borrow.axi",
         env!("CARGO_MANIFEST_DIR")
@@ -151,22 +148,26 @@ fn verifier_flags_escaping_local_borrow() {
     let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
     let vstdout = String::from_utf8_lossy(&verify.stdout);
     assert!(
-        vstdout.contains("FAIL:") && vstdout.contains("Free"),
-        "verifier should flag the escaping borrow of a local as a use-after-free, got:\n{vstdout}"
+        vstdout.contains("ok:") && !vstdout.contains("FAIL:"),
+        "the move-out should verify clean (no dangling borrow), got:\n{vstdout}"
     );
 
-    let gate = axionc().args(["--release", &path]).output().unwrap();
-    assert!(
-        !gate.status.success(),
-        "the default-on gate must refuse to compile the escaping-local-borrow to native code"
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&gate.stdout),
-        String::from_utf8_lossy(&gate.stderr)
-    );
-    assert!(
-        combined.contains("AX0910"),
-        "the gate should abort with AX0910, got:\n{combined}"
-    );
+    // the default-on gate must now ACCEPT it and every backend agrees on `1`.
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{backend}: the move-out should compile and run, got:\n{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "1",
+            "{backend}: mkGrab's moved-out field length should be 1"
+        );
+    }
 }

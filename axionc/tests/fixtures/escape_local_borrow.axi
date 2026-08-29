@@ -1,12 +1,12 @@
--- Known-bad (the escape case regions must still reject): a function that returns a BORROW
--- of a LOCALLY-allocated value. `mkGrab` builds a fresh `W`, returns an interior pointer
--- into its `inner` field, then the local `W` is freed at function exit — so the returned
--- borrow dangles (use-after-free at the caller). The borrow-return inference is PRECISE:
--- it nulls a call's ownership only when the result aliases a PARAMETER (an outliving
--- borrow the caller's frame keeps alive) — never a LOCAL, whose lifetime ends here. So
--- `mkGrab` is NOT treated as borrow-returning, its result stays owned, and the drop-balance
--- verifier flags the escaping dangling borrow (UseAfterFree) → the default-on gate refuses
--- (AX0910). This is the dual of `field_alias_return.axi` (a param borrow, which IS legal).
+-- Regions §move-out: a function that projects a heap field of a FRESH LOCAL and returns
+-- it. `mkGrab` builds a fresh `W`, returns its `inner` field; the local `W` dies at exit,
+-- so `inner` cannot be a borrow (it would dangle). Instead regions MOVE the field out: the
+-- local's destructor SKIPS the projected slot (`drop W skip{inner}`), reclaiming the
+-- siblings (`other`) + the shell while the returned field escapes OWNED to the caller. This
+-- is the LOCAL-interior dual of `field_alias_return.axi` (a PARAM borrow, which outlives the
+-- frame and stays a borrow): a local's field cannot outlive as a borrow, so it is moved.
+-- The verifier models the move-out (promotes the skipped-slot projection from borrow to
+-- owned) → clean; the default-on gate compiles it; ASan+LSan clean.
 data W = W { inner :: List Int, other :: List Int }
 
 mkGrab :: Int -> List Int
