@@ -76,6 +76,37 @@ fn hof_specialization_matches_generic_on_all_backends() {
 }
 
 #[test]
+fn hof_specialization_of_consuming_closures_is_sound() {
+    // The guard lift: a `%1`-CONSUMING closure is now safe to specialize (its direct call MOVES
+    // the arg, matching the generic callclo's Route-C move). `pairUp` (whole-param embed, Rule
+    // A′ %1) and `fstT` (case-extract %1) were previously EXCLUDED (they crashed); they now
+    // specialize and match the generic path. Verify + result parity on interp AND cranelift.
+    let fx = fixture("hof_specialize_consume.axi");
+    let generic = axionc().arg(&fx).output().unwrap();
+    assert!(generic.status.success());
+    assert_eq!(String::from_utf8_lossy(&generic.stdout), "15\n");
+    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx.clone()]] {
+        let out = axionc().args(&backend).env("AXION_SPECIALIZE", "1").output().unwrap();
+        assert!(
+            out.status.success(),
+            "specialized consuming-closure run failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "15\n", "{backend:?}");
+    }
+    let core = axionc()
+        .args(["--emit", "core", &fx])
+        .env("AXION_SPECIALIZE", "1")
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    assert!(
+        core.contains("map$$pairUp") && core.contains("map$$fstT"),
+        "consuming closures were not specialized"
+    );
+}
+
+#[test]
 fn over_application_runs_on_all_backends() {
     // applying a function beyond its arity (`(f a…) b…`) — a function returning a
     // function that is then applied, for both top-level functions and a `where`-local.

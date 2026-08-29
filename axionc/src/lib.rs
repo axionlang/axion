@@ -850,21 +850,24 @@ pub fn prepare_for_check_with(
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
+    // Infer `%1` (consumed) ownership for a signature param whose extracted heap
+    // element escapes via the result (`head`/`append`/`reverse`) or whose whole heap value
+    // is embedded into the result (`pairUp`, Rule A′). Runs BEFORE the linear checker and
+    // inference so the whole pipeline (owned_meta / Phase-B specialization / borrow analysis /
+    // drop insertion / Δ-coherence) treats it as a hand-written `%1` — otherwise the caller
+    // deep-drops a list whose elements the callee reused/returned → double-free (heap only).
+    let mut consume_exempt = infer_consumed_ownership(&mut module);
     // Higher-order specialization: clone each HOF per its statically-known top-level-function
     // closure argument (`foldr addI` → `foldr$$addI`), so the dynamic `callclo` becomes a
     // direct call and the existing per-callee ownership analysis computes the correct
-    // per-closure reclamation. Runs BEFORE consume-inference so the clones are analyzed as
-    // ordinary direct-call functions (the whole downstream pipeline is unchanged).
+    // per-closure reclamation. Runs AFTER the first consume pass so the closure guard can read
+    // the closures' `%1` marks (a `%1`-consuming closure's direct call MOVES its arg, matching
+    // the generic `callclo`'s Route-C move — sound to specialize). A SECOND consume pass then
+    // marks the freshly-generated CLONES (ordinary direct-call functions).
     if specialize {
         specialize_hofs(&mut module);
+        consume_exempt.extend(infer_consumed_ownership(&mut module));
     }
-    // Infer `%1` (consumed) ownership for a signature param whose extracted heap
-    // element escapes via the result (`head`/`append`/`reverse`). Runs BEFORE the
-    // linear checker and inference so the whole pipeline (owned_meta / Phase-B
-    // specialization / borrow analysis / drop insertion / Δ-coherence) treats it as
-    // a hand-written `%1` — otherwise the caller deep-drops a list whose elements
-    // the callee reused/returned → double-free (heap elements only).
-    let consume_exempt = infer_consumed_ownership(&mut module);
     (module, consume_exempt)
 }
 
@@ -1068,11 +1071,28 @@ fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
             _ => false,
         }
     }
-    let safe = f.clauses.len() == 1
+    // (a) a provably-fresh scalar producer (`sq`/`addI`/`gt2` — borrows its arg, returns fresh),
+    // whose direct call the HOF reclaims as borrowed-then-dead; OR
+    // (b) a closure that CONSUMES every one of its HEAP arguments (each such param is `%1` in
+    //     the signature — the first consume pass ran before this guard). Its direct call MOVES
+    //     those args, exactly matching the generic `callclo`'s Route-C move, so the specialized
+    //     HOF's ownership is sound (`pairUp`, `fstT`, `single`-when-concrete). A heap param that
+    //     is NEITHER `%1` NOR handled by (a) may be a BORROW-and-alias (interior-alias return) —
+    //     unsafe, left to the generic HOF (Route C + AX0912).
+    let pure = f.clauses.len() == 1
         && f.clauses[0].pats.iter().all(|p| matches!(p, ast::Pat::Var(..)))
         && f.clauses[0].wher.is_empty()
         && matches!(&f.clauses[0].body, ast::Body::Plain(e) if pure_arith(e) && fresh_tail(e));
-    !safe
+    let consumes_heap_args = f.sig.as_ref().is_some_and(|sig| {
+        let mults = sig.param_mults();
+        sig.param_types().iter().enumerate().all(|(i, t)| {
+            // every genuinely-heap param must be `%1`; scalars are copied (fine); a bare type
+            // variable is representation-erased (can't prove `%1`) → NOT safe.
+            !(core::is_heap_shaped(t) && !is_bare_scalar(t))
+                || (!core::ty_has_var(t) && mults.get(i) == Some(&ast::Mult::One))
+        })
+    });
+    !(pure || consumes_heap_args)
 }
 
 /// Applies `g` to every ROOT expression of a function's clauses (plain/guarded bodies).
