@@ -107,6 +107,35 @@ fn hof_specialization_of_consuming_closures_is_sound() {
 }
 
 #[test]
+fn hof_specialization_of_spine_consuming_filter_is_corruption_free() {
+    // A SPINE-CONSUMING partial consumer (`filter` — recurses on the tail on every branch) now
+    // specializes: `filter$$gt` runs == generic, corruption-free (the element-aliasing double-
+    // free is gone — the concrete direct call is a real %1 consume). Spine-DISCARDING `take`/
+    // `takeWhile` stay generic. Validates result parity (a double-free would crash/diverge);
+    // filter's discarded elements leak (the conditional-discard gap), so no leak assertion.
+    let fx = fixture("hof_specialize_filter.axi");
+    let generic = axionc().arg(&fx).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&generic.stdout), "12\n");
+    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx.clone()]] {
+        let out = axionc().args(&backend).env("AXION_SPECIALIZE", "1").output().unwrap();
+        assert!(
+            out.status.success(),
+            "specialized filter failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n", "{backend:?}");
+    }
+    let core = axionc()
+        .args(["--emit", "core", &fx])
+        .env("AXION_SPECIALIZE", "1")
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&core.stdout);
+    assert!(core.contains("filter$$gt"), "filter was not specialized");
+    assert!(!core.contains("take$$"), "take must NOT be specialized (spine-discarding)");
+}
+
+#[test]
 fn over_application_runs_on_all_backends() {
     // applying a function beyond its arity (`(f a…) b…`) — a function returning a
     // function that is then applied, for both top-level functions and a `where`-local.

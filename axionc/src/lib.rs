@@ -944,15 +944,17 @@ fn specialize_hofs(module: &mut ast::Module) {
             con_field_heap.insert(c.name.clone(), flags);
         }
     }
-    // HOF → the single arrow-param index (MVP: exactly one). EXCLUDE partial-consumer / view
-    // HOFs (`filter`/`take`/`takeWhile` — a HOF that EMBEDS an extracted element into its
-    // result, `consumed_params` non-empty): specializing them yields a concrete direct-call
-    // function the verifier rejects (`takeWhile$$gt2i`: `Unbalanced` spine) or that double-frees
-    // the aliased element — the AX0912 class. They stay generic (Route C + AX0912).
+    // HOF → the single arrow-param index (MVP: exactly one). A partial-consumer HOF that EMBEDS
+    // an extracted element into its result (`consumed_params` non-empty) is admitted ONLY when
+    // it is SPINE-CONSUMING — its recursive tail is passed to a self-recursive call on EVERY
+    // branch (`filter`: both arms recurse; the discarded ELEMENT is reclaimed by the notion-2
+    // drop → the specialized `filter$$p` is sound). A SPINE-DISCARDING HOF (`take`/`takeWhile`:
+    // `else Nil` drops the tail → the drop-view leak the verifier flags `Unbalanced`) stays
+    // generic (Route C + AX0912), as does a full consumer whose spine escapes as a view.
     let mut hof_arrow: HashMap<String, usize> = HashMap::new();
     for f in &module.funcs {
         if let Some(k) = single_arrow_param(f) {
-            if consumed_params(f, &con_field_heap).is_empty() {
+            if consumed_params(f, &con_field_heap).is_empty() || hof_spine_consuming(f) {
                 hof_arrow.insert(f.name.clone(), k);
             }
         }
@@ -1033,6 +1035,102 @@ fn single_arrow_param(f: &ast::Func) -> Option<usize> {
     (arrows.len() == 1).then(|| arrows[0])
 }
 
+/// `true` if partial-consumer HOF `f` is SPINE-CONSUMING: in every `case`-arm that binds a
+/// recursive tail (a variable passed to a SELF-recursive call to `f`), that tail is passed to a
+/// self-recursive call on EVERY leaf of the arm. This separates `filter` (both branches recurse
+/// → the spine is always consumed into a fresh result; the discarded ELEMENT is reclaimed by the
+/// notion-2 drop → specializing is sound) from `take`/`takeWhile` (`else Nil` DISCARDS the tail
+/// → the drop-view leak the verifier flags `Unbalanced`) and from spine VIEWS (`drop … ret ys`
+/// returns the tail directly, never recursing → excluded). Conservative: any leaf that fails to
+/// recurse with a spine excludes the HOF (→ generic + AX0912).
+fn hof_spine_consuming(f: &ast::Func) -> bool {
+    use std::collections::HashSet;
+    // vars passed as an argument to a self-recursive call to `f` anywhere in `e`.
+    fn self_call_args(name: &str, e: &ast::Expr, out: &mut HashSet<String>) {
+        if let ast::Expr::App(..) = e {
+            let (head, args) = core::spine(e);
+            if matches!(head, ast::Expr::Var(g, _) if g == name) {
+                for a in &args {
+                    if let ast::Expr::Var(v, _) = a {
+                        out.insert(v.clone());
+                    }
+                }
+            }
+        }
+        for_each_subexpr(e, &mut |s| self_call_args(name, s, out));
+    }
+    // the tail-position leaves of an expression (past `if`/`case`/`let`).
+    fn leaves<'a>(e: &'a ast::Expr, out: &mut Vec<&'a ast::Expr>) {
+        match e {
+            ast::Expr::If(_, t, el, _) => {
+                leaves(t, out);
+                leaves(el, out);
+            }
+            ast::Expr::Case(_, arms, _) => arms.iter().for_each(|(_, b)| leaves(b, out)),
+            ast::Expr::Let(_, body, _) => leaves(body, out),
+            _ => out.push(e),
+        }
+    }
+    // check every `case` arm that binds a spine.
+    fn check(name: &str, e: &ast::Expr) -> bool {
+        if let ast::Expr::Case(_, arms, _) = e {
+            for (pat, arm) in arms {
+                let binders = pat_binders(pat);
+                // spine candidates: pattern binders that are self-call args somewhere in the arm.
+                let mut recursed = HashSet::new();
+                self_call_args(name, arm, &mut recursed);
+                let spines: Vec<String> = binders.intersection(&recursed).cloned().collect();
+                let mut ls = Vec::new();
+                leaves(arm, &mut ls);
+                for s in &spines {
+                    // every LEAF of the arm must recurse with `s` (never discard it).
+                    let ok = ls.iter().all(|leaf| {
+                        let mut a = HashSet::new();
+                        self_call_args(name, leaf, &mut a);
+                        a.contains(s)
+                    });
+                    if !ok {
+                        return false;
+                    }
+                }
+            }
+        }
+        let mut ok = true;
+        for_each_subexpr(e, &mut |s| {
+            if !check(name, s) {
+                ok = false;
+            }
+        });
+        ok
+    }
+    f.clauses.iter().all(|c| {
+        let bodies: Vec<&ast::Expr> = match &c.body {
+            ast::Body::Plain(e) => vec![e],
+            ast::Body::Guarded(arms) => arms.iter().map(|(_, r)| r).collect(),
+        };
+        bodies.iter().all(|b| check(&f.name, b))
+    })
+}
+
+/// The variable names a pattern binds (one level of `Con`/`Tuple`, plus bare `Var`).
+fn pat_binders(pat: &ast::Pat) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    match pat {
+        ast::Pat::Var(n, _) => {
+            out.insert(n.clone());
+        }
+        ast::Pat::Con(_, subs, _) | ast::Pat::Tuple(subs, _) => {
+            for sp in subs {
+                if let ast::Pat::Var(n, _) = sp {
+                    out.insert(n.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// `true` if `f` is UNSAFE to specialize — the complement of a PROVABLY-fresh producer.
 ///
 /// A specialized direct call uses the closure's real convention (it may BORROW its arg), unlike
@@ -1051,48 +1149,43 @@ fn single_arrow_param(f: &ast::Func) -> Option<usize> {
 /// linearity arc (consume-inference `%1` for aliasing closures, or closing the verifier's
 /// borrow-alias false-negative so unsound specializations are caught).
 fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
-    // pure = every sub-expression is a variable / literal / arithmetic BinOp / If.
-    fn pure_arith(e: &ast::Expr) -> bool {
-        match e {
-            ast::Expr::Var(..) | ast::Expr::Int(..) | ast::Expr::Float(..) | ast::Expr::Str(..) => {
-                true
-            }
-            ast::Expr::BinOp(_, a, b, _) => pure_arith(a) && pure_arith(b),
-            ast::Expr::If(c, t, el, _) => pure_arith(c) && pure_arith(t) && pure_arith(el),
-            _ => false,
-        }
+    // A specialized direct call uses the closure's REAL convention, unlike the generic
+    // `callclo`'s Route-C move. It is sound iff, for EVERY parameter, the direct call agrees:
+    //   · a bare SCALAR (`is_bare_scalar`) is COPIED → always fine;
+    //   · a heap param that does NOT ESCAPE via the result (a pure predicate `gt2 n = n > k`,
+    //     an ignored arg) is a borrow the HOF reclaims as borrowed-then-dead → fine;
+    //   · a heap param that ESCAPES (returned/embedded/case-extracted-and-returned) must be
+    //     `%1` (concrete) — then the direct call MOVES it, matching Route C (`pairUp`, `fstT`);
+    //   · otherwise (a param that escapes but is NOT `%1` — a bare-type-variable embed like
+    //     `single :: a -> List a`, or an interior-alias return `grab w = inner w`) it is a
+    //     BORROW-and-alias → UNSAFE, left to the generic HOF (Route C + AX0912).
+    let Some(sig) = f.sig.as_ref() else {
+        return true;
+    };
+    if f.clauses.len() != 1 || !f.clauses[0].pats.iter().all(|p| matches!(p, ast::Pat::Var(..))) {
+        return true;
     }
-    // tail (the returned value) must be a fresh BinOp on every path — never a bare variable
-    // (which could be the argument, an alias) or anything heap-aliasing.
-    fn fresh_tail(e: &ast::Expr) -> bool {
-        match e {
-            ast::Expr::BinOp(..) => true,
-            ast::Expr::If(_, t, el, _) => fresh_tail(t) && fresh_tail(el),
-            _ => false,
+    let clause = &f.clauses[0];
+    let bodies: Vec<&ast::Expr> = match &clause.body {
+        ast::Body::Plain(e) => vec![e],
+        ast::Body::Guarded(arms) => arms.iter().map(|(_, r)| r).collect(),
+    };
+    let mults = sig.param_mults();
+    let ptypes = sig.param_types();
+    let all_safe = clause.pats.iter().enumerate().all(|(i, p)| {
+        let ast::Pat::Var(n, _) = p else { return false };
+        let Some(t) = ptypes.get(i) else { return false };
+        if !(core::is_heap_shaped(t) && !is_bare_scalar(t)) {
+            return true; // scalar (copied)
         }
-    }
-    // (a) a provably-fresh scalar producer (`sq`/`addI`/`gt2` — borrows its arg, returns fresh),
-    // whose direct call the HOF reclaims as borrowed-then-dead; OR
-    // (b) a closure that CONSUMES every one of its HEAP arguments (each such param is `%1` in
-    //     the signature — the first consume pass ran before this guard). Its direct call MOVES
-    //     those args, exactly matching the generic `callclo`'s Route-C move, so the specialized
-    //     HOF's ownership is sound (`pairUp`, `fstT`, `single`-when-concrete). A heap param that
-    //     is NEITHER `%1` NOR handled by (a) may be a BORROW-and-alias (interior-alias return) —
-    //     unsafe, left to the generic HOF (Route C + AX0912).
-    let pure = f.clauses.len() == 1
-        && f.clauses[0].pats.iter().all(|p| matches!(p, ast::Pat::Var(..)))
-        && f.clauses[0].wher.is_empty()
-        && matches!(&f.clauses[0].body, ast::Body::Plain(e) if pure_arith(e) && fresh_tail(e));
-    let consumes_heap_args = f.sig.as_ref().is_some_and(|sig| {
-        let mults = sig.param_mults();
-        sig.param_types().iter().enumerate().all(|(i, t)| {
-            // every genuinely-heap param must be `%1`; scalars are copied (fine); a bare type
-            // variable is representation-erased (can't prove `%1`) → NOT safe.
-            !(core::is_heap_shaped(t) && !is_bare_scalar(t))
-                || (!core::ty_has_var(t) && mults.get(i) == Some(&ast::Mult::One))
-        })
+        let escapes = bodies.iter().any(|b| escapes_via_result(n, b));
+        if !escapes {
+            return true; // pure borrow → HOF reclaims borrowed-then-dead
+        }
+        // escapes: must be a CONCRETE `%1` consume (direct call moves it, matching Route C).
+        !core::ty_has_var(t) && mults.get(i) == Some(&ast::Mult::One)
     });
-    !(pure || consumes_heap_args)
+    !all_safe
 }
 
 /// Applies `g` to every ROOT expression of a function's clauses (plain/guarded bodies).
