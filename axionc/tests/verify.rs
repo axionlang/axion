@@ -278,3 +278,24 @@ fn lambda_closure_over_heap_specializes_not_rejected() {
         );
     }
 }
+
+/// Native currying: a point-free curried CAF (`add = \x -> \y -> …`) applied to several
+/// args used to produce native GARBAGE (interp correct) — its value is an arity-1 closure
+/// over-applied by `callclo`. `absorb_lambda_caf` merges the leading lambdas into the clause
+/// (`add x y = …`) → a direct multi-parameter call that lowers correctly. Asserts every
+/// backend agrees (= 41), pinning the fix against a return to the closure over-application.
+#[test]
+fn curried_caf_applied_over_arity_agrees_across_backends() {
+    let path = format!("{}/tests/fixtures/curried_caf.axi", env!("CARGO_MANIFEST_DIR"));
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "41",
+            "{backend}: a curried-CAF applied over arity should compute 41, not garbage"
+        );
+    }
+}

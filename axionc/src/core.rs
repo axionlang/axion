@@ -2365,13 +2365,51 @@ fn lower_func(
 
 /// Lowers the module to the Core: candidate top-level functions, their `where`
 /// `where` (mangled) and the lifted lambdas (with capture).
+/// Absorbs the leading lambdas of a point-free curried definition into the clause
+/// parameters: `add = \x -> \y -> x + y` → `add x y = x + y`. A single-clause binding whose
+/// (Plain) body is a `\…` chain is otherwise a nullary CAF that evaluates to a curried
+/// closure of arity 1; applying it to several args (`add 21 21`) then over-applies that
+/// arity-1 closure — `callclo` passes all args at once and the native backends mishandle it
+/// (garbage). Merging the lambda params makes it an ordinary multi-parameter function (a
+/// DIRECT call), which lowers correctly on every backend. A non-lambda body (a real
+/// value-CAF, preserving its single evaluation) or a multi-clause/guarded function is left
+/// untouched; a residual partial use is re-expanded to a closure by `eta_expand` below.
+fn absorb_lambda_caf(mut f: ast::Func) -> ast::Func {
+    // only a NULLARY point-free CAF (`add = \x -> …`): a function that ALREADY has params
+    // and returns a lambda (`addN n = \k -> k + n`) is a deliberate closure factory whose
+    // partial use is a genuine closure — leave it (eta_expand handles it). The over-
+    // application bug is specific to the nullary CAF whose value is an arity-1 closure.
+    if f.clauses.len() != 1
+        || !f.clauses[0].pats.is_empty()
+        || !matches!(f.clauses[0].body, ast::Body::Plain(ast::Expr::Lam(..)))
+    {
+        return f;
+    }
+    let c = &mut f.clauses[0];
+    let ast::Body::Plain(mut body) =
+        std::mem::replace(&mut c.body, ast::Body::Plain(ast::Expr::Int(0, NO_SPAN)))
+    else {
+        unreachable!("guarded by the matches! above")
+    };
+    while let ast::Expr::Lam(pats, lbody, _) = body {
+        c.pats.extend(pats);
+        body = *lbody;
+    }
+    c.body = ast::Body::Plain(body);
+    f
+}
+
 /// Eta-expands the functions/constructors used as a value or partially
 /// parcialmente, para o backend nativo (first-class functions via closures).
 fn eta_expand(module: &ast::Module) -> ast::Module {
+    // absorb point-free curried lambdas into clause params first (`add = \x -> \y -> …`
+    // → `add x y = …`), so the arities below and the whole lowering see a proper
+    // multi-parameter function rather than a nullary CAF over an arity-1 closure.
+    let funcs0: Vec<ast::Func> = module.funcs.iter().cloned().map(absorb_lambda_caf).collect();
     // arity of each callable name: top-level functions (number of patterns), constructors
     // (field count), and the IO builtins that lower to an `Op`.
     let mut arity: HashMap<String, usize> = HashMap::new();
-    for f in &module.funcs {
+    for f in &funcs0 {
         arity.insert(
             f.name.clone(),
             f.clauses.first().map(|c| c.pats.len()).unwrap_or(0),
@@ -2402,7 +2440,7 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         arity.entry(b.into()).or_insert(2);
     }
     let mut e = Eta { arity, counter: 0 };
-    let funcs = module.funcs.iter().map(|f| e.func(f)).collect();
+    let funcs = funcs0.iter().map(|f| e.func(f)).collect();
     ast::Module {
         name: module.name.clone(),
         imports: module.imports.clone(),
