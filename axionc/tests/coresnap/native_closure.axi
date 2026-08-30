@@ -9,11 +9,11 @@ addN n k  =
 apply f x  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
-  drop _t0
+  drop g
     else
   else
 lam$0 [env n]eta$1  =
-  let _d1000000 = call apply _t0 32  ; Δ{_t0}
+  let _d1000000 = call apply g 32  ; Δ{g}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
@@ -21,7 +21,7 @@ lam$0 [env n]eta$1  =
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
-  let _t0 = closure lam$0 n  ; Δ{} · makes heap
+  let g = closure lam$0 n  ; Δ{} · makes heap
     let _tag = loadraw _p+0  ; Δ{}
 main  =
 mk n  =

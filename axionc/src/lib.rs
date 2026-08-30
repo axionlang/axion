@@ -1529,9 +1529,15 @@ fn collect_hof_demands(
         if let ast::Expr::Var(h, _) = head {
             if !bound.contains(h) {
                 if let Some(&k) = hof_arrow.get(h) {
-                    if let Some(ast::Expr::Var(g, _)) = args.get(k) {
-                        if fn_names.contains(g) && !bound.contains(g) {
-                            out.insert((h.clone(), g.clone()));
+                    // the closure arg is a bare name (`filter gt2`) OR a PARTIAL APPLICATION
+                    // (`filter (gt n)`) — spine its head to the concrete function; the
+                    // captures are the pre-applied args, threaded at the clone's leading params.
+                    if let Some(arg_k) = args.get(k) {
+                        let (chead, _caps) = app_spine(arg_k);
+                        if let ast::Expr::Var(g, _) = chead {
+                            if fn_names.contains(g) && !bound.contains(g) {
+                                out.insert((h.clone(), g.clone()));
+                            }
                         }
                     }
                 }
@@ -1691,7 +1697,12 @@ fn rewrite_hof_calls(
     let Some(&k) = hof_arrow.get(&h) else {
         return;
     };
-    let Some(ast::Expr::Var(g, _)) = args.get(k) else {
+    // the closure arg is a bare name or a partial application — spine to (g, captures).
+    let Some(arg_k) = args.get(k) else {
+        return;
+    };
+    let (chead, caps) = app_spine(arg_k);
+    let ast::Expr::Var(g, _) = chead else {
         return;
     };
     if !fn_names.contains(g)
@@ -1702,12 +1713,14 @@ fn rewrite_hof_calls(
     }
     let mangled = format!("{h}$${g}");
     let span = e.span();
-    let new_args: Vec<ast::Expr> = args
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != k)
-        .map(|(_, a)| (*a).clone())
-        .collect();
+    // clone the pre-applied captures (leading), then the HOF args other than the arrow slot.
+    let mut new_args: Vec<ast::Expr> = caps.iter().map(|c| (*c).clone()).collect();
+    new_args.extend(
+        args.iter()
+            .enumerate()
+            .filter(|(i, _)| *i != k)
+            .map(|(_, a)| (*a).clone()),
+    );
     let mut out = ast::Expr::Var(mangled, hspan);
     for a in new_args {
         out = ast::Expr::App(Box::new(out), Box::new(a), span);
@@ -1715,10 +1728,57 @@ fn rewrite_hof_calls(
     *e = out;
 }
 
+/// Splits a signature's leading `n` arrows: returns the first `n` parameter types and the
+/// RESIDUAL type after applying `n` arguments (`Integer -> Integer -> Bool`, n=1 → `([Integer],
+/// Integer -> Bool)`). Used to type a PARTIAL-APPLICATION closure (`gt n` — `gt`'s residual
+/// after the captured `n`) and to recover the captured params' types for the clone's leading
+/// parameters.
+fn split_arrows(sig: &ast::Type, n: usize) -> (Vec<ast::Type>, ast::Type) {
+    let mut caps = Vec::new();
+    let mut cur = sig;
+    for _ in 0..n {
+        if let ast::Type::Arrow { from, to, .. } = cur {
+            caps.push((**from).clone());
+            cur = to;
+        } else {
+            break;
+        }
+    }
+    (caps, cur.clone())
+}
+
+/// Prepends borrowed (`Many`) parameter arrows to a type: `[A, B]`, `R` → `A -> B -> R`. The
+/// captured args of a partial-application closure are threaded as LEADING params of the clone;
+/// they are borrowed (used across the whole traversal, e.g. a predicate's `> n` each element),
+/// and consume-inference re-derives `%1` from the clone body where a capture is actually moved.
+fn prepend_arrows(caps: &[ast::Type], body: ast::Type) -> ast::Type {
+    let mut t = body;
+    for c in caps.iter().rev() {
+        t = ast::Type::Arrow { mult: ast::Mult::Many, from: Box::new(c.clone()), to: Box::new(t) };
+    }
+    t
+}
+
+/// Replaces every free `Var(from)` with a (cloned) expression `repl`, non-scope-aware like
+/// `rename_var` — used to rewrite the closure parameter `p` to the concrete closure applied to
+/// its captured params (`p x` → `gt cap0 x`) inside a specialized clone.
+fn replace_var_with_expr(e: &mut ast::Expr, from: &str, repl: &ast::Expr) {
+    if let ast::Expr::Var(n, _) = e {
+        if n == from {
+            *e = repl.clone();
+            return;
+        }
+    }
+    for_each_subexpr_mut(e, &mut |c| replace_var_with_expr(c, from, repl));
+}
+
 /// Builds the specialized clone `hof$$clos`: drops the arrow parameter (signature + pattern),
-/// and renames the closure parameter to the concrete function name throughout the body (so
-/// `f x…` becomes `clos x…`). Recursive self-calls and nested HOF calls are redirected by the
-/// driver's global `rewrite_hof_calls` pass afterward.
+/// and rewrites the closure parameter to the concrete closure throughout the body. For a bare
+/// closure (`filter gt2`) that is `f x…` → `gt2 x…`. For a PARTIAL-APPLICATION closure (`filter
+/// (gt n)` — `gt`'s arity exceeds the arrow-param's by the number of captures) the captured
+/// args are threaded as LEADING parameters `cap0…` of the clone and `f x…` becomes `gt cap0…
+/// x…`; the call site supplies the captures (`filter$$gt n xs`). Recursive self-calls and
+/// nested HOF calls are redirected by the driver's global `rewrite_hof_calls` pass afterward.
 fn make_hof_spec(
     src: &ast::Func,
     k: usize,
@@ -1732,38 +1792,78 @@ fn make_hof_spec(
     // collide with the source's or another clone's (see `span_base` in `specialize_hofs`).
     offset_func_spans(&mut clone, delta);
     // the closure parameter's name (MVP guarantees a single clause, all-Var pats).
-    let ast::Pat::Var(param, _) = clone.clauses[0].pats.get(k)?.clone() else {
+    let ast::Pat::Var(param, pspan) = clone.clauses[0].pats.get(k)?.clone() else {
         return None;
+    };
+    // capture count = the closure's arity beyond the arrow parameter's arity (the number of
+    // args a partial application pre-applies). `filter (gt n)`: `gt` is arity 2, filter's
+    // arrow `a -> Bool` is arity 1 → 1 capture. A bare closure is 0 captures (the prior path).
+    let arrow_arity = clone
+        .sig
+        .as_ref()
+        .and_then(|s| s.param_types().get(k).map(|t| t.param_types().len()))
+        .unwrap_or(1);
+    let g_arity = clos_sig.map(|s| s.param_types().len()).unwrap_or(arrow_arity);
+    let captures = g_arity.saturating_sub(arrow_arity);
+    // the closure's RESIDUAL type after its captured args (for the type-var match below), and
+    // the captured params' types (for the clone's leading params).
+    let (cap_tys, residual_clos_sig) = match clos_sig {
+        Some(s) if captures > 0 => {
+            let (c, r) = split_arrows(s, captures);
+            (c, Some(r))
+        }
+        _ => (Vec::new(), clos_sig.cloned()),
     };
     // drop the arrow parameter from the signature, then SPECIALIZE the remaining type
     // variables to the concrete types bound by the closure. Matching the HOF's arrow-param
-    // type (`a -> b`) against the closure's signature (`Integer -> (Integer,Integer)`) binds
-    // `a`/`b`, so the clone's `List a -> List b` becomes `List Integer -> List (Integer,
-    // Integer)` — WITHOUT this the call-site result carries an unresolved generic mono key
-    // (`List` not `List$tuple$Integer$Integer`), and the concrete-element reclamation reads a
-    // garbage size → heap corruption (`map pairUp`/`map fstT`).
+    // type (`a -> b`) against the closure's (residual) signature (`Integer -> Bool`) binds
+    // `a`/`b`, so the clone's `List a -> List b` becomes concrete — WITHOUT this the call-site
+    // result carries an unresolved generic mono key and the concrete-element reclamation reads
+    // a garbage size → heap corruption (`map pairUp`/`map fstT`). Captured param types are
+    // then prepended so the clone is `cap0_ty -> … -> <dropped hof sig>`.
     if let Some(sig) = &clone.sig {
         let mut dropped = drop_arrow_param(sig, k);
-        if let (Some(arrow_ty), Some(cs)) = (sig.param_types().get(k).copied(), clos_sig) {
+        if let (Some(arrow_ty), Some(cs)) =
+            (sig.param_types().get(k).copied(), residual_clos_sig.as_ref())
+        {
             let mut subst = std::collections::HashMap::new();
             if match_type(arrow_ty, cs, &mut subst) {
                 dropped = subst_type(&dropped, &subst);
             }
         }
-        clone.sig = Some(dropped);
+        clone.sig = Some(prepend_arrows(&cap_tys, dropped));
     }
     clone.clauses[0].pats.remove(k);
-    // rename the closure param → the concrete function name throughout the clause.
+    // fresh leading capture parameters, and the closure-param replacement `gt cap0 cap1 …`.
+    let cap_names: Vec<String> = (0..captures).map(|i| format!("_cap{i}")).collect();
+    let repl = {
+        let mut e = ast::Expr::Var(clos.to_string(), pspan);
+        for c in &cap_names {
+            e = ast::Expr::App(Box::new(e), Box::new(ast::Expr::Var(c.clone(), pspan)), pspan);
+        }
+        e
+    };
+    for name in cap_names.iter().rev() {
+        clone.clauses[0].pats.insert(0, ast::Pat::Var(name.clone(), pspan));
+    }
+    // rewrite the closure param → the concrete closure (applied to its captures) in the clause.
     let cl = &mut clone.clauses[0];
+    let rw = |e: &mut ast::Expr| {
+        if captures == 0 {
+            rename_var(e, &param, clos);
+        } else {
+            replace_var_with_expr(e, &param, &repl);
+        }
+    };
     match &mut cl.body {
-        ast::Body::Plain(e) => rename_var(e, &param, clos),
+        ast::Body::Plain(e) => rw(e),
         ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
-            rename_var(g, &param, clos);
-            rename_var(r, &param, clos);
+            rw(g);
+            rw(r);
         }),
     }
     for w in &mut cl.wher {
-        for_each_func_expr_mut(w, &mut |e| rename_var(e, &param, clos));
+        for_each_func_expr_mut(w, &mut |e| rw(e));
     }
     Some(clone)
 }

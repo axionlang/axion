@@ -300,6 +300,41 @@ fn curried_caf_applied_over_arity_agrees_across_backends() {
     }
 }
 
+/// Closure-argument linearity for a PARTIAL-APPLICATION closure: a named predicate applied
+/// to some of its args (`gt (fromInt 2)`) passed to `filter` over a heap element type.
+/// Specialization threads the pre-applied arg as a LEADING param of the clone (`filter$$gt
+/// cap xs`) so the concrete element type lets consume-inference mark it `%1` — AX0912 cannot
+/// arise. Before this a partial application (head `App`, not a bare name) was AX0912-rejected.
+/// Asserts the gate accepts it (no AX0912) and every backend agrees (= 2).
+#[test]
+fn partial_application_closure_over_heap_specializes_not_rejected() {
+    let path = format!(
+        "{}/tests/fixtures/hof_partial_closure.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let gate = axionc().args(["--release", &path]).output().unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&gate.stdout),
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    assert!(
+        !combined.contains("AX0912"),
+        "a partial-application closure over a heap type should specialize, not hit AX0912:\n{combined}"
+    );
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "2",
+            "{backend}: filter (gt 2) should keep 2 elements"
+        );
+    }
+}
+
 /// Native currying, non-nullary: a function WITH params whose body is a curried lambda chain
 /// (`foo x = \y -> \z -> …`) applied past its clause arity (`foo 10 20 30`). Its arity-1
 /// returned closure was over-applied by `callclo` → native garbage. `absorb_lambda_caf`

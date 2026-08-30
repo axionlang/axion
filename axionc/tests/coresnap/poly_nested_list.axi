@@ -9,7 +9,6 @@
 
 
 
-
 axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$List$Int _p  =
@@ -17,12 +16,11 @@ axion_drop_List _p  =
     Cons y ys ->
     Cons y ys ->
     Cons y ys ->
-  drop _t0
-  drop _t3 : List$Int
+  drop _t2 : List$Int
       drop xs
       drop xs
       drop xs
-      drop xs : List$Int
+      drop xs
       drop y : List$Int
     else
     else
@@ -33,8 +31,7 @@ axion_drop_List _p  =
   else
   else
   else
-lam$0 [env ]eta$1  =
-  let _d1000000 = call sum _t3  ; Δ{_t3}
+  let _d1000000 = call sum _t2  ; Δ{_t2}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -58,30 +55,29 @@ lam$0 [env ]eta$1  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = callclo f y  ; Δ{y ys} · moves{y}
+  let _t0 = call range 1 3  ; Δ{} · makes List$Int
+      let _t0 = call range _cap0 y  ; Δ{y ys} · makes List$Int
       let _t0 = call sum ys  ; Δ{}
       let _t0 = call sum y  ; Δ{y ys}
-  let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
+  let _t1 = call map$$range 1 _t0  ; Δ{_t0} · moves{_t0} · makes List$List$Int
+      let _t1 = call map$$range _cap0 ys  ; Δ{_t0 y ys} · moves{ys} · makes List$List$Int
       let _t1 = call map$$sum ys  ; Δ{ys} · moves{ys} · makes List$Int
-      let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
-  let _t1 = call range 1 3  ; Δ{_t0} · makes List$Int
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t1 = + lo 1  ; Δ{}
     let _t2 = + acc lo  ; Δ{}
     let _t2 = callclo c lo n  ; Δ{}
-  let _t2 = call map$Int _t0 _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List$List$Int
+  let _t2 = call map$$sum _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
     let _t2 = call range _t1 hi  ; Δ{} · makes List$Int
-  let _t3 = call map$$sum _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
+map$$range _cap0 xs  =
 map$$sum xs  =
-map$Int f xs  =
     Nil ->
     Nil ->
     Nil ->
@@ -105,18 +101,17 @@ range lo hi  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
     ret acc  ; Δ{}
-  ret call range 1 eta$1  ; Δ{} · makes List$Int
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret case xs of
   ret case xs of
   ret case xs of
     ret con Cons lo _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
-      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
+      ret con Cons _t0 _t1  ; Δ{_t0 _t1 y} · moves{_t0 _t1} · makes List$List$Int
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
-      ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$Int
     ret con Nil  ; Δ{} · makes List$Int
+      ret con Nil  ; Δ{} · makes List$List$Int
   ret _d1000000  ; Δ{}
   ret if _t0 then
   ret if _t0 then

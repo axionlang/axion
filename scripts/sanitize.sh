@@ -59,6 +59,7 @@ NATIVE=(
   axionc/tests/fixtures/tuple_extract_escape.axi
   axionc/tests/fixtures/hof_unsigned_closure.axi
   axionc/tests/fixtures/hof_lambda_closure.axi
+  axionc/tests/fixtures/hof_partial_closure.axi
   axionc/tests/fixtures/curried_caf.axi
   axionc/tests/fixtures/curried_partial.axi
   axionc/tests/fixtures/strings_text.axi
@@ -169,7 +170,7 @@ LEAKFREE=(
   record_update_reclaim record_update_multi record_update_chain
   record_update_escape record_update_escape_read integer_reclaim integer_accumulator
   field_alias_return integer_divmod rsa_modexp escape_local_borrow
-  case_extract_escape tuple_extract_escape hof_unsigned_closure hof_lambda_closure curried_caf curried_partial
+  case_extract_escape tuple_extract_escape hof_unsigned_closure hof_lambda_closure hof_partial_closure curried_caf curried_partial
 )
 is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 
