@@ -299,3 +299,24 @@ fn curried_caf_applied_over_arity_agrees_across_backends() {
         );
     }
 }
+
+/// Native currying, non-nullary: a function WITH params whose body is a curried lambda chain
+/// (`foo x = \y -> \z -> …`) applied past its clause arity (`foo 10 20 30`). Its arity-1
+/// returned closure was over-applied by `callclo` → native garbage. `absorb_lambda_caf`
+/// merges ALL leading lambdas into the clause → a direct call. Asserts every backend agrees
+/// (= 60), pinning the general fix (not just the nullary-CAF case).
+#[test]
+fn curried_partial_applied_over_arity_agrees_across_backends() {
+    let path = format!("{}/tests/fixtures/curried_partial.axi", env!("CARGO_MANIFEST_DIR"));
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "60",
+            "{backend}: `foo x = \\y -> \\z -> …` applied to 3 args should compute 60, not garbage"
+        );
+    }
+}

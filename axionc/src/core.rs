@@ -2365,22 +2365,20 @@ fn lower_func(
 
 /// Lowers the module to the Core: candidate top-level functions, their `where`
 /// `where` (mangled) and the lifted lambdas (with capture).
-/// Absorbs the leading lambdas of a point-free curried definition into the clause
-/// parameters: `add = \x -> \y -> x + y` → `add x y = x + y`. A single-clause binding whose
-/// (Plain) body is a `\…` chain is otherwise a nullary CAF that evaluates to a curried
-/// closure of arity 1; applying it to several args (`add 21 21`) then over-applies that
-/// arity-1 closure — `callclo` passes all args at once and the native backends mishandle it
-/// (garbage). Merging the lambda params makes it an ordinary multi-parameter function (a
-/// DIRECT call), which lowers correctly on every backend. A non-lambda body (a real
-/// value-CAF, preserving its single evaluation) or a multi-clause/guarded function is left
-/// untouched; a residual partial use is re-expanded to a closure by `eta_expand` below.
+/// Absorbs the leading lambdas of a definition into the clause parameters: `add = \x -> \y
+/// -> x + y` → `add x y = x + y`, and `foo x = \y -> \z -> …` → `foo x y z = …`. A
+/// single-clause binding whose (Plain) body is a `\…` chain evaluates, at its declared
+/// clause arity, to a curried closure; applying it PAST that arity (`add 21 21`, `foo 10 20
+/// 30`) over-applies the returned arity-1 closure — `callclo` passes all remaining args at
+/// once and the native backends mishandle it (garbage), because `call_closure` issues one
+/// indirect call for every arg regardless of the closure's real arity. Merging the leading
+/// lambda params makes it an ordinary multi-parameter function (a DIRECT call), which lowers
+/// correctly on every backend. A non-lambda body (a real value-CAF, preserving its single
+/// evaluation) or a multi-clause/guarded function is left untouched; a PARTIAL use of the
+/// now-wider function (`addN 10`, `foo 10`) is re-expanded to a closure by `eta_expand`
+/// below — so a deliberate closure factory still yields a closure, just at the use site.
 fn absorb_lambda_caf(mut f: ast::Func) -> ast::Func {
-    // only a NULLARY point-free CAF (`add = \x -> …`): a function that ALREADY has params
-    // and returns a lambda (`addN n = \k -> k + n`) is a deliberate closure factory whose
-    // partial use is a genuine closure — leave it (eta_expand handles it). The over-
-    // application bug is specific to the nullary CAF whose value is an arity-1 closure.
     if f.clauses.len() != 1
-        || !f.clauses[0].pats.is_empty()
         || !matches!(f.clauses[0].body, ast::Body::Plain(ast::Expr::Lam(..)))
     {
         return f;
