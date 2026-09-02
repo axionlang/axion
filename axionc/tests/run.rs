@@ -41,6 +41,30 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn stdlib_batch_runs_on_all_backends() {
+    // Prelude breadth: id/const/flip/fst/snd/curry/uncurry + mapMaybe/maybeToList/listToMaybe
+    // + elemIndex. One expression exercising all of them must agree across every backend
+    // (leak-freedom is gated by scripts/sanitize.sh).
+    let fx = fixture("stdlib_batch.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "82",
+            "{backend}: stdlib batch expression should evaluate to 82"
+        );
+    }
+}
+
+#[test]
 fn hof_specialization_matches_generic_on_all_backends() {
     // Higher-order specialization (opt-in, AXION_SPECIALIZE=1): `foldr addI`/`map sq` are
     // cloned per closure into direct-call `foldr$$addI`/`map$$sq`. The result must equal the

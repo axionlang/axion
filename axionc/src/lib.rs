@@ -3613,6 +3613,54 @@ findIndex :: (a -> Bool) -> List a -> Maybe Int
 findIndex p xs = case xs of
   Nil -> Nothing
   Cons y ys -> if p y then Just 0 else incMaybe (findIndex p ys)
+
+elemIndex :: Eq a => a -> List a -> Maybe Int
+elemIndex x xs = findIndex (\\y -> eq x y) xs
+
+-- function combinators ------------------------------------------------------
+
+id :: a -> a
+id x = x
+
+const :: a -> b -> a
+const x y = x
+
+flip :: (a -> b -> c) -> b -> a -> c
+flip f x y = f y x
+
+fst :: (a, b) -> a
+fst p = case p of
+  (a, b) -> a
+
+snd :: (a, b) -> b
+snd p = case p of
+  (a, b) -> b
+
+curry :: ((a, b) -> c) -> a -> b -> c
+curry f x y = f (x, y)
+
+uncurry :: (a -> b -> c) -> (a, b) -> c
+uncurry f p = case p of
+  (a, b) -> f a b
+
+-- Maybe extensions ----------------------------------------------------------
+
+mapMaybe :: (a -> Maybe b) -> List a -> List b
+mapMaybe f xs = case xs of
+  Nil -> Nil
+  Cons y ys -> case f y of
+    Nothing -> mapMaybe f ys
+    Just z -> Cons z (mapMaybe f ys)
+
+maybeToList :: Maybe a -> List a
+maybeToList m = case m of
+  Nothing -> Nil
+  Just x -> Cons x Nil
+
+listToMaybe :: List a -> Maybe a
+listToMaybe xs = case xs of
+  Nil -> Nothing
+  Cons y ys -> Just y
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`
