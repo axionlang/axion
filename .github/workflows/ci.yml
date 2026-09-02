@@ -40,7 +40,11 @@ jobs:
         working-directory: axionc
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned (not @stable): @stable silently drifts to the newest release, and on
+      # 2026-08-30 it jumped to 1.98.0 whose new deny-by-default
+      # `invalid_runtime_symbol_definitions` lint turned pre-existing code into a hard
+      # build error, painting 4 jobs red at once. Bump this deliberately, not by drift.
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
 
@@ -66,7 +70,7 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
 
       - name: axionc vs the GHC oracle
         run: ./scripts/differential.sh
@@ -85,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Snapshot oracle (132 fixtures, --emit core)
         run: ./scripts/dump-oracle.sh
@@ -106,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - name: Install clang
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Native runtime under ASan + LSan
