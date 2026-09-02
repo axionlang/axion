@@ -102,6 +102,11 @@ struct Infer<'a> {
     /// lambda instead derives them from the wrapped callable's signature). Merged into
     /// `makecon_tys`; param spans are disjoint from call/con/array spans.
     lam_param_tys: HashMap<Span, Ty>,
+    /// Closure-argument linearity: each USER lambda's FULL type (`param… -> result`) keyed by
+    /// the lambda's own span, so a CAPTURING lambda at a HOF arrow slot can be lifted to a
+    /// concretely-signed top-level function (`infer_lambda_site_types`). Distinct from
+    /// `lam_param_tys` (individual param types for drop keys); this is the whole arrow chain.
+    lam_full_tys: HashMap<Span, Ty>,
     /// Phase 1b: each integer-literal expression's fresh type var (span → var), so a
     /// literal resolved to `Integer` by context is rewritten `fromInt n`, and an
     /// unconstrained one defaults to `Int`.
@@ -248,6 +253,30 @@ pub fn infer_unsigned_sigs(module: &Module) -> HashMap<String, Type> {
     out
 }
 
+/// Each USER lambda's FULL type (`param… -> result`) resolved in context, keyed by the lambda's
+/// span — but only lambdas whose type is fully CONCRETE (no residual type variable). Drives the
+/// capturing-lambda lift (`lift_capturing_lambdas`): a lambda that types concretely in its
+/// enclosing scope (its captures pinned by that scope) can become a concretely-signed top-level
+/// function; a polymorphic one is absent here and stays inline (the conservative floor). A
+/// throwaway inference (mirrors `infer_unsigned_sigs`), so it never perturbs the real check.
+pub fn infer_lambda_site_types(module: &Module) -> HashMap<Span, Type> {
+    let mut diags = Diagnostics::new();
+    let (mut inf, env) = setup(module, &mut diags);
+    for f in &module.funcs {
+        inf.check_body(&env, f);
+    }
+    let _ = inf.finish(module);
+    let lam_tys = std::mem::take(&mut inf.lam_full_tys);
+    let mut out = HashMap::new();
+    for (sp, ty) in lam_tys {
+        let resolved = inf.apply(&ty);
+        if let Some(ast) = ty_to_ast_sig(&resolved) {
+            out.insert(sp, ast);
+        }
+    }
+    out
+}
+
 /// Top-level functions WITHOUT a signature. In inference these get a monomorphic
 /// placeholder var shared across the whole module, so any function that references
 /// one has its inference tied to that function's body — the reason such callers are
@@ -342,6 +371,7 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         array_ret_tys: HashMap::new(),
         call_ret_tys: HashMap::new(),
         lam_param_tys: HashMap::new(),
+        lam_full_tys: HashMap::new(),
         int_lit_vars: Vec::new(),
     };
     let mut env: Env = inf.base_env();
@@ -3486,7 +3516,7 @@ impl<'a> Infer<'a> {
                 }
                 tb
             }
-            Expr::Lam(pats, body, _) => {
+            Expr::Lam(pats, body, lspan) => {
                 let mut local = env.clone();
                 let params: Vec<Ty> = pats.iter().map(|p| self.infer_pat(&mut local, p)).collect();
                 // closure-linearity: record each param's type by its `Pat::Var` span so
@@ -3500,6 +3530,9 @@ impl<'a> Infer<'a> {
                 for p in params.into_iter().rev() {
                     ty = Ty::Fun(Box::new(p), Box::new(ty));
                 }
+                // closure-argument linearity: record the whole lambda type by its own span, so a
+                // capturing lambda can be lifted to a concretely-signed top-level function.
+                self.lam_full_tys.insert(*lspan, ty.clone());
                 ty
             }
         }

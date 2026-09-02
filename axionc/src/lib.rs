@@ -962,6 +962,19 @@ fn specialize_hofs(module: &mut ast::Module) {
         return;
     }
     let mut fn_names = fn_names;
+    // A CAPTURING lambda at a HOF's arrow slot (`filter (\x -> x > n) xs`, `n` an enclosing
+    // local) is rewritten UP FRONT to a partial application of a fresh top-level function whose
+    // LEADING params are the captures (`hoflamcap<N> n x = x > n`, call `filter (hoflamcap<N> n)
+    // xs`) — the already-handled partial-application shape. So a capturing closure over a heap
+    // element type no longer falls to the generic HOF (Route C + AX0912); it specializes like
+    // any partial application. Runs before `build_lambda_candidates` so only NON-capturing
+    // lambdas remain at arrow slots for the isolated-inference path below.
+    // A preliminary inference of the ORIGINAL module recovers each lambda's full type in context;
+    // `lift_capturing_lambdas` uses it (with enclosing declared-signature capture types) to sign a
+    // lifted capturing lambda up front. Concrete only when the enclosing scope pins the captures.
+    let lam_tys = infer::infer_lambda_site_types(module);
+    let cap_committed = lift_capturing_lambdas(module, &hof_arrow, &lam_tys);
+    fn_names.extend(cap_committed);
     // A NON-CAPTURING lambda literal at a HOF's arrow slot (`filter (\x -> x > fromInt 2) xs`)
     // is a candidate to lift to a fresh top-level function so the closure becomes a NAME the
     // rest of specialization resolves. Add the candidate `hoflam<N>` bodies as UNREFERENCED
@@ -1051,6 +1064,185 @@ fn specialize_hofs(module: &mut ast::Module) {
             rewrite_func_calls(f, &generated, &hof_arrow, &fn_names, &HashSet::new());
         }
     }
+}
+
+/// Pre-pass to lambda lifting. A CAPTURING lambda at a HOF's arrow slot (`filter (\x -> x > n)
+/// xs`, where `n` is an enclosing local) is rewritten to a PARTIAL APPLICATION of a fresh
+/// CONCRETELY-SIGNED top-level function whose LEADING params are the captures (`hoflamcap<N> :: I
+/// -> I -> Bool; hoflamcap<N> n x = x > n`, call `filter (hoflamcap<N> n) xs`). This turns the
+/// capturing closure into the already-handled partial-application shape: demand collection sees
+/// the partial app and the fixpoint clones `filter$$hoflamcap<N>` threading `n` as a leading
+/// capture — so the element-aliasing double-free (AX0912) no longer arises over a heap element
+/// type.
+///
+/// The lift fires ONLY when a fully-CONCRETE signature can be assembled up front: the lambda's own
+/// type from `lam_tys` (a preliminary inference of the ORIGINAL module — concrete exactly when the
+/// enclosing scope pins the captures) prefixed by each capture's type read from the enclosing
+/// DECLARED signature (`sig_binders`). If the lambda types polymorphically, or a capture is not a
+/// concretely-typed enclosing binder (an unsigned enclosing fn, a `where`/`let`/outer-lambda
+/// local), the lift is SKIPPED and the lambda stays inline — the conservative floor (interp runs
+/// it; native falls to the generic HOF + AX0912). Signing at lift time means no unsigned poly
+/// `hoflamcap` ever reaches the AX0405 check. Bottom-up + scope-aware, so a lambda nested inside
+/// another lifts first.
+fn lift_capturing_lambdas(
+    module: &mut ast::Module,
+    hof_arrow: &std::collections::HashMap<String, usize>,
+    lam_tys: &std::collections::HashMap<ast::Span, ast::Type>,
+) -> std::collections::HashSet<String> {
+    use std::collections::{HashMap, HashSet};
+    // The `from_end`-th argument (0 = the last/outermost) of a left-nested `App` spine: descend
+    // into the callee `.0` that many times, then take the argument `.1`.
+    fn arg_mut(e: &mut ast::Expr, from_end: usize) -> Option<&mut ast::Expr> {
+        let mut cur = e;
+        for _ in 0..from_end {
+            let ast::Expr::App(f, _, _) = cur else { return None };
+            cur = f;
+        }
+        let ast::Expr::App(_, a, _) = cur else { return None };
+        Some(a)
+    }
+    // Shared state, bundled so the recursive walkers take few arguments. The two maps are the
+    // read-only inputs; `new_funcs`/`committed`/`counter` accumulate the lifted functions.
+    struct Ctx<'a> {
+        hof_arrow: &'a std::collections::HashMap<String, usize>,
+        lam_tys: &'a std::collections::HashMap<ast::Span, ast::Type>,
+        new_funcs: Vec<ast::Func>,
+        committed: HashSet<String>,
+        counter: usize,
+    }
+    fn walk(
+        e: &mut ast::Expr,
+        bound: &HashSet<String>,
+        sig_binders: &HashMap<String, ast::Type>,
+        ctx: &mut Ctx,
+    ) {
+        // rewrite children first (bottom-up) so a nested arrow-slot lambda resolves before its
+        // enclosing one clones the body.
+        for_each_subexpr_scoped_mut(e, bound, &mut |c, b| walk(c, b, sig_binders, ctx));
+        if !matches!(e, ast::Expr::App(..)) {
+            return;
+        }
+        // Gather what we need under an immutable borrow, then release it before mutating `e`.
+        let (k, n, caps, cap_tys, lam_pats, lam_body, lam_ty, lspan) = {
+            let (head, args) = app_spine(e);
+            let ast::Expr::Var(h, _) = head else { return };
+            if bound.contains(h) {
+                return; // a shadowed HOF name is a local, not our top-level HOF.
+            }
+            let Some(&k) = ctx.hof_arrow.get(h) else { return };
+            let n = args.len();
+            if k >= n {
+                return;
+            }
+            let ast::Expr::Lam(pats, body, lspan) = args[k] else {
+                return;
+            };
+            // the lambda must type concretely in context (captures pinned by the enclosing scope).
+            let Some(lam_ty) = ctx.lam_tys.get(lspan) else { return };
+            let mut lam_bound = HashSet::new();
+            pats.iter().for_each(|p| pat_bound(p, &mut lam_bound));
+            let mut refs = HashSet::new();
+            collect_expr_refs(body, &mut refs);
+            let mut caps: Vec<String> =
+                refs.into_iter().filter(|r| bound.contains(r) && !lam_bound.contains(r)).collect();
+            if caps.is_empty() {
+                return; // non-capturing → left for `build_lambda_candidates`.
+            }
+            caps.sort();
+            caps.dedup();
+            // every capture must be a concretely-typed enclosing binder, else we cannot build a
+            // concrete signature → skip (leave inline; native falls to the generic HOF).
+            let mut cap_tys = Vec::with_capacity(caps.len());
+            for c in &caps {
+                let Some(t) = sig_binders.get(c) else { return };
+                cap_tys.push(t.clone());
+            }
+            (k, n, caps, cap_tys, pats.clone(), (**body).clone(), lam_ty.clone(), *lspan)
+        };
+        let name = format!("hoflamcap{}", ctx.counter);
+        ctx.counter += 1;
+        // hoflamcap<N> signature: capture types (leading) ++ the lambda's own type. All concrete,
+        // so the function types without AX0405 and specializes.
+        let mut sig = lam_ty;
+        for t in cap_tys.into_iter().rev() {
+            sig = ast::Type::Arrow { mult: ast::Mult::Many, from: Box::new(t), to: Box::new(sig) };
+        }
+        // hoflamcap<N>: captures (leading, same names) ++ the lambda's own params, body verbatim.
+        let mut hpats: Vec<ast::Pat> =
+            caps.iter().map(|c| ast::Pat::Var(c.clone(), lspan)).collect();
+        hpats.extend(lam_pats);
+        ctx.new_funcs.push(ast::Func {
+            name: name.clone(),
+            sig: Some(sig),
+            clauses: vec![ast::Clause {
+                pats: hpats,
+                body: ast::Body::Plain(lam_body),
+                wher: Vec::new(),
+                span: lspan,
+            }],
+            span: lspan,
+            constraints: Vec::new(),
+        });
+        ctx.committed.insert(name.clone());
+        // Replace the lambda arg with the partial application `hoflamcap<N> cap0 cap1 …`.
+        let mut app = ast::Expr::Var(name, lspan);
+        for c in &caps {
+            app = ast::Expr::App(Box::new(app), Box::new(ast::Expr::Var(c.clone(), lspan)), lspan);
+        }
+        if let Some(slot) = arg_mut(e, n - 1 - k) {
+            *slot = app;
+        }
+    }
+    // The concretely-typed binders visible in `f`'s clauses: its declared-signature params (a
+    // capture whose type we can read). Where-locals/lambda params are absent → their captures skip.
+    fn sig_param_binders(f: &ast::Func) -> HashMap<String, ast::Type> {
+        let mut m = HashMap::new();
+        let Some(sig) = &f.sig else { return m };
+        let ptys = sig.param_types();
+        if let Some(c) = f.clauses.first() {
+            for (p, t) in c.pats.iter().zip(ptys) {
+                if let ast::Pat::Var(nm, _) = p {
+                    m.insert(nm.clone(), t.clone());
+                }
+            }
+        }
+        m
+    }
+    fn walk_func(
+        f: &mut ast::Func,
+        outer_bound: &HashSet<String>,
+        outer_binders: &HashMap<String, ast::Type>,
+        ctx: &mut Ctx,
+    ) {
+        let mut binders = outer_binders.clone();
+        binders.extend(sig_param_binders(f));
+        for c in &mut f.clauses {
+            let mut b = outer_bound.clone();
+            c.pats.iter().for_each(|p| pat_bound(p, &mut b));
+            match &mut c.body {
+                ast::Body::Plain(e) => walk(e, &b, &binders, ctx),
+                ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+                    walk(g, &b, &binders, ctx);
+                    walk(r, &b, &binders, ctx);
+                }),
+            }
+            for w in &mut c.wher {
+                walk_func(w, &b, &binders, ctx);
+            }
+        }
+    }
+    let mut ctx = Ctx {
+        hof_arrow,
+        lam_tys,
+        new_funcs: Vec::new(),
+        committed: HashSet::new(),
+        counter: 0,
+    };
+    for f in &mut module.funcs {
+        walk_func(f, &HashSet::new(), &HashMap::new(), &mut ctx);
+    }
+    module.funcs.extend(ctx.new_funcs);
+    ctx.committed
 }
 
 /// Pass 1 of lambda lifting: for every NON-CAPTURING lambda literal at a HOF's arrow slot,

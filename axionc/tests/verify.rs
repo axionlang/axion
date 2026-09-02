@@ -336,6 +336,42 @@ fn partial_application_closure_over_heap_specializes_not_rejected() {
     }
 }
 
+/// Closure-argument linearity for a CAPTURING-LAMBDA closure: a lambda capturing an enclosing
+/// local (`\x -> x > n`) passed to `filter` over a heap element type. A preliminary inference
+/// recovers the lambda's in-context type; specialization lifts it to a concretely-signed
+/// top-level function whose leading param is the capture (`filter (hoflamcap0 n) xs`), so
+/// `filter$$hoflamcap0` gets the concrete element type — AX0912 cannot arise. Before this a
+/// capturing lambda over a heap type was AX0912-rejected (its captures had no name/type for the
+/// lift). Asserts the gate accepts it (no AX0912) and every backend agrees (= 2).
+#[test]
+fn capturing_lambda_closure_over_heap_specializes_not_rejected() {
+    let path = format!(
+        "{}/tests/fixtures/hof_capturing_closure.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let gate = axionc().args(["--release", &path]).output().unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&gate.stdout),
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    assert!(
+        !combined.contains("AX0912"),
+        "a capturing-lambda closure over a heap type should specialize, not hit AX0912:\n{combined}"
+    );
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "2",
+            "{backend}: keepAbove 2 over {{1,5,9}} should keep 2 elements"
+        );
+    }
+}
+
 /// Native currying, non-nullary: a function WITH params whose body is a curried lambda chain
 /// (`foo x = \y -> \z -> …`) applied past its clause arity (`foo 10 20 30`). Its arity-1
 /// returned closure was over-applied by `callclo` → native garbage. `absorb_lambda_caf`
