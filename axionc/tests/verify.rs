@@ -336,6 +336,37 @@ fn partial_application_closure_over_heap_specializes_not_rejected() {
     }
 }
 
+/// Nested-parametric tuple element reclamation: a `%1`-consumed tuple whose discarded element is
+/// itself a parametric heap container (`(List Integer, Integer)`, drop `List Integer`). The tuple
+/// mono-key `tuple$List$Integer$Integer` is ambiguous under a flat `$`-split, so it used to
+/// shell-free only and leak the element; `split_tuple_key` now segments it with constructor
+/// arities and frees the element via `axion_drop_List$Integer`. Asserts every backend agrees (= 7)
+/// and the verifier reports no corruption (the LSan leak-freedom is gated by sanitize.sh).
+#[test]
+fn nested_parametric_tuple_element_is_reclaimed() {
+    let path = format!(
+        "{}/tests/fixtures/tuple_nested_elem_reclaim.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    assert!(
+        verify.status.success(),
+        "verifier must report no corruption:\n{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    for backend in ["interp", "cranelift", "llvm"] {
+        let run = axionc()
+            .args(["run", "--backend", backend, &path])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            "7",
+            "{backend}: sndOf (…, 7) should return 7"
+        );
+    }
+}
+
 /// Closure-argument linearity for a CAPTURING-LAMBDA closure: a lambda capturing an enclosing
 /// local (`\x -> x > n`) passed to `filter` over a heap element type. A preliminary inference
 /// recovers the lambda's in-context type; specialization lifts it to a concretely-signed

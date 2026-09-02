@@ -63,10 +63,13 @@ lam$0 [env ]eta$1  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$tuple$Integer$Integer _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
+  let _dd1 = rtcall axion_bignum_free _dd0  ; Δ{}
+  let _dd2 = loadraw _p+0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
@@ -75,6 +78,7 @@ lam$0 [env ]eta$1  =
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
+  let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}

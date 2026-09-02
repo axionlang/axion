@@ -3,8 +3,10 @@
 
 
 
+
     (a, b) ->
 axion_drop_Array _p  =
+axion_drop_Box _p  =
 axion_drop_List _p  =
 axion_drop_tuple$Box$Box _p  =
       drop b
@@ -26,6 +28,7 @@ fstBox t  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = record Box { v = 7}  ; Δ{} · makes Box
   let _t1 = record Box { v = 9}  ; Δ{_t0} · makes Box
   let _t2 = tuple _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes heap
@@ -36,6 +39,7 @@ main  =
       ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
       ret a  ; Δ{}

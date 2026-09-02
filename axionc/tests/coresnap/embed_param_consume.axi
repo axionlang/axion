@@ -4,7 +4,9 @@
 
 
 
+
 axion_drop_Array _p  =
+axion_drop_Box _p  =
 axion_drop_List _p  =
 axion_drop_tuple$Box$Int _p  =
     (bb, k) ->
@@ -21,6 +23,7 @@ axion_drop_tuple$Box$Int _p  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = field v bb  ; Δ{t}
   let _t0 = record Box { v = 7}  ; Δ{} · makes Box
   let _t1 = call wrap _t0  ; Δ{_t0} · moves{_t0}
@@ -30,6 +33,7 @@ main  =
       ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret call useT _t1  ; Δ{}

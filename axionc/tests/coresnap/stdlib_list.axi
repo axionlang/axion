@@ -155,10 +155,10 @@ lam$3 [env ]eta$5  =
   let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List$Bool _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$tuple$Int$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
-  let _dd1 = call axion_drop_List _dd0  ; Δ{}
   let _dd1 = if _dd0 then
   let _dd2 = loadraw _p+0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
@@ -167,7 +167,7 @@ lam$3 [env ]eta$5  =
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
       let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
-  let _dd3 = call axion_drop_List _dd2  ; Δ{}
+  let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then

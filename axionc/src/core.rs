@@ -614,22 +614,57 @@ impl RecordInfo {
     /// elements — a nested element (`tuple$List$Int`) makes the `$`-split ambiguous, so
     /// bail to the conservative shell-only free (the prior tuple-discard leak).
     pub fn tuple_elem_drops(&self, key: &str, arity: usize) -> Option<Vec<Option<Option<String>>>> {
+        let elems = self.split_tuple_key(key, arity)?;
+        Some(elems.iter().map(|el| self.classify_tuple_elem(el)).collect())
+    }
+
+    /// Segments a tuple mono-key (`tuple$List$Integer$Integer`) into its `arity` element sub-keys
+    /// (`["List$Integer", "Integer"]`), using constructor arities to walk the `$`-joined token
+    /// stream (`List` has arity 1 → it consumes the next element key). `None` if the stream can't
+    /// be segmented into exactly `arity` elements — in particular a NESTED TUPLE element, whose own
+    /// arity is not encoded in the key (`tuple$...`), so it stays the conservative shell-only free
+    /// (the documented nested-tuple-in-tuple residual).
+    fn split_tuple_key(&self, key: &str, arity: usize) -> Option<Vec<String>> {
         let mut it = key.split('$');
         if it.next() != Some("tuple") {
             return None;
         }
         let toks: Vec<&str> = it.collect();
-        if toks.len() != arity {
-            return None; // nested/ambiguous element → conservative bail
+        let mut pos = 0usize;
+        let mut out = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            out.push(self.consume_one_key(&toks, &mut pos)?);
         }
-        Some(toks.iter().map(|el| self.classify_tuple_elem(el)).collect())
+        (pos == toks.len()).then_some(out) // leftover tokens ⇒ mis-segmented → bail
     }
 
-    /// Classifies one flat tuple element name for reclamation (see `tuple_elem_drops`).
+    /// Consumes one full mono sub-key from `toks` at `pos`, recursing for a constructor's arguments
+    /// (`List` arity 1 → one following sub-key). A nested `tuple` token bails (`None`): its arity is
+    /// not encoded, so the segmentation is ambiguous.
+    fn consume_one_key(&self, toks: &[&str], pos: &mut usize) -> Option<String> {
+        let head = *toks.get(*pos)?;
+        *pos += 1;
+        if head == "tuple" {
+            return None;
+        }
+        let n = self.type_arity.get(head).copied().unwrap_or(0);
+        let mut key = head.to_string();
+        for _ in 0..n {
+            key.push('$');
+            key.push_str(&self.consume_one_key(toks, pos)?);
+        }
+        Some(key)
+    }
+
+    /// Classifies one tuple element mono sub-key for reclamation (see `tuple_elem_drops`). The key
+    /// may be MULTI-TOKEN — a nested container instantiation (`List$Integer`) routes to its own
+    /// mono destructor (`axion_drop_List$Integer`, seeded alongside the tuple), which frees the
+    /// element's payloads too, not just the spine.
     fn classify_tuple_elem(&self, el: &str) -> Option<Option<String>> {
         match el {
             "Integer" => Some(Some("Integer".into())), // bignum → axion_bignum_free
             "String" => Some(Some("String".into())),   // heap string → axion_str_drop
+            _ if el.contains('$') => Some(Some(el.to_string())), // nested container → its mono destructor
             _ if self.needs_deep_drop(el) => Some(Some(el.to_string())), // deep data destructor
             _ if self.enum_types.contains(el) => None,  // unboxed enum immediate → no drop
             _ if self.type_arity.contains_key(el) => Some(None), // boxed data, no heap → flat free
@@ -4441,6 +4476,22 @@ pub fn lower_with(
             }
         }
     }
+    // Seed the ELEMENT mono-types of every tuple seed (transitively), so a nested-parametric
+    // element that appears ONLY inside a tuple (`(List Integer, _)`) still gets its concrete mono
+    // destructor (`axion_drop_List$Integer`) — referenced by the tuple's per-element deep drop and
+    // by the case-discard reclamation (`tuple_elem_drops`). Both dedup by key, so duplicates are
+    // harmless; each pushed element is a strict sub-component, so the walk terminates.
+    {
+        let mut i = 0;
+        while i < mono_seeds.len() {
+            if let Type::Tuple(ts) = &mono_seeds[i] {
+                let elems: Vec<Type> =
+                    ts.iter().filter(|e| mono_key(e).is_some()).cloned().collect();
+                mono_seeds.extend(elems);
+            }
+            i += 1;
+        }
+    }
     // specialized destructors for concrete instantiations of parametric types
     // dropped as owned values (`List P` → `axion_drop_List$P`): they also free
     // the polymorphic payloads a generic destructor cannot see.
@@ -4457,7 +4508,7 @@ pub fn lower_with(
         data_seeds,
     ));
     // tuple-owned %1: destructors for tuple types that contain heap elements
-    result.extend(gen_tuple_destructors(&tuple_seeds, &recinfo));
+    result.extend(gen_tuple_destructors(&tuple_seeds, &recinfo, &parametric_data));
     // Phase 2c array mono destructors: scan for parametric ArrayNew ops and
     // generate per-element deep-drop destructors (axion_drop_Array$List$P, etc.)
     {
@@ -5034,7 +5085,11 @@ fn array_deep_drop_body(ptr: &str, elem_dtor: &str, ctr: &mut u32) -> Term {
 /// elements include heap-typed `data` objects.  The destructor deep-drops
 /// each `data`-typed element and flat-frees the rest, then frees the shell.
 /// Named `axion_drop_tuple$<mangle>` (matching the key from `mono_key`).
-fn gen_tuple_destructors(seeds: &[Type], recinfo: &RecordInfo) -> Vec<CoreFn> {
+fn gen_tuple_destructors(
+    seeds: &[Type],
+    recinfo: &RecordInfo,
+    parametric_data: &HashSet<String>,
+) -> Vec<CoreFn> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     for t in seeds {
@@ -5048,25 +5103,19 @@ fn gen_tuple_destructors(seeds: &[Type], recinfo: &RecordInfo) -> Vec<CoreFn> {
         let name = format!("axion_drop_{key}");
         let p = "_p".to_string();
         let mut ctr = 0u32;
-        // for each element: if it's a heap `data` type → deep-drop via its
-        // destructor; otherwise flat-free.  Then free the tuple shell.
+        // for each element, its reclamation via `drop_way` — a PARAMETRIC element (`List Integer`)
+        // routes to its MONO destructor (`axion_drop_List$Integer`, seeded above), not the leaky
+        // generic head (`axion_drop_List`), so the element's payloads (bignums/strings) are freed
+        // too. Then free the tuple shell. (A nested TUPLE element yields `DropWay::None` → skipped,
+        // the documented nested-tuple-in-tuple residual.)
         let mut body = free_then_ret(&p);
         if let Type::Tuple(ts) = t {
             for (i, el) in ts.iter().enumerate().rev() {
                 let off = i as i32 * 8;
-                let way = if let Some(h) = el.head_con() {
-                    if recinfo.type_cons(h).is_some() {
-                        if recinfo.needs_deep_drop(h) {
-                            DropWay::Deep(h.to_string())
-                        } else {
-                            DropWay::Flat
-                        }
-                    } else {
-                        continue; // scalar, not a `data` type → no free needed
-                    }
-                } else {
-                    continue;
-                };
+                let way = drop_way(el, recinfo, parametric_data, &mut Vec::new());
+                if matches!(way, DropWay::None) {
+                    continue; // scalar / nested tuple → no per-element free here
+                }
                 let fp = fresh_dd(&mut ctr);
                 let call = match way {
                     DropWay::Deep(dn) => Op::CallDirect(
