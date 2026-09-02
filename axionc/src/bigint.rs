@@ -183,6 +183,26 @@ impl BigInt {
     }
 }
 
+impl std::fmt::Display for BigInt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.mag.is_empty() {
+            return write!(f, "0");
+        }
+        if self.neg {
+            write!(f, "-")?;
+        }
+        // most-significant limb without padding, the rest zero-padded to 9 digits
+        for (i, limb) in self.mag.iter().rev().enumerate() {
+            if i == 0 {
+                write!(f, "{limb}")?;
+            } else {
+                write!(f, "{limb:09}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::BigInt;
@@ -221,25 +241,5 @@ mod tests {
         // a big literal times itself, exact
         let x = BigInt::from_str("12345678901234567890");
         assert_eq!(s(&x.mul(&x)), "152415787532388367501905199875019052100");
-    }
-}
-
-impl std::fmt::Display for BigInt {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.mag.is_empty() {
-            return write!(f, "0");
-        }
-        if self.neg {
-            write!(f, "-")?;
-        }
-        // most-significant limb without padding, the rest zero-padded to 9 digits
-        for (i, limb) in self.mag.iter().rev().enumerate() {
-            if i == 0 {
-                write!(f, "{limb}")?;
-            } else {
-                write!(f, "{limb:09}")?;
-            }
-        }
-        Ok(())
     }
 }

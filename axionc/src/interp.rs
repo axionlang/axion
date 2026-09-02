@@ -681,7 +681,6 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
                     fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
                     fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
                     fn close(fd: i32) -> i32;
-                    fn memcpy(d: *mut u8, s: *const u8, n: usize);
                 }
                 let mut hints = [0u8; 48];
                 hints[4] = 2;
@@ -700,7 +699,7 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
                     if fd >= 0 {
                         let addr_ptr = *(rp.add(24) as *const *const u8);
                         let mut sa = [0u8; 16];
-                        memcpy(sa.as_mut_ptr(), addr_ptr, 16);
+                        std::ptr::copy_nonoverlapping(addr_ptr, sa.as_mut_ptr(), 16);
                         sa[2] = ((port as u16) >> 8) as u8;
                         sa[3] = port as u8;
                         if connect(fd, sa.as_ptr(), 16) == 0 {

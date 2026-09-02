@@ -5,6 +5,7 @@
 //! cross-checked against ground truth: every committed fixture is ASan-clean (see
 //! `scripts/sanitize.sh`), so the verifier MUST report zero corruption findings over the
 //! whole corpus. `--emit verify` exits 0 iff there are no corruption findings.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::process::Command;
 

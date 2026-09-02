@@ -1424,7 +1424,7 @@ fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
     let all_safe = clause.pats.iter().enumerate().all(|(i, p)| {
         let ast::Pat::Var(n, _) = p else { return false };
         let Some(t) = ptypes.get(i) else { return false };
-        if !(core::is_heap_shaped(t) && !is_bare_scalar(t)) {
+        if !core::is_heap_shaped(t) || is_bare_scalar(t) {
             return true; // scalar (copied)
         }
         let escapes = bodies.iter().any(|b| escapes_via_result(n, b));

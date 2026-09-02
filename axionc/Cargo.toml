@@ -154,7 +154,13 @@ large_stack_frames = "warn"
 large_futures = "warn"
 ptr_arg = "warn"
 option_if_let_else = "warn"
-multiple_crate_versions = "warn"
+# `multiple_crate_versions` is a dependency-graph lint we cannot satisfy: the tree has
+# unavoidable transitive major-version splits — `syn` 2 vs 3 (async-trait/displaydoc via
+# tower-lsp + icu), `bitflags` 1 vs 2 (lsp-types/region via tower-lsp + cranelift-jit),
+# and similar for hashbrown/rustc-hash/windows-sys. No `cargo update` can collapse them
+# (different major deps require different majors), so under CI's `-D warnings` this lint
+# would fail the build for a condition we don't control. Allowed.
+multiple_crate_versions = "allow"
 
 # Style
 semicolon_if_nothing_returned = "warn"

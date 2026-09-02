@@ -444,7 +444,7 @@ fn filter_over_heap_specializes_and_runs_on_all_backends() {
     // free. (Spine-DISCARDING `take`/`takeWhile`/`drop` still hit AX0912 — see
     // `ax0912_and_specialization_interact_soundly` and `take_heap_reject`.)
     let fx = fixture("filter_heap_reject.axi");
-    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx.clone()]] {
+    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx]] {
         let out = axionc().args(&backend).output().unwrap();
         assert!(
             out.status.success(),
