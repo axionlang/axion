@@ -73,22 +73,24 @@ lam$0 [env ]a b  =
       let _dd1 = call axion_drop_List$tuple$Int$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
-    let _dd2 = == _tag 1  ; Δ{}
+      let _dd2 = loadraw _p+8  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
       let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple$Int$Int _dd2  ; Δ{}
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
-    let _dd3 = if _dd2 then
-  let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
     let _dd4 = == _tag 1  ; Δ{}
+    let _dd4 = == _tag 1  ; Δ{}
+    let _dd5 = if _dd4 then
     let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
-  let _dd5 = if _dd4 then
   let _dd6 = band _p 1  ; Δ{}
+  let _dd6 = band _p 1  ; Δ{}
+  let _dd7 = if _dd6 then
   let _dd7 = if _dd6 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}

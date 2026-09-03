@@ -28,6 +28,13 @@
 
 
 
+
+
+
+
+
+
+
                     _ ->
                 _ ->
             _ ->
@@ -35,13 +42,20 @@
     _ ->
 axion_drop_Array _p  =
 axion_drop_Either$Int$Bool _p  =
+axion_drop_Either$Int _p  =
 axion_drop_List$Either$Int$Bool _p  =
 axion_drop_List _p  =
 axion_drop_Maybe$Int _p  =
 axion_drop_Pair$Either$Int$Bool$Maybe$Int _p  =
+axion_drop_Pair$Either$Int$Bool _p  =
 axion_drop_Pair$tuple$Int$Int$Bool _p  =
+axion_drop_Pair$tuple$Int$Int _p  =
 axion_drop_These$Int$Bool _p  =
+axion_drop_These$Int _p  =
 axion_drop_Tri$Int$Bool$Int _p  =
+axion_drop_Tri$Int$Bool _p  =
+axion_drop_Tri$Int _p  =
+axion_drop_tuple$Int$Int _p  =
 both  =
     Both a0 a1 ->
     (c0, c1) ->
@@ -141,12 +155,18 @@ inList  =
       let _d1000001 = rtcall axion_strcat _t7 ")"  ; Δ{_t7} · makes String
       let _d1000002 = rtcall axion_strcat _t7 _t8  ; Δ{_t7 _t8} · makes String
   let _dd0 = band _p 1  ; Δ{}
+  let _dd0 = loadraw _p+0  ; Δ{}
+  let _dd0 = loadraw _p+0  ; Δ{}
+  let _dd0 = loadraw _p+0  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = call axion_drop_Either$Int$Bool _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Either$Int$Bool _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
   let _dd1 = call axion_drop_Maybe$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_tuple$Int$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_tuple$Int$Int _dd0  ; Δ{}
   let _dd1 = if _dd0 then
   let _dd2 = loadraw _p+0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
@@ -163,6 +183,13 @@ inList  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
@@ -258,6 +285,8 @@ inList  =
     let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
+  let _tag = loadraw _p+0  ; Δ{}
+  let _tag = loadraw _p+0  ; Δ{}
 main  =
 nested  =
     Nil ->
@@ -275,6 +304,13 @@ nested  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

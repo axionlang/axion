@@ -20,6 +20,9 @@
 
 
 
+
+
+
                 _ ->
             _ ->
         _ ->
@@ -31,9 +34,12 @@
     _ ->
 axion_drop_Array _p  =
 axion_drop_Eit$Int$Bool _p  =
+axion_drop_Eit$Int _p  =
 axion_drop_List _p  =
 axion_drop_Pair$Eit$Int$Bool$Int _p  =
+axion_drop_Pair$Eit$Int$Bool _p  =
 axion_drop_Pair$Int$Bool _p  =
+axion_drop_Pair$Int _p  =
   drop _t0 : Pair$Int$Bool
           drop _t10 : Eit$Int$Bool
           drop _t11 : Eit$Int$Bool
@@ -73,7 +79,9 @@ le$Int x y  =
 le$Pair$Int$Bool x y  =
                   let _d1000000 = putStrLn _t23  ; Δ{_t23}
   let _dd0 = loadraw _p+0  ; Δ{}
+  let _dd0 = loadraw _p+0  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
+  let _dd1 = call axion_drop_Eit$Int$Bool _dd0  ; Δ{}
   let _dd1 = call axion_drop_Eit$Int$Bool _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
@@ -81,6 +89,9 @@ le$Pair$Int$Bool x y  =
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
@@ -122,6 +133,7 @@ le$Pair$Int$Bool x y  =
       let _t9 = putStrLn _t8  ; Δ{_t8}
     let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
+  let _tag = loadraw _p+0  ; Δ{}
         Lft _ ->
     Lft a0 ->
     Lft a0 ->
@@ -149,6 +161,9 @@ p2  =
       ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

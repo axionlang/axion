@@ -5,11 +5,13 @@
 
 
 
+
         (a, b) ->
 axion_drop_Array _p  =
 axion_drop_List$Box _p  =
 axion_drop_List$tuple$Box$Box _p  =
 axion_drop_List _p  =
+axion_drop_tuple$Box$Box _p  =
     Cons h t ->
     Cons t ts ->
 countV xs  =
@@ -29,26 +31,33 @@ countV xs  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List$Box _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$tuple$Box$Box _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
+  let _dd1 = rtcall axion_free _dd0  ; Δ{}
+  let _dd2 = loadraw _p+0  ; Δ{}
+      let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
-    let _dd2 = == _tag 1  ; Δ{}
-    let _dd3 = if _dd2 then
+      let _dd3 = call axion_drop_tuple$Box$Box _dd2  ; Δ{}
     let _dd3 = if _dd2 then
       let _dd3 = rtcall axion_free _dd2  ; Δ{}
-  let _dd4 = band _p 1  ; Δ{}
+  let _dd3 = rtcall axion_free _dd2  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
     let _dd4 = == _tag 1  ; Δ{}
+    let _dd4 = == _tag 1  ; Δ{}
+    let _dd5 = if _dd4 then
     let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
-  let _dd5 = if _dd4 then
   let _dd6 = band _p 1  ; Δ{}
+  let _dd6 = band _p 1  ; Δ{}
+  let _dd7 = if _dd6 then
   let _dd7 = if _dd6 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call countV t  ; Δ{t} · moves{t}
           let _t0 = call mapFst ts  ; Δ{ts} · moves{ts} · makes List$Box
   let _t0 = record Box { v = 3}  ; Δ{} · makes Box
@@ -81,6 +90,7 @@ mapFst xs  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

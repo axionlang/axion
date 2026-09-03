@@ -21,6 +21,9 @@
 
 
 
+
+
+
                 _ ->
             _ ->
         _ ->
@@ -29,8 +32,11 @@ axion_drop_Array _p  =
 axion_drop_List$Int _p  =
 axion_drop_List _p  =
 axion_drop_Pair$Bool$Int _p  =
+axion_drop_Pair$Bool _p  =
 axion_drop_Pair$Int$Bool _p  =
+axion_drop_Pair$Int _p  =
 axion_drop_Pair$List$Int$Bool _p  =
+axion_drop_Pair$List$Int _p  =
 bi  =
     Cons y ys ->
     Cons z zs ->
@@ -89,9 +95,11 @@ ib  =
       let _d1000000 = rtcall axion_strcat _t4 ">"  ; Δ{_t4} · makes String
       let _d1000000 = rtcall axion_strcat _t4 ">"  ; Δ{_t4} · makes String
   let _dd0 = loadraw _p+0  ; Δ{}
+  let _dd0 = loadraw _p+0  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
   let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
@@ -104,6 +112,9 @@ ib  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
@@ -176,6 +187,9 @@ main  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

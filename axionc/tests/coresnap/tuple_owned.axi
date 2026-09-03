@@ -3,10 +3,8 @@
 
 
 
-
     (a, b) ->
 axion_drop_Array _p  =
-axion_drop_Box _p  =
 axion_drop_List _p  =
 axion_drop_tuple$Box$Box _p  =
       drop t : tuple$Box$Box
@@ -24,7 +22,6 @@ axion_drop_tuple$Box$Box _p  =
   let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
-  let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = field v a  ; Δ{t}
   let _t0 = record Box { v = 1}  ; Δ{} · makes Box
       let _t1 = field v b  ; Δ{t}
@@ -36,7 +33,6 @@ main  =
       ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
-  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret call useTuple _t2  ; Δ{_t2} · moves{_t2}

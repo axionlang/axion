@@ -24,6 +24,7 @@
 
 
 
+
             _ ->
         _ ->
     _ ->
@@ -35,6 +36,7 @@ axion_drop_List _p  =
 axion_drop_Rose$Int _p  =
 axion_drop_Rose _p  =
 axion_drop_Two$Int$Bool _p  =
+axion_drop_Two$Int _p  =
 axion_drop_Two _p  =
 bin  =
 binEq  =
@@ -84,6 +86,7 @@ binEq  =
   else
   else
   else
+  else
 eq$Bin$Int s t  =
 eq$Int x y  =
     Fork l v r ->
@@ -102,6 +105,7 @@ eq$Int x y  =
       let _dd0 = loadraw _p+24  ; Δ{}
     let _dd0 = loadraw _p+24  ; Δ{}
     let _dd0 = loadraw _p+24  ; Δ{}
+    let _dd0 = loadraw _p+24  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_Bin$Int _dd0  ; Δ{}
@@ -112,9 +116,11 @@ eq$Int x y  =
   let _dd1 = call axion_drop_List _dd0  ; Δ{}
     let _dd1 = call axion_drop_Two$Int$Bool _dd0  ; Δ{}
     let _dd1 = call axion_drop_Two _dd0  ; Δ{}
+    let _dd1 = call axion_drop_Two _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
+    let _dd2 = loadraw _p+8  ; Δ{}
     let _dd2 = loadraw _p+8  ; Δ{}
     let _dd2 = loadraw _p+8  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
@@ -123,6 +129,7 @@ eq$Int x y  =
       let _dd3 = call axion_drop_Rose$Int _dd2  ; Δ{}
     let _dd3 = call axion_drop_Two$Int$Bool _dd2  ; Δ{}
     let _dd3 = call axion_drop_Two _dd2  ; Δ{}
+    let _dd3 = call axion_drop_Two _dd2  ; Δ{}
     let _dd3 = if _dd2 then
   let _dd4 = band _p 1  ; Δ{}
     let _dd4 = == _tag 1  ; Δ{}
@@ -130,9 +137,11 @@ eq$Int x y  =
     let _dd4 = == _tag 1  ; Δ{}
   let _dd4 = == _tag 1  ; Δ{}
   let _dd4 = == _tag 1  ; Δ{}
+  let _dd4 = == _tag 1  ; Δ{}
     let _dd5 = if _dd4 then
     let _dd5 = if _dd4 then
     let _dd5 = if _dd4 then
+  let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
@@ -146,6 +155,7 @@ eq$Int x y  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
@@ -217,6 +227,7 @@ eq$Int x y  =
     let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
+  let _tag = loadraw _p+0  ; Δ{}
 main  =
     Nil ->
     Nil ->
@@ -248,6 +259,9 @@ main  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -313,6 +327,7 @@ showListRest$Rose$Int ys  =
     Tip ->
     Tip ->
 two  =
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

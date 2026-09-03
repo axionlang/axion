@@ -25,6 +25,7 @@
 
 
 
+
                     _ ->
                 _ ->
             _ ->
@@ -36,6 +37,7 @@ axion_drop_List _p  =
 axion_drop_Maybe$Int _p  =
 axion_drop_Maybe$List$Int _p  =
 axion_drop_Maybe$tuple$Int$List$Int _p  =
+axion_drop_tuple$Int$List$Int _p  =
     (c0, c1) ->
     Cons y ys ->
     Cons y ys ->
@@ -92,6 +94,7 @@ drop n xs  =
     else
     else
     else
+    else
   else
   else
   else
@@ -115,32 +118,39 @@ last xs  =
       let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
       let _d1000000 = rtcall axion_strcat "(" _t4  ; Δ{_t4} · makes String
   let _dd0 = band _p 1  ; Δ{}
-  let _dd0 = band _p 1  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+8  ; Δ{}
+      let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
+      let _dd1 = call axion_drop_tuple$Int$List$Int _dd0  ; Δ{}
   let _dd1 = if _dd0 then
-  let _dd1 = if _dd0 then
+    let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
+    let _dd3 = if _dd2 then
+  let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
+  let _dd5 = if _dd4 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call double y  ; Δ{y ys}
       let _t0 = call show$Int c0  ; Δ{} · makes String
       let _t0 = call show$Int y  ; Δ{} · makes String
@@ -240,6 +250,8 @@ range lo hi  =
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
@@ -250,6 +262,7 @@ range lo hi  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -327,6 +340,7 @@ showListElems$Int xs  =
 showListRest$Int ys  =
 tail xs  =
 uncons$Int xs  =
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

@@ -4476,21 +4476,40 @@ pub fn lower_with(
             }
         }
     }
-    // Seed the ELEMENT mono-types of every tuple seed (transitively), so a nested-parametric
-    // element that appears ONLY inside a tuple (`(List Integer, _)`) still gets its concrete mono
-    // destructor (`axion_drop_List$Integer`) — referenced by the tuple's per-element deep drop and
-    // by the case-discard reclamation (`tuple_elem_drops`). Both dedup by key, so duplicates are
-    // harmless; each pushed element is a strict sub-component, so the walk terminates.
-    {
-        let mut i = 0;
-        while i < mono_seeds.len() {
-            if let Type::Tuple(ts) = &mono_seeds[i] {
-                let elems: Vec<Type> =
-                    ts.iter().filter(|e| mono_key(e).is_some()).cloned().collect();
-                mono_seeds.extend(elems);
+    // Seed every TUPLE and CONTAINER sub-type appearing in a seed, so each gets its concrete mono
+    // destructor even when it only ever appears NESTED: a `List (Int,Int)` seeds `(Int,Int)` (its
+    // tuple element, else the list frees only its spine and leaks every tuple cell); a
+    // `(List Integer, _)` seeds `List Integer`. `gen_tuple_destructors` emits the tuples,
+    // `gen_mono_destructors` the containers; both dedup by key, so duplicates are harmless, and the
+    // recursion walks strict sub-components so it terminates.
+    fn collect_droppable_subtypes(t: &Type, out: &mut Vec<Type>) {
+        match t {
+            Type::Tuple(ts) => {
+                if mono_key(t).is_some() {
+                    out.push(t.clone());
+                }
+                ts.iter().for_each(|e| collect_droppable_subtypes(e, out));
             }
-            i += 1;
+            Type::App(f, a) => {
+                if mono_key(t).is_some() {
+                    out.push(t.clone());
+                }
+                collect_droppable_subtypes(f, out);
+                collect_droppable_subtypes(a, out);
+            }
+            Type::Arrow { from, to, .. } => {
+                collect_droppable_subtypes(from, out);
+                collect_droppable_subtypes(to, out);
+            }
+            _ => {}
         }
+    }
+    {
+        let mut extra = Vec::new();
+        for t in &mono_seeds {
+            collect_droppable_subtypes(t, &mut extra);
+        }
+        mono_seeds.extend(extra);
     }
     // specialized destructors for concrete instantiations of parametric types
     // dropped as owned values (`List P` → `axion_drop_List$P`): they also free
@@ -4799,6 +4818,19 @@ fn drop_way(
     parametric_data: &HashSet<String>,
     work: &mut Vec<Type>,
 ) -> DropWay {
+    // A TUPLE field/element (`(Int,Int)` in a `List (Int,Int)`, a record field, or a nested
+    // tuple) owns a heap cell → its per-arity destructor `axion_drop_tuple$…` (which shell-frees
+    // the cell and deep-drops any heap elements). Without this a container of tuples freed only
+    // its spine, leaking every tuple cell. Seed the tuple so `gen_tuple_destructors` emits it.
+    if let Type::Tuple(_) = t {
+        return match mono_key(t) {
+            Some(key) => {
+                work.push(t.clone());
+                DropWay::Deep(key)
+            }
+            None => DropWay::None,
+        };
+    }
     let (head, args) = ty_head_args(t);
     let Some(head) = head else {
         return DropWay::None;
