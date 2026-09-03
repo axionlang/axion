@@ -5617,13 +5617,43 @@ fn rhs_view(p: &str, rhs: &Rhs, con_rec: &HashMap<String, Vec<usize>>) -> bool {
             let CPat::Con(con, subs) = pat else { return false };
             con_rec.get(con).is_some_and(|recs| {
                 recs.iter().any(|&r| {
-                    matches!(subs.get(r), Some(CPat::Var(f)) if embedded_in_con(f, body))
+                    // A recursive (spine) field of a borrowed param is a VIEW when it escapes via
+                    // the result — either EMBEDDED in a fresh con (`drop`'s `Cons y ys`) OR
+                    // RETURNED DIRECTLY (`deleteBy`'s `Cons y ys -> ys`). Both alias the borrowed
+                    // param's spine, so the caller freeing the param AND the result double-frees
+                    // the shared tail; the auto-move relinquishes the param (leak the prefix, never
+                    // a double-free). Direct return was missed before (only `embedded_in_con`).
+                    matches!(subs.get(r), Some(CPat::Var(f))
+                        if embedded_in_con(f, body) || returns_var_directly(f, body))
                 })
             })
         }),
         Rhs::Case(_, arms) => arms
             .iter()
             .any(|(_, b)| destructures_and_embeds_recursive(p, b, con_rec)),
+    }
+}
+
+/// `true` if `name` is RETURNED DIRECTLY at some tail position of `t` — as the returned atom,
+/// through an `if`/`case`, or via an alias let (`let x = name` then `x` returned). This is the
+/// direct-return counterpart of `embedded_in_con`: returning a borrowed param's recursive spine
+/// field aliases it just as much as embedding it in a fresh con (`deleteBy`'s `Cons y ys -> ys`).
+fn returns_var_directly(name: &str, t: &Term) -> bool {
+    match t {
+        // alias binding `let x = name`: `x` now aliases the field too.
+        Term::Let(x, Rhs::Op(Op::Atom(Atom::Var(v))), _, body) if v == name => {
+            returns_var_directly(x, body) || returns_var_directly(name, body)
+        }
+        Term::Let(_, _, _, body) => returns_var_directly(name, body),
+        Term::Drop(_, _, _, _, body) => returns_var_directly(name, body),
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => v == name,
+        Term::Ret(Rhs::If(_, t, e), _) => {
+            returns_var_directly(name, t) || returns_var_directly(name, e)
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => {
+            arms.iter().any(|(_, b)| returns_var_directly(name, b))
+        }
+        Term::Ret(_, _) => false,
     }
 }
 
