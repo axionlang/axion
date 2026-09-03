@@ -89,6 +89,30 @@ fn stdlib_batch2_runs_on_all_backends() {
 }
 
 #[test]
+fn sortby_runs_on_all_backends() {
+    // `sortBy` with a user comparator exercises the closure-capture borrow fix (the pivot is
+    // captured across two partition closures + `Cons y`). Sorted sum is order-independent, so
+    // = 17 on every backend; leak-freedom gated by scripts/sanitize.sh.
+    let fx = fixture("stdlib_sortby.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "17",
+            "{backend}: sum of sortBy [2,9,1,5] should be 17"
+        );
+    }
+}
+
+#[test]
 fn hof_specialization_matches_generic_on_all_backends() {
     // Higher-order specialization (opt-in, AXION_SPECIALIZE=1): `foldr addI`/`map sq` are
     // cloned per closure into direct-call `foldr$$addI`/`map$$sq`. The result must equal the

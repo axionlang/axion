@@ -3698,6 +3698,19 @@ comparing f x y = le (f x) (f y)
 
 on :: (b -> b -> c) -> (a -> b) -> a -> a -> c
 on g f x y = g (f x) (f y)
+
+-- `sortBy`: quicksort with a user `<=` predicate (mirrors `sort`, which uses the `Ord` `le`).
+-- The partition predicates capture both the comparator `leq` and the pivot `y`; the
+-- closure-capture borrow (delta.rs) keeps `y` live to its single consumer `Cons y`, so a
+-- named comparator is leak-free. (`sortOn` is omitted: it would build a closure comparator,
+-- whose env is the documented conservative closure leak.)
+sortBy :: (a -> a -> Bool) -> List a -> List a
+sortBy leq xs = case xs of
+  Nil -> Nil
+  Cons y ys ->
+    let less = filter (\\z -> leq z y) ys in
+    let greq = filter (\\z -> not (leq z y)) ys in
+    append (sortBy leq less) (Cons y (sortBy leq greq))
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`
