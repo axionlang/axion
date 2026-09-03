@@ -36,10 +36,16 @@ fn alias_target<'a>(op: &'a Op, recinfo: &RecordInfo) -> Option<&'a Atom> {
 /// The classification of a value produced on EITHER branch of an `if`/`case`: a resource
 /// (owned, or holding interior pointers) iff some branch yields one; the borrow sets union.
 fn merge_vals(rets: &[Val]) -> Val {
+    // a key only if every branch agrees on it (else unknown → not cross-checked).
+    let key = rets
+        .first()
+        .and_then(|v| v.key.clone())
+        .filter(|k| rets.iter().all(|v| v.key.as_ref() == Some(k)));
     Val {
         owned: rets.iter().any(|v| v.owned),
         borrows: rets.iter().flat_map(|v| v.borrows.iter().cloned()).collect(),
         dead: None,
+        key,
     }
 }
 
@@ -62,6 +68,10 @@ pub enum Cat {
     DropOfAlias,
     /// two paths reaching a join disagree on which resources are still live.
     Unbalanced,
+    /// `drop x` with a reclaimer that does not match `x`'s type — freeing a boxed `Integer`
+    /// or `String` with the wrong key (a flat `free` of a bignum/string, or a mismatched
+    /// tagged reclaimer) → a bad-free / leak the balance analysis alone can't see.
+    WrongDropKey,
     /// an owned resource still live at a `ret` and not returned — a (soft) leak.
     Leak,
 }
@@ -69,7 +79,14 @@ pub enum Cat {
 impl Cat {
     /// The hard guarantee: a corruption finding means Auto-Drop emitted unsafe code.
     pub fn is_corruption(self) -> bool {
-        matches!(self, Cat::DoubleFree | Cat::UseAfterFree | Cat::DropOfAlias | Cat::Unbalanced)
+        matches!(
+            self,
+            Cat::DoubleFree
+                | Cat::UseAfterFree
+                | Cat::DropOfAlias
+                | Cat::Unbalanced
+                | Cat::WrongDropKey
+        )
     }
 }
 
@@ -93,6 +110,12 @@ struct Val {
     /// `Some` once the resource is freed (`DoubleFree` origin) or moved out — using it,
     /// or anything borrowing it, afterwards is a use-after-free.
     dead: Option<Cat>,
+    /// the value's DEFINITE reclaim key when known (`Some("Integer")` → `axion_bignum_free`,
+    /// `Some("String")` → `axion_str_drop`, a mono destructor key otherwise) — from its producer
+    /// (`delta::Res.key`), inherited through aliases, or resolved for a case-extracted field.
+    /// Drives the drop-key cross-check (`do_drop`): freeing a value with the wrong reclaimer is a
+    /// bad-free / leak the balance analysis alone can't see. `None` = unknown → not cross-checked.
+    key: Option<String>,
 }
 
 type State = HashMap<String, Val>;
@@ -385,7 +408,7 @@ impl Verifier<'_> {
                         _ => None,
                     })
                     .collect();
-                return Val { owned: false, borrows, dead: None };
+                return Val { owned: false, borrows, dead: None, key: None };
             }
         }
         let e = op_delta_effect(op, self.ba);
@@ -406,11 +429,11 @@ impl Verifier<'_> {
         if let Some(Atom::Var(w)) = alias_target(op, self.recinfo) {
             if st.contains_key(w.as_str()) {
                 inherited.insert(w.clone());
-                return Val { owned: false, borrows: inherited, dead: None };
+                return Val { owned: false, borrows: inherited, dead: None, key: None };
             }
         }
-        if e.produces.is_some() {
-            return Val { owned: true, borrows: inherited, dead: None };
+        if let Some(res) = &e.produces {
+            return Val { owned: true, borrows: inherited, dead: None, key: res.key.clone() };
         }
         Val::default()
     }
@@ -432,6 +455,17 @@ impl Verifier<'_> {
             }
             Some(v) if !v.owned => self.finding(Cat::DropOfAlias, x, sp),
             Some(_) => {
+                // drop-key cross-check: a value KNOWN to be a boxed `Integer`/`String` must be
+                // freed by its tagged reclaimer (`Some("Integer")`/`Some("String")`). Any other
+                // key — a flat `free` (`None`) of a bignum/string, or a mismatched tag — is a
+                // bad-free / leak. Only fires when the value's key is DEFINITELY tagged (from its
+                // producer or a resolved poly field), so it is 0-false-positive.
+                let vkey = st.get(x).and_then(|v| v.key.clone());
+                if let Some(vk) = vkey.filter(|k| k == "Integer" || k == "String") {
+                    if key != Some(&vk) {
+                        self.finding(Cat::WrongDropKey, x, sp);
+                    }
+                }
                 if let Some(v) = st.get_mut(x) {
                     v.dead = Some(Cat::DoubleFree);
                 }
@@ -562,11 +596,17 @@ impl Verifier<'_> {
         let Some(scrut) = scrut_var else {
             return;
         };
+        // the scrutinee's own reclaim key (known only when it was locally PRODUCED — a param has
+        // no key here), so a poly field can resolve to its tagged reclaimer for the drop-key check.
+        let scrut_key = st.get(scrut).and_then(|v| v.key.clone());
         if let CPat::Con(con, subs) = pat {
             for (i, sp) in subs.iter().enumerate() {
                 if let CPat::Var(n) = sp {
                     if self.recinfo.field_transfers_heap(con, i) {
-                        st.insert(n.clone(), Val { owned: true, ..Default::default() });
+                        let fkey = scrut_key
+                            .as_deref()
+                            .and_then(|sk| self.recinfo.field_tagged_key(con, i, sk));
+                        st.insert(n.clone(), Val { owned: true, key: fkey, ..Default::default() });
                         // record the field as a CHILD of its scrutinee at slot `i`: a DEEP
                         // `drop` of the scrutinee frees it transitively (see `do_drop`), so it
                         // is not a separate leak unless the arm moves it out first.
@@ -751,6 +791,47 @@ mod tests {
         assert!(
             fs.iter().any(|f| f.cat == Cat::UseAfterFree),
             "expected a UseAfterFree finding, got {fs:?}"
+        );
+    }
+
+    fn bignum(name: &str, dropkey: Option<String>, body_tail: Term) -> CoreFn {
+        // let x = rtcall axion_bignum_from_i64 8 ; drop x [dropkey] ; <tail>
+        let body = Term::Let(
+            name.into(),
+            Rhs::Op(Op::RtCall {
+                func: "axion_bignum_from_i64".into(),
+                args: vec![Atom::Int(8)],
+                returns: true,
+            }),
+            (0, 0),
+            Box::new(Term::Drop(name.into(), dropkey, vec![], (0, 0), Box::new(body_tail))),
+        );
+        fn_body(body)
+    }
+
+    /// The drop-key cross-check CATCHES a boxed `Integer` freed with the wrong reclaimer —
+    /// a flat `free` (`key = None`) instead of `axion_bignum_free` (`Some("Integer")`). This
+    /// is the class the multi-param bad-free belonged to; freeing a bignum as a plain cell
+    /// leaks its limbs / bad-frees a tagged value.
+    #[test]
+    fn flags_wrong_drop_key_on_integer() {
+        let ret0 = Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), (0, 0));
+        let fs = one(bignum("x", None, ret0));
+        assert!(
+            fs.iter().any(|f| f.cat == Cat::WrongDropKey),
+            "expected WrongDropKey for a flat-freed Integer, got {fs:?}"
+        );
+    }
+
+    /// The dual: freeing the same boxed `Integer` with its CORRECT tagged key is clean — the
+    /// cross-check is not vacuously firing.
+    #[test]
+    fn correct_integer_drop_key_is_ok() {
+        let ret0 = Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), (0, 0));
+        let fs = one(bignum("x", Some("Integer".into()), ret0));
+        assert!(
+            !fs.iter().any(|f| f.cat == Cat::WrongDropKey),
+            "a correctly-keyed Integer drop must not flag, got {fs:?}"
         );
     }
 

@@ -692,6 +692,17 @@ impl RecordInfo {
         self.classify_tuple_elem(elem)
     }
 
+    /// The TAGGED reclaimer (`"Integer"` → `axion_bignum_free`, `"String"` → `axion_str_drop`) a
+    /// polymorphic field `fi` of `con` resolves to under the scrutinee's instantiation `scrut_key`,
+    /// or `None` if it is not definitely one of those. Used by the drop-balance verifier's
+    /// drop-key cross-check — freeing such a field with any other key is a bad-free / leak.
+    pub fn field_tagged_key(&self, con: &str, fi: usize, scrut_key: &str) -> Option<String> {
+        match self.poly_field_elem_key(con, fi, scrut_key) {
+            Some(Some(k)) if k == "Integer" || k == "String" => Some(k),
+            _ => None,
+        }
+    }
+
     /// `data`-typed fields a constructor owns: (offset, type name).
     pub fn drop_slots(&self, con: &str) -> &[(i32, Type)] {
         self.con_drop_slots.get(con).map_or(&[], Vec::as_slice)
