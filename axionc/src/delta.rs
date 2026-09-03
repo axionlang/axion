@@ -109,7 +109,20 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.moves.extend(args.iter());
         }
         Op::MakeClosure { captures, .. } => {
-            e.moves.extend(captures.iter());
+            // Captures are BORROWED, not moved: a closure's env is never reclaimed (closures are
+            // conservative — they may be called), so capturing a value does NOT consume it. The
+            // enclosing frame keeps ownership and frees each capture exactly once — at its real
+            // consumer (`Cons y`), or, if the closure ESCAPES (returned/stored), Auto-Drop's own
+            // escape analysis already declines to drop a capture reachable through the escaped
+            // closure (the documented conservative closure leak). Marking captures `moves` was
+            // redundant with that escape handling AND coarser: it killed a capture used by a LATER
+            // op (a second closure, or the final consumer), so a var captured by two closures +
+            // consumed once (`sortBy`'s `\z -> leq z y` twice, then `Cons y`) looked consumed
+            // three times → a spurious UAF in the specialized clone. Borrowing keeps it live to its
+            // single real consumer. Validated: no corruption/divergence over the corpus (ASan+LSan,
+            // 113/102) + 300 fuzzed HOF programs; no new leaks (a dead-after capture leaked under
+            // `moves` too — the env is never freed either way).
+            e.borrows.extend(captures.iter());
             e.produces = Some(Res {
                 key: None,
                 parent: None,
