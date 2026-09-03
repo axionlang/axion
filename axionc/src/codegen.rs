@@ -1274,7 +1274,7 @@ extern "C" fn axion_sess_send(sched: i64, ep: i64, v: i64) {
     // closes the lost-wakeup window between a step returning blocked and the worker
     // recording it in `blocked`.
     g.gen = g.gen.wrapping_add(1);
-    let woken: Vec<usize> = g.blocked.drain(..).collect();
+    let woken = std::mem::take(&mut g.blocked);
     g.ready.extend(woken);
 }
 
