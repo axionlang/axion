@@ -23,12 +23,19 @@ fn code_of(d: &tower_lsp::lsp_types::Diagnostic) -> Option<&str> {
 
 #[test]
 fn outline_lists_top_level_declarations() {
-    let names: Vec<String> = outline("f :: Int\nf = 0\n\ndata Color = Red\n\nmain :: Int\nmain = f\n")
-        .into_iter()
-        .map(|s| s.name)
-        .collect();
-    assert!(names.contains(&"f".to_string()), "expected `f` in {names:?}");
-    assert!(names.contains(&"main".to_string()), "expected `main` in {names:?}");
+    let names: Vec<String> =
+        outline("f :: Int\nf = 0\n\ndata Color = Red\n\nmain :: Int\nmain = f\n")
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+    assert!(
+        names.contains(&"f".to_string()),
+        "expected `f` in {names:?}"
+    );
+    assert!(
+        names.contains(&"main".to_string()),
+        "expected `main` in {names:?}"
+    );
 }
 
 #[test]
@@ -71,7 +78,10 @@ fn goto_definition_jumps_to_the_declaration() {
     let use_site = src.rfind("helper").unwrap() + 1; // cursor inside the call `helper`
     let def = definition(src, use_site).expect("expected a definition");
     // The signature is on line 0; the use is on line 4.
-    assert_eq!(def.start.line, 0, "should jump to the first `helper` decl, got {def:?}");
+    assert_eq!(
+        def.start.line, 0,
+        "should jump to the first `helper` decl, got {def:?}"
+    );
     // And it points at the name, not the whole line.
     assert_eq!(def.start.character, 0);
 
@@ -79,7 +89,10 @@ fn goto_definition_jumps_to_the_declaration() {
     let src2 = "data Color = Red | Green\n\nfirst :: Color -> Color\nfirst c = c\n";
     let at = src2.rfind("Color").unwrap();
     let d2 = definition(src2, at).expect("data type should resolve");
-    assert_eq!(d2.start.line, 0, "should jump to the `data Color` line: {d2:?}");
+    assert_eq!(
+        d2.start.line, 0,
+        "should jump to the `data Color` line: {d2:?}"
+    );
 
     // A cursor on empty space / a literal resolves to nothing.
     assert!(definition(src, src.find(" 0").unwrap() + 1).is_none());
@@ -92,7 +105,10 @@ fn goto_definition_resolves_locals_and_constructors() {
     let src = "x :: Int\nx = 0\n\nf :: Int -> Int\nf x = x + 1\n";
     let body_x = src.rfind("x +").unwrap();
     let def = definition(src, body_x).expect("param should resolve");
-    assert_eq!(def.start.line, 4, "should jump to the parameter on line 4, got {def:?}");
+    assert_eq!(
+        def.start.line, 4,
+        "should jump to the parameter on line 4, got {def:?}"
+    );
 
     // A `let` binding resolves to itself.
     let src2 = "g :: Int\ng = let y = 1 in y + y\n";
@@ -106,7 +122,10 @@ fn goto_definition_resolves_locals_and_constructors() {
     let src3 = "data List a = Cons a (List a) | Nil\n\nhd :: List a -> a\nhd (Cons x xs) = x\n";
     let use_cons = src3.rfind("Cons").unwrap();
     let d3 = definition(src3, use_cons).expect("constructor should resolve");
-    assert_eq!(d3.start.line, 0, "Cons should resolve into the data decl: {d3:?}");
+    assert_eq!(
+        d3.start.line, 0,
+        "Cons should resolve into the data decl: {d3:?}"
+    );
 }
 
 #[test]
@@ -116,14 +135,35 @@ fn completion_offers_scope_toplevel_builtins_and_keywords() {
     // in scope. (Completion needs the enclosing clause to parse; it degrades to
     // top-level + builtins + keywords when the code around the cursor is malformed.)
     let offset = src.rfind('y').unwrap();
-    let labels: Vec<String> = completions(src, offset).into_iter().map(|c| c.label).collect();
+    let labels: Vec<String> = completions(src, offset)
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
 
-    assert!(labels.contains(&"x".to_string()), "local param `x` should be offered");
-    assert!(labels.contains(&"helper".to_string()), "top-level `helper` should be offered");
-    assert!(labels.contains(&"Color".to_string()), "the data type should be offered");
-    assert!(labels.contains(&"Red".to_string()), "the constructor `Red` should be offered");
-    assert!(labels.contains(&"putStrLn".to_string()), "a builtin should be offered");
-    assert!(labels.contains(&"case".to_string()), "a keyword should be offered");
+    assert!(
+        labels.contains(&"x".to_string()),
+        "local param `x` should be offered"
+    );
+    assert!(
+        labels.contains(&"helper".to_string()),
+        "top-level `helper` should be offered"
+    );
+    assert!(
+        labels.contains(&"Color".to_string()),
+        "the data type should be offered"
+    );
+    assert!(
+        labels.contains(&"Red".to_string()),
+        "the constructor `Red` should be offered"
+    );
+    assert!(
+        labels.contains(&"putStrLn".to_string()),
+        "a builtin should be offered"
+    );
+    assert!(
+        labels.contains(&"case".to_string()),
+        "a keyword should be offered"
+    );
     // De-duplicated.
     let mut sorted = labels.clone();
     sorted.sort();
@@ -132,7 +172,10 @@ fn completion_offers_scope_toplevel_builtins_and_keywords() {
 
     // Outside any function, a local param isn't in scope.
     let top = completions(src, src.find("main = 0").unwrap());
-    assert!(!top.iter().any(|c| c.label == "x"), "`x` is not in scope at top level of main");
+    assert!(
+        !top.iter().any(|c| c.label == "x"),
+        "`x` is not in scope at top level of main"
+    );
 }
 
 #[test]
@@ -142,7 +185,11 @@ fn find_references_is_scope_aware() {
     let src = "inc :: Int -> Int\ninc n = n + 1\n\nmain :: Int\nmain = inc (inc 0)\n";
     let at_def = src.find("inc ::").unwrap();
     let with_decl = references_of(src, at_def, true);
-    assert_eq!(with_decl.len(), 4, "sig + clause name + two calls: {with_decl:?}");
+    assert_eq!(
+        with_decl.len(),
+        4,
+        "sig + clause name + two calls: {with_decl:?}"
+    );
     let without = references_of(src, at_def, false);
     assert_eq!(without.len(), 3, "excluding the declaration line's name");
 
@@ -151,9 +198,16 @@ fn find_references_is_scope_aware() {
     let param_use = src2.rfind("n + n").unwrap(); // the first `n` in the body
     let refs = references_of(src2, param_use, true);
     // f's clause: the param `n` + two uses = 3, and NOT the top-level `n` (2 more).
-    assert_eq!(refs.len(), 3, "only the local `n` occurrences, not the top-level: {refs:?}");
+    assert_eq!(
+        refs.len(),
+        3,
+        "only the local `n` occurrences, not the top-level: {refs:?}"
+    );
     // All references are on line 4 (f's clause), not line 1 (top-level n).
-    assert!(refs.iter().all(|r| r.start.line == 4), "should stay within f: {refs:?}");
+    assert!(
+        refs.iter().all(|r| r.start.line == 4),
+        "should stay within f: {refs:?}"
+    );
 }
 
 #[test]
@@ -164,13 +218,19 @@ fn positions_are_utf16_code_units() {
     let src = "g :: Int\ng = 0\n\nmain :: Int\nmain = id \"café😀\" g\n";
     let at = src.find("g ::").unwrap();
     let refs = references_of(src, at, true);
-    let use_ref = refs.iter().find(|r| r.start.line == 4).expect("`g` is used on line 4");
+    let use_ref = refs
+        .iter()
+        .find(|r| r.start.line == 4)
+        .expect("`g` is used on line 4");
 
     let line = "main = id \"café😀\" g";
     let g_byte = line.rfind('g').unwrap();
     let prefix = line.get(..g_byte).unwrap_or("");
     let expected_u16 = u32::try_from(prefix.encode_utf16().count()).unwrap_or(0);
-    assert_eq!(use_ref.start.character, expected_u16, "reference column must be UTF-16");
+    assert_eq!(
+        use_ref.start.character, expected_u16,
+        "reference column must be UTF-16"
+    );
     // The test only means something if the UTF-16 column differs from the byte column.
     assert!(
         (expected_u16 as usize) < g_byte,
@@ -199,7 +259,10 @@ fn signature_help_tracks_the_active_parameter() {
     let a_src = "import B\n\nmain :: Int\nmain = twice 5\n";
     let mut ws2: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     ws2.insert(a.to_string(), a_src.to_string());
-    ws2.insert(b.to_string(), "twice :: Int -> Int\ntwice n = n\n".to_string());
+    ws2.insert(
+        b.to_string(),
+        "twice :: Int -> Int\ntwice n = n\n".to_string(),
+    );
     let at = a_src.rfind("twice 5").unwrap() + 6;
     let sh = signature_help(a, a_src, at, &ws2).expect("cross-file sig help");
     assert_eq!(sh.signatures[0].label, "twice :: Int -> Int");
@@ -223,7 +286,10 @@ fn signature_help_covers_constructors_and_builtins() {
     let map_src = "main :: List Int\nmain = map f Nil\n";
     let at = map_src.find("map f").unwrap() + 4;
     let sh = signature_help("t.axi", map_src, at, &ws).expect("builtin sig help");
-    assert_eq!(sh.signatures[0].label, "map :: (a -> b) -> List a -> List b");
+    assert_eq!(
+        sh.signatures[0].label,
+        "map :: (a -> b) -> List a -> List b"
+    );
     assert_eq!(sh.signatures[0].parameters.as_ref().unwrap().len(), 2);
 }
 
@@ -234,9 +300,18 @@ fn completion_survives_a_half_typed_body() {
     // are still offered — the case that used to degrade to top-level + builtins only.
     let src = "helper :: Int -> Int -> Int\nhelper x y = x + \n\nmain :: Int\nmain = 0\n";
     let at_hole = src.find("x + ").unwrap() + 4; // right after the hole
-    let labels: Vec<String> = completions(src, at_hole).into_iter().map(|c| c.label).collect();
-    assert!(labels.contains(&"x".to_string()), "param `x` offered mid-edit: {labels:?}");
-    assert!(labels.contains(&"y".to_string()), "param `y` offered mid-edit: {labels:?}");
+    let labels: Vec<String> = completions(src, at_hole)
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    assert!(
+        labels.contains(&"x".to_string()),
+        "param `x` offered mid-edit: {labels:?}"
+    );
+    assert!(
+        labels.contains(&"y".to_string()),
+        "param `y` offered mid-edit: {labels:?}"
+    );
     // Top-level and builtins are still there too.
     assert!(labels.contains(&"helper".to_string()));
     assert!(labels.contains(&"putStrLn".to_string()));
@@ -246,8 +321,14 @@ fn completion_survives_a_half_typed_body() {
     let bad = "helper :: Int -> Int\nhelper x = x @ \n\nmain :: Int\nmain = 0\n";
     let at = bad.find("x @").unwrap();
     let l2: Vec<String> = completions(bad, at).into_iter().map(|c| c.label).collect();
-    assert!(l2.contains(&"x".to_string()), "param survives an illegal char: {l2:?}");
-    assert!(l2.contains(&"helper".to_string()), "top-level survives an illegal char");
+    assert!(
+        l2.contains(&"x".to_string()),
+        "param survives an illegal char: {l2:?}"
+    );
+    assert!(
+        l2.contains(&"helper".to_string()),
+        "top-level survives an illegal char"
+    );
 }
 
 #[test]
@@ -279,12 +360,18 @@ fn cross_file_definition_and_references_follow_imports() {
     let x_off = b_src.rfind('x').unwrap();
     let xrefs = references_at(b, b_src, x_off, &ws, true);
     assert!(!xrefs.is_empty(), "the local `x` resolves to itself");
-    assert!(xrefs.iter().all(|(p, _)| p == b), "local `x` stays in B: {xrefs:?}");
+    assert!(
+        xrefs.iter().all(|(p, _)| p == b),
+        "local `x` stays in B: {xrefs:?}"
+    );
 
     // With an empty workspace, cross-file resolution degrades to single-file: the use in
     // A resolves to nothing (helper is not defined in A).
     let empty = std::collections::HashMap::new();
-    assert!(definition_at(a, a_src, use_off, &empty).is_none(), "no B → no cross-file def");
+    assert!(
+        definition_at(a, a_src, use_off, &empty).is_none(),
+        "no B → no cross-file def"
+    );
 }
 
 #[test]
@@ -297,7 +384,11 @@ fn ownership_hints_draw_the_auto_drop_topology() {
         .iter()
         .find(|h| h.label.contains("drop b"))
         .unwrap_or_else(|| panic!("expected an Auto-Drop hint for `b`: {hints:?}"));
-    assert!(drop_b.label.contains("Buf"), "hint names the type: {}", drop_b.label);
+    assert!(
+        drop_b.label.contains("Buf"),
+        "hint names the type: {}",
+        drop_b.label
+    );
     assert!(
         drop_b.tooltip.contains("Auto-Drop"),
         "tooltip explains the drop: {}",
@@ -306,7 +397,10 @@ fn ownership_hints_draw_the_auto_drop_topology() {
 
     // A program with no linear resources produces no ownership hints.
     let plain = "main :: Int\nmain = 1 + 2\n";
-    assert!(ownership_hints("test.axi", plain).is_empty(), "no resources → no hints");
+    assert!(
+        ownership_hints("test.axi", plain).is_empty(),
+        "no resources → no hints"
+    );
 
     // A syntactically broken buffer degrades to no hints rather than panicking.
     assert!(ownership_hints("test.axi", "main = = =").is_empty());

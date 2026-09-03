@@ -71,9 +71,17 @@ const L1_BUILTINS: &[&str] = &[
 
 const L2_BUILTINS: &[&str] = &[
     // channels / session types (§6)
-    "send", "recv", "close", "newChannel", "select", "offer", "cancel",
+    "send",
+    "recv",
+    "close",
+    "newChannel",
+    "select",
+    "offer",
+    "cancel",
     // structured-concurrency nursery (§9)
-    "bound", "spawn", "parMap",
+    "bound",
+    "spawn",
+    "parMap",
 ];
 
 const L3_BUILTINS: &[&str] = &[
@@ -91,7 +99,9 @@ const L3_BUILTINS: &[&str] = &[
 ];
 
 // Level-defining type heads that may appear in a signature.
-const L1_TYPES: &[&str] = &["Buffer", "Array", "I8Array", "I32Array", "Arena", "Cell", "Mark"];
+const L1_TYPES: &[&str] = &[
+    "Buffer", "Array", "I8Array", "I32Array", "Arena", "Cell", "Mark",
+];
 const L2_TYPES: &[&str] = &["Ep", "Endpoint", "Chan", "Bound"];
 const L3_TYPES: &[&str] = &["Trit", "TritVec"];
 

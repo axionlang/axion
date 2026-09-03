@@ -95,12 +95,12 @@ pub enum SyntaxKind {
 }
 
 use SyntaxKind::{
-    APP_EXPR, BINOP_EXPR, CASE_EXPR, COMMENT, CON_PAT, CONID, DECL, ERROR, IDENT, IF_EXPR, KEYWORD,
-    BIND_STMT, CLASS_DECL, CONSTRAINT, CON_DECL, DATA_DECL, DO_EXPR, EXPR_STMT, FIELD, FOREIGN_DECL,
-    FUN_CLAUSE, GUARD, IMPORT_DECL, INSTANCE_DECL, LAMBDA_EXPR, LET_EXPR, LIST_EXPR, LITERAL,
-    LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, PAREN_EXPR, PUNCT,
-    RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON,
-    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT, OPER, FIXITY_DECL,
+    APP_EXPR, BIND_STMT, BINOP_EXPR, CASE_EXPR, CLASS_DECL, COMMENT, CONID, CONSTRAINT, CON_DECL,
+    CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL, FOREIGN_DECL,
+    FUN_CLAUSE, GUARD, IDENT, IF_EXPR, IMPORT_DECL, INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR,
+    LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER,
+    PAREN_EXPR, PUNCT, RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW,
+    TYPE_CON, TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -266,9 +266,10 @@ fn expr_outline(e: &Expr) -> Outline {
             (CASE_EXPR, kids)
         }
         Expr::Tuple(es, _) => (TUPLE_EXPR, es.iter().map(expr_outline).collect()),
-        Expr::RecordCon(_, fields, _) => {
-            (RECORD_EXPR, fields.iter().map(|(_, e)| expr_outline(e)).collect())
-        }
+        Expr::RecordCon(_, fields, _) => (
+            RECORD_EXPR,
+            fields.iter().map(|(_, e)| expr_outline(e)).collect(),
+        ),
         Expr::RecordUpd(base, fields, _) => {
             let mut kids = vec![expr_outline(base)];
             kids.extend(fields.iter().map(|(_, e)| expr_outline(e)));
@@ -356,7 +357,11 @@ impl Emitter<'_> {
     fn trivia(&mut self, to: usize) {
         let text = self.src.get(self.cursor..to).unwrap_or("");
         if !text.is_empty() {
-            let kind = if text.contains("--") { COMMENT } else { WHITESPACE };
+            let kind = if text.contains("--") {
+                COMMENT
+            } else {
+                WHITESPACE
+            };
             self.b.token(kind.into(), text);
         }
         self.cursor = to;
@@ -670,7 +675,11 @@ impl ExprParser<'_> {
     fn trivia(&mut self, to: usize) {
         let text = self.src.get(self.cursor..to).unwrap_or("");
         if !text.is_empty() {
-            let kind = if text.contains("--") { COMMENT } else { WHITESPACE };
+            let kind = if text.contains("--") {
+                COMMENT
+            } else {
+                WHITESPACE
+            };
             self.b.token(kind.into(), text);
         }
         self.cursor = to;
@@ -1571,7 +1580,7 @@ fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
     };
     p.b.start_node(MODULE.into());
     p.eat_v(&LTok::VLBrace); // outer module block
-    // `main =` — leaves, not nodes, so the body expression is MODULE's only node child.
+                             // `main =` — leaves, not nodes, so the body expression is MODULE's only node child.
     if matches!(p.cur(), Some(Tok::VarId(n)) if n == "main") {
         p.bump();
     } else {
@@ -1579,8 +1588,10 @@ fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
     }
     p.expect(&Tok::Equals);
     p.expr(); // the body expression
-    // Any remaining REAL token means the subset didn't cover the whole expression.
-    let leftover_real = p.toks[p.pos..].iter().any(|s| matches!(s.tok, LTok::Tok(_)));
+              // Any remaining REAL token means the subset didn't cover the whole expression.
+    let leftover_real = p.toks[p.pos..]
+        .iter()
+        .any(|s| matches!(s.tok, LTok::Tok(_)));
     let full = p.ok && !leftover_real;
     let end = p.src.len();
     p.trivia(end);
@@ -1649,8 +1660,20 @@ fn head_token(node: &SyntaxNode) -> Option<rowan::SyntaxToken<AxionLang>> {
 fn is_expr_kind(k: SyntaxKind) -> bool {
     matches!(
         k,
-        LITERAL_EXPR | NAME_EXPR | APP_EXPR | BINOP_EXPR | IF_EXPR | LAMBDA_EXPR | TUPLE_EXPR
-            | PAREN_EXPR | LET_EXPR | CASE_EXPR | RECORD_EXPR | LIST_EXPR | SECTION_EXPR | DO_EXPR
+        LITERAL_EXPR
+            | NAME_EXPR
+            | APP_EXPR
+            | BINOP_EXPR
+            | IF_EXPR
+            | LAMBDA_EXPR
+            | TUPLE_EXPR
+            | PAREN_EXPR
+            | LET_EXPR
+            | CASE_EXPR
+            | RECORD_EXPR
+            | LIST_EXPR
+            | SECTION_EXPR
+            | DO_EXPR
     )
 }
 
@@ -1778,7 +1801,12 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             if is_range && elems.len() == 2 {
                 // `[a..b]` → `range a b`
                 let mut it = elems.into_iter();
-                Some(app2(Expr::Var("range".into(), sp), it.next()?, it.next()?, sp))
+                Some(app2(
+                    Expr::Var("range".into(), sp),
+                    it.next()?,
+                    it.next()?,
+                    sp,
+                ))
             } else {
                 // `[e1, …]` → `Cons e1 (Cons … Nil)`; `[]` → `Nil`.
                 let mut list = Expr::Con("Nil".into(), sp);
@@ -1884,7 +1912,6 @@ fn lower_stmt(node: &SyntaxNode) -> Option<DoStmt> {
     }
 }
 
-
 /// Lower a CST pattern node to `ast::Pat`.
 fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
     let sp = node_span(node);
@@ -1900,13 +1927,17 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
         }
         CON_PAT => {
             let name = head_token(node)?.text().to_string();
-            let args: Vec<Pat> = node.children().map(|c| lower_pat(&c)).collect::<Option<_>>()?;
+            let args: Vec<Pat> = node
+                .children()
+                .map(|c| lower_pat(&c))
+                .collect::<Option<_>>()?;
             // `parser.rs`: an APPLIED constructor (only produced by `parse_pat`) spans to
             // the next token. A NULLARY constructor spans to the next token only in
             // *pattern* position (a `case` arm or a tuple element, both `parse_pat`); as a
             // clause/lambda parameter or a constructor argument (`parse_apat`) it is just
             // its token.
-            let pattern_pos = matches!(node.parent().map(|p| p.kind()), Some(CASE_EXPR | TUPLE_PAT));
+            let pattern_pos =
+                matches!(node.parent().map(|p| p.kind()), Some(CASE_EXPR | TUPLE_PAT));
             let sp = if args.is_empty() && !pattern_pos {
                 node_span(node)
             } else {
@@ -1935,7 +1966,11 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
 fn zero_spans(e: &mut Expr) {
     let z = (0usize, 0usize);
     match e {
-        Expr::Int(_, s) | Expr::Float(_, s) | Expr::Str(_, s) | Expr::Var(_, s) | Expr::Con(_, s) => {
+        Expr::Int(_, s)
+        | Expr::Float(_, s)
+        | Expr::Str(_, s)
+        | Expr::Var(_, s)
+        | Expr::Con(_, s) => {
             *s = z;
         }
         Expr::App(a, b, s) | Expr::BinOp(_, a, b, s) => {
@@ -2446,7 +2481,9 @@ fn parse_module_cst(src: &str) -> (SyntaxNode, bool) {
     };
     p.b.start_node(MODULE.into());
     p.block(ExprParser::top_decl);
-    let leftover_real = p.toks[p.pos..].iter().any(|s| matches!(s.tok, LTok::Tok(_)));
+    let leftover_real = p.toks[p.pos..]
+        .iter()
+        .any(|s| matches!(s.tok, LTok::Tok(_)));
     // A lex error makes the parse non-`full`, so `module_matches_parser` (the flip's
     // differential gate) still demands a completely clean parse.
     let full = p.ok && !leftover_real && lex_errs.is_empty();

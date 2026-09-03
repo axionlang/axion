@@ -591,7 +591,6 @@ impl RecordInfo {
         self.type_cons.get(ty).map(Vec::as_slice)
     }
 
-
     /// For a concrete tuple mono-key (`tuple$Integer$Integer`) of `arity` elements,
     /// the per-element reclamation of a `%1`-consumed tuple: `None` = no drop (a
     /// scalar/unboxed element); `Some(k)` = a `Term::Drop` with key `k` (`k = None` →
@@ -601,7 +600,12 @@ impl RecordInfo {
     /// bail to the conservative shell-only free (the prior tuple-discard leak).
     pub fn tuple_elem_drops(&self, key: &str, arity: usize) -> Option<Vec<Option<Option<String>>>> {
         let elems = self.split_tuple_key(key, arity)?;
-        Some(elems.iter().map(|el| self.classify_tuple_elem(el)).collect())
+        Some(
+            elems
+                .iter()
+                .map(|el| self.classify_tuple_elem(el))
+                .collect(),
+        )
     }
 
     /// Segments a tuple mono-key (`tuple$List$Integer$Integer`) into its `arity` element sub-keys
@@ -652,9 +656,9 @@ impl RecordInfo {
             "String" => Some(Some("String".into())),   // heap string → axion_str_drop
             _ if el.contains('$') => Some(Some(el.to_string())), // nested container → its mono destructor
             _ if self.needs_deep_drop(el) => Some(Some(el.to_string())), // deep data destructor
-            _ if self.enum_types.contains(el) => None,  // unboxed enum immediate → no drop
+            _ if self.enum_types.contains(el) => None,           // unboxed enum immediate → no drop
             _ if self.type_arity.contains_key(el) => Some(None), // boxed data, no heap → flat free
-            _ => None,                                  // Int/Float/Bool/unknown → no drop
+            _ => None,                                           // Int/Float/Bool/unknown → no drop
         }
     }
 
@@ -735,7 +739,9 @@ impl RecordInfo {
     /// `true` if `ty` is a BOXED `data` type with no owned heap fields — a heap value
     /// reclaimed by a flat `axion_free` (not a scalar, not an unboxed enum, not deep).
     pub fn is_shallow_boxed_data(&self, ty: &str) -> bool {
-        self.type_arity.contains_key(ty) && !self.enum_types.contains(ty) && !self.needs_deep.contains(ty)
+        self.type_arity.contains_key(ty)
+            && !self.enum_types.contains(ty)
+            && !self.needs_deep.contains(ty)
     }
 
     /// The constructor index within its type (its immediate value when unboxed).
@@ -2245,7 +2251,10 @@ fn lifted_lambda_owned(
     for p in pats {
         let Pat::Var(n, sp) = p else { continue };
         // user-lambda inferred type (makecon_tys) takes precedence; else the eta spine type.
-        let Some(t) = makecon_tys.get(sp).or_else(|| spine_ty.get(n.as_str()).copied()) else {
+        let Some(t) = makecon_tys
+            .get(sp)
+            .or_else(|| spine_ty.get(n.as_str()).copied())
+        else {
             continue;
         };
         if let Some(key) = heap_drop_key(t, data_types, parametric_data, mono_seeds) {
@@ -2361,11 +2370,11 @@ fn lower_func(
             NO_SPAN,
         );
         (params, body)
-    } else if f
-        .clauses
-        .iter()
-        .any(|c| c.pats.iter().any(|p| matches!(p, Pat::Con(..) | Pat::Tuple(..))))
-    {
+    } else if f.clauses.iter().any(|c| {
+        c.pats
+            .iter()
+            .any(|p| matches!(p, Pat::Con(..) | Pat::Tuple(..)))
+    }) {
         // multi-clause with a constructor/tuple head pattern: the `if`-chain desugar
         // (`lw.clauses`) dispatches only on Int literals, NOT on Con tags — it would
         // select clause 0 unconditionally (a silent miscompile: `fj Nothing = 0;
@@ -2444,9 +2453,7 @@ fn lower_func(
 /// now-wider function (`addN 10`, `foo 10`) is re-expanded to a closure by `eta_expand`
 /// below — so a deliberate closure factory still yields a closure, just at the use site.
 fn absorb_lambda_caf(mut f: ast::Func) -> ast::Func {
-    if f.clauses.len() != 1
-        || !matches!(f.clauses[0].body, ast::Body::Plain(ast::Expr::Lam(..)))
-    {
+    if f.clauses.len() != 1 || !matches!(f.clauses[0].body, ast::Body::Plain(ast::Expr::Lam(..))) {
         return f;
     }
     let c = &mut f.clauses[0];
@@ -2469,7 +2476,12 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
     // absorb point-free curried lambdas into clause params first (`add = \x -> \y -> …`
     // → `add x y = …`), so the arities below and the whole lowering see a proper
     // multi-parameter function rather than a nullary CAF over an arity-1 closure.
-    let funcs0: Vec<ast::Func> = module.funcs.iter().cloned().map(absorb_lambda_caf).collect();
+    let funcs0: Vec<ast::Func> = module
+        .funcs
+        .iter()
+        .cloned()
+        .map(absorb_lambda_caf)
+        .collect();
     // arity of each callable name: top-level functions (number of patterns), constructors
     // (field count), and the IO builtins that lower to an `Op`.
     let mut arity: HashMap<String, usize> = HashMap::new();
@@ -4036,7 +4048,10 @@ pub fn lower_with(
     // resolves a call's name through the same mangling before looking up here).
     let mut fn_arity: HashMap<String, usize> = HashMap::new();
     for f in &module.funcs {
-        fn_arity.insert(f.name.clone(), f.clauses.first().map_or(0, |c| c.pats.len()));
+        fn_arity.insert(
+            f.name.clone(),
+            f.clauses.first().map_or(0, |c| c.pats.len()),
+        );
         for w in f.clauses.iter().flat_map(|c| &c.wher) {
             let arity = w.clauses.first().map_or(0, |c| c.pats.len());
             fn_arity.insert(format!("{}${}", f.name, w.name), arity);
@@ -4073,8 +4088,11 @@ pub fn lower_with(
                     own.extend(vs);
                 }
             }
-            let mut extra: Vec<String> =
-                union.iter().filter(|n| !own.contains(*n)).cloned().collect();
+            let mut extra: Vec<String> = union
+                .iter()
+                .filter(|n| !own.contains(*n))
+                .cloned()
+                .collect();
             extra.sort();
             where_captures.insert(format!("{}${}", f.name, w.name), extra);
         }
@@ -4360,9 +4378,12 @@ pub fn lower_with(
         .funcs
         .iter()
         .filter_map(|f| {
-            f.sig
-                .as_ref()
-                .map(|s| (f.name.clone(), s.param_types().into_iter().cloned().collect()))
+            f.sig.as_ref().map(|s| {
+                (
+                    f.name.clone(),
+                    s.param_types().into_iter().cloned().collect(),
+                )
+            })
         })
         .collect();
 
@@ -4373,7 +4394,10 @@ pub fn lower_with(
     // Safe: an absent mono destructor routes to a flat free (leak), never a crash,
     // and the scrutinee's deep-vs-shell choice is by escape analysis, not this key.
     for f in &out {
-        let Some(ptys) = param_types.get(&f.name).filter(|p| p.len() == f.params.len()) else {
+        let Some(ptys) = param_types
+            .get(&f.name)
+            .filter(|p| p.len() == f.params.len())
+        else {
             continue;
         };
         let dty = all_dty.entry(f.name.clone()).or_default();
@@ -4397,8 +4421,9 @@ pub fn lower_with(
         // Guard: only when the Core params line up 1:1 with the signature arrows
         // (a captured/synthetic param would otherwise pick the WRONG destructor key
         // for a slot and free a differently-shaped value → heap corruption).
-        let owned: Vec<(String, Option<String>)> = if let Some(ptys) =
-            param_types.get(&f.name).filter(|p| p.len() == f.params.len())
+        let owned: Vec<(String, Option<String>)> = if let Some(ptys) = param_types
+            .get(&f.name)
+            .filter(|p| p.len() == f.params.len())
         {
             let ba_set = borrow_args.get(&f.name);
             let drp = droppable_vars(&f, &borrow_args);
@@ -4416,10 +4441,9 @@ pub fn lower_with(
                     // destructor, or a boxed `Integer`) — NOT a pure enum, whose values
                     // are unboxed immediate tags with no destructor (freeing one corrupts).
                     let is_enum = ty.head_con().is_some_and(|h| recinfo.is_enum_type(h));
-                    let reclaimable = (heap_ty(ty, &data_types)
-                        && mono_key(ty).is_some()
-                        && !is_enum)
-                        || ty.head_con() == Some("Integer");
+                    let reclaimable =
+                        (heap_ty(ty, &data_types) && mono_key(ty).is_some() && !is_enum)
+                            || ty.head_con() == Some("Integer");
                     reclaimable
                         && !ba_set.is_some_and(|s| s.contains(i))
                         && !drp.contains(name.as_str())
@@ -4459,8 +4483,10 @@ pub fn lower_with(
         // escaping case-extracted heap elements (`filter`/`keepBig`) and reclaims them
         // branch-sensitively. A no-op when there is nothing to reclaim.
         {
-            let body =
-                std::mem::replace(&mut f.body, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
+            let body = std::mem::replace(
+                &mut f.body,
+                Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+            );
             f.body = reclaim_cond_escape(body, owned, &borrow_args, &borrow_ret, &recinfo, dty);
         }
         result.push(f);
@@ -4558,7 +4584,11 @@ pub fn lower_with(
         data_seeds,
     ));
     // tuple-owned %1: destructors for tuple types that contain heap elements
-    result.extend(gen_tuple_destructors(&tuple_seeds, &recinfo, &parametric_data));
+    result.extend(gen_tuple_destructors(
+        &tuple_seeds,
+        &recinfo,
+        &parametric_data,
+    ));
     // Phase 2c array mono destructors: scan for parametric ArrayNew ops and
     // generate per-element deep-drop destructors (axion_drop_Array$List$P, etc.)
     {
@@ -4622,7 +4652,6 @@ fn gen_destructors(
     }
     out
 }
-
 
 /// The shared destructor-body shape (generic `gen_destructors` and monomorphized
 /// `gen_mono_destructors` differ only in how they resolve each field's `DropWay`).
@@ -5352,15 +5381,11 @@ impl Op {
             Op::RtCall { func, .. } if func == "axion_tritvec_iota" => Some("TritVec".into()),
             Op::RtCall { func, .. } if func == "axion_array_iota" => Some("Array".into()),
             // I8Array constructors: fresh owned flat blocks, flat-freed like TritVec.
-            Op::RtCall { func, .. }
-                if func == "axion_i8_new" || func == "axion_i8_iota" =>
-            {
+            Op::RtCall { func, .. } if func == "axion_i8_new" || func == "axion_i8_iota" => {
                 Some("I8Array".into())
             }
             // I32Array constructors: likewise flat owned blocks.
-            Op::RtCall { func, .. }
-                if func == "axion_i32_new" || func == "axion_i32_iota" =>
-            {
+            Op::RtCall { func, .. } if func == "axion_i32_new" || func == "axion_i32_iota" => {
                 Some("I32Array".into())
             }
             // §9 parMap returns an owned `List` of the workers' replies — reclaimed by
@@ -5473,7 +5498,11 @@ pub fn atom_is(v: &str, a: &Atom) -> bool {
 fn body_moves_var(v: &str, t: &Term, ba: &BorrowArgs) -> bool {
     fn op_moves_v(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         let e = crate::delta::op_delta_effect(op, ba);
-        e.moves.iter().chain(e.nonstrict.iter()).chain(e.alias.iter()).any(|a| atom_is(v, a))
+        e.moves
+            .iter()
+            .chain(e.nonstrict.iter())
+            .chain(e.alias.iter())
+            .any(|a| atom_is(v, a))
     }
     fn in_rhs(v: &str, rhs: &Rhs, ba: &BorrowArgs) -> bool {
         match rhs {
@@ -5597,9 +5626,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
 
 /// For each constructor, the field indices whose type is the SELF-type (the recursive
 /// spine — e.g. field 1 of `Cons a (List a)`). Built from the module's `data` decls.
-pub fn con_recursive_fields(
-    datas: &[ast::DataDecl],
-) -> HashMap<String, Vec<usize>> {
+pub fn con_recursive_fields(datas: &[ast::DataDecl]) -> HashMap<String, Vec<usize>> {
     let mut out = HashMap::new();
     for d in datas {
         for c in &d.cons {
@@ -5670,7 +5697,9 @@ fn rhs_view(p: &str, rhs: &Rhs, con_rec: &HashMap<String, Vec<usize>>) -> bool {
                 || destructures_and_embeds_recursive(p, e, con_rec)
         }
         Rhs::Case(scrut, arms) if atom_is(p, scrut) => arms.iter().any(|(pat, body)| {
-            let CPat::Con(con, subs) = pat else { return false };
+            let CPat::Con(con, subs) = pat else {
+                return false;
+            };
             con_rec.get(con).is_some_and(|recs| {
                 recs.iter().any(|&r| {
                     // A recursive (spine) field of a borrowed param is a VIEW when it escapes via
@@ -5706,9 +5735,7 @@ fn returns_var_directly(name: &str, t: &Term) -> bool {
         Term::Ret(Rhs::If(_, t, e), _) => {
             returns_var_directly(name, t) || returns_var_directly(name, e)
         }
-        Term::Ret(Rhs::Case(_, arms), _) => {
-            arms.iter().any(|(_, b)| returns_var_directly(name, b))
-        }
+        Term::Ret(Rhs::Case(_, arms), _) => arms.iter().any(|(_, b)| returns_var_directly(name, b)),
         Term::Ret(_, _) => false,
     }
 }
@@ -6388,7 +6415,9 @@ fn cond_elem_key(
 /// discovered as owned (that would double-free — `firstOr`'s deep-dropped tail).
 fn arm_shell_frees_scrut(scrut: &str, t: &Term) -> bool {
     match t {
-        Term::Drop(v, key, _, _, b) => (v == scrut && key.is_none()) || arm_shell_frees_scrut(scrut, b),
+        Term::Drop(v, key, _, _, b) => {
+            (v == scrut && key.is_none()) || arm_shell_frees_scrut(scrut, b)
+        }
         Term::Let(_, _, _, b) => arm_shell_frees_scrut(scrut, b),
         Term::Ret(_, _) => false,
     }
@@ -6438,16 +6467,34 @@ fn reclaim_cond_escape(
             if let Some(key) = alias_key {
                 owned.push((x.clone(), key));
             }
-            Term::Let(x, rhs, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br, recinfo, dty)))
+            Term::Let(
+                x,
+                rhs,
+                sp,
+                Box::new(reclaim_cond_escape(*b, owned, ba, br, recinfo, dty)),
+            )
         }
         Term::Drop(v, k, sk, sp, b) => {
             let owned: Vec<_> = owned.into_iter().filter(|(n, _)| n != &v).collect();
-            Term::Drop(v, k, sk, sp, Box::new(reclaim_cond_escape(*b, owned, ba, br, recinfo, dty)))
+            Term::Drop(
+                v,
+                k,
+                sk,
+                sp,
+                Box::new(reclaim_cond_escape(*b, owned, ba, br, recinfo, dty)),
+            )
         }
         Term::Ret(Rhs::If(c, th, el), sp) => Term::Ret(
             Rhs::If(
                 c,
-                Box::new(reclaim_cond_escape(*th, owned.clone(), ba, br, recinfo, dty)),
+                Box::new(reclaim_cond_escape(
+                    *th,
+                    owned.clone(),
+                    ba,
+                    br,
+                    recinfo,
+                    dty,
+                )),
                 Box::new(reclaim_cond_escape(*el, owned, ba, br, recinfo, dty)),
             ),
             sp,
@@ -6457,7 +6504,9 @@ fn reclaim_cond_escape(
                 Atom::Var(n) => Some(n.clone()),
                 _ => None,
             };
-            let scrut_key = scrut_name.as_deref().and_then(|s| dty.get(s).cloned().flatten());
+            let scrut_key = scrut_name
+                .as_deref()
+                .and_then(|s| dty.get(s).cloned().flatten());
             let arms = arms
                 .into_iter()
                 .map(|(pat, arm)| {
@@ -6494,7 +6543,10 @@ fn reclaim_cond_escape(
                             }
                         }
                     }
-                    (pat, reclaim_cond_escape(arm, owned_arm, ba, br, recinfo, dty))
+                    (
+                        pat,
+                        reclaim_cond_escape(arm, owned_arm, ba, br, recinfo, dty),
+                    )
                 })
                 .collect();
             Term::Ret(Rhs::Case(scrut, arms), sp)
@@ -6674,7 +6726,16 @@ fn collect_update_skips(
         out: &mut HashMap<String, (String, Vec<usize>)>,
     ) {
         match t {
-            Term::Let(v, Rhs::Op(Op::UpdateRecord { base, fields, inplace: false }), _, body) => {
+            Term::Let(
+                v,
+                Rhs::Op(Op::UpdateRecord {
+                    base,
+                    fields,
+                    inplace: false,
+                }),
+                _,
+                body,
+            ) => {
                 if let Some((name0, _)) = fields.first() {
                     if let (Some((_, all_fields)), Some((con, _))) =
                         (recinfo.field(name0), recinfo.named_field_slot(name0))
@@ -6765,10 +6826,16 @@ fn collect_projection_skips(
         acc: &mut HashMap<String, (String, BTreeSet<usize>)>,
     ) {
         match t {
-            Term::Let(d, Rhs::Op(Op::Field { name, rec: Atom::Var(src) }), _, body) => {
-                if drp.contains(src)
-                    && recinfo.named_field_is_heap(name)
-                    && body_moves(d, body, ba)
+            Term::Let(
+                d,
+                Rhs::Op(Op::Field {
+                    name,
+                    rec: Atom::Var(src),
+                }),
+                _,
+                body,
+            ) => {
+                if drp.contains(src) && recinfo.named_field_is_heap(name) && body_moves(d, body, ba)
                 {
                     if let Some((con, slot)) = recinfo.named_field_slot(name) {
                         if let Some(ty) = recinfo.con_type_name(&con) {
@@ -6788,7 +6855,13 @@ fn collect_projection_skips(
             Term::Drop(_, _, _, _, body) => walk(body, recinfo, drp, ba, acc),
             // a projected heap field returned directly IS the move-out (the Elab binds it
             // to a temp and deep-drops `src` before the tail — so `src` must skip it).
-            Term::Ret(Rhs::Op(Op::Field { name, rec: Atom::Var(src) }), _) => {
+            Term::Ret(
+                Rhs::Op(Op::Field {
+                    name,
+                    rec: Atom::Var(src),
+                }),
+                _,
+            ) => {
                 if drp.contains(src) && recinfo.named_field_is_heap(name) {
                     if let Some((con, slot)) = recinfo.named_field_slot(name) {
                         if let Some(ty) = recinfo.con_type_name(&con) {
@@ -6816,7 +6889,9 @@ fn collect_projection_skips(
                 walk(th, recinfo, drp, ba, acc);
                 walk(el, recinfo, drp, ba, acc);
             }
-            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, recinfo, drp, ba, acc)),
+            Rhs::Case(_, arms) => arms
+                .iter()
+                .for_each(|(_, b)| walk(b, recinfo, drp, ba, acc)),
         }
     }
     walk(t, recinfo, drp, ba, &mut acc);
@@ -7045,8 +7120,7 @@ fn returns_param_interior_alias(f: &CoreFn, recinfo: &RecordInfo) -> bool {
                 Rhs::Op(Op::Atom(Atom::Var(v))) => aliases.contains(v),
                 Rhs::Op(_) => false,
                 Rhs::If(_, th, el) => {
-                    walk(th, params, aliases.clone(), recinfo)
-                        || walk(el, params, aliases, recinfo)
+                    walk(th, params, aliases.clone(), recinfo) || walk(el, params, aliases, recinfo)
                 }
                 Rhs::Case(scrut, arms) => arms.iter().any(|(pat, b)| {
                     let mut a = aliases.clone();
@@ -7185,9 +7259,7 @@ fn reads_heap_field(v: &str, t: &Term, recinfo: &RecordInfo) -> bool {
         }
     }
     match t {
-        Term::Let(_, rhs, _, body) => {
-            in_rhs(v, rhs, recinfo) || reads_heap_field(v, body, recinfo)
-        }
+        Term::Let(_, rhs, _, body) => in_rhs(v, rhs, recinfo) || reads_heap_field(v, body, recinfo),
         Term::Drop(_, _, _, _, body) => reads_heap_field(v, body, recinfo),
         Term::Ret(rhs, _) => in_rhs(v, rhs, recinfo),
     }
@@ -7578,8 +7650,7 @@ impl Elab<'_> {
                         {
                             self.drp.insert(n.clone());
                             if !term_mentions_any(&body, &[n.clone()].into_iter().collect()) {
-                                let key =
-                                    self.recinfo.field_drop_slot(con, fi);
+                                let key = self.recinfo.field_drop_slot(con, fi);
                                 unused.push((n.clone(), key));
                             }
                         }
@@ -7652,8 +7723,7 @@ impl Elab<'_> {
                 {
                     for (fi, sp) in subs.iter().enumerate() {
                         if let CPat::Var(n) = sp {
-                            let mentioned =
-                                term_mentions_any(&body, &HashSet::from([n.clone()]));
+                            let mentioned = term_mentions_any(&body, &HashSet::from([n.clone()]));
                             let borrowed_dead = mentioned
                                 && !body_moves_var(n, &body, self.ba)
                                 && !reads_heap_field(n, &body, self.recinfo);
@@ -7705,83 +7775,102 @@ impl Elab<'_> {
                     b = self.tuple_discard_drops(b, subs, s);
                     b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                 } else {
-                let decision = scrut_decision(deep_safe, info);
-                match decision {
-                    ScrutDrop::Remainder { skip } => {
-                        let ty = if let CPat::Con(con, _) = &pat {
-                            Some(con.clone())
-                        } else {
-                            self.dty(s)
-                        };
-                        let sp = term_span(&b);
-                        let skip_vec: Vec<usize> = skip.iter().copied().collect();
-                        if !skip_vec.is_empty() {
-                            if let Some(ty) = &ty {
-                                self.skip_seeds.push((ty.clone(), skip_vec.clone()));
+                    let decision = scrut_decision(deep_safe, info);
+                    match decision {
+                        ScrutDrop::Remainder { skip } => {
+                            let ty = if let CPat::Con(con, _) = &pat {
+                                Some(con.clone())
+                            } else {
+                                self.dty(s)
+                            };
+                            let sp = term_span(&b);
+                            let skip_vec: Vec<usize> = skip.iter().copied().collect();
+                            if !skip_vec.is_empty() {
+                                if let Some(ty) = &ty {
+                                    self.skip_seeds.push((ty.clone(), skip_vec.clone()));
+                                }
+                            }
+                            b = Term::Drop(s.clone(), ty, skip_vec, sp, Box::new(b));
+                        }
+                        ScrutDrop::Deep => {
+                            let ty = self.dty(s);
+                            let mut alias = HashSet::from([s.clone()]);
+                            // only USED heap field bindings start in the alias set;
+                            // unused ones are dead and safe to deep-drop.
+                            alias.extend(mentioned_heap.iter().cloned());
+                            self.collect_payload_aliases(&b, &mut alias);
+                            b = self.place_deep_drop(b, s, &ty, &alias);
+                        }
+                        ScrutDrop::Inline { non_own } => {
+                            if let CPat::Con(con, subs) = &pat {
+                                // Skip every MENTIONED heap field, not only the escaping (`non_own`)
+                                // ones: a mentioned field is either moved out (escapes), reclaimed
+                                // by `go`/the inner case (notion-2, now in `drp`), or a borrowed-
+                                // then-dead conservative leak — dropping it here (before the body
+                                // that USES it) is the `sumV` `UseAfterFree`. Only UNMENTIONED dead
+                                // discards are reclaimed by the scrutinee drop. (Matches `Shallow`.)
+                                let skip: HashSet<usize> =
+                                    non_own.union(&mentioned_slots).copied().collect();
+                                // shell-free the cell FIRST in construction so it runs LAST — a
+                                // wildcard-discarded heap field is reclaimed via `loadraw s+off`,
+                                // which must read `s` while it is still live. Building the shell
+                                // drop innermost puts the loads (and their drops) ahead of it in
+                                // execution order (the `grabBox`/case-extraction-escape UAF).
+                                b = Term::Drop(
+                                    s.clone(),
+                                    None,
+                                    Vec::new(),
+                                    term_span(&b),
+                                    Box::new(b),
+                                );
+                                b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
                             }
                         }
-                        b = Term::Drop(s.clone(), ty, skip_vec, sp, Box::new(b));
-                    }
-                    ScrutDrop::Deep => {
-                        let ty = self.dty(s);
-                        let mut alias = HashSet::from([s.clone()]);
-                        // only USED heap field bindings start in the alias set;
-                        // unused ones are dead and safe to deep-drop.
-                        alias.extend(mentioned_heap.iter().cloned());
-                        self.collect_payload_aliases(&b, &mut alias);
-                        b = self.place_deep_drop(b, s, &ty, &alias);
-                    }
-                    ScrutDrop::Inline { non_own } => {
-                        if let CPat::Con(con, subs) = &pat {
-                            // Skip every MENTIONED heap field, not only the escaping (`non_own`)
-                            // ones: a mentioned field is either moved out (escapes), reclaimed
-                            // by `go`/the inner case (notion-2, now in `drp`), or a borrowed-
-                            // then-dead conservative leak — dropping it here (before the body
-                            // that USES it) is the `sumV` `UseAfterFree`. Only UNMENTIONED dead
-                            // discards are reclaimed by the scrutinee drop. (Matches `Shallow`.)
-                            let skip: HashSet<usize> = non_own.union(&mentioned_slots).copied().collect();
-                            // shell-free the cell FIRST in construction so it runs LAST — a
-                            // wildcard-discarded heap field is reclaimed via `loadraw s+off`,
-                            // which must read `s` while it is still live. Building the shell
-                            // drop innermost puts the loads (and their drops) ahead of it in
-                            // execution order (the `grabBox`/case-extraction-escape UAF).
-                            b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
-                            b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
+                        ScrutDrop::Shallow => {
+                            // Build the alias set (same as `Deep` path): field bindings
+                            // whose heap/poly payload may alias into the arm result.
+                            // Skip those from deep-drop; reclaim all other heap fields.
+                            let mut alias = HashSet::from([s.clone()]);
+                            // only USED heap field bindings start in the alias set;
+                            // unused ones are dead and safe to deep-drop.
+                            alias.extend(mentioned_heap.iter().cloned());
+                            if let CPat::Con(con, subs) = &pat {
+                                self.collect_payload_aliases(&b, &mut alias);
+                                // compute the skip set: field indices whose binding
+                                // name appears in the alias set (the result may
+                                // reference them — must NOT deep-drop).
+                                let skip: HashSet<usize> = subs
+                                    .iter()
+                                    .enumerate()
+                                    .filter_map(|(fi, sp)| {
+                                        if let CPat::Var(n) = sp {
+                                            alias.contains(n).then_some(fi)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                // same ordering as `Inline`: shell-free constructed innermost so
+                                // it runs after any `loadraw s+off` of a wildcard-discarded field.
+                                b = Term::Drop(
+                                    s.clone(),
+                                    None,
+                                    Vec::new(),
+                                    term_span(&b),
+                                    Box::new(b),
+                                );
+                                b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
+                            } else {
+                                b = Term::Drop(
+                                    s.clone(),
+                                    None,
+                                    Vec::new(),
+                                    term_span(&b),
+                                    Box::new(b),
+                                );
+                            }
                         }
                     }
-                    ScrutDrop::Shallow => {
-                        // Build the alias set (same as `Deep` path): field bindings
-                        // whose heap/poly payload may alias into the arm result.
-                        // Skip those from deep-drop; reclaim all other heap fields.
-                        let mut alias = HashSet::from([s.clone()]);
-                        // only USED heap field bindings start in the alias set;
-                        // unused ones are dead and safe to deep-drop.
-                        alias.extend(mentioned_heap.iter().cloned());
-                        if let CPat::Con(con, subs) = &pat {
-                            self.collect_payload_aliases(&b, &mut alias);
-                            // compute the skip set: field indices whose binding
-                            // name appears in the alias set (the result may
-                            // reference them — must NOT deep-drop).
-                            let skip: HashSet<usize> = subs
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(fi, sp)| {
-                                    if let CPat::Var(n) = sp {
-                                        alias.contains(n).then_some(fi)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            // same ordering as `Inline`: shell-free constructed innermost so
-                            // it runs after any `loadraw s+off` of a wildcard-discarded field.
-                            b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
-                            b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
-                        } else {
-                            b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
-                        }
-                    }
-                }
                 }
             }
 
@@ -7807,7 +7896,9 @@ impl Elab<'_> {
         // recursive SPINE of a parametric container resolve to the scrutinee's mono key.
         if let Some(k) = self.recinfo.field_drop_slot(con, fi) {
             return Some(match self.dty(scrut) {
-                Some(sk) if sk.contains('$') && sk.split('$').next() == Some(k.as_str()) => Some(sk),
+                Some(sk) if sk.contains('$') && sk.split('$').next() == Some(k.as_str()) => {
+                    Some(sk)
+                }
                 _ => Some(k),
             });
         }
@@ -7836,7 +7927,9 @@ impl Elab<'_> {
         let mentioned: HashSet<String> = subs
             .iter()
             .filter_map(|p| match p {
-                CPat::Var(n) if term_mentions_any(&b, &HashSet::from([n.clone()])) => Some(n.clone()),
+                CPat::Var(n) if term_mentions_any(&b, &HashSet::from([n.clone()])) => {
+                    Some(n.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -7889,10 +7982,13 @@ impl Elab<'_> {
                 // → a flat `free` on a boxed Integer/String or a scalar = BAD FREE. `Integer`/
                 // `String` route to their tagged reclaimer; a scalar/unresolved poly field is
                 // SKIPPED (not flat-freed — a scalar is not heap).
-                match elab.dty(s).and_then(|sk| elab.recinfo.poly_field_elem_key(con, fi, &sk)) {
-                    None => continue,             // scalar / unresolved → nothing to free
-                    Some(None) => None,           // shallow heap → flat `free`
-                    Some(Some(k)) => Some(k),     // Integer/String/nested/deep → keyed reclaimer
+                match elab
+                    .dty(s)
+                    .and_then(|sk| elab.recinfo.poly_field_elem_key(con, fi, &sk))
+                {
+                    None => continue,         // scalar / unresolved → nothing to free
+                    Some(None) => None,       // shallow heap → flat `free`
+                    Some(Some(k)) => Some(k), // Integer/String/nested/deep → keyed reclaimer
                 }
             };
             let off = elab.recinfo.field_offset(con, fi);

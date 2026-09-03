@@ -52,12 +52,24 @@ fn cst_round_trips_comments_and_layout() {
 fn cst_is_grammar_structured() {
     // Stage 2: expressions and patterns are nested nodes, not a flat token run.
     let cst = build_cst("f x = x + 1\n");
-    assert!(has_kind(&cst, SyntaxKind::VAR_PAT), "the parameter `x` should be a VAR_PAT");
-    assert!(has_kind(&cst, SyntaxKind::BINOP_EXPR), "`x + 1` should be a BINOP_EXPR");
-    assert!(has_kind(&cst, SyntaxKind::LITERAL_EXPR), "`1` should be a LITERAL_EXPR");
+    assert!(
+        has_kind(&cst, SyntaxKind::VAR_PAT),
+        "the parameter `x` should be a VAR_PAT"
+    );
+    assert!(
+        has_kind(&cst, SyntaxKind::BINOP_EXPR),
+        "`x + 1` should be a BINOP_EXPR"
+    );
+    assert!(
+        has_kind(&cst, SyntaxKind::LITERAL_EXPR),
+        "`1` should be a LITERAL_EXPR"
+    );
 
     let cst = build_cst("g y = if y then A else B\n");
-    assert!(has_kind(&cst, SyntaxKind::IF_EXPR), "should have an IF_EXPR");
+    assert!(
+        has_kind(&cst, SyntaxKind::IF_EXPR),
+        "should have an IF_EXPR"
+    );
 }
 
 #[test]
@@ -65,13 +77,19 @@ fn broken_declaration_becomes_an_error_node_but_siblings_survive() {
     // A malformed declaration is wrapped in an ERROR node; a valid sibling still gets
     // its grammar structure — CST-level resilience.
     let cst = build_cst("broken = = =\n\ngood :: Int\ngood = h 1\n");
-    assert!(has_kind(&cst, SyntaxKind::ERROR), "the broken decl should be an ERROR node");
+    assert!(
+        has_kind(&cst, SyntaxKind::ERROR),
+        "the broken decl should be an ERROR node"
+    );
     assert!(
         has_kind(&cst, SyntaxKind::APP_EXPR),
         "the valid sibling `h 1` should still be a structured APP_EXPR"
     );
     // And it still round-trips.
-    assert_eq!(cst.text().to_string(), "broken = = =\n\ngood :: Int\ngood = h 1\n");
+    assert_eq!(
+        cst.text().to_string(),
+        "broken = = =\n\ngood :: Int\ngood = h 1\n"
+    );
 }
 
 #[test]
@@ -82,7 +100,10 @@ fn token_driven_parser_recovers_within_a_declaration() {
     let src = "helper x y = x + \n\n= = =\n\nmain z = z\n";
     let cst = parse_recover(src);
     assert_eq!(cst.text().to_string(), src, "recovery must stay lossless");
-    assert!(has_kind(&cst, SyntaxKind::ERROR), "the `= = =` garbage becomes an ERROR node");
+    assert!(
+        has_kind(&cst, SyntaxKind::ERROR),
+        "the `= = =` garbage becomes an ERROR node"
+    );
     // `helper`'s params survive even though its body has a hole.
     assert!(
         has_kind(&cst, SyntaxKind::VAR_PAT),
@@ -92,8 +113,14 @@ fn token_driven_parser_recovers_within_a_declaration() {
     // The binders in scope inside `helper`'s (broken) body: the function + its params.
     let at_hole = src.find("x + ").unwrap() + 4;
     let binders = binders_in_decl(&cst, at_hole);
-    assert!(binders.contains(&"x".to_string()), "param x survives: {binders:?}");
-    assert!(binders.contains(&"y".to_string()), "param y survives: {binders:?}");
+    assert!(
+        binders.contains(&"x".to_string()),
+        "param x survives: {binders:?}"
+    );
+    assert!(
+        binders.contains(&"y".to_string()),
+        "param y survives: {binders:?}"
+    );
 
     // The valid sibling after the garbage still parses — its param `z` is a binder.
     let at_z = src.rfind('z').unwrap();
@@ -111,15 +138,25 @@ fn a_stray_illegal_character_does_not_blank_the_cst() {
     // editor no longer goes dark on one bad keystroke.
     let src = "helper :: Int\nhelper = x @ 1\n\nmain :: Int\nmain = helper\n";
     let cst = build_cst(src);
-    assert_eq!(cst.text().to_string(), src, "the illegal char survives in trivia (lossless)");
+    assert_eq!(
+        cst.text().to_string(),
+        src,
+        "the illegal char survives in trivia (lossless)"
+    );
     // Both declarations are still present (not a single blank MODULE).
     let decls = cst
         .children()
         .filter(|n| matches!(n.kind(), SyntaxKind::DECL | SyntaxKind::ERROR))
         .count();
-    assert!(decls >= 4, "sig+clause for helper and main all survive: {decls}");
+    assert!(
+        decls >= 4,
+        "sig+clause for helper and main all survive: {decls}"
+    );
     // The names are still findable across the illegal character.
-    assert!(document_symbols(&cst).iter().any(|(n, _)| n == "main"), "main still named");
+    assert!(
+        document_symbols(&cst).iter().any(|(n, _)| n == "main"),
+        "main still named"
+    );
 }
 
 #[test]
@@ -304,7 +341,10 @@ fn token_driven_module_spans_are_byte_exact_over_all_fixtures() {
             let src = std::fs::read_to_string(&path).unwrap();
             checked += 1;
             if let Some(diff) = first_span_mismatch(&src) {
-                failures.push(format!("{}: {diff}", path.file_name().unwrap().to_string_lossy()));
+                failures.push(format!(
+                    "{}: {diff}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
             }
         }
     }
@@ -323,7 +363,10 @@ fn subset_boundary_is_honest() {
     // (Stage 3f: the module parser). A signature construct isn't a valid expression,
     // so it stays out of the expression subset.
     for e in ["x :: Int", "\\x -> y where y = x"] {
-        assert!(!expr_matches_parser(e), "unexpectedly claimed support for: {e}");
+        assert!(
+            !expr_matches_parser(e),
+            "unexpectedly claimed support for: {e}"
+        );
     }
 }
 
@@ -336,10 +379,16 @@ fn document_symbols_lists_top_level_declarations() {
         .into_iter()
         .map(|(n, _)| n)
         .collect();
-    assert!(syms.contains(&"f".to_string()), "expected `f`, got {syms:?}");
+    assert!(
+        syms.contains(&"f".to_string()),
+        "expected `f`, got {syms:?}"
+    );
     assert!(
         syms.contains(&"data".to_string()) || syms.contains(&"Color".to_string()),
         "expected the data declaration, got {syms:?}"
     );
-    assert!(syms.contains(&"main".to_string()), "expected `main`, got {syms:?}");
+    assert!(
+        syms.contains(&"main".to_string()),
+        "expected `main`, got {syms:?}"
+    );
 }

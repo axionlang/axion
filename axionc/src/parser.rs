@@ -43,7 +43,10 @@ pub fn op_fixity(op: &str, user: &FixityTable) -> (u8, Assoc) {
         ":" | "++" => (5, Assoc::Right),
         "==" | "<" | ">" | "==." | "<." | ">." => (4, Assoc::Left),
         _ => user.get(op).copied().unwrap_or_else(|| {
-            let symbolic = op.chars().next().is_some_and(|c| !c.is_alphabetic() && c != '_');
+            let symbolic = op
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_alphabetic() && c != '_');
             if symbolic {
                 (9, Assoc::Left)
             } else {
@@ -891,10 +894,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(Pat::Int(n, (s, e)))
             }
-            Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Big(_)))) => {
-                Err(self.syntax_err("an integer within Int (a literal exceeding Int \
-                                     can't appear in a pattern — use a guard)"))
-            }
+            Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Big(_)))) => Err(self.syntax_err(
+                "an integer within Int (a literal exceeding Int \
+                                     can't appear in a pattern — use a guard)",
+            )),
             Some(LTok::Tok(Tok::VarId(name))) => {
                 let name = name.clone();
                 self.pos += 1;
@@ -1086,7 +1089,11 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.pos += width;
-            let next_min = if assoc == Assoc::Right { prec } else { prec + 1 };
+            let next_min = if assoc == Assoc::Right {
+                prec
+            } else {
+                prec + 1
+            };
             let rhs = self.parse_ops(next_min)?;
             let sp = (lhs.span().0, rhs.span().1);
             lhs = make_binop(op, lhs, rhs, sp);

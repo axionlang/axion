@@ -610,7 +610,9 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
                 #[cfg(not(feature = "native"))]
                 {
                     let _ = &args;
-                    Err(format!("foreign function '{name}' is not available in the browser"))
+                    Err(format!(
+                        "foreign function '{name}' is not available in the browser"
+                    ))
                 }
             } else {
                 Ok(Value::Foreign { name, arity, args })
@@ -1038,7 +1040,9 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("showFloat", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
         // Integer (§ Listing 1.4): construct from an Int, show, convert back.
         ("fromInt", [Value::Int(n)]) => Ok(Value::Integer(crate::bigint::BigInt::from_i64(*n))),
-        ("bignumFromStr", [Value::Str(s)]) => Ok(Value::Integer(crate::bigint::BigInt::from_str(s))),
+        ("bignumFromStr", [Value::Str(s)]) => {
+            Ok(Value::Integer(crate::bigint::BigInt::from_str(s)))
+        }
         ("showInteger", [Value::Integer(n)]) => Ok(Value::Str(n.to_string())),
         ("divInteger", [Value::Integer(a), Value::Integer(b)]) => a
             .divmod(b)
@@ -1054,19 +1058,21 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("strLen", [Value::Str(s)]) => Ok(Value::Int(s.len() as i64)),
         ("charAt", [Value::Int(i), Value::Str(s)]) => {
             let b = s.as_bytes();
-            Ok(Value::Int(
-                if *i < 0 || *i as usize >= b.len() {
-                    -1
-                } else {
-                    i64::from(b[*i as usize])
-                },
-            ))
+            Ok(Value::Int(if *i < 0 || *i as usize >= b.len() {
+                -1
+            } else {
+                i64::from(b[*i as usize])
+            }))
         }
         ("substr", [Value::Int(start), Value::Int(len), Value::Str(s)]) => {
             let b = s.as_bytes();
             let start = (*start).clamp(0, b.len() as i64) as usize;
             let avail = b.len() - start;
-            let take = if *len < 0 { 0 } else { (*len as usize).min(avail) };
+            let take = if *len < 0 {
+                0
+            } else {
+                (*len as usize).min(avail)
+            };
             Ok(Value::Str(
                 String::from_utf8_lossy(&b[start..start + take]).into_owned(),
             ))

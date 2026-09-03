@@ -63,10 +63,21 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             // documented conservative class). A leak in ordinary code would be a gate-worthy
             // false positive (the leak analysis is precise, cross-checked by scripts/
             // sanitize.sh). `Leak: `var` in `func` @span`.
-            for l in stdout.lines().filter(|l| l.trim_start().starts_with("Leak:")) {
-                let func = l.split(" in `").nth(1).and_then(|s| s.split('`').next()).unwrap_or("");
+            for l in stdout
+                .lines()
+                .filter(|l| l.trim_start().starts_with("Leak:"))
+            {
+                let func = l
+                    .split(" in `")
+                    .nth(1)
+                    .and_then(|s| s.split('`').next())
+                    .unwrap_or("");
                 if !func.ends_with("$step") {
-                    leak_fps.push(format!("{}: {}", path.file_name().unwrap().to_string_lossy(), l.trim()));
+                    leak_fps.push(format!(
+                        "{}: {}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        l.trim()
+                    ));
                 }
             }
         }
@@ -109,7 +120,10 @@ fn leak_gate_whitelists_synthetic_worker() {
         !combined.contains("AX0911"),
         "the leak gate must whitelist the synthetic worker's leak, got:\n{combined}"
     );
-    assert!(out.status.success(), "session_parmap_integer should still compile+run:\n{combined}");
+    assert!(
+        out.status.success(),
+        "session_parmap_integer should still compile+run:\n{combined}"
+    );
 }
 
 /// Regions/lifetimes: a borrow-returning function (`grab w = inner w`, an interior heap
@@ -183,7 +197,10 @@ fn escaping_local_field_is_moved_out_not_rejected() {
 #[test]
 fn case_extracted_local_field_escape_is_reclaimed_in_order() {
     for fixture in ["case_extract_escape", "tuple_extract_escape"] {
-        let path = format!("{}/tests/fixtures/{fixture}.axi", env!("CARGO_MANIFEST_DIR"));
+        let path = format!(
+            "{}/tests/fixtures/{fixture}.axi",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
         let vstdout = String::from_utf8_lossy(&verify.stdout);
         assert!(
@@ -287,7 +304,10 @@ fn lambda_closure_over_heap_specializes_not_rejected() {
 /// backend agrees (= 41), pinning the fix against a return to the closure over-application.
 #[test]
 fn curried_caf_applied_over_arity_agrees_across_backends() {
-    let path = format!("{}/tests/fixtures/curried_caf.axi", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/tests/fixtures/curried_caf.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
     for backend in ["interp", "cranelift", "llvm"] {
         let run = axionc()
             .args(["run", "--backend", backend, &path])
@@ -410,7 +430,10 @@ fn capturing_lambda_closure_over_heap_specializes_not_rejected() {
 /// (= 60), pinning the general fix (not just the nullary-CAF case).
 #[test]
 fn curried_partial_applied_over_arity_agrees_across_backends() {
-    let path = format!("{}/tests/fixtures/curried_partial.axi", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/tests/fixtures/curried_partial.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
     for backend in ["interp", "cranelift", "llvm"] {
         let run = axionc()
             .args(["run", "--backend", backend, &path])

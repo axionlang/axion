@@ -669,68 +669,68 @@ impl Infer<'_> {
     /// were checked (all of them for [`infer`], one for a per-decl partial).
     fn finish(&mut self, module: &Module) -> Mono {
         let inf = self;
-    // Phase 1b: resolve each integer literal. If context unified it to `Integer`,
-    // mark it for the `fromInt` rewrite; otherwise unify it with `Int` — this both
-    // defaults an unconstrained literal and re-raises the original error if a literal
-    // was forced to a non-`Int` type (e.g. `Int` vs `Float`).
-    let lit_vars = std::mem::take(&mut inf.int_lit_vars);
-    let mut integer_lits: std::collections::HashSet<Span> = std::collections::HashSet::new();
-    for (span, v) in lit_vars {
-        if matches!(inf.apply(&v), Ty::Con(ref n, _) if n == "Integer") {
-            integer_lits.insert(span);
-        } else {
-            inf.unify(&v, &Ty::Con("Int".into(), vec![]), span);
+        // Phase 1b: resolve each integer literal. If context unified it to `Integer`,
+        // mark it for the `fromInt` rewrite; otherwise unify it with `Int` — this both
+        // defaults an unconstrained literal and re-raises the original error if a literal
+        // was forced to a non-`Int` type (e.g. `Int` vs `Float`).
+        let lit_vars = std::mem::take(&mut inf.int_lit_vars);
+        let mut integer_lits: std::collections::HashSet<Span> = std::collections::HashSet::new();
+        for (span, v) in lit_vars {
+            if matches!(inf.apply(&v), Ty::Con(ref n, _) if n == "Integer") {
+                integer_lits.insert(span);
+            } else {
+                inf.unify(&v, &Ty::Con("Int".into(), vec![]), span);
+            }
         }
-    }
-    inf.check_exhaustiveness();
-    let mut mono = inf.discharge_obligations(module);
-    mono.integer_lits = integer_lits;
-    // Phase B (generic-owning corner): the owning-generic specializations
-    // (`dropList$P`), merged with the typeclass ones.
-    let owning = inf.discharge_owning();
-    mono.resolutions.extend(owning.resolutions);
-    mono.specs.extend(owning.specs);
-    // Phase 4: resolve + convert constructor return types before passing on
-    let con_tys = std::mem::take(&mut inf.con_ret_tys);
-    mono.makecon_tys = con_tys
-        .into_iter()
-        .filter_map(|(sp, ty)| {
+        inf.check_exhaustiveness();
+        let mut mono = inf.discharge_obligations(module);
+        mono.integer_lits = integer_lits;
+        // Phase B (generic-owning corner): the owning-generic specializations
+        // (`dropList$P`), merged with the typeclass ones.
+        let owning = inf.discharge_owning();
+        mono.resolutions.extend(owning.resolutions);
+        mono.specs.extend(owning.specs);
+        // Phase 4: resolve + convert constructor return types before passing on
+        let con_tys = std::mem::take(&mut inf.con_ret_tys);
+        mono.makecon_tys = con_tys
+            .into_iter()
+            .filter_map(|(sp, ty)| {
+                let resolved = inf.apply(&ty);
+                ty_to_ast(&resolved).map(|ast| (sp, ast))
+            })
+            .collect();
+        // Phase 2c array: resolve + convert `newArray` return types for mono
+        // destructor generation (Array$List$P, etc.)
+        let array_tys = std::mem::take(&mut inf.array_ret_tys);
+        mono.array_tys = array_tys
+            .into_iter()
+            .filter_map(|(sp, ty)| {
+                let resolved = inf.apply(&ty);
+                ty_to_ast(&resolved).map(|ast| (sp, ast))
+            })
+            .collect();
+        // Phase 4: merge call-site result types into `makecon_tys` (a shared span→Type
+        // map, already threaded to every backend). Call spans are disjoint from
+        // constructor spans, and the `MakeCon` lowering only looks up constructor spans,
+        // so this is safe and needs no extra plumbing — the lowering reads the same map
+        // for a `CallDirect`'s concrete drop key.
+        let call_tys = std::mem::take(&mut inf.call_ret_tys);
+        for (sp, ty) in call_tys {
             let resolved = inf.apply(&ty);
-            ty_to_ast(&resolved).map(|ast| (sp, ast))
-        })
-        .collect();
-    // Phase 2c array: resolve + convert `newArray` return types for mono
-    // destructor generation (Array$List$P, etc.)
-    let array_tys = std::mem::take(&mut inf.array_ret_tys);
-    mono.array_tys = array_tys
-        .into_iter()
-        .filter_map(|(sp, ty)| {
+            if let Some(ast) = ty_to_ast(&resolved) {
+                mono.makecon_tys.entry(sp).or_insert(ast);
+            }
+        }
+        // Closure-linearity: merge USER-lambda param types (keyed by the param's `Pat::Var`
+        // span, disjoint from the above). Only CONCRETE types survive `ty_to_ast` — a param
+        // that stays a bare type variable is skipped (no static drop key; Phase D residual).
+        let lam_tys = std::mem::take(&mut inf.lam_param_tys);
+        for (sp, ty) in lam_tys {
             let resolved = inf.apply(&ty);
-            ty_to_ast(&resolved).map(|ast| (sp, ast))
-        })
-        .collect();
-    // Phase 4: merge call-site result types into `makecon_tys` (a shared span→Type
-    // map, already threaded to every backend). Call spans are disjoint from
-    // constructor spans, and the `MakeCon` lowering only looks up constructor spans,
-    // so this is safe and needs no extra plumbing — the lowering reads the same map
-    // for a `CallDirect`'s concrete drop key.
-    let call_tys = std::mem::take(&mut inf.call_ret_tys);
-    for (sp, ty) in call_tys {
-        let resolved = inf.apply(&ty);
-        if let Some(ast) = ty_to_ast(&resolved) {
-            mono.makecon_tys.entry(sp).or_insert(ast);
+            if let Some(ast) = ty_to_ast(&resolved) {
+                mono.makecon_tys.entry(sp).or_insert(ast);
+            }
         }
-    }
-    // Closure-linearity: merge USER-lambda param types (keyed by the param's `Pat::Var`
-    // span, disjoint from the above). Only CONCRETE types survive `ty_to_ast` — a param
-    // that stays a bare type variable is skipped (no static drop key; Phase D residual).
-    let lam_tys = std::mem::take(&mut inf.lam_param_tys);
-    for (sp, ty) in lam_tys {
-        let resolved = inf.apply(&ty);
-        if let Some(ast) = ty_to_ast(&resolved) {
-            mono.makecon_tys.entry(sp).or_insert(ast);
-        }
-    }
         mono
     }
 }
@@ -1001,11 +1001,11 @@ fn class_field_method(class: &str) -> &'static str {
 /// stay out of the loop's borrows. Tuples are `Show`-only (no tuple Eq/Ord).
 #[derive(Default)]
 struct SynthNeeds {
-    tuples: Vec<Vec<Type>>,                    // tuple shapes → `show$(…)`
-    datas: Vec<(String, String, Vec<Type>)>,   // (class, data, args) → `<m>$Name$…`
+    tuples: Vec<Vec<Type>>,                     // tuple shapes → `show$(…)`
+    datas: Vec<(String, String, Vec<Type>)>,    // (class, data, args) → `<m>$Name$…`
     seeds: Vec<(String, Span, String, String)>, // extra method_seeds (parametric parts)
-    key_types: Vec<(String, Type)>,            // extra key_types entries
-    missing: Vec<(String, Type, Span)>,        // (class, field type, span) → AX0404
+    key_types: Vec<(String, Type)>,             // extra key_types entries
+    missing: Vec<(String, Type, Span)>,         // (class, field type, span) → AX0404
 }
 
 impl SynthNeeds {
@@ -1038,7 +1038,8 @@ impl SynthNeeds {
             }
             for m in ["show", "showArg"] {
                 let base = crate::ast::method_impl_name(m, h);
-                self.seeds.push(("$show_synth_seed".into(), (0, 0), base, ak.clone()));
+                self.seeds
+                    .push(("$show_synth_seed".into(), (0, 0), base, ak.clone()));
             }
             self.note_show(arg, decls);
         }
@@ -1058,7 +1059,8 @@ impl SynthNeeds {
         if self.has_data("Show", name, args) {
             return;
         }
-        self.datas.push(("Show".into(), name.to_string(), args.to_vec()));
+        self.datas
+            .push(("Show".into(), name.to_string(), args.to_vec()));
         if let Some(d) = decls.get(name) {
             let sub = data_subst(d, args);
             for con in &d.cons {
@@ -1090,7 +1092,8 @@ impl SynthNeeds {
             return false;
         };
         // optimistic insert so a recursive field re-enters as already-known.
-        self.datas.push((class.into(), name.to_string(), args.to_vec()));
+        self.datas
+            .push((class.into(), name.to_string(), args.to_vec()));
         let sub = data_subst(d, args);
         let mut ok = true;
         for con in &d.cons {
@@ -1101,7 +1104,8 @@ impl SynthNeeds {
             }
         }
         if !ok {
-            self.datas.retain(|(c, n, a)| !(c == class && n == name && a == args));
+            self.datas
+                .retain(|(c, n, a)| !(c == class && n == name && a == args));
         }
         ok
     }
@@ -1142,7 +1146,8 @@ impl SynthNeeds {
                 self.key_types.push((ak.clone(), arg.clone()));
             }
             let base = crate::ast::method_impl_name(m, h);
-            self.seeds.push(("$eqord_synth_seed".into(), (0, 0), base, ak.clone()));
+            self.seeds
+                .push(("$eqord_synth_seed".into(), (0, 0), base, ak.clone()));
             if !self.note_eqord_field(class, arg, span, decls, instances) {
                 ok = false;
             }
@@ -1230,7 +1235,12 @@ fn synth_show_funcs(needs: &SynthNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec
         let sig = arrow(from.clone(), Type::Con("String".into()));
         let k = ty_mangle(&from);
         // a tuple is always parenthesised → show == showArg (same body).
-        out.push(mk(format!("show${k}"), vec!["p"], sig.clone(), case.clone()));
+        out.push(mk(
+            format!("show${k}"),
+            vec!["p"],
+            sig.clone(),
+            case.clone(),
+        ));
         out.push(mk(format!("showArg${k}"), vec!["p"], sig, case));
     }
 
@@ -1245,15 +1255,25 @@ fn synth_show_funcs(needs: &SynthNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec
         let from = applied_ty(name, args);
         // field vars + concrete field types for a constructor, prefixed a/b.
         let con_fields = |con: &ConDecl, prefix: &str| -> (Vec<String>, Vec<Type>) {
-            let vs = (0..con.fields.len()).map(|i| format!("{prefix}{i}")).collect();
+            let vs = (0..con.fields.len())
+                .map(|i| format!("{prefix}{i}"))
+                .collect();
             let ts = con.fields.iter().map(|f| subst_type(&f.ty, &sub)).collect();
             (vs, ts)
         };
         let con_pat = |con: &ConDecl, vs: &[String]| {
-            Pat::Con(con.name.clone(), vs.iter().map(|v| Pat::Var(v.clone(), SP)).collect(), SP)
+            Pat::Con(
+                con.name.clone(),
+                vs.iter().map(|v| Pat::Var(v.clone(), SP)).collect(),
+                SP,
+            )
         };
         let wild_pat = |con: &ConDecl| {
-            Pat::Con(con.name.clone(), con.fields.iter().map(|_| Pat::Wild(SP)).collect(), SP)
+            Pat::Con(
+                con.name.clone(),
+                con.fields.iter().map(|_| Pat::Wild(SP)).collect(),
+                SP,
+            )
         };
 
         match class.as_str() {
@@ -1269,7 +1289,10 @@ fn synth_show_funcs(needs: &SynthNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec
                                 body = strcat(strcat(body, Expr::Str(" ".into(), SP)), call);
                             }
                             if wrap && !con.fields.is_empty() {
-                                body = strcat(strcat(Expr::Str("(".into(), SP), body), Expr::Str(")".into(), SP));
+                                body = strcat(
+                                    strcat(Expr::Str("(".into(), SP), body),
+                                    Expr::Str(")".into(), SP),
+                                );
                             }
                             (con_pat(con, &vs), body)
                         })
@@ -1277,7 +1300,12 @@ fn synth_show_funcs(needs: &SynthNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec
                 };
                 let sig = arrow(from.clone(), Type::Con("String".into()));
                 let mk_case = |wrap: bool| Expr::Case(Box::new(var("x")), arm(wrap), SP);
-                out.push(mk(format!("show${key}"), vec!["x"], sig.clone(), mk_case(false)));
+                out.push(mk(
+                    format!("show${key}"),
+                    vec!["x"],
+                    sig.clone(),
+                    mk_case(false),
+                ));
                 out.push(mk(format!("showArg${key}"), vec!["x"], sig, mk_case(true)));
             }
             // `eq x y = case x of Con a.. -> case y of Con b.. -> eq a0 b0 && …
@@ -1292,18 +1320,27 @@ fn synth_show_funcs(needs: &SynthNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec
                         let (bvs, _) = con_fields(con, "b");
                         let mut conj = Expr::Con("True".into(), SP);
                         for k in (0..con.fields.len()).rev() {
-                            let call = sapp2(&show_impl_name("eq", &ts[k]), var(&avs[k]), var(&bvs[k]));
+                            let call =
+                                sapp2(&show_impl_name("eq", &ts[k]), var(&avs[k]), var(&bvs[k]));
                             conj = if k == con.fields.len() - 1 {
                                 call
                             } else {
-                                Expr::If(Box::new(call), Box::new(conj), Box::new(Expr::Con("False".into(), SP)), SP)
+                                Expr::If(
+                                    Box::new(call),
+                                    Box::new(conj),
+                                    Box::new(Expr::Con("False".into(), SP)),
+                                    SP,
+                                )
                             };
                         }
                         let mut inner = vec![(con_pat(con, &bvs), conj)];
                         if multi {
                             inner.push((Pat::Wild(SP), Expr::Con("False".into(), SP)));
                         }
-                        (con_pat(con, &avs), Expr::Case(Box::new(var("y")), inner, SP))
+                        (
+                            con_pat(con, &avs),
+                            Expr::Case(Box::new(var("y")), inner, SP),
+                        )
                     })
                     .collect();
                 let sig = arrow(from.clone(), arrow(from, Type::Con("Bool".into())));
@@ -1327,18 +1364,36 @@ fn synth_show_funcs(needs: &SynthNeeds, decls: &HashMap<&str, &DataDecl>) -> Vec
                             .collect();
                         let mut lexi = Expr::Con("True".into(), SP);
                         for k in (0..con.fields.len()).rev() {
-                            let le_ab = sapp2(&show_impl_name("le", &ts[k]), var(&avs[k]), var(&bvs[k]));
+                            let le_ab =
+                                sapp2(&show_impl_name("le", &ts[k]), var(&avs[k]), var(&bvs[k]));
                             lexi = if k == con.fields.len() - 1 {
                                 le_ab
                             } else {
-                                let le_ba = sapp2(&show_impl_name("le", &ts[k]), var(&bvs[k]), var(&avs[k]));
-                                let inner_if = Expr::If(Box::new(le_ba), Box::new(lexi), Box::new(Expr::Con("True".into(), SP)), SP);
-                                Expr::If(Box::new(le_ab), Box::new(inner_if), Box::new(Expr::Con("False".into(), SP)), SP)
+                                let le_ba = sapp2(
+                                    &show_impl_name("le", &ts[k]),
+                                    var(&bvs[k]),
+                                    var(&avs[k]),
+                                );
+                                let inner_if = Expr::If(
+                                    Box::new(le_ba),
+                                    Box::new(lexi),
+                                    Box::new(Expr::Con("True".into(), SP)),
+                                    SP,
+                                );
+                                Expr::If(
+                                    Box::new(le_ab),
+                                    Box::new(inner_if),
+                                    Box::new(Expr::Con("False".into(), SP)),
+                                    SP,
+                                )
                             };
                         }
                         inner.push((con_pat(con, &bvs), lexi));
                         inner.push((Pat::Wild(SP), Expr::Con("True".into(), SP)));
-                        (con_pat(con, &avs), Expr::Case(Box::new(var("y")), inner, SP))
+                        (
+                            con_pat(con, &avs),
+                            Expr::Case(Box::new(var("y")), inner, SP),
+                        )
                     })
                     .collect();
                 let sig = arrow(from.clone(), arrow(from, Type::Con("Bool".into())));
@@ -1454,8 +1509,7 @@ fn con_method_target(
     cnames: &[String],
     types: &[Type],
 ) -> Option<(String, String, Vec<Type>)> {
-    let subst: HashMap<String, Type> =
-        cnames.iter().cloned().zip(types.iter().cloned()).collect();
+    let subst: HashMap<String, Type> = cnames.iter().cloned().zip(types.iter().cloned()).collect();
     let ct = subst_type(tast, &subst);
     let (cn, cargs) = flatten_app_ty(&ct);
     let cn = cn?;
@@ -1467,10 +1521,7 @@ fn con_method_target(
 }
 
 /// The constraint-var names of a constrained function, in order (empty if none).
-fn cvar_names(
-    meta: &ConstraintMeta,
-    f: &str,
-) -> Vec<String> {
+fn cvar_names(meta: &ConstraintMeta, f: &str) -> Vec<String> {
     meta.get(f)
         .map(|v| v.iter().map(|(n, _)| n.clone()).collect())
         .unwrap_or_default()
@@ -2076,7 +2127,10 @@ impl<'a> Infer<'a> {
             "arrayIota".into(),
             Scheme {
                 vars: vec![],
-                ty: Ty::Fun(Box::new(int()), Box::new(Ty::Con("Array".into(), vec![int()]))),
+                ty: Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Con("Array".into(), vec![int()])),
+                ),
             },
         );
         // I8Array (Phase B): compact signed-byte array. Monomorphic (elements are
@@ -2150,31 +2204,56 @@ impl<'a> Infer<'a> {
         );
         // --- general dense-array primitives ---
         let arr_int = || Ty::Con("Array".into(), vec![int()]);
-        let fun2 = |a: Ty, b: Ty, c: Ty| Ty::Fun(Box::new(a), Box::new(Ty::Fun(Box::new(b), Box::new(c))));
+        let fun2 =
+            |a: Ty, b: Ty, c: Ty| Ty::Fun(Box::new(a), Box::new(Ty::Fun(Box::new(b), Box::new(c))));
         let fun3 = |a: Ty, b: Ty, c: Ty, d: Ty| {
             Ty::Fun(
                 Box::new(a),
-                Box::new(Ty::Fun(Box::new(b), Box::new(Ty::Fun(Box::new(c), Box::new(d))))),
+                Box::new(Ty::Fun(
+                    Box::new(b),
+                    Box::new(Ty::Fun(Box::new(c), Box::new(d))),
+                )),
             )
         };
         let mono = |ty: Ty| Scheme { vars: vec![], ty };
         // Array Int fused reductions
-        env.insert("arraySum".into(), mono(Ty::Fun(Box::new(arr_int()), Box::new(int()))));
+        env.insert(
+            "arraySum".into(),
+            mono(Ty::Fun(Box::new(arr_int()), Box::new(int()))),
+        );
         env.insert("arrayDot".into(), mono(fun2(arr_int(), arr_int(), int())));
         // I8Array reductions
-        env.insert("i8Sum".into(), mono(Ty::Fun(Box::new(i8a_ty()), Box::new(int()))));
+        env.insert(
+            "i8Sum".into(),
+            mono(Ty::Fun(Box::new(i8a_ty()), Box::new(int()))),
+        );
         env.insert("i8Dot".into(), mono(fun2(i8a_ty(), arr_int(), int())));
         env.insert("i8DotI8".into(), mono(fun2(i8a_ty(), i8a_ty(), int())));
         // I32Array: compact int32 array
         let i32a_ty = || Ty::Con("I32Array".into(), vec![]);
         env.insert("newI32Array".into(), mono(fun2(int(), int(), i32a_ty())));
-        env.insert("i32Iota".into(), mono(Ty::Fun(Box::new(int()), Box::new(i32a_ty()))));
+        env.insert(
+            "i32Iota".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(i32a_ty()))),
+        );
         env.insert("getI32".into(), mono(fun2(i32a_ty(), int(), int())));
-        env.insert("setI32".into(), mono(fun3(i32a_ty(), int(), int(), i32a_ty())));
-        env.insert("lenI32".into(), mono(Ty::Fun(Box::new(i32a_ty()), Box::new(int()))));
-        env.insert("i32Sum".into(), mono(Ty::Fun(Box::new(i32a_ty()), Box::new(int()))));
+        env.insert(
+            "setI32".into(),
+            mono(fun3(i32a_ty(), int(), int(), i32a_ty())),
+        );
+        env.insert(
+            "lenI32".into(),
+            mono(Ty::Fun(Box::new(i32a_ty()), Box::new(int()))),
+        );
+        env.insert(
+            "i32Sum".into(),
+            mono(Ty::Fun(Box::new(i32a_ty()), Box::new(int()))),
+        );
         env.insert("i32Dot".into(), mono(fun2(i32a_ty(), arr_int(), int())));
-        env.insert("i32MatVecSum".into(), mono(fun3(i32a_ty(), arr_int(), int(), int())));
+        env.insert(
+            "i32MatVecSum".into(),
+            mono(fun3(i32a_ty(), arr_int(), int(), int())),
+        );
         // tritDot :: TritVec -> Array Int -> Int — fused ternary dot product (§10),
         // borrows both, returns the scalar sum_i weight(i) * acts[i].
         env.insert(
@@ -2335,8 +2414,10 @@ impl<'a> Infer<'a> {
                 // built-in Num/Ord operator over Integer → resolve to the `#I`
                 // operator, lowered to the arbitrary-precision runtime (§Listing 1.4).
                 Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Integer" => {
-                    resolutions
-                        .insert((o.func.clone(), o.span), builtin_op_integer(&o.method).into());
+                    resolutions.insert(
+                        (o.func.clone(), o.span),
+                        builtin_op_integer(&o.method).into(),
+                    );
                 }
                 // built-in Num/Ord operator over Int → keep the operator (native
                 // iadd/imul; the interpreter's Int path).
@@ -2344,8 +2425,10 @@ impl<'a> Infer<'a> {
                 // built-in Integral `div`/`mod` over Integer → the `#I` runtime op;
                 // over Int → keep (native sdiv/srem). (No Float instance → AX0404.)
                 Ty::Con(name, _) if is_integral_method(&o.method) && name == "Integer" => {
-                    resolutions
-                        .insert((o.func.clone(), o.span), builtin_op_integer(&o.method).into());
+                    resolutions.insert(
+                        (o.func.clone(), o.span),
+                        builtin_op_integer(&o.method).into(),
+                    );
                 }
                 Ty::Con(name, _) if is_integral_method(&o.method) && name == "Int" => {}
                 // MULTI-PARAM derived `Show`/`Eq`/`Ord` (`Either Int Bool`): the
@@ -2389,7 +2472,8 @@ impl<'a> Infer<'a> {
                     // type in cvar-NAME form to rewrite per-spec. The recursive /
                     // parametric-field case a hand-written instance needs.
                     let cvar_ast = self.cvar_name_map(&o.func).and_then(|names| {
-                        let t = self.ty_to_cvar_ast(&Ty::Con(name.clone(), args.clone()), &names)?;
+                        let t =
+                            self.ty_to_cvar_ast(&Ty::Con(name.clone(), args.clone()), &names)?;
                         type_has_any_var(&t).then_some(t)
                     });
                     if let Some(tast) = cvar_ast {
@@ -2449,7 +2533,11 @@ impl<'a> Infer<'a> {
                 // function is multi-constraint), by matching the dispatch var to the
                 // function's captured `cvar_ivars`.
                 Ty::Var(_) if o.scope.contains(&o.class) => {
-                    let ivars = self.cvar_ivars.get(&o.func).filter(|v| v.len() > 1).cloned();
+                    let ivars = self
+                        .cvar_ivars
+                        .get(&o.func)
+                        .filter(|v| v.len() > 1)
+                        .cloned();
                     let cvar_idx = match ivars {
                         Some(ivars) => {
                             let d = var_id(&self.resolve(&o.ty));
@@ -2460,10 +2548,11 @@ impl<'a> Infer<'a> {
                         }
                         None => 0,
                     };
-                    poly_methods
-                        .entry(o.func.clone())
-                        .or_default()
-                        .push((o.span, o.method.clone(), cvar_idx));
+                    poly_methods.entry(o.func.clone()).or_default().push((
+                        o.span,
+                        o.method.clone(),
+                        cvar_idx,
+                    ));
                 }
                 // built-in Num over an unconstrained (monomorphic) type variable:
                 // default to Int (à la Haskell), so `g x = x + x` is `Int -> Int`.
@@ -2516,22 +2605,21 @@ impl<'a> Infer<'a> {
         // rejected for a not-yet-existing `show$(…)`).
         method_seeds.extend(show_needs.seeds.iter().cloned());
         for (k, t) in &show_needs.key_types {
-            key_types.entry(k.clone()).or_insert_with(|| vec![t.clone()]);
+            key_types
+                .entry(k.clone())
+                .or_insert_with(|| vec![t.clone()]);
         }
         // a multi-param `Eq`/`Ord` field whose type has no instance of that class:
         // report it (instead of silently mis-dispatching to `==`/`<`).
         for (class, ty, span) in std::mem::take(&mut show_needs.missing) {
             let name = flatten_app_ty(&ty).0.unwrap_or("?");
             self.diags.push(
-                Diagnostic::error(
-                    "AX0404",
-                    format!("no instance of `{class}` for `{name}`"),
-                )
-                .label(span.0, span.1, "derived here, over a field of this type")
-                .with_help(format!(
-                    "a field of a `deriving ({class})` type needs `{class} {name}` \
+                Diagnostic::error("AX0404", format!("no instance of `{class}` for `{name}`"))
+                    .label(span.0, span.1, "derived here, over a field of this type")
+                    .with_help(format!(
+                        "a field of a `deriving ({class})` type needs `{class} {name}` \
                      — declare it, or drop `{class}` from the deriving clause.",
-                )),
+                    )),
             );
         }
         let synth_tuple_names: Set<String> = show_needs.names();
@@ -2646,12 +2734,8 @@ impl<'a> Infer<'a> {
                 // full vector for), or a multi-constraint fn makes a non-self
                 // constrained call (whose cvar mapping we don't track).
                 let cannot = ncvars == 0 || ncvars != types.len();
-                let multi_bad_call = ncvars > 1
-                    && poly_calls
-                        .get(f)
-                        .into_iter()
-                        .flatten()
-                        .any(|(_, g)| g != f);
+                let multi_bad_call =
+                    ncvars > 1 && poly_calls.get(f).into_iter().flatten().any(|(_, g)| g != f);
                 let bad = self.refs_unspec.contains(f)
                     || cannot
                     || multi_bad_call

@@ -8,8 +8,8 @@ const BASE: u64 = 1_000_000_000; // 1e9 fits two limbs' product in u64
 
 #[derive(Clone, Debug)]
 pub struct BigInt {
-    neg: bool,      // sign; zero is always non-negative
-    mag: Vec<u32>,  // base-1e9 limbs, least-significant first, no trailing zeros
+    neg: bool,     // sign; zero is always non-negative
+    mag: Vec<u32>, // base-1e9 limbs, least-significant first, no trailing zeros
 }
 
 impl BigInt {
@@ -21,7 +21,12 @@ impl BigInt {
         let mut i = digits.len();
         while i > 0 {
             let start = i.saturating_sub(9); // 9 digits fit a base-1e9 limb
-            mag.push(digits.get(start..i).and_then(|d| d.parse::<u32>().ok()).unwrap_or(0));
+            mag.push(
+                digits
+                    .get(start..i)
+                    .and_then(|d| d.parse::<u32>().ok())
+                    .unwrap_or(0),
+            );
             i = start;
         }
         Self { neg, mag }.norm()
@@ -36,7 +41,11 @@ impl BigInt {
             mag.push((v % BASE as u128) as u32);
             v /= BASE as u128;
         }
-        Self { neg: neg && !mag.is_empty(), mag }.norm()
+        Self {
+            neg: neg && !mag.is_empty(),
+            mag,
+        }
+        .norm()
     }
 
     fn norm(mut self) -> Self {
@@ -95,16 +104,27 @@ impl BigInt {
 
     pub fn add(&self, o: &BigInt) -> BigInt {
         if self.neg == o.neg {
-            BigInt { neg: self.neg, mag: Self::add_mag(&self.mag, &o.mag) }.norm()
+            BigInt {
+                neg: self.neg,
+                mag: Self::add_mag(&self.mag, &o.mag),
+            }
+            .norm()
         } else {
             match Self::cmp_mag(&self.mag, &o.mag) {
-                std::cmp::Ordering::Equal => BigInt { neg: false, mag: Vec::new() },
-                std::cmp::Ordering::Greater => {
-                    BigInt { neg: self.neg, mag: Self::sub_mag(&self.mag, &o.mag) }.norm()
+                std::cmp::Ordering::Equal => BigInt {
+                    neg: false,
+                    mag: Vec::new(),
+                },
+                std::cmp::Ordering::Greater => BigInt {
+                    neg: self.neg,
+                    mag: Self::sub_mag(&self.mag, &o.mag),
                 }
-                std::cmp::Ordering::Less => {
-                    BigInt { neg: o.neg, mag: Self::sub_mag(&o.mag, &self.mag) }.norm()
+                .norm(),
+                std::cmp::Ordering::Less => BigInt {
+                    neg: o.neg,
+                    mag: Self::sub_mag(&o.mag, &self.mag),
                 }
+                .norm(),
             }
         }
     }
@@ -114,12 +134,18 @@ impl BigInt {
     }
 
     fn negated(&self) -> BigInt {
-        BigInt { neg: !self.neg && !self.is_zero(), mag: self.mag.clone() }
+        BigInt {
+            neg: !self.neg && !self.is_zero(),
+            mag: self.mag.clone(),
+        }
     }
 
     pub fn mul(&self, o: &BigInt) -> BigInt {
         if self.is_zero() || o.is_zero() {
-            return BigInt { neg: false, mag: Vec::new() };
+            return BigInt {
+                neg: false,
+                mag: Vec::new(),
+            };
         }
         let mut mag = vec![0u64; self.mag.len() + o.mag.len()];
         for (i, &x) in self.mag.iter().enumerate() {
@@ -131,7 +157,11 @@ impl BigInt {
             }
             mag[i + o.mag.len()] += carry;
         }
-        BigInt { neg: self.neg != o.neg, mag: mag.into_iter().map(|l| l as u32).collect() }.norm()
+        BigInt {
+            neg: self.neg != o.neg,
+            mag: mag.into_iter().map(|l| l as u32).collect(),
+        }
+        .norm()
     }
 
     pub fn cmp(&self, o: &BigInt) -> std::cmp::Ordering {
@@ -154,12 +184,24 @@ impl BigInt {
             return None;
         }
         if Self::cmp_mag(&self.mag, &o.mag) == Less {
-            return Some((BigInt { neg: false, mag: Vec::new() }, self.clone()));
+            return Some((
+                BigInt {
+                    neg: false,
+                    mag: Vec::new(),
+                },
+                self.clone(),
+            ));
         }
-        let babs = BigInt { neg: false, mag: o.mag.clone() };
+        let babs = BigInt {
+            neg: false,
+            mag: o.mag.clone(),
+        };
         let base = BigInt::from_i64(BASE as i64);
         let mut q = vec![0u32; self.mag.len()];
-        let mut r = BigInt { neg: false, mag: Vec::new() };
+        let mut r = BigInt {
+            neg: false,
+            mag: Vec::new(),
+        };
         for i in (0..self.mag.len()).rev() {
             // bring down the next digit: r = r * BASE + self.mag[i]
             r = r.mul(&base).add(&BigInt::from_i64(i64::from(self.mag[i])));
@@ -177,8 +219,16 @@ impl BigInt {
             q[i] = d as u32;
             r = r.sub(&babs.mul(&BigInt::from_i64(d)));
         }
-        let quo = BigInt { neg: self.neg != o.neg, mag: q }.norm();
-        let rem = BigInt { neg: self.neg, mag: r.mag }.norm();
+        let quo = BigInt {
+            neg: self.neg != o.neg,
+            mag: q,
+        }
+        .norm();
+        let rem = BigInt {
+            neg: self.neg,
+            mag: r.mag,
+        }
+        .norm();
         Some((quo, rem))
     }
 }
@@ -214,7 +264,10 @@ mod tests {
     }
     #[test]
     fn arithmetic_and_divmod() {
-        assert_eq!(s(&b(1_000_000_000).mul(&b(1_000_000_000))), "1000000000000000000");
+        assert_eq!(
+            s(&b(1_000_000_000).mul(&b(1_000_000_000))),
+            "1000000000000000000"
+        );
         assert_eq!(s(&b(7).sub(&b(10))), "-3");
         // factorial 25 by mul, then divide back down
         let mut f = b(1);

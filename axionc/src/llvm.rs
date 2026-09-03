@@ -157,7 +157,16 @@ pub fn emit_ir(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
 ) -> Result<String, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, consume_exempt, fuse).fns;
+    let fns = core::lower_with(
+        module,
+        inplace,
+        makecon_tys,
+        &HashMap::new(),
+        integer_pats,
+        consume_exempt,
+        fuse,
+    )
+    .fns;
     let records = RecordInfo::build(module);
     // type keys with a generated destructor `axion_drop_<key>` — includes the
     // monomorphized ones (`List$P`), whose key is not a `needs_deep_drop` type.
@@ -213,8 +222,10 @@ pub fn emit_ir(
     // function → parameter count, so a direct call with a mismatched arity fails
     // LOUDLY (a residual over-application the lowering split didn't catch) instead of
     // emitting a malformed `call` that silently returns garbage.
-    let fn_arity: HashMap<String, usize> =
-        fns.iter().map(|f| (f.name.clone(), f.params.len())).collect();
+    let fn_arity: HashMap<String, usize> = fns
+        .iter()
+        .map(|f| (f.name.clone(), f.params.len()))
+        .collect();
     for f in &fns {
         out.push_str(&emit_fn(f, &records, &strings, &drop_keys, &fn_arity)?);
         out.push('\n');
@@ -252,13 +263,29 @@ pub fn build_and_run(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
 ) -> Result<(), String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, consume_exempt, fuse).fns;
+    let fns = core::lower_with(
+        module,
+        inplace,
+        makecon_tys,
+        &HashMap::new(),
+        integer_pats,
+        consume_exempt,
+        fuse,
+    )
+    .fns;
     if !fns.iter().any(|f| f.name == entry && f.params.is_empty()) {
         return Err(format!(
             "'{entry}' must be a native function with no parameters"
         ));
     }
-    let ir = emit_ir(module, inplace, fuse, makecon_tys, integer_pats, consume_exempt)?;
+    let ir = emit_ir(
+        module,
+        inplace,
+        fuse,
+        makecon_tys,
+        integer_pats,
+        consume_exempt,
+    )?;
 
     let dir = std::env::temp_dir();
     let pid = std::process::id();

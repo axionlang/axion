@@ -1315,7 +1315,11 @@ fn check_func(
             }
             if let (Pat::Var(name, span), Some(ty)) = (p, ptypes.get(i)) {
                 let heap = is_heap_ty(ty, ctx);
-                let consumes = if heap { analyze_clause(clause, name, ctx).0 } else { 0 };
+                let consumes = if heap {
+                    analyze_clause(clause, name, ctx).0
+                } else {
+                    0
+                };
                 if consumes > 1 {
                     diags.push(
                         Diagnostic::error(
@@ -1813,14 +1817,20 @@ fn resolve_expr(
     match e {
         Expr::Var(n, sp) => {
             if !scope.contains(n) && !globals.contains(n) {
-                let mut d = Diagnostic::error("AX0101", format!("name not found: '{n}'"))
-                    .label(sp.0, sp.1, "not in scope");
+                let mut d = Diagnostic::error("AX0101", format!("name not found: '{n}'")).label(
+                    sp.0,
+                    sp.1,
+                    "not in scope",
+                );
                 // machine-applicable fix: suggest the closest in-scope name (§8).
                 match nearest_name(n, scope, globals) {
                     Some(best) => {
-                        d = d
-                            .with_help(format!("did you mean `{best}`?"))
-                            .with_fix(sp.0, sp.1, best.clone(), format!("`{n}` → `{best}`"));
+                        d = d.with_help(format!("did you mean `{best}`?")).with_fix(
+                            sp.0,
+                            sp.1,
+                            best.clone(),
+                            format!("`{n}` → `{best}`"),
+                        );
                     }
                     None => {
                         d = d.with_help(
@@ -1849,14 +1859,20 @@ fn resolve_expr(
             // Only SYMBOLIC operators (`<+>`) are resolved: an alphabetic backtick name
             // (`` `mod` ``, `` `div` ``) may be a builtin that lives outside `globals`, so
             // it keeps its prior (unchecked) treatment rather than a false positive.
-            let symbolic = op.chars().next().is_some_and(|c| !c.is_alphabetic() && c != '_');
+            let symbolic = op
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_alphabetic() && c != '_');
             if symbolic
                 && !BUILTIN_OPS.contains(&op.as_str())
                 && !scope.contains(op)
                 && !globals.contains(op)
             {
-                let mut d = Diagnostic::error("AX0101", format!("name not found: '{op}'"))
-                    .label(sp.0, sp.1, "operator not in scope");
+                let mut d = Diagnostic::error("AX0101", format!("name not found: '{op}'")).label(
+                    sp.0,
+                    sp.1,
+                    "operator not in scope",
+                );
                 d = match nearest_name(op, scope, globals) {
                     Some(best) => d.with_help(format!("did you mean `{best}`?")),
                     None => d.with_help(
@@ -1981,7 +1997,10 @@ fn build_ctx(module: &Module) -> Ctx {
     for d in &module.datas {
         for c in &d.cons {
             consumers.insert(c.name.clone(), c.fields.iter().map(|f| f.mult).collect());
-            con_fields.insert(c.name.clone(), c.fields.iter().map(|f| f.ty.clone()).collect());
+            con_fields.insert(
+                c.name.clone(),
+                c.fields.iter().map(|f| f.ty.clone()).collect(),
+            );
             for f in &c.fields {
                 if !f.name.is_empty() {
                     consumers.insert(f.name.clone(), vec![Mult::Many]); // selector: borrows
@@ -2026,7 +2045,10 @@ fn build_ctx(module: &Module) -> Ctx {
         vec![Mult::Many, Mult::Many, Mult::Many],
     );
     // tritVecFromBuffer borrows the buffer (caller frees it); the Int is inert.
-    consumers.insert("tritVecFromBuffer".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert(
+        "tritVecFromBuffer".to_string(),
+        vec![Mult::Many, Mult::Many],
+    );
     // bulk builders: the Int arg is inert; the result is a fresh owned resource.
     consumers.insert("tritVecIota".to_string(), vec![Mult::Many]);
     consumers.insert("arrayIota".to_string(), vec![Mult::Many]);
@@ -2050,7 +2072,10 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("newI32Array".to_string(), vec![Mult::Many, Mult::Many]);
     consumers.insert("i32Iota".to_string(), vec![Mult::Many]);
     consumers.insert("getI32".to_string(), vec![Mult::Many, Mult::Many]);
-    consumers.insert("setI32".to_string(), vec![Mult::One, Mult::Many, Mult::Many]);
+    consumers.insert(
+        "setI32".to_string(),
+        vec![Mult::One, Mult::Many, Mult::Many],
+    );
     consumers.insert("lenI32".to_string(), vec![Mult::Many]);
     consumers.insert("i32Sum".to_string(), vec![Mult::Many]);
     consumers.insert("i32Dot".to_string(), vec![Mult::Many, Mult::Many]);

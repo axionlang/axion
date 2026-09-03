@@ -19,19 +19,18 @@ use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result as RpcResult;
 use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
-    CodeActionResponse, CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
-    CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, FoldingRange, FoldingRangeKind, FoldingRangeParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintParams, InlayHintTooltip, Location, MarkupContent,
-    MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation, ParameterLabel,
-    Position, Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams,
-    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
-    SignatureInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Url, WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
+    FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip, Location, MarkupContent,
+    MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position,
+    Range, ReferenceParams, RenameParams, SelectionRange, SelectionRangeParams, ServerCapabilities,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -369,8 +368,12 @@ impl LanguageServer for Backend {
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 // CST-powered structural features (§8).
                 document_symbol_provider: Some(OneOf::Left(true)),
-                folding_range_provider: Some(tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true)),
-                selection_range_provider: Some(tower_lsp::lsp_types::SelectionRangeProviderCapability::Simple(true)),
+                folding_range_provider: Some(
+                    tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true),
+                ),
+                selection_range_provider: Some(
+                    tower_lsp::lsp_types::SelectionRangeProviderCapability::Simple(true),
+                ),
                 definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 references_provider: Some(OneOf::Left(true)),
@@ -572,17 +575,16 @@ impl LanguageServer for Backend {
 
     /// Completion: names in scope at the cursor (locals, then top-level declarations
     /// and builtins) plus keywords. The client filters by the typed prefix.
-    async fn completion(
-        &self,
-        params: CompletionParams,
-    ) -> RpcResult<Option<CompletionResponse>> {
+    async fn completion(&self, params: CompletionParams) -> RpcResult<Option<CompletionResponse>> {
         let pos = params.text_document_position;
         let docs = self.docs.lock().await;
         let Some(doc) = docs.get(&pos.text_document.uri) else {
             return Ok(None);
         };
         let offset = Positions::new(&doc.text).byte(pos.position.line, pos.position.character);
-        Ok(Some(CompletionResponse::Array(completions(&doc.text, offset))))
+        Ok(Some(CompletionResponse::Array(completions(
+            &doc.text, offset,
+        ))))
     }
 
     /// Find references: every occurrence that resolves to the same definition as the one
@@ -599,7 +601,13 @@ impl LanguageServer for Backend {
         let path = uri_to_path(&uri);
         let roots = self.effective_roots(&path).await;
         let ws = build_workspace(&path, &doc.text, &docs, &roots);
-        let refs = references_at(&path, &doc.text, offset, &ws, params.context.include_declaration);
+        let refs = references_at(
+            &path,
+            &doc.text,
+            offset,
+            &ws,
+            params.context.include_declaration,
+        );
         Ok(Some(
             refs.into_iter()
                 .filter_map(|(p, range)| {
@@ -608,7 +616,10 @@ impl LanguageServer for Backend {
                     } else {
                         Url::from_file_path(&p).ok()?
                     };
-                    Some(Location { uri: file_uri, range })
+                    Some(Location {
+                        uri: file_uri,
+                        range,
+                    })
                 })
                 .collect(),
         ))
@@ -729,7 +740,8 @@ fn build_workspace(
                 .and_then(|p| p.to_str().map(|s| (s.to_string(), d.text.clone())))
         })
         .collect();
-    ws.entry(path.to_string()).or_insert_with(|| src.to_string());
+    ws.entry(path.to_string())
+        .or_insert_with(|| src.to_string());
 
     // Walk the active file's import closure, reading disk for anything not already open.
     let mut stack = vec![path.to_string()];
@@ -821,9 +833,10 @@ struct DefSite {
 
 /// The directory an import in `path` resolves against.
 fn dir_of(path: &str) -> std::path::PathBuf {
-    std::path::Path::new(path)
-        .parent()
-        .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf)
+    std::path::Path::new(path).parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    )
 }
 
 /// The definition the identifier `name` (used at `offset` in `path`/`src`) resolves to,
@@ -842,7 +855,11 @@ fn def_site(
 ) -> Option<DefSite> {
     if let Some(m) = module {
         if let Some(sp) = resolve_local(m, name, offset) {
-            return Some(DefSite { path: path.to_string(), span: sp, local: true });
+            return Some(DefSite {
+                path: path.to_string(),
+                span: sp,
+                local: true,
+            });
         }
     }
     if let Some(r) = cst::definition_site(cst, name) {
@@ -856,7 +873,9 @@ fn def_site(
     let dir = dir_of(path);
     for import in crate::module_imports(src) {
         let target = crate::import_target_path(&dir, &import);
-        let Some(tpath) = target.to_str() else { continue };
+        let Some(tpath) = target.to_str() else {
+            continue;
+        };
         let Some(text) = ws.get(tpath) else { continue };
         let tcst = cst::build_cst(text);
         if let Some(r) = cst::definition_site(&tcst, name) {
@@ -873,7 +892,12 @@ fn def_site(
 /// Cross-file go-to-definition: the `(file, range)` the identifier at `offset` in
 /// `path`/`src` defines to — the definition may live in an imported file present in
 /// `ws`. Falls back to the current file when there is no workspace / no import hit.
-pub fn definition_at(path: &str, src: &str, offset: usize, ws: &Workspace) -> Option<(String, Range)> {
+pub fn definition_at(
+    path: &str,
+    src: &str,
+    offset: usize,
+    ws: &Workspace,
+) -> Option<(String, Range)> {
     let cst = cst::build_cst(src);
     let name = cst::name_at(&cst, offset)?;
     let module = parse_ast(src);
@@ -949,7 +973,10 @@ fn fmt_type(t: &crate::ast::Type) -> String {
         Type::Con(n) | Type::Var(n) => n.clone(),
         Type::Unit => "()".to_string(),
         Type::Tuple(ts) => {
-            format!("({})", ts.iter().map(fmt_type).collect::<Vec<_>>().join(", "))
+            format!(
+                "({})",
+                ts.iter().map(fmt_type).collect::<Vec<_>>().join(", ")
+            )
         }
         Type::App(f, x) => format!("{} {}", fmt_type(f), fmt_atom(x)),
         Type::Arrow { from, to, .. } => format!("{} -> {}", fmt_param(from), fmt_type(to)),
@@ -976,7 +1003,10 @@ fn fmt_param(t: &crate::ast::Type) -> String {
 
 fn tok_atom_start(t: &crate::lexer::Tok) -> bool {
     use crate::lexer::Tok::{ConId, Float, Int, LBracket, LParen, Str, VarId};
-    matches!(t, VarId(_) | ConId(_) | Int(_) | Float(_) | Str(_) | LParen | LBracket)
+    matches!(
+        t,
+        VarId(_) | ConId(_) | Int(_) | Float(_) | Str(_) | LParen | LBracket
+    )
 }
 
 fn tok_ident(t: &crate::lexer::Tok) -> Option<String> {
@@ -1027,14 +1057,18 @@ fn call_context(src: &str, offset: usize) -> Option<(String, usize)> {
     }
     let head = tok_ident(&toks[head_idx?].tok)?;
     let arg_count = atoms.len().saturating_sub(1); // `atoms` includes the head
-    // A trailing gap (whitespace before the cursor) means we've moved on to the NEXT
-    // argument; otherwise the cursor is still writing the last atom.
+                                                   // A trailing gap (whitespace before the cursor) means we've moved on to the NEXT
+                                                   // argument; otherwise the cursor is still writing the last atom.
     let in_gap = offset == 0
         || src
             .as_bytes()
             .get(offset - 1)
             .is_some_and(u8::is_ascii_whitespace);
-    let active = if in_gap { arg_count } else { arg_count.saturating_sub(1) };
+    let active = if in_gap {
+        arg_count
+    } else {
+        arg_count.saturating_sub(1)
+    };
     Some((head, active))
 }
 
@@ -1079,7 +1113,9 @@ fn lookup_sig(name: &str, path: &str, src: &str, ws: &Workspace) -> Option<crate
     let dir = dir_of(path);
     for import in crate::module_imports(src) {
         let target = crate::import_target_path(&dir, &import);
-        let Some(tpath) = target.to_str() else { continue };
+        let Some(tpath) = target.to_str() else {
+            continue;
+        };
         if let Some(text) = ws.get(tpath) {
             if let Some(m) = parse_ast(text) {
                 if let Some(t) = module_sig(&m, name) {
@@ -1144,8 +1180,24 @@ pub fn signature_help(
 }
 
 const KEYWORDS: &[&str] = &[
-    "let", "in", "if", "then", "else", "case", "of", "where", "do", "data", "class", "instance",
-    "module", "import", "qualified", "as", "deriving", "foreign",
+    "let",
+    "in",
+    "if",
+    "then",
+    "else",
+    "case",
+    "of",
+    "where",
+    "do",
+    "data",
+    "class",
+    "instance",
+    "module",
+    "import",
+    "qualified",
+    "as",
+    "deriving",
+    "foreign",
 ];
 
 fn completion_item(label: impl Into<String>, kind: CompletionItemKind) -> CompletionItem {
@@ -1162,7 +1214,10 @@ fn completion_item(label: impl Into<String>, kind: CompletionItemKind) -> Comple
 pub fn completions(src: &str, offset: usize) -> Vec<CompletionItem> {
     let mut items: Vec<CompletionItem> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let add = |items: &mut Vec<CompletionItem>, seen: &mut std::collections::HashSet<String>, label: String, kind| {
+    let add = |items: &mut Vec<CompletionItem>,
+               seen: &mut std::collections::HashSet<String>,
+               label: String,
+               kind| {
         if seen.insert(label.clone()) {
             items.push(completion_item(label, kind));
         }
@@ -1182,19 +1237,44 @@ pub fn completions(src: &str, offset: usize) -> Vec<CompletionItem> {
             add(&mut items, &mut seen, name, CompletionItemKind::VARIABLE);
         }
         for f in &module.funcs {
-            add(&mut items, &mut seen, f.name.clone(), CompletionItemKind::FUNCTION);
+            add(
+                &mut items,
+                &mut seen,
+                f.name.clone(),
+                CompletionItemKind::FUNCTION,
+            );
         }
         for fo in &module.foreigns {
-            add(&mut items, &mut seen, fo.name.clone(), CompletionItemKind::FUNCTION);
+            add(
+                &mut items,
+                &mut seen,
+                fo.name.clone(),
+                CompletionItemKind::FUNCTION,
+            );
         }
         for d in &module.datas {
-            add(&mut items, &mut seen, d.name.clone(), CompletionItemKind::CLASS);
+            add(
+                &mut items,
+                &mut seen,
+                d.name.clone(),
+                CompletionItemKind::CLASS,
+            );
             for c in &d.cons {
-                add(&mut items, &mut seen, c.name.clone(), CompletionItemKind::CONSTRUCTOR);
+                add(
+                    &mut items,
+                    &mut seen,
+                    c.name.clone(),
+                    CompletionItemKind::CONSTRUCTOR,
+                );
             }
         }
         for c in &module.classes {
-            add(&mut items, &mut seen, c.name.clone(), CompletionItemKind::INTERFACE);
+            add(
+                &mut items,
+                &mut seen,
+                c.name.clone(),
+                CompletionItemKind::INTERFACE,
+            );
             for (m, _) in &c.methods {
                 add(&mut items, &mut seen, m.clone(), CompletionItemKind::METHOD);
             }
@@ -1206,7 +1286,12 @@ pub fn completions(src: &str, offset: usize) -> Vec<CompletionItem> {
         add(&mut items, &mut seen, b, CompletionItemKind::FUNCTION);
     }
     for kw in KEYWORDS {
-        add(&mut items, &mut seen, (*kw).to_string(), CompletionItemKind::KEYWORD);
+        add(
+            &mut items,
+            &mut seen,
+            (*kw).to_string(),
+            CompletionItemKind::KEYWORD,
+        );
     }
     items
 }
@@ -1338,7 +1423,11 @@ fn pat_binds(p: &crate::ast::Pat, name: &str) -> Option<crate::ast::Span> {
 
 /// The nearest local binder of `name` in scope at `offset`, or `None` if it's not a
 /// local (so the caller falls back to top-level resolution).
-fn resolve_local(module: &crate::ast::Module, name: &str, offset: usize) -> Option<crate::ast::Span> {
+fn resolve_local(
+    module: &crate::ast::Module,
+    name: &str,
+    offset: usize,
+) -> Option<crate::ast::Span> {
     module
         .funcs
         .iter()
@@ -1568,14 +1657,21 @@ mod tests {
 
         scan_axi_dir(&dir, &mut ws);
 
-        assert_eq!(ws.get(&a_path).map(String::as_str), Some("a = 999\n"), "open buffer wins over disk");
+        assert_eq!(
+            ws.get(&a_path).map(String::as_str),
+            Some("a = 999\n"),
+            "open buffer wins over disk"
+        );
         assert!(
             ws.keys().any(|k| k.ends_with("sub/b.axi")),
             "recurses into subdirectories: {:?}",
             ws.keys().collect::<Vec<_>>()
         );
         assert!(!ws.keys().any(|k| k.contains("target")), "skips build dirs");
-        assert!(!ws.keys().any(|k| k.ends_with("notes.txt")), "only .axi files");
+        assert!(
+            !ws.keys().any(|k| k.ends_with("notes.txt")),
+            "only .axi files"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

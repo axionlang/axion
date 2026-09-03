@@ -217,7 +217,10 @@ fn hof_specialization_matches_generic_on_all_backends() {
     let generic = axionc().arg(&fx).output().unwrap();
     assert!(generic.status.success());
     assert_eq!(String::from_utf8_lossy(&generic.stdout), "55\n");
-    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx.clone()]] {
+    for backend in [
+        vec![fx.clone()],
+        vec!["--backend".into(), "cranelift".into(), fx.clone()],
+    ] {
         let out = axionc()
             .args(&backend)
             .env("AXION_SPECIALIZE", "1")
@@ -252,8 +255,15 @@ fn hof_specialization_of_consuming_closures_is_sound() {
     let generic = axionc().arg(&fx).output().unwrap();
     assert!(generic.status.success());
     assert_eq!(String::from_utf8_lossy(&generic.stdout), "15\n");
-    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx.clone()]] {
-        let out = axionc().args(&backend).env("AXION_SPECIALIZE", "1").output().unwrap();
+    for backend in [
+        vec![fx.clone()],
+        vec!["--backend".into(), "cranelift".into(), fx.clone()],
+    ] {
+        let out = axionc()
+            .args(&backend)
+            .env("AXION_SPECIALIZE", "1")
+            .output()
+            .unwrap();
         assert!(
             out.status.success(),
             "specialized consuming-closure run failed: {}",
@@ -283,8 +293,15 @@ fn hof_specialization_of_spine_consuming_filter_is_corruption_free() {
     let fx = fixture("hof_specialize_filter.axi");
     let generic = axionc().arg(&fx).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&generic.stdout), "12\n");
-    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx.clone()]] {
-        let out = axionc().args(&backend).env("AXION_SPECIALIZE", "1").output().unwrap();
+    for backend in [
+        vec![fx.clone()],
+        vec!["--backend".into(), "cranelift".into(), fx.clone()],
+    ] {
+        let out = axionc()
+            .args(&backend)
+            .env("AXION_SPECIALIZE", "1")
+            .output()
+            .unwrap();
         assert!(
             out.status.success(),
             "specialized filter failed: {}",
@@ -299,7 +316,10 @@ fn hof_specialization_of_spine_consuming_filter_is_corruption_free() {
         .unwrap();
     let core = String::from_utf8_lossy(&core.stdout);
     assert!(core.contains("filter$$gt"), "filter was not specialized");
-    assert!(!core.contains("take$$"), "take must NOT be specialized (spine-discarding)");
+    assert!(
+        !core.contains("take$$"),
+        "take must NOT be specialized (spine-discarding)"
+    );
 }
 
 #[test]
@@ -611,7 +631,10 @@ fn filter_over_heap_specializes_and_runs_on_all_backends() {
     // free. (Spine-DISCARDING `take`/`takeWhile`/`drop` still hit AX0912 — see
     // `ax0912_and_specialization_interact_soundly` and `take_heap_reject`.)
     let fx = fixture("filter_heap_reject.axi");
-    for backend in [vec![fx.clone()], vec!["--backend".into(), "cranelift".into(), fx]] {
+    for backend in [
+        vec![fx.clone()],
+        vec!["--backend".into(), "cranelift".into(), fx],
+    ] {
         let out = axionc().args(&backend).output().unwrap();
         assert!(
             out.status.success(),
@@ -628,7 +651,10 @@ fn array_out_of_bounds_index_aborts_not_reads_garbage() {
     // bounds-check), never a silent OOB read returning garbage (UB). Asserts the process does
     // NOT exit 0 with a value — it aborts. Guards codegen against inlining an unchecked load.
     let fx = fixture("array_oob_abort.axi");
-    let out = axionc().args(["--backend", "cranelift", &fx]).output().unwrap();
+    let out = axionc()
+        .args(["--backend", "cranelift", &fx])
+        .output()
+        .unwrap();
     assert!(
         !out.status.success(),
         "OOB index must abort, not succeed — got stdout {:?}",
@@ -668,7 +694,10 @@ fn ax0912_and_specialization_interact_soundly() {
         .env("AXION_SPECIALIZE", "1")
         .output()
         .unwrap();
-    assert!(!out.status.success(), "specialized take-over-heap must STILL be AX0912-rejected");
+    assert!(
+        !out.status.success(),
+        "specialized take-over-heap must STILL be AX0912-rejected"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("AX0912"),
         "expected AX0912 for take-over-heap under specialization"
@@ -701,12 +730,12 @@ fn closure_linearity_adversarial_runs_on_all_backends() {
         ("closure_mono_hof.axi", "15\n"),
         // Adversarial-sweep survivors — heap-through-closure shapes that came back clean
         // and are pinned so a future reclamation change can't silently corrupt them:
-        ("closure_foldl.axi", "15\n"),              // accumulator on the left
-        ("closure_record_elem.axi", "15\n"),        // records with a heap field
-        ("closure_nested_list.axi", "15\n"),        // List (List Integer)
-        ("closure_alias_combiner.axi", "5\n"),      // combiner returns one arg by alias
-        ("closure_discard_combiner.axi", "0\n"),    // combiner discards BOTH args
-        ("closure_heaplist_combiner.axi", "15\n"),  // combiner allocates a fresh list
+        ("closure_foldl.axi", "15\n"),       // accumulator on the left
+        ("closure_record_elem.axi", "15\n"), // records with a heap field
+        ("closure_nested_list.axi", "15\n"), // List (List Integer)
+        ("closure_alias_combiner.axi", "5\n"), // combiner returns one arg by alias
+        ("closure_discard_combiner.axi", "0\n"), // combiner discards BOTH args
+        ("closure_heaplist_combiner.axi", "15\n"), // combiner allocates a fresh list
     ] {
         for backend in [
             vec!["--backend", "interp"],
@@ -722,7 +751,11 @@ fn closure_linearity_adversarial_runs_on_all_backends() {
                 "{name} should run ({backend:?}): {}",
                 String::from_utf8_lossy(&out.stderr)
             );
-            assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{name} {backend:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                want,
+                "{name} {backend:?}"
+            );
         }
     }
 }
@@ -914,7 +947,11 @@ fn record_update_escape_runs_on_all_backends() {
                 "{fx_name} should run ({backend:?}): {}",
                 String::from_utf8_lossy(&out.stderr)
             );
-            assert_eq!(String::from_utf8_lossy(&out.stdout), expect, "{fx_name} {backend:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                expect,
+                "{fx_name} {backend:?}"
+            );
         }
     }
 }
@@ -1227,13 +1264,22 @@ fn level_ceiling_enforced_ax0500() {
         .args(["--check", &fixture("level_exceeded.axi")])
         .output()
         .unwrap();
-    assert!(!bad.status.success(), "L1 decl under L0 ceiling should fail");
+    assert!(
+        !bad.status.success(),
+        "L1 decl under L0 ceiling should fail"
+    );
     let text = String::from_utf8_lossy(&bad.stdout);
     assert!(text.contains("AX0500"), "expected AX0500, got: {text}");
-    assert!(text.contains("L1"), "diagnostic should name the level, got: {text}");
+    assert!(
+        text.contains("L1"),
+        "diagnostic should name the level, got: {text}"
+    );
 
     // …but the same decl under an L1 ceiling is fine…
-    let ok = axionc().args(["--check", &fixture("level_ok.axi")]).output().unwrap();
+    let ok = axionc()
+        .args(["--check", &fixture("level_ok.axi")])
+        .output()
+        .unwrap();
     assert!(ok.status.success(), "L1 decl under L1 ceiling should pass");
 
     // …and with no pragma there is no ceiling to enforce…
@@ -1250,7 +1296,10 @@ fn level_ceiling_enforced_ax0500() {
         .args(["--check", &fixture("level_call_does_not_raise.axi")])
         .output()
         .unwrap();
-    assert!(call.status.success(), "a plain call must not raise the level");
+    assert!(
+        call.status.success(),
+        "a plain call must not raise the level"
+    );
 }
 
 #[test]
@@ -1263,9 +1312,15 @@ fn parser_recovers_at_declaration_boundaries() {
         .args(["--check", &fixture("recover_partial.axi")])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "a file with errors should fail --check");
+    assert!(
+        !out.status.success(),
+        "a file with errors should fail --check"
+    );
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("AX0100"), "expected the syntax error, got: {text}");
+    assert!(
+        text.contains("AX0100"),
+        "expected the syntax error, got: {text}"
+    );
     assert!(
         text.contains("AX0101"),
         "the valid sibling must still be analysed past the broken decl, got: {text}"
@@ -1287,7 +1342,10 @@ fn explain_covers_every_emitted_code() {
         );
     }
     let unknown = axionc().args(["--explain", "AX9999"]).output().unwrap();
-    assert!(!unknown.status.success(), "--explain of unknown code should fail");
+    assert!(
+        !unknown.status.success(),
+        "--explain of unknown code should fail"
+    );
 }
 
 #[test]
@@ -1416,7 +1474,7 @@ fn parmap_over_range_and_reduce_run() {
     // inline `foldr` reduce over the replies (so `parMapReduce` needs no prelude
     // entry). Both run native (cranelift) in agreement with the interpreter.
     for (fx, expected) in [
-        ("session_run_parmap_range.axi", "45381\n"),  // sum of fib 15..22
+        ("session_run_parmap_range.axi", "45381\n"), // sum of fib 15..22
         ("session_run_parmap_reduce.axi", "17711\n"), // max of fib 15..22 = fib 22
     ] {
         let native = axionc()
@@ -1465,7 +1523,11 @@ fn stateful_server_loop_runs() {
     // accumulator, each `Add` folds a value into it, `Total` returns the running sum
     // (10 + 20 = 30). Native (cranelift) agrees with the interpreter.
     let native = axionc()
-        .args(["--backend", "cranelift", &fixture("session_stateful_server.axi")])
+        .args([
+            "--backend",
+            "cranelift",
+            &fixture("session_stateful_server.axi"),
+        ])
         .output()
         .unwrap();
     assert!(
@@ -2660,11 +2722,11 @@ fn general_dense_array_primitives() {
     // the compact I32Array (new/set/get/len/i32Sum/i32Dot/i32MatVecSum) — closure-free
     // one-pass readers, owned/borrow linearity (reclaimed once; sanitize-gated).
     let cases = [
-        ("array_reduce.axi", "330\n"),  // 45 + 285
-        ("i8_reduce.axi", "-103\n"),    // -1*100 + -3
-        ("i8_dot_i8.axi", "7\n"),       // fair int8×int8 dot: sum of squares over 0..9
+        ("array_reduce.axi", "330\n"),     // 45 + 285
+        ("i8_reduce.axi", "-103\n"),       // -1*100 + -3
+        ("i8_dot_i8.axi", "7\n"),          // fair int8×int8 dot: sum of squares over 0..9
         ("i32array_run.axi", "4950000\n"), // sum i*1000, 0..99 (int32 range)
-        ("i32_reduce.axi", "346\n"),    // 285 + 61
+        ("i32_reduce.axi", "346\n"),       // 285 + 61
     ];
     for (fx, want) in cases {
         for backend in [["--backend", "cranelift"], ["--release", ""]] {
@@ -2686,7 +2748,10 @@ fn i8array_compact_signed_byte_array() {
     // threads new/setI8/getI8/lenI8 (fillI8 owns, sumI8 borrows) — sum of (i-3)
     // over 0..99 = 4650, confirming signed storage; reclaimed once (sanitize gate).
     // `i8array_matvec` runs the int8 matvec (i8Iota weights, small activation) = -3.
-    for (fx, want) in [("i8array_run.axi", "4650\n"), ("i8array_matvec.axi", "-3\n")] {
+    for (fx, want) in [
+        ("i8array_run.axi", "4650\n"),
+        ("i8array_matvec.axi", "-3\n"),
+    ] {
         for backend in [["--backend", "cranelift"], ["--release", ""]] {
             let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
             let out = axionc().args(&args).arg(fixture(fx)).output().unwrap();

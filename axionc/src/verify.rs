@@ -43,7 +43,10 @@ fn merge_vals(rets: &[Val]) -> Val {
         .filter(|k| rets.iter().all(|v| v.key.as_ref() == Some(k)));
     Val {
         owned: rets.iter().any(|v| v.owned),
-        borrows: rets.iter().flat_map(|v| v.borrows.iter().cloned()).collect(),
+        borrows: rets
+            .iter()
+            .flat_map(|v| v.borrows.iter().cloned())
+            .collect(),
         dead: None,
         key,
     }
@@ -140,7 +143,13 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
         if is_generated(&f.name) {
             continue;
         }
-        run_fn(f, &lowered.borrow_args, &lowered.recinfo, &summaries, Some(&mut out));
+        run_fn(
+            f,
+            &lowered.borrow_args,
+            &lowered.recinfo,
+            &summaries,
+            Some(&mut out),
+        );
     }
     out
 }
@@ -151,11 +160,7 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
 /// consumes this to null the ownership annotation on calls to a borrow-returning function,
 /// so Auto-Drop stops freeing a borrowed result (the `grab w = inner w` class); the
 /// verifier then re-derives its own summary from the emitted Core and CHECKS the outcome.
-pub fn borrow_return_summary(
-    fns: &[CoreFn],
-    ba: &BorrowArgs,
-    recinfo: &RecordInfo,
-) -> Summaries {
+pub fn borrow_return_summary(fns: &[CoreFn], ba: &BorrowArgs, recinfo: &RecordInfo) -> Summaries {
     let mut sums = compute_summaries(fns, ba, recinfo);
     sums.retain(|_, params| !params.is_empty());
     sums
@@ -233,7 +238,11 @@ fn run_fn(
             // an owned heap param is a live resource this fn must free.
             st.insert(
                 p.clone(),
-                Val { owned: true, key: param_key.get(p.as_str()).map(|k| (*k).to_string()), ..Default::default() },
+                Val {
+                    owned: true,
+                    key: param_key.get(p.as_str()).map(|k| (*k).to_string()),
+                    ..Default::default()
+                },
             );
         } else {
             // a borrowed/scalar param: present (so a `Field` read of it is tracked as an
@@ -370,7 +379,12 @@ impl Verifier<'_> {
     /// resource (owns an allocation or holds an interior pointer into one).
     fn bind_op(&mut self, x: &str, op: &Op, sp: Span, st: &mut State) {
         let e = op_delta_effect(op, self.ba);
-        for a in e.borrows.iter().chain(e.moves.iter()).chain(e.nonstrict.iter()) {
+        for a in e
+            .borrows
+            .iter()
+            .chain(e.moves.iter())
+            .chain(e.nonstrict.iter())
+        {
             self.use_atom(a, sp, st);
         }
         if let Some(a) = e.alias {
@@ -390,7 +404,11 @@ impl Verifier<'_> {
         if val.owned || !val.borrows.is_empty() {
             // record a direct heap field projection's exact slot, so a move-out skip-drop
             // of the source can transfer that slot's ownership to `x` (§move-out).
-            if let Op::Field { name, rec: Atom::Var(src) } = op {
+            if let Op::Field {
+                name,
+                rec: Atom::Var(src),
+            } = op
+            {
                 if self.recinfo.named_field_is_heap(name) {
                     if let Some((_, slot)) = self.recinfo.named_field_slot(name) {
                         self.projections.insert(x.to_string(), (src.clone(), slot));
@@ -419,7 +437,12 @@ impl Verifier<'_> {
                         _ => None,
                     })
                     .collect();
-                return Val { owned: false, borrows, dead: None, key: None };
+                return Val {
+                    owned: false,
+                    borrows,
+                    dead: None,
+                    key: None,
+                };
             }
         }
         let e = op_delta_effect(op, self.ba);
@@ -440,11 +463,21 @@ impl Verifier<'_> {
         if let Some(Atom::Var(w)) = alias_target(op, self.recinfo) {
             if st.contains_key(w.as_str()) {
                 inherited.insert(w.clone());
-                return Val { owned: false, borrows: inherited, dead: None, key: None };
+                return Val {
+                    owned: false,
+                    borrows: inherited,
+                    dead: None,
+                    key: None,
+                };
             }
         }
         if let Some(res) = &e.produces {
-            return Val { owned: true, borrows: inherited, dead: None, key: res.key.clone() };
+            return Val {
+                owned: true,
+                borrows: inherited,
+                dead: None,
+                key: res.key.clone(),
+            };
         }
         Val::default()
     }
@@ -527,7 +560,12 @@ impl Verifier<'_> {
         match rhs {
             Rhs::Op(op) => {
                 let e = op_delta_effect(op, self.ba);
-                for a in e.borrows.iter().chain(e.moves.iter()).chain(e.nonstrict.iter()) {
+                for a in e
+                    .borrows
+                    .iter()
+                    .chain(e.moves.iter())
+                    .chain(e.nonstrict.iter())
+                {
                     self.use_atom(a, sp, st);
                 }
                 if let Some(a) = e.alias {
@@ -576,13 +614,22 @@ impl Verifier<'_> {
         merge_vals(&rets)
     }
 
-    fn case(&mut self, scrut: &Atom, arms: &[(CPat, Term)], sp: Span, st: &mut State, tail: bool) -> Val {
+    fn case(
+        &mut self,
+        scrut: &Atom,
+        arms: &[(CPat, Term)],
+        sp: Span,
+        st: &mut State,
+        tail: bool,
+    ) -> Val {
         self.use_atom(scrut, sp, st);
         // extracted fields are owned iff the scrutinee is an owned resource (consumed) —
         // the reclamation transfers them out; if the scrutinee is BORROWED, the owner keeps
         // the whole structure, so the fields are borrowed too (untracked).
         let scrut_var = match scrut {
-            Atom::Var(n) if st.get(n).is_some_and(|v| v.owned && v.dead.is_none()) => Some(n.clone()),
+            Atom::Var(n) if st.get(n).is_some_and(|v| v.owned && v.dead.is_none()) => {
+                Some(n.clone())
+            }
             _ => None,
         };
         let outer: Vec<String> = st.keys().cloned().collect();
@@ -617,7 +664,14 @@ impl Verifier<'_> {
                         let fkey = scrut_key
                             .as_deref()
                             .and_then(|sk| self.recinfo.field_tagged_key(con, i, sk));
-                        st.insert(n.clone(), Val { owned: true, key: fkey, ..Default::default() });
+                        st.insert(
+                            n.clone(),
+                            Val {
+                                owned: true,
+                                key: fkey,
+                                ..Default::default()
+                            },
+                        );
                         // record the field as a CHILD of its scrutinee at slot `i`: a DEEP
                         // `drop` of the scrutinee frees it transitively (see `do_drop`), so it
                         // is not a separate leak unless the arm moves it out first.
@@ -655,7 +709,10 @@ impl Verifier<'_> {
             let any_live = vals.iter().any(live);
             let all_live = vals.iter().all(live);
             let mut merged = vals[0].clone();
-            merged.borrows = vals.iter().flat_map(|v| v.borrows.iter().cloned()).collect();
+            merged.borrows = vals
+                .iter()
+                .flat_map(|v| v.borrows.iter().cloned())
+                .collect();
             if any_live && !all_live {
                 // A POLYMORPHIC extracted field (heap-ness unresolved → `leak_exempt`) that is
                 // owned on one path and moved out on another can only LEAK on the still-live
@@ -815,7 +872,13 @@ mod tests {
                 returns: true,
             }),
             (0, 0),
-            Box::new(Term::Drop(name.into(), dropkey, vec![], (0, 0), Box::new(body_tail))),
+            Box::new(Term::Drop(
+                name.into(),
+                dropkey,
+                vec![],
+                (0, 0),
+                Box::new(body_tail),
+            )),
         );
         fn_body(body)
     }
@@ -911,7 +974,10 @@ mod tests {
         let fs = one(fn_body(body));
         let leak = fs.iter().find(|f| f.cat == Cat::Leak);
         assert!(leak.is_some(), "expected a Leak finding, got {fs:?}");
-        assert!(leak_gates(leak.unwrap()), "the leak should gate native compilation");
+        assert!(
+            leak_gates(leak.unwrap()),
+            "the leak should gate native compilation"
+        );
     }
 
     /// A leak inside a compiler-synthesized session/parmap state machine (`*$step`) is NOT
@@ -930,6 +996,9 @@ mod tests {
         let fs = one(f);
         let leak = fs.iter().find(|f| f.cat == Cat::Leak);
         assert!(leak.is_some(), "the leak is still detected/reported");
-        assert!(!leak_gates(leak.unwrap()), "a $step worker leak must not gate");
+        assert!(
+            !leak_gates(leak.unwrap()),
+            "a $step worker leak must not gate"
+        );
     }
 }

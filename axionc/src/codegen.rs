@@ -109,7 +109,9 @@ extern "C" fn axion_bignum_from_i64(n: i64) -> i64 {
 extern "C" fn axion_bignum_from_str(s: i64) -> i64 {
     // SAFETY: `s` is a NUL-terminated Axion String (C-string) of decimal digits.
     let text = unsafe { std::ffi::CStr::from_ptr(s as *const std::os::raw::c_char) };
-    bignum_box(crate::bigint::BigInt::from_str(text.to_str().unwrap_or("0")))
+    bignum_box(crate::bigint::BigInt::from_str(
+        text.to_str().unwrap_or("0"),
+    ))
 }
 extern "C" fn axion_bignum_add(a: i64, b: i64) -> i64 {
     bignum_box(bignum(a).add(bignum(b)))
@@ -203,7 +205,11 @@ extern "C" fn axion_substr(start: i64, len: i64, s: *const u8) -> *const u8 {
     let bytes = unsafe { std::ffi::CStr::from_ptr(s as *const std::ffi::c_char) }.to_bytes();
     let start = start.clamp(0, bytes.len() as i64) as usize;
     let avail = bytes.len() - start;
-    let take = if len < 0 { 0 } else { (len as usize).min(avail) };
+    let take = if len < 0 {
+        0
+    } else {
+        (len as usize).min(avail)
+    };
     axion_str_alloc(&bytes[start..start + take])
 }
 
@@ -1142,11 +1148,7 @@ extern "C" fn axion_tritvec_from_buffer(buf: i64, n: i64) -> i64 {
         }
         let p = axion_alloc(8 + nbytes) as i64;
         (p as *mut i64).write_unaligned(trits);
-        std::ptr::copy_nonoverlapping(
-            (buf + 8) as *const u8,
-            (p + 8) as *mut u8,
-            nbytes as usize,
-        );
+        std::ptr::copy_nonoverlapping((buf + 8) as *const u8, (p + 8) as *mut u8, nbytes as usize);
         p
     }
 }
@@ -1567,7 +1569,10 @@ impl Cg {
         builder.symbol("axion_bignum_eq", axion_bignum_eq as *const u8);
         builder.symbol("axion_bignum_lt", axion_bignum_lt as *const u8);
         builder.symbol("axion_bignum_gt", axion_bignum_gt as *const u8);
-        builder.symbol("axion_bignum_to_string", axion_bignum_to_string as *const u8);
+        builder.symbol(
+            "axion_bignum_to_string",
+            axion_bignum_to_string as *const u8,
+        );
         builder.symbol("axion_bignum_free", axion_bignum_free as *const u8);
         builder.symbol("axion_alloc", axion_alloc as *const u8);
         builder.symbol("axion_free", axion_free as *const u8);
@@ -1595,8 +1600,14 @@ impl Cg {
         builder.symbol("axion_tritvec_set", axion_tritvec_set as *const u8);
         builder.symbol("axion_tritvec_len", axion_tritvec_len as *const u8);
         builder.symbol("axion_tritvec_dot", axion_tritvec_dot as *const u8);
-        builder.symbol("axion_tritvec_matvec_sum", axion_tritvec_matvec_sum as *const u8);
-        builder.symbol("axion_tritvec_from_buffer", axion_tritvec_from_buffer as *const u8);
+        builder.symbol(
+            "axion_tritvec_matvec_sum",
+            axion_tritvec_matvec_sum as *const u8,
+        );
+        builder.symbol(
+            "axion_tritvec_from_buffer",
+            axion_tritvec_from_buffer as *const u8,
+        );
         builder.symbol("axion_tritvec_iota", axion_tritvec_iota as *const u8);
         builder.symbol("axion_array_iota", axion_array_iota as *const u8);
         // I8Array (Phase B)
@@ -2751,7 +2762,16 @@ pub fn run(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
 ) -> Result<Option<i64>, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, consume_exempt, fuse).fns;
+    let fns = core::lower_with(
+        module,
+        inplace,
+        makecon_tys,
+        &HashMap::new(),
+        integer_pats,
+        consume_exempt,
+        fuse,
+    )
+    .fns;
     let entry_ok = fns
         .iter()
         .find(|f| f.name == entry)
@@ -2847,7 +2867,16 @@ pub fn emit_ir(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
 ) -> Result<String, String> {
-    let fns = core::lower_with(module, inplace, makecon_tys, &HashMap::new(), integer_pats, consume_exempt, fuse).fns;
+    let fns = core::lower_with(
+        module,
+        inplace,
+        makecon_tys,
+        &HashMap::new(),
+        integer_pats,
+        consume_exempt,
+        fuse,
+    )
+    .fns;
     if fns.is_empty() {
         return Ok("; no natively compilable function (Int core).\n".into());
     }

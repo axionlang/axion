@@ -83,9 +83,9 @@ mod props;
 #[cfg(test)]
 mod session;
 
-use diag::Diagnostics;
 /// Re-exported so the engine's public `Vec<Diagnostic>` returns are nameable.
 pub use diag::Diagnostic;
+use diag::Diagnostics;
 use lexer::LineMap;
 use std::process::ExitCode;
 
@@ -322,7 +322,10 @@ pub fn run_cli() -> ExitCode {
         let corruption = findings.iter().filter(|f| f.cat.is_corruption()).count();
         let leaks = findings.len() - corruption;
         for f in &findings {
-            println!("{:?}: `{}` in `{}` @{}..{}", f.cat, f.var, f.func, f.span.0, f.span.1);
+            println!(
+                "{:?}: `{}` in `{}` @{}..{}",
+                f.cat, f.var, f.func, f.span.0, f.span.1
+            );
         }
         if corruption == 0 {
             println!("ok: no corruption findings ({leaks} leak note(s))");
@@ -422,9 +425,16 @@ pub fn run_cli() -> ExitCode {
             for f in &corruption {
                 let d = Diagnostic::error(
                     "AX0910",
-                    format!("unsound reclamation: {:?} of `{}` in `{}`", f.cat, f.var, f.func),
+                    format!(
+                        "unsound reclamation: {:?} of `{}` in `{}`",
+                        f.cat, f.var, f.func
+                    ),
                 )
-                .label(f.span.0, f.span.1, "the Auto-Drop-inserted `free`s are not balanced here")
+                .label(
+                    f.span.0,
+                    f.span.1,
+                    "the Auto-Drop-inserted `free`s are not balanced here",
+                )
                 .with_help(
                     "the drop-balance verifier proved the emitted native code would \
                      double-free or use-after-free (a compiler soundness check). This is \
@@ -445,7 +455,11 @@ pub fn run_cli() -> ExitCode {
                     "AX0911",
                     format!("memory leak: `{}` in `{}` is never freed", f.var, f.func),
                 )
-                .label(f.span.0, f.span.1, "this heap resource escapes every path without being reclaimed")
+                .label(
+                    f.span.0,
+                    f.span.1,
+                    "this heap resource escapes every path without being reclaimed",
+                )
                 .with_help(
                     "the drop-balance verifier proved the emitted native code leaks this \
                      allocation (an Auto-Drop gap). Pass --allow-leaks to emit anyway (still \
@@ -459,7 +473,14 @@ pub fn run_cli() -> ExitCode {
 
     // --- native --dev backend (Cranelift): IR dump or JIT+run main::Int ---
     if emit == Emit::Clif {
-        match codegen::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
+        match codegen::emit_ir(
+            &module,
+            &inplace,
+            fuse,
+            &analysis.makecon_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+        ) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -472,7 +493,14 @@ pub fn run_cli() -> ExitCode {
     }
     // --- backend --release (LLVM): dump do IR ou compilar+correr ---
     if emit == Emit::Llvm {
-        match llvm::emit_ir(&module, &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
+        match llvm::emit_ir(
+            &module,
+            &inplace,
+            fuse,
+            &analysis.makecon_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+        ) {
             Ok(ir) => {
                 print!("{ir}");
                 return ExitCode::SUCCESS;
@@ -484,7 +512,15 @@ pub fn run_cli() -> ExitCode {
         }
     }
     if backend == Backend::Cranelift {
-        return match codegen::run(&module, "main", &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
+        return match codegen::run(
+            &module,
+            "main",
+            &inplace,
+            fuse,
+            &analysis.makecon_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+        ) {
             Ok(Some(n)) => {
                 println!("{n}");
                 ExitCode::SUCCESS
@@ -497,7 +533,15 @@ pub fn run_cli() -> ExitCode {
         };
     }
     if backend == Backend::Llvm {
-        return match llvm::build_and_run(&module, "main", &inplace, fuse, &analysis.makecon_tys, &analysis.integer_lits, &analysis.consume_native_exempt) {
+        return match llvm::build_and_run(
+            &module,
+            "main",
+            &inplace,
+            fuse,
+            &analysis.makecon_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+        ) {
             Ok(()) => ExitCode::SUCCESS, // the binary already printed the result
             Err(e) => {
                 eprintln!("llvm backend (--release): {e}");
@@ -554,8 +598,11 @@ fn scan_level_pragma(src: &str, diags: &mut Diagnostics) -> Option<u8> {
     let end = start + 3 + end_rel + 3;
     let bad = |diags: &mut Diagnostics| {
         diags.push(
-            Diagnostic::warning("AX0500", "malformed `{-# LEVEL … #-}` pragma — ignored")
-                .label(start, end, "expected `{-# LEVEL L0 #-}` … `{-# LEVEL L3 #-}`"),
+            Diagnostic::warning("AX0500", "malformed `{-# LEVEL … #-}` pragma — ignored").label(
+                start,
+                end,
+                "expected `{-# LEVEL L0 #-}` … `{-# LEVEL L3 #-}`",
+            ),
         );
     };
     let Some(tok) = words.next() else {
@@ -720,8 +767,11 @@ fn dce_functions(module: &mut ast::Module, roots: &std::collections::HashSet<Str
         })
         .collect();
     // fixpoint reachability from the roots.
-    let mut reachable: HashSet<String> =
-        roots.iter().filter(|r| present.contains(r.as_str())).cloned().collect();
+    let mut reachable: HashSet<String> = roots
+        .iter()
+        .filter(|r| present.contains(r.as_str()))
+        .cloned()
+        .collect();
     let mut queue: Vec<String> = reachable.iter().cloned().collect();
     // fusion targets become reachable the moment `range` is (see doc comment).
     let mut fusion_added = false;
@@ -766,7 +816,9 @@ fn collect_func_refs(f: &ast::Func, out: &mut std::collections::HashSet<String>)
 }
 
 fn collect_expr_refs(e: &ast::Expr, out: &mut std::collections::HashSet<String>) {
-    use ast::Expr::{App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var};
+    use ast::Expr::{
+        App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+    };
     match e {
         Var(n, _) => {
             out.insert(n.clone());
@@ -774,7 +826,11 @@ fn collect_expr_refs(e: &ast::Expr, out: &mut std::collections::HashSet<String>)
         BinOp(op, l, r, _) => {
             // a backtick-infix's operator is its callee; `++` lowers to `append`.
             // builtin operators (`+`, `==`, …) simply match no function name.
-            out.insert(if op == "++" { "append".into() } else { op.clone() });
+            out.insert(if op == "++" {
+                "append".into()
+            } else {
+                op.clone()
+            });
             collect_expr_refs(l, out);
             collect_expr_refs(r, out);
         }
@@ -869,7 +925,6 @@ pub fn prepare_for_check_with(
     }
     (module, consume_exempt)
 }
-
 
 /// Materializes the specialized constrained functions: clones each
 /// `src` (already rewritten by the direct resolutions), specializes the signature
@@ -993,8 +1048,12 @@ fn specialize_hofs(module: &mut ast::Module) {
     for f in &module.funcs {
         collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demand_pairs);
     }
-    let unsigned: HashSet<String> =
-        module.funcs.iter().filter(|f| f.sig.is_none()).map(|f| f.name.clone()).collect();
+    let unsigned: HashSet<String> = module
+        .funcs
+        .iter()
+        .filter(|f| f.sig.is_none())
+        .map(|f| f.name.clone())
+        .collect();
     let unsigned_closures: HashSet<String> = demand_pairs
         .iter()
         .map(|(_, clos)| clos.clone())
@@ -1015,8 +1074,11 @@ fn specialize_hofs(module: &mut ast::Module) {
         let committed = commit_lambda_lifts(module, &candidates, &inferred);
         fn_names.extend(committed);
     }
-    let by_name: HashMap<String, ast::Func> =
-        module.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
+    let by_name: HashMap<String, ast::Func> = module
+        .funcs
+        .iter()
+        .map(|f| (f.name.clone(), f.clone()))
+        .collect();
     // Closures UNSAFE to specialize: one that EMBEDS a parameter into a returned container
     // (`pairUp n = (n, …)`, `single n = Cons n Nil`). The generic `callclo` is sound because
     // Route C assumes the closure MOVES its arg; a direct call uses the closure's real
@@ -1043,8 +1105,7 @@ fn specialize_hofs(module: &mut ast::Module) {
             collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demands);
         }
         demands.retain(|(_, clos)| !unsafe_clos.contains(clos));
-        let fresh: Vec<(String, String)> =
-            demands.difference(&generated).cloned().collect();
+        let fresh: Vec<(String, String)> = demands.difference(&generated).cloned().collect();
         if fresh.is_empty() {
             break;
         }
@@ -1095,10 +1156,14 @@ fn lift_capturing_lambdas(
     fn arg_mut(e: &mut ast::Expr, from_end: usize) -> Option<&mut ast::Expr> {
         let mut cur = e;
         for _ in 0..from_end {
-            let ast::Expr::App(f, _, _) = cur else { return None };
+            let ast::Expr::App(f, _, _) = cur else {
+                return None;
+            };
             cur = f;
         }
-        let ast::Expr::App(_, a, _) = cur else { return None };
+        let ast::Expr::App(_, a, _) = cur else {
+            return None;
+        };
         Some(a)
     }
     // Shared state, bundled so the recursive walkers take few arguments. The two maps are the
@@ -1129,7 +1194,9 @@ fn lift_capturing_lambdas(
             if bound.contains(h) {
                 return; // a shadowed HOF name is a local, not our top-level HOF.
             }
-            let Some(&k) = ctx.hof_arrow.get(h) else { return };
+            let Some(&k) = ctx.hof_arrow.get(h) else {
+                return;
+            };
             let n = args.len();
             if k >= n {
                 return;
@@ -1138,13 +1205,17 @@ fn lift_capturing_lambdas(
                 return;
             };
             // the lambda must type concretely in context (captures pinned by the enclosing scope).
-            let Some(lam_ty) = ctx.lam_tys.get(lspan) else { return };
+            let Some(lam_ty) = ctx.lam_tys.get(lspan) else {
+                return;
+            };
             let mut lam_bound = HashSet::new();
             pats.iter().for_each(|p| pat_bound(p, &mut lam_bound));
             let mut refs = HashSet::new();
             collect_expr_refs(body, &mut refs);
-            let mut caps: Vec<String> =
-                refs.into_iter().filter(|r| bound.contains(r) && !lam_bound.contains(r)).collect();
+            let mut caps: Vec<String> = refs
+                .into_iter()
+                .filter(|r| bound.contains(r) && !lam_bound.contains(r))
+                .collect();
             if caps.is_empty() {
                 return; // non-capturing → left for `build_lambda_candidates`.
             }
@@ -1157,7 +1228,16 @@ fn lift_capturing_lambdas(
                 let Some(t) = sig_binders.get(c) else { return };
                 cap_tys.push(t.clone());
             }
-            (k, n, caps, cap_tys, pats.clone(), (**body).clone(), lam_ty.clone(), *lspan)
+            (
+                k,
+                n,
+                caps,
+                cap_tys,
+                pats.clone(),
+                (**body).clone(),
+                lam_ty.clone(),
+                *lspan,
+            )
         };
         let name = format!("hoflamcap{}", ctx.counter);
         ctx.counter += 1;
@@ -1165,11 +1245,17 @@ fn lift_capturing_lambdas(
         // so the function types without AX0405 and specializes.
         let mut sig = lam_ty;
         for t in cap_tys.into_iter().rev() {
-            sig = ast::Type::Arrow { mult: ast::Mult::Many, from: Box::new(t), to: Box::new(sig) };
+            sig = ast::Type::Arrow {
+                mult: ast::Mult::Many,
+                from: Box::new(t),
+                to: Box::new(sig),
+            };
         }
         // hoflamcap<N>: captures (leading, same names) ++ the lambda's own params, body verbatim.
-        let mut hpats: Vec<ast::Pat> =
-            caps.iter().map(|c| ast::Pat::Var(c.clone(), lspan)).collect();
+        let mut hpats: Vec<ast::Pat> = caps
+            .iter()
+            .map(|c| ast::Pat::Var(c.clone(), lspan))
+            .collect();
         hpats.extend(lam_pats);
         ctx.new_funcs.push(ast::Func {
             name: name.clone(),
@@ -1187,7 +1273,11 @@ fn lift_capturing_lambdas(
         // Replace the lambda arg with the partial application `hoflamcap<N> cap0 cap1 …`.
         let mut app = ast::Expr::Var(name, lspan);
         for c in &caps {
-            app = ast::Expr::App(Box::new(app), Box::new(ast::Expr::Var(c.clone(), lspan)), lspan);
+            app = ast::Expr::App(
+                Box::new(app),
+                Box::new(ast::Expr::Var(c.clone(), lspan)),
+                lspan,
+            );
         }
         if let Some(slot) = arg_mut(e, n - 1 - k) {
             *slot = app;
@@ -1324,7 +1414,14 @@ fn build_lambda_candidates(
         });
     }
     for f in &module.funcs {
-        walk_func(f, &std::collections::HashSet::new(), hof_arrow, &mut candidates, &mut new_funcs, &mut counter);
+        walk_func(
+            f,
+            &std::collections::HashSet::new(),
+            hof_arrow,
+            &mut candidates,
+            &mut new_funcs,
+            &mut counter,
+        );
     }
     module.funcs.extend(new_funcs);
     candidates
@@ -1351,9 +1448,15 @@ fn commit_lambda_lifts(
     let keep: HashSet<String> = committed.clone();
     // remove the dropped candidates' unreferenced hoflam funcs; sign the committed ones.
     let cand_names: HashSet<String> = candidates.iter().map(|(n, _)| n.clone()).collect();
-    module.funcs.retain(|f| !cand_names.contains(&f.name) || keep.contains(&f.name));
+    module
+        .funcs
+        .retain(|f| !cand_names.contains(&f.name) || keep.contains(&f.name));
     for f in &mut module.funcs {
-        if let Some(ty) = keep.contains(&f.name).then(|| inferred.get(&f.name)).flatten() {
+        if let Some(ty) = keep
+            .contains(&f.name)
+            .then(|| inferred.get(&f.name))
+            .flatten()
+        {
             f.sig = Some(ty.clone());
         }
     }
@@ -1404,7 +1507,8 @@ fn lambda_captures_local(
     collect_expr_refs(body, &mut refs);
     let mut lam_bound = std::collections::HashSet::new();
     pats.iter().for_each(|p| pat_bound(p, &mut lam_bound));
-    refs.iter().any(|r| bound.contains(r) && !lam_bound.contains(r))
+    refs.iter()
+        .any(|r| bound.contains(r) && !lam_bound.contains(r))
 }
 
 /// Scope-aware demand collection over a whole function: seeds the `bound` set with the clause
@@ -1463,7 +1567,11 @@ fn single_arrow_param(f: &ast::Func) -> Option<usize> {
     if f.clauses.len() != 1 {
         return None;
     }
-    if !f.clauses[0].pats.iter().all(|p| matches!(p, ast::Pat::Var(..))) {
+    if !f.clauses[0]
+        .pats
+        .iter()
+        .all(|p| matches!(p, ast::Pat::Var(..)))
+    {
         return None;
     }
     let arrows: Vec<usize> = sig
@@ -1603,7 +1711,12 @@ fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
     let Some(sig) = f.sig.as_ref() else {
         return true;
     };
-    if f.clauses.len() != 1 || !f.clauses[0].pats.iter().all(|p| matches!(p, ast::Pat::Var(..))) {
+    if f.clauses.len() != 1
+        || !f.clauses[0]
+            .pats
+            .iter()
+            .all(|p| matches!(p, ast::Pat::Var(..)))
+    {
         return true;
     }
     let clause = &f.clauses[0];
@@ -1897,10 +2010,7 @@ fn rewrite_hof_calls(
     let ast::Expr::Var(g, _) = chead else {
         return;
     };
-    if !fn_names.contains(g)
-        || bound.contains(g)
-        || !generated.contains(&(h.clone(), g.clone()))
-    {
+    if !fn_names.contains(g) || bound.contains(g) || !generated.contains(&(h.clone(), g.clone())) {
         return;
     }
     let mangled = format!("{h}$${g}");
@@ -1946,7 +2056,11 @@ fn split_arrows(sig: &ast::Type, n: usize) -> (Vec<ast::Type>, ast::Type) {
 fn prepend_arrows(caps: &[ast::Type], body: ast::Type) -> ast::Type {
     let mut t = body;
     for c in caps.iter().rev() {
-        t = ast::Type::Arrow { mult: ast::Mult::Many, from: Box::new(c.clone()), to: Box::new(t) };
+        t = ast::Type::Arrow {
+            mult: ast::Mult::Many,
+            from: Box::new(c.clone()),
+            to: Box::new(t),
+        };
     }
     t
 }
@@ -1995,7 +2109,9 @@ fn make_hof_spec(
         .as_ref()
         .and_then(|s| s.param_types().get(k).map(|t| t.param_types().len()))
         .unwrap_or(1);
-    let g_arity = clos_sig.map(|s| s.param_types().len()).unwrap_or(arrow_arity);
+    let g_arity = clos_sig
+        .map(|s| s.param_types().len())
+        .unwrap_or(arrow_arity);
     let captures = g_arity.saturating_sub(arrow_arity);
     // the closure's RESIDUAL type after its captured args (for the type-var match below), and
     // the captured params' types (for the clone's leading params).
@@ -2015,9 +2131,10 @@ fn make_hof_spec(
     // then prepended so the clone is `cap0_ty -> … -> <dropped hof sig>`.
     if let Some(sig) = &clone.sig {
         let mut dropped = drop_arrow_param(sig, k);
-        if let (Some(arrow_ty), Some(cs)) =
-            (sig.param_types().get(k).copied(), residual_clos_sig.as_ref())
-        {
+        if let (Some(arrow_ty), Some(cs)) = (
+            sig.param_types().get(k).copied(),
+            residual_clos_sig.as_ref(),
+        ) {
             let mut subst = std::collections::HashMap::new();
             if match_type(arrow_ty, cs, &mut subst) {
                 dropped = subst_type(&dropped, &subst);
@@ -2031,12 +2148,18 @@ fn make_hof_spec(
     let repl = {
         let mut e = ast::Expr::Var(clos.to_string(), pspan);
         for c in &cap_names {
-            e = ast::Expr::App(Box::new(e), Box::new(ast::Expr::Var(c.clone(), pspan)), pspan);
+            e = ast::Expr::App(
+                Box::new(e),
+                Box::new(ast::Expr::Var(c.clone(), pspan)),
+                pspan,
+            );
         }
         e
     };
     for name in cap_names.iter().rev() {
-        clone.clauses[0].pats.insert(0, ast::Pat::Var(name.clone(), pspan));
+        clone.clauses[0]
+            .pats
+            .insert(0, ast::Pat::Var(name.clone(), pspan));
     }
     // rewrite the closure param → the concrete closure (applied to its captures) in the clause.
     let cl = &mut clone.clauses[0];
@@ -2189,9 +2312,14 @@ fn match_type(
         },
         (Con(a), Con(b)) => a == b,
         (App(f1, a1), App(f2, a2)) => match_type(f1, f2, subst) && match_type(a1, a2, subst),
-        (Arrow { from: f1, to: t1, .. }, Arrow { from: f2, to: t2, .. }) => {
-            match_type(f1, f2, subst) && match_type(t1, t2, subst)
-        }
+        (
+            Arrow {
+                from: f1, to: t1, ..
+            },
+            Arrow {
+                from: f2, to: t2, ..
+            },
+        ) => match_type(f1, f2, subst) && match_type(t1, t2, subst),
         (Tuple(xs), Tuple(ys)) if xs.len() == ys.len() => {
             xs.iter().zip(ys).all(|(x, y)| match_type(x, y, subst))
         }
@@ -2207,9 +2335,14 @@ fn types_equal(a: &ast::Type, b: &ast::Type) -> bool {
     match (a, b) {
         (Var(x), Var(y)) | (Con(x), Con(y)) => x == y,
         (App(f1, a1), App(f2, a2)) => types_equal(f1, f2) && types_equal(a1, a2),
-        (Arrow { from: f1, to: t1, .. }, Arrow { from: f2, to: t2, .. }) => {
-            types_equal(f1, f2) && types_equal(t1, t2)
-        }
+        (
+            Arrow {
+                from: f1, to: t1, ..
+            },
+            Arrow {
+                from: f2, to: t2, ..
+            },
+        ) => types_equal(f1, f2) && types_equal(t1, t2),
         (Tuple(xs), Tuple(ys)) if xs.len() == ys.len() => {
             xs.iter().zip(ys).all(|(x, y)| types_equal(x, y))
         }
@@ -2224,7 +2357,10 @@ fn subst_type(t: &ast::Type, subst: &std::collections::HashMap<String, ast::Type
     match t {
         Var(v) => subst.get(v).cloned().unwrap_or_else(|| t.clone()),
         Con(_) | Unit => t.clone(),
-        App(f, a) => App(Box::new(subst_type(f, subst)), Box::new(subst_type(a, subst))),
+        App(f, a) => App(
+            Box::new(subst_type(f, subst)),
+            Box::new(subst_type(a, subst)),
+        ),
         Arrow { mult, from, to } => Arrow {
             mult: *mult,
             from: Box::new(subst_type(from, subst)),
@@ -2337,7 +2473,14 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
         // Kept SEPARATE from `consumed_params` (which feeds `alias_borrowers`/AX0912) so a fn
         // that embeds a FRESH value copying a scalar arg (`build … Cons (P{a=n}) …`) is not
         // mis-flagged as an element-aliasing borrower.
-        for (i, (p, t)) in f.clauses.first().map_or(&[][..], |c| &c.pats[..]).iter().zip(&ptypes).enumerate() {
+        for (i, (p, t)) in f
+            .clauses
+            .first()
+            .map_or(&[][..], |c| &c.pats[..])
+            .iter()
+            .zip(&ptypes)
+            .enumerate()
+        {
             if let ast::Pat::Var(n, _) = p {
                 let embeds = f.clauses.iter().any(|c| match &c.body {
                     ast::Body::Plain(e) => embedded_in_ctor(n, e),
@@ -2383,7 +2526,8 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
                 // double-free against the caller's drop of the list. A concrete heap param with
                 // NO heap payload (`Box Int` — a scalar accessor's arg) must NOT qualify: it is a
                 // borrow, and consuming it would double-free a value its owner still frees.
-                if !(core::is_heap_shaped(ty) && (core::ty_has_var(ty) || carries_heap_payload(ty, &heap_payload_data)))
+                if !(core::is_heap_shaped(ty)
+                    && (core::ty_has_var(ty) || carries_heap_payload(ty, &heap_payload_data)))
                 {
                     continue;
                 }
@@ -2426,9 +2570,7 @@ fn carries_heap_payload(
         ast::Type::Tuple(ts) => ts
             .iter()
             .any(|t| core::is_heap_shaped(t) || core::ty_has_var(t)),
-        _ => ty
-            .head_con()
-            .is_some_and(|h| heap_payload_data.contains(h)),
+        _ => ty.head_con().is_some_and(|h| heap_payload_data.contains(h)),
     }
 }
 
@@ -2583,9 +2725,10 @@ fn consumed_params(
                 }
                 // direct destructuring in the clause head: `f (Cons b ..) = <b>`
                 ast::Pat::Con(con, subs, _)
-                    if arm_field_escapes(con, subs, &bodies, con_field_heap) => {
-                        out.insert(i);
-                    }
+                    if arm_field_escapes(con, subs, &bodies, con_field_heap) =>
+                {
+                    out.insert(i);
+                }
                 _ => {}
             }
         }
@@ -2611,7 +2754,9 @@ fn collect_consuming_cases(
             }
         }
     }
-    for_each_subexpr(e, &mut |sub| collect_consuming_cases(sub, con_field_heap, names));
+    for_each_subexpr(e, &mut |sub| {
+        collect_consuming_cases(sub, con_field_heap, names);
+    });
 }
 
 /// `true` if some heap field binder of pattern `Con subs` escapes via any of the
@@ -2658,16 +2803,15 @@ fn embedded_in_ctor(name: &str, e: &ast::Expr) -> bool {
             here || args.iter().any(|a| embedded_in_ctor(name, a))
         }
         ast::Expr::Tuple(es, _) => es.iter().any(|x| is_var(x) || embedded_in_ctor(name, x)),
-        ast::Expr::RecordCon(_, fs, _) => {
-            fs.iter().any(|(_, x)| is_var(x) || embedded_in_ctor(name, x))
-        }
+        ast::Expr::RecordCon(_, fs, _) => fs
+            .iter()
+            .any(|(_, x)| is_var(x) || embedded_in_ctor(name, x)),
         ast::Expr::If(_, t, el, _) => embedded_in_ctor(name, t) || embedded_in_ctor(name, el),
         ast::Expr::Case(_, arms, _) => arms.iter().any(|(_, b)| embedded_in_ctor(name, b)),
         ast::Expr::Let(_, body, _) => embedded_in_ctor(name, body),
         _ => false,
     }
 }
-
 
 /// Applies `g` to each immediate sub-expression of `e` (one level).
 fn for_each_subexpr(e: &ast::Expr, g: &mut dyn FnMut(&ast::Expr)) {
@@ -2755,7 +2899,9 @@ fn moved_into_consuming(
             } else {
                 false
             };
-            here || args.iter().any(|a| moved_into_consuming(name, a, consuming))
+            here || args
+                .iter()
+                .any(|a| moved_into_consuming(name, a, consuming))
         }
         ast::Expr::If(_, t, el, _) => {
             moved_into_consuming(name, t, consuming) || moved_into_consuming(name, el, consuming)
@@ -2765,9 +2911,9 @@ fn moved_into_consuming(
             .any(|(_, b)| moved_into_consuming(name, b, consuming)),
         ast::Expr::Let(_, body, _) => moved_into_consuming(name, body, consuming),
         ast::Expr::Tuple(es, _) => es.iter().any(|x| moved_into_consuming(name, x, consuming)),
-        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => {
-            fs.iter().any(|(_, x)| moved_into_consuming(name, x, consuming))
-        }
+        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => fs
+            .iter()
+            .any(|(_, x)| moved_into_consuming(name, x, consuming)),
         _ => false,
     }
 }
@@ -2799,9 +2945,9 @@ fn moved_into_closure(
             .any(|(_, b)| moved_into_closure(name, b, closures)),
         ast::Expr::Let(_, body, _) => moved_into_closure(name, body, closures),
         ast::Expr::Tuple(es, _) => es.iter().any(|x| moved_into_closure(name, x, closures)),
-        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => {
-            fs.iter().any(|(_, x)| moved_into_closure(name, x, closures))
-        }
+        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => fs
+            .iter()
+            .any(|(_, x)| moved_into_closure(name, x, closures)),
         _ => false,
     }
 }
@@ -2859,7 +3005,15 @@ fn param_is_pure_escape(
         match clause.pats.get(idx) {
             Some(ast::Pat::Var(p, _)) => {
                 for body in &bodies {
-                    if !p_path_ok(p, body, false, con_field_heap, consuming, &closures, &mut saw) {
+                    if !p_path_ok(
+                        p,
+                        body,
+                        false,
+                        con_field_heap,
+                        consuming,
+                        &closures,
+                        &mut saw,
+                    ) {
                         return false;
                     }
                 }
@@ -4106,9 +4260,8 @@ pub fn parse_import_text(
 /// (transitive) imports against. Returns `None` after pushing a diagnostic when the
 /// file is missing or malformed. The CLI reads the file from disk; the salsa engine
 /// reads it from a tracked input so dependents are invalidated when it changes.
-pub type ImportResolver<'a> =
-    dyn Fn(&std::path::Path, &ast::ImportDecl, &mut Diagnostics) -> Option<(ast::Module, String)>
-        + 'a;
+pub type ImportResolver<'a> = dyn Fn(&std::path::Path, &ast::ImportDecl, &mut Diagnostics) -> Option<(ast::Module, String)>
+    + 'a;
 
 /// Disk-backed import resolution (the CLI path): read the file, then parse it.
 pub fn disk_import_resolver(

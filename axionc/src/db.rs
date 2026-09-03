@@ -141,9 +141,10 @@ impl AxionDb {
                     Err(_) => continue, // missing → AX0900 emitted at query time
                 },
             };
-            let dir = std::path::Path::new(&p)
-                .parent()
-                .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf);
+            let dir = std::path::Path::new(&p).parent().map_or_else(
+                || std::path::PathBuf::from("."),
+                std::path::Path::to_path_buf,
+            );
             for import in crate::module_imports(&text) {
                 if let Some(s) = crate::import_target_path(&dir, &import).to_str() {
                     stack.push(s.to_string());

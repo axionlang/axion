@@ -33,9 +33,19 @@ fn differential_fuzz_gate() {
     let script = format!("{}/../scripts/fuzz.py", env!("CARGO_MANIFEST_DIR"));
     let axionc = env!("CARGO_BIN_EXE_axionc");
     let out = Command::new(py)
-        .args([&script, "--count", "40", "--seed", "20240827", "--keep-going"])
+        .args([
+            &script,
+            "--count",
+            "40",
+            "--seed",
+            "20240827",
+            "--keep-going",
+        ])
         .env("AXIONC", axionc)
-        .env("AXION_CLANG", std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into()))
+        .env(
+            "AXION_CLANG",
+            std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into()),
+        )
         .output()
         .expect("run fuzz.py");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -47,5 +57,8 @@ fn differential_fuzz_gate() {
          --count 40 --seed 20240827`:\n{stdout}\n{stderr}"
     );
     // sanity: the run actually exercised programs (not an empty/no-op pass).
-    assert!(stdout.contains("summary"), "fuzz gate produced no summary:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("summary"),
+        "fuzz gate produced no summary:\n{stdout}\n{stderr}"
+    );
 }

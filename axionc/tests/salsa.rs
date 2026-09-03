@@ -76,7 +76,8 @@ fn editing_one_body_rechecks_only_that_declaration() {
     // Edit g's body with a LENGTH-CHANGING edit. Thanks to the relative-offset
     // normalization, `main` (which shifts in the file) has an unchanged normalized
     // body and is reused; `f` (before g) is unchanged. Only g re-checks.
-    let v2 = "f :: Int -> Int\nf x = x\n\ng :: Int -> Int\ng y = y + 1234\n\nmain :: Int\nmain = 0\n";
+    let v2 =
+        "f :: Int -> Int\nf x = x\n\ng :: Int -> Int\ng y = y + 1234\n\nmain :: Int\nmain = 0\n";
     let file = db.set_file("/two.axi", v2.to_string());
     let _ = db::diagnostics_of(&db, file);
     let delta = check_runs(&log) - after_first;
@@ -101,11 +102,15 @@ fn editing_one_isolated_body_reinfers_only_that_declaration() {
     let mut db = AxionDb::with_event_logger(Arc::clone(&log));
 
     // Two isolated functions: annotated, calling only builtins.
-    let v1 = "f :: Int -> Int\nf x = x + 1\n\ng :: Int -> Int\ng y = y + 2\n\nmain :: Int\nmain = 0\n";
+    let v1 =
+        "f :: Int -> Int\nf x = x + 1\n\ng :: Int -> Int\ng y = y + 2\n\nmain :: Int\nmain = 0\n";
     let file = db.set_file("/iso.axi", v1.to_string());
     let _ = db::diagnostics_of(&db, file);
     let after_first = infer_runs(&log);
-    assert!(after_first >= 2, "first run infers each isolated decl, got {after_first}");
+    assert!(
+        after_first >= 2,
+        "first run infers each isolated decl, got {after_first}"
+    );
 
     // Edit g's body with a LENGTH-CHANGING edit. The relative-offset normalization
     // keeps `main`'s normalized body identical despite its shift in the file, so it
@@ -163,7 +168,10 @@ fn engine_diagnostics_match_whole_module() {
         );
         checked += 1;
     }
-    assert!(checked > 20, "expected to exercise many fixtures, got {checked}");
+    assert!(
+        checked > 20,
+        "expected to exercise many fixtures, got {checked}"
+    );
 }
 
 #[test]
@@ -181,7 +189,10 @@ fn editing_an_imported_file_updates_the_importer() {
     let mut db = AxionDb::default();
     let a = db.set_file(a_path.to_str().unwrap(), a_src.to_string());
     // B is an OPEN buffer defining `helper`.
-    db.set_file(b_path.to_str().unwrap(), "helper :: Int -> Int\nhelper x = x\n".to_string());
+    db.set_file(
+        b_path.to_str().unwrap(),
+        "helper :: Int -> Int\nhelper x = x\n".to_string(),
+    );
     db.load_imports(a_path.to_str().unwrap());
 
     let d1 = db::diagnostics_of(&db, a);
@@ -191,7 +202,10 @@ fn editing_an_imported_file_updates_the_importer() {
     );
 
     // Edit B: `helper` is gone. A's use of it must now be unresolved.
-    db.set_file(b_path.to_str().unwrap(), "other :: Int -> Int\nother x = x\n".to_string());
+    db.set_file(
+        b_path.to_str().unwrap(),
+        "other :: Int -> Int\nother x = x\n".to_string(),
+    );
     let d2 = db::diagnostics_of(&db, a);
     assert!(
         d2.iter().any(|d| d.code == "AX0101"),

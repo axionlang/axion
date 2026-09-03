@@ -153,7 +153,11 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 slot: None,
             });
         }
-        Op::UpdateRecord { base, fields, inplace } => {
+        Op::UpdateRecord {
+            base,
+            fields,
+            inplace,
+        } => {
             // IN-PLACE: the base's block BECOMES the result — its resources move into
             // the returned record (no separate free). BY-COPY: the base is READ to
             // copy its (non-linear, so safely aliased) fields into a FRESH block, so
@@ -245,10 +249,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             }
             // Integer comparisons READ both operands and return a scalar `Bool` — they
             // BORROW their args (the owner still Auto-Drops them) and produce nothing.
-            if func == "axion_bignum_eq"
-                || func == "axion_bignum_lt"
-                || func == "axion_bignum_gt"
-            {
+            if func == "axion_bignum_eq" || func == "axion_bignum_lt" || func == "axion_bignum_gt" {
                 e.borrows.extend(args.iter());
                 return e;
             }
@@ -324,19 +325,14 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                     parent: None,
                     slot: None,
                 });
-            } else if func == "axion_i8_new"
-                || func == "axion_i8_iota"
-                || func == "axion_i8_set"
-            {
+            } else if func == "axion_i8_new" || func == "axion_i8_iota" || func == "axion_i8_set" {
                 // I8Array constructors + in-place set → fresh/threaded owned block.
                 e.produces = Some(Res {
                     key: Some("I8Array".into()),
                     parent: None,
                     slot: None,
                 });
-            } else if func == "axion_i32_new"
-                || func == "axion_i32_iota"
-                || func == "axion_i32_set"
+            } else if func == "axion_i32_new" || func == "axion_i32_iota" || func == "axion_i32_set"
             {
                 e.produces = Some(Res {
                     key: Some("I32Array".into()),
@@ -1356,9 +1352,7 @@ impl Ck<'_> {
                     if promoted {
                         s.split.entry(rn.clone()).or_default().insert(idx);
                         self.transfers.insert(name.clone());
-                        let key = self
-                            .recinfo
-                            .field_drop_slot(&con, idx);
+                        let key = self.recinfo.field_drop_slot(&con, idx);
                         return Some(Res {
                             key,
                             parent: Some(rn.clone()),
@@ -2164,10 +2158,7 @@ mod tests {
         // facts the annotated dump cannot show
         // `makeAndDrop b = 0` now reclaims the never-used `%1` param at entry
         // (Auto-Drop) rather than leaking it — a `drops: b` fact, not `never-used`.
-        assert!(
-            v.contains("makeAndDrop b = ok — drops: b\n"),
-            "got:\n{v}"
-        );
+        assert!(v.contains("makeAndDrop b = ok — drops: b\n"), "got:\n{v}");
         assert!(v.contains("axion_drop_List _p = ok\n"), "got:\n{v}");
         // Since DCE, the view holds only what `drop_ok.axi` reaches (its user fn +
         // the destructors it needs) — NOT the whole prelude, so the counts are small
