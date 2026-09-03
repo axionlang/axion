@@ -89,6 +89,30 @@ fn stdlib_batch2_runs_on_all_backends() {
 }
 
 #[test]
+fn delete_runs_on_all_backends() {
+    // `delete`/`deleteBy` are VIEW functions (return the tail on a match) — the closure-era
+    // view-detection fix (returns_var_directly) auto-moves the list so they are sound (no
+    // double-free). delete 3 [1,3,5] = [1,5], sum = 6 on every backend.
+    let fx = fixture("stdlib_delete.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "6",
+            "{backend}: sum of delete 3 [1,3,5] should be 6"
+        );
+    }
+}
+
+#[test]
 fn stdlib_batch3_runs_on_all_backends() {
     // Prelude breadth batch 3: nubBy, maximumByOr, minimumByOr, scanl1, count. nubBy exercises
     // the closure-capture borrow fix (its inner filter lambda captures both predicate and pivot).

@@ -98,6 +98,7 @@ NATIVE=(
   axionc/tests/fixtures/native_case.axi
   axionc/tests/fixtures/native_closure.axi
   axionc/tests/fixtures/drop_view.axi
+  axionc/tests/fixtures/stdlib_delete.axi
   axionc/tests/fixtures/native_fib.axi
   axionc/tests/fixtures/lambda_hof.axi
   axionc/tests/fixtures/nested_drop.axi

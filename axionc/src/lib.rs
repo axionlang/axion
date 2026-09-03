@@ -3739,6 +3739,18 @@ count :: (a -> Bool) -> List a -> Int
 count p xs = case xs of
   Nil -> 0
   Cons y ys -> if p y then 1 + count p ys else count p ys
+
+-- `deleteBy`/`delete`: remove the FIRST element matching the predicate/`==`. A VIEW function —
+-- on a match it returns the tail directly (aliasing the input's spine), so the list arg is
+-- auto-moved (`returns_var_directly`, core.rs) and the removed prefix leaks conservatively,
+-- like `drop`/`dropWhile` (sound, no double-free; excluded from the leak-free gate).
+deleteBy :: (a -> a -> Bool) -> a -> List a -> List a
+deleteBy f x xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if f x y then ys else Cons y (deleteBy f x ys)
+
+delete :: Eq a => a -> List a -> List a
+delete x xs = deleteBy eq x xs
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`
