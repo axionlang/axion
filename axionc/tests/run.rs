@@ -89,6 +89,30 @@ fn stdlib_batch2_runs_on_all_backends() {
 }
 
 #[test]
+fn stdlib_batch3_runs_on_all_backends() {
+    // Prelude breadth batch 3: nubBy, maximumByOr, minimumByOr, scanl1, count. nubBy exercises
+    // the closure-capture borrow fix (its inner filter lambda captures both predicate and pivot).
+    // = 26 on every backend; leak-freedom gated by scripts/sanitize.sh.
+    let fx = fixture("stdlib_batch3.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "26",
+            "{backend}: stdlib batch 3 expression should evaluate to 26"
+        );
+    }
+}
+
+#[test]
 fn sortby_runs_on_all_backends() {
     // `sortBy` with a user comparator exercises the closure-capture borrow fix (the pivot is
     // captured across two partition closures + `Cons y`). Sorted sum is order-independent, so

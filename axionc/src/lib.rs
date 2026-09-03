@@ -3711,6 +3711,34 @@ sortBy leq xs = case xs of
     let less = filter (\\z -> leq z y) ys in
     let greq = filter (\\z -> not (leq z y)) ys in
     append (sortBy leq less) (Cons y (sortBy leq greq))
+
+-- List extensions (batch 3) — comparator/predicate HOFs. `nubBy`'s inner `filter (\\z -> not
+-- (p y z))` captures both `p` and the pivot `y`, exercising the closure-capture borrow fix.
+-- `maximumByOr`/`minimumByOr` take a `>`/`<` predicate + a default (safe on `[]`, like maxOr).
+nubBy :: (a -> a -> Bool) -> List a -> List a
+nubBy p xs = case xs of
+  Nil -> Nil
+  Cons y ys -> Cons y (nubBy p (filter (\\z -> not (p y z)) ys))
+
+maximumByOr :: (a -> a -> Bool) -> a -> List a -> a
+maximumByOr gt d xs = case xs of
+  Nil -> d
+  Cons y ys -> if gt y d then maximumByOr gt y ys else maximumByOr gt d ys
+
+minimumByOr :: (a -> a -> Bool) -> a -> List a -> a
+minimumByOr lt d xs = case xs of
+  Nil -> d
+  Cons y ys -> if lt y d then minimumByOr lt y ys else minimumByOr lt d ys
+
+scanl1 :: (a -> a -> a) -> List a -> List a
+scanl1 f xs = case xs of
+  Nil -> Nil
+  Cons y ys -> scanl f y ys
+
+count :: (a -> Bool) -> List a -> Int
+count p xs = case xs of
+  Nil -> 0
+  Cons y ys -> if p y then 1 + count p ys else count p ys
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`
