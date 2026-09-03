@@ -61,7 +61,7 @@ concat$Int xs  =
   else
   else
   else
-hoflam7 a b  =
+hoflam11 a b  =
 lam$0 [env ]a b  =
   let _d1000000 = call zipWith _t0 xs ys  ; Δ{_t0} · makes List
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -101,7 +101,7 @@ lam$0 [env ]a b  =
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
           let _t0 = callclo f a b  ; Δ{}
       let _t0 = call concat$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
-          let _t0 = call hoflam7 a b  ; Δ{}
+          let _t0 = call hoflam11 a b  ; Δ{}
       let _t0 = call snd y  ; Δ{y ys} · moves{y}
       let _t0 = call sum ys  ; Δ{}
   let _t0 = closure lam$0  ; Δ{} · makes heap
@@ -117,7 +117,7 @@ lam$0 [env ]a b  =
   let _t18 = con Cons _t12 _t17  ; Δ{_t12 _t17} · moves{_t12 _t17} · makes List$List$Int
   let _t19 = call concat$Int _t18  ; Δ{_t18} · moves{_t18} · makes List$Int
       let _t1 = call map$$snd ys  ; Δ{ys} · moves{ys} · makes List$Int
-          let _t1 = call zipWith$$hoflam7 as_ bs  ; Δ{} · makes List$Int
+          let _t1 = call zipWith$$hoflam11 as_ bs  ; Δ{} · makes List$Int
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
   let _t1 = con Cons 2 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   let _t20 = call sum _t19  ; Δ{_t19}
@@ -132,7 +132,7 @@ lam$0 [env ]a b  =
   let _t29 = con Cons 20 _t28  ; Δ{_t25 _t28} · moves{_t28} · makes List$Int
   let _t2 = con Cons 1 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
   let _t30 = con Cons 10 _t29  ; Δ{_t25 _t29} · moves{_t29} · makes List$Int
-  let _t31 = call zipWith$$hoflam7 _t25 _t30  ; Δ{_t25 _t30} · makes List$Int
+  let _t31 = call zipWith$$hoflam11 _t25 _t30  ; Δ{_t25 _t30} · makes List$Int
   let _t32 = call sum _t31  ; Δ{_t31}
   let _t33 = + _t21 _t32  ; Δ{}
   let _t34 = con Nil  ; Δ{} · makes List$Int
@@ -221,7 +221,7 @@ map$$snd xs  =
       ret + y _t0  ; Δ{}
 snd p  =
 sum xs  =
-zipWith$$hoflam7 xs ys  =
+zipWith$$hoflam11 xs ys  =
 zipWith f xs ys  =
 zip xs ys  =
   ; Δ{}

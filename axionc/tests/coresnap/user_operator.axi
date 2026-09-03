@@ -9,7 +9,7 @@
 
 
 <+> a b  =
-applyOp$$hoflam7 a b  =
+applyOp$$hoflam11 a b  =
 applyOp f a b  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
@@ -17,7 +17,7 @@ double n  =
   drop _t1
     else
   else
-hoflam7 _op0 _op1  =
+hoflam11 _op0 _op1  =
 lam$0 [env ]eta$1  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
@@ -38,11 +38,11 @@ main  =
     ret 0  ; Δ{}
     ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call applyOp$$hoflam7 s t  ; Δ{}
+  ret call applyOp$$hoflam11 s t  ; Δ{}
   ret callclo f a b  ; Δ{}
   ret callclo f x  ; Δ{}
   ret call double eta$1  ; Δ{}
-  ret call hoflam7 a b  ; Δ{}
+  ret call hoflam11 a b  ; Δ{}
   ret call <+> _op0 _op1  ; Δ{}
   ret * n 2  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}

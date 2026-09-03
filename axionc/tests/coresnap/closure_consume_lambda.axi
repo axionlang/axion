@@ -54,7 +54,7 @@ axion_drop_List _p  =
   else
   else
 foldr$$addI z xs  =
-hoflam6 x  =
+hoflam10 x  =
 lam$0 [env ]eta$1  =
 lam$1 [env ]eta$3  =
       let _d1000000 = call addI y _t0  ; Δ{_t0 y} · makes Integer
@@ -152,7 +152,7 @@ range lo hi  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
     ret acc  ; Δ{}
-  ret call hoflam6 eta$1  ; Δ{} · makes Box
+  ret call hoflam10 eta$1  ; Δ{} · makes Box
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret case b of

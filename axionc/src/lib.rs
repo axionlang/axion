@@ -3751,6 +3751,20 @@ deleteBy f x xs = case xs of
 
 delete :: Eq a => a -> List a -> List a
 delete x xs = deleteBy eq x xs
+
+-- `unzip`/`zip3`: tuple-building/consuming list HOFs — leak-free now that container destructors
+-- reclaim tuple cells (drop_way handles tuples). `zip3` reuses the prelude `zipWith3`.
+unzip :: List (a, b) -> (List a, List b)
+unzip xs = case xs of
+  Nil -> (Nil, Nil)
+  Cons p ps -> case p of
+    (a, b) -> consBoth a b (unzip ps)
+consBoth :: a -> b -> (List a, List b) -> (List a, List b)
+consBoth a b ab = case ab of
+  (as_, bs) -> (Cons a as_, Cons b bs)
+
+zip3 :: List a -> List b -> List c -> List (a, b, c)
+zip3 xs ys zs = zipWith3 (\\a b c -> (a, b, c)) xs ys zs
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`

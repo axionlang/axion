@@ -27,8 +27,8 @@ axion_drop_List _p  =
   else
 evenN n  =
 filter$$evenN xs  =
-foldr$$hoflam7 z xs  =
-hoflam7 x a  =
+foldr$$hoflam11 z xs  =
+hoflam11 x a  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
@@ -44,7 +44,7 @@ hoflam7 x a  =
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call evenN y  ; Δ{y ys}
-      let _t0 = call foldr$$hoflam7 z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call foldr$$hoflam11 z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call sq y  ; Δ{y ys}
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t0 = mod n 2  ; Δ{}
@@ -76,8 +76,8 @@ map$$sq xs  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
         ret call filter$$evenN ys  ; Δ{y ys} · moves{ys} · makes List$Int
-  ret call foldr$$hoflam7 0 _t8  ; Δ{_t8} · moves{_t8}
-      ret call hoflam7 y _t0  ; Δ{y}
+  ret call foldr$$hoflam11 0 _t8  ; Δ{_t8} · moves{_t8}
+      ret call hoflam11 y _t0  ; Δ{y}
   ret case xs of
   ret case xs of
   ret case xs of

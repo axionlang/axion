@@ -20,8 +20,8 @@ axion_drop_List _p  =
     else
   else
   else
-filter$$hoflam6 xs  =
-hoflam6 x  =
+filter$$hoflam10 xs  =
+hoflam10 x  =
 length xs  =
   let _d1000000 = call length _t7  ; Δ{_t7}
   let _d1000000 = rtcall axion_bignum_gt x _t0  ; Δ{_t0}
@@ -41,18 +41,18 @@ length xs  =
   let _dd7 = if _dd6 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-      let _t0 = call hoflam6 y  ; Δ{y ys}
+      let _t0 = call hoflam10 y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
   let _t0 = rtcall axion_bignum_from_i64 1  ; Δ{} · makes Integer
   let _t0 = rtcall axion_bignum_from_i64 2  ; Δ{} · makes Integer
-        let _t1 = call filter$$hoflam6 ys  ; Δ{y ys} · moves{ys} · makes List$Integer
+        let _t1 = call filter$$hoflam10 ys  ; Δ{y ys} · moves{ys} · makes List$Integer
   let _t1 = rtcall axion_bignum_from_i64 5  ; Δ{_t0} · makes Integer
   let _t2 = rtcall axion_bignum_from_i64 9  ; Δ{_t0 _t1} · makes Integer
   let _t3 = con Nil  ; Δ{_t0 _t1 _t2} · makes List$Integer
   let _t4 = con Cons _t2 _t3  ; Δ{_t0 _t1 _t2 _t3} · moves{_t2 _t3} · makes List$Integer
   let _t5 = con Cons _t1 _t4  ; Δ{_t0 _t1 _t4} · moves{_t1 _t4} · makes List$Integer
   let _t6 = con Cons _t0 _t5  ; Δ{_t0 _t5} · moves{_t0 _t5} · makes List$Integer
-  let _t7 = call filter$$hoflam6 _t6  ; Δ{_t6} · moves{_t6} · makes List$Integer
+  let _t7 = call filter$$hoflam10 _t6  ; Δ{_t6} · moves{_t6} · makes List$Integer
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
 main  =
@@ -70,7 +70,7 @@ main  =
   ret 0  ; Δ{}
   ret 0  ; Δ{}
       ret + 1 _t0  ; Δ{}
-        ret call filter$$hoflam6 ys  ; Δ{ys} · moves{ys} · makes List$Integer
+        ret call filter$$hoflam10 ys  ; Δ{ys} · moves{ys} · makes List$Integer
   ret case xs of
   ret case xs of
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Integer

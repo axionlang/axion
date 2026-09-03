@@ -89,6 +89,29 @@ fn stdlib_batch2_runs_on_all_backends() {
 }
 
 #[test]
+fn unzip_zip3_run_on_all_backends() {
+    // unzip/zip3 — tuple list HOFs, leak-free now that container destructors reclaim tuple cells
+    // (the tuple-shell reclamation fix). = 343 on every backend; leak-freedom gated by sanitize.sh.
+    let fx = fixture("stdlib_unzip.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "343",
+            "{backend}: unzip/zip3 expression should evaluate to 343"
+        );
+    }
+}
+
+#[test]
 fn delete_runs_on_all_backends() {
     // `delete`/`deleteBy` are VIEW functions (return the tail on a match) — the closure-era
     // view-detection fix (returns_var_directly) auto-moves the list so they are sound (no

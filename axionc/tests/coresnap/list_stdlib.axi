@@ -64,10 +64,10 @@ elem x xs  =
   else
 evenN n  =
 filter$$evenN xs  =
-foldl$$hoflam10 z xs  =
-foldr$$hoflam7 z xs  =
-hoflam10 a x  =
-hoflam7 x a  =
+foldl$$hoflam14 z xs  =
+foldr$$hoflam11 z xs  =
+hoflam11 x a  =
+hoflam14 a x  =
 length xs  =
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -85,8 +85,8 @@ length xs  =
     let _dfree = rtcall axion_free _p  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call evenN y  ; Δ{y ys}
-      let _t0 = call foldr$$hoflam7 z ys  ; Δ{y ys} · moves{ys}
-      let _t0 = call hoflam10 z y  ; Δ{y ys}
+      let _t0 = call foldr$$hoflam11 z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call hoflam14 z y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call reverse$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
       let _t0 = call sum ys  ; Δ{}
@@ -116,7 +116,7 @@ length xs  =
   let _t23 = con Cons 3 _t22  ; Δ{_t22} · moves{_t22} · makes List$Int
   let _t24 = con Cons 2 _t23  ; Δ{_t23} · moves{_t23} · makes List$Int
   let _t25 = con Cons 1 _t24  ; Δ{_t24} · moves{_t24} · makes List$Int
-  let _t26 = call foldr$$hoflam7 0 _t25  ; Δ{_t25} · moves{_t25}
+  let _t26 = call foldr$$hoflam11 0 _t25  ; Δ{_t25} · moves{_t25}
   let _t27 = + _t21 _t26  ; Δ{}
   let _t28 = con Nil  ; Δ{} · makes List$Int
   let _t29 = con Cons 6 _t28  ; Δ{_t28} · moves{_t28} · makes List$Int
@@ -125,7 +125,7 @@ length xs  =
       let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}
   let _t30 = con Cons 5 _t29  ; Δ{_t29} · moves{_t29} · makes List$Int
   let _t31 = con Cons 4 _t30  ; Δ{_t30} · moves{_t30} · makes List$Int
-  let _t32 = call foldl$$hoflam10 0 _t31  ; Δ{_t31} · moves{_t31}
+  let _t32 = call foldl$$hoflam14 0 _t31  ; Δ{_t31} · moves{_t31}
   let _t33 = + _t27 _t32  ; Δ{}
   let _t34 = con Nil  ; Δ{} · makes List$Int
   let _t35 = con Cons 300 _t34  ; Δ{_t34} · moves{_t34} · makes List$Int
@@ -207,8 +207,8 @@ null xs  =
         ret call drop _t1 ys  ; Δ{} · makes List
         ret call elem x ys  ; Δ{}
         ret call filter$$evenN ys  ; Δ{y ys} · moves{ys} · makes List$Int
-      ret call foldl$$hoflam10 _t0 ys  ; Δ{y ys} · moves{ys}
-      ret call hoflam7 y _t0  ; Δ{y}
+      ret call foldl$$hoflam14 _t0 ys  ; Δ{y ys} · moves{ys}
+      ret call hoflam11 y _t0  ; Δ{y}
   ret case xs of
   ret case xs of
   ret case xs of

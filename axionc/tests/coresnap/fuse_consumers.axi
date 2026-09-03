@@ -34,11 +34,11 @@ axion_drop_List _p  =
   else
   else
   else
-foldr$$hoflam7 z xs  =
+foldr$$hoflam11 z xs  =
 fuse$0 [env ]x acc  =
 fuse$1 [env ]x acc  =
 fuse$2 [env ]x acc  =
-hoflam7 x acc  =
+hoflam11 x acc  =
 length xs  =
   let a = call rangeFusedSum 1 11 0  ; Δ{}
   let c = call rangeFused 1 11 fuse$0_clo 0  ; Δ{fuse$0_clo}
@@ -59,10 +59,10 @@ length xs  =
   let fuse$0_clo = closure fuse$0  ; Δ{} · makes heap
   let fuse$1_clo = closure fuse$1  ; Δ{} · makes heap
   let fuse$2_clo = closure fuse$2  ; Δ{} · makes heap
-  let g = call foldr$$hoflam7 1 _t2  ; Δ{_t2} · moves{_t2}
+  let g = call foldr$$hoflam11 1 _t2  ; Δ{_t2} · moves{_t2}
   let h = if _t4 then
   let i = if _t6 then
-      let _t0 = call foldr$$hoflam7 z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call foldr$$hoflam11 z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
@@ -114,7 +114,7 @@ range lo hi  =
     ret 7  ; Δ{}
     ret 7  ; Δ{}
     ret acc  ; Δ{}
-      ret call hoflam7 y _t0  ; Δ{y}
+      ret call hoflam11 y _t0  ; Δ{y}
     ret call rangeFusedSum _t1 hi _t2  ; Δ{}
     ret call rangeFused _t1 hi c _t2  ; Δ{}
   ret case xs of
