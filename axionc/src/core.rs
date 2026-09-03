@@ -479,6 +479,12 @@ pub struct RecordInfo {
     /// EXTRACTED and escapes, the scrutinee must be freed shallowly (as with a
     /// concrete heap field) to avoid double-freeing the escaped payload.
     con_poly_fields: HashMap<String, HashSet<usize>>,
+    /// constructor → (bare-type-var field index → its type-PARAMETER index in the data decl).
+    /// `data Either a b = Left a | Right b` → Left{0→0}, Right{0→1}. Lets a poly field be
+    /// resolved to the RIGHT argument of a multi-param instantiation's mono key
+    /// (`Either$Integer$String` field of `Left` → arg 0 = Integer), not the leaky/unsound
+    /// single-param `split_once('$')` assumption (`List$Elem`).
+    con_field_param: HashMap<String, HashMap<usize, usize>>,
     /// constructor → field indices declared `%1` (linear — per-field ownership,
     /// docs/per-field-ownership.md): each such slot owns its own linear resource,
     /// so a remainder drop may skip the moved-out ones (`Term::Drop` skip set).
@@ -529,6 +535,7 @@ impl RecordInfo {
                 let mut slots = Vec::new();
                 let mut poly = HashSet::new();
                 let mut owned = HashSet::new();
+                let mut field_param: HashMap<usize, usize> = HashMap::new();
                 for (i, f) in c.fields.iter().enumerate() {
                     // a `data`-typed field is a heap allocation owned by the
                     // record → must be reclaimed when the parent dies. Tuples and
@@ -542,9 +549,14 @@ impl RecordInfo {
                             // `axion_drop_List` frees the spine and leaks them).
                             slots.push((r.field_offset(&c.name, i), f.ty.clone()));
                         }
-                    } else if matches!(f.ty, Type::Var(_)) {
-                        // a bare type variable: possibly-heap once instantiated.
+                    } else if let Type::Var(v) = &f.ty {
+                        // a bare type variable: possibly-heap once instantiated. Record which
+                        // type PARAMETER of the data decl it is, so a multi-param instantiation
+                        // resolves the field to the correct mono-key argument.
                         poly.insert(i);
+                        if let Some(pi) = d.params.iter().position(|p| p == v) {
+                            field_param.insert(i, pi);
+                        }
                     }
                     if f.mult == ast::Mult::One {
                         owned.insert(i);
@@ -556,6 +568,9 @@ impl RecordInfo {
                 r.con_drop_slots.insert(c.name.clone(), slots);
                 if !poly.is_empty() {
                     r.con_poly_fields.insert(c.name.clone(), poly);
+                }
+                if !field_param.is_empty() {
+                    r.con_field_param.insert(c.name.clone(), field_param);
                 }
                 if !owned.is_empty() {
                     r.con_owned_fields.insert(c.name.clone(), owned);
@@ -576,35 +591,6 @@ impl RecordInfo {
         self.type_cons.get(ty).map(Vec::as_slice)
     }
 
-    /// How to reclaim a POLYMORPHIC field (`a` in `Cons a (List a)`) when it is
-    /// dropped, resolved from the container's instantiation key (`scrut_key`, e.g.
-    /// `List$Expr`). Only handles a single-type-parameter container with a plain
-    /// (non-nested) element, so the single argument is unambiguous:
-    ///   - a `data` type with heap fields (`Expr`) → `Deep` (its destructor);
-    ///   - a shallow heap `data` type (`P`, a record of scalars) → `Flat` free;
-    ///   - a non-heap element (`Int`, an unboxed enum) → `Skip` (no drop).
-    ///
-    /// `None` = unresolved (generic `a`, multi-parameter, or nested element) — the
-    /// caller falls back to the previous behaviour (a flat `free`).
-    fn poly_elem_drop(&self, con: &str, scrut_key: &str) -> Option<PolyDrop> {
-        let ty = self.con_type.get(con)?;
-        if self.type_arity.get(ty).copied() != Some(1) {
-            return None;
-        }
-        let elem = scrut_key.split_once('$')?.1;
-        if elem.contains('$') {
-            return None; // nested parametric (`List$Int`) — leave to the fallback
-        }
-        if self.needs_deep.contains(elem) {
-            Some(PolyDrop::Deep(elem.to_string()))
-        } else if self.enum_types.contains(elem) {
-            Some(PolyDrop::Skip) // unboxed enum immediate — nothing to free
-        } else if self.type_arity.contains_key(elem) {
-            Some(PolyDrop::Flat) // boxed `data` with no owned heap fields → flat free
-        } else {
-            Some(PolyDrop::Skip) // Int/Float/Bool/… — not a heap value
-        }
-    }
 
     /// For a concrete tuple mono-key (`tuple$Integer$Integer`) of `arity` elements,
     /// the per-element reclamation of a `%1`-consumed tuple: `None` = no drop (a
@@ -670,6 +656,40 @@ impl RecordInfo {
             _ if self.type_arity.contains_key(el) => Some(None), // boxed data, no heap → flat free
             _ => None,                                  // Int/Float/Bool/unknown → no drop
         }
+    }
+
+    /// Splits a container mono-key into (head, per-parameter argument keys) using type arities:
+    /// `Either$Integer$String` → ("Either", ["Integer","String"]); `List$tuple$Int$Int` →
+    /// ("List", ["tuple$Int$Int"]). Arity 1 takes the whole remainder (so a tuple arg is kept
+    /// intact); arity ≥ 2 segments arg-by-arg (bailing `None` on a nested tuple arg, whose arity
+    /// is not encoded — conservative). `None` if the key has no `$` (a nullary/scalar type).
+    fn split_mono_key(&self, key: &str) -> Option<(String, Vec<String>)> {
+        let (head, rest) = key.split_once('$')?;
+        let n = self.type_arity.get(head).copied().unwrap_or(0);
+        if n <= 1 {
+            return Some((head.to_string(), vec![rest.to_string()]));
+        }
+        let toks: Vec<&str> = rest.split('$').collect();
+        let mut pos = 0usize;
+        let mut args = Vec::with_capacity(n);
+        for _ in 0..n {
+            args.push(self.consume_one_key(&toks, &mut pos)?);
+        }
+        (pos == toks.len()).then_some((head.to_string(), args))
+    }
+
+    /// Reclamation for a polymorphic field `fi` of constructor `con`, given the SCRUTINEE's mono
+    /// key: resolves the field's own type PARAMETER to the matching argument of the instantiation
+    /// (`Left`'s field of `Either$Integer$String` → arg 0 = Integer → `axion_bignum_free`), then
+    /// classifies it. Handles MULTI-PARAM types correctly — the old `split_once('$')` took the
+    /// whole tail as one element (`Integer$String`), mis-freeing it. Outer `None` = do not make
+    /// droppable (unresolved / scalar → never a wrong free); `Some(None)` = flat free; `Some(k)` =
+    /// keyed reclaimer.
+    fn poly_field_elem_key(&self, con: &str, fi: usize, scrut_key: &str) -> Option<Option<String>> {
+        let param_idx = *self.con_field_param.get(con)?.get(&fi)?;
+        let (_, args) = self.split_mono_key(scrut_key)?;
+        let elem = args.get(param_idx)?;
+        self.classify_tuple_elem(elem)
     }
 
     /// `data`-typed fields a constructor owns: (offset, type name).
@@ -4794,13 +4814,6 @@ fn subst_ty(t: &Type, subst: &HashMap<String, Type>) -> Type {
     }
 }
 
-/// How to reclaim a polymorphic field, once its element type is resolved.
-enum PolyDrop {
-    Skip,         // non-heap (Int / unboxed enum) — no drop
-    Flat,         // heap value with no owned heap fields — a flat `free`
-    Deep(String), // needs the destructor `axion_drop_<key>`
-}
-
 /// How to free a value of a (concrete) field type.
 enum DropWay {
     Flat,         // heap object with no owned heap fields → a flat `free`
@@ -7787,19 +7800,11 @@ impl Elab<'_> {
                 _ => Some(k),
             });
         }
-        // polymorphic field: resolve the concrete element from the scrutinee mono key
-        // (`List$tuple$Integer$Integer` → `tuple$Integer$Integer`; `List$Integer` →
-        // `Integer`). Only classify to a DEFINITE heap key — scalar/shallow/unknown bail.
+        // polymorphic field: resolve the field's own type PARAMETER to the matching argument of
+        // the scrutinee's instantiation (multi-param-correct: `Left`'s field of
+        // `Either$Integer$String` → arg 0 = Integer), then classify. Scalar/shallow/unknown bail.
         let sk = self.dty(scrut)?;
-        let (_, elem) = sk.split_once('$')?;
-        match elem {
-            "Integer" => Some(Some("Integer".into())),
-            "String" => Some(Some("String".into())),
-            _ if elem.contains('$') => Some(Some(elem.to_string())), // tuple / nested container mono
-            _ if self.recinfo.needs_deep_drop(elem) => Some(Some(elem.to_string())), // deep data
-            _ if self.recinfo.is_shallow_boxed_data(elem) => Some(None), // boxed data → flat free
-            _ => None, // scalar / unknown → leave as-is (conservative)
-        }
+        self.recinfo.poly_field_elem_key(con, fi, &sk)
     }
 
     /// Frees the DISCARDED heap elements of a `%1`-consumed TUPLE scrutinee `s`,
@@ -7866,30 +7871,17 @@ impl Elab<'_> {
                     _ => Some(k),
                 }
             } else {
-                // polymorphic field (`a`): resolve the element's concrete reclamation
-                // from the scrutinee's instantiation key. A blind flat `free` here
-                // corrupts a non-heap element (`List Int`) or shallow-frees a deep
-                // one (`List Expr`), so resolve when we can and skip when unsure.
-                //
-                // `Integer`/`String` elements need their TAGGED reclaimer
-                // (`axion_bignum_free` / `axion_str_drop`, routed by the `Some("Integer")`/
-                // `Some("String")` drop key) — `poly_elem_drop` does not model them and
-                // returns `Skip`, silently LEAKING a discarded `Integer` element
-                // (`len :: List Integer %1`, `Cons y ys -> 1 + len ys`). Resolve those
-                // directly off the scrutinee mono key, then fall back to `poly_elem_drop`.
-                let elem = elab.dty(s).and_then(|sk| sk.split_once('$').map(|(_, e)| e.to_string()));
-                match elem.as_deref() {
-                    Some("Integer") => Some("Integer".to_string()),
-                    Some("String") => Some("String".to_string()),
-                    _ => match elab
-                        .dty(s)
-                        .and_then(|sk| elab.recinfo.poly_elem_drop(con, &sk))
-                    {
-                        Some(PolyDrop::Skip) => continue, // non-heap — nothing to free
-                        Some(PolyDrop::Flat) => None,     // shallow heap → flat `free`
-                        Some(PolyDrop::Deep(k)) => Some(k), // deep → its destructor
-                        None => None,                     // unresolved → prior flat `free`
-                    },
+                // polymorphic field (`a`): resolve the field's own type PARAMETER to the matching
+                // argument of the scrutinee's instantiation and classify it. Multi-param-correct
+                // (`Right`'s field of `Either$Integer$String` → arg 1 = String → `axion_str_drop`);
+                // the old `split_once('$')` took the whole tail (`Integer$String`) as one element
+                // → a flat `free` on a boxed Integer/String or a scalar = BAD FREE. `Integer`/
+                // `String` route to their tagged reclaimer; a scalar/unresolved poly field is
+                // SKIPPED (not flat-freed — a scalar is not heap).
+                match elab.dty(s).and_then(|sk| elab.recinfo.poly_field_elem_key(con, fi, &sk)) {
+                    None => continue,             // scalar / unresolved → nothing to free
+                    Some(None) => None,           // shallow heap → flat `free`
+                    Some(Some(k)) => Some(k),     // Integer/String/nested/deep → keyed reclaimer
                 }
             };
             let off = elab.recinfo.field_offset(con, fi);

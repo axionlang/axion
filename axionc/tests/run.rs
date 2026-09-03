@@ -89,6 +89,30 @@ fn stdlib_batch2_runs_on_all_backends() {
 }
 
 #[test]
+fn either_discard_reclaims_multiparam_payload() {
+    // A concrete multi-param `Either Integer Integer` discarding a heap payload used to BAD-FREE
+    // (the poly-field resolver mis-split the mono key); now each field resolves to its correct
+    // type argument. = 8 on every backend; leak-freedom + no-corruption gated by sanitize.sh.
+    let fx = fixture("either_discard.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "8",
+            "{backend}: either_discard should evaluate to 8"
+        );
+    }
+}
+
+#[test]
 fn unzip_zip3_run_on_all_backends() {
     // unzip/zip3 — tuple list HOFs, leak-free now that container destructors reclaim tuple cells
     // (the tuple-shell reclamation fix). = 343 on every backend; leak-freedom gated by sanitize.sh.
