@@ -220,10 +220,21 @@ fn run_fn(
         }
     }
     let borrowed = ba.get(&f.name);
+    // each `%1` param's mono destructor key (`e :: Either Integer Integer` → `Either$Integer$
+    // Integer`), so a param scrutinee resolves its extracted fields' reclaimers — extending the
+    // drop-key cross-check to fields extracted from a PARAMETER (not just a locally-produced value).
+    let param_key: HashMap<&str, &str> = f
+        .owned_drop_ty
+        .iter()
+        .filter_map(|(n, k)| k.as_deref().map(|k| (n.as_str(), k)))
+        .collect();
     for (i, p) in f.params.iter().enumerate() {
         if owned.contains(p) && !borrowed.is_some_and(|s| s.contains(&i)) {
             // an owned heap param is a live resource this fn must free.
-            st.insert(p.clone(), Val { owned: true, ..Default::default() });
+            st.insert(
+                p.clone(),
+                Val { owned: true, key: param_key.get(p.as_str()).map(|k| (*k).to_string()), ..Default::default() },
+            );
         } else {
             // a borrowed/scalar param: present (so a `Field` read of it is tracked as an
             // interior alias — needed to detect `grab`-style return-of-a-field), owning and
@@ -832,6 +843,34 @@ mod tests {
         assert!(
             !fs.iter().any(|f| f.cat == Cat::WrongDropKey),
             "a correctly-keyed Integer drop must not flag, got {fs:?}"
+        );
+    }
+
+    /// The drop-key check reaches a PARAMETER's key too (seeded from `owned_drop_ty`): a `%1`
+    /// `Integer` param flat-freed (`key = None`) is a bad-free. Guards the param-key seeding that
+    /// extends the cross-check to fields extracted from a param (proven end-to-end on either_discard).
+    #[test]
+    fn flags_wrong_drop_key_on_integer_param() {
+        let f = CoreFn {
+            name: "t".into(),
+            params: vec!["x".into()],
+            captures: vec![],
+            is_closure: false,
+            owned_params: vec!["x".into()],
+            owned_drop_ty: vec![("x".into(), Some("Integer".into()))],
+            // drop x (flat free) ; ret 0
+            body: Term::Drop(
+                "x".into(),
+                None,
+                vec![],
+                (0, 0),
+                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), (0, 0))),
+            ),
+        };
+        let fs = one(f);
+        assert!(
+            fs.iter().any(|f| f.cat == Cat::WrongDropKey),
+            "expected WrongDropKey for a flat-freed Integer param, got {fs:?}"
         );
     }
 
