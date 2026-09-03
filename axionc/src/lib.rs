@@ -3661,6 +3661,43 @@ listToMaybe :: List a -> Maybe a
 listToMaybe xs = case xs of
   Nil -> Nothing
   Cons y ys -> Just y
+
+-- List extensions (batch 2) -------------------------------------------------
+
+scanl :: (b -> a -> b) -> b -> List a -> List b
+scanl f z xs = Cons z (scanlGo f z xs)
+scanlGo :: (b -> a -> b) -> b -> List a -> List b
+scanlGo f z xs = case xs of
+  Nil -> Nil
+  Cons y ys -> scanl f (f z y) ys
+
+zipWith3 :: (a -> b -> c -> d) -> List a -> List b -> List c -> List d
+zipWith3 f xs ys zs = case xs of
+  Nil -> Nil
+  Cons a as_ -> case ys of
+    Nil -> Nil
+    Cons b bs -> case zs of
+      Nil -> Nil
+      Cons c cs -> Cons (f a b c) (zipWith3 f as_ bs cs)
+
+findIndicesFrom :: (a -> Bool) -> Int -> List a -> List Int
+findIndicesFrom p i xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if p y then Cons i (findIndicesFrom p (i + 1) ys) else findIndicesFrom p (i + 1) ys
+
+findIndices :: (a -> Bool) -> List a -> List Int
+findIndices p xs = findIndicesFrom p 0 xs
+
+elemIndices :: Eq a => a -> List a -> List Int
+elemIndices x xs = findIndicesFrom (\\y -> eq x y) 0 xs
+
+-- comparison combinators ----------------------------------------------------
+
+comparing :: Ord b => (a -> b) -> a -> a -> Bool
+comparing f x y = le (f x) (f y)
+
+on :: (b -> b -> c) -> (a -> b) -> a -> a -> c
+on g f x y = g (f x) (f y)
 ";
 
 /// Lowers the typeclass instances: each method of each `instance`

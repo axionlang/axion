@@ -65,6 +65,30 @@ fn stdlib_batch_runs_on_all_backends() {
 }
 
 #[test]
+fn stdlib_batch2_runs_on_all_backends() {
+    // Prelude breadth batch 2: scanl, zipWith3, findIndices/elemIndices, comparing, on.
+    // One expression exercising all of them agrees across every backend (leak-freedom gated
+    // by scripts/sanitize.sh).
+    let fx = fixture("stdlib_batch2.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "368",
+            "{backend}: stdlib batch 2 expression should evaluate to 368"
+        );
+    }
+}
+
+#[test]
 fn hof_specialization_matches_generic_on_all_backends() {
     // Higher-order specialization (opt-in, AXION_SPECIALIZE=1): `foldr addI`/`map sq` are
     // cloned per closure into direct-call `foldr$$addI`/`map$$sq`. The result must equal the
