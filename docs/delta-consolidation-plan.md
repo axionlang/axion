@@ -68,6 +68,34 @@ for the Core proof, and an evidence run.
 - **Abort condition:** if any real bug is caught by `check_all` but not `verify.rs`,
   stop and fold that rule into `verify.rs` first.
 
+**STATUS: DONE.** The cross-check is implemented as `delta::tests::subsumes_*` — it re-runs
+the same genuine-bug tampers as the `rejects_*` Δ guards but asserts **both** `check_all` and
+`verify.rs` fire on one Core (helper `both_analyses`). The subsumption map, over `check_all`'s
+seven negative-guard rules:
+
+| `check_all` rule (tamper) | property | `verify.rs` mechanism | subsumed? |
+|---|---|---|---|
+| double-drop | double-free | `Cat::DoubleFree` (`do_drop` on a dead val) | ✅ |
+| deep-drop-after-payload-move | double-free (child freed twice) | deep-drop-frees-children marks the moved child dead → later free = `DoubleFree` | ✅ |
+| leak-at-return | leak | `Cat::Leak` (owned+live at exit), gate-worthy | ✅ |
+| unbalanced-arms | leak on one path | per-path `Cat::Leak`, gate-worthy | ✅ |
+| drop-key mismatch (container) | bad-free (wrong destructor) | `Cat::WrongDropKey` — **GAP FOUND + FOLDED IN** | ✅ (after fix) |
+| drop-of-non-resource | well-formedness | — (not a memory-safety property) | out of scope¹ |
+| use-of-unbound-variable | well-formedness | — (not a memory-safety property) | out of scope¹ |
+
+¹ Structural well-formedness, not soundness: an unbound/alien variable never reaches Core in
+real compilation (the front-end's scope + linearity checks reject it first). Only reachable by
+deliberate tamper; excluded by construction.
+
+**The one real gap Step 0 surfaced (and closed):** `verify.rs`'s drop-key cross-check
+originally validated only the boxed-scalar tags (`Integer`/`String`); a **container** freed
+with a bogus destructor key (`List$Int` dropped as `Wrong`) passed silently. Folded in
+(`verify.rs`, `ctor_base`): a deep drop must name the value's own type *constructor*, compared
+on the base before `$` so generic-vs-mono naming (`List` ↔ `List$Int`) is **not** a mismatch —
+which keeps the check 0-false-positive (the very drift class that made `check_all` itself FP is
+sidestepped) while catching a genuinely different constructor. Verified 0-FP over the whole
+corpus (`verifier_reports_no_corruption_over_all_fixtures`).
+
 ### Step 1 — Make `verify.rs` the blocking Δ gate
 **Files:** `scripts/` (+ `.github/workflows/ci.yml`).
 - Add `scripts/verify-gate.sh`: build `--release` (or reuse the debug binary), run

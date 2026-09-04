@@ -1972,6 +1972,167 @@ mod tests {
         );
     }
 
+    // --- Step 0 (docs/delta-consolidation-plan.md): SUBSUMPTION cross-check ---
+    //
+    // Every genuine-bug tamper that makes the Δ judgment (`check_all`) fire must ALSO be
+    // caught by the drop-balance verifier (`verify.rs`) — direct evidence that promoting
+    // `verify.rs` to the sole Δ gate (Path B) loses no real bug. These re-run the SAME
+    // tampers as the `rejects_*` guards above but assert BOTH judgments on one Core.
+    //
+    // Scope: the five MEMORY-SAFETY rules (double-free, deep-drop-after-move, leak-at-exit,
+    // unbalanced-arms leak, drop-key mismatch). `check_all`'s two other rules —
+    // drop-of-non-resource and use-of-unbound-variable — are structural well-formedness,
+    // not memory-safety properties: an unbound/alien variable never reaches Core in real
+    // compilation (the front-end's scope + linearity checks reject it first), so they are
+    // out of scope by construction and only reachable via deliberate tamper.
+
+    /// Run BOTH judgments over the same tampered Core (fresh pipeline, one tamper).
+    fn both_analyses(
+        src: &str,
+        tamper: impl FnOnce(&mut Vec<CoreFn>),
+    ) -> (Vec<DeltaErr>, Vec<crate::verify::Finding>) {
+        let l = pipeline(src);
+        let mut fns = l.fns.clone();
+        tamper(&mut fns);
+        let delta = check_all(&fns, &l.borrow_args, &l.recinfo);
+        let lw = crate::core::Lowered {
+            fns,
+            borrow_args: l.borrow_args,
+            recinfo: l.recinfo,
+        };
+        let verify = crate::verify::verify(&lw);
+        (delta, verify)
+    }
+
+    /// The subsumption assertion: the tamper must fire `check_all` (else the cross-check is
+    /// vacuous), and `verify.rs` must fire a corruption or a gate-worthy leak on it too.
+    fn assert_subsumed(src: &str, what: &str, tamper: impl FnOnce(&mut Vec<CoreFn>)) {
+        let (delta, verify) = both_analyses(src, tamper);
+        assert!(
+            !delta.is_empty(),
+            "{what}: the tamper must make check_all fire, else the cross-check proves nothing"
+        );
+        let verify_fires = verify
+            .iter()
+            .any(|f| f.cat.is_corruption() || crate::verify::leak_gates(f));
+        assert!(
+            verify_fires,
+            "{what}: verify.rs must ALSO flag the bug check_all caught (subsumption gap!)\n  \
+             check_all: {:?}\n  verify:   {verify:?}",
+            msgs(&delta),
+        );
+    }
+
+    #[test]
+    fn subsumes_double_drop() {
+        assert_subsumed(OWNED_POLY, "double-drop", |fns| {
+            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
+            map_term(&mut f.body, &mut |t| {
+                if let Term::Drop(v, ty, _, _, body) = t {
+                    let inner = std::mem::replace(
+                        body,
+                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                    );
+                    *t = Term::Drop(
+                        v.clone(),
+                        ty.clone(),
+                        Vec::new(),
+                        NO_SPAN,
+                        Box::new(Term::Drop(
+                            v.clone(),
+                            ty.clone(),
+                            Vec::new(),
+                            NO_SPAN,
+                            inner,
+                        )),
+                    );
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn subsumes_deep_drop_after_payload_move() {
+        assert_subsumed(OWNED_POLY, "deep-drop-after-move", |fns| {
+            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
+            map_term(&mut f.body, &mut |t| {
+                if let Term::Drop(v, None, _, _, body) = t {
+                    if let Term::Let(x, rhs, _, rest) = body.as_mut() {
+                        let (x2, rhs2) = (x.clone(), rhs.clone());
+                        let rest2 = std::mem::replace(
+                            rest,
+                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                        );
+                        *t = Term::Let(
+                            x2,
+                            rhs2,
+                            NO_SPAN,
+                            Box::new(Term::Drop(
+                                v.clone(),
+                                Some("List$Int".into()),
+                                Vec::new(),
+                                NO_SPAN,
+                                rest2,
+                            )),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn subsumes_leak_at_return() {
+        assert_subsumed(OWNED_POLY, "leak-at-return", |fns| {
+            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
+            map_term(&mut f.body, &mut |t| {
+                if let Term::Drop(_, Some(_), _, _, body) = t {
+                    let body = std::mem::replace(
+                        body,
+                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                    );
+                    *t = *body;
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn subsumes_unbalanced_arms() {
+        assert_subsumed(OWNED_POLY, "unbalanced-arms", |fns| {
+            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
+            let mut seen = false;
+            map_term(&mut f.body, &mut |t| {
+                if let Term::Drop(_, Some(_), _, _, body) = t {
+                    if !seen {
+                        seen = true;
+                        let body = std::mem::replace(
+                            body,
+                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                        );
+                        *t = *body;
+                    }
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn subsumes_drop_key_mismatch() {
+        assert_subsumed(OWNED_POLY, "drop-key-mismatch", |fns| {
+            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
+            map_term(&mut f.body, &mut |t| {
+                if let Term::Drop(v, Some(_), _, _, body) = t {
+                    let body = std::mem::replace(
+                        body,
+                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                    );
+                    *t = Term::Drop(v.clone(), Some("Wrong".into()), Vec::new(), NO_SPAN, body);
+                }
+            });
+        });
+    }
+
     // --- Δ-2: the annotated dump locks the format (the oracle gate sorts
     //     lines, so it cannot see an annotation on the wrong line) ---
 

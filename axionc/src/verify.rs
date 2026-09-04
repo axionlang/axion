@@ -103,6 +103,14 @@ pub fn leak_gates(f: &Finding) -> bool {
     f.cat == Cat::Leak && !f.func.ends_with("$step")
 }
 
+/// The type CONSTRUCTOR of a mono/destructor key: the segment before the first `$` argument
+/// separator (`List$Int` → `List`, `Either$Int$Int` → `Either`, `Integer` → `Integer`). Used
+/// by the drop-key cross-check so generic-vs-mono naming (`List` ↔ `List$Int`) is not treated
+/// as a mismatch — only a genuinely different constructor is.
+fn ctor_base(key: &str) -> &str {
+    key.split_once('$').map_or(key, |(base, _)| base)
+}
+
 /// Per-variable resource state.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 struct Val {
@@ -505,8 +513,22 @@ impl Verifier<'_> {
                 // bad-free / leak. Only fires when the value's key is DEFINITELY tagged (from its
                 // producer or a resolved poly field), so it is 0-false-positive.
                 let vkey = st.get(x).and_then(|v| v.key.clone());
-                if let Some(vk) = vkey.filter(|k| k == "Integer" || k == "String") {
-                    if key != Some(&vk) {
+                if let Some(vk) = vkey {
+                    // `Integer`/`String` are boxed scalars that MUST be freed by their exact
+                    // tagged reclaimer — even a shell free (`None`) leaks limbs/bytes, so any
+                    // key other than the tag is a bad-free.
+                    let bad = if vk == "Integer" || vk == "String" {
+                        key != Some(&vk)
+                    } else {
+                        // Any other keyed value (a container `List$Int`, `Either$..`, …): a DEEP
+                        // drop (`Some`) must name the value's own type CONSTRUCTOR. Compare the
+                        // base (before `$`) so generic-vs-mono naming (`List` ↔ `List$Int`) is
+                        // NOT a mismatch — only a different constructor (`Wrong` ↔ `List`) is a
+                        // real bad-free. A SHELL free (`None`) is legitimate (payload moved out,
+                        // cell-only free) and never checked. This stays 0-false-positive.
+                        key.is_some_and(|dk| ctor_base(dk) != ctor_base(&vk))
+                    };
+                    if bad {
                         self.finding(Cat::WrongDropKey, x, sp);
                     }
                 }
