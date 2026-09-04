@@ -197,6 +197,25 @@ ownership overlay surfaces (`lsp.rs:236`). Not run in CI (a local/opt-in guard).
   the "advisory / superseded" note; it is now a real blocking verify gate).
 - **Gate:** docs match reality; CI fully green with the Δ soundness gate blocking again.
 
+**STATUS: DONE.** `delta-design.md` gained a top-of-file **REALIZATION UPDATE** banner: the
+single Δ judgment is `verify.rs` (the drop-balance verifier), `check_all` was retired after
+being proven to subsume it, and what survives from `delta.rs` is `op_delta_effect` +
+`dump_annotated` + `check_drop_coherence` (now `--check-coherence`). Its §7 "in practice" CI
+description was updated (`verify-gate.sh` replaces `check-delta.sh`); the §8 phase table is
+kept as the dated historical design log, read through the banner. `memory-model-options.md`
+needed no change (no `check_all`/`check-delta` references).
+
+---
+
+## Path B: COMPLETE
+
+All six steps (0–5) are done and on green CI. Outcome: **`verify.rs` (the drop-balance
+verifier) is the single, proven linearity judgment** — the design's stated endgame — reached
+via the ASan-cross-checked implementation rather than `delta.rs::check_all`, which is retired.
+The `delta` CI job's soundness gate is blocking and in-sync again. The one deviation from the
+original plan (Step 3's ~500-line deletion) is documented above: the `Ck` state machine is
+shared with the coherence guard and the oracle dump, so it stays; net ~250 lines removed.
+
 ## 4. Risk register
 
 | Risk | Mitigation |

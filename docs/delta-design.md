@@ -1,12 +1,34 @@
 # Δ — a single linearity judgment over the ANF Core
 
-Status: design (pre-implementation). Phase A′ (drop-type annotations) is done and
-verified; this document designs the Δ validator that (a) makes Auto-Drop a *proven*
+Status: design doc + realization log. Phase A′ (drop-type annotations) is done and
+verified; this document designed the Δ validator that (a) makes Auto-Drop a *proven*
 single judgment instead of three ad-hoc analyses, and (b) collapses the dual
 analysis (`check.rs` DropPoints ↔ `core.rs` insert_drops).
 
 Source: *Lazy Linearity* (Mesquita & Toninho, POPL 2026; arXiv:2511.10361;
 `spec/studies/Lazy_Linearity.pdf`, text at `/tmp/opencode/ll.txt` + `ll2.txt`).
+
+> **REALIZATION UPDATE (2026-09-04) — the single Δ judgment is `verify.rs`, not
+> `check_all`.** The judgment designed below (§5) was implemented as
+> `delta.rs::check_all` and served as the Δ gate for a time. But the reclamation
+> (`core.rs::insert_drops`) kept advancing while `check_all` drifted behind it, and a
+> newer, **sound** judgment matured in parallel: the **drop-balance verifier**
+> (`src/verify.rs`, default-on `AX0910`/`AX0911`), an abstract interpretation over the
+> *final* drop-inserted Core that proves no double-free / use-after-free / bad-free /
+> gate-worthy leak, is **ASan-cross-checked and 0-false-positive**, and uses the same
+> `delta::op_delta_effect` authority. It was proven to **subsume** `check_all` (the
+> `delta::tests::verify_catches_*` tamper battery, née the Step-0 subsumption
+> cross-check), so `check_all` was **retired** and `verify.rs` is now the sole soundness
+> judgment and the blocking Δ CI gate (`scripts/verify-gate.sh`). See
+> [`delta-consolidation-plan.md`](delta-consolidation-plan.md). The design's *goal* —
+> one proven judgment, no drift-prone duplication — is thus realized, via `verify.rs`
+> rather than `check_all`. What survives from `delta.rs`: `op_delta_effect` (the shared
+> multiplicity axiom table), `dump_annotated` (the oracle-locked `--emit core`
+> annotations) with its `Ck` state machine, and `check_drop_coherence` — the §6
+> coherence cross-check, now the standalone **non-soundness** guard `--check-coherence`
+> (`scripts/check-coherence.sh`, guarding that the LSP-shown DropPoints match the emitted
+> Core). The phase table in §8 below is kept as the historical design log; read it
+> through this update.
 
 ---
 
@@ -300,16 +322,19 @@ generator, mono destructor generation):
   binder-swap C.12), or (b) re-validate: run the Δ checker after the pass.
   β-with-sharing (C.3) and full-laziness (C.7) are lazy-only and **inapplicable**
   (strict ANF — §3).
-- **In practice:** the checker runs in CI after every pass that exists today and
-  after any pass added later. A future optimizer gets the paper's theorems as
-  its license and the checker as its CI. Today the descent is a single pass, so
-  the `delta` job of `.github/workflows/ci.yml` runs the two gate scripts —
-  `dump-oracle.sh` (every fixture's annotated dump byte-matches the stored
-  snapshot; an *unintended* change of behavior cannot land) and `check-delta.sh`
-  (the checker accepts every fixture that reaches the Core); the `axionc` job
-  runs the unit suite, which locks the dump format (`annotated_dump_locks_format`)
-  and the judgment's behavior, and `bench.sh` (also in the `delta` job) is a
-  runtime correctness gate — dev/rel vs C/Rust must agree per kernel.
+- **In practice (updated 2026-09-04):** the soundness judgment runs in CI after every
+  pass that exists today and after any pass added later. A future optimizer gets the
+  paper's theorems as its license and the judgment as its CI. Today the descent is a
+  single pass, so the `delta` job of `.github/workflows/ci.yml` runs the gate scripts —
+  `dump-oracle.sh` (every fixture's annotated dump byte-matches the stored snapshot; an
+  *unintended* change of behavior cannot land) and **`verify-gate.sh`** (the **drop-balance
+  verifier** proves no corruption / no gate-worthy leak over the final Core across the whole
+  corpus — the realized single judgment; see the top-of-file update, `check_all` retired);
+  the `axionc` job runs the unit suite, which locks the dump format
+  (`annotated_dump_locks_format`) and the verifier's behavior, and `bench.sh` (also in the
+  `delta` job) is a runtime correctness gate — dev/rel vs C/Rust must agree per kernel. The
+  §6 coherence cross-check survives as the standalone, opt-in `check-coherence.sh` (not run
+  in CI).
 - The C.9 special case (case-of-case with an inner let) is exactly the
   `Let`/`Case` commutation the strict ANF form permits — no lazy caveats.
 
