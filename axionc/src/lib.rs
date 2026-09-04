@@ -117,7 +117,7 @@ enum Backend {
 pub fn run_cli() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut check_only = false;
-    let mut check_delta = false;
+    let mut check_coherence = false;
     let mut backend = Backend::Interp;
     let mut emit = Emit::Text;
     let mut path: Option<String> = None;
@@ -129,7 +129,7 @@ pub fn run_cli() -> ExitCode {
     while i < args.len() {
         match args[i].as_str() {
             "--check" => check_only = true,
-            "--check-delta" => check_delta = true,
+            "--check-coherence" => check_coherence = true,
             "--fuse" => fuse = true,
             "--no-verify" => no_verify = true,
             "--allow-leaks" => allow_leaks = true,
@@ -246,9 +246,12 @@ pub fn run_cli() -> ExitCode {
         analysis.inplace.iter().map(|ip| ip.span).collect();
 
     // --- Axion Core IR: dump da baixada ANF (partilhada pelos backends) ---
-    if check_delta {
-        // Δ-1 (report-only): the linearity judgment over the annotated Core,
-        // plus the Δ-3 coherence cross-check against the front-end DropPoints.
+    if check_coherence {
+        // Δ-3 coherence cross-check (report-only): the emitted Core's drop
+        // classification/anchors must agree with the front-end DropPoints
+        // (`check.rs`) that the LSP ownership overlay surfaces. This is a
+        // NON-soundness regression guard — the soundness judgment is the
+        // drop-balance verifier (`--emit verify`, default-on AX0910/AX0911).
         let lowered = core::lower_with(
             &module,
             &inplace,
@@ -258,15 +261,14 @@ pub fn run_cli() -> ExitCode {
             &analysis.consume_native_exempt,
             fuse,
         );
-        let mut errs = delta::check_all(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
-        errs.extend(delta::check_drop_coherence(
+        let errs = delta::check_drop_coherence(
             &lowered.fns,
             &lowered.borrow_args,
             &lowered.recinfo,
             &analysis.drops,
-        ));
+        );
         if errs.is_empty() {
-            println!("Δ ok: the Core satisfies the linearity judgment.");
+            println!("Δ ok: the Core's drops agree with the front-end DropPoints.");
             return ExitCode::SUCCESS;
         }
         for e in &errs {
@@ -281,7 +283,7 @@ pub fn run_cli() -> ExitCode {
                 _ => eprintln!("Δ {}: {}", e.func, e.msg),
             }
         }
-        eprintln!("Δ FAILED: {} violation(s).", errs.len());
+        eprintln!("Δ FAILED: {} coherence violation(s).", errs.len());
         return ExitCode::FAILURE;
     }
 
@@ -340,10 +342,11 @@ pub fn run_cli() -> ExitCode {
     }
 
     if emit == Emit::Delta {
-        // Δ-4: the judgment's per-function verdicts plus the resource-life
-        // facts the annotated dump cannot show (drops in the judged Core,
-        // never-used `%1` params, coherence agreement). Report-only: the exit
-        // code is unaffected — `--check-delta` is the verdict channel.
+        // Δ-4: the per-function resource-life facts the annotated dump cannot
+        // show (drops in the judged Core, never-used `%1` params, coherence
+        // agreement). Report-only debug view; the SOUNDNESS gate is the
+        // drop-balance verifier (`--emit verify`), the coherence guard is
+        // `--check-coherence`.
         let lowered = core::lower_with(
             &module,
             &inplace,

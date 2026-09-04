@@ -4109,15 +4109,19 @@ fn stream_fusion_agrees_across_backends() {
             "--fuse {label}"
         );
     }
-    // the Δ checker must accept the fused Core (the §7 contract — a pass that
-    // rewrites the Core re-validates it under the judgment).
+    // the Δ coherence guard must accept the fused Core (a pass that rewrites the
+    // Core keeps the emitted drops in agreement with the front-end DropPoints).
     let out = axionc()
-        .args(["--fuse", "--check-delta", &fixture("fuse_consumers.axi")])
+        .args([
+            "--fuse",
+            "--check-coherence",
+            &fixture("fuse_consumers.axi"),
+        ])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "--fuse --check-delta: {}",
+        "--fuse --check-coherence: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
@@ -4133,7 +4137,7 @@ fn drop_view_agrees_across_backends() {
     // param reaches a recursive call): the caller relinquishes the input,
     // the result's destructor reclaims the shared suffix, and the dropped
     // prefix leaks conservatively. All backends must agree on 180
-    // (51 + 63 + 66); the Δ checker must accept the moved argument.
+    // (51 + 63 + 66); the Δ coherence guard must accept the moved argument.
     let fx = fixture("drop_view.axi");
     let variants: [(&str, &[&str]); 3] = [
         ("interp", &[]),
@@ -4150,12 +4154,12 @@ fn drop_view_agrees_across_backends() {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "180\n", "{label}");
     }
     let out = axionc()
-        .args(["--check-delta", &fixture("drop_view.axi")])
+        .args(["--check-coherence", &fixture("drop_view.axi")])
         .output()
         .unwrap();
     assert!(
         out.status.success(),
-        "--check-delta: {}",
+        "--check-coherence: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

@@ -102,10 +102,10 @@ jobs:
       - name: Δ soundness gate (drop-balance verifier over the corpus)
         run: ./scripts/verify-gate.sh
 
-      # The legacy advisory Δ checker (delta.rs::check_all, scripts/check-delta.sh) was removed
-      # here (Δ-consolidation Step 2, docs/delta-consolidation-plan.md): the blocking Δ soundness
-      # gate above supersedes it (proven to subsume it in Step 0), so the non-blocking signal was
-      # pure redundancy. check_all itself is retired in Step 3.
+      # The legacy Δ checker (delta.rs::check_all) was removed (Δ-consolidation Steps 2-3,
+      # docs/delta-consolidation-plan.md): the blocking Δ soundness gate above supersedes it
+      # (proven to subsume it in Step 0). The coherence cross-check survives as the standalone,
+      # non-soundness `scripts/check-coherence.sh` (--check-coherence), not run in CI.
 
       - name: Bench — Axion dev/rel vs C/Rust agree on every kernel
         run: |

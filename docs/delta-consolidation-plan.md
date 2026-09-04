@@ -141,6 +141,29 @@ now: oracle → Δ soundness gate → bench.
   `op_delta_effect`-based, unaffected) + sanitize + differential + clippy/fmt. ~500
   lines deleted, zero behavior change.
 
+**STATUS: DONE — but the ~500-line premise was WRONG; corrected in flight.** The `Ck`
+judgment state machine (`check_fn`/`term`/`op`/`do_drop`/`use_atom`/`case`, ~350 lines) is
+**not** `check_all`'s to delete — it is **shared**: `check_drop_coherence` (kept, Step 4)
+calls `check_fn`, and `dump_annotated` (the **oracle-snapshotted** `--emit core`) drives
+`dump_term`/`dump_case` which call `self.op()`/`self.do_drop()`/`self.use_atom()`/`same_res`/
+`ret_carries`. So the state machine powers the coherence guard and the oracle annotations —
+it is live code, not the retired gate. What was **uniquely** `check_all`'s and got removed:
+`check_all` itself (a 22-line wrapper over `check_fn`), its CLI wiring, `check-delta.sh`, and
+the `check_all`-only tests. After Steps 1–2 `check_all` no longer gated anything (only the
+report-only CLI + tests called it), so the drift risk was already neutralized; this removes
+the dead second-gate entry point. Concretely:
+- Deleted `delta::check_all`.
+- Folded in **Step 4**: renamed `--check-delta` → `--check-coherence` and dropped its
+  `check_all` call, so it runs **only** `check_drop_coherence` (the non-soundness LSP-ownership
+  guard). `scripts/check-delta.sh` → `scripts/check-coherence.sh`.
+- Deleted the `check_all`-only tests (`accepts_*`, `rejects_*`, the F-1 judgment-rule tests)
+  and converted the Step-0 `subsumes_*` cross-checks to `verify_catches_*` verify-only tamper
+  tests over realistic lowered Core (their subsumption job done; they now stand as verify
+  regression tests). Kept `annotated_dump_locks_format`, the coherence tests, and the
+  `delta_view_*` dump tests.
+- **Net:** ~250 lines removed (mostly the check_all-only tests + the wrapper); the shared
+  `Ck` machine stays. Oracle byte-identical; full suite/clippy/fmt/sanitize green.
+
 ### Step 4 — Decide `check_drop_coherence`'s fate
 **Files:** `axionc/src/delta.rs`, `axionc/src/check.rs`, `scripts/check-delta.sh`.
 The coherence check is the *only* guarantee `verify.rs` does not replicate: it catches
@@ -159,6 +182,12 @@ drift between the front-end liveness (`check.rs` DropPoints) and the Core. Two o
   Keep it as a standalone, clearly-labeled non-soundness check (`--check-coherence`),
   separate from the verify soundness gate.
 - **Gate:** whichever chosen, CI green; the decision recorded in `delta-design.md`.
+
+**STATUS: DONE (folded into Step 3), option (b).** `check_drop_coherence` is kept as the
+standalone, non-soundness guard behind `--check-coherence` (`scripts/check-coherence.sh`),
+clearly separated from the soundness gate (`--emit verify`). It still drives the shared
+`check_fn` to compare the emitted Core's drops against the front-end DropPoints that the LSP
+ownership overlay surfaces (`lsp.rs:236`). Not run in CI (a local/opt-in guard).
 
 ### Step 5 — Reconcile the docs + CI comment
 **Files:** `docs/delta-design.md`, `docs/memory-model-options.md`, `.github/workflows/ci.yml`.

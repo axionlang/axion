@@ -397,30 +397,6 @@ struct Scope {
     split: HashMap<String, HashSet<usize>>,
 }
 
-pub fn check_all(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &RecordInfo) -> Vec<DeltaErr> {
-    let mut out = Vec::new();
-    for f in fns {
-        // hand-managed, generated: session state machines and their `$step`
-        // entry points bypass the drop machinery (scheduler nursery arena)
-        if f.name.starts_with("sess$") || f.name.ends_with("$step") {
-            continue;
-        }
-        let mut ck = Ck {
-            borrow_args,
-            recinfo,
-            errs: Vec::new(),
-            transfers: HashSet::new(),
-        };
-        ck.check_fn(f);
-        out.extend(ck.errs.into_iter().map(|(msg, span)| DeltaErr {
-            func: f.name.clone(),
-            msg,
-            span,
-        }));
-    }
-    out
-}
-
 /// The front-end DropPoints of `fname`, split by classification. Shared by
 /// `check_drop_coherence` and the `--emit delta` view (Δ-4).
 fn drop_sets(drops: &[crate::check::DropPoint], fname: &str) -> (HashSet<String>, HashSet<String>) {
@@ -646,10 +622,12 @@ pub fn check_drop_coherence(
     out
 }
 
-/// Δ-2: `core::dump` with the judgment made visible — every `let`/`ret` is/// annotated with the live-resource env entering it (`; Δ{…}`), the resources
+/// Δ-2: `core::dump` with the judgment made visible — every `let`/`ret` is
+/// annotated with the live-resource env entering it (`; Δ{…}`), the resources
 /// moved out by the op (`moves{…}`), and what it produces (`makes …`).
-/// Deterministic: all sets sorted; the judgment state transitions exactly as
-/// in `check_all` (errors are ignored — the verdict channel is unchanged).
+/// Deterministic: all sets sorted. Runs the same `Ck` state machine as the
+/// coherence check, but only to render annotations (errors are ignored — this
+/// dump is the oracle-locked `--emit core` output, not a soundness verdict).
 pub fn dump_annotated(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &RecordInfo) -> String {
     let mut out = String::new();
     for f in fns {
@@ -731,9 +709,9 @@ fn collect_drops(t: &Term, out: &mut Vec<String>) {
 /// Δ (never used — they must stay in `owned`, the Δ-3, move 2
 /// classification). The coherence cross-check (Δ-3, move 2 + Δ-5 position
 /// rule) is summarized per run. Deterministic (structural walk, sorted sets).
-/// Report-only: the exit code is unaffected — `--check-delta` is the verdict
-/// channel. `lines`/`src` render the violations' anchors (`path:line:col` +
-/// the source line, Δ-5).
+/// Report-only debug view: the exit code is unaffected. The SOUNDNESS gate is the
+/// drop-balance verifier (`--emit verify`); the coherence guard is `--check-coherence`.
+/// `lines`/`src` render the violations' anchors (`path:line:col` + the source line, Δ-5).
 pub fn dump_delta(
     fns: &[CoreFn],
     borrow_args: &BorrowArgs,
@@ -747,7 +725,7 @@ pub fn dump_delta(
         "== Δ: the linearity judgment over the annotated Core (docs/delta-design.md §5)\n",
     );
     out.push_str("   per-function verdicts · drops in the judged Core · never-used %1 params.\n");
-    out.push_str("   Report-only: `--check-delta` is the verdict channel (exit code).\n");
+    out.push_str("   Report-only debug view: soundness = `--emit verify`, coherence = `--check-coherence`.\n");
     let mut n_ok = 0usize;
     let mut n_viol = 0usize;
     let mut n_skipped = 0usize;
@@ -766,8 +744,8 @@ pub fn dump_delta(
         };
         let fin = ck.check_fn(f);
         // the coherence cross-check totals (Δ-3, move 2 + Δ-5 position rule —
-        // same facts and helpers as the `--check-delta` gate): a disagreement
-        // counts as a violation of this function, exactly like `--check-delta`
+        // same facts and helpers as the `--check-coherence` gate): a disagreement
+        // counts as a violation of this function, exactly like `--check-coherence`
         // reports it
         let (never_dp, used_dp) = drop_sets(drops, &f.name);
         let universe: HashSet<String> = f.owned_drop_ty.iter().map(|(n, _)| n.clone()).collect();
@@ -1405,7 +1383,7 @@ impl Ck<'_> {
     /// visible. Every `let`/`ret` carries the live-resource env (Δ) entering
     /// it, the resources moved out, and the produced value. The judgment state
     /// transitions exactly as in `term`/`case`/`op` (report-only; no errors are
-    /// collected — `--check-delta` remains the verdict channel).
+    /// collected — the annotated dump is oracle-locked, not a verdict channel).
     #[allow(clippy::many_single_char_names)]
     fn dump_term(
         &mut self,
@@ -1646,20 +1624,6 @@ mod tests {
         )
     }
 
-    /// Runs the Δ judgment over `src` (fresh pipeline), returning the errors.
-    fn check_src(src: &str) -> Vec<DeltaErr> {
-        let l = pipeline(src);
-        check_all(&l.fns, &l.borrow_args, &l.recinfo)
-    }
-
-    /// Runs the Δ judgment over `src` after a tamper on the lowered Core.
-    fn check_tampered(src: &str, tamper: impl FnOnce(&mut Vec<CoreFn>)) -> Vec<DeltaErr> {
-        let l = pipeline(src);
-        let mut fns = l.fns.clone();
-        tamper(&mut fns);
-        check_all(&fns, &l.borrow_args, &l.recinfo)
-    }
-
     /// Δ-3 coherence cross-check with the front-end's DropPoints (`src` fresh).
     fn coherence_src(src: &str) -> Vec<DeltaErr> {
         let mut diags = Diagnostics::default();
@@ -1725,307 +1689,53 @@ mod tests {
         f(t);
     }
 
-    /// Immutable walk over every `Term` — collect information without
-    /// mutating.  Calls `f` on each term.
-    fn for_each_term(t: &Term, f: &mut impl FnMut(&Term)) {
-        f(t);
-        match t {
-            Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => for_each_term(b, f),
-            Term::Ret(rhs, _) => match rhs {
-                Rhs::Op(_) => {}
-                Rhs::If(_, th, el) => {
-                    for_each_term(th, f);
-                    for_each_term(el, f);
-                }
-                Rhs::Case(_, arms) => {
-                    for (_, b) in arms {
-                        for_each_term(b, f);
-                    }
-                }
-            },
-        }
-    }
-
     const OWNED_POLY: &str = include_str!("../tests/fixtures/land_owned_poly.axi");
     const DROP_OK: &str = include_str!("../tests/fixtures/drop_ok.axi");
     const LINEAR_MOVE: &str = include_str!("../tests/fixtures/linear_move.axi");
-    const DEEPDROP: &str = include_str!("../tests/fixtures/land_deepdrop_safety.axi");
-    const PAYLOAD_RET: &str = include_str!("../tests/fixtures/poly_payload_borrow_return.axi");
-    const SESSIONS: &str = include_str!("../tests/fixtures/bound_ok.axi");
 
-    // --- positive guards: the judgment accepts the pipeline's own output ---
-
-    #[test]
-    fn accepts_never_used_param() {
-        // `makeAndDrop b = 0`: the `%1` parameter is never touched — the
-        // reclamation analysis never frees it, so Δ must not call it a leak
-        assert_eq!(msgs(&check_src(DROP_OK)), Vec::<String>::new());
-    }
-
-    #[test]
-    fn accepts_transferred_payload_shallow() {
-        // `sum` moves the tail out in the Cons arm and frees the shell there
-        // (shallow), deep-drops in the Nil arm — both sound, both accepted
-        assert_eq!(msgs(&check_src(OWNED_POLY)), Vec::<String>::new());
-    }
-
-    #[test]
-    fn accepts_returned_payload_shallow() {
-        // `firstInner` returns `inner y` — a heap sub-object of the payload —
-        // so the scrutinee gets a shallow free and the payload leaks with it
-        assert_eq!(msgs(&check_src(PAYLOAD_RET)), Vec::<String>::new());
-    }
-
-    #[test]
-    fn accepts_destructors_and_sessions() {
-        // the generated destructors (`axion_drop_*`) pass the same judgment;
-        // the session state machines are skipped by name
-        let src = format!("{DEEPDROP}\n{SESSIONS}\n");
-        assert_eq!(msgs(&check_src(&src)), Vec::<String>::new());
-    }
-
-    // --- negative guards: the judgment rejects a broken Core ---
-
-    #[test]
-    fn rejects_double_drop() {
-        let errs = check_tampered(OWNED_POLY, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, ty, _, _, body) = t {
-                    let inner = std::mem::replace(
-                        body,
-                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                    );
-                    *t = Term::Drop(
-                        v.clone(),
-                        ty.clone(),
-                        Vec::new(),
-                        NO_SPAN,
-                        Box::new(Term::Drop(
-                            v.clone(),
-                            ty.clone(),
-                            Vec::new(),
-                            NO_SPAN,
-                            inner,
-                        )),
-                    );
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(
-            m.iter()
-                .any(|s| s.contains("drop of `xs` which is not a live resource")),
-            "got: {m:?}"
-        );
-    }
-
-    #[test]
-    fn rejects_drop_of_non_resource() {
-        let errs = check_tampered(OWNED_POLY, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(_v, ty, _, _, body) = t {
-                    let body = std::mem::replace(
-                        body,
-                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                    );
-                    *t = Term::Drop("alien".into(), ty.clone(), Vec::new(), NO_SPAN, body);
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(
-            m.iter()
-                .any(|s| s.contains("drop of `alien` which is not a live resource")),
-            "got: {m:?}"
-        );
-    }
-
-    #[test]
-    fn rejects_deep_drop_after_payload_move() {
-        // move the tail (`ys`) out, THEN deep-drop the scrutinee — the
-        // destructor would free `ys` twice
-        let errs = check_tampered(OWNED_POLY, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, None, _, _, body) = t {
-                    if let Term::Let(x, rhs, _, rest) = body.as_mut() {
-                        let (x2, rhs2) = (x.clone(), rhs.clone());
-                        let rest2 = std::mem::replace(
-                            rest,
-                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                        );
-                        *t = Term::Let(
-                            x2,
-                            rhs2,
-                            NO_SPAN,
-                            Box::new(Term::Drop(
-                                v.clone(),
-                                Some("List$Int".into()),
-                                Vec::new(),
-                                NO_SPAN,
-                                rest2,
-                            )),
-                        );
-                    }
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(
-            m.iter()
-                .any(|s| s.contains("deep drop of `xs` after one of its payloads was moved out")),
-            "got: {m:?}"
-        );
-    }
-
-    #[test]
-    fn rejects_leak_at_return() {
-        // remove the deep drop from the Nil arm: `xs` survives to the exit
-        let errs = check_tampered(OWNED_POLY, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(_, Some(_), _, _, body) = t {
-                    let body = std::mem::replace(
-                        body,
-                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                    );
-                    *t = *body;
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(
-            m.iter()
-                .any(|s| s.contains("resource `xs` is live at the return")),
-            "got: {m:?}"
-        );
-    }
-
-    #[test]
-    fn rejects_unbalanced_arms() {
-        // a drop in only one arm: the arms leave different live resources
-        let errs = check_tampered(OWNED_POLY, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
-            let mut seen = false;
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(_, Some(_), _, _, body) = t {
-                    if !seen {
-                        seen = true;
-                        let body = std::mem::replace(
-                            body,
-                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                        );
-                        *t = *body;
-                    }
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(
-            m.iter()
-                .any(|s| s.contains("arms of `case` leave different live resources")),
-            "got: {m:?}"
-        );
-    }
-
-    #[test]
-    fn rejects_drop_key_mismatch() {
-        let errs = check_tampered(OWNED_POLY, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, Some(_), _, _, body) = t {
-                    let body = std::mem::replace(
-                        body,
-                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                    );
-                    *t = Term::Drop(v.clone(), Some("Wrong".into()), Vec::new(), NO_SPAN, body);
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(
-            m.iter()
-                .any(|s| s.contains("destructor `axion_drop_Wrong` but the value is a `List$Int`")),
-            "got: {m:?}"
-        );
-    }
-
-    #[test]
-    fn rejects_unbound_variable() {
-        let errs = check_tampered(OWNED_POLY, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Let(_, Rhs::Op(Op::CallDirect(g, args, _)), _, _) = t {
-                    if g == "sum" {
-                        args[0] = Atom::Var("alien".into());
-                    }
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(
-            m.iter()
-                .any(|s| s.contains("use of unbound/consumed variable `alien`")),
-            "got: {m:?}"
-        );
-    }
-
-    // --- Step 0 (docs/delta-consolidation-plan.md): SUBSUMPTION cross-check ---
+    // --- verify.rs tamper coverage over realistic lowered Core ---
     //
-    // Every genuine-bug tamper that makes the Δ judgment (`check_all`) fire must ALSO be
-    // caught by the drop-balance verifier (`verify.rs`) — direct evidence that promoting
-    // `verify.rs` to the sole Δ gate (Path B) loses no real bug. These re-run the SAME
-    // tampers as the `rejects_*` guards above but assert BOTH judgments on one Core.
-    //
-    // Scope: the five MEMORY-SAFETY rules (double-free, deep-drop-after-move, leak-at-exit,
-    // unbalanced-arms leak, drop-key mismatch). `check_all`'s two other rules —
-    // drop-of-non-resource and use-of-unbound-variable — are structural well-formedness,
-    // not memory-safety properties: an unbound/alien variable never reaches Core in real
-    // compilation (the front-end's scope + linearity checks reject it first), so they are
-    // out of scope by construction and only reachable via deliberate tamper.
+    // These re-run the genuine-bug tampers that the retired `check_all` guards used, now
+    // asserting the drop-balance verifier (`verify.rs`) — the SOLE soundness judgment — flags
+    // each over REAL pipeline-lowered Core (richer than verify.rs's own hand-built CoreFns).
+    // In Δ-consolidation Step 0 (docs/delta-consolidation-plan.md) these ran through BOTH
+    // judgments to PROVE verify ⊇ check_all across the five memory-safety rules (double-free,
+    // deep-drop-after-move, leak-at-exit, unbalanced-arms leak, drop-key mismatch) BEFORE
+    // `check_all` was retired (Step 3); they now stand as verify regression tests. (check_all's
+    // two structural rules — drop-of-non-resource, use-of-unbound-var — were front-end-
+    // guaranteed and out of scope.)
 
-    /// Run BOTH judgments over the same tampered Core (fresh pipeline, one tamper).
-    fn both_analyses(
+    /// Run the verifier over a tampered, pipeline-lowered Core (fresh pipeline, one tamper).
+    fn verify_tampered(
         src: &str,
         tamper: impl FnOnce(&mut Vec<CoreFn>),
-    ) -> (Vec<DeltaErr>, Vec<crate::verify::Finding>) {
+    ) -> Vec<crate::verify::Finding> {
         let l = pipeline(src);
         let mut fns = l.fns.clone();
         tamper(&mut fns);
-        let delta = check_all(&fns, &l.borrow_args, &l.recinfo);
         let lw = crate::core::Lowered {
             fns,
             borrow_args: l.borrow_args,
             recinfo: l.recinfo,
         };
-        let verify = crate::verify::verify(&lw);
-        (delta, verify)
+        crate::verify::verify(&lw)
     }
 
-    /// The subsumption assertion: the tamper must fire `check_all` (else the cross-check is
-    /// vacuous), and `verify.rs` must fire a corruption or a gate-worthy leak on it too.
-    fn assert_subsumed(src: &str, what: &str, tamper: impl FnOnce(&mut Vec<CoreFn>)) {
-        let (delta, verify) = both_analyses(src, tamper);
-        assert!(
-            !delta.is_empty(),
-            "{what}: the tamper must make check_all fire, else the cross-check proves nothing"
-        );
-        let verify_fires = verify
+    /// The verifier must flag a corruption or a gate-worthy leak on the tampered Core.
+    fn assert_verify_catches(src: &str, what: &str, tamper: impl FnOnce(&mut Vec<CoreFn>)) {
+        let verify = verify_tampered(src, tamper);
+        let fires = verify
             .iter()
             .any(|f| f.cat.is_corruption() || crate::verify::leak_gates(f));
         assert!(
-            verify_fires,
-            "{what}: verify.rs must ALSO flag the bug check_all caught (subsumption gap!)\n  \
-             check_all: {:?}\n  verify:   {verify:?}",
-            msgs(&delta),
+            fires,
+            "{what}: verify.rs must flag the injected bug, got: {verify:?}"
         );
     }
 
     #[test]
-    fn subsumes_double_drop() {
-        assert_subsumed(OWNED_POLY, "double-drop", |fns| {
+    fn verify_catches_double_drop() {
+        assert_verify_catches(OWNED_POLY, "double-drop", |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
                 if let Term::Drop(v, ty, _, _, body) = t {
@@ -2052,8 +1762,8 @@ mod tests {
     }
 
     #[test]
-    fn subsumes_deep_drop_after_payload_move() {
-        assert_subsumed(OWNED_POLY, "deep-drop-after-move", |fns| {
+    fn verify_catches_deep_drop_after_payload_move() {
+        assert_verify_catches(OWNED_POLY, "deep-drop-after-move", |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
                 if let Term::Drop(v, None, _, _, body) = t {
@@ -2082,8 +1792,8 @@ mod tests {
     }
 
     #[test]
-    fn subsumes_leak_at_return() {
-        assert_subsumed(OWNED_POLY, "leak-at-return", |fns| {
+    fn verify_catches_leak_at_return() {
+        assert_verify_catches(OWNED_POLY, "leak-at-return", |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
                 if let Term::Drop(_, Some(_), _, _, body) = t {
@@ -2098,8 +1808,8 @@ mod tests {
     }
 
     #[test]
-    fn subsumes_unbalanced_arms() {
-        assert_subsumed(OWNED_POLY, "unbalanced-arms", |fns| {
+    fn verify_catches_unbalanced_arms() {
+        assert_verify_catches(OWNED_POLY, "unbalanced-arms", |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             let mut seen = false;
             map_term(&mut f.body, &mut |t| {
@@ -2118,8 +1828,8 @@ mod tests {
     }
 
     #[test]
-    fn subsumes_drop_key_mismatch() {
-        assert_subsumed(OWNED_POLY, "drop-key-mismatch", |fns| {
+    fn verify_catches_drop_key_mismatch() {
+        assert_verify_catches(OWNED_POLY, "drop-key-mismatch", |fns| {
             let f = fns.iter_mut().find(|f| f.name == "sum").unwrap();
             map_term(&mut f.body, &mut |t| {
                 if let Term::Drop(v, Some(_), _, _, body) = t {
@@ -2371,7 +2081,7 @@ mod tests {
     fn delta_view_surfaces_coherence_violations() {
         // the Δ-3 tamper that makes the Core LEAK an entry-dead param (`ret 0`
         // drops the Auto-Drop of `b`, leaving it owned at the exit): the view must
-        // surface the disagreement as a violation, in sync with `--check-delta`
+        // surface the disagreement as a violation, in sync with `--check-coherence`
         let mut diags = Diagnostics::default();
         let (module, analysis) = crate::compile_front(DROP_OK, ".", &mut diags);
         let module = module.expect("front-end must compile");
@@ -2424,97 +2134,6 @@ takeA p = v (a p)
 main :: Int
 main = takeA (P { a = Box { v = 1 }, b = Box { v = 2 } })
 ";
-
-    const OWNED_SCALAR_FIELD: &str = "\
-data Q = Q { f :: Int %1 }
-takeF :: Q %1 -> Int
-takeF q = f q
-main :: Int
-main = takeF (Q { f = 1 })
-";
-
-    #[test]
-    fn owned_heap_field_read_rejects_unsafe_deep_drop() {
-        // `takeA p = v (a p)`: reads a `%1` heap field, then the pipeline
-        // deep-drops `p` — the destructor would free the already-escaped
-        // `a` (UAF).  The (Field·owned) rule classifies the read as a
-        // transfer that splits `p`, so the subsequent deep drop is rejected.
-        let m = msgs(&check_src(OWNED_HEAP_FIELD));
-        assert!(
-            m.iter()
-                .any(|s| s.contains("deep drop of `p` after one of its payloads was moved out")),
-            "got: {m:?}"
-        );
-    }
-
-    #[test]
-    fn remainder_drop_accepts_correct_skip() {
-        // tamper the deep drop of `p` into a remainder drop `skip{0}`
-        // (skips the extracted slot `a`) — the (Drop·skip) rule accepts it
-        // because skip==transferred.  The extracted `Box` binder becomes an
-        // independent resource after detach; add a flat drop before return.
-        let errs = check_tampered(OWNED_HEAP_FIELD, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "takeA").unwrap();
-            let mut binder = None;
-            // find the binder of `field a p`
-            for_each_term(&f.body, &mut |t| {
-                if let Term::Let(x, Rhs::Op(Op::Field { name, .. }), _, _) = t {
-                    if name == "a" {
-                        binder = Some(x.clone());
-                    }
-                }
-            });
-            let binder = binder.expect("takeA must have 'let <x> = field a p'");
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, ty, _, _, _body) = t {
-                    if v == "p" && ty.is_some() {
-                        let old = std::mem::replace(
-                            _body,
-                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                        );
-                        *t = Term::Drop(
-                            v.clone(),
-                            ty.clone(),
-                            vec![0],
-                            NO_SPAN,
-                            Box::new(Term::Drop(binder.clone(), None, Vec::new(), NO_SPAN, old)),
-                        );
-                    }
-                }
-            });
-        });
-        assert!(msgs(&errs).is_empty(), "got: {:?}", msgs(&errs));
-    }
-
-    #[test]
-    fn remainder_drop_rejects_wrong_skip() {
-        // tamper skip{1} (slot b — NOT transferred) — the (Drop·skip)
-        // rule requires skip to equal transferred {0}, so it errors.
-        let errs = check_tampered(OWNED_HEAP_FIELD, |fns| {
-            let f = fns.iter_mut().find(|f| f.name == "takeA").unwrap();
-            map_term(&mut f.body, &mut |t| {
-                if let Term::Drop(v, ty, _, _, body) = t {
-                    if v == "p" && ty.is_some() {
-                        let body = std::mem::replace(
-                            body,
-                            Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
-                        );
-                        *t = Term::Drop(v.clone(), ty.clone(), vec![1], NO_SPAN, body);
-                    }
-                }
-            });
-        });
-        let m = msgs(&errs);
-        assert!(m.iter().any(|s| s.contains("remainder drop")), "got: {m:?}");
-    }
-
-    #[test]
-    fn scalar_owned_field_no_false_positive() {
-        // `takeF q = f q` with `f :: Int %1`: a scalar `%1` field read is
-        // not a transfer (the destructor doesn't touch scalar slots), so the
-        // deep drop of `q` is still valid.  (Field·owned) must NOT fire.
-        assert_eq!(msgs(&check_src(OWNED_SCALAR_FIELD)), Vec::<String>::new());
-    }
 
     #[test]
     fn owned_field_read_delta_view_facts() {

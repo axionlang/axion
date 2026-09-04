@@ -6,9 +6,9 @@
 # proves no double-free / use-after-free / bad-free (corruption) and no gate-worthy leak,
 # cross-checked against ASan (scripts/sanitize.sh). This is the script form of the in-crate
 # `tests/verify.rs::verifier_reports_no_corruption_over_all_fixtures` gate, promoted to a
-# BLOCKING CI step in the `delta` job — the sound successor to the advisory Δ checker
-# (scripts/check-delta.sh, delta.rs::check_all), which it was proven to subsume (the
-# `delta::tests::subsumes_*` cross-check).
+# BLOCKING CI step in the `delta` job — the sound successor to the retired Δ checker
+# (delta.rs::check_all), which it was proven to subsume (the `delta::tests::verify_catches_*`
+# tamper tests, formerly the subsumption cross-check) before check_all was removed.
 #
 # `--emit verify` prints, per fixture:
 #   · "ok: …"    — lowered to Core and verified clean (counted)
