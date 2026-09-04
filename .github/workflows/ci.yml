@@ -94,6 +94,15 @@ jobs:
       - name: Snapshot oracle (132 fixtures, --emit core)
         run: ./scripts/dump-oracle.sh
 
+      # BLOCKING Δ SOUNDNESS GATE (docs/delta-consolidation-plan.md): the drop-balance
+      # verifier (verify.rs, default-on AX0910/AX0911) proves no double-free/UAF/bad-free and
+      # no gate-worthy leak over the FINAL Core across the whole corpus — the authoritative,
+      # ASan-cross-checked, 0-false-positive linearity judgment. It was proven to SUBSUME the
+      # legacy Δ checker below (delta::tests::subsumes_*), so this is the sound successor that
+      # makes the Δ gate real and blocking again.
+      - name: Δ soundness gate (drop-balance verifier over the corpus)
+        run: ./scripts/verify-gate.sh
+
       # ADVISORY (continue-on-error): the Δ judgment (docs/delta-design.md §8) is a SECONDARY
       # overfitting-guard that has fallen behind the reclamation — it false-positives on ~26
       # fixtures (tuple/multi-param/record-update/closure/foldl reclamation, generic-vs-mono keys,

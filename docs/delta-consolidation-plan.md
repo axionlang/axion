@@ -107,6 +107,13 @@ corpus (`verifier_reports_no_corruption_over_all_fixtures`).
 - **Gate:** the new step is green on CI (it must be — `verify` is 0-FP and default-on
   already). CI stays green; the `delta` job now has a real soundness gate again.
 
+**STATUS: DONE.** `scripts/verify-gate.sh` runs `--emit verify` over the whole corpus
+(fixtures + examples), failing on any `FAIL:` corruption line or gate-worthy (non-`$step`)
+`Leak:` line — the script form of `tests/verify.rs`. Local run: **237 verify clean, 36
+skipped (rejections/malformed), exit 0** (237 + 36 = 273 = full corpus). Wired into the
+`delta` job as a **blocking** step ("Δ soundness gate"), placed after the oracle and before
+the (still-advisory, until Step 2) legacy Δ checker.
+
 ### Step 2 — Demote/retire the `check-delta` step
 **Files:** `.github/workflows/ci.yml`, `scripts/check-delta.sh`.
 - With Step 1's verify gate blocking, the advisory `check_all` step is redundant.
