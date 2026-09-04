@@ -75,16 +75,15 @@ jobs:
       - name: axionc vs the GHC oracle
         run: ./scripts/differential.sh
 
-  # Δ (docs/delta-design.md §8): the linearity-judgment gates. Per the §7
-  # contract the checker runs after every Core pass that exists; today the
-  # descent is a single pass, so the gates are: the snapshot oracle (every
-  # fixture's annotated `--emit core` dump byte-matches the stored snapshot)
-  # and the checker gate (Δ accepts every fixture that reaches the Core; the
-  # front-end rejections never reach it). The unit suite in the `axionc` job
-  # additionally locks the dump format (annotated_dump_locks_format) and the
-  # judgment's behavior (delta::tests, incl. the Δ-3 coherence cross-check).
-  # bench runs the same kernels on both Axion backends vs C/Rust and requires
-  # the results to agree — a runtime correctness gate, not a timing assertion.
+  # Δ (docs/delta-design.md + docs/delta-consolidation-plan.md): the linearity-judgment
+  # gates. Two blocking gates: the snapshot oracle (every fixture's annotated `--emit core`
+  # dump byte-matches the stored snapshot) and the Δ SOUNDNESS gate (the drop-balance
+  # verifier proves no double-free/UAF/bad-free and no gate-worthy leak over the final Core
+  # across the whole corpus — the authoritative, ASan-cross-checked, 0-FP judgment). The unit
+  # suite in the `axionc` job additionally locks the dump format (annotated_dump_locks_format),
+  # the verifier↔check_all subsumption (delta::tests::subsumes_*), and the coherence
+  # cross-check. bench runs the same kernels on both Axion backends vs C/Rust and requires the
+  # results to agree — a runtime correctness gate, not a timing assertion.
   delta:
     runs-on: ubuntu-latest
     steps:
@@ -103,15 +102,10 @@ jobs:
       - name: Δ soundness gate (drop-balance verifier over the corpus)
         run: ./scripts/verify-gate.sh
 
-      # ADVISORY (continue-on-error): the Δ judgment (docs/delta-design.md §8) is a SECONDARY
-      # overfitting-guard that has fallen behind the reclamation — it false-positives on ~26
-      # fixtures (tuple/multi-param/record-update/closure/foldl reclamation, generic-vs-mono keys,
-      # session/parmap ops) that the AUTHORITATIVE drop-balance verifier (verify.rs, default-on
-      # AX0910, ASan-cross-checked, 0-FP — see the `sanitize` job + the verify test suite) proves
-      # sound. Kept as a non-blocking signal; resurrecting it to par is tracked as future work.
-      - name: Δ checker gate (advisory — superseded by the drop-balance verifier)
-        continue-on-error: true
-        run: ./scripts/check-delta.sh
+      # The legacy advisory Δ checker (delta.rs::check_all, scripts/check-delta.sh) was removed
+      # here (Δ-consolidation Step 2, docs/delta-consolidation-plan.md): the blocking Δ soundness
+      # gate above supersedes it (proven to subsume it in Step 0), so the non-blocking signal was
+      # pure redundancy. check_all itself is retired in Step 3.
 
       - name: Bench — Axion dev/rel vs C/Rust agree on every kernel
         run: |

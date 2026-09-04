@@ -120,6 +120,12 @@ the (still-advisory, until Step 2) legacy Δ checker.
   **Remove it** (or, if Step 4 keeps coherence, narrow the script to coherence-only).
 - **Gate:** CI green; `delta` job = oracle + verify-gate + bench (+ optional coherence).
 
+**STATUS: DONE.** Removed the advisory `Δ checker gate` step from the `delta` job and
+refreshed the job header comment to describe the two blocking gates (oracle + Δ soundness
+gate). `scripts/check-delta.sh` is left in place for now — it still runs locally (`check_all`
+is not retired until Step 3) and is deleted together with `check_all` there. `delta` job is
+now: oracle → Δ soundness gate → bench.
+
 ### Step 3 — Retire `check_all` (the net-negative-code payoff)
 **Files:** `axionc/src/delta.rs`, `axionc/src/lib.rs`.
 - Delete `delta::check_all` and the `Ck` judgment machinery it drives (the ~500-line
