@@ -216,6 +216,13 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_show_float"
                 || func == "axion_bignum_to_string"
                 || func == "axion_substr"
+                // OS capability layer (§pass): read String args, return a fresh
+                // reclaimable heap String.
+                || func == "axion_getenv"
+                || func == "axion_run"
+                || func == "axion_read_file"
+                || func == "axion_readdir"
+                || func == "axion_rand_hex"
             {
                 e.borrows.extend(args.iter());
                 e.produces = Some(Res {
@@ -295,6 +302,15 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_str_len"
                 || func == "axion_str_at"
                 || func == "axion_str_cmp"
+                // OS capability layer (§pass): effectful primitives that READ their
+                // String args (no free) and return a scalar Int.
+                || func == "axion_system"
+                || func == "axion_write_file"
+                || func == "axion_file_exists"
+                || func == "axion_mkdir_p"
+                || func == "axion_unlink"
+                || func == "axion_rename"
+                || func == "axion_exit"
             {
                 e.borrows.extend(args.iter());
                 return e;

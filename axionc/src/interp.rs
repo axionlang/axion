@@ -237,7 +237,8 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 fn builtin_arity(name: &str) -> usize {
     match name {
         "substr" => 3,
-        "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" => 2,
+        "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
+        | "renameFile" => 2,
         _ => 1,
     }
 }
@@ -507,6 +508,54 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "strCmp" => Ok(Value::Builtin {
             name: "strCmp",
+            args: Vec::new(),
+        }),
+        "getEnv" => Ok(Value::Builtin {
+            name: "getEnv",
+            args: Vec::new(),
+        }),
+        "runCapture" => Ok(Value::Builtin {
+            name: "runCapture",
+            args: Vec::new(),
+        }),
+        "runStatus" => Ok(Value::Builtin {
+            name: "runStatus",
+            args: Vec::new(),
+        }),
+        "readFile" => Ok(Value::Builtin {
+            name: "readFile",
+            args: Vec::new(),
+        }),
+        "writeFile" => Ok(Value::Builtin {
+            name: "writeFile",
+            args: Vec::new(),
+        }),
+        "fileExists" => Ok(Value::Builtin {
+            name: "fileExists",
+            args: Vec::new(),
+        }),
+        "makeDir" => Ok(Value::Builtin {
+            name: "makeDir",
+            args: Vec::new(),
+        }),
+        "removeFile" => Ok(Value::Builtin {
+            name: "removeFile",
+            args: Vec::new(),
+        }),
+        "renameFile" => Ok(Value::Builtin {
+            name: "renameFile",
+            args: Vec::new(),
+        }),
+        "readDir" => Ok(Value::Builtin {
+            name: "readDir",
+            args: Vec::new(),
+        }),
+        "randHex" => Ok(Value::Builtin {
+            name: "randHex",
+            args: Vec::new(),
+        }),
+        "exitWith" => Ok(Value::Builtin {
+            name: "exitWith",
             args: Vec::new(),
         }),
         "substr" => Ok(Value::Builtin {
@@ -1073,6 +1122,76 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // char-level string primitives (§text). Byte-oriented, to agree with the
         // native (C/Rust) runtime exactly; ASCII in practice.
         ("strLen", [Value::Str(s)]) => Ok(Value::Int(s.len() as i64)),
+        // OS capability layer (§pass): effectful primitives for CLI work. These
+        // mirror axion_rt.c so the interpreter agrees with the native backends.
+        ("getEnv", [Value::Str(name)]) => Ok(Value::Str(std::env::var(name).unwrap_or_default())),
+        ("runCapture", [Value::Str(cmd)]) => {
+            let out = std::process::Command::new("sh").arg("-c").arg(cmd).output();
+            Ok(Value::Str(match out {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+                Err(_) => String::new(),
+            }))
+        }
+        ("runStatus", [Value::Str(cmd)]) => {
+            let code = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .status()
+                .ok()
+                .and_then(|s| s.code())
+                .map_or(-1, i64::from);
+            Ok(Value::Int(code))
+        }
+        ("readFile", [Value::Str(path)]) => Ok(Value::Str(
+            std::fs::read(path)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default(),
+        )),
+        ("writeFile", [Value::Str(path), Value::Str(content)]) => {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let r = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .and_then(|mut f| f.write_all(content.as_bytes()));
+            Ok(Value::Int(if r.is_ok() { 0 } else { -1 }))
+        }
+        ("fileExists", [Value::Str(path)]) => {
+            Ok(Value::Int(i64::from(std::path::Path::new(path).exists())))
+        }
+        ("makeDir", [Value::Str(path)]) => Ok(Value::Int(
+            i64::from(std::fs::create_dir_all(path).is_ok()) - 1,
+        )),
+        ("removeFile", [Value::Str(path)]) => Ok(Value::Int(
+            i64::from(std::fs::remove_file(path).is_ok()) - 1,
+        )),
+        ("renameFile", [Value::Str(from), Value::Str(to)]) => {
+            Ok(Value::Int(i64::from(std::fs::rename(from, to).is_ok()) - 1))
+        }
+        ("readDir", [Value::Str(path)]) => Ok(Value::Str(match std::fs::read_dir(path) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(_) => String::new(),
+        })),
+        ("randHex", [Value::Int(n)]) => {
+            use std::io::Read;
+            if *n <= 0 {
+                return Ok(Value::Str(String::new()));
+            }
+            let mut bytes = vec![0u8; *n as usize];
+            let s = std::fs::File::open("/dev/urandom")
+                .and_then(|mut f| f.read_exact(&mut bytes))
+                .map(|()| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+                .unwrap_or_default();
+            Ok(Value::Str(s))
+        }
+        ("exitWith", [Value::Int(code)]) => std::process::exit(*code as i32),
         ("strCmp", [Value::Str(x), Value::Str(y)]) => {
             Ok(Value::Int(match x.as_bytes().cmp(y.as_bytes()) {
                 std::cmp::Ordering::Less => -1,

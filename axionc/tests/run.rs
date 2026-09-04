@@ -41,6 +41,37 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn capability_layer_runs_on_all_backends() {
+    // OS capability layer (§pass): subprocess/env/randomness/filesystem primitives,
+    // each reclaiming its String result. Driven with a unique temp dir + known env
+    // so the run is deterministic and every backend agrees. Also leak-checked by the
+    // drop-verifier gate over the fixture corpus.
+    let fx = fixture("capability.axi");
+    let dir = std::env::temp_dir().join(format!("axion_cap_{}", std::process::id()));
+    let expected = "ok\n7\nenvworks\n32\n0\n0\nroundtrip\n1\n0\n";
+    for backend in ["interp", "cranelift", "llvm"] {
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .env("CAP_DIR", &dir)
+            .env("CAP_VAR", "envworks")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            expected,
+            "{backend}: capability layer output"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn string_compare_runs_on_all_backends() {
     // String Eq/Ord (§text): `== < >` over String (byte-lexicographic via the
     // native axion_str_cmp), plus lookup/elemBy over String keys. Scalar Int

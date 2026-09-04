@@ -1690,6 +1690,34 @@ impl<'a> Infer<'a> {
                 Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
             )),
         );
+        // OS capability layer (§pass): effectful primitives for CLI work. String
+        // results are fresh reclaimable heap Strings; String args are read (borrowed).
+        let s_to_s = || mono(Ty::Fun(Box::new(string()), Box::new(string())));
+        let s_to_i = || mono(Ty::Fun(Box::new(string()), Box::new(int())));
+        let ss_to_i = || {
+            mono(Ty::Fun(
+                Box::new(string()),
+                Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
+            ))
+        };
+        env.insert("getEnv".into(), s_to_s()); // env var value, "" if unset
+        env.insert("runCapture".into(), s_to_s()); // shell cmd → stdout
+        env.insert("runStatus".into(), s_to_i()); // shell cmd → exit status
+        env.insert("readFile".into(), s_to_s()); // path → contents
+        env.insert("writeFile".into(), ss_to_i()); // path, content → 0/-1
+        env.insert("fileExists".into(), s_to_i()); // path → 1/0
+        env.insert("makeDir".into(), s_to_i()); // mkdir -p → 0/-1
+        env.insert("removeFile".into(), s_to_i()); // unlink → 0/-1
+        env.insert("renameFile".into(), ss_to_i()); // from, to → 0/-1
+        env.insert("readDir".into(), s_to_s()); // dir → newline-joined entries
+        env.insert(
+            "randHex".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))), // n bytes → 2n hex chars
+        );
+        env.insert(
+            "exitWith".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(int()))), // exit code (never returns)
+        );
         env.insert(
             "substr".into(),
             mono(Ty::Fun(

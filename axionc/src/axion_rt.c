@@ -10,6 +10,12 @@
 #include <string.h>
 #include <unistd.h>
 
+/* --- OS capability layer (§pass): filesystem, subprocess, randomness --- */
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+
 /* --- networking (§FFI): socket operations for TCP clients and servers --- */
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -374,6 +380,192 @@ long axion_str_at(long i, long s) {
 long axion_str_cmp(long a, long b) {
   int c = strcmp((const char *)a, (const char *)b);
   return c < 0 ? -1 : (c > 0 ? 1 : 0);
+}
+
+/* --- OS capability layer (§pass). Effectful primitives for CLI work. String
+ * results are fresh reclaimable heap Strings (axion_str_drop); they READ their
+ * String args (no free). --- */
+/* getEnv :: String -> String — the value of env var `name`, or "" if unset. */
+long axion_getenv(long name) {
+  const char *v = getenv((const char *)name);
+  if (!v)
+    v = "";
+  long n = (long)strlen(v);
+  char *buf = (char *)axion_alloc(n + 1);
+  memcpy(buf, v, n + 1); /* copies the NUL too */
+  return (long)buf;
+}
+
+/* Copies `len` bytes of `src` into a fresh reclaimable heap String (NUL-terminated,
+ * axion_alloc size header). Shared helper for the capability String producers. */
+static long axion_str_of(const char *src, long len) {
+  if (len < 0)
+    len = 0;
+  char *buf = (char *)axion_alloc(len + 1);
+  memcpy(buf, src, len);
+  buf[len] = 0;
+  return (long)buf;
+}
+
+/* runCapture :: String -> String — run `cmd` via the shell, capture stdout as a
+ * fresh heap String ("" on failure). Secrets must NOT be embedded in `cmd`
+ * (visible in ps/argv) — pipe them via stdin/tmpfile instead (§pass security). */
+long axion_run(long cmd) {
+  FILE *p = popen((const char *)cmd, "r");
+  if (!p)
+    return axion_str_of("", 0);
+  size_t cap = 256, len = 0;
+  char *buf = (char *)axion_xmalloc(cap);
+  size_t got;
+  char chunk[4096];
+  while ((got = fread(chunk, 1, sizeof(chunk), p)) > 0) {
+    if (len + got + 1 > cap) {
+      while (len + got + 1 > cap)
+        cap *= 2;
+      buf = (char *)realloc(buf, cap);
+      if (!buf) {
+        pclose(p);
+        return axion_str_of("", 0);
+      }
+    }
+    memcpy(buf + len, chunk, got);
+    len += got;
+  }
+  pclose(p);
+  long r = axion_str_of(buf, (long)len);
+  free(buf);
+  return r;
+}
+
+/* runStatus :: String -> Int — run `cmd` via the shell, return its exit status
+ * (-1 if the shell could not run). */
+long axion_system(long cmd) {
+  int rc = system((const char *)cmd);
+  if (rc == -1)
+    return -1;
+  return (long)WEXITSTATUS(rc);
+}
+
+/* readFile :: String -> String — the file's bytes as a heap String ("" if it can't
+ * be read). Binary with embedded NULs is truncated at the first NUL (text model). */
+long axion_read_file(long path) {
+  FILE *f = fopen((const char *)path, "rb");
+  if (!f)
+    return axion_str_of("", 0);
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (sz < 0)
+    sz = 0;
+  char *buf = (char *)axion_alloc(sz + 1);
+  size_t rd = fread(buf, 1, (size_t)sz, f);
+  buf[rd] = 0;
+  fclose(f);
+  return (long)buf;
+}
+
+/* writeFile :: String -> String -> Int — write `content` to `path` (mode 0600, so
+ * secrets are owner-only), truncating. 0 on success, -1 on error. */
+long axion_write_file(long path, long content) {
+  int fd = open((const char *)path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0)
+    return -1;
+  const char *c = (const char *)content;
+  size_t len = strlen(c);
+  ssize_t w = write(fd, c, len);
+  close(fd);
+  return (w == (ssize_t)len) ? 0 : -1;
+}
+
+/* fileExists :: String -> Int — 1 if `path` exists, else 0. */
+long axion_file_exists(long path) {
+  return access((const char *)path, F_OK) == 0 ? 1 : 0;
+}
+
+/* makeDir :: String -> Int — create `path` and any missing parents (mode 0700). */
+long axion_mkdir_p(long path) {
+  char tmp[4096];
+  strncpy(tmp, (const char *)path, sizeof(tmp) - 1);
+  tmp[sizeof(tmp) - 1] = 0;
+  for (char *s = tmp + 1; *s; s++) {
+    if (*s == '/') {
+      *s = 0;
+      mkdir(tmp, 0700);
+      *s = '/';
+    }
+  }
+  mkdir(tmp, 0700);
+  return 0;
+}
+
+/* removeFile :: String -> Int — unlink `path`. 0 on success, -1 on error. */
+long axion_unlink(long path) { return unlink((const char *)path) == 0 ? 0 : -1; }
+
+/* renameFile :: String -> String -> Int — rename `from` to `to`. 0 / -1. */
+long axion_rename(long from, long to) {
+  return rename((const char *)from, (const char *)to) == 0 ? 0 : -1;
+}
+
+/* readDir :: String -> String — the entries of directory `path` (excluding `.`/`..`)
+ * joined by '\n', or "" if it can't be opened. */
+long axion_readdir(long path) {
+  DIR *d = opendir((const char *)path);
+  if (!d)
+    return axion_str_of("", 0);
+  size_t cap = 256, len = 0;
+  char *buf = (char *)axion_xmalloc(cap);
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+      continue;
+    size_t nl = strlen(e->d_name);
+    if (len + nl + 2 > cap) {
+      while (len + nl + 2 > cap)
+        cap *= 2;
+      buf = (char *)realloc(buf, cap);
+      if (!buf) {
+        closedir(d);
+        return axion_str_of("", 0);
+      }
+    }
+    if (len)
+      buf[len++] = '\n';
+    memcpy(buf + len, e->d_name, nl);
+    len += nl;
+  }
+  closedir(d);
+  long r = axion_str_of(buf, (long)len);
+  free(buf);
+  return r;
+}
+
+/* randHex :: Int -> String — `n` cryptographically-random bytes from /dev/urandom
+ * as a 2n-char lowercase hex String (empty if n<=0 or the source is unavailable). */
+long axion_rand_hex(long n) {
+  if (n <= 0)
+    return axion_str_of("", 0);
+  FILE *f = fopen("/dev/urandom", "rb");
+  if (!f)
+    return axion_str_of("", 0);
+  static const char hx[] = "0123456789abcdef";
+  char *buf = (char *)axion_alloc(2 * n + 1);
+  for (long i = 0; i < n; i++) {
+    int c = fgetc(f);
+    if (c == EOF)
+      c = 0;
+    buf[2 * i] = hx[(c >> 4) & 15];
+    buf[2 * i + 1] = hx[c & 15];
+  }
+  buf[2 * n] = 0;
+  fclose(f);
+  return (long)buf;
+}
+
+/* exitWith :: Int -> Int — terminate the process with status `code` (never returns;
+ * the Int return type just lets it sit in expression position). */
+long axion_exit(long code) {
+  exit((int)code);
+  return 0;
 }
 /* substr :: Int -> Int -> String -> String — `len` bytes from `start`, both
  * clamped to the string's bounds; a fresh NUL-terminated heap String. */

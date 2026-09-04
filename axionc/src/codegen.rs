@@ -215,6 +215,140 @@ extern "C" fn axion_str_cmp(a: *const u8, b: *const u8) -> i64 {
     }
 }
 
+/// `getEnv :: String -> String` — value of the named env var, or "" if unset, as a
+/// fresh reclaimable heap String. Borrows the name.
+extern "C" fn axion_getenv(name: *const u8) -> *const u8 {
+    // SAFETY: caller passed a valid NUL-terminated C-string.
+    let n = unsafe { std::ffi::CStr::from_ptr(name as *const std::ffi::c_char) };
+    let val = std::env::var(n.to_string_lossy().as_ref()).unwrap_or_default();
+    axion_str_alloc(val.as_bytes())
+}
+
+/// Reads a borrowed String arg (a NUL-terminated C-string) into an owned Rust String.
+fn ffi_str(p: *const u8) -> String {
+    // SAFETY: caller passed a valid NUL-terminated C-string (an Axion String).
+    unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `runCapture :: String -> String` — run `cmd` via `sh -c`, capture stdout ("" on
+/// failure). Cranelift reimpl of `axion_run`.
+extern "C" fn axion_run(cmd: *const u8) -> *const u8 {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(ffi_str(cmd))
+        .output();
+    match out {
+        Ok(o) => axion_str_alloc(&o.stdout),
+        Err(_) => axion_str_alloc(b""),
+    }
+}
+
+/// `runStatus :: String -> Int` — run `cmd` via `sh -c`, return its exit status
+/// (-1 if it could not run). Cranelift reimpl of `axion_system`.
+extern "C" fn axion_system(cmd: *const u8) -> i64 {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(ffi_str(cmd))
+        .status()
+        .ok()
+        .and_then(|s| s.code())
+        .map_or(-1, i64::from)
+}
+
+/// `readFile :: String -> String` — the file's bytes as a heap String ("" if
+/// unreadable). Cranelift reimpl of `axion_read_file`.
+extern "C" fn axion_read_file(path: *const u8) -> *const u8 {
+    match std::fs::read(ffi_str(path)) {
+        Ok(bytes) => axion_str_alloc(&bytes),
+        Err(_) => axion_str_alloc(b""),
+    }
+}
+
+/// `writeFile :: String -> String -> Int` — write `content` to `path` (mode 0600),
+/// truncating. 0 / -1. Cranelift reimpl of `axion_write_file`.
+extern "C" fn axion_write_file(path: *const u8, content: *const u8) -> i64 {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(ffi_str(path));
+    match f {
+        Ok(mut file) => {
+            if file.write_all(ffi_str(content).as_bytes()).is_ok() {
+                0
+            } else {
+                -1
+            }
+        }
+        Err(_) => -1,
+    }
+}
+
+/// `fileExists :: String -> Int` — 1 if `path` exists, else 0.
+extern "C" fn axion_file_exists(path: *const u8) -> i64 {
+    i64::from(std::path::Path::new(&ffi_str(path)).exists())
+}
+
+/// `makeDir :: String -> Int` — create `path` and missing parents. 0 / -1.
+extern "C" fn axion_mkdir_p(path: *const u8) -> i64 {
+    i64::from(std::fs::create_dir_all(ffi_str(path)).is_ok()) - 1
+}
+
+/// `removeFile :: String -> Int` — unlink `path`. 0 / -1.
+extern "C" fn axion_unlink(path: *const u8) -> i64 {
+    i64::from(std::fs::remove_file(ffi_str(path)).is_ok()) - 1
+}
+
+/// `renameFile :: String -> String -> Int` — rename `from` to `to`. 0 / -1.
+extern "C" fn axion_rename(from: *const u8, to: *const u8) -> i64 {
+    i64::from(std::fs::rename(ffi_str(from), ffi_str(to)).is_ok()) - 1
+}
+
+/// `readDir :: String -> String` — entries of `path` (excluding `.`/`..`) joined by
+/// '\n', or "" if it can't be opened. Cranelift reimpl of `axion_readdir`.
+extern "C" fn axion_readdir(path: *const u8) -> *const u8 {
+    match std::fs::read_dir(ffi_str(path)) {
+        Ok(rd) => {
+            let names: Vec<String> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            axion_str_alloc(names.join("\n").as_bytes())
+        }
+        Err(_) => axion_str_alloc(b""),
+    }
+}
+
+/// `randHex :: Int -> String` — `n` random bytes from /dev/urandom as 2n hex chars
+/// ("" if n<=0 or unavailable). Cranelift reimpl of `axion_rand_hex`.
+extern "C" fn axion_rand_hex(n: i64) -> *const u8 {
+    use std::io::Read;
+    if n <= 0 {
+        return axion_str_alloc(b"");
+    }
+    let mut bytes = vec![0u8; n as usize];
+    match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)) {
+        Ok(()) => {
+            let mut hex = String::with_capacity(bytes.len() * 2);
+            for b in bytes {
+                hex.push_str(&format!("{b:02x}"));
+            }
+            axion_str_alloc(hex.as_bytes())
+        }
+        Err(_) => axion_str_alloc(b""),
+    }
+}
+
+/// `exitWith :: Int -> Int` — terminate the process with `code` (never returns).
+extern "C" fn axion_exit(code: i64) -> i64 {
+    std::process::exit(code as i32);
+}
+
 /// `substr :: Int -> Int -> String -> String` — `len` bytes from `start` (both
 /// clamped to bounds), as a fresh reclaimable heap String.
 extern "C" fn axion_substr(start: i64, len: i64, s: *const u8) -> *const u8 {
@@ -1575,6 +1709,18 @@ impl Cg {
         builder.symbol("axion_str_len", axion_str_len as *const u8);
         builder.symbol("axion_str_at", axion_str_at as *const u8);
         builder.symbol("axion_str_cmp", axion_str_cmp as *const u8);
+        builder.symbol("axion_getenv", axion_getenv as *const u8);
+        builder.symbol("axion_run", axion_run as *const u8);
+        builder.symbol("axion_system", axion_system as *const u8);
+        builder.symbol("axion_read_file", axion_read_file as *const u8);
+        builder.symbol("axion_write_file", axion_write_file as *const u8);
+        builder.symbol("axion_file_exists", axion_file_exists as *const u8);
+        builder.symbol("axion_mkdir_p", axion_mkdir_p as *const u8);
+        builder.symbol("axion_unlink", axion_unlink as *const u8);
+        builder.symbol("axion_rename", axion_rename as *const u8);
+        builder.symbol("axion_readdir", axion_readdir as *const u8);
+        builder.symbol("axion_rand_hex", axion_rand_hex as *const u8);
+        builder.symbol("axion_exit", axion_exit as *const u8);
         builder.symbol("axion_substr", axion_substr as *const u8);
         builder.symbol("axion_str_drop", axion_str_drop as *const u8);
         builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
@@ -1743,6 +1889,19 @@ impl Cg {
             ("axion_str_at", 2, true),
             ("axion_str_cmp", 2, true),
             ("axion_substr", 3, true),
+            // OS capability layer (§pass)
+            ("axion_getenv", 1, true),
+            ("axion_run", 1, true),
+            ("axion_system", 1, true),
+            ("axion_read_file", 1, true),
+            ("axion_write_file", 2, true),
+            ("axion_file_exists", 1, true),
+            ("axion_mkdir_p", 1, true),
+            ("axion_unlink", 1, true),
+            ("axion_rename", 2, true),
+            ("axion_readdir", 1, true),
+            ("axion_rand_hex", 1, true),
+            ("axion_exit", 1, true),
             // drops a String: frees a heap string, skips a static literal (§tc)
             ("axion_str_drop", 1, false),
             ("axion_bignum_from_i64", 1, true),

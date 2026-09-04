@@ -430,6 +430,18 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "charAt" => ("axion_str_at", 2),
         "strCmp" => ("axion_str_cmp", 2),
         "substr" => ("axion_substr", 3),
+        "getEnv" => ("axion_getenv", 1),
+        "runCapture" => ("axion_run", 1),
+        "runStatus" => ("axion_system", 1),
+        "readFile" => ("axion_read_file", 1),
+        "writeFile" => ("axion_write_file", 2),
+        "fileExists" => ("axion_file_exists", 1),
+        "makeDir" => ("axion_mkdir_p", 1),
+        "removeFile" => ("axion_unlink", 1),
+        "renameFile" => ("axion_rename", 2),
+        "readDir" => ("axion_readdir", 1),
+        "randHex" => ("axion_rand_hex", 1),
+        "exitWith" => ("axion_exit", 1),
         _ => return None,
     })
 }
@@ -1683,6 +1695,43 @@ impl Lower<'_> {
         }
         if name == "substr" && args.len() == 3 {
             return self.rtcall("axion_substr", &args, true, buf);
+        }
+        // OS capability layer (§pass)
+        if name == "getEnv" && args.len() == 1 {
+            return self.rtcall("axion_getenv", &args, true, buf);
+        }
+        if name == "runCapture" && args.len() == 1 {
+            return self.rtcall("axion_run", &args, true, buf);
+        }
+        if name == "runStatus" && args.len() == 1 {
+            return self.rtcall("axion_system", &args, true, buf);
+        }
+        if name == "readFile" && args.len() == 1 {
+            return self.rtcall("axion_read_file", &args, true, buf);
+        }
+        if name == "writeFile" && args.len() == 2 {
+            return self.rtcall("axion_write_file", &args, true, buf);
+        }
+        if name == "fileExists" && args.len() == 1 {
+            return self.rtcall("axion_file_exists", &args, true, buf);
+        }
+        if name == "makeDir" && args.len() == 1 {
+            return self.rtcall("axion_mkdir_p", &args, true, buf);
+        }
+        if name == "removeFile" && args.len() == 1 {
+            return self.rtcall("axion_unlink", &args, true, buf);
+        }
+        if name == "renameFile" && args.len() == 2 {
+            return self.rtcall("axion_rename", &args, true, buf);
+        }
+        if name == "readDir" && args.len() == 1 {
+            return self.rtcall("axion_readdir", &args, true, buf);
+        }
+        if name == "randHex" && args.len() == 1 {
+            return self.rtcall("axion_rand_hex", &args, true, buf);
+        }
+        if name == "exitWith" && args.len() == 1 {
+            return self.rtcall("axion_exit", &args, true, buf);
         }
         if name == "toFloat" && args.len() == 1 {
             return Op::IntToFloat(self.atom(args[0], buf));
@@ -5384,7 +5433,13 @@ impl Op {
                 if func == "axion_strcat"
                     || func == "axion_show_float"
                     || func == "axion_bignum_to_string"
-                    || func == "axion_substr" =>
+                    || func == "axion_substr"
+                    // OS capability layer (§pass): String-returning primitives.
+                    || func == "axion_getenv"
+                    || func == "axion_run"
+                    || func == "axion_read_file"
+                    || func == "axion_readdir"
+                    || func == "axion_rand_hex" =>
             {
                 Some("String".into())
             }
