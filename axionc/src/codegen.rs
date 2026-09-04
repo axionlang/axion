@@ -198,6 +198,23 @@ extern "C" fn axion_str_at(i: i64, s: *const u8) -> i64 {
     }
 }
 
+/// `strCmp :: String -> String -> Int` — byte-lexicographic compare normalised to
+/// -1/0/1. Borrows both strings (the caller still owns/drops them).
+extern "C" fn axion_str_cmp(a: *const u8, b: *const u8) -> i64 {
+    // SAFETY: caller passed two valid NUL-terminated C-strings.
+    let (x, y) = unsafe {
+        (
+            std::ffi::CStr::from_ptr(a as *const std::ffi::c_char),
+            std::ffi::CStr::from_ptr(b as *const std::ffi::c_char),
+        )
+    };
+    match x.to_bytes().cmp(y.to_bytes()) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
 /// `substr :: Int -> Int -> String -> String` — `len` bytes from `start` (both
 /// clamped to bounds), as a fresh reclaimable heap String.
 extern "C" fn axion_substr(start: i64, len: i64, s: *const u8) -> *const u8 {
@@ -1557,6 +1574,7 @@ impl Cg {
         builder.symbol("axion_strcat", axion_strcat as *const u8);
         builder.symbol("axion_str_len", axion_str_len as *const u8);
         builder.symbol("axion_str_at", axion_str_at as *const u8);
+        builder.symbol("axion_str_cmp", axion_str_cmp as *const u8);
         builder.symbol("axion_substr", axion_substr as *const u8);
         builder.symbol("axion_str_drop", axion_str_drop as *const u8);
         builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
@@ -1723,6 +1741,7 @@ impl Cg {
             // char-level string primitives (§text)
             ("axion_str_len", 1, true),
             ("axion_str_at", 2, true),
+            ("axion_str_cmp", 2, true),
             ("axion_substr", 3, true),
             // drops a String: frees a heap string, skips a static literal (§tc)
             ("axion_str_drop", 1, false),

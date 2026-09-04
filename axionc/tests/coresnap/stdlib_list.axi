@@ -38,6 +38,7 @@
 
 
 
+
                                       drop _t60 : List$Int
                                       drop _t63 : String
                                       let _d1000000 = putStrLn _t63  ; Δ{_t63}
@@ -120,7 +121,7 @@
           drop _t12 : List$Int
           drop _t14 : String
           else
-          let _t0 = == a k  ; Δ{}
+          let _t0 = call eq$Int a k  ; Δ{}
           let _t10 = closure lam$2  ; Δ{} · makes heap
           let _t11 = call range 1 6  ; Δ{_t10} · makes List$Int
           let _t12 = call dropWhile _t10 _t11  ; Δ{_t10 _t11} · moves{_t11} · makes List$Int
@@ -447,6 +448,7 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret < n 5  ; Δ{}
+  ret == x y  ; Δ{}
   ret _d1000000  ; Δ{}
   ret call concat$Int _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   ret call lt5 eta$1  ; Δ{}
@@ -494,6 +496,7 @@ concatMap$$dup xs  =
 consFst y ab  =
 dropWhile p xs  =
 dup n  =
+eq$Int x y  =
 findIndex$$lt5 xs  =
 fromMaybe d m  =
 incMaybe m  =

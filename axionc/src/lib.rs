@@ -3560,6 +3560,13 @@ instance Eq Bool where
   eq x y = if x then y else if y then False else True
 instance Ord Bool where
   le x y = if x then y else True
+-- String Eq/Ord: `==`/`<` are wired over String (byte-lexicographic, via the
+-- native `axion_str_cmp`), so these mirror the Int/Float instances exactly and
+-- lookup/elem/sortBy/nub/find all work over String (§text).
+instance Eq String where
+  eq x y = x == y
+instance Ord String where
+  le x y = if x < y then True else x == y
 -- Show for lists: `[1, 2, 3]` (bracketed, comma-separated). Elements use
 -- `show` (not showArg) so nested constructors aren't parenthesised inside the
 -- brackets, matching Haskell's `show [Just 1, Nothing]` = `[Just 1, Nothing]`.
@@ -3759,7 +3766,7 @@ lookup :: Eq k => k -> List (k, v) -> Maybe v
 lookup k xs = case xs of
   Nil -> Nothing
   Cons p ps -> case p of
-    (a, b) -> if a == k then Just b else lookup k ps
+    (a, b) -> if eq a k then Just b else lookup k ps
 
 incMaybe :: Maybe Int -> Maybe Int
 incMaybe m = case m of

@@ -1,3 +1,4 @@
--- AX0404: method over a concrete type with no instance (there is no Eq String).
+-- AX0404: method over a concrete type with no instance (Foo has no Eq).
+data Foo = Foo
 main :: Bool
-main = eq "a" "b"
+main = eq Foo Foo

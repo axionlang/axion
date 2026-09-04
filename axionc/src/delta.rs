@@ -294,6 +294,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 // char-level string reads: BORROW the string, return a scalar Int.
                 || func == "axion_str_len"
                 || func == "axion_str_at"
+                || func == "axion_str_cmp"
             {
                 e.borrows.extend(args.iter());
                 return e;

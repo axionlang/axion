@@ -780,6 +780,19 @@ pub fn builtin_op_integer(op: &str) -> &'static str {
     }
 }
 
+/// String (§text) counterparts of the built-in `Ord` comparisons, resolved like
+/// the Float/Integer ones — `core`/`interp` lower the `#str` markers to the
+/// byte-lexicographic `axion_str_cmp`. Only the comparisons (`== < >`) have a
+/// String instance; `+ - *` (Num) do not.
+pub fn builtin_op_str(op: &str) -> &'static str {
+    match op {
+        "==" => "==#str",
+        "<" => "<#str",
+        ">" => ">#str",
+        _ => unreachable!("not a built-in String comparison operator: {op}"),
+    }
+}
+
 /// Whether the type variable `var` occurs anywhere in the (surface) type `t`.
 fn type_contains_var(t: &Type, var: &str) -> bool {
     match t {
@@ -1668,6 +1681,15 @@ impl<'a> Infer<'a> {
                 Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
             )),
         );
+        // strCmp :: String -> String -> Int (byte-lexicographic compare, -1/0/1);
+        // backs the Eq/Ord instances for String.
+        env.insert(
+            "strCmp".into(),
+            mono(Ty::Fun(
+                Box::new(string()),
+                Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
+            )),
+        );
         env.insert(
             "substr".into(),
             mono(Ty::Fun(
@@ -2418,6 +2440,15 @@ impl<'a> Infer<'a> {
                         (o.func.clone(), o.span),
                         builtin_op_integer(&o.method).into(),
                     );
+                }
+                // built-in Ord comparison over String → rewrite to the `#str`
+                // marker, lowered to the byte-lexicographic `axion_str_cmp`. Only
+                // the comparisons have a String instance (class `Ord`); `+ - *`
+                // (`Num`) fall through and are rejected below.
+                Ty::Con(name, _)
+                    if o.class == "Ord" && is_builtin_op_method(&o.method) && name == "String" =>
+                {
+                    resolutions.insert((o.func.clone(), o.span), builtin_op_str(&o.method).into());
                 }
                 // built-in Num/Ord operator over Int → keep the operator (native
                 // iadd/imul; the interpreter's Int path).

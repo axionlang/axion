@@ -368,6 +368,13 @@ long axion_str_at(long i, long s) {
     return -1;
   return (long)(unsigned char)x[i];
 }
+/* strCmp :: String -> String -> Int — byte-lexicographic compare of two
+ * NUL-terminated C-strings, normalised to -1/0/1. READS both (no free). Backs
+ * the `Eq String`/`Ord String` instances. */
+long axion_str_cmp(long a, long b) {
+  int c = strcmp((const char *)a, (const char *)b);
+  return c < 0 ? -1 : (c > 0 ? 1 : 0);
+}
 /* substr :: Int -> Int -> String -> String — `len` bytes from `start`, both
  * clamped to the string's bounds; a fresh NUL-terminated heap String. */
 long axion_substr(long start, long len, long s) {

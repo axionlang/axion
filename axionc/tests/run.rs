@@ -41,6 +41,30 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn string_compare_runs_on_all_backends() {
+    // String Eq/Ord (§text): `== < >` over String (byte-lexicographic via the
+    // native axion_str_cmp), plus lookup/elemBy over String keys. Scalar Int
+    // result (no heap alias), so it runs on every backend; all three must agree.
+    let fx = fixture("string_compare.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "95",
+            "{backend}: string comparison expression should evaluate to 95"
+        );
+    }
+}
+
+#[test]
 fn stdlib_batch_runs_on_all_backends() {
     // Prelude breadth: id/const/flip/fst/snd/curry/uncurry + mapMaybe/maybeToList/listToMaybe
     // + elemIndex. One expression exercising all of them must agree across every backend

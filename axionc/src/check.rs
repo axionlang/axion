@@ -1166,6 +1166,7 @@ pub fn builtins() -> HashSet<String> {
         "strAppend",
         "strLen",
         "charAt",
+        "strCmp",
         "substr",
         "otherwise",
         "True",

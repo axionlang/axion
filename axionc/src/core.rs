@@ -353,6 +353,18 @@ pub fn integer_op_rt(op: &str) -> Option<&'static str> {
     })
 }
 
+/// The Int predicate a String comparison marker (`==#str`/`<#str`/`>#str`) reduces
+/// to, applied to `axion_str_cmp a b` against `0` (the cmp is -1/0/1). `Some` only
+/// for the three String comparisons (§text).
+pub fn str_cmp_int_op(op: &str) -> Option<&'static str> {
+    Some(match op {
+        "==#str" => "==",
+        "<#str" => "<",
+        ">#str" => ">",
+        _ => return None,
+    })
+}
+
 /// A bignum runtime call that allocates and returns a fresh owned `Integer` (the
 /// result the caller must reclaim via `axion_bignum_free`). Comparisons
 /// (`eq`/`lt`/`gt`) and `to_string` are NOT producers (they return a scalar/String).
@@ -416,6 +428,7 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "strAppend" => ("axion_strcat", 2),
         "strLen" => ("axion_str_len", 1),
         "charAt" => ("axion_str_at", 2),
+        "strCmp" => ("axion_str_cmp", 2),
         "substr" => ("axion_substr", 3),
         _ => return None,
     })
@@ -1516,9 +1529,25 @@ impl Lower<'_> {
             Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Var(_, _) => {
                 Op::Atom(self.atom(e, buf))
             }
-            Expr::BinOp(op, l, r, _) => {
+            Expr::BinOp(op, l, r, sp) => {
                 let a = self.atom(l, buf);
                 let b = self.atom(r, buf);
+                if let Some(int_op) = str_cmp_int_op(op) {
+                    // String comparison (§text): `axion_str_cmp a b` yields -1/0/1;
+                    // compare that against 0 with the matching Int predicate. Reuses
+                    // the one native compare for `== < >` — no dedicated runtime fns.
+                    let cmp = self.fresh();
+                    buf.push((
+                        cmp.clone(),
+                        Rhs::Op(Op::RtCall {
+                            func: "axion_str_cmp".into(),
+                            args: vec![a, b],
+                            returns: true,
+                        }),
+                        *sp,
+                    ));
+                    return Op::Prim(int_op.into(), Atom::Var(cmp), Atom::Int(0));
+                }
                 if is_float_op(op) {
                     Op::PrimF(op.clone(), a, b)
                 } else if let Some(func) = integer_op_rt(op) {
@@ -1648,6 +1677,9 @@ impl Lower<'_> {
         }
         if name == "charAt" && args.len() == 2 {
             return self.rtcall("axion_str_at", &args, true, buf);
+        }
+        if name == "strCmp" && args.len() == 2 {
+            return self.rtcall("axion_str_cmp", &args, true, buf);
         }
         if name == "substr" && args.len() == 3 {
             return self.rtcall("axion_substr", &args, true, buf);

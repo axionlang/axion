@@ -237,7 +237,7 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 fn builtin_arity(name: &str) -> usize {
     match name {
         "substr" => 3,
-        "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" => 2,
+        "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" => 2,
         _ => 1,
     }
 }
@@ -290,6 +290,19 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
                         let f = resolve_var(prog, env, "append")?;
                         apply(prog, apply(prog, f, a)?, b)
                     }
+                },
+                // String comparisons (§text): byte-lexicographic, resolved by
+                // inference from `== < >` when the operands are String.
+                "==#str" | "<#str" | ">#str" => match (a, b) {
+                    (Value::Str(x), Value::Str(y)) => {
+                        let c = x.as_bytes().cmp(y.as_bytes());
+                        Ok(Value::Bool(match op.as_str() {
+                            "==#str" => c == std::cmp::Ordering::Equal,
+                            "<#str" => c == std::cmp::Ordering::Less,
+                            _ => c == std::cmp::Ordering::Greater,
+                        }))
+                    }
+                    _ => Err("String comparison on non-strings".to_string()),
                 },
                 o if is_builtin_op(o) => eval_binop(o, a, b),
                 // operador infixo de utilizador (§8): `x `f` y` ≡ `f x y`.
@@ -490,6 +503,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "charAt" => Ok(Value::Builtin {
             name: "charAt",
+            args: Vec::new(),
+        }),
+        "strCmp" => Ok(Value::Builtin {
+            name: "strCmp",
             args: Vec::new(),
         }),
         "substr" => Ok(Value::Builtin {
@@ -1056,6 +1073,13 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // char-level string primitives (§text). Byte-oriented, to agree with the
         // native (C/Rust) runtime exactly; ASCII in practice.
         ("strLen", [Value::Str(s)]) => Ok(Value::Int(s.len() as i64)),
+        ("strCmp", [Value::Str(x), Value::Str(y)]) => {
+            Ok(Value::Int(match x.as_bytes().cmp(y.as_bytes()) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            }))
+        }
         ("charAt", [Value::Int(i), Value::Str(s)]) => {
             let b = s.as_bytes();
             Ok(Value::Int(if *i < 0 || *i as usize >= b.len() {
