@@ -114,6 +114,15 @@ enum Backend {
 /// binary and the `axion-lsp` binary can share the whole compiler crate. Native
 /// only — it drives the Cranelift/LLVM backends and the FFI runtime.
 #[cfg(feature = "native")]
+/// The program's command-line arguments — everything after a `--` separator on the
+/// `axionc` command line (e.g. `axionc pass.axi -- show github` → `["show","github"]`).
+/// Read by the interpreter and the Cranelift JIT via `getArgs`; a standalone
+/// `--release` binary instead reads its own `argv` through C `main`/`axion_set_args`.
+/// Set once by `run_cli`.
+pub static PROG_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Entry point for the `axionc` CLI: parses arguments, then compiles/checks/runs the
+/// given `.axi` file on the selected backend.
 pub fn run_cli() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut check_only = false;
@@ -125,9 +134,17 @@ pub fn run_cli() -> ExitCode {
     let mut no_verify = false;
     let mut allow_leaks = false;
 
+    let mut prog_args: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            // everything after `--` is the compiled program's argv (§pass), not an
+            // axionc flag. Captured for the interpreter/Cranelift; the --release
+            // binary also receives it via the exec below.
+            "--" => {
+                prog_args = args[i + 1..].to_vec();
+                break;
+            }
             "--check" => check_only = true,
             "--check-coherence" => check_coherence = true,
             "--fuse" => fuse = true,
@@ -185,6 +202,9 @@ pub fn run_cli() -> ExitCode {
         }
         i += 1;
     }
+
+    // Publish the program's argv for the interpreter/Cranelift `getArgs`.
+    let _ = PROG_ARGS.set(prog_args);
 
     let path = match path {
         Some(p) => p,

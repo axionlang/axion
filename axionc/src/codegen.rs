@@ -349,6 +349,27 @@ extern "C" fn axion_exit(code: i64) -> i64 {
     std::process::exit(code as i32);
 }
 
+/// `getArg :: Int -> String` — the i-th program argument (0-based) as a fresh copy,
+/// "" if out of range. Cranelift reimpl (reads the Rust-side store).
+extern "C" fn axion_getarg(i: i64) -> *const u8 {
+    let s = crate::PROG_ARGS
+        .get()
+        .and_then(|v| usize::try_from(i).ok().and_then(|i| v.get(i)))
+        .map_or("", String::as_str);
+    axion_str_alloc(s.as_bytes())
+}
+
+/// `getArgs :: Int -> String` — the program's arguments (from `axionc … -- <args>`)
+/// joined by '\n'. The Int arg is an ignored placeholder. Cranelift reimpl: reads the
+/// Rust-side store (the JIT runs `main` in-process, so there is no C `main`/argv).
+extern "C" fn axion_getargs(_ignored: i64) -> *const u8 {
+    let joined = crate::PROG_ARGS
+        .get()
+        .map(|v| v.join("\n"))
+        .unwrap_or_default();
+    axion_str_alloc(joined.as_bytes())
+}
+
 /// `substr :: Int -> Int -> String -> String` — `len` bytes from `start` (both
 /// clamped to bounds), as a fresh reclaimable heap String.
 extern "C" fn axion_substr(start: i64, len: i64, s: *const u8) -> *const u8 {
@@ -1721,6 +1742,8 @@ impl Cg {
         builder.symbol("axion_readdir", axion_readdir as *const u8);
         builder.symbol("axion_rand_hex", axion_rand_hex as *const u8);
         builder.symbol("axion_exit", axion_exit as *const u8);
+        builder.symbol("axion_getargs", axion_getargs as *const u8);
+        builder.symbol("axion_getarg", axion_getarg as *const u8);
         builder.symbol("axion_substr", axion_substr as *const u8);
         builder.symbol("axion_str_drop", axion_str_drop as *const u8);
         builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
@@ -1902,6 +1925,8 @@ impl Cg {
             ("axion_readdir", 1, true),
             ("axion_rand_hex", 1, true),
             ("axion_exit", 1, true),
+            ("axion_getargs", 1, true),
+            ("axion_getarg", 1, true),
             // drops a String: frees a heap string, skips a static literal (§tc)
             ("axion_str_drop", 1, false),
             ("axion_bignum_from_i64", 1, true),

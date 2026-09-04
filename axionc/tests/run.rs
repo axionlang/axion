@@ -41,6 +41,32 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn hello_cli_spike_runs_on_all_backends() {
+    // Phase A gate (§pass): a real CLI shape — argv dispatch via getArg (fresh copy
+    // per index, no heap-element aliasing), env via getEnv, subprocess via runCapture
+    // — end-to-end. Args after `--` become the program's argv; all backends agree.
+    let fx = fixture("hello_cli.axi");
+    let expected = "cmd=greet\narg=world\nmissing=\nhome=/home/x\nspawned\n";
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx, "--", "greet", "world"])
+            .env("HELLO_HOME", "/home/x")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            expected,
+            "{backend}: hello_cli spike"
+        );
+    }
+}
+
+#[test]
 fn capability_layer_runs_on_all_backends() {
     // OS capability layer (§pass): subprocess/env/randomness/filesystem primitives,
     // each reclaiming its String result. Driven with a unique temp dir + known env
@@ -3266,7 +3292,7 @@ fn emit_llvm_dumps_llvm_ir() {
     assert!(ir.contains("call i64 @\"ax_fib\""), "no recursion:\n{ir}");
     assert!(ir.contains("phi i64"), "no phi from the if:\n{ir}");
     assert!(
-        ir.contains("define i32 @main()") && ir.contains("@printf"),
+        ir.contains("define i32 @main(i32 %argc, ptr %argv)") && ir.contains("@printf"),
         "no driver that prints:\n{ir}"
     );
 }

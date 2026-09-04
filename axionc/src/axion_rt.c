@@ -567,6 +567,53 @@ long axion_exit(long code) {
   exit((int)code);
   return 0;
 }
+
+/* Command-line arguments (§pass). A standalone --release binary's `main(argc, argv)`
+ * hands them here; `getArgs` then reads them. (The interpreter and Cranelift set
+ * their own Rust-side store instead — see codegen.rs / lib.rs.) */
+static int g_argc = 0;
+static char **g_argv = 0;
+void axion_set_args(long argc, long argv) {
+  g_argc = (int)argc;
+  g_argv = (char **)argv;
+}
+
+/* getArg :: Int -> String — the i-th program argument (0-based over argv[1..],
+ * excluding the program name), as a FRESH reclaimable heap String ("" if out of
+ * range). Each call copies, so results never alias each other — the CLI-safe way to
+ * read argv (a List String from splitting would trip heap-element aliasing). */
+long axion_getarg(long i) {
+  long idx = i + 1; /* skip the program name */
+  if (i < 0 || idx >= g_argc || !g_argv)
+    return axion_str_of("", 0);
+  return axion_str_of(g_argv[idx], (long)strlen(g_argv[idx]));
+}
+
+/* getArgs :: Int -> String — the program's arguments (argv[1..], excluding the
+ * program name) joined by '\n', as a fresh reclaimable heap String. The Int arg is
+ * an ignored placeholder (the applied-builtin model needs one operand); pass 0. */
+long axion_getargs(long ignored) {
+  (void)ignored;
+  size_t cap = 128, len = 0;
+  char *buf = (char *)axion_xmalloc(cap);
+  for (int i = 1; i < g_argc; i++) {
+    size_t nl = strlen(g_argv[i]);
+    if (len + nl + 2 > cap) {
+      while (len + nl + 2 > cap)
+        cap *= 2;
+      buf = (char *)realloc(buf, cap);
+      if (!buf)
+        return axion_str_of("", 0);
+    }
+    if (len)
+      buf[len++] = '\n';
+    memcpy(buf + len, g_argv[i], nl);
+    len += nl;
+  }
+  long r = axion_str_of(buf, (long)len);
+  free(buf);
+  return r;
+}
 /* substr :: Int -> Int -> String -> String — `len` bytes from `start`, both
  * clamped to the string's bounds; a fresh NUL-terminated heap String. */
 long axion_substr(long start, long len, long s) {

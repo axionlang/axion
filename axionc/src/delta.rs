@@ -223,6 +223,8 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_read_file"
                 || func == "axion_readdir"
                 || func == "axion_rand_hex"
+                || func == "axion_getargs"
+                || func == "axion_getarg"
             {
                 e.borrows.extend(args.iter());
                 e.produces = Some(Res {

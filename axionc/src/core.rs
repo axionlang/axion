@@ -442,6 +442,8 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "readDir" => ("axion_readdir", 1),
         "randHex" => ("axion_rand_hex", 1),
         "exitWith" => ("axion_exit", 1),
+        "getArgs" => ("axion_getargs", 1),
+        "getArg" => ("axion_getarg", 1),
         _ => return None,
     })
 }
@@ -1732,6 +1734,12 @@ impl Lower<'_> {
         }
         if name == "exitWith" && args.len() == 1 {
             return self.rtcall("axion_exit", &args, true, buf);
+        }
+        if name == "getArgs" && args.len() == 1 {
+            return self.rtcall("axion_getargs", &args, true, buf);
+        }
+        if name == "getArg" && args.len() == 1 {
+            return self.rtcall("axion_getarg", &args, true, buf);
         }
         if name == "toFloat" && args.len() == 1 {
             return Op::IntToFloat(self.atom(args[0], buf));
@@ -5439,7 +5447,9 @@ impl Op {
                     || func == "axion_run"
                     || func == "axion_read_file"
                     || func == "axion_readdir"
-                    || func == "axion_rand_hex" =>
+                    || func == "axion_rand_hex"
+                    || func == "axion_getargs"
+                    || func == "axion_getarg" =>
             {
                 Some("String".into())
             }

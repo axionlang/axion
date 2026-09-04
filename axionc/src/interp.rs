@@ -558,6 +558,14 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "exitWith",
             args: Vec::new(),
         }),
+        "getArgs" => Ok(Value::Builtin {
+            name: "getArgs",
+            args: Vec::new(),
+        }),
+        "getArg" => Ok(Value::Builtin {
+            name: "getArg",
+            args: Vec::new(),
+        }),
         "substr" => Ok(Value::Builtin {
             name: "substr",
             args: Vec::new(),
@@ -1192,6 +1200,19 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
             Ok(Value::Str(s))
         }
         ("exitWith", [Value::Int(code)]) => std::process::exit(*code as i32),
+        ("getArgs", [Value::Int(_)]) => Ok(Value::Str(
+            crate::PROG_ARGS
+                .get()
+                .map(|v| v.join("\n"))
+                .unwrap_or_default(),
+        )),
+        ("getArg", [Value::Int(i)]) => Ok(Value::Str(
+            crate::PROG_ARGS
+                .get()
+                .and_then(|v| usize::try_from(*i).ok().and_then(|i| v.get(i)))
+                .cloned()
+                .unwrap_or_default(),
+        )),
         ("strCmp", [Value::Str(x), Value::Str(y)]) => {
             Ok(Value::Int(match x.as_bytes().cmp(y.as_bytes()) {
                 std::cmp::Ordering::Less => -1,

@@ -1719,6 +1719,14 @@ impl<'a> Infer<'a> {
             mono(Ty::Fun(Box::new(int()), Box::new(int()))), // exit code (never returns)
         );
         env.insert(
+            "getArgs".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))), // argv[1..] joined by '\n'
+        );
+        env.insert(
+            "getArg".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))), // i-th arg, fresh copy, "" if OOB
+        );
+        env.insert(
             "substr".into(),
             mono(Ty::Fun(
                 Box::new(int()),

@@ -1181,6 +1181,8 @@ pub fn builtins() -> HashSet<String> {
         "readDir",
         "randHex",
         "exitWith",
+        "getArgs",
+        "getArg",
         "otherwise",
         "True",
         "False",

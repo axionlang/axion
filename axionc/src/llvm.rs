@@ -47,6 +47,9 @@ declare i64 @axion_rename(i64, i64)
 declare i64 @axion_readdir(i64)
 declare i64 @axion_rand_hex(i64)
 declare i64 @axion_exit(i64)
+declare void @axion_set_args(i64, i64)
+declare i64 @axion_getargs(i64)
+declare i64 @axion_getarg(i64)
 declare i64 @axion_bignum_from_i64(i64)
 declare i64 @axion_bignum_from_str(i64)
 declare i64 @axion_bignum_add(i64, i64)
@@ -246,7 +249,11 @@ pub fn emit_ir(
 
     // driver: runs `ax_main` on a large-stack thread (deep recursion safety),
     // then prints the Int, or nothing if it is IO ().
-    out.push_str("define i32 @main() {\nentry:\n");
+    out.push_str("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n");
+    // §pass: hand the process argv to the runtime so `getArgs` can read it.
+    out.push_str("  %ac = sext i32 %argc to i64\n");
+    out.push_str("  %av = ptrtoint ptr %argv to i64\n");
+    out.push_str("  call void @axion_set_args(i64 %ac, i64 %av)\n");
     out.push_str("  %fp = ptrtoint ptr @\"ax_main\" to i64\n");
     out.push_str("  %r = call i64 @axion_run_main(i64 %fp)\n");
     if main_int {
@@ -332,7 +339,13 @@ pub fn build_and_run(
     if !status.success() {
         return Err("clang failed to compile the LLVM IR".into());
     }
-    let run = std::process::Command::new(&exe).status();
+    // Forward the program's argv (from `axionc … -- <args>`) to the compiled binary
+    // so its `getArgs` sees them (§pass).
+    let mut run_cmd = std::process::Command::new(&exe);
+    if let Some(prog_args) = crate::PROG_ARGS.get() {
+        run_cmd.args(prog_args);
+    }
+    let run = run_cmd.status();
     drop(std::fs::remove_file(&ll));
     drop(std::fs::remove_file(&rt));
     drop(std::fs::remove_file(&exe));
