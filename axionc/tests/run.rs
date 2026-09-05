@@ -41,6 +41,32 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn conditional_escape_of_let_bound_heap_runs_on_all_backends() {
+    // Auto-Drop (§): a let-bound fresh heap String that escapes in one `if` branch and
+    // is dead in the other must be dropped on the dead path (reclaim_cond_escape seeds
+    // such let-bound producers). Previously native rejected this common pattern (AX0910
+    // Unbalanced); now it compiles and all backends agree.
+    let fx = fixture("cond_escape_let.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .env("COND_VAR", "hello")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "short\nhello\n",
+            "{backend}: conditional-escape reclamation"
+        );
+    }
+}
+
+#[test]
 fn hello_cli_spike_runs_on_all_backends() {
     // Phase A gate (§pass): a real CLI shape — argv dispatch via getArg (fresh copy
     // per index, no heap-element aliasing), env via getEnv, subprocess via runCapture

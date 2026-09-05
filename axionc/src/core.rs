@@ -381,6 +381,40 @@ pub fn is_bignum_producer(func: &str) -> bool {
     )
 }
 
+/// A runtime call that allocates and returns a FRESH owned heap `String` (reclaimed by
+/// the tagged `axion_str_drop`). All read (borrow) their operands, so the result never
+/// aliases them. The String builtins + the §pass OS capability layer's producers.
+pub fn is_string_producer(func: &str) -> bool {
+    matches!(
+        func,
+        "axion_strcat"
+            | "axion_show_float"
+            | "axion_bignum_to_string"
+            | "axion_substr"
+            | "axion_getenv"
+            | "axion_run"
+            | "axion_read_file"
+            | "axion_readdir"
+            | "axion_rand_hex"
+            | "axion_getargs"
+            | "axion_getarg"
+    )
+}
+
+/// The drop key of a FRESH owned heap value a `let` binding allocates — a String or
+/// Integer producer whose result cannot alias its args, so it is safe to reclaim
+/// branch-sensitively when it conditionally escapes (`let s = getEnv…; if c then s
+/// else "d"` → drop `s` on the `else`). `None` for scalars, in-place setters (a
+/// threaded handle, already owned), and calls/getters (may return an interior alias).
+fn fresh_let_producer_key(op: &Op) -> Option<String> {
+    match op {
+        Op::ShowInt(_) => Some("String".into()),
+        Op::RtCall { func, .. } if is_string_producer(func) => Some("String".into()),
+        Op::RtCall { func, .. } if is_bignum_producer(func) => Some("Integer".into()),
+        _ => None,
+    }
+}
+
 /// `true` if the op returns a value that CANNOT alias its (heap) operands — a fresh
 /// scalar or a freshly-allocated result. Used by `reclaim_cond_escape` to decide whether
 /// an owned param stays reclaimable across a binding that reads it: a fresh-producing op
@@ -390,10 +424,33 @@ pub fn is_bignum_producer(func: &str) -> bool {
 fn op_is_fresh_wrt_args(op: &Op) -> bool {
     match op {
         Op::Prim(..) | Op::PrimF(..) => true,
-        // bignum arith → a fresh `Integer`; bignum comparison → a scalar `Bool`.
-        Op::RtCall { func, .. } => is_bignum_borrower(func),
+        // Reads its (heap) operands and returns a fresh value that cannot alias them:
+        // bignum arith → a fresh `Integer`; a String producer → a fresh copy; a scalar
+        // reader (strLen/strCmp/…, §pass capability Int-returners) → a fresh Int.
+        Op::RtCall { func, .. } => {
+            is_bignum_borrower(func) || is_string_producer(func) || is_scalar_reader(func)
+        }
         _ => false,
     }
+}
+
+/// A runtime call whose result is a fresh scalar that READS (borrows) its String/array
+/// operands — it cannot alias them, so an owned operand stays reclaimable across it. The
+/// String readers (strLen/charAt/strCmp) and the §pass capability Int-returning
+/// primitives (subprocess status, filesystem ops, exit).
+pub fn is_scalar_reader(func: &str) -> bool {
+    matches!(
+        func,
+        "axion_str_len"
+            | "axion_str_at"
+            | "axion_str_cmp"
+            | "axion_system"
+            | "axion_file_exists"
+            | "axion_mkdir_p"
+            | "axion_unlink"
+            | "axion_rename"
+            | "axion_exit"
+    )
 }
 
 /// A bignum runtime call that BORROWS its heap operand(s) (reads without freeing), so
@@ -5437,22 +5494,7 @@ impl Op {
             // String producers → reclaimed by the tagged `axion_str_drop` (§tc):
             // frees a heap string, skips a static literal (zero size-header).
             Op::ShowInt(_) => Some("String".into()),
-            Op::RtCall { func, .. }
-                if func == "axion_strcat"
-                    || func == "axion_show_float"
-                    || func == "axion_bignum_to_string"
-                    || func == "axion_substr"
-                    // OS capability layer (§pass): String-returning primitives.
-                    || func == "axion_getenv"
-                    || func == "axion_run"
-                    || func == "axion_read_file"
-                    || func == "axion_readdir"
-                    || func == "axion_rand_hex"
-                    || func == "axion_getargs"
-                    || func == "axion_getarg" =>
-            {
-                Some("String".into())
-            }
+            Op::RtCall { func, .. } if is_string_producer(func) => Some("String".into()),
             // Integer producers → reclaimed by `axion_bignum_free` (frees the boxed
             // BigNum struct + its limbs). Args are borrowed (see `delta`), so an Integer
             // value's owner drops it at its death.
@@ -6250,16 +6292,11 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         {
             false
         }
-        // String builtins READ their operands and return a fresh String — the
-        // operand stays owned by the caller (matches delta::op_delta_effect, §tc),
-        // so a read-only String param is a borrow-arg the caller reclaims.
-        Op::RtCall { func, .. }
-            if func == "axion_strcat"
-                || func == "axion_show_float"
-                || func == "axion_bignum_to_string" =>
-        {
-            false
-        }
+        // String builtins + §pass capability primitives READ their operands and return
+        // a fresh String or scalar — the operand stays owned by the caller (matches
+        // delta::op_delta_effect, §tc), so a read-only String arg is a borrow-arg the
+        // caller reclaims. Keeps `op_moves` in sync with the borrow effect.
+        Op::RtCall { func, .. } if is_string_producer(func) || is_scalar_reader(func) => false,
         // Integer arithmetic/comparison READS its operands (borrows) and returns a
         // fresh Integer/Bool — the operands stay owned by the caller (matches
         // `delta::op_delta_effect`), so a read-only Integer param is a borrow-arg the
@@ -6563,6 +6600,19 @@ fn reclaim_cond_escape(
                 .collect();
             if let Some(key) = alias_key {
                 owned.push((x.clone(), key));
+            } else if let Rhs::Op(op) = &rhs {
+                // A fresh let-bound heap producer (`let s = getEnv…`) that CONDITIONALLY
+                // escapes — returned in one `if`/`case` arm, dead in another — must be
+                // dropped on the dead paths. `insert_drops` leaves it (it sees the escape
+                // and never drops it → the sibling arm is Unbalanced), so seed it here and
+                // let the branch-sensitive tail logic reclaim it. Fresh-producer-only, so
+                // the result never aliases an arg; if it is consumed/dropped downstream the
+                // `Drop`/move handling removes it before any second free.
+                if let Some(key) = fresh_let_producer_key(op) {
+                    if !owned.iter().any(|(v, _)| v == &x) {
+                        owned.push((x.clone(), Some(key)));
+                    }
+                }
             }
             Term::Let(
                 x,
