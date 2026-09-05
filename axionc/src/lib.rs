@@ -1631,16 +1631,50 @@ fn hof_spine_consuming(f: &ast::Func) -> bool {
         }
         for_each_subexpr(e, &mut |s| self_call_args(name, s, out));
     }
-    // the tail-position leaves of an expression (past `if`/`case`/`let`).
-    fn leaves<'a>(e: &'a ast::Expr, out: &mut Vec<&'a ast::Expr>) {
-        match e {
-            ast::Expr::If(_, t, el, _) => {
-                leaves(t, out);
-                leaves(el, out);
+    // whether variable `s` occurs (free) anywhere in `e`.
+    fn occurs(e: &ast::Expr, s: &str) -> bool {
+        if matches!(e, ast::Expr::Var(v, _) if v == s) {
+            return true;
+        }
+        let mut found = false;
+        for_each_subexpr(e, &mut |sub| {
+            if occurs(sub, s) {
+                found = true;
             }
-            ast::Expr::Case(_, arms, _) => arms.iter().for_each(|(_, b)| leaves(b, out)),
-            ast::Expr::Let(_, body, _) => leaves(body, out),
-            _ => out.push(e),
+        });
+        found
+    }
+    // `s` is CONSUMED on EVERY path through `e` — passed to exactly one self-recursive call to
+    // `name` and not otherwise used. A `case`/`if` whose SCRUTINEE/condition consumes `s` runs on
+    // all paths (`partition`: `case partition p ys of …`, `ys` gone in the arms); otherwise every
+    // branch must consume it (`filter`: both `if` arms recurse with `ys`); a leaf must recurse
+    // with it. A branch that DISCARDS `s` (`take`'s `else Nil`) fails — correctly staying generic.
+    fn consumes_all_paths(name: &str, e: &ast::Expr, s: &str) -> bool {
+        match e {
+            ast::Expr::Case(scrut, arms, _) => {
+                let mut sc = std::collections::HashSet::new();
+                self_call_args(name, scrut, &mut sc);
+                if sc.contains(s) {
+                    arms.iter().all(|(_, arm)| !occurs(arm, s))
+                } else {
+                    arms.iter().all(|(_, arm)| consumes_all_paths(name, arm, s))
+                }
+            }
+            ast::Expr::If(c, t, el, _) => {
+                let mut cc = std::collections::HashSet::new();
+                self_call_args(name, c, &mut cc);
+                if cc.contains(s) {
+                    !occurs(t, s) && !occurs(el, s)
+                } else {
+                    consumes_all_paths(name, t, s) && consumes_all_paths(name, el, s)
+                }
+            }
+            ast::Expr::Let(_, body, _) => consumes_all_paths(name, body, s),
+            _ => {
+                let mut a = std::collections::HashSet::new();
+                self_call_args(name, e, &mut a);
+                a.contains(s)
+            }
         }
     }
     // check every `case` arm that binds a spine.
@@ -1652,16 +1686,9 @@ fn hof_spine_consuming(f: &ast::Func) -> bool {
                 let mut recursed = HashSet::new();
                 self_call_args(name, arm, &mut recursed);
                 let spines: Vec<String> = binders.intersection(&recursed).cloned().collect();
-                let mut ls = Vec::new();
-                leaves(arm, &mut ls);
                 for s in &spines {
-                    // every LEAF of the arm must recurse with `s` (never discard it).
-                    let ok = ls.iter().all(|leaf| {
-                        let mut a = HashSet::new();
-                        self_call_args(name, leaf, &mut a);
-                        a.contains(s)
-                    });
-                    if !ok {
+                    // `s` must be consumed (passed to a self-recursive call) on EVERY path.
+                    if !consumes_all_paths(name, arm, s) {
                         return false;
                     }
                 }
