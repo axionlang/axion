@@ -80,6 +80,31 @@ main = putStrLn (secondOr "none" (words "a b c"))
 }
 
 #[test]
+fn partial_consumer_hofs_over_heap_run_on_all_backends() {
+    // Tier-2 (§): a partial-consumer HOF with a closure param — `takeWhile`/`dropWhile`
+    // (spine-discarding, once AX0912-rejected over a heap element type) and `filter` — now
+    // specializes and runs natively over `String`, so the drop-insertion reclaims precisely.
+    // Scalar Int result; all backends must agree (= 7).
+    let fx = fixture("hof_heap_element.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "7",
+            "{backend}: takeWhile/dropWhile/filter over String"
+        );
+    }
+}
+
+#[test]
 fn multi_file_imports_resolve_and_handle_cycles() {
     // Module system (§): `import Foo` loads Foo.axi from the same directory and merges its
     // definitions. A basic import must run identically on every backend; an import CYCLE must
