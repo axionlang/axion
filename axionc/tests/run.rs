@@ -80,6 +80,30 @@ main = putStrLn (secondOr "none" (words "a b c"))
 }
 
 #[test]
+fn unused_effectful_let_runs_on_all_backends() {
+    // Effect consistency (§): an UNUSED effectful `let` binding still runs (Axión is strict)
+    // and its output is sequenced before the body — the interpreter used to lazily skip it
+    // while native ran it (a backend divergence). All backends must print "AB".
+    let fx = fixture("let_effect_forced.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "AB\n",
+            "{backend}: unused effectful let must run + sequence"
+        );
+    }
+}
+
+#[test]
 fn conditional_escape_of_let_bound_heap_runs_on_all_backends() {
     // Auto-Drop (§): a let-bound fresh heap String that escapes in one `if` branch and
     // is dead in the other must be dropped on the dead path (reclaim_cond_escape seeds

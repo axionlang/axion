@@ -331,7 +331,27 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         Expr::Let(binds, body, _) => {
             let child = child_env(env);
             bind_funcs(binds, &child);
-            eval(prog, &child, body)
+            // Axión is STRICT (matching the native backends): force every 0-arg (CAF) binding
+            // eagerly, in source order, so an UNUSED effectful binding (`let _ = writeFile …`)
+            // still runs — the interpreter's laziness otherwise silently skips it, a real
+            // backend divergence (native evaluates every `let`). A binding whose forced value
+            // is `Io` has its output sequenced before the body, like a `do`-statement; a
+            // side-effecting primitive (`writeFile`/`runStatus`) performs its effect during the
+            // force itself. Function bindings (arity > 0) are inert closures — nothing to force.
+            let mut io_prefix = String::new();
+            for b in binds {
+                if b.clauses.first().is_some_and(|c| c.pats.is_empty()) {
+                    if let Value::Io(s) = resolve_var(prog, &child, &b.name)? {
+                        io_prefix.push_str(&s);
+                    }
+                }
+            }
+            let r = eval(prog, &child, body)?;
+            Ok(match (io_prefix.is_empty(), r) {
+                (false, Value::Io(rest)) => Value::Io(io_prefix + &rest),
+                (false, Value::Unit) => Value::Io(io_prefix),
+                (_, r) => r,
+            })
         }
         Expr::Case(scrut, arms, _) => {
             let v = eval(prog, env, scrut)?;
