@@ -43,10 +43,10 @@
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
       let _t0 = call foldr$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
       let _t0 = call fstT y  ; Δ{y ys} · moves{y} · makes Integer
-      let _t0 = call pairUp y  ; Δ{y ys} · moves{y}
+      let _t0 = call pairUp y  ; Δ{y ys} · moves{y} · makes tuple$Integer$Integer
       let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t1 = call map$$fstT ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
-      let _t1 = call map$$pairUp ys  ; Δ{ys} · moves{ys} · makes List$tuple$Integer$Integer
+      let _t1 = call map$$pairUp ys  ; Δ{_t0 ys} · moves{ys} · makes List$tuple$Integer$Integer
       let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -59,8 +59,8 @@
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret a  ; Δ{}
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
+      ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$tuple$Integer$Integer
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
-      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$tuple$Integer$Integer
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$Integer
       ret con Nil  ; Δ{} · makes List$tuple$Integer$Integer

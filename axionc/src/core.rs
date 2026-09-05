@@ -4036,6 +4036,15 @@ pub fn lower_with(
         .iter()
         .filter_map(|f| {
             let rt = result_type(f.sig.as_ref()?);
+            // a function returning a TUPLE yields an owned heap tuple the caller reclaims;
+            // key it by its mono tuple key (`tuple$A$B`) so a `case t of (x,y)` destructure
+            // reclaims the cell + fields (the tuple case-destructure path — `notion-2` +
+            // `tuple_discard_drops`) instead of leaking. A `head_con()` lookup misses this (a
+            // tuple type has no head constructor). Only when every element resolves to a
+            // concrete key — a polymorphic element leaves it generic (no drop key).
+            if matches!(rt, Type::Tuple(_)) {
+                return mono_key(rt).map(|k| (f.name.clone(), k));
+            }
             let h = rt.head_con()?;
             // `Array` is a native heap resource freed by the flat `axion_drop_Array`
             // (element type phantom), so a function returning it produces an owned

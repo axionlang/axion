@@ -29,10 +29,10 @@
   let _dd5 = if _dd4 then
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = record Box { v = 7}  ; Δ{} · makes Box
-  let _t1 = call wrap _t0  ; Δ{_t0} · moves{_t0}
+  let _t1 = call wrap _t0  ; Δ{_t0} · moves{_t0} · makes tuple$Box$Int
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call useT _t1  ; Δ{}
+  ret call useT _t1  ; Δ{_t1} · moves{_t1}
   ret case t of
   ret rtcall axion_array_free _p  ; Δ{}
   ret tuple b 5  ; Δ{} · makes heap
