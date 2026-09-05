@@ -80,6 +80,65 @@ main = putStrLn (secondOr "none" (words "a b c"))
 }
 
 #[test]
+fn multi_file_imports_resolve_and_handle_cycles() {
+    // Module system (§): `import Foo` loads Foo.axi from the same directory and merges its
+    // definitions. A basic import must run identically on every backend; an import CYCLE must
+    // terminate cleanly (it used to recurse to a stack overflow) — the shared visited set.
+    let dir = std::env::temp_dir().join(format!("axion_mods_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, body: &str| std::fs::write(dir.join(name), body).unwrap();
+
+    // basic: Main imports Lib and uses its functions.
+    write("Lib.axi", "double :: Int -> Int\ndouble n = n + n\n");
+    write("Main.axi", "import Lib\nmain :: Int\nmain = double 21\n");
+    // cycle: CycA <-> CycB.
+    write("CycA.axi", "import CycB\nfa :: Int\nfa = 1\n");
+    write(
+        "CycB.axi",
+        "import CycA\nfb :: Int\nfb = 2\nmain :: Int\nmain = fa + fb\n",
+    );
+
+    let run = |file: &str, backend: &str| {
+        axionc()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                dir.join(file).to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+    };
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = run("Main.axi", backend);
+        assert!(
+            out.status.success(),
+            "{backend} import: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "42",
+            "{backend}: imported `double`"
+        );
+        // the cycle must compile+run (no stack overflow) and give fa+fb=3.
+        let cyc = run("CycB.axi", backend);
+        assert!(
+            cyc.status.success(),
+            "{backend} cycle: {}",
+            String::from_utf8_lossy(&cyc.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&cyc.stdout).trim(),
+            "3",
+            "{backend}: cyclic import resolves"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn unused_effectful_let_runs_on_all_backends() {
     // Effect consistency (§): an UNUSED effectful `let` binding still runs (Axión is strict)
     // and its output is sequenced before the body — the interpreter used to lazily skip it

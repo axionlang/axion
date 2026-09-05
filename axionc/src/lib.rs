@@ -4326,6 +4326,21 @@ pub fn resolve_imports_with(
     diags: &mut Diagnostics,
     resolve: &ImportResolver,
 ) {
+    // `resolved` is shared across the WHOLE transitive closure (not per-call), so each module
+    // is loaded+merged at most once: this both dedups a diamond (A and B both import C → C
+    // merged once) and terminates an import CYCLE (A→B→A → the second A is skipped) that would
+    // otherwise recurse until stack overflow.
+    let mut resolved = std::collections::HashSet::new();
+    resolve_imports_rec(module, path, diags, resolve, &mut resolved);
+}
+
+fn resolve_imports_rec(
+    module: &mut ast::Module,
+    path: &str,
+    diags: &mut Diagnostics,
+    resolve: &ImportResolver,
+    resolved: &mut std::collections::HashSet<Vec<String>>,
+) {
     if module.imports.is_empty() {
         return;
     }
@@ -4345,16 +4360,16 @@ pub fn resolve_imports_with(
         .map(|i| (i.class_name.clone(), i.ty_head.clone()))
         .collect();
 
-    let mut seen: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
     for import in std::mem::take(&mut module.imports) {
         let key = import.module.clone();
-        if !seen.insert(key.clone()) {
+        // already loaded somewhere in the closure (a repeated, diamond, or cyclic import)?
+        if !resolved.insert(key.clone()) {
             continue;
         }
         let Some((mut imported, resolved_path)) = resolve(dir, &import, diags) else {
             continue;
         };
-        resolve_imports_with(&mut imported, &resolved_path, diags, resolve);
+        resolve_imports_rec(&mut imported, &resolved_path, diags, resolve, resolved);
         // prepend imported definitions, skipping those already defined locally.
         // qualified imports: prefix names with the alias (or last module component).
         let prefix = if import.qualified {
