@@ -49,6 +49,22 @@ Or run the self-contained behavioral test:
 ./scripts/pass-test.sh
 ```
 
+### Testing effectful programs
+
+`scripts/axi-check.sh` is the reusable pattern for testing any Axión program: it runs the
+file on every available backend (interp / Cranelift / LLVM), asserts they all produce
+**identical** output (the `runtime_backends_agree` invariant), and optionally checks the
+output. Program args pass through after `--`, and the caller's environment is inherited — so
+an effectful program runs against whatever throwaway setup the caller arranges:
+
+```sh
+scripts/axi-check.sh --expect "95" axionc/tests/fixtures/string_compare.axi
+HELLO_HOME=/h scripts/axi-check.sh --expect $'cmd=greet\n…' examples/pass/pass.axi -- greet x
+```
+
+`pass-test.sh` builds a throwaway GnuPG keyring + store, then drives each `pass` command
+through `axi-check.sh`.
+
 ## Security notes
 
 - Secrets are never placed on a command line or in the environment (visible in

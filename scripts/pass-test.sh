@@ -57,36 +57,27 @@ EXPECT_SHOW='correcthorsebatterystaple'
 EXPECT_FIND='github/work'
 EXPECT_GREP=$'github/work:\n  user: workacct'
 
-backends="interp"
-"$AXIONC" --emit clif "$PASS" >/dev/null 2>&1 && backends="$backends cranelift"
-command -v clang >/dev/null 2>&1 && backends="$backends llvm"
-
+# Drive each command through scripts/axi-check.sh (the blessed pattern): it runs the program
+# on every available backend, asserts they AGREE, and checks the output — all against the
+# throwaway GNUPGHOME/PASSWORD_STORE_DIR exported above, which it inherits.
 fail=0
-check() { # name expected actual
-  if [ "$2" = "$3" ]; then
-    echo "  ✓ $1"
-  else
-    echo "  ✗ $1"
-    echo "    expected: $(printf '%q' "$2")"
-    echo "    actual:   $(printf '%q' "$3")"
-    fail=1
-  fi
+check() { # label expected -- prog args...
+  local label="$1" expect="$2"
+  shift 2
+  [ "${1:-}" = "--" ] && shift
+  ./scripts/axi-check.sh --label "$label" --expect "$expect" "$PASS" -- "$@" || fail=1
 }
 
-for b in $backends; do
-  echo "backend: $b"
-  check "pass ls"        "$EXPECT_LS"   "$("$AXIONC" run --backend "$b" "$PASS" -- ls 2>/dev/null)"
-  check "pass (no args)" "$EXPECT_LS"   "$("$AXIONC" run --backend "$b" "$PASS" 2>/dev/null)"
-  check "pass show wifi" "$EXPECT_SHOW" "$("$AXIONC" run --backend "$b" "$PASS" -- show wifi 2>/dev/null)"
-  check "pass wifi"      "$EXPECT_SHOW" "$("$AXIONC" run --backend "$b" "$PASS" -- wifi 2>/dev/null)"
-  check "pass find git"  "$EXPECT_FIND" "$("$AXIONC" run --backend "$b" "$PASS" -- find git 2>/dev/null)"
-  check "pass grep acct" "$EXPECT_GREP" "$("$AXIONC" run --backend "$b" "$PASS" -- grep workacct 2>/dev/null)"
-  check "not found"      "Error: nope is not in the password store." \
-                         "$("$AXIONC" run --backend "$b" "$PASS" -- show nope 2>/dev/null)"
-done
+check "pass ls"        "$EXPECT_LS"   -- ls
+check "pass (no args)" "$EXPECT_LS"   --
+check "pass show wifi" "$EXPECT_SHOW" -- show wifi
+check "pass wifi"      "$EXPECT_SHOW" -- wifi
+check "pass find git"  "$EXPECT_FIND" -- find git
+check "pass grep acct" "$EXPECT_GREP" -- grep workacct
+check "not found"      "Error: nope is not in the password store." -- show nope
 
 if [ "$fail" -eq 0 ]; then
-  echo "OK: pass ls/show behave correctly across: $backends"
+  echo "OK: pass behaves correctly, and all backends agree, across ls/show/find/grep"
 else
   echo "FAIL: differences above"
   exit 1
