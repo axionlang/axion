@@ -259,7 +259,11 @@ fn run_fn(
             st.insert(p.clone(), Val::default());
         }
     }
+    let borrowed_params: HashSet<String> = borrowed
+        .map(|s| s.iter().filter_map(|&i| f.params.get(i).cloned()).collect())
+        .unwrap_or_default();
     let mut sink = Vec::new();
+    let checking = out.is_some();
     let mut v = Verifier {
         f: &f.name,
         ba,
@@ -269,6 +273,8 @@ fn run_fn(
         children: HashMap::new(),
         leak_exempt: HashSet::new(),
         projections: HashMap::new(),
+        borrowed_params,
+        checking,
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -330,6 +336,16 @@ struct Verifier<'a> {
     /// the source's shell free, rather than dangling it. Populated by `bind_op`, consumed by
     /// `do_drop`'s skip handling.
     projections: HashMap<String, (String, usize)>,
+    /// The GENUINELY-borrowed params (in `borrow_args`): the caller retains and drops the
+    /// whole structure. Distinct from a MOVED-in param modelled the same way here (a view
+    /// like `dropWhile` — not in `borrow_args`). `consume` flags freeing an interior of one
+    /// of THESE (the owner double-frees), but not of a moved-in/view param (this fn owns it).
+    borrowed_params: HashSet<String>,
+    /// true in the CHECK pass (`out` was `Some`), false in the summary pass. Tracking a
+    /// borrowed scrutinee's fields as interior aliases (for `consume`) is confined to the check
+    /// pass, so it never perturbs the alias summaries — those feed core.rs's drop insertion and
+    /// must stay identical (a view like `delete` must keep its owned-return summary).
+    checking: bool,
 }
 
 impl Verifier<'_> {
@@ -385,6 +401,45 @@ impl Verifier<'_> {
     /// A `let x = op`: check operand liveness, classify the result, then apply the operands'
     /// escapes (moved/aliased operands leave the state). `x` is tracked only if it is a
     /// resource (owns an allocation or holds an interior pointer into one).
+    /// Apply a consuming op's escapes: each moved operand (and an indirect call's `nonstrict`
+    /// closure receiver) leaves the state. CONSUMING an interior alias of a BORROWED
+    /// (externally-owned) resource — moving it into a callee's owning argument or embedding it in
+    /// a new structure — frees memory the owner still holds, so the owner's later drop
+    /// double-frees; flag it (sound-by-rejection). A bare `Atom` move is the value ESCAPING as the
+    /// result (a `grab`-style borrow-return), not a consume, so it is exempt.
+    fn consume(&mut self, op: &Op, sp: Span, st: &mut State) {
+        // Flag a DIRECT call that FREES a borrowed interior: an argument at a position the
+        // callee neither BORROWS (`borrow_args`) nor RETURNS AS AN ALIAS (its summary — a
+        // view/borrow-return like `dropWhile`) is one the callee reclaims. If that argument is
+        // an interior alias of a BORROWED (externally-owned) resource, the owner still holds it
+        // and will drop it → double free (the partial-consumer-over-a-heap-element class, which
+        // the analysis previously missed). `MakeCon`/closures/views embed-or-return the value
+        // rather than free it, so only `CallDirect` is a definite free.
+        if let Op::CallDirect(g, args, _) = op {
+            let borrowed_pos = self.ba.get(g);
+            let alias_ret = self.summaries.get(g);
+            for (i, a) in args.iter().enumerate() {
+                if let Atom::Var(v) = a {
+                    let frees = !borrowed_pos.is_some_and(|s| s.contains(&i))
+                        && !alias_ret.is_some_and(|s| s.contains(&i));
+                    let borrowed_interior = st.get(v).is_some_and(|val| {
+                        !val.owned && val.borrows.iter().any(|w| self.borrowed_params.contains(w))
+                    });
+                    if frees && borrowed_interior {
+                        self.finding(Cat::DropOfAlias, v, sp);
+                    }
+                }
+            }
+        }
+        // moved operands (and an indirect call's `nonstrict` receiver) escape → mark them dead.
+        let e = op_delta_effect(op, self.ba);
+        for a in e.moves.iter().chain(e.nonstrict.iter()) {
+            if let Atom::Var(v) = a {
+                Self::kill(v, Cat::UseAfterFree, st);
+            }
+        }
+    }
+
     fn bind_op(&mut self, x: &str, op: &Op, sp: Span, st: &mut State) {
         let e = op_delta_effect(op, self.ba);
         for a in e
@@ -403,12 +458,9 @@ impl Verifier<'_> {
             Self::kill(src, Cat::UseAfterFree, st);
         }
         // moved operands AND the `nonstrict` closure receiver of an indirect call escape
-        // (the call consumes them) — same as `scan_op_escapes` in Auto-Drop.
-        for a in e.moves.iter().chain(e.nonstrict.iter()) {
-            if let Atom::Var(v) = a {
-                Self::kill(v, Cat::UseAfterFree, st);
-            }
-        }
+        // (the call consumes them) — same as `scan_op_escapes` in Auto-Drop; `consume` also
+        // flags consuming an interior alias of a borrowed resource.
+        self.consume(op, sp, st);
         if val.owned || !val.borrows.is_empty() {
             // record a direct heap field projection's exact slot, so a move-out skip-drop
             // of the source can transfer that slot's ownership to `x` (§move-out).
@@ -599,11 +651,8 @@ impl Verifier<'_> {
                 }
                 // returned/consumed resources escape → mark moved so they aren't leaks: the
                 // moved operands and the `nonstrict` closure receiver of an indirect call.
-                for a in e.moves.iter().chain(e.nonstrict.iter()) {
-                    if let Atom::Var(v) = a {
-                        Self::kill(v, Cat::UseAfterFree, st);
-                    }
-                }
+                // `consume` also flags consuming an interior alias of a borrowed resource.
+                self.consume(op, sp, st);
                 // a leak is only meaningful at a real function EXIT — an internal branch-ret
                 // (the value of a let-bound `if`/`case`) has a continuation that may still
                 // consume the resource, so it is not a leak point.
@@ -645,21 +694,24 @@ impl Verifier<'_> {
         tail: bool,
     ) -> Val {
         self.use_atom(scrut, sp, st);
-        // extracted fields are owned iff the scrutinee is an owned resource (consumed) —
-        // the reclamation transfers them out; if the scrutinee is BORROWED, the owner keeps
-        // the whole structure, so the fields are borrowed too (untracked).
-        let scrut_var = match scrut {
-            Atom::Var(n) if st.get(n).is_some_and(|v| v.owned && v.dead.is_none()) => {
-                Some(n.clone())
-            }
-            _ => None,
+        // extracted fields are owned iff the scrutinee is an owned resource (consumed) — the
+        // reclamation transfers them out. A BORROWED scrutinee's heap fields are INTERIOR
+        // ALIASES of it: reading one is fine, but CONSUMING one (moving it into a callee or a
+        // new structure) frees memory the owner still holds — `consume` catches that. `scrut_var`
+        // now names any live tracked scrutinee; `scrut_owned` selects the two field treatments.
+        let (scrut_var, scrut_owned) = match scrut {
+            Atom::Var(n) => match st.get(n) {
+                Some(v) if v.dead.is_none() => (Some(n.clone()), v.owned),
+                _ => (None, false),
+            },
+            _ => (None, false),
         };
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
         let mut rets: Vec<Val> = Vec::new();
         for (pat, body) in arms {
             let mut s = st.clone();
-            self.bind_pattern(pat, scrut_var.as_deref(), &mut s);
+            self.bind_pattern(pat, scrut_var.as_deref(), scrut_owned, &mut s);
             rets.push(self.term(body, &mut s, tail));
             exits.push(s);
         }
@@ -670,9 +722,13 @@ impl Verifier<'_> {
     /// Bind a `case` pattern's field variables: a heap field the pattern names is either a
     /// `%1`-owned slot transferred OUT of the scrutinee (an owned resource) or a borrowed
     /// interior alias of the scrutinee.
-    fn bind_pattern(&mut self, pat: &CPat, scrut_var: Option<&str>, st: &mut State) {
-        // only when the scrutinee is CONSUMED does a heap field transfer out as an owned
-        // resource; a borrowed scrutinee keeps its fields (untracked).
+    fn bind_pattern(
+        &mut self,
+        pat: &CPat,
+        scrut_var: Option<&str>,
+        scrut_owned: bool,
+        st: &mut State,
+    ) {
         let Some(scrut) = scrut_var else {
             return;
         };
@@ -682,31 +738,54 @@ impl Verifier<'_> {
         if let CPat::Con(con, subs) = pat {
             for (i, sp) in subs.iter().enumerate() {
                 if let CPat::Var(n) = sp {
-                    if self.recinfo.field_transfers_heap(con, i) {
-                        let fkey = scrut_key
-                            .as_deref()
-                            .and_then(|sk| self.recinfo.field_tagged_key(con, i, sk));
-                        st.insert(
-                            n.clone(),
-                            Val {
-                                owned: true,
-                                key: fkey,
-                                ..Default::default()
-                            },
-                        );
-                        // record the field as a CHILD of its scrutinee at slot `i`: a DEEP
-                        // `drop` of the scrutinee frees it transitively (see `do_drop`), so it
-                        // is not a separate leak unless the arm moves it out first.
-                        self.children
-                            .entry(scrut.to_string())
-                            .or_default()
-                            .push((n.clone(), i));
-                        // a POLYMORPHIC field (transfers heap but has NO concrete drop slot —
-                        // a bare type variable) may instantiate to a scalar, so exempt it from
-                        // leak reporting (see `leak_exempt`); it stays owned for double-free.
-                        if self.recinfo.field_drop_slot(con, i).is_none() {
-                            self.leak_exempt.insert(n.clone());
+                    if !self.recinfo.field_transfers_heap(con, i) {
+                        continue;
+                    }
+                    if !scrut_owned {
+                        // BORROWED scrutinee: a CONCRETE heap field is an INTERIOR ALIAS of it —
+                        // the owner keeps the whole structure. Reading it is fine; `consume`
+                        // flags moving it into a callee that frees it (a double-free of the
+                        // owner's memory — the partial-consumer-over-a-heap-element class). A
+                        // POLYMORPHIC field (no concrete drop slot) may instantiate to a scalar,
+                        // so — like the leak-exempt policy for owned poly fields — it is left
+                        // untracked (freeing a scalar is a no-op; only a concrete heap field is a
+                        // definite double-free).
+                        if self.checking && self.recinfo.field_drop_slot(con, i).is_some() {
+                            st.insert(
+                                n.clone(),
+                                Val {
+                                    owned: false,
+                                    borrows: HashSet::from([scrut.to_string()]),
+                                    ..Default::default()
+                                },
+                            );
                         }
+                        continue;
+                    }
+                    // OWNED (consumed) scrutinee: the heap field transfers OUT as an owned resource.
+                    let fkey = scrut_key
+                        .as_deref()
+                        .and_then(|sk| self.recinfo.field_tagged_key(con, i, sk));
+                    st.insert(
+                        n.clone(),
+                        Val {
+                            owned: true,
+                            key: fkey,
+                            ..Default::default()
+                        },
+                    );
+                    // record the field as a CHILD of its scrutinee at slot `i`: a DEEP
+                    // `drop` of the scrutinee frees it transitively (see `do_drop`), so it
+                    // is not a separate leak unless the arm moves it out first.
+                    self.children
+                        .entry(scrut.to_string())
+                        .or_default()
+                        .push((n.clone(), i));
+                    // a POLYMORPHIC field (transfers heap but has NO concrete drop slot —
+                    // a bare type variable) may instantiate to a scalar, so exempt it from
+                    // leak reporting (see `leak_exempt`); it stays owned for double-free.
+                    if self.recinfo.field_drop_slot(con, i).is_none() {
+                        self.leak_exempt.insert(n.clone());
                     }
                 }
             }

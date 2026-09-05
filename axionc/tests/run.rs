@@ -41,6 +41,45 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
+fn consuming_a_borrowed_heap_element_is_rejected() {
+    // Soundness (§verify): a function that passes a BORROWED list's concrete heap element into
+    // a consuming call frees memory the owner still holds → the owner's drop double-frees. The
+    // drop-verifier now CATCHES this (it was a false-negative → a silent native double-free):
+    // AX0910, pointing at the consuming call. `firstOr` (which MOVES its arg) stays sound.
+    let src = r#"firstOr :: String -> List String -> String
+firstOr d xs = case xs of
+  Nil -> d
+  Cons c _ -> c
+secondOr :: String -> List String -> String
+secondOr d xs = case xs of
+  Nil -> d
+  Cons _ ys -> firstOr d ys
+main :: IO ()
+main = putStrLn (secondOr "none" (words "a b c"))
+"#;
+    let dir = std::env::temp_dir().join(format!("axion_reject_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("consume_borrowed.axi");
+    std::fs::write(&path, src).unwrap();
+    let out = axionc()
+        .args(["run", "--backend", "cranelift", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "should be rejected");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("AX0910"), "expected AX0910, got: {text}");
+    assert!(
+        text.contains("DropOfAlias") && text.contains("secondOr"),
+        "expected DropOfAlias in secondOr, got: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn conditional_escape_of_let_bound_heap_runs_on_all_backends() {
     // Auto-Drop (§): a let-bound fresh heap String that escapes in one `if` branch and
     // is dead in the other must be dropped on the dead path (reclaim_cond_escape seeds
