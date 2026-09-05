@@ -24,13 +24,15 @@ a `List String` — the latter would trip a native heap-element aliasing issue.
 | `pass` / `pass ls` | list entry names (relative paths, `.gpg` stripped), sorted |
 | `pass show <name>` | decrypt `<name>.gpg` and print it |
 | `pass <name>` | bare-name shorthand for `show` |
+| `pass find <term>` (alias `search`) | list entries whose path matches `<term>` (case-insensitive) |
+| `pass grep <search>` | decrypt every entry, print those whose content matches, with the matching lines |
 
 Verified across all three backends (interp / Cranelift / LLVM) by
 `scripts/pass-test.sh`, which stands up a throwaway GnuPG keyring + store (never
 touching your real `~/.gnupg` / `~/.password-store`) and checks the output.
 
 **Not yet implemented:** `insert`, `generate`, `edit`, `rm`, `mv`, `cp`, `git`,
-clipboard, `find`, `grep`. `insert`/`generate`/`edit` need the stdin/tty primitives
+clipboard. `insert`/`generate`/`edit` need the stdin/tty primitives
 (`readLine`/`readSecret`) still to be added.
 
 ## Try it

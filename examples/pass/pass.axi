@@ -35,7 +35,23 @@ doShow name =
 -- `pass ls`: list entry names (relative paths, .gpg stripped), sorted.
 doLs :: IO ()
 doLs =
-  putStr (runCapture (strAppend "cd '" (strAppend (storeDir 0) "' 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort")))
+  putStr (runCapture ("cd '" ++ storeDir 0 ++ "' 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort"))
+
+-- `pass find <term>`: list entry names whose path matches <term> (case-insensitive).
+doFind :: String -> IO ()
+doFind term =
+  if strLen term > 0
+    then putStr (runCapture ("cd '" ++ storeDir 0 ++ "' 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort | grep -i '" ++ term ++ "'"))
+    else putStrLn "Usage: pass find <term>"
+
+-- `pass grep <search>`: decrypt every entry and print those whose CONTENT matches
+-- <search> (case-insensitive), each followed by its indented matching lines. gpg
+-- writes plaintext to a pipe grep reads — it never touches disk.
+doGrep :: String -> IO ()
+doGrep search =
+  if strLen search > 0
+    then putStr (runCapture ("cd '" ++ storeDir 0 ++ "' 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sort | while read f; do m=$(gpg -d --quiet \"$f\" 2>/dev/null | grep -i '" ++ search ++ "'); if [ -n \"$m\" ]; then echo \"${f#./}\" | sed 's#\\.gpg$#:#'; echo \"$m\" | sed 's/^/  /'; fi; done"))
+    else putStrLn "Usage: pass grep <search>"
 
 main :: IO ()
 main =
@@ -43,5 +59,8 @@ main =
   if cmd == "show" then doShow (getArg 1)
   else if cmd == "ls" then doLs
   else if cmd == "list" then doLs
+  else if cmd == "find" then doFind (getArg 1)
+  else if cmd == "search" then doFind (getArg 1)
+  else if cmd == "grep" then doGrep (getArg 1)
   else if cmd == "" then doLs
   else doShow cmd

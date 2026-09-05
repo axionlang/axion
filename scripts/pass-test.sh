@@ -49,11 +49,13 @@ mkdir -p "$PASSWORD_STORE_DIR/github" "$PASSWORD_STORE_DIR/email"
 echo "pass-test@axion.local" >"$PASSWORD_STORE_DIR/.gpg-id"
 enc() { printf '%s' "$2" | gpg --batch --yes --quiet -r pass-test@axion.local -e -o "$PASSWORD_STORE_DIR/$1.gpg" 2>/dev/null; }
 enc "wifi" 'correcthorsebatterystaple'
-enc "email/personal" 'hunter2'
-enc "github/work" 'ghp_worktoken123'
+enc "email/personal" $'hunter2\nuser: me@example.com'
+enc "github/work" $'ghp_worktoken123\nuser: workacct'
 
 EXPECT_LS=$'email/personal\ngithub/work\nwifi'
 EXPECT_SHOW='correcthorsebatterystaple'
+EXPECT_FIND='github/work'
+EXPECT_GREP=$'github/work:\n  user: workacct'
 
 backends="interp"
 "$AXIONC" --emit clif "$PASS" >/dev/null 2>&1 && backends="$backends cranelift"
@@ -77,6 +79,8 @@ for b in $backends; do
   check "pass (no args)" "$EXPECT_LS"   "$("$AXIONC" run --backend "$b" "$PASS" 2>/dev/null)"
   check "pass show wifi" "$EXPECT_SHOW" "$("$AXIONC" run --backend "$b" "$PASS" -- show wifi 2>/dev/null)"
   check "pass wifi"      "$EXPECT_SHOW" "$("$AXIONC" run --backend "$b" "$PASS" -- wifi 2>/dev/null)"
+  check "pass find git"  "$EXPECT_FIND" "$("$AXIONC" run --backend "$b" "$PASS" -- find git 2>/dev/null)"
+  check "pass grep acct" "$EXPECT_GREP" "$("$AXIONC" run --backend "$b" "$PASS" -- grep workacct 2>/dev/null)"
   check "not found"      "Error: nope is not in the password store." \
                          "$("$AXIONC" run --backend "$b" "$PASS" -- show nope 2>/dev/null)"
 done
