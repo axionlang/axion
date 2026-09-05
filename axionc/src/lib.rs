@@ -1006,34 +1006,20 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
 fn specialize_hofs(module: &mut ast::Module) {
     use std::collections::{HashMap, HashSet};
     let fn_names: HashSet<String> = module.funcs.iter().map(|f| f.name.clone()).collect();
-    // per-constructor ELEMENT-heap flags (non-recursive heap field), for `consumed_params`.
-    let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
-    let mut con_field_heap: HashMap<String, Vec<bool>> = HashMap::new();
-    for d in &module.datas {
-        for c in &d.cons {
-            let flags = c
-                .fields
-                .iter()
-                .map(|f| {
-                    is_heap_field_ty(&f.ty, &data_names) && f.ty.head_con() != Some(d.name.as_str())
-                })
-                .collect();
-            con_field_heap.insert(c.name.clone(), flags);
-        }
-    }
-    // HOF → the single arrow-param index (MVP: exactly one). A partial-consumer HOF that EMBEDS
-    // an extracted element into its result (`consumed_params` non-empty) is admitted ONLY when
-    // it is SPINE-CONSUMING — its recursive tail is passed to a self-recursive call on EVERY
-    // branch (`filter`: both arms recurse; the discarded ELEMENT is reclaimed by the notion-2
-    // drop → the specialized `filter$$p` is sound). A SPINE-DISCARDING HOF (`take`/`takeWhile`:
-    // `else Nil` drops the tail → the drop-view leak the verifier flags `Unbalanced`) stays
-    // generic (Route C + AX0912), as does a full consumer whose spine escapes as a view.
+    // HOF → the single arrow-param index (MVP: exactly one). ANY single-arrow HOF is admitted:
+    // monomorphizing it (`filter$$p`, `takeWhile$$p`) makes the drop-insertion reclaim precisely
+    // — including a SPINE-DISCARDING partial-consumer (`takeWhile`: the `else Nil` becomes a
+    // `drop ys; drop y` of the discarded tail+head), which soundly compiles the take/takeWhile
+    // class over a heap element type that the generic (poly) form could not. The earlier
+    // structural filter (spine-consuming only) was overly conservative — the specialized code is
+    // both corruption-free (two nets: the drop-verifier runs on it, AX0912 guards any residual
+    // that still fails to specialize) AND gate-clean, validated over the corpus + the differential
+    // fuzzer (scripts/fuzz.py, ~850 programs, 0 corruption/divergence). An unsafe CLOSURE argument
+    // is still rejected downstream (`closure_unsafe_to_specialize` → generic HOF → AX0912).
     let mut hof_arrow: HashMap<String, usize> = HashMap::new();
     for f in &module.funcs {
         if let Some(k) = single_arrow_param(f) {
-            if consumed_params(f, &con_field_heap).is_empty() || hof_spine_consuming(f) {
-                hof_arrow.insert(f.name.clone(), k);
-            }
+            hof_arrow.insert(f.name.clone(), k);
         }
     }
     if hof_arrow.is_empty() {
@@ -1605,129 +1591,6 @@ fn single_arrow_param(f: &ast::Func) -> Option<usize> {
         .map(|(i, _)| i)
         .collect();
     (arrows.len() == 1).then(|| arrows[0])
-}
-
-/// `true` if partial-consumer HOF `f` is SPINE-CONSUMING: in every `case`-arm that binds a
-/// recursive tail (a variable passed to a SELF-recursive call to `f`), that tail is passed to a
-/// self-recursive call on EVERY leaf of the arm. This separates `filter` (both branches recurse
-/// → the spine is always consumed into a fresh result; the discarded ELEMENT is reclaimed by the
-/// notion-2 drop → specializing is sound) from `take`/`takeWhile` (`else Nil` DISCARDS the tail
-/// → the drop-view leak the verifier flags `Unbalanced`) and from spine VIEWS (`drop … ret ys`
-/// returns the tail directly, never recursing → excluded). Conservative: any leaf that fails to
-/// recurse with a spine excludes the HOF (→ generic + AX0912).
-fn hof_spine_consuming(f: &ast::Func) -> bool {
-    use std::collections::HashSet;
-    // vars passed as an argument to a self-recursive call to `f` anywhere in `e`.
-    fn self_call_args(name: &str, e: &ast::Expr, out: &mut HashSet<String>) {
-        if let ast::Expr::App(..) = e {
-            let (head, args) = core::spine(e);
-            if matches!(head, ast::Expr::Var(g, _) if g == name) {
-                for a in &args {
-                    if let ast::Expr::Var(v, _) = a {
-                        out.insert(v.clone());
-                    }
-                }
-            }
-        }
-        for_each_subexpr(e, &mut |s| self_call_args(name, s, out));
-    }
-    // whether variable `s` occurs (free) anywhere in `e`.
-    fn occurs(e: &ast::Expr, s: &str) -> bool {
-        if matches!(e, ast::Expr::Var(v, _) if v == s) {
-            return true;
-        }
-        let mut found = false;
-        for_each_subexpr(e, &mut |sub| {
-            if occurs(sub, s) {
-                found = true;
-            }
-        });
-        found
-    }
-    // `s` is CONSUMED on EVERY path through `e` — passed to exactly one self-recursive call to
-    // `name` and not otherwise used. A `case`/`if` whose SCRUTINEE/condition consumes `s` runs on
-    // all paths (`partition`: `case partition p ys of …`, `ys` gone in the arms); otherwise every
-    // branch must consume it (`filter`: both `if` arms recurse with `ys`); a leaf must recurse
-    // with it. A branch that DISCARDS `s` (`take`'s `else Nil`) fails — correctly staying generic.
-    fn consumes_all_paths(name: &str, e: &ast::Expr, s: &str) -> bool {
-        match e {
-            ast::Expr::Case(scrut, arms, _) => {
-                let mut sc = std::collections::HashSet::new();
-                self_call_args(name, scrut, &mut sc);
-                if sc.contains(s) {
-                    arms.iter().all(|(_, arm)| !occurs(arm, s))
-                } else {
-                    arms.iter().all(|(_, arm)| consumes_all_paths(name, arm, s))
-                }
-            }
-            ast::Expr::If(c, t, el, _) => {
-                let mut cc = std::collections::HashSet::new();
-                self_call_args(name, c, &mut cc);
-                if cc.contains(s) {
-                    !occurs(t, s) && !occurs(el, s)
-                } else {
-                    consumes_all_paths(name, t, s) && consumes_all_paths(name, el, s)
-                }
-            }
-            ast::Expr::Let(_, body, _) => consumes_all_paths(name, body, s),
-            _ => {
-                let mut a = std::collections::HashSet::new();
-                self_call_args(name, e, &mut a);
-                a.contains(s)
-            }
-        }
-    }
-    // check every `case` arm that binds a spine.
-    fn check(name: &str, e: &ast::Expr) -> bool {
-        if let ast::Expr::Case(_, arms, _) = e {
-            for (pat, arm) in arms {
-                let binders = pat_binders(pat);
-                // spine candidates: pattern binders that are self-call args somewhere in the arm.
-                let mut recursed = HashSet::new();
-                self_call_args(name, arm, &mut recursed);
-                let spines: Vec<String> = binders.intersection(&recursed).cloned().collect();
-                for s in &spines {
-                    // `s` must be consumed (passed to a self-recursive call) on EVERY path.
-                    if !consumes_all_paths(name, arm, s) {
-                        return false;
-                    }
-                }
-            }
-        }
-        let mut ok = true;
-        for_each_subexpr(e, &mut |s| {
-            if !check(name, s) {
-                ok = false;
-            }
-        });
-        ok
-    }
-    f.clauses.iter().all(|c| {
-        let bodies: Vec<&ast::Expr> = match &c.body {
-            ast::Body::Plain(e) => vec![e],
-            ast::Body::Guarded(arms) => arms.iter().map(|(_, r)| r).collect(),
-        };
-        bodies.iter().all(|b| check(&f.name, b))
-    })
-}
-
-/// The variable names a pattern binds (one level of `Con`/`Tuple`, plus bare `Var`).
-fn pat_binders(pat: &ast::Pat) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    match pat {
-        ast::Pat::Var(n, _) => {
-            out.insert(n.clone());
-        }
-        ast::Pat::Con(_, subs, _) | ast::Pat::Tuple(subs, _) => {
-            for sp in subs {
-                if let ast::Pat::Var(n, _) = sp {
-                    out.insert(n.clone());
-                }
-            }
-        }
-        _ => {}
-    }
-    out
 }
 
 /// `true` if `f` is UNSAFE to specialize — the complement of a PROVABLY-fresh producer.
