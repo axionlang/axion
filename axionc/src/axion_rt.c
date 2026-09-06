@@ -10,11 +10,13 @@
 #include <string.h>
 #include <unistd.h>
 
-/* --- OS capability layer (§pass): filesystem, subprocess, randomness --- */
+/* --- OS capability layer (§pass): filesystem, subprocess, randomness, tty --- */
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <termios.h>
+#include <signal.h>
 
 /* --- networking (§FFI): socket operations for TCP clients and servers --- */
 #include <arpa/inet.h>
@@ -310,7 +312,20 @@ long axion_bignum_to_string(long p) {
 
 /* --- strings / IO --- */
 void axion_puts(long s) { puts((const char *)s); }
-void axion_put(long s) { fputs((const char *)s, stdout); }
+/* putStr: flush so a prompt without a trailing newline appears before a following
+ * read (e.g. an interactive passphrase). */
+void axion_put(long s) {
+  fputs((const char *)s, stdout);
+  fflush(stdout);
+}
+/* ePutStr / ePutStrLn — the stderr counterparts of putStr / putStrLn (§CLI: prompts
+ * and diagnostics belong on stderr, leaving stdout for real output). stderr is
+ * unbuffered, so no explicit flush is needed. */
+void axion_eput(long s) { fputs((const char *)s, stderr); }
+void axion_eputs(long s) {
+  fputs((const char *)s, stderr);
+  fputc('\n', stderr);
+}
 /* Drops a `String`: heap strings carry the `axion_alloc` size header (nonzero at
    `s-8`); string literals are emitted with a ZERO header (static `.rodata`), so
    this frees the former and skips the latter. See core.rs string-drop lowering. */
@@ -559,6 +574,195 @@ long axion_rand_hex(long n) {
   buf[2 * n] = 0;
   fclose(f);
   return (long)buf;
+}
+
+/* Read one line from stdin into a fresh heap String (trailing newline stripped, "" at
+ * EOF). When `hide` is set and stdin is a terminal, echo is disabled for the duration
+ * (a password prompt) and a newline is emitted afterward since the user's Enter is not
+ * shown; on a pipe (tcgetattr fails) it degrades to a plain read, so it stays testable. */
+static long axion_read_line_impl(int hide) {
+  struct termios old;
+  int is_tty = 0;
+  if (hide) {
+    is_tty = (tcgetattr(0, &old) == 0);
+    if (is_tty) {
+      struct termios raw = old;
+      raw.c_lflag &= ~(tcflag_t)ECHO;
+      tcsetattr(0, TCSAFLUSH, &raw);
+    }
+  }
+  size_t cap = 64, len = 0;
+  char *buf = (char *)axion_xmalloc((long)cap);
+  int c;
+  while ((c = fgetc(stdin)) != EOF && c != '\n') {
+    if (len + 1 >= cap) {
+      cap *= 2;
+      buf = (char *)realloc(buf, cap);
+      if (!buf) {
+        fprintf(stderr, "axion: out of memory\n");
+        exit(1);
+      }
+    }
+    buf[len++] = (char)c;
+  }
+  if (hide && is_tty) {
+    tcsetattr(0, TCSAFLUSH, &old);
+    fputc('\n', stderr);
+  }
+  long r = axion_str_of(buf, (long)len);
+  free(buf);
+  return r;
+}
+
+/* readLine :: Int -> String — one line from stdin, echoed. The Int arg is ignored; it
+ * exists so each call re-reads instead of sharing a CAF. */
+long axion_read_line(long unused) {
+  (void)unused;
+  return axion_read_line_impl(0);
+}
+
+/* readSecret :: Int -> String — one line from stdin with terminal echo OFF (§pass
+ * security: passphrase entry, never shown, never on argv). */
+long axion_read_secret(long unused) {
+  (void)unused;
+  return axion_read_line_impl(1);
+}
+
+/* Shell-free process exec (§pass): run a program with an explicit argv and feed it
+ * `input` on stdin, with NO shell in between — so nothing is word-split, glob-expanded,
+ * or injection-prone, and a secret can be handed to a child (e.g. gpg) over the pipe
+ * instead of on a command line. `argv_joined` is the argv with elements separated by
+ * '\n' (so argv[0] is the program; an element may not itself contain a newline). When
+ * `want_stdout` is set the child's stdout is captured and returned as a String; else the
+ * exit status is returned as an Int. Returns "" / -1 if the program can't be spawned. */
+static long axion_exec_impl(long argv_joined, long stdin_str, int want_stdout) {
+  const char *joined = (const char *)argv_joined;
+  const char *input = (const char *)stdin_str;
+  if (!joined || joined[0] == '\0' || joined[0] == '\n')
+    return want_stdout ? axion_str_of("", 0) : -1;
+
+  /* Split the '\n'-joined argv into a NULL-terminated array (pointers into `copy`). */
+  char *copy = strdup(joined);
+  if (!copy)
+    return want_stdout ? axion_str_of("", 0) : -1;
+  int cap = 8, argc = 0;
+  char **argv = (char **)axion_xmalloc((long)sizeof(char *) * cap);
+  argv[argc++] = copy;
+  for (char *p = copy; *p; p++) {
+    if (*p == '\n') {
+      *p = '\0';
+      if (argc + 1 >= cap) {
+        cap *= 2;
+        argv = (char **)realloc(argv, sizeof(char *) * (size_t)cap);
+        if (!argv) {
+          fprintf(stderr, "axion: out of memory\n");
+          exit(1);
+        }
+      }
+      argv[argc++] = p + 1;
+    }
+  }
+  argv[argc] = NULL;
+
+  /* Only give the child a stdin PIPE when we actually have bytes to feed it. With no
+   * input, INHERIT the terminal — otherwise a child that needs the tty (e.g. `gpg`'s
+   * pinentry passphrase prompt) fails with "Inappropriate ioctl for device". */
+  int feed_stdin = (input && input[0] != '\0');
+  int in_pipe[2], out_pipe[2];
+  if (feed_stdin && pipe(in_pipe) != 0) {
+    free(copy);
+    free(argv);
+    return want_stdout ? axion_str_of("", 0) : -1;
+  }
+  if (want_stdout && pipe(out_pipe) != 0) {
+    if (feed_stdin) {
+      close(in_pipe[0]);
+      close(in_pipe[1]);
+    }
+    free(copy);
+    free(argv);
+    return axion_str_of("", 0);
+  }
+
+  signal(SIGPIPE, SIG_IGN); /* a child that exits before reading must not kill us */
+  pid_t pid = fork();
+  if (pid == 0) {
+    if (feed_stdin) {
+      dup2(in_pipe[0], 0);
+      close(in_pipe[0]);
+      close(in_pipe[1]);
+    }
+    if (want_stdout) {
+      dup2(out_pipe[1], 1);
+      close(out_pipe[0]);
+      close(out_pipe[1]);
+    }
+    execvp(argv[0], argv);
+    _exit(127); /* exec failed */
+  }
+  if (want_stdout)
+    close(out_pipe[1]);
+
+  /* Feed stdin, then close so the child sees EOF. */
+  if (feed_stdin) {
+    close(in_pipe[0]);
+    if (pid > 0) {
+      size_t inlen = strlen(input), off = 0;
+      while (off < inlen) {
+        ssize_t w = write(in_pipe[1], input + off, inlen - off);
+        if (w <= 0)
+          break;
+        off += (size_t)w;
+      }
+    }
+    close(in_pipe[1]);
+  }
+
+  char *out = NULL;
+  size_t outlen = 0;
+  if (want_stdout) {
+    size_t ocap = 256;
+    out = (char *)axion_xmalloc((long)ocap);
+    char rb[4096];
+    ssize_t r;
+    while ((r = read(out_pipe[0], rb, sizeof rb)) > 0) {
+      if (outlen + (size_t)r >= ocap) {
+        while (outlen + (size_t)r >= ocap)
+          ocap *= 2;
+        out = (char *)realloc(out, ocap);
+        if (!out) {
+          fprintf(stderr, "axion: out of memory\n");
+          exit(1);
+        }
+      }
+      memcpy(out + outlen, rb, (size_t)r);
+      outlen += (size_t)r;
+    }
+    close(out_pipe[0]);
+  }
+
+  int st = 0;
+  if (pid > 0)
+    waitpid(pid, &st, 0);
+  int code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+  free(copy);
+  free(argv);
+  if (want_stdout) {
+    long r = axion_str_of(out ? out : "", (long)outlen);
+    free(out);
+    return r;
+  }
+  return (pid > 0) ? code : -1;
+}
+
+/* execCapture :: String -> String -> String — argv (newline-joined) + stdin → stdout. */
+long axion_exec_capture(long argv_joined, long stdin_str) {
+  return axion_exec_impl(argv_joined, stdin_str, 1);
+}
+
+/* execStatus :: String -> String -> Int — argv (newline-joined) + stdin → exit status. */
+long axion_exec_status(long argv_joined, long stdin_str) {
+  return axion_exec_impl(argv_joined, stdin_str, 0);
 }
 
 /* exitWith :: Int -> Int — terminate the process with status `code` (never returns;

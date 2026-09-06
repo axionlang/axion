@@ -133,6 +133,7 @@ pub fn run_cli() -> ExitCode {
     let mut fuse = false;
     let mut no_verify = false;
     let mut allow_leaks = false;
+    let mut out_path: Option<String> = None;
 
     let mut prog_args: Vec<String> = Vec::new();
     let mut i = 0;
@@ -151,6 +152,19 @@ pub fn run_cli() -> ExitCode {
             "--no-verify" => no_verify = true,
             "--allow-leaks" => allow_leaks = true,
             "--release" => backend = Backend::Llvm,
+            "-o" | "--output" => {
+                i += 1;
+                match args.get(i) {
+                    Some(p) => {
+                        out_path = Some(p.clone());
+                        backend = Backend::Llvm; // only the native --release path emits a binary
+                    }
+                    None => {
+                        eprintln!("-o expects an output path");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
             "--backend" => {
                 i += 1;
                 match args.get(i).map(|s| s.as_str()) {
@@ -564,8 +578,14 @@ pub fn run_cli() -> ExitCode {
             &analysis.makecon_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
+            out_path.as_deref().map(std::path::Path::new),
         ) {
-            Ok(()) => ExitCode::SUCCESS, // the binary already printed the result
+            Ok(()) => {
+                if let Some(p) = &out_path {
+                    eprintln!("wrote executable: {p}");
+                }
+                ExitCode::SUCCESS // the binary already printed the result (or was written)
+            }
             Err(e) => {
                 eprintln!("llvm backend (--release): {e}");
                 ExitCode::FAILURE
@@ -928,6 +948,15 @@ pub fn prepare_for_check_with(
     inject_prelude(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
+    // Rewrite infix uses of USER-DEFINED operators (`a <= b`, `x <+> y`, backtick calls)
+    // into ordinary application, so a polymorphic operator's body is instantiated and
+    // monomorphized exactly like a normal call. Runs after the prelude/classes are merged
+    // (all function names known) and before consume-inference/specialization/HM inference.
+    desugar_user_operators(&mut module);
+    // Desugar `case s of "a" -> …; _ -> …` (string-literal patterns) into an `if`-chain
+    // over String `==`, so no downstream stage (check/infer/core/interp/backends) needs a
+    // string-pattern kind — they run on the desugared form.
+    desugar_string_patterns(&mut module, diags);
     // Infer `%1` (consumed) ownership for a signature param whose extracted heap
     // element escapes via the result (`head`/`append`/`reverse`) or whose whole heap value
     // is embedded into the result (`pairUp`, Rule A′). Runs BEFORE the linear checker and
@@ -2130,7 +2159,9 @@ fn offset_span(s: &mut ast::Span, d: usize) {
 
 fn offset_pat(p: &mut ast::Pat, d: usize) {
     match p {
-        ast::Pat::Wild(s) | ast::Pat::Var(_, s) | ast::Pat::Int(_, s) => offset_span(s, d),
+        ast::Pat::Wild(s) | ast::Pat::Var(_, s) | ast::Pat::Int(_, s) | ast::Pat::Str(_, s) => {
+            offset_span(s, d);
+        }
         ast::Pat::Con(_, ps, s) | ast::Pat::Tuple(ps, s) => {
             offset_span(s, d);
             ps.iter_mut().for_each(|p| offset_pat(p, d));
@@ -3168,6 +3199,249 @@ fn rw_int_lits_expr(e: &mut ast::Expr, lits: &std::collections::HashSet<(usize, 
     }
 }
 
+/// Rewrite infix uses of USER-DEFINED operators into ordinary application: `a <= b`,
+/// `x <+> y`, and any backtick call `x `f` y` become `(op) a b`. A polymorphic operator
+/// (e.g. `(<=) :: Ord a => a -> a -> Bool`) then flows through the same instantiation +
+/// monomorphization path as a normal call — its class-method body is resolved per use
+/// type. Built-in operators (`+ - * div mod == < >`, their float/Integer variants, `++`,
+/// `:`) are primitives, never functions, so the `funcs`-membership guard leaves them as
+/// `BinOp` for their dedicated lowering.
+/// Desugar every `case` with string-literal patterns into an `if`-chain over String
+/// `==`. A well-formed one is zero-or-more `"lit" -> e` arms followed by a single
+/// catch-all (`_` or a variable — string patterns are never exhaustive on their own):
+///
+/// ```text
+///   case S of "a" -> e1 ; "b" -> e2 ; x -> ed
+///     ⇒  case S of m -> if m == "a" then e1 else if m == "b" then e2 else ed[x:=m]
+/// ```
+///
+/// The scrutinee is bound once (the single-var `case` arm is a strict `let`), and the
+/// catch-all's variable becomes that binder so its body needs no rewrite. A malformed
+/// case (a string pattern mixed with constructors, or no catch-all) reports AX0204.
+fn desugar_string_patterns(module: &mut ast::Module, diags: &mut Diagnostics) {
+    for f in &mut module.funcs {
+        desugar_strpat_in_func(f, diags);
+    }
+}
+
+fn desugar_strpat_in_func(f: &mut ast::Func, diags: &mut Diagnostics) {
+    for c in &mut f.clauses {
+        match &mut c.body {
+            ast::Body::Plain(e) => desugar_strpat_in_expr(e, diags),
+            ast::Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    desugar_strpat_in_expr(g, diags);
+                    desugar_strpat_in_expr(r, diags);
+                }
+            }
+        }
+        for w in &mut c.wher {
+            desugar_strpat_in_func(w, diags);
+        }
+    }
+}
+
+fn desugar_strpat_in_expr(e: &mut ast::Expr, diags: &mut Diagnostics) {
+    use ast::Expr::{
+        App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+    };
+    match e {
+        Int(..) | Float(..) | Str(..) | Var(..) | Con(..) => {}
+        App(a, b, _) | BinOp(_, a, b, _) => {
+            desugar_strpat_in_expr(a, diags);
+            desugar_strpat_in_expr(b, diags);
+        }
+        If(c, t, el, _) => {
+            desugar_strpat_in_expr(c, diags);
+            desugar_strpat_in_expr(t, diags);
+            desugar_strpat_in_expr(el, diags);
+        }
+        Let(binds, body, _) => {
+            for b in binds {
+                desugar_strpat_in_func(b, diags);
+            }
+            desugar_strpat_in_expr(body, diags);
+        }
+        Case(scrut, arms, _) => {
+            desugar_strpat_in_expr(scrut, diags);
+            for (_, body) in arms.iter_mut() {
+                desugar_strpat_in_expr(body, diags);
+            }
+        }
+        Tuple(es, _) => es.iter_mut().for_each(|x| desugar_strpat_in_expr(x, diags)),
+        RecordCon(_, fs, _) => fs.iter_mut().for_each(|(_, x)| desugar_strpat_in_expr(x, diags)),
+        RecordUpd(base, fs, _) => {
+            desugar_strpat_in_expr(base, diags);
+            fs.iter_mut().for_each(|(_, x)| desugar_strpat_in_expr(x, diags));
+        }
+        Lam(_, body, _) => desugar_strpat_in_expr(body, diags),
+    }
+    // After children, rebuild a string-pattern `case` as an `if`-chain.
+    if let Case(_, arms, sp) = e {
+        if !arms.iter().any(|(p, _)| matches!(p, ast::Pat::Str(..))) {
+            return;
+        }
+        let sp = *sp;
+        // Split into leading string arms and the trailing catch-all.
+        let mut lits: Vec<(String, ast::Expr)> = Vec::new();
+        let mut catch: Option<(String, ast::Expr)> = None;
+        let mut malformed = false;
+        let taken = std::mem::take(arms);
+        for (p, body) in taken {
+            if catch.is_some() {
+                malformed = true; // an arm after the catch-all is unreachable
+                break;
+            }
+            match p {
+                ast::Pat::Str(s, _) => lits.push((s, body)),
+                ast::Pat::Var(n, _) => catch = Some((n, body)),
+                ast::Pat::Wild(_) => catch = Some(("_".to_string(), body)),
+                _ => {
+                    malformed = true;
+                    break;
+                }
+            }
+        }
+        let Some((binder, default)) = catch else {
+            malformed = true;
+            // Fall back so no `Pat::Str` survives: use the last literal arm's body.
+            let default = lits.pop().map(|(_, b)| b).unwrap_or(ast::Expr::Int(0, sp));
+            report_strpat_error(diags, sp, malformed);
+            rebuild_str_case(e, "_".to_string(), lits, default, sp);
+            return;
+        };
+        if malformed {
+            report_strpat_error(diags, sp, true);
+        }
+        rebuild_str_case(e, binder, lits, default, sp);
+    }
+}
+
+fn report_strpat_error(diags: &mut Diagnostics, sp: ast::Span, _malformed: bool) {
+    diags.push(
+        Diagnostic::error(
+            "AX0204",
+            "a `case` with string-literal patterns must be `\"lit\" -> …` arms \
+             followed by exactly one catch-all (`_` or a variable)",
+        )
+        .label(sp.0, sp.1, "string patterns are never exhaustive on their own"),
+    );
+}
+
+/// Replace `*e` (a `case`) with `case scrut of binder -> if binder == "l0" then e0 …
+/// else default`. `binder` is the catch-all variable, so `default` needs no rewrite.
+fn rebuild_str_case(
+    e: &mut ast::Expr,
+    binder: String,
+    lits: Vec<(String, ast::Expr)>,
+    default: ast::Expr,
+    sp: ast::Span,
+) {
+    use ast::Expr::{App, BinOp, If, Int, Str, Var};
+    let mut chain = default;
+    for (lit, body) in lits.into_iter().rev() {
+        // `strCmp binder lit == 0`: the direct String-compare primitive (Int result),
+        // then builtin Int `==` — avoiding the span-keyed `==#str` method resolution
+        // (all these synthetic comparisons would otherwise share the `case`'s span).
+        let cmp = App(
+            Box::new(App(
+                Box::new(Var("strCmp".to_string(), sp)),
+                Box::new(Var(binder.clone(), sp)),
+                sp,
+            )),
+            Box::new(Str(lit, sp)),
+            sp,
+        );
+        let cond = BinOp("==".to_string(), Box::new(cmp), Box::new(Int(0, sp)), sp);
+        chain = If(Box::new(cond), Box::new(body), Box::new(chain), sp);
+    }
+    // Extract the original scrutinee and re-wrap as a single-var `case` (strict let).
+    if let ast::Expr::Case(scrut, _, _) = e {
+        let scrut = std::mem::replace(scrut.as_mut(), ast::Expr::Int(0, sp));
+        *e = ast::Expr::Case(
+            Box::new(scrut),
+            vec![(ast::Pat::Var(binder, sp), chain)],
+            sp,
+        );
+    }
+}
+
+fn desugar_user_operators(module: &mut ast::Module) {
+    let funcs: std::collections::HashSet<String> =
+        module.funcs.iter().map(|f| f.name.clone()).collect();
+    for f in &mut module.funcs {
+        desugar_ops_in_func(f, &funcs);
+    }
+}
+
+fn desugar_ops_in_func(f: &mut ast::Func, funcs: &std::collections::HashSet<String>) {
+    for c in &mut f.clauses {
+        match &mut c.body {
+            ast::Body::Plain(e) => desugar_ops_in_expr(e, funcs),
+            ast::Body::Guarded(arms) => {
+                for (g, r) in arms {
+                    desugar_ops_in_expr(g, funcs);
+                    desugar_ops_in_expr(r, funcs);
+                }
+            }
+        }
+        for w in &mut c.wher {
+            desugar_ops_in_func(w, funcs);
+        }
+    }
+}
+
+fn desugar_ops_in_expr(e: &mut ast::Expr, funcs: &std::collections::HashSet<String>) {
+    use ast::Expr::{
+        App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+    };
+    match e {
+        Int(..) | Float(..) | Str(..) | Var(..) | Con(..) => {}
+        App(a, b, _) | BinOp(_, a, b, _) => {
+            desugar_ops_in_expr(a, funcs);
+            desugar_ops_in_expr(b, funcs);
+        }
+        If(c, t, el, _) => {
+            desugar_ops_in_expr(c, funcs);
+            desugar_ops_in_expr(t, funcs);
+            desugar_ops_in_expr(el, funcs);
+        }
+        Let(binds, body, _) => {
+            for b in binds {
+                desugar_ops_in_func(b, funcs);
+            }
+            desugar_ops_in_expr(body, funcs);
+        }
+        Case(s, arms, _) => {
+            desugar_ops_in_expr(s, funcs);
+            for (_, body) in arms {
+                desugar_ops_in_expr(body, funcs);
+            }
+        }
+        Tuple(es, _) => es.iter_mut().for_each(|x| desugar_ops_in_expr(x, funcs)),
+        RecordCon(_, fs, _) => {
+            for (_, x) in fs {
+                desugar_ops_in_expr(x, funcs);
+            }
+        }
+        RecordUpd(base, fs, _) => {
+            desugar_ops_in_expr(base, funcs);
+            for (_, x) in fs {
+                desugar_ops_in_expr(x, funcs);
+            }
+        }
+        Lam(_, body, _) => desugar_ops_in_expr(body, funcs),
+    }
+    // With children handled, turn a user-operator `BinOp` into `(op) l r`.
+    if let BinOp(op, _, _, _) = e {
+        if funcs.contains(op) && !core::is_builtin_op(op) && !core::is_float_op(op) {
+            if let BinOp(op, l, r, sp) = std::mem::replace(e, Int(0, (0, 0))) {
+                *e = App(Box::new(App(Box::new(Var(op, sp)), l, sp)), r, sp);
+            }
+        }
+    }
+}
+
 fn resolve_methods(module: &mut ast::Module, res: &Resolutions) {
     if res.is_empty() {
         return;
@@ -3434,6 +3708,51 @@ consWord :: String -> Int -> Int -> Int -> List String
 consWord s i n j = Cons (substr i (j - i) s) (wordsFrom s j n)
 wordEnd :: String -> Int -> Int -> Int
 wordEnd s i n = if i < n then (if isSpace (charAt i s) then i else wordEnd s (i + 1) n) else i
+-- Boolean operators. Axion is strict, so unlike Haskell these evaluate BOTH operands
+-- (no short-circuit); use nested `if` when the right side must not run.
+(&&) :: Bool -> Bool -> Bool
+(&&) x y = if x then y else False
+(||) :: Bool -> Bool -> Bool
+(||) x y = if x then True else y
+-- `isDigit` on a byte code (ASCII '0'..'9' = 48..57).
+isDigit :: Int -> Bool
+isDigit c = c >= 48 && c <= 57
+-- Str helpers (§text) on the byte primitives. `chomp` drops one trailing '\\n' (10);
+-- `trim` strips leading/trailing whitespace; prefix/suffix tests; path dir/base split
+-- on '/' (47). All total (empty and no-separator cases handled).
+chomp :: String -> String
+chomp s = if strLen s == 0 then s else (if charAt (strLen s - 1) s == 10 then substr 0 (strLen s - 1) s else s)
+trimStart :: String -> Int -> Int
+trimStart s i = if i < strLen s then (if isSpace (charAt i s) then trimStart s (i + 1) else i) else i
+trimEnd :: String -> Int -> Int
+trimEnd s j = if j > 0 then (if isSpace (charAt (j - 1) s) then trimEnd s (j - 1) else j) else j
+trim :: String -> String
+trim s = substr (trimStart s 0) (trimEnd s (strLen s) - trimStart s 0) s
+hasPrefix :: String -> String -> Bool
+hasPrefix p s = if strLen p > strLen s then False else substr 0 (strLen p) s == p
+hasSuffix :: String -> String -> Bool
+hasSuffix q s = if strLen q > strLen s then False else substr (strLen s - strLen q) (strLen q) s == q
+lastIndex :: Int -> String -> Int -> Int -> Int
+lastIndex c s i best = if i >= strLen s then best else (if charAt i s == c then lastIndex c s (i + 1) i else lastIndex c s (i + 1) best)
+dirName :: String -> String
+dirName s = dirBefore s (lastIndex 47 s 0 (0 - 1))
+dirBefore :: String -> Int -> String
+dirBefore s k = if k < 0 then \".\" else substr 0 k s
+baseName :: String -> String
+baseName s = baseAfter s (lastIndex 47 s 0 (0 - 1))
+baseAfter :: String -> Int -> String
+baseAfter s k = if k < 0 then s else substr (k + 1) (strLen s - k - 1) s
+-- Print an error to stderr and exit non-zero (§CLI). Polymorphic result (it never
+-- returns) so it fits any position, e.g. an error arm of an `IO ()` command.
+die :: String -> a
+die msg = do
+  ePutStrLn msg
+  exitWith 1
+-- Parse a non-empty run of ASCII digits; `Nothing` on empty or a non-digit byte.
+readInt :: String -> Maybe Int
+readInt s = if strLen s == 0 then Nothing else readIntGo s 0 0
+readIntGo :: String -> Int -> Int -> Maybe Int
+readIntGo s i acc = if i >= strLen s then Just acc else (if isDigit (charAt i s) then readIntGo s (i + 1) (acc * 10 + (charAt i s - 48)) else Nothing)
 class Eq a where
   eq :: a -> a -> Bool
 class Ord a where
@@ -3477,6 +3796,12 @@ instance Eq String where
   eq x y = x == y
 instance Ord String where
   le x y = if x < y then True else x == y
+-- `<=` and `>=` (precedence 4, like `<`/`>`) in terms of the `Ord` method `le` (≤),
+-- so they are polymorphic over every `Ord` instance and any `deriving Ord` type.
+(<=) :: Ord a => a -> a -> Bool
+(<=) x y = le x y
+(>=) :: Ord a => a -> a -> Bool
+(>=) x y = le y x
 -- Show for lists: `[1, 2, 3]` (bracketed, comma-separated). Elements use
 -- `show` (not showArg) so nested constructors aren't parenthesised inside the
 -- brackets, matching Haskell's `show [Just 1, Nothing]` = `[Just 1, Nothing]`.
@@ -4592,6 +4917,13 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
              what a decl writes, NOT what it calls — an L0 module may still depend on\n\
              an L3 library. Raise the ceiling, or drop the higher-level feature."
         }
+        "AX0204" => {
+            "AX0204 — a `case` with string-literal patterns is malformed. String\n\
+             patterns are never exhaustive on their own, so such a `case` must be a\n\
+             run of `\"lit\" -> …` arms followed by exactly one catch-all (`_` or a\n\
+             variable); a constructor pattern mixed in, or an arm after the catch-all,\n\
+             is rejected. (String `case`s desugar to an `if`-chain over `==`.)"
+        }
         "AX0900" => {
             "AX0900 — could not import module. The imported module file was not\n\
              found or could not be read. Check the module name, the file path, and\n\
@@ -4601,6 +4933,15 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
             "AX0901 — lex error in an imported module. The imported file itself does\n\
              not tokenize (a stray character or malformed literal there). Fix the\n\
              imported module; the error location points into it."
+        }
+        "AX0920" => {
+            "AX0920 — an effectful value (a command run, a filesystem mutation, a\n\
+             stdin read, process exit, or console output) is bound in a `where`\n\
+             clause but never used. `where` bindings are demand-evaluated, so an\n\
+             unreferenced one is dropped and its EFFECT NEVER RUNS — silently, because\n\
+             Axion types effects as ordinary String/Int values. Move the call into a\n\
+             `do` block (or a `let` in the function body), which is evaluated strictly\n\
+             and in order."
         }
         _ => return None,
     };
@@ -4623,6 +4964,7 @@ fn print_usage() {
          axionc --emit llvm <file>      LLVM IR of the Int core (--release backend)\n  \
          axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \
          axionc --release <file>        compile with clang -O2 and run (--release)\n  \
+         axionc -o <exe> <file>         compile to a standalone executable (implies --release)\n  \
          axionc --no-verify <file>      skip the default-on drop-balance safety gate\n  \
          axionc --allow-leaks <file>    permit leaks (AX0911); still gate on corruption\n  \
          axionc --explain AX0001        explain an error code"

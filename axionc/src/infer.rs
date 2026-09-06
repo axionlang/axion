@@ -1618,6 +1618,15 @@ impl<'a> Infer<'a> {
         );
         env.insert(
             "putStr".into(),
+            mono(Ty::Fun(Box::new(string()), Box::new(io_unit.clone()))),
+        );
+        // ePutStrLn / ePutStr :: String -> IO () — the stderr counterparts (§CLI).
+        env.insert(
+            "ePutStrLn".into(),
+            mono(Ty::Fun(Box::new(string()), Box::new(io_unit.clone()))),
+        );
+        env.insert(
+            "ePutStr".into(),
             mono(Ty::Fun(Box::new(string()), Box::new(io_unit))),
         );
         // Show primitives (the `class Show` base instances live in the prelude):
@@ -1700,9 +1709,17 @@ impl<'a> Infer<'a> {
                 Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
             ))
         };
+        let ss_to_s = || {
+            mono(Ty::Fun(
+                Box::new(string()),
+                Box::new(Ty::Fun(Box::new(string()), Box::new(string()))),
+            ))
+        };
         env.insert("getEnv".into(), s_to_s()); // env var value, "" if unset
         env.insert("runCapture".into(), s_to_s()); // shell cmd → stdout
         env.insert("runStatus".into(), s_to_i()); // shell cmd → exit status
+        env.insert("execCapture".into(), ss_to_s()); // argv(\n-joined) + stdin → stdout
+        env.insert("execStatus".into(), ss_to_i()); // argv(\n-joined) + stdin → status
         env.insert("readFile".into(), s_to_s()); // path → contents
         env.insert("writeFile".into(), ss_to_i()); // path, content → 0/-1
         env.insert("fileExists".into(), s_to_i()); // path → 1/0
@@ -1711,12 +1728,25 @@ impl<'a> Infer<'a> {
         env.insert("renameFile".into(), ss_to_i()); // from, to → 0/-1
         env.insert("readDir".into(), s_to_s()); // dir → newline-joined entries
         env.insert(
+            "readLine".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))), // dummy Int → a stdin line
+        );
+        env.insert(
+            "readSecret".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))), // dummy Int → an echo-off line
+        );
+        env.insert(
             "randHex".into(),
             mono(Ty::Fun(Box::new(int()), Box::new(string()))), // n bytes → 2n hex chars
         );
         env.insert(
             "exitWith".into(),
-            mono(Ty::Fun(Box::new(int()), Box::new(int()))), // exit code (never returns)
+            // `forall a. Int -> a` — it never returns, so it fits any position (e.g. a
+            // `do` block of type `IO ()`). The stored bound var is instantiated per use.
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(int()), Box::new(Ty::Var(0))),
+            },
         );
         env.insert(
             "getArgs".into(),
@@ -3132,7 +3162,7 @@ impl<'a> Infer<'a> {
                     Pat::Con(cn, _, _) => {
                         covered.insert(cn.clone());
                     }
-                    Pat::Int(_, _) => {}
+                    Pat::Int(_, _) | Pat::Str(_, _) => {}
                 }
             }
             if catch_all {
@@ -3381,6 +3411,9 @@ impl<'a> Infer<'a> {
                 self.int_lit_vars.push((*span, v.clone()));
                 v
             }
+            // Normally desugared to an `if`-chain before inference; typed here for
+            // robustness (a string pattern constrains the scrutinee to String).
+            Pat::Str(_, _) => Ty::Con("String".into(), vec![]),
             Pat::Var(n, _) => {
                 let t = self.fresh();
                 env.insert(n.clone(), mono(t.clone()));

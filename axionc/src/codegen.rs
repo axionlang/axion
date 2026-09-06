@@ -54,6 +54,19 @@ extern "C" fn axion_put(ptr: *const u8) {
     drop(std::io::stdout().flush());
 }
 
+/// `ePutStr` / `ePutStrLn`: the stderr counterparts (§CLI). Reimpl of `axion_eput` /
+/// `axion_eputs` for the Cranelift backend.
+extern "C" fn axion_eput(ptr: *const u8) {
+    // SAFETY: caller passed a valid NUL-terminated C-string.
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
+    eprint!("{}", s.to_string_lossy());
+}
+extern "C" fn axion_eputs(ptr: *const u8) {
+    // SAFETY: caller passed a valid NUL-terminated C-string.
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
+    eprintln!("{}", s.to_string_lossy());
+}
+
 /// Copies `bytes` + a NUL into an `axion_alloc` buffer (8-byte size header), so the
 /// resulting String is reclaimable by `axion_str_drop`/`axion_free` and counted in
 /// the heap stats (unlike a leaked `CString`). Returns the payload C-string pointer.
@@ -322,6 +335,31 @@ extern "C" fn axion_readdir(path: *const u8) -> *const u8 {
         }
         Err(_) => axion_str_alloc(b""),
     }
+}
+
+/// `execCapture :: String -> String -> String` — run argv (newline-joined) with stdin,
+/// return captured stdout. Cranelift reimpl of `axion_exec_capture`.
+extern "C" fn axion_exec_capture(argv: *const u8, input: *const u8) -> *const u8 {
+    let (out, _) = crate::interp::run_exec(&ffi_str(argv), &ffi_str(input), true);
+    axion_str_alloc(out.as_bytes())
+}
+
+/// `execStatus :: String -> String -> Int` — run argv (newline-joined) with stdin,
+/// return exit status. Cranelift reimpl of `axion_exec_status`.
+extern "C" fn axion_exec_status(argv: *const u8, input: *const u8) -> i64 {
+    crate::interp::run_exec(&ffi_str(argv), &ffi_str(input), false).1
+}
+
+/// `readLine :: Int -> String` — one stdin line (echoed). Cranelift reimpl of
+/// `axion_read_line`; shares the reader with the interpreter (`interp::read_stdin_line`).
+extern "C" fn axion_read_line(_n: i64) -> *const u8 {
+    axion_str_alloc(crate::interp::read_stdin_line(false).as_bytes())
+}
+
+/// `readSecret :: Int -> String` — one stdin line with terminal echo OFF (§pass
+/// passphrase entry). Cranelift reimpl of `axion_read_secret`.
+extern "C" fn axion_read_secret(_n: i64) -> *const u8 {
+    axion_str_alloc(crate::interp::read_stdin_line(true).as_bytes())
 }
 
 /// `randHex :: Int -> String` — `n` random bytes from /dev/urandom as 2n hex chars
@@ -1740,12 +1778,18 @@ impl Cg {
         builder.symbol("axion_unlink", axion_unlink as *const u8);
         builder.symbol("axion_rename", axion_rename as *const u8);
         builder.symbol("axion_readdir", axion_readdir as *const u8);
+        builder.symbol("axion_exec_capture", axion_exec_capture as *const u8);
+        builder.symbol("axion_exec_status", axion_exec_status as *const u8);
+        builder.symbol("axion_read_line", axion_read_line as *const u8);
+        builder.symbol("axion_read_secret", axion_read_secret as *const u8);
         builder.symbol("axion_rand_hex", axion_rand_hex as *const u8);
         builder.symbol("axion_exit", axion_exit as *const u8);
         builder.symbol("axion_getargs", axion_getargs as *const u8);
         builder.symbol("axion_getarg", axion_getarg as *const u8);
         builder.symbol("axion_substr", axion_substr as *const u8);
         builder.symbol("axion_str_drop", axion_str_drop as *const u8);
+        builder.symbol("axion_eput", axion_eput as *const u8);
+        builder.symbol("axion_eputs", axion_eputs as *const u8);
         builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
         builder.symbol("axion_bignum_from_str", axion_bignum_from_str as *const u8);
         builder.symbol("axion_bignum_add", axion_bignum_add as *const u8);
@@ -1923,12 +1967,18 @@ impl Cg {
             ("axion_unlink", 1, true),
             ("axion_rename", 2, true),
             ("axion_readdir", 1, true),
+            ("axion_exec_capture", 2, true),
+            ("axion_exec_status", 2, true),
+            ("axion_read_line", 1, true),
+            ("axion_read_secret", 1, true),
             ("axion_rand_hex", 1, true),
             ("axion_exit", 1, true),
             ("axion_getargs", 1, true),
             ("axion_getarg", 1, true),
             // drops a String: frees a heap string, skips a static literal (§tc)
             ("axion_str_drop", 1, false),
+            ("axion_eput", 1, false),
+            ("axion_eputs", 1, false),
             ("axion_bignum_from_i64", 1, true),
             ("axion_bignum_from_str", 1, true),
             ("axion_bignum_add", 2, true),

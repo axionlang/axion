@@ -223,7 +223,12 @@ struct Outline {
 
 fn pat_span(p: &Pat) -> Span {
     match p {
-        Pat::Wild(s) | Pat::Var(_, s) | Pat::Int(_, s) | Pat::Con(_, _, s) | Pat::Tuple(_, s) => *s,
+        Pat::Wild(s)
+        | Pat::Var(_, s)
+        | Pat::Int(_, s)
+        | Pat::Str(_, s)
+        | Pat::Con(_, _, s)
+        | Pat::Tuple(_, s) => *s,
     }
 }
 
@@ -231,7 +236,7 @@ fn pat_outline(p: &Pat) -> Outline {
     let (kind, children) = match p {
         Pat::Wild(_) => (WILD_PAT, vec![]),
         Pat::Var(_, _) => (VAR_PAT, vec![]),
-        Pat::Int(_, _) => (LIT_PAT, vec![]),
+        Pat::Int(_, _) | Pat::Str(_, _) => (LIT_PAT, vec![]),
         Pat::Con(_, ps, _) => (CON_PAT, ps.iter().map(pat_outline).collect()),
         Pat::Tuple(ps, _) => (TUPLE_PAT, ps.iter().map(pat_outline).collect()),
     };
@@ -1137,7 +1142,7 @@ impl ExprParser<'_> {
 
     fn apat(&mut self) {
         match self.cur() {
-            Some(Tok::Int(IntLit::Small(_))) => {
+            Some(Tok::Int(IntLit::Small(_)) | Tok::Str(_)) => {
                 self.b.start_node(LIT_PAT.into());
                 self.bump();
                 self.b.finish_node();
@@ -1920,8 +1925,9 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
         VAR_PAT => Some(Pat::Var(head_token(node)?.text().to_string(), sp)),
         LIT_PAT => {
             let tok = head_token(node)?;
-            match lex(tok.text()).ok()?.first()?.tok {
+            match lex(tok.text()).ok()?.first()?.tok.clone() {
                 Tok::Int(IntLit::Small(n)) => Some(Pat::Int(n, sp)),
+                Tok::Str(s) => Some(Pat::Str(s, sp)),
                 _ => None,
             }
         }
@@ -2021,7 +2027,7 @@ fn zero_spans(e: &mut Expr) {
 fn zero_pat(p: &mut Pat) {
     let z = (0usize, 0usize);
     match p {
-        Pat::Wild(s) | Pat::Var(_, s) | Pat::Int(_, s) => *s = z,
+        Pat::Wild(s) | Pat::Var(_, s) | Pat::Int(_, s) | Pat::Str(_, s) => *s = z,
         Pat::Con(_, ps, s) | Pat::Tuple(ps, s) => {
             *s = z;
             ps.iter_mut().for_each(zero_pat);
@@ -2586,6 +2592,7 @@ fn collect_pat_spans(p: &crate::ast::Pat, out: &mut Vec<(&'static str, crate::as
         Pat::Wild(s) => out.push(("Wild", *s)),
         Pat::Var(_, s) => out.push(("PatVar", *s)),
         Pat::Int(_, s) => out.push(("PatInt", *s)),
+        Pat::Str(_, s) => out.push(("PatStr", *s)),
         Pat::Con(_, ps, s) => {
             out.push(("PatCon", *s));
             for sub in ps {

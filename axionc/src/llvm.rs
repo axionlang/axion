@@ -28,6 +28,8 @@ const RUNTIME_C: &str = include_str!("axion_rt.c");
 const RT_DECLS: &str = "\
 declare void @axion_puts(i64)
 declare void @axion_put(i64)
+declare void @axion_eput(i64)
+declare void @axion_eputs(i64)
 declare i64 @axion_show_int(i64)
 declare i64 @axion_show_float(i64)
 declare i64 @axion_strcat(i64, i64)
@@ -45,6 +47,10 @@ declare i64 @axion_mkdir_p(i64)
 declare i64 @axion_unlink(i64)
 declare i64 @axion_rename(i64, i64)
 declare i64 @axion_readdir(i64)
+declare i64 @axion_exec_capture(i64, i64)
+declare i64 @axion_exec_status(i64, i64)
+declare i64 @axion_read_line(i64)
+declare i64 @axion_read_secret(i64)
 declare i64 @axion_rand_hex(i64)
 declare i64 @axion_exit(i64)
 declare void @axion_set_args(i64, i64)
@@ -273,7 +279,10 @@ pub fn emit_ir(
     Ok(out)
 }
 
-/// Compiles the Core with `clang -O2 -flto` (+ C runtime) and runs the binary.
+/// Compiles the Core with `clang -O2 -flto` (+ C runtime). With `out = None` the binary
+/// goes to a temp file and is run immediately (the default `--release` behaviour); with
+/// `out = Some(path)` it is written there as a standalone executable and NOT run.
+#[allow(clippy::too_many_arguments)]
 pub fn build_and_run(
     module: &ast::Module,
     entry: &str,
@@ -282,6 +291,7 @@ pub fn build_and_run(
     makecon_tys: &HashMap<Span, ast::Type>,
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
+    out: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let fns = core::lower_with(
         module,
@@ -311,7 +321,10 @@ pub fn build_and_run(
     let pid = std::process::id();
     let ll = dir.join(format!("axion-{pid}.ll"));
     let rt = dir.join(format!("axion-{pid}-rt.c"));
-    let exe = dir.join(format!("axion-{pid}.out"));
+    let exe = match out {
+        Some(p) => p.to_path_buf(),
+        None => dir.join(format!("axion-{pid}.out")),
+    };
     std::fs::write(&ll, ir).map_err(|e| e.to_string())?;
     std::fs::write(&rt, RUNTIME_C).map_err(|e| e.to_string())?;
 
@@ -336,8 +349,14 @@ pub fn build_and_run(
     let status = cmd
         .status()
         .map_err(|e| format!("could not invoke '{clang}' ({e}); set AXION_CLANG or use nix"))?;
+    drop(std::fs::remove_file(&ll));
+    drop(std::fs::remove_file(&rt));
     if !status.success() {
         return Err("clang failed to compile the LLVM IR".into());
+    }
+    // `-o <path>`: built a standalone executable — do not run it.
+    if out.is_some() {
+        return Ok(());
     }
     // Forward the program's argv (from `axionc … -- <args>`) to the compiled binary
     // so its `getArgs` sees them (§pass).
@@ -346,12 +365,12 @@ pub fn build_and_run(
         run_cmd.args(prog_args);
     }
     let run = run_cmd.status();
-    drop(std::fs::remove_file(&ll));
-    drop(std::fs::remove_file(&rt));
     drop(std::fs::remove_file(&exe));
     match run {
         Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("the --release binary exited with {s}")),
+        // Propagate the program's own exit code transparently — a non-zero exit is the
+        // program's result (e.g. `exitWith`/`die`), not a build error.
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
         Err(e) => Err(e.to_string()),
     }
 }

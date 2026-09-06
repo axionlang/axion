@@ -238,13 +238,105 @@ fn builtin_arity(name: &str) -> usize {
     match name {
         "substr" => 3,
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
-        | "renameFile" => 2,
+        | "renameFile" | "execCapture" | "execStatus" => 2,
         _ => 1,
     }
 }
 
 fn clause_arity(def: &Func) -> usize {
     def.clauses.first().map(|c| c.pats.len()).unwrap_or(0)
+}
+
+/// Read one line from stdin (trailing newline stripped, "" at EOF). When `hide` is set
+/// this is the echo-off passphrase read; a terminal has its echo disabled for the read
+/// via `stty` (a no-op on a pipe, so tests that feed stdin still work). Shared by the
+/// interpreter and — to avoid a second copy — the Cranelift runtime (`codegen.rs`).
+pub fn read_stdin_line(hide: bool) -> String {
+    use std::io::BufRead;
+    // Best-effort echo-off around the read; restored no matter how we return.
+    struct EchoGuard(bool);
+    impl EchoGuard {
+        fn on() -> EchoGuard {
+            // stderr is silenced so the "not a tty" complaint on a pipe stays invisible.
+            let ok = std::process::Command::new("stty")
+                .arg("-echo")
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            EchoGuard(ok)
+        }
+    }
+    impl Drop for EchoGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = std::process::Command::new("stty")
+                    .arg("echo")
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                eprintln!();
+            }
+        }
+    }
+    let _guard = hide.then(EchoGuard::on);
+    let mut s = String::new();
+    match std::io::stdin().lock().read_line(&mut s) {
+        Ok(0) | Err(_) => String::new(),
+        Ok(_) => {
+            while s.ends_with('\n') || s.ends_with('\r') {
+                s.pop();
+            }
+            s
+        }
+    }
+}
+
+/// Run a program with an explicit argv (`joined`, elements separated by '\n', argv[0]
+/// first) and `input` fed on its stdin — NO shell, so nothing is word-split or
+/// injection-prone and a secret can reach the child over the pipe. Returns the child's
+/// captured stdout and exit code (`("", -1)` if it can't be spawned). Shared by the
+/// interpreter and the Cranelift runtime (`codegen.rs`), matching the C `axion_exec_*`.
+pub fn run_exec(joined: &str, input: &str, want_stdout: bool) -> (String, i64) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut parts = joined.split('\n');
+    let prog = match parts.next() {
+        Some(p) if !p.is_empty() => p,
+        _ => return (String::new(), -1),
+    };
+    let mut cmd = Command::new(prog);
+    // Only give the child a stdin PIPE when we actually have bytes to feed it. With no
+    // input, INHERIT the terminal instead — otherwise a child that needs the tty (e.g.
+    // `gpg`'s pinentry passphrase prompt) fails with "Inappropriate ioctl for device".
+    cmd.args(parts).stdin(if input.is_empty() {
+        Stdio::inherit()
+    } else {
+        Stdio::piped()
+    });
+    cmd.stdout(if want_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return (String::new(), -1),
+    };
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(input.as_bytes()); // dropped here → the child sees EOF
+    }
+    match child.wait_with_output() {
+        Ok(o) => {
+            let code = o.status.code().unwrap_or(-1) as i64;
+            let out = if want_stdout {
+                String::from_utf8_lossy(&o.stdout).into_owned()
+            } else {
+                String::new()
+            };
+            (out, code)
+        }
+        Err(_) => (String::new(), -1),
+    }
 }
 
 fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
@@ -486,6 +578,14 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "putStr",
             args: Vec::new(),
         }),
+        "ePutStrLn" => Ok(Value::Builtin {
+            name: "ePutStrLn",
+            args: Vec::new(),
+        }),
+        "ePutStr" => Ok(Value::Builtin {
+            name: "ePutStr",
+            args: Vec::new(),
+        }),
         "showInt" => Ok(Value::Builtin {
             name: "showInt",
             args: Vec::new(),
@@ -572,6 +672,22 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "randHex" => Ok(Value::Builtin {
             name: "randHex",
+            args: Vec::new(),
+        }),
+        "execCapture" => Ok(Value::Builtin {
+            name: "execCapture",
+            args: Vec::new(),
+        }),
+        "execStatus" => Ok(Value::Builtin {
+            name: "execStatus",
+            args: Vec::new(),
+        }),
+        "readLine" => Ok(Value::Builtin {
+            name: "readLine",
+            args: Vec::new(),
+        }),
+        "readSecret" => Ok(Value::Builtin {
+            name: "readSecret",
             args: Vec::new(),
         }),
         "exitWith" => Ok(Value::Builtin {
@@ -1041,6 +1157,8 @@ fn match_pat(pat: &Pat, v: &Value, env: &Env) -> bool {
             }
             _ => false,
         },
+        // Normally desugared to `==` before we run; handled for robustness.
+        Pat::Str(s, _) => matches!(v, Value::Str(t) if t == s),
     }
 }
 
@@ -1130,6 +1248,16 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
     match (name, args.as_slice()) {
         ("putStrLn", [Value::Str(s)]) => Ok(Value::Io(format!("{s}\n"))),
         ("putStr", [Value::Str(s)]) => Ok(Value::Io(s.clone())),
+        // stderr writes happen immediately (a side effect during evaluation) and add
+        // nothing to the collected stdout `Io` stream.
+        ("ePutStrLn", [Value::Str(s)]) => {
+            eprintln!("{s}");
+            Ok(Value::Io(String::new()))
+        }
+        ("ePutStr", [Value::Str(s)]) => {
+            eprint!("{s}");
+            Ok(Value::Io(String::new()))
+        }
         ("showInt", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
         ("showFloat", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
         // Integer (§ Listing 1.4): construct from an Int, show, convert back.
@@ -1219,6 +1347,18 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
                 .unwrap_or_default();
             Ok(Value::Str(s))
         }
+        ("execCapture", [Value::Str(argv), Value::Str(input)]) => {
+            Ok(Value::Str(run_exec(argv, input, true).0))
+        }
+        ("execStatus", [Value::Str(argv), Value::Str(input)]) => {
+            Ok(Value::Int(run_exec(argv, input, false).1))
+        }
+        ("readLine", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(false))),
+        ("readSecret", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(true))),
+        // NOTE: the interpreter accumulates stdout as `Io` and prints it only when the
+        // program ends, so any stdout produced BEFORE `exitWith` is lost here (the native
+        // backends stream, so they print it). Write pre-exit output to stderr (`ePutStr*`,
+        // as `die` does) to stay consistent across backends.
         ("exitWith", [Value::Int(code)]) => std::process::exit(*code as i32),
         ("getArgs", [Value::Int(_)]) => Ok(Value::Str(
             crate::PROG_ARGS

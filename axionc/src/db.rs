@@ -297,9 +297,9 @@ fn shift_clause(c: &mut ast::Clause, d: i64) {
 }
 
 fn shift_pat(p: &mut ast::Pat, d: i64) {
-    use ast::Pat::{Con, Int, Tuple, Var, Wild};
+    use ast::Pat::{Con, Int, Str, Tuple, Var, Wild};
     match p {
-        Wild(s) | Var(_, s) | Int(_, s) => shift_span(s, d),
+        Wild(s) | Var(_, s) | Int(_, s) | Str(_, s) => shift_span(s, d),
         Con(_, ps, s) | Tuple(ps, s) => {
             shift_span(s, d);
             for p in ps {

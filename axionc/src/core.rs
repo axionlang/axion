@@ -393,8 +393,11 @@ pub fn is_string_producer(func: &str) -> bool {
             | "axion_substr"
             | "axion_getenv"
             | "axion_run"
+            | "axion_exec_capture"
             | "axion_read_file"
             | "axion_readdir"
+            | "axion_read_line"
+            | "axion_read_secret"
             | "axion_rand_hex"
             | "axion_getargs"
             | "axion_getarg"
@@ -445,6 +448,7 @@ pub fn is_scalar_reader(func: &str) -> bool {
             | "axion_str_at"
             | "axion_str_cmp"
             | "axion_system"
+            | "axion_exec_status"
             | "axion_file_exists"
             | "axion_mkdir_p"
             | "axion_unlink"
@@ -490,6 +494,8 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "getEnv" => ("axion_getenv", 1),
         "runCapture" => ("axion_run", 1),
         "runStatus" => ("axion_system", 1),
+        "execCapture" => ("axion_exec_capture", 2),
+        "execStatus" => ("axion_exec_status", 2),
         "readFile" => ("axion_read_file", 1),
         "writeFile" => ("axion_write_file", 2),
         "fileExists" => ("axion_file_exists", 1),
@@ -497,6 +503,8 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "removeFile" => ("axion_unlink", 1),
         "renameFile" => ("axion_rename", 2),
         "readDir" => ("axion_readdir", 1),
+        "readLine" => ("axion_read_line", 1),
+        "readSecret" => ("axion_read_secret", 1),
         "randHex" => ("axion_rand_hex", 1),
         "exitWith" => ("axion_exit", 1),
         "getArgs" => ("axion_getargs", 1),
@@ -1103,7 +1111,12 @@ fn where_free_vars(w: &ast::Func, globals: &HashSet<String>) -> HashSet<String> 
             }
         }
     }
-    out.retain(|n| !globals.contains(n));
+    // A builtin that lowers to a runtime call (`getEnv`/`runCapture`/… — `sess_builtin_rt`)
+    // is resolved directly at that call site, never captured; capturing its NAME leaves an
+    // unbound `getEnv` in the native IR (`where s = getEnv "HOME"`). Excluded here in
+    // addition to module globals. (Kept narrow — NOT the whole builtin set, whose session
+    // ops resolve through a different path and must stay out of the global name resolver.)
+    out.retain(|n| !globals.contains(n) && sess_builtin_rt(n).is_none());
     out
 }
 
@@ -1717,6 +1730,12 @@ impl Lower<'_> {
         if name == "putStr" && args.len() == 1 {
             return Op::PutStr(self.atom(args[0], buf));
         }
+        if name == "ePutStrLn" && args.len() == 1 {
+            return self.rtcall("axion_eputs", &args, false, buf);
+        }
+        if name == "ePutStr" && args.len() == 1 {
+            return self.rtcall("axion_eput", &args, false, buf);
+        }
         if name == "showInt" && args.len() == 1 {
             return Op::ShowInt(self.atom(args[0], buf));
         }
@@ -1765,6 +1784,12 @@ impl Lower<'_> {
         if name == "runStatus" && args.len() == 1 {
             return self.rtcall("axion_system", &args, true, buf);
         }
+        if name == "execCapture" && args.len() == 2 {
+            return self.rtcall("axion_exec_capture", &args, true, buf);
+        }
+        if name == "execStatus" && args.len() == 2 {
+            return self.rtcall("axion_exec_status", &args, true, buf);
+        }
         if name == "readFile" && args.len() == 1 {
             return self.rtcall("axion_read_file", &args, true, buf);
         }
@@ -1785,6 +1810,12 @@ impl Lower<'_> {
         }
         if name == "readDir" && args.len() == 1 {
             return self.rtcall("axion_readdir", &args, true, buf);
+        }
+        if name == "readLine" && args.len() == 1 {
+            return self.rtcall("axion_read_line", &args, true, buf);
+        }
+        if name == "readSecret" && args.len() == 1 {
+            return self.rtcall("axion_read_secret", &args, true, buf);
         }
         if name == "randHex" && args.len() == 1 {
             return self.rtcall("axion_rand_hex", &args, true, buf);
@@ -2279,6 +2310,7 @@ fn lower_pat(p: &Pat) -> CPat {
         Pat::Wild(_) => CPat::Wild,
         Pat::Var(n, _) => CPat::Var(n.clone()),
         Pat::Int(n, _) => CPat::Int(*n),
+        Pat::Str(_, _) => unreachable!("string patterns are desugared to `if`-chains before core"),
         Pat::Tuple(ps, _) => CPat::Tuple(ps.iter().map(lower_pat).collect()),
         Pat::Con(n, ps, _) => CPat::Con(n.clone(), ps.iter().map(lower_pat).collect()),
     }
@@ -2329,7 +2361,7 @@ fn pat_irrefutable(p: &Pat, single_con: &HashSet<String>) -> bool {
         Pat::Con(c, subs, _) => {
             single_con.contains(c) && subs.iter().all(|q| pat_irrefutable(q, single_con))
         }
-        Pat::Int(_, _) => false,
+        Pat::Int(_, _) | Pat::Str(_, _) => false,
     }
 }
 

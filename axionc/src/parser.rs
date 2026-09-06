@@ -41,7 +41,9 @@ pub fn op_fixity(op: &str, user: &FixityTable) -> (u8, Assoc) {
         "*" | "*." | "/." => (7, Assoc::Left),
         "+" | "-" | "+." | "-." => (6, Assoc::Left),
         ":" | "++" => (5, Assoc::Right),
-        "==" | "<" | ">" | "==." | "<." | ">." => (4, Assoc::Left),
+        "==" | "<" | ">" | "<=" | ">=" | "==." | "<." | ">." => (4, Assoc::Left),
+        "&&" => (3, Assoc::Right),
+        "||" => (2, Assoc::Right),
         _ => user.get(op).copied().unwrap_or_else(|| {
             let symbolic = op
                 .chars()
@@ -893,6 +895,11 @@ impl<'a> Parser<'a> {
                 let n = *n;
                 self.pos += 1;
                 Ok(Pat::Int(n, (s, e)))
+            }
+            Some(LTok::Tok(Tok::Str(lit))) => {
+                let lit = lit.clone();
+                self.pos += 1;
+                Ok(Pat::Str(lit, (s, e)))
             }
             Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Big(_)))) => Err(self.syntax_err(
                 "an integer within Int (a literal exceeding Int \

@@ -17,22 +17,19 @@
     ret 0  ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t0
   else
-  let _d1000000 = call <$> _t0 _t1  ; Δ{_t0}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let _t0 = closure lam$0  ; Δ{} · makes heap
-  let _t1 = call inc 40  ; Δ{_t0}
+  let _t0 = call inc 40  ; Δ{}
   ret + n 1  ; Δ{}
   ret 0  ; Δ{}
-  ret _d1000000  ; Δ{}
-  ret call inc eta$1  ; Δ{}
+  ret call <$>$$inc _t0  ; Δ{}
+  ret call inc x  ; Δ{}
   ret callclo f x  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
 <$> f x  =
+<$>$$inc x  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 inc n  =
-lam$0 [env ]eta$1  =
 main  =

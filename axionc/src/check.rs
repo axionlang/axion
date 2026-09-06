@@ -94,7 +94,154 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
     check_sessions(module, diags);
     check_bound_escapes(module, diags);
     check_instances(module, diags);
+    warn_dropped_effects(module, diags);
     out
+}
+
+/// The single source of truth for "this built-in performs a side effect" — a command
+/// run, a filesystem mutation, a stream read/write, or process exit. Because these
+/// values are typed as ordinary `String`/`Int` (Axión has no `IO` type), the compiler
+/// must treat them specially: an optimization must never COALESCE two effectful calls
+/// (each occurrence is one effect — see the `effects_run_per_occurrence` test), never
+/// REORDER them, and never DROP one whose result is unused. There is no common-subexpr
+/// pass today, so this predicate is the contract any future one must consult. The pure
+/// capability *reads* (`getEnv`/`readFile`/`fileExists`/`readDir`/`randHex`/`getArg`)
+/// are excluded: dropping them changes nothing observable.
+pub fn is_effectful(name: &str) -> bool {
+    matches!(
+        name,
+        "runCapture"
+            | "runStatus"
+            | "execCapture"
+            | "execStatus"
+            | "writeFile"
+            | "makeDir"
+            | "removeFile"
+            | "renameFile"
+            | "readLine"
+            | "readSecret"
+            | "exitWith"
+            | "putStr"
+            | "putStrLn"
+            | "ePutStr"
+            | "ePutStrLn"
+            // networking FFI (§): every socket op performs IO
+            | "ax_net_connect"
+            | "ax_net_listen"
+            | "ax_net_accept"
+            | "ax_net_send"
+            | "ax_net_recv"
+            | "ax_net_close"
+    )
+}
+
+/// Warn (AX0920) when an effectful value is bound in a `where` clause but never used:
+/// `where` bindings are demand-evaluated, so — unlike a strict `let` in the body — an
+/// unreferenced one is dropped on every backend and its effect NEVER RUNS. That silent
+/// loss is exactly the footgun of typing effects as pure values; the fix is to move the
+/// call into a `do` block (or a `let` in the body), which Axión evaluates strictly.
+fn warn_dropped_effects(module: &Module, diags: &mut Diagnostics) {
+    for f in &module.funcs {
+        warn_dropped_in_func(f, diags);
+    }
+}
+
+fn warn_dropped_in_func(f: &Func, diags: &mut Diagnostics) {
+    for c in &f.clauses {
+        // Everything referenced by the clause body, its guards, and every where-binding
+        // body — a where-binding whose name is absent here is genuinely unused.
+        let mut used: HashSet<String> = HashSet::new();
+        collect_body_refs(&c.body, &mut used);
+        for w in &c.wher {
+            for wc in &w.clauses {
+                collect_body_refs(&wc.body, &mut used);
+            }
+        }
+        for w in &c.wher {
+            let is_value = w.clauses.first().is_some_and(|cl| cl.pats.is_empty());
+            if is_value && !used.contains(&w.name) && where_body_is_effectful(w) {
+                diags.push(
+                    Diagnostic::warning(
+                        "AX0920",
+                        format!(
+                            "effectful binding `{}` in `where` is never used — its effect will not run",
+                            w.name
+                        ),
+                    )
+                    .label(
+                        w.span.0,
+                        w.span.1,
+                        "move it into a `do` block or a `let` in the body to sequence the effect",
+                    ),
+                );
+            }
+        }
+        // Nested `where`s (a where-binding may have its own).
+        for w in &c.wher {
+            warn_dropped_in_func(w, diags);
+        }
+    }
+}
+
+fn where_body_is_effectful(w: &Func) -> bool {
+    let mut refs = HashSet::new();
+    for c in &w.clauses {
+        collect_body_refs(&c.body, &mut refs);
+    }
+    refs.iter().any(|n| is_effectful(n))
+}
+
+fn collect_body_refs(body: &Body, out: &mut HashSet<String>) {
+    match body {
+        Body::Plain(e) => collect_refs(e, out),
+        Body::Guarded(arms) => {
+            for (g, r) in arms {
+                collect_refs(g, out);
+                collect_refs(r, out);
+            }
+        }
+    }
+}
+
+/// Collect every `Var` name referenced in `e` (over-approximate: no shadowing/bound
+/// tracking, which only ever marks a name as *used* — never a false "unused" warning).
+fn collect_refs(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n, _) => {
+            out.insert(n.clone());
+        }
+        Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) | Expr::Con(_, _) => {}
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+            collect_refs(a, out);
+            collect_refs(b, out);
+        }
+        Expr::If(c, t, el, _) => {
+            collect_refs(c, out);
+            collect_refs(t, out);
+            collect_refs(el, out);
+        }
+        Expr::Let(binds, body, _) => {
+            for b in binds {
+                for c in &b.clauses {
+                    collect_body_refs(&c.body, out);
+                }
+            }
+            collect_refs(body, out);
+        }
+        Expr::Case(s, arms, _) => {
+            collect_refs(s, out);
+            for (_, body) in arms {
+                collect_refs(body, out);
+            }
+        }
+        Expr::Tuple(es, _) => es.iter().for_each(|x| collect_refs(x, out)),
+        Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| collect_refs(x, out)),
+        Expr::RecordUpd(base, fs, _) => {
+            collect_refs(base, out);
+            fs.iter().for_each(|(_, x)| collect_refs(x, out));
+        }
+        Expr::Lam(_, body, _) => collect_refs(body, out),
+    }
 }
 
 /// The body-independent environment for the per-function linearity/Auto-Drop
@@ -1161,6 +1308,8 @@ pub fn builtins() -> HashSet<String> {
     [
         "putStrLn",
         "putStr",
+        "ePutStrLn",
+        "ePutStr",
         "showInt",
         "showFloat",
         "strAppend",
@@ -1172,6 +1321,8 @@ pub fn builtins() -> HashSet<String> {
         "getEnv",
         "runCapture",
         "runStatus",
+        "execCapture",
+        "execStatus",
         "readFile",
         "writeFile",
         "fileExists",
@@ -1179,6 +1330,8 @@ pub fn builtins() -> HashSet<String> {
         "removeFile",
         "renameFile",
         "readDir",
+        "readLine",
+        "readSecret",
         "randHex",
         "exitWith",
         "getArgs",
@@ -1761,7 +1914,7 @@ fn collect_pat_vars(p: &Pat, out: &mut HashSet<String>) {
                 collect_pat_vars(a, out);
             }
         }
-        Pat::Wild(_) | Pat::Int(_, _) => {}
+        Pat::Wild(_) | Pat::Int(_, _) | Pat::Str(_, _) => {}
     }
 }
 

@@ -66,6 +66,10 @@ pub enum Pat {
     Wild(Span),
     Var(String, Span),
     Int(i64, Span),
+    /// String-literal pattern (`case cmd of "show" -> …`). Desugared to an `if`-chain
+    /// over String `==` before check/inference/lowering, so only the parsers and that
+    /// desugaring construct/inspect it.
+    Str(String, Span),
     Con(String, Vec<Pat>, Span),
     Tuple(Vec<Pat>, Span),
 }
