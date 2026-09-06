@@ -1586,7 +1586,8 @@ fn explain_covers_every_emitted_code() {
     // Every AXnnnn the compiler can emit has an `--explain` entry (§8); an unknown
     // code is rejected. (Regression guard for the newly-added 0202/0203/0411/0500/09xx.)
     for code in [
-        "AX0001", "AX0002", "AX0101", "AX0202", "AX0203", "AX0411", "AX0500", "AX0900", "AX0901",
+        "AX0001", "AX0002", "AX0101", "AX0202", "AX0203", "AX0204", "AX0411", "AX0500", "AX0900",
+        "AX0901", "AX0920",
     ] {
         let out = axionc().args(["--explain", code]).output().unwrap();
         assert!(out.status.success(), "--explain {code} should succeed");
@@ -4165,6 +4166,152 @@ fn where_local_captures_enclosing_parameter() {
     // parameter threaded in (native) / closed over (interp). Regression: native used
     // to reject it ("variable 'm' not bound in the Core").
     agree_across_backends("where_capture.axi", "99\n");
+}
+
+#[test]
+fn dropped_effect_where_warns() {
+    // AX0920: an effectful value bound in `where` but never used drops its effect
+    // silently. The compiler must warn (but still compile — it is a warning, not an
+    // error), steering the effect into a strict `do`/`let` sequence.
+    let out = axionc()
+        .args(["--check", &fixture("dropped_effect_where.axi")])
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("AX0920"), "expected AX0920, got: {text}");
+    assert!(
+        out.status.success(),
+        "AX0920 is a warning and must not fail the build"
+    );
+}
+
+#[test]
+fn effects_run_per_occurrence() {
+    // The effect model's guarantee: each occurrence of an effectful call runs the
+    // effect — they are never coalesced (guarding against a future CSE) or dropped.
+    // `tick + tick` references the effectful CAF twice, so the command runs twice and
+    // the file gets two bytes on every backend.
+    for (label, pre) in [
+        ("interp", &[][..]),
+        ("cranelift", &["--backend", "cranelift"][..]),
+        ("llvm", &["--release"][..]),
+    ] {
+        let dir = std::env::temp_dir().join(format!("axion_eff_{label}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("count");
+        let _ = std::fs::remove_file(&f);
+        let out = axionc()
+            .args(pre)
+            .arg(fixture("effect_per_occurrence.axi"))
+            .env("AXION_EFF_FILE", &f)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let bytes = std::fs::read(&f).unwrap_or_default();
+        assert_eq!(
+            bytes.len(),
+            2,
+            "{label}: an effect at two occurrences must run twice, got {bytes:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn where_bound_capability_lowers_natively() {
+    // Regression (#4): a `where`-local calling a capability (`where s = getEnv …`) used
+    // to capture the builtin name as a lifted parameter, leaving an unbound `getEnv` in
+    // the native IR. All backends must agree ($AXION_WHERE_TEST → the value).
+    for (label, pre) in [
+        ("interp", &[][..]),
+        ("cranelift", &["--backend", "cranelift"][..]),
+        ("llvm", &["--release"][..]),
+    ] {
+        let out = axionc()
+            .args(pre)
+            .arg(fixture("where_capability.axi"))
+            .env("AXION_WHERE_TEST", "hello")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hello", "{label}");
+    }
+}
+
+#[test]
+fn stderr_output_and_nonzero_exit() {
+    // §CLI: `ePutStrLn` writes to stderr; `die` writes to stderr and exits non-zero;
+    // stdout stays empty. Consistent across all three backends.
+    for (label, pre) in [
+        ("interp", &[][..]),
+        ("cranelift", &["--backend", "cranelift"][..]),
+        ("llvm", &["--release"][..]),
+    ] {
+        let out = axionc()
+            .args(pre)
+            .arg(fixture("stderr_exit.axi"))
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("diagnostic to stderr") && err.contains("fatal: boom"),
+            "{label} stderr: {err}"
+        );
+        assert_eq!(out.status.code(), Some(1), "{label} exit code");
+        assert!(out.stdout.is_empty(), "{label} stdout should be empty");
+    }
+}
+
+#[test]
+fn string_literal_case_patterns() {
+    // `case s of "one" -> …; other -> …` desugars to an `if`-chain over strCmp; the
+    // catch-all binds the scrutinee. 1 + 2*10 + 3*100 + 9*1000 = 9321.
+    agree_across_backends("string_case.axi", "9321\n");
+}
+
+#[test]
+fn str_prelude_helpers() {
+    // trim / hasPrefix / hasSuffix / isDigit / readInt / dirName / baseName / && / ||.
+    agree_across_backends(
+        "str_helpers.axi",
+        "2\ntrue\ntrue\ntrue\nJust 42\nNothing\na/b\nc\nfalse\ntrue\n",
+    );
+}
+
+#[test]
+fn string_case_without_catchall_is_rejected() {
+    // AX0204: string patterns are never exhaustive without a catch-all.
+    let out = axionc()
+        .args(["--check", &fixture("string_case_no_catchall.axi")])
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("AX0204"), "expected AX0204, got: {text}");
+    assert!(!out.status.success(), "AX0204 is an error");
+}
+
+#[test]
+fn comparison_operators_le_and_ge() {
+    // `<=`/`>=` are defined in the prelude via the `Ord` method `le` and reach it
+    // through the user-operator→application desugaring, so they are polymorphic over
+    // every `Ord` type (Int/Float/String and `deriving Ord`) and parse at precedence 4.
+    agree_across_backends("compare_ops.axi", "6\n");
 }
 
 #[test]
