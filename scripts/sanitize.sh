@@ -71,6 +71,7 @@ NATIVE=(
   axionc/tests/fixtures/strings_text.axi
   axionc/tests/fixtures/string_compare.axi
   axionc/tests/fixtures/capability_sanitize.axi
+  axionc/tests/fixtures/readline_sanitize.axi
   axionc/tests/fixtures/hello_cli.axi
   axionc/tests/fixtures/cond_escape_let.axi
   axionc/tests/fixtures/heap_loop.axi
@@ -179,7 +180,7 @@ LEAKFREE=(
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field
-  string_compare capability_sanitize hello_cli cond_escape_let
+  string_compare capability_sanitize readline_sanitize hello_cli cond_escape_let
   record_update_reclaim record_update_multi record_update_chain
   record_update_escape record_update_escape_read integer_reclaim integer_accumulator
   field_alias_return integer_divmod rsa_modexp escape_local_borrow
