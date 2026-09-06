@@ -4251,6 +4251,29 @@ fn where_bound_capability_lowers_natively() {
 }
 
 #[test]
+fn stdout_streams_before_exit_on_all_backends() {
+    // The interpreter now streams stdout (not buffered-to-end), so output before an
+    // `exitWith` survives — matching native. All backends: the line + exit code 4.
+    for (label, pre) in [
+        ("interp", &[][..]),
+        ("cranelift", &["--backend", "cranelift"][..]),
+        ("llvm", &["--release"][..]),
+    ] {
+        let out = axionc()
+            .args(pre)
+            .arg(fixture("stdout_before_exit.axi"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "printed before exit\n",
+            "{label} stdout"
+        );
+        assert_eq!(out.status.code(), Some(4), "{label} exit code");
+    }
+}
+
+#[test]
 fn stderr_output_and_nonzero_exit() {
     // §CLI: `ePutStrLn` writes to stderr; `die` writes to stderr and exits non-zero;
     // stdout stays empty. Consistent across all three backends.

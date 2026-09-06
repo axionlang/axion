@@ -35,7 +35,10 @@ enum Value {
     Bool(bool),
     #[allow(dead_code)] // `()` — still handled in the matches (main :: (), etc.)
     Unit,
-    /// An IO action still to execute (the text to print).
+    /// Legacy IO-output value. No longer constructed — `putStr`/`putStrLn` now write to
+    /// the [`OUT`] sink immediately — but kept so the exhaustive matches (`render_main`,
+    /// `type_name`, `RtType`) stay stable.
+    #[allow(dead_code)]
     Io(String),
     Closure {
         def: Rc<Func>,
@@ -161,10 +164,34 @@ fn build_program(module: &Module) -> Program {
     }
 }
 
+thread_local! {
+    /// The interpreter's stdout sink. `None` = STREAM: write immediately to the real
+    /// stdout (matching the native backends, so output produced before an `exitWith` is
+    /// not lost). `Some(buf)` = CAPTURE: accumulate into `buf` (the browser playground's
+    /// `run_capture`). `putStr`/`putStrLn` route through [`emit`]; they no longer thread
+    /// output through `Value::Io`, so ordering follows strict evaluation order.
+    static OUT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Write `s` to stdout: append to the capture buffer, or stream it immediately.
+fn emit(s: &str) {
+    OUT.with(|o| {
+        let mut o = o.borrow_mut();
+        match o.as_mut() {
+            Some(buf) => buf.push_str(s),
+            None => {
+                use std::io::Write;
+                print!("{s}");
+                let _ = std::io::stdout().flush();
+            }
+        }
+    });
+}
+
 /// Compiles the module into a `Program`, runs `main`, and RETURNS the program's output
-/// as a string (rather than printing it) — the whole output is reified in the final
-/// `Value` (IO effects concatenate into `Value::Io`), so capturing is exact. Used by the
-/// browser playground; [`run`] is the printing wrapper.
+/// as a string (rather than printing it) — output is collected via the CAPTURE sink, so
+/// capturing is exact. Used by the browser playground; [`run`] is the streaming wrapper.
+#[cfg_attr(not(feature = "wasm"), allow(dead_code))]
 pub fn run_capture(module: &Module) -> Result<String, RunError> {
     // FFI (§18): loads the user's libraries into the global symbol space, so
     // `call_foreign`'s `dlsym(RTLD_DEFAULT)` finds them. No FFI in a wasm build.
@@ -177,12 +204,20 @@ pub fn run_capture(module: &Module) -> Result<String, RunError> {
         .ok_or_else(|| "there is no 'main' to run".to_string())?
         .clone();
     let base = empty_env();
-    let v = run_func(&prog, &main, &base, Vec::new())?;
+    // CAPTURE mode: `putStr`/`putStrLn` accumulate into the sink during evaluation.
+    OUT.with(|o| *o.borrow_mut() = Some(String::new()));
+    let v = run_func(&prog, &main, &base, Vec::new());
+    let captured = OUT.with(|o| o.borrow_mut().take().unwrap_or_default());
+    let v = v?;
+    Ok(captured + &render_main(v)?)
+}
+
+/// The trailing rendering of `main`'s result: nothing for `IO ()`; the value for a
+/// `main :: Int`/`Bool`/… (like the native backend, so the paths agree).
+fn render_main(v: Value) -> Result<String, RunError> {
     match v {
-        Value::Io(s) => Ok(s),
+        Value::Io(s) => Ok(s), // no longer produced, but harmless
         Value::Unit => Ok(String::new()),
-        // 'main :: Int' / 'main :: Bool' — renders the result, like the native
-        // backend, so the two paths agree.
         Value::Int(n) => Ok(format!("{n}\n")),
         Value::Integer(n) => Ok(format!("{n}\n")),
         Value::Float(f) => Ok(format!("{f}\n")),
@@ -194,9 +229,19 @@ pub fn run_capture(module: &Module) -> Result<String, RunError> {
     }
 }
 
-/// Compiles the module into a `Program` and runs `main`, printing the resulting output.
+/// Compiles the module into a `Program` and runs `main`, STREAMING its output (the
+/// default `None` sink writes each `putStr` immediately), then prints a non-IO result.
 pub fn run(module: &Module) -> Result<(), RunError> {
-    print!("{}", run_capture(module)?);
+    #[cfg(feature = "native")]
+    crate::ffi::load_libs(&module.foreign_libs())?;
+    let prog = build_program(module);
+    let main = prog
+        .funcs
+        .get("main")
+        .ok_or_else(|| "there is no 'main' to run".to_string())?
+        .clone();
+    let v = run_func(&prog, &main, &empty_env(), Vec::new())?;
+    print!("{}", render_main(v)?);
     Ok(())
 }
 
@@ -426,44 +471,24 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
             // Axión is STRICT (matching the native backends): force every 0-arg (CAF) binding
             // eagerly, in source order, so an UNUSED effectful binding (`let _ = writeFile …`)
             // still runs — the interpreter's laziness otherwise silently skips it, a real
-            // backend divergence (native evaluates every `let`). A binding whose forced value
-            // is `Io` has its output sequenced before the body, like a `do`-statement; a
-            // side-effecting primitive (`writeFile`/`runStatus`) performs its effect during the
-            // force itself. Function bindings (arity > 0) are inert closures — nothing to force.
-            let mut io_prefix = String::new();
+            // backend divergence (native evaluates every `let`). Any stdout it emits is
+            // written to the sink during the force (in order), so no explicit sequencing of
+            // an `Io` value is needed. Function bindings (arity > 0) are inert closures.
             for b in binds {
                 if b.clauses.first().is_some_and(|c| c.pats.is_empty()) {
-                    if let Value::Io(s) = resolve_var(prog, &child, &b.name)? {
-                        io_prefix.push_str(&s);
-                    }
+                    resolve_var(prog, &child, &b.name)?;
                 }
             }
-            let r = eval(prog, &child, body)?;
-            Ok(match (io_prefix.is_empty(), r) {
-                (false, Value::Io(rest)) => Value::Io(io_prefix + &rest),
-                (false, Value::Unit) => Value::Io(io_prefix),
-                (_, r) => r,
-            })
+            eval(prog, &child, body)
         }
         Expr::Case(scrut, arms, _) => {
+            // A `do` desugars to `case action of _ -> rest`: evaluating the scrutinee
+            // performs its effects (stdout emitted to the sink in order) BEFORE the arm.
             let v = eval(prog, env, scrut)?;
-            // IO sequencing: a `do` desugars to `case action of _ -> rest`.
-            // If the scrutinee is an IO action, its output PRECEDES the rest's
-            // (otherwise it would be lost — the `case` value is only the arm's). The
-            // interp's IO model is accumulated `Io(String)`; native prints immediately.
-            let io_prefix = match &v {
-                Value::Io(s) => Some(s.clone()),
-                _ => None,
-            };
             for (pat, body) in arms {
                 let child = child_env(env);
                 if match_pat(pat, &v, &child) {
-                    let r = eval(prog, &child, body)?;
-                    return Ok(match (io_prefix, r) {
-                        (Some(pre), Value::Io(rest)) => Value::Io(pre + &rest),
-                        (Some(pre), Value::Unit) => Value::Io(pre),
-                        (_, r) => r,
-                    });
+                    return eval(prog, &child, body);
                 }
             }
             Err("no 'case' arm matched".to_string())
@@ -1246,17 +1271,23 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
     match (name, args.as_slice()) {
-        ("putStrLn", [Value::Str(s)]) => Ok(Value::Io(format!("{s}\n"))),
-        ("putStr", [Value::Str(s)]) => Ok(Value::Io(s.clone())),
-        // stderr writes happen immediately (a side effect during evaluation) and add
-        // nothing to the collected stdout `Io` stream.
+        // stdout writes go to the sink immediately (streamed or captured) and return
+        // `()`; output ordering follows strict evaluation order, matching native.
+        ("putStrLn", [Value::Str(s)]) => {
+            emit(&format!("{s}\n"));
+            Ok(Value::Unit)
+        }
+        ("putStr", [Value::Str(s)]) => {
+            emit(s);
+            Ok(Value::Unit)
+        }
         ("ePutStrLn", [Value::Str(s)]) => {
             eprintln!("{s}");
-            Ok(Value::Io(String::new()))
+            Ok(Value::Unit)
         }
         ("ePutStr", [Value::Str(s)]) => {
             eprint!("{s}");
-            Ok(Value::Io(String::new()))
+            Ok(Value::Unit)
         }
         ("showInt", [Value::Int(n)]) => Ok(Value::Str(n.to_string())),
         ("showFloat", [Value::Float(f)]) => Ok(Value::Str(f.to_string())),
