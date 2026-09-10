@@ -34,6 +34,16 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             if path.file_name().unwrap() == "recover_partial.axi" {
                 continue;
             }
+            // GENUINELY UNSAFE, AX0912-rejected: `take` over a heap element type aliases a
+            // borrowed input element into its owned result, so the caller double-frees. Native
+            // compilation is BLOCKED by AX0912, so this never reaches ASan (it is not
+            // ASan-clean — it is unsafe-and-refused). The verifier now CATCHES this class
+            // directly (the element-alias interior share), so it is EXPECTED to report a
+            // corruption here — the drop-balance analysis independently agreeing with AX0912's
+            // rejection is the soundness win, not a false positive. Asserted below.
+            if path.file_name().unwrap() == "take_heap_reject.axi" {
+                continue;
+            }
             let out = axionc()
                 .args(["--emit", "verify", path.to_str().unwrap()])
                 .output()
@@ -96,6 +106,47 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
          false-positives, or a real Auto-Drop regression — cross-check scripts/sanitize.sh):\n{}",
         leak_fps.len(),
         leak_fps.join("\n")
+    );
+}
+
+/// The element-alias double-free class the verifier used to MISS (an AX0912 false-negative):
+/// `take` over a heap element type shares a BORROWED input element into its OWNED result, so
+/// the caller frees the input AND the aliasing result → a double-free of the shared element.
+/// AX0912 rejects this at the front-end, but the drop-balance verifier is the independent
+/// soundness net and must now ALSO catch it. The interprocedural element-alias summary
+/// (`take` → borrows param 1's interior) fires only for a BORROWED (not moved) heap-typed
+/// arg — so genuine consumers (`tail`/`last`/`uncons`, which MOVE the list and return a fresh
+/// owned sublist) stay clean. Asserts the verifier reports corruption here (`FAIL:`).
+#[test]
+fn element_alias_double_free_is_caught_by_verifier() {
+    let path = format!(
+        "{}/tests/fixtures/take_heap_reject.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    let vstdout = String::from_utf8_lossy(&verify.stdout);
+    assert!(
+        vstdout.contains("FAIL:") && vstdout.contains("Free"),
+        "the verifier must catch the element-alias double-free (the AX0912 class), got:\n{vstdout}"
+    );
+}
+
+/// The dual of the above: safe list deconstruction (`head`/`tail`/`last`/`uncons`) over a heap
+/// element type must NOT be flagged. These CONSUME (`%1`, `moves{xs}`) the list and return a
+/// FRESH owned part — ownership transfers to the result, so there is no shared element the
+/// caller could double-free. Guards the move-vs-borrow discriminator of the element-alias hook
+/// against regressing into a false positive on legitimate consumers.
+#[test]
+fn safe_consumers_over_heap_elements_verify_clean() {
+    let path = format!(
+        "{}/tests/fixtures/list_deconstruct.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    let vstdout = String::from_utf8_lossy(&verify.stdout);
+    assert!(
+        vstdout.contains("ok:") && !vstdout.contains("FAIL:"),
+        "safe list deconstruction (moving consumers) must verify clean, got:\n{vstdout}"
     );
 }
 

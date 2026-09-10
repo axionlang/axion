@@ -111,6 +111,18 @@ fn ctor_base(key: &str) -> &str {
     key.split_once('$').map_or(key, |(base, _)| base)
 }
 
+/// `true` if a container mono key's ELEMENT is a heap resource — `List$Integer`/`List$String`/
+/// `List$List$Int` (nested)/`List$tuple$…` yes, `List$Int`/`List$Bool` (scalar) no. Keys with
+/// no element separator (a bare `List`, or a scalar `Integer` itself) are conservatively NOT
+/// heap-gated (avoids over-flagging when the concrete element is unknown). Used to apply the
+/// element-alias double-free check only where a shared element would actually be freed twice.
+fn key_elem_is_heap(key: &str) -> bool {
+    match key.split_once('$') {
+        Some((_, elem)) => !matches!(elem, "Int" | "Float" | "Bool" | "Char"),
+        None => false,
+    }
+}
+
 /// Per-variable resource state.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 struct Val {
@@ -139,13 +151,26 @@ type State = HashMap<String, Val>;
 /// the per-function analysis can't see alone.
 type Summaries = HashMap<String, HashSet<usize>>;
 
+/// Which of the two verifier passes is running, controlling how deeply constructor operands
+/// are tracked as interior aliases. `track_fields` = follow a borrowed scrutinee's extracted
+/// fields (needed to spot an interior escape); `poly_elem` = additionally propagate borrows
+/// through POLYMORPHIC constructors (no concrete drop slot) — used ONLY while computing the
+/// element-alias summary, so a generic `take`'s `Cons y ys` records that it embeds a borrowed
+/// element. The CHECK pass runs with `poly_elem` off and applies that summary at call sites.
+#[derive(Clone, Copy)]
+struct PassMode {
+    track_fields: bool,
+    poly_elem: bool,
+}
+
 fn is_generated(name: &str) -> bool {
     name.starts_with("axion_drop_")
 }
 
 /// Verify every function of a lowered module; returns all findings (corruption + leak).
 pub fn verify(lowered: &Lowered) -> Vec<Finding> {
-    let summaries = compute_summaries(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
+    let (summaries, elem_aliases) =
+        compute_summaries(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
     let mut out = Vec::new();
     for f in &lowered.fns {
         if is_generated(&f.name) {
@@ -156,6 +181,11 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
             &lowered.borrow_args,
             &lowered.recinfo,
             &summaries,
+            &elem_aliases,
+            PassMode {
+                track_fields: true,
+                poly_elem: false,
+            },
             Some(&mut out),
         );
     }
@@ -169,39 +199,79 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
 /// so Auto-Drop stops freeing a borrowed result (the `grab w = inner w` class); the
 /// verifier then re-derives its own summary from the emitted Core and CHECKS the outcome.
 pub fn borrow_return_summary(fns: &[CoreFn], ba: &BorrowArgs, recinfo: &RecordInfo) -> Summaries {
-    let mut sums = compute_summaries(fns, ba, recinfo);
+    let (mut sums, _elem) = compute_summaries(fns, ba, recinfo);
     sums.retain(|_, params| !params.is_empty());
     sums
 }
+
+/// Per-function ELEMENT-alias summary: parameter indices whose heap ELEMENT the function's
+/// OWNED result shares — it builds a fresh container but embeds a BORROWED element of the
+/// param into it (`take`/`drop`/`filter` over a heap element type: `Cons y …` where `y` is a
+/// case-extracted element of the borrowed input). The whole-value alias summary discards
+/// this (it only records a NON-owned return), yet dropping BOTH the input and such a result
+/// double-frees the shared element — the class AX0912 guards and the verifier used to miss.
+type ElemAliases = std::collections::HashMap<String, HashSet<usize>>;
 
 /// Fixpoint over the call graph: a function returns a PURE interior alias of param `i` when
 /// its `ret` is an interior pointer (`owned == false`) that borrows `i` — which may flow
 /// through a call to another alias-returning function, so it iterates to a fixed point
 /// (findings suppressed during this dry run).
-fn compute_summaries(fns: &[CoreFn], ba: &BorrowArgs, recinfo: &RecordInfo) -> Summaries {
+fn compute_summaries(
+    fns: &[CoreFn],
+    ba: &BorrowArgs,
+    recinfo: &RecordInfo,
+) -> (Summaries, ElemAliases) {
     let mut sums: Summaries = HashMap::new();
+    let mut elem: ElemAliases = HashMap::new();
+    let no_elem: ElemAliases = HashMap::new();
+    let params_borrowed = |rv: &Val, f: &CoreFn| -> HashSet<usize> {
+        f.params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| rv.borrows.contains(p.as_str()))
+            .map(|(i, _)| i)
+            .collect()
+    };
     loop {
         let mut changed = false;
         for f in fns {
             if is_generated(&f.name) {
                 continue;
             }
-            let rv = run_fn(f, ba, recinfo, &sums, None);
-            // only a PURE interior alias (not owned) exposes an outliving borrow; an owned
-            // result (fresh allocation OR whole-value ownership passthrough) is the caller's
-            // to free once, so it records no aliased parameter.
-            let params: HashSet<usize> = if rv.owned {
+            // PURE-alias pass: field-tracking OFF + no elem hook → identical to the original
+            // analysis, so the summary that feeds core.rs drop insertion is unchanged. A
+            // NON-owned return that borrows a param is a pure interior alias (`grab`).
+            let pure_mode = PassMode {
+                track_fields: false,
+                poly_elem: false,
+            };
+            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, pure_mode, None);
+            let pure_borrowed = params_borrowed(&rv, f);
+            let params = if rv.owned {
                 HashSet::new()
             } else {
-                f.params
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| rv.borrows.contains(p.as_str()))
-                    .map(|(i, _)| i)
-                    .collect()
+                pure_borrowed.clone()
             };
             if sums.get(&f.name) != Some(&params) {
                 sums.insert(f.name.clone(), params);
+                changed = true;
+            }
+            // ELEM-alias pass: field-tracking ON so a case-extracted borrowed ELEMENT is seen.
+            // The params the return borrows ONLY under element-tracking (`P_elem − P_pure`) are
+            // the ones shared via a CONSTRUCTOR embed (`take`: `Cons y …` embeds a borrowed
+            // element) — as opposed to a pure interior alias (`grab`, already in P_pure).
+            // Dropping BOTH the input and such a result double-frees the shared heap element.
+            let elem_mode = PassMode {
+                track_fields: true,
+                poly_elem: true,
+            };
+            let rve = run_fn(f, ba, recinfo, &sums, &elem, elem_mode, None);
+            let elem_params: HashSet<usize> = params_borrowed(&rve, f)
+                .difference(&pure_borrowed)
+                .copied()
+                .collect();
+            if elem.get(&f.name) != Some(&elem_params) {
+                elem.insert(f.name.clone(), elem_params);
                 changed = true;
             }
         }
@@ -209,7 +279,7 @@ fn compute_summaries(fns: &[CoreFn], ba: &BorrowArgs, recinfo: &RecordInfo) -> S
             break;
         }
     }
-    sums
+    (sums, elem)
 }
 
 /// Verify one function against the summaries; returns the resource classification of its
@@ -219,6 +289,8 @@ fn run_fn(
     ba: &BorrowArgs,
     recinfo: &RecordInfo,
     summaries: &Summaries,
+    elem_aliases: &ElemAliases,
+    mode: PassMode,
     out: Option<&mut Vec<Finding>>,
 ) -> Val {
     let mut st = State::new();
@@ -263,18 +335,18 @@ fn run_fn(
         .map(|s| s.iter().filter_map(|&i| f.params.get(i).cloned()).collect())
         .unwrap_or_default();
     let mut sink = Vec::new();
-    let checking = out.is_some();
     let mut v = Verifier {
         f: &f.name,
         ba,
         recinfo,
         summaries,
+        elem_aliases,
+        mode,
         out: out.unwrap_or(&mut sink),
         children: HashMap::new(),
         leak_exempt: HashSet::new(),
         projections: HashMap::new(),
         borrowed_params,
-        checking,
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -317,6 +389,9 @@ struct Verifier<'a> {
     ba: &'a BorrowArgs,
     recinfo: &'a RecordInfo,
     summaries: &'a Summaries,
+    elem_aliases: &'a ElemAliases,
+    /// which pass is running — gates how deeply constructor operands are tracked (`PassMode`).
+    mode: PassMode,
     out: &'a mut Vec<Finding>,
     /// scrutinee var → the (extracted-field var, slot index) pairs a `case` bound from it.
     /// A DEEP `drop` of the scrutinee frees these fields transitively, so they must NOT be
@@ -341,11 +416,6 @@ struct Verifier<'a> {
     /// like `dropWhile` — not in `borrow_args`). `consume` flags freeing an interior of one
     /// of THESE (the owner double-frees), but not of a moved-in/view param (this fn owns it).
     borrowed_params: HashSet<String>,
-    /// true in the CHECK pass (`out` was `Some`), false in the summary pass. Tracking a
-    /// borrowed scrutinee's fields as interior aliases (for `consume`) is confined to the check
-    /// pass, so it never perturbs the alias summaries — those feed core.rs's drop insertion and
-    /// must stay identical (a view like `delete` must keep its owned-return summary).
-    checking: bool,
 }
 
 impl Verifier<'_> {
@@ -520,6 +590,64 @@ impl Verifier<'_> {
                 }
             }
         }
+        // A constructor EMBEDS every operand into the fresh value — including a BORROWED
+        // element (`Cons y ys` where `y` is a case-extracted element of a borrowed input).
+        // So the result shares whatever those borrowed operands borrow. `e.moves` above only
+        // captured the OWNED (moved-in) operands, not the borrowed embedded ones.
+        // Confined to the ELEM-summary pass (`poly_elem`): there it lets a generic `take`'s
+        // poly `Cons y ys` propagate the borrowed element so the summary records the share.
+        // In the CHECK pass the heap-gated call-site hook below applies that summary directly,
+        // so re-deriving borrows through every concrete constructor here would only over-flag
+        // scalar builds (a plain `Cons 1 …`) as aliasing — a false positive.
+        let con_args: &[Atom] = match op {
+            Op::MakeCon { args, .. } | Op::MakeTuple(args) if self.mode.poly_elem => args,
+            _ => &[],
+        };
+        for a in con_args {
+            if let Atom::Var(v) = a {
+                if let Some(val) = st.get(v) {
+                    inherited.extend(val.borrows.iter().cloned());
+                    if !val.owned {
+                        inherited.insert(v.clone());
+                    }
+                }
+            }
+        }
+        // A call whose ELEMENT-alias summary says its OWNED result shares a heap element of
+        // an argument (`take`/`drop` over a heap element type): the result borrows that arg,
+        // so dropping BOTH double-frees the shared element (caught in `do_drop`).
+        if let Op::CallDirect(g, args, _) = op {
+            // Heap-GATED: apply only when the call's CONCRETE result element is heap
+            // (`List$Integer` yes, `List$Int` no) — the generic summary is element-agnostic,
+            // but the double-free only happens for a heap element, so a scalar `List Int`
+            // result stays clean (no false positive, no regression of take-over-List-Int).
+            let heap_elem = e
+                .produces
+                .as_ref()
+                .and_then(|r| r.key.as_deref())
+                .is_some_and(key_elem_is_heap);
+            if heap_elem {
+                if let Some(params) = self.elem_aliases.get(g) {
+                    for &i in params {
+                        if let Some(Atom::Var(v)) = args.get(i) {
+                            // ONLY when the arg is BORROWED by the call, not MOVED. A moved arg
+                            // (`tail`/`last`/`uncons`: `moves{xs}`) transfers ownership to the
+                            // callee — the caller no longer frees it, so a result sharing its
+                            // interior is a fresh owned transfer, NOT a double-free. The AX0912
+                            // class is precisely the BORROWED input (`take`: `Δ{xs}` no move)
+                            // that the caller ALSO drops alongside the aliasing result.
+                            let moved = e
+                                .moves
+                                .iter()
+                                .any(|m| matches!(m, Atom::Var(mv) if mv == v));
+                            if !moved {
+                                inherited.insert(v.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(Atom::Var(w)) = alias_target(op, self.recinfo) {
             if st.contains_key(w.as_str()) {
                 inherited.insert(w.clone());
@@ -537,6 +665,18 @@ impl Verifier<'_> {
                 borrows: inherited,
                 dead: None,
                 key: res.key.clone(),
+            };
+        }
+        // A constructor with no concrete produce key (a POLYMORPHIC `Cons y ys` in a generic
+        // function) still EMBEDS its borrowed operands — keep the inherited borrows so the
+        // element-alias summary sees the share (`take` returns a list embedding a borrowed
+        // element). Not owned here (unknown key); the concrete call site supplies ownership.
+        if self.mode.poly_elem && !inherited.is_empty() && matches!(op, Op::MakeCon { .. } | Op::MakeTuple(_)) {
+            return Val {
+                owned: false,
+                borrows: inherited,
+                dead: None,
+                key: None,
             };
         }
         Val::default()
@@ -559,6 +699,21 @@ impl Verifier<'_> {
             }
             Some(v) if !v.owned => self.finding(Cat::DropOfAlias, x, sp),
             Some(_) => {
+                // A deep drop of an OWNED value that shares a heap element with an
+                // already-freed resource (its `borrows` name a dead value — the
+                // element-alias class, `take`/`drop` over a heap element type) frees that
+                // shared element a SECOND time. Deep only (`key.is_some()`): a shell free
+                // touches just the cell, not the shared element.
+                if key.is_some() {
+                    let dbl = st.get(x).is_some_and(|v| {
+                        v.borrows
+                            .iter()
+                            .any(|w| st.get(w).is_some_and(|wv| wv.dead.is_some()))
+                    });
+                    if dbl {
+                        self.finding(Cat::DoubleFree, x, sp);
+                    }
+                }
                 // drop-key cross-check: a value KNOWN to be a boxed `Integer`/`String` must be
                 // freed by its tagged reclaimer (`Some("Integer")`/`Some("String")`). Any other
                 // key — a flat `free` (`None`) of a bignum/string, or a mismatched tag — is a
@@ -750,7 +905,9 @@ impl Verifier<'_> {
                         // so — like the leak-exempt policy for owned poly fields — it is left
                         // untracked (freeing a scalar is a no-op; only a concrete heap field is a
                         // definite double-free).
-                        if self.checking && self.recinfo.field_drop_slot(con, i).is_some() {
+                        if self.mode.track_fields
+                            && (self.mode.poly_elem || self.recinfo.field_drop_slot(con, i).is_some())
+                        {
                             st.insert(
                                 n.clone(),
                                 Val {
