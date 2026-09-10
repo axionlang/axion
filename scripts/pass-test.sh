@@ -166,6 +166,18 @@ for be in "${backends[@]}"; do
   if [ -e "$S/PWNED" ] || [ "$got" != "sekret" ]; then
     echo "✗ [$be] injection-safety (canary=$([ -e "$S/PWNED" ] && echo HIT) got=$(printf '%q' "$got"))"; wfail=1
   else echo "✓ [$be] shell-free: metachar name round-trips, no command injection"; fi
+
+  # injection safety, shell-STRING paths: find/grep/generate build an `sh -c` pipeline,
+  # so every interpolated user value is single-quoted through `shQuote`. A term that
+  # closes the quote and runs a command substitution must be treated as a LITERAL
+  # pattern — the canary file must never appear on any of the three.
+  rm -f "$S/PWNED_FIND" "$S/PWNED_GREP" "$S/PWNED_GEN"
+  run_be "$be" -- find   "x'; touch $S/PWNED_FIND; echo '"  >/dev/null 2>&1
+  run_be "$be" -- grep   "x'; touch $S/PWNED_GREP; echo '"  >/dev/null 2>&1
+  run_be "$be" -- generate "n'; touch $S/PWNED_GEN; echo '" 8 >/dev/null 2>&1
+  if [ -e "$S/PWNED_FIND" ] || [ -e "$S/PWNED_GREP" ] || [ -e "$S/PWNED_GEN" ]; then
+    echo "✗ [$be] shell-string injection (find=$([ -e "$S/PWNED_FIND" ] && echo HIT) grep=$([ -e "$S/PWNED_GREP" ] && echo HIT) gen=$([ -e "$S/PWNED_GEN" ] && echo HIT))"; wfail=1
+  else echo "✓ [$be] shell-string: shQuote blocks find/grep/generate injection"; fi
 done
 
 if [ "$wfail" -eq 0 ]; then

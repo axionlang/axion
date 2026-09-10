@@ -22,7 +22,9 @@
 -- to gpg over stdin, so the secret is never on a command line and no plaintext tmpfile
 -- is created; `mv`/`cp` build the parent dir with the prelude `dirName`/`makeDir` (no
 -- shell `$(dirname …)`). (`ls`/`find`/`grep` remain shell pipelines; `generate` keeps
--- its secret in-shell.) Still to come: `edit`, `git` passthrough.
+-- its secret in-shell.) Every user value interpolated into a shell string goes through
+-- `shQuote` (POSIX single-quoting), so those pipelines are injection-proof too. Still
+-- to come: `edit`, `git` passthrough.
 --
 -- Command dispatch is a string-literal `case`; other branches use guards + `otherwise`.
 -- Path/length handling uses the prelude Str helpers (`dirName`, `chomp`, `readInt`).
@@ -31,14 +33,38 @@
 -- each reference re-runs `getEnv` and yields a fresh String (top-level CAFs are not
 -- memoized across uses), so no dummy argument is needed to avoid shared-CAF aliasing.
 storeDir :: String
-storeDir
+storeDir = resolveStore (getEnv "PASSWORD_STORE_DIR")
+
+-- Resolve the store dir from the (already-read) $PASSWORD_STORE_DIR value: use it if
+-- non-empty, else fall back to $HOME/.password-store. `sd` is a PARAMETER (evaluated
+-- exactly once by the caller), so `getEnv` runs once and the borrowed-then-moved value
+-- is not re-materialized. A `where sd = getEnv …` binding instead re-runs the effectful
+-- CAF per reference (`strLen sd` + the returned `sd`), which both double-read the env
+-- AND leaked the guard-test copy — a real leak the drop-verifier modelled as one shared
+-- value and so missed.
+resolveStore :: String -> String
+resolveStore sd
   | strLen sd > 0 = sd
   | otherwise     = strAppend (getEnv "HOME") "/.password-store"
-  where sd = getEnv "PASSWORD_STORE_DIR"
+
+-- Path join, like Haskell's System.FilePath `</>`: join with a single '/', collapsing a
+-- separator when the left already ends in one. A pure `String -> String -> String`; an
+-- infix `a </> b` lowers to the ordinary call `(</>) a b`, i.e. the SAME `axion_strcat`
+-- sequence a hand-written `strAppend` emits — zero abstraction cost. NB: both arms consume
+-- `b` only THROUGH `strAppend` (a borrow), never returning it bare — so `b` stays a borrowed
+-- param the caller reclaims. A `| … = b` arm (Haskell's "absolute right wins") would instead
+-- make `b` an owned param returned on one path but only borrowed at the `strAppend` tail of
+-- the others, where reclaim_cond_escape leaves a documented conservative leak. Entry names
+-- are never absolute here, so dropping that case is both leak-free AND safer.
+infixr 5 </>
+(</>) :: String -> String -> String
+(</>) a b
+  | hasSuffix "/" a = strAppend a b
+  | otherwise       = strAppend a (strAppend "/" b)
 
 -- The .gpg file backing entry <name>.
 entryPath :: String -> String
-entryPath name = strAppend storeDir (strAppend "/" (strAppend name ".gpg"))
+entryPath name = storeDir </> (name ++ ".gpg")
 
 -- `chomp` (drop a trailing newline) and `dirName` (parent directory) come from the
 -- prelude's Str helpers now — no local copies needed.
@@ -47,6 +73,20 @@ entryPath name = strAppend storeDir (strAppend "/" (strAppend name ".gpg"))
 -- passed to execvp verbatim — no quoting, no shell, so a name with any character is safe.
 decryptArgv :: String -> String
 decryptArgv entry = "gpg\n-d\n--quiet\n" ++ entry
+
+-- POSIX single-quote a string for safe `sh -c` interpolation: wrap in '…' and
+-- rewrite every embedded ' as '\'' (close-quote, escaped-quote, reopen-quote).
+-- Inside single quotes the shell treats every other byte literally, so the result
+-- is injection-proof for ARBITRARY input — the `ls`/`find`/`grep`/`generate`/commit
+-- pipelines below interpolate user argv only through this. (byte 39 is `'`.)
+shQuote :: String -> String
+shQuote s = "'" ++ shEsc s 0 (strLen s) ++ "'"
+shEsc :: String -> Int -> Int -> String
+shEsc s i n =
+  if i >= n then ""
+  else (if charAt i s == 39
+        then "'\\''" ++ shEsc s (i + 1) n
+        else substr i 1 s ++ shEsc s (i + 1) n)
 
 -- `pass show <name>`: decrypt the entry and print it. execCapture runs gpg with an
 -- explicit argv (no shell) and returns its stdout — the plaintext.
@@ -61,13 +101,13 @@ doShow name
 -- `pass ls`: list entry names (relative paths, .gpg stripped), sorted.
 doLs :: IO ()
 doLs =
-  putStr (runCapture ("cd '" ++ storeDir ++ "' 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort"))
+  putStr (runCapture ("cd " ++ shQuote storeDir ++ " 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort"))
 
 -- `pass find <term>`: list entry names whose path matches <term> (case-insensitive).
 doFind :: String -> IO ()
 doFind term
   | strLen term == 0 = die "Usage: pass find <term>"
-  | otherwise        = putStr (runCapture ("cd '" ++ storeDir ++ "' 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort | grep -i '" ++ term ++ "'"))
+  | otherwise        = putStr (runCapture ("cd " ++ shQuote storeDir ++ " 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort | grep -i -- " ++ shQuote term))
 
 -- `pass grep <search>`: decrypt every entry and print those whose CONTENT matches
 -- <search> (case-insensitive), each followed by its indented matching lines. gpg
@@ -75,18 +115,18 @@ doFind term
 doGrep :: String -> IO ()
 doGrep search
   | strLen search == 0 = die "Usage: pass grep <search>"
-  | otherwise          = putStr (runCapture ("cd '" ++ storeDir ++ "' 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sort | while read f; do m=$(gpg -d --quiet \"$f\" 2>/dev/null | grep -i '" ++ search ++ "'); if [ -n \"$m\" ]; then echo \"${f#./}\" | sed 's#\\.gpg$#:#'; echo \"$m\" | sed 's/^/  /'; fi; done"))
+  | otherwise          = putStr (runCapture ("cd " ++ shQuote storeDir ++ " 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sort | while read f; do m=$(gpg -d --quiet \"$f\" 2>/dev/null | grep -i -- " ++ shQuote search ++ "); if [ -n \"$m\" ]; then echo \"${f#./}\" | sed 's#\\.gpg$#:#'; echo \"$m\" | sed 's/^/  /'; fi; done"))
 
 -- The store's recipient file (holds the GPG key id entries are encrypted to).
 gpgId :: String
-gpgId = strAppend storeDir "/.gpg-id"
+gpgId = storeDir </> ".gpg-id"
 
 -- Auto-commit the store when it is a git repo — silent and non-fatal, mirroring
 -- upstream pass, which commits after every mutation under version control. The
 -- trailing `; true` makes the status 0 whether or not the store is a repo.
 gitCommit :: String -> Int
 gitCommit msg =
-  runStatus (("d='" ++ storeDir ++ "'; test -d \"$d/.git\" && git -C \"$d\" add -A && git -C \"$d\" commit -q -m '") ++ (msg ++ "' >/dev/null 2>&1; true"))
+  runStatus (("d=" ++ shQuote storeDir ++ "; test -d \"$d/.git\" && git -C \"$d\" add -A && git -C \"$d\" commit -q -m ") ++ (shQuote msg ++ " >/dev/null 2>&1; true"))
 
 -- `pass rm <name>`: delete an entry, then commit. removeFile returns 0/-1 (its
 -- result is forced then discarded by the `do` sequencing).
@@ -135,7 +175,7 @@ doCp old new
 -- prelude `readInt`, defaulted to 25), so only a validated number reaches `head -c`.
 genCmd :: String -> String -> Int -> String
 genCmd entry gpgid len =
-  "e='" ++ entry ++ "'; g='" ++ gpgid ++ "'; mkdir -p \"$(dirname \"$e\")\" && pw=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c " ++ showInt len ++ ") && printf '%s' \"$pw\" | gpg -e --batch --yes -r \"$(head -1 \"$g\")\" -o \"$e\" && printf '%s\\n' \"$pw\""
+  "e=" ++ shQuote entry ++ "; g=" ++ shQuote gpgid ++ "; mkdir -p \"$(dirname \"$e\")\" && pw=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c " ++ showInt len ++ ") && printf '%s' \"$pw\" | gpg -e --batch --yes -r \"$(head -1 \"$g\")\" -o \"$e\" && printf '%s\\n' \"$pw\""
 
 -- Report the outcome of `generate`: an empty capture means the pipeline failed
 -- (most often no `.gpg-id` in the store), otherwise echo the header + password.
