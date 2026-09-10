@@ -962,6 +962,42 @@ fn ax0912_and_specialization_interact_soundly() {
 }
 
 #[test]
+fn uncons_over_heap_fails_closed_not_uaf() {
+    // `uncons` over a HEAP element MOVES its list (sound Core — the drop-verifier passes it),
+    // so the alias-borrower net (AX0912's original class) skips it, but BOTH native backends
+    // miscompile the heap-element tuple payload to a use-after-free. The fail-closed guard
+    // (`peel_deconstructor_violations`) rejects it natively — a clean AX0912, never a silent
+    // UAF. Over a SCALAR element it must still compile (no over-rejection); interp runs both.
+    let fx = fixture("uncons_heap_reject.axi");
+    for backend in [
+        vec!["--release".into(), fx.clone()],
+        vec!["--backend".into(), "cranelift".into(), fx.clone()],
+    ] {
+        let out = axionc().args(&backend).output().unwrap();
+        assert!(
+            !out.status.success(),
+            "{backend:?}: uncons-over-heap must fail closed, not miscompile"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("AX0912"),
+            "{backend:?}: expected AX0912 rejection, got {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // interp reclaims safely and runs it.
+    let out = axionc().arg(&fx).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\n");
+    // scalar `uncons` (List Int) must STILL compile natively — no over-rejection.
+    let sc = fixture("list_deconstruct.axi");
+    let out = axionc().args(["--release", &sc]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "scalar uncons must still compile natively: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn closure_linearity_adversarial_runs_on_all_backends() {
     // Regression guard for the closure-linearity arc (consuming HOFs + lifted-lambda
     // reclamation). Three adversarial shapes that a naive drop would corrupt:

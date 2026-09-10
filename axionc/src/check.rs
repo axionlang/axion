@@ -82,6 +82,10 @@ pub struct Analysis {
     /// Generic pure-escape functions (consume-inferred `%1` on a var-carrying param
     /// that only shell-frees) — EXEMPT from the owning-generic native exclusion.
     pub consume_native_exempt: HashSet<String>,
+    /// `where`-local return types (mangled `parent$local` → concrete RESULT AST Type),
+    /// merged into the lowering's `fn_ret_ty` so a call to a heap-returning `where`-local
+    /// carries a produce key (Auto-Drop reclaims it; the drop-verifier sees the ownership).
+    pub where_ret_tys: HashMap<String, Type>,
 }
 
 /// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.

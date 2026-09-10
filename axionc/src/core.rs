@@ -269,6 +269,25 @@ pub fn result_type(sig: &Type) -> &Type {
     t
 }
 
+/// The `fn_ret_ty` produce key for a function whose RESULT type is `rt`: the reclamation
+/// key the caller uses to drop the owned heap value the call returns, or `None` for a
+/// non-heap / polymorphic result (no drop needed / no concrete key). A TUPLE keys by its
+/// mono tuple key (`tuple$A$B`) so a `case t of (x,y)` destructure reclaims cell + fields;
+/// the flat native resources (`Array`/`TritVec`/`I8Array`/`I32Array`) key flat; `String`
+/// and `Integer` key by name; a boxed `data` keys by its mono instantiation. Shared by the
+/// signature-derived map and the `where`-local merge so both classify results identically.
+fn ret_ty_key(rt: &Type, boxed: &HashSet<String>) -> Option<String> {
+    if matches!(rt, Type::Tuple(_)) {
+        return mono_key(rt);
+    }
+    let h = rt.head_con()?;
+    match h {
+        "Array" | "TritVec" | "I8Array" | "I32Array" | "String" | "Integer" => Some(h.to_string()),
+        _ if boxed.contains(h) => Some(mono_key(rt).unwrap_or_else(|| h.to_string())),
+        _ => None,
+    }
+}
+
 /// Type allocated on the heap by `axion_alloc` (record/`data` or tuple). Excludes
 /// `Int`/`IO` (pure i64), `String` (a runtime C-string, not ours) and functions
 /// (closures are reclaimed conservatively — they may be called).
@@ -4002,6 +4021,7 @@ fn lift_step(consume: &FuseConsumer, helpers: &mut Vec<CoreFn>) -> String {
     name
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn lower_with(
     module: &ast::Module,
     inplace: &HashSet<Span>,
@@ -4009,6 +4029,7 @@ pub fn lower_with(
     array_tys: &HashMap<Span, Type>,
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
+    where_ret_tys: &HashMap<String, Type>,
     _fuse: bool, // kept for API compatibility, auto-fusion always runs now
 ) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
@@ -4063,53 +4084,25 @@ pub fn lower_with(
     // Phase A′: function → `data`-type name of its (boxed) result, from the
     // signature. Attached to `CallDirect` at lowering. (Used to live only in the
     // drop-type walk; now the node itself carries it.)
-    let fn_ret_ty: HashMap<String, String> = module
+    let mut fn_ret_ty: HashMap<String, String> = module
         .funcs
         .iter()
         .filter_map(|f| {
             let rt = result_type(f.sig.as_ref()?);
-            // a function returning a TUPLE yields an owned heap tuple the caller reclaims;
-            // key it by its mono tuple key (`tuple$A$B`) so a `case t of (x,y)` destructure
-            // reclaims the cell + fields (the tuple case-destructure path — `notion-2` +
-            // `tuple_discard_drops`) instead of leaking. A `head_con()` lookup misses this (a
-            // tuple type has no head constructor). Only when every element resolves to a
-            // concrete key — a polymorphic element leaves it generic (no drop key).
-            if matches!(rt, Type::Tuple(_)) {
-                return mono_key(rt).map(|k| (f.name.clone(), k));
-            }
-            let h = rt.head_con()?;
-            // `Array` is a native heap resource freed by the flat `axion_drop_Array`
-            // (element type phantom), so a function returning it produces an owned
-            // array the caller reclaims — keyed flat, like `ArrayNew`.
-            if h == "Array" {
-                Some((f.name.clone(), "Array".to_string()))
-            } else if h == "TritVec" {
-                // TritVec (§10): a flat native heap resource; a function returning
-                // it produces an owned vec the caller reclaims via the flat
-                // `axion_free` (no generated destructor), like a threaded Array.
-                Some((f.name.clone(), "TritVec".to_string()))
-            } else if h == "I8Array" {
-                // I8Array (Phase B): flat compact byte array, same as TritVec.
-                Some((f.name.clone(), "I8Array".to_string()))
-            } else if h == "I32Array" {
-                Some((f.name.clone(), "I32Array".to_string()))
-            } else if h == "String" {
-                // a function returning String yields an owned heap string the
-                // caller reclaims via the tagged `axion_str_drop` (§tc): frees a
-                // heap string, skips a static literal (zero size-header).
-                Some((f.name.clone(), "String".to_string()))
-            } else if h == "Integer" {
-                // a function returning Integer yields an owned boxed BigNum the caller
-                // reclaims via `axion_bignum_free` (frees the struct + limbs).
-                Some((f.name.clone(), "Integer".to_string()))
-            } else if boxed.contains(h) {
-                let key = mono_key(rt).unwrap_or_else(|| h.to_string());
-                Some((f.name.clone(), key))
-            } else {
-                None
-            }
+            ret_ty_key(rt, &boxed).map(|k| (f.name.clone(), k))
         })
         .collect();
+    // `where`-locals have no signature, so the map above (built from sigs) missed them: a
+    // call to a heap-returning local (`where sd = getEnv …`) got NO produce key, so
+    // Auto-Drop inserted no drop and the drop-verifier saw no ownership — a re-materialized
+    // copy borrowed-then-abandoned leaked, unseen (an AX0911 false-negative). Their RESULT
+    // types come from inference (`where_ret_tys`, mangled `parent$local`, the same key the
+    // lowering resolves a call through). Merge them the same way so those calls carry a key.
+    for (name, rt) in where_ret_tys {
+        if let Some(k) = ret_ty_key(rt, &boxed) {
+            fn_ret_ty.entry(name.clone()).or_insert(k);
+        }
+    }
     // Phase B (closure-linearity): function → its declared param types. A lifted
     // eta-lambda `\v.. -> base v..` owns each heap-typed `v` (the closure consume-ABI
     // — `callclo` moves its args in); its drop keys come from the WRAPPED callable's

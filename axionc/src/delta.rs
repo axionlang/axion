@@ -1621,6 +1621,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
             false,
         );
         let con_rec = crate::core::con_recursive_fields(&module.datas);
@@ -1646,6 +1647,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
             false,
         )
     }
@@ -1663,6 +1665,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
             false,
         );
         check_drop_coherence(&l.fns, &l.borrow_args, &l.recinfo, &analysis.drops)
@@ -1681,6 +1684,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
             false,
         );
         let mut fns = l.fns.clone();
@@ -2035,6 +2039,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
             false,
         );
         let lines = crate::lexer::LineMap::new(src);
@@ -2119,6 +2124,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
             false,
         );
         let mut fns = l.fns.clone();

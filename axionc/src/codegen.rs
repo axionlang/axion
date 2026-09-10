@@ -3006,6 +3006,7 @@ impl Fx<'_, '_> {
 /// JIT-compiles the Core and runs `entry` (a parameterless function). Returns `Some(n)`
 /// if `entry :: Int` (the caller prints `n`); `None` if `:: IO ()` (the effects
 /// have already been executed during the run).
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     module: &ast::Module,
     entry: &str,
@@ -3014,6 +3015,7 @@ pub fn run(
     makecon_tys: &HashMap<Span, ast::Type>,
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
+    where_ret_tys: &HashMap<String, ast::Type>,
 ) -> Result<Option<i64>, String> {
     let fns = core::lower_with(
         module,
@@ -3022,6 +3024,7 @@ pub fn run(
         &HashMap::new(),
         integer_pats,
         consume_exempt,
+        where_ret_tys,
         fuse,
     )
     .fns;
@@ -3119,6 +3122,7 @@ pub fn emit_ir(
     makecon_tys: &HashMap<Span, ast::Type>,
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
+    where_ret_tys: &HashMap<String, ast::Type>,
 ) -> Result<String, String> {
     let fns = core::lower_with(
         module,
@@ -3127,6 +3131,7 @@ pub fn emit_ir(
         &HashMap::new(),
         integer_pats,
         consume_exempt,
+        where_ret_tys,
         fuse,
     )
     .fns;

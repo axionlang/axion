@@ -55,7 +55,7 @@
   let _t5 = call headBox _t4  ; Δ{_t4} · moves{_t4} · makes Box
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call headBox$go xs  ; Δ{}
+  ret call headBox$go xs  ; Δ{} · makes Box
   ret case _t5 of
   ret case ys of
   ret rtcall axion_array_free _p  ; Δ{}

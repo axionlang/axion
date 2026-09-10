@@ -111,6 +111,14 @@ struct Infer<'a> {
     /// literal resolved to `Integer` by context is rewritten `fromInt n`, and an
     /// unconstrained one defaults to `Int`.
     int_lit_vars: Vec<(Span, Ty)>,
+    /// `where`-local RETURN types, keyed by the lifted mangled name (`parent$local`).
+    /// A `where`-local has no signature, so it was absent from `fn_ret_ty` at lowering —
+    /// a call to one that returns an owned heap value (`where sd = getEnv …`) got no
+    /// produce key, so Auto-Drop inserted no drop and the drop-verifier saw no ownership:
+    /// a re-materialized copy borrowed-then-abandoned leaked, unseen (an AX0911
+    /// false-negative). Recorded here (the full arrow type; the RESULT is reified in
+    /// `finish`) so the lowering can key those calls like any signed function's.
+    where_ret_tys: HashMap<String, Ty>,
 }
 
 /// An obligation `class C over type T`, collected at a method use and
@@ -171,6 +179,10 @@ pub struct Mono {
     /// so the single-`t` monomorphizer never holds two type vars at once — the
     /// reason this sidesteps the 2-param dispatch limit.
     pub synth_shows: Vec<Func>,
+    /// `where`-local return types (mangled `parent$local` → concrete RESULT AST Type),
+    /// merged into the lowering's `fn_ret_ty` so a call to a heap-returning `where`-local
+    /// carries a produce key (Auto-Drop reclaims it; the verifier sees the ownership).
+    pub where_ret_tys: HashMap<String, Type>,
 }
 
 /// Instruction to clone `src` into a monomorphic function `name`, substituting
@@ -373,6 +385,7 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         lam_param_tys: HashMap::new(),
         lam_full_tys: HashMap::new(),
         int_lit_vars: Vec::new(),
+        where_ret_tys: HashMap::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -707,6 +720,21 @@ impl Infer<'_> {
             .filter_map(|(sp, ty)| {
                 let resolved = inf.apply(&ty);
                 ty_to_ast(&resolved).map(|ast| (sp, ast))
+            })
+            .collect();
+        // `where`-local return types: reify each to its concrete RESULT type (peel the
+        // parameter arrows) so the lowering can key a call to a heap-returning local. Only
+        // ground result types survive `ty_to_ast` (a polymorphic local returning a bare
+        // type var has no concrete drop key anyway — it stays unkeyed, as before).
+        let where_tys = std::mem::take(&mut inf.where_ret_tys);
+        mono.where_ret_tys = where_tys
+            .into_iter()
+            .filter_map(|(name, ty)| {
+                let mut resolved = inf.apply(&ty);
+                while let Ty::Fun(_, r) = resolved {
+                    resolved = inf.apply(&r);
+                }
+                ty_to_ast(&resolved).map(|ast| (name, ast))
             })
             .collect();
         // Phase 4: merge call-site result types into `makecon_tys` (a shared span→Type
@@ -2971,6 +2999,7 @@ impl<'a> Infer<'a> {
             array_tys: HashMap::new(),
             integer_lits: std::collections::HashSet::new(),
             synth_shows: synth_show_funcs(&show_needs, &decls),
+            where_ret_tys: HashMap::new(),
         }
     }
 
@@ -3107,6 +3136,7 @@ impl<'a> Infer<'a> {
             array_tys: HashMap::new(),
             integer_lits: std::collections::HashSet::new(),
             synth_shows: Vec::new(),
+            where_ret_tys: HashMap::new(),
         }
     }
 
@@ -3371,7 +3401,7 @@ impl<'a> Infer<'a> {
             params.push(pt);
         }
         // where: a group of bindings with generalization
-        let local = self.infer_group(&local, &clause.wher);
+        let local = self.infer_group(&local, &clause.wher, true);
         let body_ty = match &clause.body {
             Body::Plain(e) => self.infer_expr(&local, e),
             Body::Guarded(arms) => {
@@ -3440,7 +3470,7 @@ impl<'a> Infer<'a> {
 
     /// Infers a group of bindings (`let`/`where`) with generalization and
     /// returns the extended env.
-    fn infer_group(&mut self, env: &Env, funcs: &[Func]) -> Env {
+    fn infer_group(&mut self, env: &Env, funcs: &[Func], is_where: bool) -> Env {
         if funcs.is_empty() {
             return env.clone();
         }
@@ -3461,6 +3491,16 @@ impl<'a> Infer<'a> {
         let mut out = env.clone();
         for f in funcs {
             let t = self.apply(&vars[&f.name]);
+            // `where`-group only: record the local's (monomorphic) type under its lifted
+            // `parent$local` name (the same mangling the lowering uses), so a heap-returning
+            // local gets a produce key in `fn_ret_ty`. `cur_fn` is the enclosing TOP-LEVEL
+            // function throughout where-inference (only set per top-level decl), matching the
+            // lowering's single-level `f.name${w.name}` key. `let`-groups (`is_where=false`)
+            // are not lifted this way, so they are skipped.
+            if is_where {
+                self.where_ret_tys
+                    .insert(format!("{}${}", self.cur_fn, f.name), t.clone());
+            }
             let scheme = self.generalize(env, &t);
             out.insert(f.name.clone(), scheme);
         }
@@ -3640,7 +3680,7 @@ impl<'a> Infer<'a> {
                 tt
             }
             Expr::Let(binds, body, _) => {
-                let env2 = self.infer_group(env, binds);
+                let env2 = self.infer_group(env, binds, false);
                 self.infer_expr(&env2, body)
             }
             Expr::Case(scrut, arms, span) => {

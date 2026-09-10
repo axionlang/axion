@@ -178,6 +178,7 @@ pub fn emit_ir(
     makecon_tys: &HashMap<Span, ast::Type>,
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
+    where_ret_tys: &HashMap<String, ast::Type>,
 ) -> Result<String, String> {
     let fns = core::lower_with(
         module,
@@ -186,6 +187,7 @@ pub fn emit_ir(
         &HashMap::new(),
         integer_pats,
         consume_exempt,
+        where_ret_tys,
         fuse,
     )
     .fns;
@@ -291,6 +293,7 @@ pub fn build_and_run(
     makecon_tys: &HashMap<Span, ast::Type>,
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
+    where_ret_tys: &HashMap<String, ast::Type>,
     out: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let fns = core::lower_with(
@@ -300,6 +303,7 @@ pub fn build_and_run(
         &HashMap::new(),
         integer_pats,
         consume_exempt,
+        where_ret_tys,
         fuse,
     )
     .fns;
@@ -315,6 +319,7 @@ pub fn build_and_run(
         makecon_tys,
         integer_pats,
         consume_exempt,
+        where_ret_tys,
     )?;
 
     let dir = std::env::temp_dir();
