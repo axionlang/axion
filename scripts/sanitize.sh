@@ -138,6 +138,7 @@ NATIVE=(
   axionc/tests/fixtures/filter_discard_reclaim.axi
   axionc/tests/fixtures/tuple_field_borrow_reclaim.axi
   axionc/tests/fixtures/tuple_nested_elem_reclaim.axi
+  axionc/tests/fixtures/peel_heap_reclaim.axi
   axionc/tests/fixtures/land_tuple_upd.axi
   axionc/tests/fixtures/land_owned_poly.axi
   axionc/tests/fixtures/session_run_pingpong.axi
@@ -179,7 +180,7 @@ LEAKFREE=(
   land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned tuple_discard_owned tuple_elem_discard list_elem_borrow_reclaim list_integer_discard list_foldl_accum embed_param_consume filter_discard_reclaim tuple_field_borrow_reclaim tuple_nested_elem_reclaim stdlib_batch stdlib_batch2 stdlib_sortby stdlib_batch3 stdlib_unzip either_discard land_tuple_upd land_owned_poly
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
-  poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field
+  poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field peel_heap_reclaim
   string_compare capability_sanitize readline_sanitize hello_cli cond_escape_let
   record_update_reclaim record_update_multi record_update_chain
   record_update_escape record_update_escape_read integer_reclaim integer_accumulator

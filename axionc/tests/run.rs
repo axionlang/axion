@@ -962,32 +962,36 @@ fn ax0912_and_specialization_interact_soundly() {
 }
 
 #[test]
-fn uncons_over_heap_fails_closed_not_uaf() {
-    // `uncons` over a HEAP element MOVES its list (sound Core — the drop-verifier passes it),
-    // so the alias-borrower net (AX0912's original class) skips it, but BOTH native backends
-    // miscompile the heap-element tuple payload to a use-after-free. The fail-closed guard
-    // (`peel_deconstructor_violations`) rejects it natively — a clean AX0912, never a silent
-    // UAF. Over a SCALAR element it must still compile (no over-rejection); interp runs both.
-    let fx = fixture("uncons_heap_reject.axi");
+fn peel_over_heap_reclaims_on_all_backends() {
+    // `uncons` over a HEAP element (String) — the list-argv / dispatch shape. It MOVES its `%1`
+    // list and peels the head into an `(a, List a)` tuple (sound Core, the drop-verifier passes).
+    // This was formerly rejected by AX0912: both native backends miscompiled the moved-out tuple
+    // element to a use-after-free (the whole-tuple deep-drop freed the head that had escaped the
+    // tuple). The case-lowering now reclaims a moved-out heap tuple element soundly — a tail-
+    // ordered whole-tuple deep-drop when the head is BORROWED, or an `axion_drop_tuple$…_skip_N`
+    // skip-destructor when it is MOVED OUT or a heap sibling is DISCARDED — so it compiles and
+    // runs leak-free on every backend (ASan + LSan clean; see scripts/sanitize.sh).
+    let fx = fixture("peel_heap_reclaim.axi");
     for backend in [
-        vec!["--release".into(), fx.clone()],
-        vec!["--backend".into(), "cranelift".into(), fx.clone()],
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
     ] {
-        let out = axionc().args(&backend).output().unwrap();
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
         assert!(
-            !out.status.success(),
-            "{backend:?}: uncons-over-heap must fail closed, not miscompile"
-        );
-        assert!(
-            String::from_utf8_lossy(&out.stderr).contains("AX0912"),
-            "{backend:?}: expected AX0912 rejection, got {}",
+            out.status.success(),
+            "peel-over-heap should run ({backend:?}): {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "a\nnone\n3\n",
+            "{backend:?}"
+        );
     }
-    // interp reclaims safely and runs it.
-    let out = axionc().arg(&fx).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\n");
-    // scalar `uncons` (List Int) must STILL compile natively — no over-rejection.
+    // scalar `uncons` (List Int) must still compile natively — no regression.
     let sc = fixture("list_deconstruct.axi");
     let out = axionc().args(["--release", &sc]).output().unwrap();
     assert!(

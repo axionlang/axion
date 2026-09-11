@@ -11,13 +11,13 @@
       drop _t0 : Integer
       drop a : Integer
       drop b : Integer
-      drop t
+      drop t : tuple$Integer$Integer skip{0 1}
       drop xs
       drop xs
       drop xs
       drop xs
       drop y : Integer
-      let _d1000000 = rtcall axion_bignum_add a b  ; Δ{} · makes Integer
+      let _d1000000 = rtcall axion_bignum_add a b  ; Δ{t} · makes Integer
       let _d1000000 = rtcall axion_bignum_add y _t0  ; Δ{_t0 y} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -38,7 +38,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret _d1000000  ; Δ{_d1000000 t} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
       ret con Nil  ; Δ{} · makes List$Integer

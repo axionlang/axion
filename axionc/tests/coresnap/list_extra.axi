@@ -28,7 +28,7 @@
         Cons b bs ->
         Nil ->
         Nil ->
-      drop p
+      drop p : tuple$Int$Int
       drop xs
       drop xs
       drop xs

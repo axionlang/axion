@@ -16,9 +16,9 @@
 
 
 
+
       drop _t0 : Integer
-      drop b : Integer
-      drop t
+      drop t : tuple$Integer$Integer skip{0}
       drop xs
       drop xs
       drop xs
@@ -57,7 +57,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
-      ret a  ; Δ{}
+      ret a  ; Δ{t}
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$tuple$Integer$Integer
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
@@ -142,6 +142,8 @@
   else
   let _d1000000 = putStrLn _t7  ; Δ{_t7}
   let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = rtcall axion_bignum_free _dd0  ; Δ{}
   let _dd1 = rtcall axion_bignum_free _dd0  ; Δ{}
   let _dd2 = loadraw _p+0  ; Δ{}
   let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
@@ -153,6 +155,7 @@
   let _dd6 = band _p 1  ; Δ{}
   let _dd7 = if _dd6 then
   let _dd7 = if _dd6 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
@@ -166,6 +169,7 @@
   let _t5 = call map$$fstT _t4  ; Δ{_t0 _t4} · moves{_t4} · makes List$Integer
   let _t6 = call foldr$$addI _t0 _t5  ; Δ{_t0 _t5} · moves{_t0 _t5} · makes Integer
   let _t7 = rtcall axion_bignum_to_string _t6  ; Δ{_t6} · makes String
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -191,6 +195,7 @@ axion_drop_List$Int _p  =
 axion_drop_List$Integer _p  =
 axion_drop_List$tuple$Integer$Integer _p  =
 axion_drop_tuple$Integer$Integer _p  =
+axion_drop_tuple$Integer$Integer_skip_0 _p  =
 foldr$$addI z xs  =
 fstT t  =
 lam$0 [env ]eta$1  =

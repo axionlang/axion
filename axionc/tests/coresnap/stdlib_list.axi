@@ -155,8 +155,8 @@
       drop _t5 : List$Int
       drop _t7 : String
       drop ab
-      drop ab
       drop ab : tuple$List$Int$List$Int
+      drop ab : tuple$List$Int$List$Int skip{0 1}
       drop m
       drop m
       drop xs
@@ -202,7 +202,7 @@
       let _t0 = call product ys  ; Δ{}
       let _t0 = call sum a  ; Δ{ab}
       let _t0 = call sum ys  ; Δ{}
-      let _t0 = con Cons y a  ; Δ{}
+      let _t0 = con Cons y a  ; Δ{ab}
       let _t0 = con Cons y a  ; Δ{}
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{} · makes List$Int
@@ -258,7 +258,7 @@
       ret if y then
       ret tuple _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes heap
       ret tuple _t0 _t1  ; Δ{} · makes heap
-      ret tuple _t0 b  ; Δ{} · makes heap
+      ret tuple _t0 b  ; Δ{ab} · makes heap
       ret tuple _t0 b  ; Δ{} · makes heap
       ret ys  ; Δ{}
     (a, b) ->

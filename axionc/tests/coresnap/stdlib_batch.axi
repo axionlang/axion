@@ -42,8 +42,8 @@
       drop m : Maybe$Int
       drop m : Maybe$Int
       drop p
-      drop p
-      drop p
+      drop p : tuple$Int$Int
+      drop p : tuple$Int$Int
       drop p : tuple$Int$Int
       else
       let _dd0 = loadraw _p+16  ; Δ{}

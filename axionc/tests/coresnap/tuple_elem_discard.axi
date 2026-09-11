@@ -6,10 +6,10 @@
 
 
 
-          drop b
-          drop t
-          let _t0 = call mapFst ts  ; Δ{ts} · moves{ts} · makes List$Box
-          ret con Cons a _t0  ; Δ{_t0} · moves{_t0} · makes List$Box
+
+          drop t : tuple$Box$Box skip{0}
+          let _t0 = call mapFst ts  ; Δ{t ts} · moves{ts} · makes List$Box
+          ret con Cons a _t0  ; Δ{_t0 t} · moves{_t0} · makes List$Box
         (a, b) ->
       drop h
       drop xs
@@ -75,6 +75,8 @@
   else
   else
   let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = rtcall axion_free _dd0  ; Δ{}
   let _dd1 = rtcall axion_free _dd0  ; Δ{}
   let _dd2 = loadraw _p+0  ; Δ{}
   let _dd3 = rtcall axion_free _dd2  ; Δ{}
@@ -84,6 +86,7 @@
   let _dd6 = band _p 1  ; Δ{}
   let _dd7 = if _dd6 then
   let _dd7 = if _dd6 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = record Box { v = 3}  ; Δ{} · makes Box
   let _t1 = record Box { v = 9}  ; Δ{_t0} · makes Box
@@ -99,6 +102,7 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret call countV _t9  ; Δ{_t9} · moves{_t9}
   ret case xs of
   ret case xs of
@@ -108,6 +112,7 @@ axion_drop_List _p  =
 axion_drop_List$Box _p  =
 axion_drop_List$tuple$Box$Box _p  =
 axion_drop_tuple$Box$Box _p  =
+axion_drop_tuple$Box$Box_skip_0 _p  =
 countV xs  =
 main  =
 mapFst xs  =

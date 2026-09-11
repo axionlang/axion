@@ -4592,11 +4592,12 @@ pub fn lower_with(
 
     let mut result: Vec<CoreFn> = Vec::with_capacity(out.len());
     let mut skip_seeds: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut tuple_skip_seeds: Vec<(String, usize, Vec<usize>)> = Vec::new();
     // stream-fusion pass: fuse producer→consumer chains on List operations
     fuse_list_ops(&mut out);
     for f in out {
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
-        let (mut f, seeds) = insert_drops(f, &borrow_args, dty, &recinfo);
+        let (mut f, seeds, tuple_seeds_skip) = insert_drops(f, &borrow_args, dty, &recinfo);
         // A2: reclaim a conditionally-escaping owned heap param in a tail case/if.
         // Guard: only when the Core params line up 1:1 with the signature arrows
         // (a captured/synthetic param would otherwise pick the WRONG destructor key
@@ -4671,6 +4672,7 @@ pub fn lower_with(
         }
         result.push(f);
         skip_seeds.extend(seeds);
+        tuple_skip_seeds.extend(tuple_seeds_skip);
     }
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
@@ -4769,6 +4771,10 @@ pub fn lower_with(
         &recinfo,
         &parametric_data,
     ));
+    // tuple skip-variant destructors (`axion_drop_tuple$…_skip_0`): reclaim every heap
+    // element EXCEPT the moved-out slot(s), for a peel deconstructor (`uncons`) whose head
+    // is moved out of the result tuple while the tail (or a wildcard sibling) is discarded.
+    result.extend(gen_tuple_skip_destructors(&tuple_skip_seeds, &recinfo));
     // Phase 2c array mono destructors: scan for parametric ArrayNew ops and
     // generate per-element deep-drop destructors (axion_drop_Array$List$P, etc.)
     {
@@ -5420,6 +5426,96 @@ fn gen_tuple_destructors(
         }
         out.push(CoreFn {
             name,
+            params: vec![p],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
+            body,
+        });
+    }
+    out
+}
+
+/// Tuple SKIP-variant destructors: `axion_drop_tuple$…_skip_N` reclaims every heap element
+/// of a concrete tuple type EXCEPT the listed (moved-out) slots, then frees the shell. The
+/// twin of [`gen_skip_destructors`] for TUPLES, which are not registered `type_cons` so they
+/// cannot go through that generator. Used when a peel deconstructor (`uncons`) moves the head
+/// out of its `(a, List a)` result tuple while the tail (or a wildcard sibling) is discarded:
+/// the moved-out slot must NOT be freed (it escaped into the caller), the rest must be. Seeds
+/// are `(tuple_key, arity, skip_slots)`; the per-element reclamation is resolved from the
+/// mono-key via [`RecordInfo::tuple_elem_drops`] (`String` → `axion_str_drop`, `Integer` →
+/// `axion_bignum_free`, a nested container → its own mono destructor, a boxed no-heap data →
+/// flat free, a scalar/nested-tuple → skipped). A seed whose non-skipped slots are all
+/// no-drop yields nothing — `emit_drop` then falls back to the plain shell `axion_free`.
+fn gen_tuple_skip_destructors(seeds: &[TupleSkipSeed], recinfo: &RecordInfo) -> Vec<CoreFn> {
+    let mut seen: HashSet<(String, Vec<usize>)> = HashSet::new();
+    let mut out = Vec::new();
+    for (key, arity, skip) in seeds {
+        let mut sorted_skip = skip.clone();
+        sorted_skip.sort_unstable();
+        sorted_skip.dedup();
+        if sorted_skip.is_empty() || !seen.insert((key.clone(), sorted_skip.clone())) {
+            continue;
+        }
+        let Some(elems) = recinfo.tuple_elem_drops(key, *arity) else {
+            continue;
+        };
+        let p = "_p".to_string();
+        let mut ctr = 0u32;
+        let mut body = free_then_ret(&p);
+        let mut any = false;
+        for (i, el) in elems.iter().enumerate().rev() {
+            if sorted_skip.contains(&i) {
+                continue; // moved out of the result tuple → survives, do not free
+            }
+            // `None` = scalar/nested tuple → no per-element free; `Some(None)` = flat free;
+            // `Some(Some(k))` = a tagged drop (`String`/`Integer`) or a mono destructor key.
+            let Some(inner) = el else { continue };
+            let fp = fresh_dd(&mut ctr);
+            let arg = vec![Atom::Var(fp.clone())];
+            let call = match inner.as_deref() {
+                Some("String") => Op::RtCall {
+                    func: "axion_str_drop".into(),
+                    args: arg,
+                    returns: false,
+                },
+                Some("Integer") => Op::RtCall {
+                    func: "axion_bignum_free".into(),
+                    args: arg,
+                    returns: false,
+                },
+                Some(k) => Op::CallDirect(format!("axion_drop_{k}"), arg, None),
+                None => Op::RtCall {
+                    func: "axion_free".into(),
+                    args: arg,
+                    returns: false,
+                },
+            };
+            any = true;
+            let off = i as i32 * 8;
+            body = Term::Let(
+                fp.clone(),
+                Rhs::Op(Op::LoadRaw(Atom::Var(p.clone()), off)),
+                NO_SPAN,
+                Box::new(Term::Let(
+                    fresh_dd(&mut ctr),
+                    Rhs::Op(call),
+                    NO_SPAN,
+                    Box::new(body),
+                )),
+            );
+        }
+        if !any {
+            continue; // all non-skipped slots are no-drop → shell-only free (emit_drop fallback)
+        }
+        let skip_name: String = sorted_skip
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("_");
+        out.push(CoreFn {
+            name: format!("axion_drop_{key}_skip_{skip_name}"),
             params: vec![p],
             captures: Vec::new(),
             is_closure: false,
@@ -7115,15 +7211,20 @@ fn null_borrow_result_in_rhs(rhs: &mut Rhs, borrow_ret: &HashMap<String, HashSet
     }
 }
 
+/// A `(type_key, skip_slots)` seed for a `data`/record skip-variant destructor.
+type SkipSeed = (String, Vec<usize>);
+/// A `(tuple_key, arity, skip_slots)` seed for a TUPLE skip-variant destructor.
+type TupleSkipSeed = (String, usize, Vec<usize>);
+
 fn insert_drops(
     mut f: CoreFn,
     ba: &BorrowArgs,
     drop_ty: &HashMap<String, Option<String>>,
     recinfo: &RecordInfo,
-) -> (CoreFn, Vec<(String, Vec<usize>)>) {
+) -> (CoreFn, Vec<SkipSeed>, Vec<TupleSkipSeed>) {
     let drp = droppable_vars(&f, ba);
     if drp.is_empty() {
-        return (f, Vec::new());
+        return (f, Vec::new(), Vec::new());
     }
     let mut update_skip = collect_update_skips(&f.body, recinfo, &drp);
     // §move-out: fold in projected-heap-field escapes (a fresh local's field moved out
@@ -7151,6 +7252,7 @@ fn insert_drops(
         drop_ty: drop_ty.clone(),
         recinfo,
         skip_seeds: Vec::new(),
+        tuple_skip_seeds: Vec::new(),
         update_skip,
     };
     let body = std::mem::replace(
@@ -7171,7 +7273,7 @@ fn insert_drops(
         }
     }
     f.body = body;
-    (f, e.skip_seeds)
+    (f, e.skip_seeds, e.tuple_skip_seeds)
 }
 
 struct Elab<'a> {
@@ -7187,6 +7289,13 @@ struct Elab<'a> {
     /// Populated by `case_arms` for each remainder drop and by `drop_target` for each
     /// by-copy record-update result.
     skip_seeds: Vec<(String, Vec<usize>)>,
+    /// TUPLE skip-variant destructors to generate: `(tuple_key, arity, skip_slots)`.
+    /// Populated by `case_arms` when a heap TUPLE field is MOVED OUT of an owned tuple
+    /// scrutinee — the remaining heap slots are reclaimed by `axion_drop_{key}_skip_{N}`
+    /// while the moved-out slot survives (the `uncons`/peel-deconstructor case). Kept
+    /// separate from `skip_seeds` because tuples are not registered `type_cons`, so they
+    /// need a bespoke generator (`gen_tuple_skip_destructors`) keyed off the mono-key.
+    tuple_skip_seeds: Vec<(String, usize, Vec<usize>)>,
     /// By-copy `UpdateRecord` result → `(type, non-updated field indices)`: its drop
     /// reclaims only the genuinely-owned updated heap slots (see `collect_update_skips`).
     update_skip: HashMap<String, (String, Vec<usize>)>,
@@ -7556,6 +7665,21 @@ impl Elab<'_> {
         ty: &Option<String>,
         alias: &HashSet<String>,
     ) -> Term {
+        self.place_deep_drop_skip(t, s, ty, alias, &[])
+    }
+
+    /// [`place_deep_drop`] carrying a SKIP set: the scrutinee drop routes to the
+    /// skip-variant destructor (`axion_drop_T_skip_N`), reclaiming every heap slot except
+    /// the moved-out ones. Placed at each tail exit (after the body's last read), so a
+    /// borrowed-then-dead sibling is freed only once its last use has run.
+    fn place_deep_drop_skip(
+        &mut self,
+        t: Term,
+        s: &str,
+        ty: &Option<String>,
+        alias: &HashSet<String>,
+        skip: &[usize],
+    ) -> Term {
         // the drop anchors at the node it precedes (Δ-5): the position-level
         // coherence cross-check reads the anchor against the front-end's
         // `DropPoint` span (NO_SPAN anchors are unverifiable).
@@ -7573,7 +7697,7 @@ impl Elab<'_> {
                             Box::new(Term::Drop(
                                 s.to_string(),
                                 ty.clone(),
-                                Vec::new(),
+                                skip.to_vec(),
                                 sp,
                                 Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))), sp)),
                             )),
@@ -7584,7 +7708,7 @@ impl Elab<'_> {
                         Term::Drop(
                             s.to_string(),
                             ty.clone(),
-                            Vec::new(),
+                            skip.to_vec(),
                             sp,
                             Box::new(Term::Ret(Rhs::Op(op), sp)),
                         )
@@ -7592,14 +7716,14 @@ impl Elab<'_> {
                 }
                 // the exits live in the branches → recurse into each.
                 Rhs::If(c, th, el) => {
-                    let th = self.place_deep_drop(*th, s, ty, alias);
-                    let el = self.place_deep_drop(*el, s, ty, alias);
+                    let th = self.place_deep_drop_skip(*th, s, ty, alias, skip);
+                    let el = self.place_deep_drop_skip(*el, s, ty, alias, skip);
                     Term::Ret(Rhs::If(c, Box::new(th), Box::new(el)), sp)
                 }
                 Rhs::Case(sc, arms) => {
                     let arms = arms
                         .into_iter()
-                        .map(|(p, b)| (p, self.place_deep_drop(b, s, ty, alias)))
+                        .map(|(p, b)| (p, self.place_deep_drop_skip(b, s, ty, alias, skip)))
                         .collect();
                     Term::Ret(Rhs::Case(sc, arms), sp)
                 }
@@ -7610,14 +7734,14 @@ impl Elab<'_> {
                 x,
                 rhs,
                 sp,
-                Box::new(self.place_deep_drop(*body, s, ty, alias)),
+                Box::new(self.place_deep_drop_skip(*body, s, ty, alias, skip)),
             ),
             Term::Drop(v, ty2, _, _, body) => Term::Drop(
                 v,
                 ty2,
                 Vec::new(),
                 sp,
-                Box::new(self.place_deep_drop(*body, s, ty, alias)),
+                Box::new(self.place_deep_drop_skip(*body, s, ty, alias, skip)),
             ),
         }
     }
@@ -7938,6 +8062,28 @@ impl Elab<'_> {
                     }
                 }
             }
+            // Same for a TUPLE scrutinee: a heap tuple field that is USED in the body must be
+            // in the alias set so the whole-tuple deep-drop is ordered AFTER the body's last
+            // read (`case p of (x, _) -> putStrLn x` — `x` is borrowed by the print, then the
+            // tuple frees it). Without this the `Con`-only pass left the alias set empty and the
+            // `Deep` path dropped the tuple BEFORE the read — the `uncons`/peel use-after-free.
+            if let (CPat::Tuple(subs), Atom::Var(sn)) = (&pat, scrut) {
+                if let Some(elems) = self
+                    .dty(sn)
+                    .and_then(|k| self.recinfo.tuple_elem_drops(&k, subs.len()))
+                {
+                    for (fi, sp) in subs.iter().enumerate() {
+                        if let CPat::Var(n) = sp {
+                            if elems.get(fi).is_some_and(Option::is_some)
+                                && term_mentions_any(&body, &HashSet::from([n.clone()]))
+                            {
+                                mentioned_heap.insert(n.clone());
+                                mentioned_slots.insert(fi);
+                            }
+                        }
+                    }
+                }
+            }
             let mut b = self.go(body, live_out);
             for (n, key) in unused {
                 b = Term::Drop(n, key, Vec::new(), term_span(&b), Box::new(b));
@@ -7945,6 +8091,41 @@ impl Elab<'_> {
 
             if let Some(s) = &scrut_drop {
                 let deep_safe = !info.non_owning && !result_heap;
+                // MOVED-OUT heap TUPLE field over an OWNED tuple whose arm result is NON-heap
+                // (`deep_safe`, so the fallthrough would `Deep`-drop the WHOLE tuple, freeing the
+                // moved-out element → the `uncons`/peel-deconstructor use-after-free: `case p of
+                // (x, _) -> putStrLn x` deep-drops `p`, whose destructor `axion_str_drop`s slot 0
+                // — the very `x` that escaped into `putStrLn`). Route to a tuple skip-destructor
+                // that frees only the REMAINING heap slots (the discarded tail / wildcard sibling)
+                // and keeps the moved-out slot alive. `notion-2` does not fire on a `deep_safe`
+                // tuple (its guard is `!deep_safe0`), so nothing else drops these slots — no
+                // double-free. Placed at the tail so a borrowed-then-dead sibling frees after its
+                // last read.
+                let tuple_moveout: Option<(String, usize, Vec<usize>)> =
+                    if let (true, CPat::Tuple(subs)) = (deep_safe, &pat) {
+                        self.dty(s)
+                            .and_then(|key| {
+                                self.recinfo.tuple_elem_drops(&key, subs.len()).map(|elems| {
+                                    let skip: Vec<usize> = subs
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(i, sp)| match sp {
+                                            CPat::Var(n)
+                                                if elems.get(i).is_some_and(Option::is_some)
+                                                    && body_moves_var(n, &b, self.ba) =>
+                                            {
+                                                Some(i)
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    (key, subs.len(), skip)
+                                })
+                            })
+                            .filter(|(_, _, skip)| !skip.is_empty())
+                    } else {
+                        None
+                    };
                 // A `%1`-consumed TUPLE scrutinee whose result IS heap (`!deep_safe`): a
                 // field escaped into the result, so the whole-tuple deep-drop of the `Deep`
                 // path would double-free it. The per-field paths key off `CPat::Con`, so
@@ -7952,7 +8133,38 @@ impl Elab<'_> {
                 // tuple mono-key) then shell-free the cell, closing the tuple-discard leak.
                 // The `deep_safe` tuple case (nothing escapes into a heap result) falls
                 // through to `Deep`, which reclaims the whole tuple correctly.
-                if let (false, CPat::Tuple(subs)) = (deep_safe, &pat) {
+                if let Some((key, arity, skip)) = tuple_moveout {
+                    self.tuple_skip_seeds
+                        .push((key.clone(), arity, skip.clone()));
+                    // keep the moved-out (skipped) bindings in the alias set so the tail op is
+                    // computed before the drop when it references one (they survive regardless).
+                    let mut alias = HashSet::from([s.clone()]);
+                    if let CPat::Tuple(subs) = &pat {
+                        for &i in &skip {
+                            if let Some(CPat::Var(n)) = subs.get(i) {
+                                alias.insert(n.clone());
+                            }
+                        }
+                    }
+                    self.collect_payload_aliases(&b, &mut alias);
+                    b = self.place_deep_drop_skip(b, s, &Some(key), &alias, &skip);
+                } else if let (false, CPat::Tuple(subs), Some(key)) =
+                    (deep_safe, &pat, self.dty(s))
+                {
+                    // A `%1`-consumed TUPLE whose arm result IS heap: a field escaped into the
+                    // result, so a whole-tuple deep-drop would double-free it. Reclaim via a
+                    // skip-destructor that SKIPS every MENTIONED slot — those either escaped
+                    // (survive), were moved into a consuming call (freed by the callee), or are
+                    // borrowed-then-dead (freed by `go`/notion-2) — and frees the rest: the
+                    // UNMENTIONED heap siblings, INCLUDING a wildcard `_` discard that
+                    // `tuple_discard_drops` left leaking (`firstOr xs = … (x, _) -> x`), plus the
+                    // shell. Falls back to a plain shell `axion_free` when all heap slots are
+                    // skipped (`emit_drop`).
+                    let skip: Vec<usize> = mentioned_slots.iter().copied().collect();
+                    self.tuple_skip_seeds
+                        .push((key.clone(), subs.len(), skip.clone()));
+                    b = Term::Drop(s.clone(), Some(key), skip, term_span(&b), Box::new(b));
+                } else if let (false, CPat::Tuple(subs)) = (deep_safe, &pat) {
                     b = self.tuple_discard_drops(b, subs, s);
                     b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
                 } else {

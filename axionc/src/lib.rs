@@ -427,12 +427,13 @@ pub fn run_cli() -> ExitCode {
         // backend would double-free the shared element. Sound-by-construction: a clean
         // rejection instead of a silent UAF. Interp is not gated (it reclaims via Rust
         // Drop, no aliasing hazard).
-        let mut heap_alias = heap_alias_violations(&module, &analysis.makecon_tys);
-        // Fail-closed sibling: `uncons`-shaped PEEL deconstructors over a heap element. These
-        // MOVE their list (sound Core, so the drop-verifier passes), but the native backends
-        // cannot lower the heap-element tuple payload and miscompile it to a UAF — reject rather
-        // than emit a use-after-free. (`head`/`last` go through the alias path above.)
-        heap_alias.extend(peel_deconstructor_violations(&module));
+        let heap_alias = heap_alias_violations(&module, &analysis.makecon_tys);
+        // NOTE: `uncons`-shaped PEEL deconstructors over a heap element (which MOVE their list and
+        // return the head in an `(a, List a)` tuple) are NO LONGER gated — the case-lowering now
+        // reclaims the moved-out tuple element soundly (a tail-ordered whole-tuple deep-drop when
+        // the head is borrowed, a `axion_drop_tuple$…_skip_N` when it is moved out or a heap
+        // sibling is discarded), so they compile + run leak-free on both native backends. Only the
+        // element-ALIASING borrowers (`filter`/`take`/`head`/`last`, above) remain rejected.
         if !heap_alias.is_empty() {
             for (name, span) in &heap_alias {
                 let d = Diagnostic::error(
@@ -446,13 +447,14 @@ pub fn run_cli() -> ExitCode {
                      reclaim without a double-free",
                 )
                 .with_help(
-                    "`filter`/`take`/`takeWhile`/… alias input elements into their result, and \
-                     `uncons`/`head`/`last` extract one; over a heap element type (Integer, \
-                     String, a record, a nested list) the native backend would free the element \
-                     twice (a use-after-free). Use it over a scalar element type, or run on the \
-                     interpreter (`axionc <file>`), which reclaims safely. The general fix \
-                     (native codegen for heap-element list destructuring) is the pending \
-                     arrow-ownership / poly-payload work.",
+                    "`filter`/`take`/`takeWhile`/`head`/`last` ALIAS an input element into their \
+                     result (the input list is only borrowed, so the element is shared); over a \
+                     heap element type (Integer, String, a record, a nested list) the native \
+                     backend would free it twice (a use-after-free). Use it over a scalar element \
+                     type, or run on the interpreter (`axionc <file>`), which reclaims safely. \
+                     (`uncons`, which MOVES the list and peels the head into a tuple, is sound and \
+                     no longer gated.) The general fix (native codegen for element-aliasing \
+                     borrowers) is the pending arrow-ownership / poly-payload work.",
                 );
                 eprint!("{}", d.render(&path, &src, &lines));
             }
@@ -2642,129 +2644,6 @@ fn heap_alias_violations(
     out
 }
 
-/// The element type `E` of a `List E` type (`App (Con "List") E`), else `None`.
-fn list_elem_ty(t: &ast::Type) -> Option<&ast::Type> {
-    match t {
-        ast::Type::App(f, a) if f.head_con() == Some("List") => Some(a.as_ref()),
-        _ => None,
-    }
-}
-
-/// Structural type equality — avoids the `PartialEq` on `Type` that is only derived under the
-/// `cst`/`salsa` features (this guard must build with `--no-default-features` too).
-fn types_eq(a: &ast::Type, b: &ast::Type) -> bool {
-    use ast::Type::{App, Arrow, Con, Tuple, Unit, Var};
-    match (a, b) {
-        (Con(x), Con(y)) | (Var(x), Var(y)) => x == y,
-        (App(f1, a1), App(f2, a2)) => types_eq(f1, f2) && types_eq(a1, a2),
-        (Arrow { from: f1, to: t1, .. }, Arrow { from: f2, to: t2, .. }) => {
-            types_eq(f1, f2) && types_eq(t1, t2)
-        }
-        (Tuple(x), Tuple(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| types_eq(p, q)),
-        (Unit, Unit) => true,
-        _ => false,
-    }
-}
-
-/// `true` if `elem` is a HEAP element type (String / Integer / a tuple / a nested container / a
-/// user `data`) — anything the native backend allocates separately, as opposed to an unboxed
-/// scalar (`Int`/`Float`/`Bool`/`Char`) or a still-polymorphic type var.
-fn is_heap_elem(t: &ast::Type) -> bool {
-    match t {
-        ast::Type::Con(h) => !matches!(h.as_str(), "Int" | "Float" | "Bool" | "Char"),
-        ast::Type::Tuple(_) | ast::Type::App(_, _) => true,
-        _ => false, // Var (poly) / Unit → no concrete heap element
-    }
-}
-
-/// `true` if `ty` contains an `(E, List E)` PEEL tuple — a tuple with both a bare `E` component
-/// and a `List E` sibling. This is the `uncons` result shape (`Maybe (a, List a)`, monomorphized
-/// to `Maybe (String, List String)`), as opposed to `zip`'s `List (a, b)` (no `List a` inside the
-/// tuple) or `splitAt`'s `(List a, List a)` (no bare element) — neither of which is a heap peel.
-fn has_peel_tuple(ty: &ast::Type, elem: &ast::Type) -> bool {
-    match ty {
-        ast::Type::Tuple(cs) => {
-            let bare = cs.iter().any(|c| types_eq(c, elem));
-            let spine = cs.iter().any(|c| list_elem_ty(c).is_some_and(|e| types_eq(e, elem)));
-            (bare && spine) || cs.iter().any(|c| has_peel_tuple(c, elem))
-        }
-        ast::Type::App(f, a) => has_peel_tuple(f, elem) || has_peel_tuple(a, elem),
-        ast::Type::Arrow { from, to, .. } => has_peel_tuple(from, elem) || has_peel_tuple(to, elem),
-        _ => false,
-    }
-}
-
-/// `true` if `sig` is a list PEEL deconstructor over a HEAP element: some `List E` parameter
-/// (E heap) whose element is returned embedded in an `(E, List E)` tuple — `uncons`, once
-/// monomorphized to `uncons$String :: List String -> Maybe (String, List String)`. Such a
-/// function MOVES its `%1` list (its Core is sound — the drop-verifier passes it), so the
-/// alias-borrower net skips it, but the native backends cannot lower a heap-element tuple
-/// payload and miscompile it to a use-after-free.
-fn is_peel_deconstructor(sig: &ast::Type) -> bool {
-    let result = core::result_type(sig);
-    sig.param_types().into_iter().any(|p| {
-        list_elem_ty(p).is_some_and(|elem| is_heap_elem(elem) && has_peel_tuple(result, elem))
-    })
-}
-
-/// Every call to a heap-element PEEL deconstructor ([`is_peel_deconstructor`]) — `uncons` over
-/// `List String`/`List Integer`/… — which the native backends miscompile to a use-after-free.
-/// Fail-closed sibling of [`heap_alias_violations`]: the Core is SOUND (the element is MOVED, so
-/// the drop-verifier passes) but the backend cannot lower the heap-element tuple payload, so this
-/// rejects native compilation (interp still runs it safely). Detected on the MONOMORPHIZED
-/// signature (`uncons$String`), so no call-site type lookup is needed. A peeler with no visible
-/// call site still fails closed at its own definition span.
-fn peel_deconstructor_violations(module: &ast::Module) -> Vec<(String, ast::Span)> {
-    let peelers: std::collections::HashSet<&str> = module
-        .funcs
-        .iter()
-        .filter(|f| f.sig.as_ref().is_some_and(is_peel_deconstructor))
-        .map(|f| f.name.as_str())
-        .collect();
-    if peelers.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    fn visit(
-        e: &ast::Expr,
-        peelers: &std::collections::HashSet<&str>,
-        out: &mut Vec<(String, ast::Span)>,
-    ) {
-        if let ast::Expr::App(_, _, span) = e {
-            if let ast::Expr::Var(g, _) = core::spine(e).0 {
-                if peelers.contains(g.as_str()) {
-                    out.push((g.clone(), *span));
-                }
-            }
-        }
-        for_each_subexpr(e, &mut |sub| visit(sub, peelers, out));
-    }
-    for f in &module.funcs {
-        for c in &f.clauses {
-            match &c.body {
-                ast::Body::Plain(e) => visit(e, &peelers, &mut out),
-                ast::Body::Guarded(arms) => {
-                    for (g, r) in arms {
-                        visit(g, &peelers, &mut out);
-                        visit(r, &peelers, &mut out);
-                    }
-                }
-            }
-        }
-    }
-    // Fallback: a peeler present with no visible call site still fails closed, anchored at its
-    // own first-clause span — never silently emit a UAF-producing function.
-    if out.is_empty() {
-        for f in &module.funcs {
-            if peelers.contains(f.name.as_str()) {
-                if let Some(c) = f.clauses.first() {
-                    out.push((f.name.clone(), c.span));
-                }
-            }
-        }
-    }
-    out
-}
 
 /// `true` if `ty` is a bare SCALAR primitive (`Int`/`Float`/`Bool`/`Char`) — an unboxed
 /// immediate that is COPYABLE and needs no reclamation, so it is never `%1`. Distinct from a
