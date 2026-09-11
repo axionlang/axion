@@ -28,6 +28,25 @@ AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 CLANG="${AXION_CLANG:-clang}"
 RT="axionc/src/axion_rt.c"
 RUNS="${RUNS:-3}"
+
+# Perf-regression gate (§13): the correctness check below guards RESULTS; this guards SPEED.
+# The metric is the machine-RELATIVE ratio  Axion(--release) / C(-O2)  per kernel — a ratio,
+# not absolute ms, so it is portable across machines and cancels CPU-speed differences. The
+# baseline is stored (like the Core oracle); `--check` fails if any kernel's ratio has
+# regressed beyond TOL. Only kernels whose C(-O2) time clears a floor are gated (tiny times are
+# timer noise). Usage:  bench.sh [--snapshot | --check]  (no arg = table only, no gate).
+MODE="report"
+case "${1:-}" in
+  --snapshot) MODE="snapshot" ;;
+  --check)    MODE="check" ;;
+  "")         ;;
+  *) echo "usage: bench.sh [--snapshot | --check]"; exit 2 ;;
+esac
+BASELINE="bench/perf-baseline.txt"
+TOL="${PERF_TOL:-25}"        # allowed % regression of the Axion/C ratio before --check fails
+FLOOR_MS="${PERF_FLOOR_MS:-20}"  # skip kernels whose C(-O2) time is under this (noise)
+# For the gate, take more samples so the best-of is a tighter lower bound.
+[ "$MODE" = report ] || RUNS="${RUNS_GATE:-7}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -97,3 +116,48 @@ for k in $KERNELS; do
   done
 done
 [ "$ok" = 1 ] && echo "OK: in each kernel, all variants agree on the result." || exit 1
+
+# ---- perf-regression gate ----------------------------------------------------
+# Ratio (×100, integer) of Axion --release to C -O2 for a kernel, or "" if either
+# side is missing / below the noise floor.
+perf_ratio() {
+  local k="$1" rel="${T[$1:rel]:-}" c2="${T[$1:c2]:-}"
+  [ "$rel" != "-" ] && [ -n "$rel" ] || { echo ""; return; }
+  [ "$c2" != "-" ] && [ -n "$c2" ] || { echo ""; return; }
+  [ "$c2" -ge "$FLOOR_MS" ] || { echo ""; return; }
+  echo $(( rel * 100 / c2 ))
+}
+
+if [ "$MODE" = snapshot ]; then
+  : > "$BASELINE"
+  {
+    echo "# Axion(--release) / C(-O2) ratio ×100 per kernel — the perf-regression baseline."
+    echo "# Regenerate with: scripts/bench.sh --snapshot   (on a quiet machine). Gate: --check."
+    for k in $KERNELS; do
+      r=$(perf_ratio "$k"); [ -n "$r" ] && printf "%s %s\n" "$k" "$r"
+    done
+  } >> "$BASELINE"
+  echo "wrote perf baseline → $BASELINE"
+  echo "NOTE: commit it from a QUIET machine; the ratio (not ms) is what's stored, so it is portable."
+elif [ "$MODE" = check ]; then
+  [ -f "$BASELINE" ] || { echo "no $BASELINE — run: scripts/bench.sh --snapshot"; exit 2; }
+  regress=0
+  printf "\nPerf gate (Axion/C-O2 ratio ×100, tolerance +%s%%):\n" "$TOL"
+  printf "  %-8s %8s %8s %8s\n" "kernel" "base" "now" "verdict"
+  while read -r k base; do
+    case "$k" in ''|\#*) continue ;; esac
+    now=$(perf_ratio "$k")
+    if [ -z "$now" ]; then printf "  %-8s %8s %8s %8s\n" "$k" "$base" "-" "skip(noise/na)"; continue; fi
+    limit=$(( base * (100 + TOL) / 100 ))
+    if [ "$now" -gt "$limit" ]; then
+      printf "  %-8s %8s %8s %8s\n" "$k" "$base" "$now" "REGRESS"; regress=1
+    else
+      printf "  %-8s %8s %8s %8s\n" "$k" "$base" "$now" "ok"
+    fi
+  done < "$BASELINE"
+  if [ "$regress" = 1 ]; then
+    echo "PERF REGRESSION: a kernel's Axion/C ratio exceeded baseline by >${TOL}%. (Re-run on a quiet machine to rule out noise; --snapshot to rebaseline if intended.)"
+    exit 1
+  fi
+  echo "OK: no kernel regressed beyond +${TOL}% of its baseline Axion/C ratio."
+fi

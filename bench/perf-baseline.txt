@@ -1,0 +1,13 @@
+# Axion(--release) / C(-O2) ratio ×100 per kernel — the perf-regression baseline.
+# Regenerate with: scripts/bench.sh --snapshot   (on a quiet machine). Gate: --check.
+fib 104
+loop 100
+alloc 8
+simd 103
+dispatch 100
+sumtype 104
+tritvec 112
+dot_i8 84
+ternmv 125
+i8mv 83
+i32mv 114
