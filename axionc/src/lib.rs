@@ -443,18 +443,21 @@ pub fn run_cli() -> ExitCode {
                 .label(
                     span.0,
                     span.1,
-                    "this list function extracts a heap element the native backend cannot \
-                     reclaim without a double-free",
+                    "the native backend cannot reclaim this list function's extracted heap element \
+                     soundly at this element type",
                 )
                 .with_help(
-                    "`filter`/`take`/`takeWhile`/`head`/`last` ALIAS an input element into their \
-                     result (the input list is only borrowed, so the element is shared); over a \
-                     heap element type (Integer, String, a record, a nested list) the native \
-                     backend would free it twice (a use-after-free). Use it over a scalar element \
-                     type, or run on the interpreter (`axionc <file>`), which reclaims safely. \
-                     (`uncons`, which MOVES the list and peels the head into a tuple, is sound and \
-                     no longer gated.) The general fix (native codegen for element-aliasing \
-                     borrowers) is the pending arrow-ownership / poly-payload work.",
+                    "two cases reach this gate. (1) A function that destructures a BORROWED list \
+                     (param not `%1`) and returns a heap element aliases it — the caller frees the \
+                     input AND the aliasing result → a double-free. Fix: mark the list parameter \
+                     `%1` so it CONSUMES the list (the element becomes a genuine move, the \
+                     remainder is freed), exactly how the prelude `head`/`take`/`last`/`drop` are \
+                     defined; closure-taking borrowers like `filter`/`takeWhile` get this \
+                     automatically via higher-order specialization. (2) An element-extracting \
+                     consumer over a TUPLE element type (`List (a, b)`) hits the nested-tuple \
+                     poly-payload residual the monomorphizer cannot yet lower — there is no source \
+                     fix; run it on the interpreter (`axionc <file>`), which reclaims via Rust \
+                     Drop, or use a `data` record element instead of a bare tuple.",
                 );
                 eprint!("{}", d.render(&path, &src, &lines));
             }
@@ -2547,7 +2550,13 @@ fn carries_heap_payload(
 /// (it stores a FRESH `f y`, never the element itself); genuine consumers (`reverse`,
 /// `append`) are `%1` and reclaim soundly. Until arrow-ownership makes these consume their
 /// input, `heap_alias_violations` REJECTS such a call at a heap element type (native only).
-fn alias_borrowers(module: &ast::Module) -> std::collections::HashSet<String> {
+#[allow(clippy::type_complexity)]
+fn alias_borrowers(
+    module: &ast::Module,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
     use std::collections::{HashMap, HashSet};
     let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
     // Only NON-RECURSIVE heap fields (the ELEMENT, `a` in `Cons a (List a)`) count — a
@@ -2567,20 +2576,23 @@ fn alias_borrowers(module: &ast::Module) -> std::collections::HashSet<String> {
             con_field_elem_heap.insert(c.name.clone(), flags);
         }
     }
-    let mut out = HashSet::new();
+    let mut borrowers = HashSet::new();
+    let mut escaping = HashSet::new();
     for f in &module.funcs {
         let Some(sig) = &f.sig else { continue };
         let mults = sig.param_mults();
-        // a param whose extracted ELEMENT escapes via the RESULT, but which is NOT `%1`
-        // (so the input is borrowed and its elements aliased into the output).
+        // a param whose extracted ELEMENT escapes via the RESULT. If it is NOT `%1` the input is
+        // borrowed and its elements aliased into the output (the double-free class, `borrowers`);
+        // either way the function EXTRACTS an element (`escaping`), which the native backend
+        // cannot lower over a TUPLE element type (the nested-tuple poly-payload residual).
         for i in consumed_params(f, &con_field_elem_heap) {
+            escaping.insert(f.name.clone());
             if mults.get(i) != Some(&ast::Mult::One) {
-                out.insert(f.name.clone());
-                break;
+                borrowers.insert(f.name.clone());
             }
         }
     }
-    out
+    (borrowers, escaping)
 }
 
 /// `true` if `ty` is a container (`List a`, …) whose ELEMENT type is heap — Integer /
@@ -2597,45 +2609,76 @@ fn container_elem_is_heap(ty: &ast::Type) -> bool {
     }
 }
 
-/// Every call to an element-aliasing borrower whose instantiated result is a container
-/// with a HEAP element — the calls the native backend cannot compile without a
-/// double-free. Returns `(function, call span)` for each. Empty ⇒ nothing to reject.
+/// `true` if the EXTRACTED element of an element-extracting list consumer's result type is a
+/// TUPLE — the nested-tuple poly-payload residual the monomorphizer cannot lower. The extracted
+/// element is the `App` argument of the result container (`take`/`drop` → `List a`, `head`/`last`
+/// → `Maybe a`, so the element is `a`), EXCEPT the `uncons` PEEL shape `Maybe (a, List a)`, whose
+/// element is the tuple's FIRST component `a` (the `(a, List a)` peel tuple itself is structural,
+/// not a tuple element). So `uncons` over `List String` (element `String`) is allowed, while over
+/// `List (x,y)` (element `(x,y)`) is rejected — as are `take`/`head`/… over `List (x,y)`.
+fn extracted_element_is_tuple(ty: &ast::Type) -> bool {
+    let ast::Type::App(_, inner) = ty else {
+        return false;
+    };
+    let ast::Type::Tuple(cs) = inner.as_ref() else {
+        return false;
+    };
+    // peel shape `(a, List a)`: the element is `cs[0]`, the `List` sibling is structural.
+    if cs.len() == 2
+        && matches!(&cs[1], ast::Type::App(f, _) if f.head_con() == Some("List"))
+    {
+        return matches!(cs[0], ast::Type::Tuple(_));
+    }
+    // a plain tuple element (`take`/`head`/… over `List (x,y)` → `List (x,y)` / `Maybe (x,y)`).
+    true
+}
+
+/// Every call the native backend cannot compile soundly over its instantiated heap element type:
+///   · an element-ALIASING borrower (`filter`/… over a BORROWED list) at ANY heap element —
+///     the shared element would be double-freed (`borrowers`);
+///   · any element-EXTRACTING list consumer (`head`/`last`/`take`/`drop`/`uncons`, and user
+///     functions of the same shape — `escaping`) at a TUPLE element — the nested-tuple
+///     poly-payload residual the monomorphizer cannot lower (it silently drops the caller).
+/// Returns `(function, call span)` for each. Empty ⇒ nothing to reject.
 fn heap_alias_violations(
     module: &ast::Module,
     makecon_tys: &std::collections::HashMap<ast::Span, ast::Type>,
 ) -> Vec<(String, ast::Span)> {
-    let borrowers = alias_borrowers(module);
+    let (borrowers, escaping) = alias_borrowers(module);
     let mut out = Vec::new();
-    if borrowers.is_empty() {
+    if borrowers.is_empty() && escaping.is_empty() {
         return out;
     }
     fn visit(
         e: &ast::Expr,
         borrowers: &std::collections::HashSet<String>,
+        escaping: &std::collections::HashSet<String>,
         mk: &std::collections::HashMap<ast::Span, ast::Type>,
         out: &mut Vec<(String, ast::Span)>,
     ) {
         if let ast::Expr::App(_, _, span) = e {
             if let ast::Expr::Var(g, _) = core::spine(e).0 {
-                if borrowers.contains(g) {
-                    if let Some(ty) = mk.get(span) {
-                        if container_elem_is_heap(ty) {
-                            out.push((g.clone(), *span));
-                        }
+                if let Some(ty) = mk.get(span) {
+                    // aliasing borrower over any heap element → double-free; OR an extracting
+                    // consumer over a TUPLE element → the poly-payload monomorphization hole.
+                    if (borrowers.contains(g) && container_elem_is_heap(ty))
+                        || (escaping.contains(g) && extracted_element_is_tuple(ty))
+                    {
+                        out.push((g.clone(), *span));
                     }
                 }
             }
         }
-        for_each_subexpr(e, &mut |sub| visit(sub, borrowers, mk, out));
+        for_each_subexpr(e, &mut |sub| visit(sub, borrowers, escaping, mk, out));
     }
     for f in &module.funcs {
         for c in &f.clauses {
             match &c.body {
-                ast::Body::Plain(e) => visit(e, &borrowers, makecon_tys, &mut out),
+                ast::Body::Plain(e) => visit(e, &borrowers, &escaping, makecon_tys, &mut out),
                 ast::Body::Guarded(arms) => {
                     for (g, r) in arms {
-                        visit(g, &borrowers, makecon_tys, &mut out);
-                        visit(r, &borrowers, makecon_tys, &mut out);
+                        visit(g, &borrowers, &escaping, makecon_tys, &mut out);
+                        visit(r, &borrowers, &escaping, makecon_tys, &mut out);
                     }
                 }
             }
@@ -3620,11 +3663,11 @@ foldl :: (b -> a -> b) -> b -> List a -> b
 foldl f z xs = case xs of
   Nil -> z
   Cons y ys -> foldl f (f z y) ys
-take :: Int -> List a -> List a
+take :: Int -> List a %1 -> List a
 take n xs = case xs of
   Nil -> Nil
   Cons y ys -> if n < 1 then Nil else Cons y (take (n - 1) ys)
-drop :: Int -> List a -> List a
+drop :: Int -> List a %1 -> List a
 drop n xs = case xs of
   Nil -> Nil
   Cons y ys -> if n < 1 then Cons y ys else drop (n - 1) ys
@@ -3643,7 +3686,7 @@ uncons :: List a -> Maybe (a, List a)
 uncons xs = case xs of
   Nil -> Nothing
   Cons y ys -> Just (y, ys)
-head :: List a -> Maybe a
+head :: List a %1 -> Maybe a
 head xs = case xs of
   Nil -> Nothing
   Cons y ys -> Just y
@@ -3651,7 +3694,7 @@ tail :: List a -> Maybe (List a)
 tail xs = case xs of
   Nil -> Nothing
   Cons y ys -> Just ys
-last :: List a -> Maybe a
+last :: List a %1 -> Maybe a
 last xs = case xs of
   Nil -> Nothing
   Cons y ys -> case ys of

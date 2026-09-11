@@ -11,29 +11,39 @@
 
 
 
-        let _t1 = - n 1  ; Δ{}
-        let _t2 = call take _t1 ys  ; Δ{} · makes List
-        ret con Cons y _t2  ; Δ{_t2} · moves{_t2}
-        ret con Nil  ; Δ{}
-      drop _t0 : Integer
+
+
+
+
+      drop t : tuple$Integer$Integer skip{0}
+      drop xs
+      drop xs
+      drop xs
+      drop xs
       drop xs
       drop xs
       drop xs
       drop xs : List$Int
       drop y : Integer
-      else
-      let _d1000000 = call addI y _t0  ; Δ{_t0 y} · makes Integer
+      drop z : Integer
+      let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple$Integer$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
+      let _dd2 = loadraw _p+8  ; Δ{}
+      let _dd3 = call axion_drop_tuple$Integer$Integer _dd2  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = < n 1  ; Δ{}
-      let _t0 = call foldr$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
+      let _t0 = call addI z y  ; Δ{y ys} · makes Integer
+      let _t0 = call fstT y  ; Δ{y ys} · moves{y} · makes Integer
+      let _t0 = call pairUp y  ; Δ{y ys} · moves{y} · makes tuple$Integer$Integer
       let _t0 = callclo f y  ; Δ{y ys} · moves{y}
+      let _t1 = call map$$fstT ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
+      let _t1 = call map$$pairUp ys  ; Δ{_t0 ys} · moves{ys} · makes List$tuple$Integer$Integer
       let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -41,18 +51,27 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret a  ; Δ{t}
+      ret call foldl$$addI _t0 ys  ; Δ{_t0 ys} · moves{_t0 ys} · makes Integer
+      ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
+      ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$tuple$Integer$Integer
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
       ret con Nil  ; Δ{}
-      ret con Nil  ; Δ{}
-      ret if _t0 then
+      ret con Nil  ; Δ{} · makes List$Integer
+      ret con Nil  ; Δ{} · makes List$tuple$Integer$Integer
       ret z  ; Δ{}
+    (a, b) ->
+    Cons y ys ->
     Cons y ys ->
     Cons y ys ->
     Cons y ys ->
     Nil ->
     Nil ->
     Nil ->
+    Nil ->
+    else
     else
     else
     else
@@ -61,7 +80,10 @@
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
     let _dd4 = == _tag 1  ; Δ{}
+    let _dd4 = == _tag 1  ; Δ{}
     let _dd5 = if _dd4 then
+    let _dd5 = if _dd4 then
+    let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
@@ -74,6 +96,9 @@
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
+    let _tag = loadraw _p+0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
@@ -99,37 +124,44 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t1
-  drop _t3 : List$Integer
-  drop _t5 : Integer
-  drop _t6 : String
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   else
   else
   else
   else
   else
   else
-  let _d1000000 = putStrLn _t6  ; Δ{_t6}
+  else
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = rtcall axion_bignum_free _dd0  ; Δ{}
+  let _dd1 = rtcall axion_bignum_free _dd0  ; Δ{}
+  let _dd2 = loadraw _p+0  ; Δ{}
+  let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd6 = band _p 1  ; Δ{}
+  let _dd6 = band _p 1  ; Δ{}
   let _dd7 = if _dd6 then
+  let _dd7 = if _dd6 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
-  let _t1 = closure lam$0  ; Δ{_t0} · makes heap
-  let _t2 = call range 1 5  ; Δ{_t0 _t1} · makes List$Int
-  let _t3 = call map$Int _t1 _t2  ; Δ{_t0 _t1 _t2} · moves{_t2} · makes List$Integer
-  let _t4 = call take 3 _t3  ; Δ{_t0 _t3} · makes List$Integer
-  let _t5 = call foldr$$addI _t0 _t4  ; Δ{_t0 _t4} · moves{_t0 _t4} · makes Integer
-  let _t6 = rtcall axion_bignum_to_string _t5  ; Δ{_t5} · makes String
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret _d1000000  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret case t of
+  ret case xs of
   ret case xs of
   ret case xs of
   ret case xs of
@@ -138,17 +170,21 @@
   ret if _t0 then
   ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_bignum_add a b  ; Δ{} · makes Integer
-  ret rtcall axion_bignum_from_i64 eta$1  ; Δ{} · makes Integer
+  ret tuple n _t0  ; Δ{_t0} · moves{_t0} · makes heap
 addI a b  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$Integer _p  =
-foldr$$addI z xs  =
-lam$0 [env ]eta$1  =
-main  =
+axion_drop_List$tuple$Integer$Integer _p  =
+axion_drop_tuple$Integer$Integer _p  =
+axion_drop_tuple$Integer$Integer_skip_0 _p  =
+foldl$$addI z xs  =
+fstT t  =
+map$$fstT xs  =
+map$$pairUp xs  =
 map$Int f xs  =
+pairUp n  =
 range lo hi  =
 rangeFused lo hi c n  =
 rangeFusedSum lo hi acc  =
-take n xs  =

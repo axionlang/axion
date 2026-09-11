@@ -882,8 +882,9 @@ fn filter_over_heap_specializes_and_runs_on_all_backends() {
     // AX0912-rejected natively (it aliases its kept input elements into the output → double-
     // free). It now SPECIALIZES to a `%1`-consuming `filter$$gt2` — the element-aliasing is gone
     // — so it compiles and runs identically to the interpreter on every backend, corruption-
-    // free. (Spine-DISCARDING `take`/`takeWhile`/`drop` still hit AX0912 — see
-    // `ax0912_and_specialization_interact_soundly` and `take_heap_reject`.)
+    // free. (Structural `take`/`drop`/`head`/`last` reach soundness the other way — a `%1` list
+    // param — see `ax0912_borrowers_reach_soundness_by_two_routes` and
+    // `structural_borrowers_over_heap_reclaim_on_all_backends`.)
     let fx = fixture("filter_heap_reject.axi");
     for backend in [
         vec![fx.clone()],
@@ -921,14 +922,14 @@ fn array_out_of_bounds_index_aborts_not_reads_garbage() {
 }
 
 #[test]
-fn ax0912_and_specialization_interact_soundly() {
-    // Under AXION_SPECIALIZE, the two partial-consumer classes diverge SOUNDLY:
-    //   · `filter` is SPINE-CONSUMING → specialized to a `%1`-consuming `filter$$gt` → the
-    //     element-aliasing is gone → it COMPILES over a heap element type (was AX0912). The
-    //     specialization rewrites the call, so the generic alias-borrower call — and thus
-    //     AX0912 — simply vanishes; no AX0912 change was needed.
-    //   · `take` is SPINE-DISCARDING → NOT specializable → stays generic → AX0912 still fires
-    //     (its kept elements would double-free over heap). Interp runs both.
+fn ax0912_borrowers_reach_soundness_by_two_routes() {
+    // The two element-borrower classes over a HEAP element type both reach soundness — by
+    // DIFFERENT mechanisms — and now compile natively (both were once AX0912-rejected):
+    //   · `filter` takes a CLOSURE → higher-order specialization rewrites it to a `%1`-consuming
+    //     `filter$$gt`, so the generic alias-borrower call (and thus AX0912) simply vanishes.
+    //   · `take` is a STRUCTURAL (non-closure) borrower → the prelude marks its list param `%1`,
+    //     so it consumes the list: kept elements move into the result, the cutoff frees the tail.
+    // Interp runs both. Guards that neither route regresses into a rejection or a miscompile.
     let filt = fixture("filter_heap_reject.axi");
     let out = axionc()
         .args(["--backend", "cranelift", &filt])
@@ -942,23 +943,100 @@ fn ax0912_and_specialization_interact_soundly() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n");
 
-    let tk = fixture("take_heap_reject.axi");
-    let out = axionc()
-        .args(["--backend", "cranelift", &tk])
-        .env("AXION_SPECIALIZE", "1")
-        .output()
-        .unwrap();
-    assert!(
-        !out.status.success(),
-        "specialized take-over-heap must STILL be AX0912-rejected"
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("AX0912"),
-        "expected AX0912 for take-over-heap under specialization"
-    );
-    // interp reclaims via Rust Drop → runs either way.
-    let out = axionc().arg(&tk).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n");
+    let tk = fixture("take_heap_reclaim.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&tk);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "take-over-heap (%1-consuming) must compile + run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n", "{backend:?}");
+    }
+}
+
+#[test]
+fn structural_borrowers_over_heap_reclaim_on_all_backends() {
+    // The structural (non-closure) list borrowers `take`/`drop`/`head`/`last` over a HEAP element
+    // type (String). Marking their list param `%1` (consume) turns each kept element into a move
+    // and each discarded one into a free — closing the AX0912 alias-borrower double-free (and, for
+    // `drop`, the discarded-prefix leak). interp == cranelift == llvm; ASan + LSan clean.
+    let fx = fixture("structural_borrowers_reclaim.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "structural borrowers over heap should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nc\n2\n1\n", "{backend:?}");
+    }
+}
+
+#[test]
+fn tuple_element_extraction_is_rejected_ax0912() {
+    // The nested-tuple poly-payload residual (differential-fuzzer regression): an element-
+    // EXTRACTING list consumer (`take`/`drop`/`head`/`last`/`uncons`) over a TUPLE element type
+    // extracts a tuple payload the monomorphizer cannot lower — native compilation used to
+    // silently drop `main`. AX0912 now rejects it fail-closed on both native backends; interp
+    // reclaims via Rust Drop and runs it. (Over a non-tuple heap element the same functions
+    // compile + run — see `structural_borrowers_over_heap_reclaim_on_all_backends`.)
+    let fx = fixture("tuple_element_extract_reject.axi");
+    for backend in [
+        vec!["--release".into(), fx.clone()],
+        vec!["--backend".into(), "cranelift".into(), fx.clone()],
+    ] {
+        let out = axionc().args(&backend).output().unwrap();
+        assert!(
+            !out.status.success(),
+            "{backend:?}: tuple-element extraction must be rejected, not miscompiled"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("AX0912"),
+            "{backend:?}: expected AX0912, got {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = axionc().arg(&fx).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
+}
+
+#[test]
+fn user_polymorphic_alias_borrower_is_rejected_ax0912() {
+    // The fail-closed backstop remains for HAND-WRITTEN offenders: a polymorphic user function
+    // that destructures a BORROWED list (no `%1`) and returns a heap element embedded in its
+    // result aliases that element. Over a heap instantiation the native backend is refused with
+    // AX0912 (the fix is to mark the param `%1`, as the prelude does). Interp runs it → `a`.
+    let fx = fixture("user_alias_borrow.axi");
+    for backend in [
+        vec!["--release".into(), fx.clone()],
+        vec!["--backend".into(), "cranelift".into(), fx.clone()],
+    ] {
+        let out = axionc().args(&backend).output().unwrap();
+        assert!(
+            !out.status.success(),
+            "{backend:?}: user alias-borrower over heap must be rejected"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("AX0912"),
+            "{backend:?}: expected AX0912, got {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = axionc().arg(&fx).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a\n");
 }
 
 #[test]

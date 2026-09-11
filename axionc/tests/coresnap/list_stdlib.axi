@@ -17,18 +17,21 @@
 
 
 
-        let _t1 = - n 1  ; Δ{}
-        let _t1 = - n 1  ; Δ{}
+        drop ys : List$Int
+        let _t1 = - n 1  ; Δ{y ys}
+        let _t1 = - n 1  ; Δ{y ys}
         let _t1 = call filter$$evenN ys  ; Δ{y ys} · moves{ys} · makes List$Int
-        let _t2 = call take _t1 ys  ; Δ{} · makes List
+        let _t2 = call take$Int _t1 ys  ; Δ{y ys} · moves{ys} · makes List$Int
         ret 1  ; Δ{}
-        ret call drop _t1 ys  ; Δ{} · makes List
+        ret call drop$Int _t1 ys  ; Δ{y ys} · moves{ys} · makes List$Int
         ret call elem x ys  ; Δ{}
         ret call filter$$evenN ys  ; Δ{y ys} · moves{ys} · makes List$Int
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Int
-        ret con Cons y _t2  ; Δ{_t2} · moves{_t2}
-        ret con Cons y ys  ; Δ{}
-        ret con Nil  ; Δ{}
+        ret con Cons y _t2  ; Δ{_t2 y} · moves{_t2 y}
+        ret con Cons y ys  ; Δ{y ys} · moves{y ys}
+        ret con Nil  ; Δ{y}
+      drop xs
+      drop xs
       drop xs
       drop xs
       drop xs
@@ -39,6 +42,8 @@
       drop xs
       drop xs
       drop xs : List$Int
+      drop xs : List$Int
+      drop xs : List$Int
       else
       else
       else
@@ -47,8 +52,8 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _t0 = < n 1  ; Δ{}
-      let _t0 = < n 1  ; Δ{}
+      let _t0 = < n 1  ; Δ{y ys}
+      let _t0 = < n 1  ; Δ{y ys}
       let _t0 = == x y  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call evenN y  ; Δ{y ys}
@@ -124,8 +129,8 @@
     ret 0  ; Δ{}
     ret 1  ; Δ{}
   ; Δ{y ys}
-  ; Δ{}
-  ; Δ{}
+  ; Δ{y ys}
+  ; Δ{y ys}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -145,7 +150,6 @@
   ; Δ{}
   drop _t12 : List$Int
   drop _t19 : List$Int
-  drop _t37 : List$Int
   drop _t38 : List$Int
   drop _t4 : List$Int
   drop _t45 : List$Int
@@ -191,7 +195,7 @@
   let _t35 = con Cons 300 _t34  ; Δ{_t34} · moves{_t34} · makes List$Int
   let _t36 = con Cons 200 _t35  ; Δ{_t35} · moves{_t35} · makes List$Int
   let _t37 = con Cons 100 _t36  ; Δ{_t36} · moves{_t36} · makes List$Int
-  let _t38 = call take 2 _t37  ; Δ{_t37} · makes List$Int
+  let _t38 = call take$Int 2 _t37  ; Δ{_t37} · moves{_t37} · makes List$Int
   let _t39 = call sum _t38  ; Δ{_t38}
   let _t4 = con Cons 1 _t3  ; Δ{_t3} · moves{_t3} · makes List$Int
   let _t40 = + _t33 _t39  ; Δ{}
@@ -199,7 +203,7 @@
   let _t42 = con Cons 3 _t41  ; Δ{_t41} · moves{_t41} · makes List$Int
   let _t43 = con Cons 2 _t42  ; Δ{_t42} · moves{_t42} · makes List$Int
   let _t44 = con Cons 1 _t43  ; Δ{_t43} · moves{_t43} · makes List$Int
-  let _t45 = call drop 1 _t44  ; Δ{_t44} · moves{_t44} · makes List$Int
+  let _t45 = call drop$Int 1 _t44  ; Δ{_t44} · moves{_t44} · makes List$Int
   let _t46 = call sum _t45  ; Δ{_t45}
   let _t47 = + _t40 _t46  ; Δ{}
   let _t48 = con Nil  ; Δ{} · makes List$Int
@@ -251,7 +255,7 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 b2i b  =
-drop n xs  =
+drop$Int n xs  =
 elem x xs  =
 evenN n  =
 filter$$evenN xs  =
@@ -264,4 +268,4 @@ main  =
 null xs  =
 reverse$Int xs  =
 sum xs  =
-take n xs  =
+take$Int n xs  =
