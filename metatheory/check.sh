@@ -6,16 +6,17 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 LEAN=(nix shell nixpkgs#lean4 --command lean)
-OUT="$("${LEAN[@]}" AxionDrop.lean 2>&1)"
-status=$?
-
-echo "$OUT"
-if [ $status -ne 0 ]; then
-  echo "FAIL: lean reported errors" >&2
-  exit 1
-fi
-if echo "$OUT" | grep -qi "sorryAx\|declaration uses 'sorry'"; then
-  echo "FAIL: a proof depends on sorry" >&2
-  exit 1
-fi
-echo "OK: AxionDrop metatheory checks (no sorry; axioms = propext/Quot.sound only)"
+for f in AxionDrop.lean AxionAlias.lean; do
+  OUT="$("${LEAN[@]}" "$f" 2>&1)"
+  status=$?
+  echo "$OUT"
+  if [ $status -ne 0 ]; then
+    echo "FAIL: lean reported errors in $f" >&2
+    exit 1
+  fi
+  if echo "$OUT" | grep -qi "sorryAx\|declaration uses 'sorry'"; then
+    echo "FAIL: a proof in $f depends on sorry" >&2
+    exit 1
+  fi
+done
+echo "OK: AxionDrop + AxionAlias metatheory check (no sorry; axioms = propext/Quot.sound only)"
