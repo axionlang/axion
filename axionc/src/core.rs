@@ -847,14 +847,6 @@ impl RecordInfo {
         self.enum_types.contains(ty)
     }
 
-    /// `true` if `ty` is a BOXED `data` type with no owned heap fields — a heap value
-    /// reclaimed by a flat `axion_free` (not a scalar, not an unboxed enum, not deep).
-    pub fn is_shallow_boxed_data(&self, ty: &str) -> bool {
-        self.type_arity.contains_key(ty)
-            && !self.enum_types.contains(ty)
-            && !self.needs_deep.contains(ty)
-    }
-
     /// The constructor index within its type (its immediate value when unboxed).
     pub fn con_index(&self, con: &str) -> i32 {
         self.con_tag.get(con).copied().unwrap_or(0)
@@ -6661,15 +6653,13 @@ fn cond_elem_key(
             _ => Some(k),
         });
     }
-    let (_, elem) = scrut_key?.split_once('$')?;
-    match elem {
-        "Integer" => Some(Some("Integer".into())),
-        "String" => Some(Some("String".into())),
-        _ if elem.contains('$') => Some(Some(elem.to_string())),
-        _ if recinfo.needs_deep_drop(elem) => Some(Some(elem.to_string())),
-        _ if recinfo.is_shallow_boxed_data(elem) => Some(None),
-        _ => None,
-    }
+    // Polymorphic field: resolve the field's own type PARAMETER to the matching argument of the
+    // scrutinee's instantiation before classifying — the multi-param-correct path, identical to
+    // the `Elab::consumed_elem_key` twin. The old `split_once('$')` took the WHOLE tail as one
+    // element (`Either$Int$Int` → `Int$Int`), so `Right`'s scalar `Int` payload was dropped as a
+    // bogus `Int$Int` container = a bad free / double-free on the native backends (interp, which
+    // reclaims via Rust `Drop`, was unaffected — hence the verifier missed it too).
+    recinfo.poly_field_elem_key(con, fi, scrut_key?)
 }
 
 /// `true` if `t`'s leading `let`/`drop` spine (NOT descending into `if`/`case` branches)

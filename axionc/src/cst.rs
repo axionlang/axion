@@ -19,7 +19,7 @@
 
 use rowan::{GreenNodeBuilder, Language};
 
-use crate::ast::{Body, Clause, Expr, Func, Pat, Span};
+use crate::ast::{desugar_bind, BindKind, Body, Clause, Expr, Func, Pat, Span};
 use crate::layout::{self, LSpanned, LTok};
 use crate::lexer::{lex, LineMap, Spanned, Tok};
 
@@ -184,6 +184,27 @@ impl Language for AxionLang {
 
 /// A typed syntax node over the Axión CST.
 pub type SyntaxNode = rowan::SyntaxNode<AxionLang>;
+
+/// Is the token a `do`-bind arrow — `<-` (IO), `<-?` (Maybe), or `<-!` (Either)?
+/// `<-?`/`<-!` are single `Op` tokens (the lexer's maximal munch).
+fn is_bind_arrow(t: Option<&Tok>) -> bool {
+    matches!(t, Some(Tok::LArrow)) || matches!(t, Some(Tok::Op(s)) if s == "<-?" || s == "<-!")
+}
+
+/// The `BindKind` of a `BIND_STMT` node, read off its bind-arrow token.
+fn bind_kind_of(node: &SyntaxNode) -> BindKind {
+    for el in node.children_with_tokens() {
+        if let Some(t) = el.as_token() {
+            match t.text() {
+                "<-?" => return BindKind::Maybe,
+                "<-!" => return BindKind::Either,
+                "<-" => return BindKind::Io,
+                _ => {}
+            }
+        }
+    }
+    BindKind::Io
+}
 
 /// The CST token kind of a lexer token.
 fn token_kind(t: &Tok) -> SyntaxKind {
@@ -797,7 +818,13 @@ impl ExprParser<'_> {
         if self.stmt_is_bind() {
             self.b.start_node(BIND_STMT.into());
             self.apat();
-            self.expect(&Tok::LArrow);
+            // the bind arrow — `<-` (IO), `<-?` (Maybe), `<-!` (Either); stmt_is_bind
+            // already confirmed one is present at statement depth 0.
+            if is_bind_arrow(self.cur()) {
+                self.bump();
+            } else {
+                self.ok = false;
+            }
             self.expr();
             self.b.finish_node();
         } else {
@@ -821,6 +848,7 @@ impl ExprParser<'_> {
                 }
                 LTok::VSemi if depth == 0 => break,
                 LTok::Tok(Tok::LArrow) if depth == 0 => return true,
+                LTok::Tok(Tok::Op(s)) if depth == 0 && (s == "<-?" || s == "<-!") => return true,
                 _ => {}
             }
             i += 1;
@@ -1684,7 +1712,7 @@ fn is_expr_kind(k: SyntaxKind) -> bool {
 
 /// A lowered `do` statement (mirrors the parser's internal `Stmt`).
 enum DoStmt {
-    Bind(Pat, Expr),
+    Bind(BindKind, Pat, Expr),
     Expr(Expr),
 }
 
@@ -1893,11 +1921,11 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
                 DoStmt::Bind(..) => return None, // a `do` block can't end in `<-`
             };
             for stmt in it {
-                let (pat, e) = match stmt {
-                    DoStmt::Bind(p, e) => (p, e),
-                    DoStmt::Expr(e) => (Pat::Wild(sp), e),
+                let (kind, pat, e) = match stmt {
+                    DoStmt::Bind(k, p, e) => (k, p, e),
+                    DoStmt::Expr(e) => (BindKind::Io, Pat::Wild(sp), e),
                 };
-                acc = Expr::Case(Box::new(e), vec![(pat, acc)], sp);
+                acc = desugar_bind(kind, pat, e, acc, sp);
             }
             Some(acc)
         }
@@ -1910,7 +1938,11 @@ fn lower_stmt(node: &SyntaxNode) -> Option<DoStmt> {
         BIND_STMT => {
             let pat = node.children().find(|c| !is_expr_kind(c.kind()))?;
             let e = node.children().find(|c| is_expr_kind(c.kind()))?;
-            Some(DoStmt::Bind(lower_pat(&pat)?, lower_expr(&e)?))
+            Some(DoStmt::Bind(
+                bind_kind_of(node),
+                lower_pat(&pat)?,
+                lower_expr(&e)?,
+            ))
         }
         EXPR_STMT => Some(DoStmt::Expr(lower_expr(&node.children().next()?)?)),
         _ => None,

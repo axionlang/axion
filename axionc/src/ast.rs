@@ -97,6 +97,53 @@ pub enum Expr {
     Lam(Vec<Pat>, Box<Expr>, Span),
 }
 
+/// Which monad a `do`-block bind (`pat <- e`) short-circuits over. Chosen
+/// SYNTACTICALLY by the bind arrow — `<-` (IO, no short-circuit), `<-?` (Maybe),
+/// `<-!` (Either) — so the desugar needs no type inference (§ error-handling
+/// ergonomics). Each lowers to the exact `case` a hand-written version would write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindKind {
+    /// `x <- e` — sequential IO; binds the whole value, no short-circuit.
+    Io,
+    /// `x <-? e` — Maybe-bind; `Nothing` short-circuits the block.
+    Maybe,
+    /// `x <-! e` — Either-bind; `Left err` short-circuits the block (re-wrapped).
+    Either,
+}
+
+/// Desugar one `do` statement `pat <arrow> scrut` with continuation `cont` into a
+/// `case`. IO binds the whole value (`case scrut of pat -> cont`); Maybe/Either add a
+/// short-circuit arm (`Nothing -> Nothing` / `Left e -> Left e`). Shared by both
+/// parsers so the two front-ends can never diverge on the desugaring.
+pub fn desugar_bind(kind: BindKind, pat: Pat, scrut: Expr, cont: Expr, sp: Span) -> Expr {
+    let case = |arms| Expr::Case(Box::new(scrut), arms, sp);
+    match kind {
+        BindKind::Io => case(vec![(pat, cont)]),
+        BindKind::Maybe => case(vec![
+            (Pat::Con("Just".into(), vec![pat], sp), cont),
+            (
+                Pat::Con("Nothing".into(), Vec::new(), sp),
+                Expr::Con("Nothing".into(), sp),
+            ),
+        ]),
+        BindKind::Either => {
+            // `$bindErr` cannot be written in source (the lexer forbids `$` in an
+            // identifier), so it can never capture a user binding; it is bound and
+            // re-wrapped within its own arm and never referenced elsewhere.
+            let err = "$bindErr".to_string();
+            let rewrap = Expr::App(
+                Box::new(Expr::Con("Left".into(), sp)),
+                Box::new(Expr::Var(err.clone(), sp)),
+                sp,
+            );
+            case(vec![
+                (Pat::Con("Right".into(), vec![pat], sp), cont),
+                (Pat::Con("Left".into(), vec![Pat::Var(err, sp)], sp), rewrap),
+            ])
+        }
+    }
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         match self {

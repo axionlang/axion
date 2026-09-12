@@ -1080,6 +1080,64 @@ fn peel_over_heap_reclaims_on_all_backends() {
 }
 
 #[test]
+fn do_notation_monad_binds_short_circuit_on_all_backends() {
+    // Explicit per-monad `do`-bind (§ error-handling ergonomics): `<-?` (Maybe) and `<-!`
+    // (Either) short-circuit on `Nothing` / `Left`, `<-` stays IO. Purely a parser desugar to
+    // `case`, so the Core is what a hand-written version writes and every backend must agree.
+    // `calc 100 5 2` = Just 11; `calc 100 0 2` short-circuits (Nothing); `both 3 4` = Right 7;
+    // `both 3 0` short-circuits (Left "not positive"), exercising a HEAP (String) Left payload.
+    let fx = fixture("do_monad_bind.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "do-monad-bind should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "Just 11\nNothing\nRight 7\nLeft not positive\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
+fn either_map_over_multiparam_sum_reclaims_on_all_backends() {
+    // Regression for a PRE-EXISTING multi-type-parameter reclamation double-free (core.rs
+    // `cond_elem_key`): `case e of Right y -> Right (f y); Left x -> Left x` over `Either a b`
+    // dropped the `Right` arm's SCALAR payload as a bogus `Int$Int` container (naive
+    // `split_once('$')` on the mono key) = a bad free on the native backends, while interp (and
+    // thus the drop verifier) passed. Now resolves the field's own type parameter first.
+    let fx = fixture("either_map_reclaim.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "either-map reclamation should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "R7\nL9\nLerr\nR5\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn closure_linearity_adversarial_runs_on_all_backends() {
     // Regression guard for the closure-linearity arc (consuming HOFs + lifted-lambda
     // reclamation). Three adversarial shapes that a naive drop would corrupt:

@@ -7,8 +7,8 @@
 //! the LSP keeps analysing the rest of a half-typed file (§8).
 
 use crate::ast::{
-    Body, ClassDecl, Clause, ConDecl, DataDecl, Expr, Field, Foreign, Func, ImportDecl,
-    InstanceDecl, Module, Mult, Pat, Span, Type,
+    desugar_bind, BindKind, Body, ClassDecl, Clause, ConDecl, DataDecl, Expr, Field, Foreign, Func,
+    ImportDecl, InstanceDecl, Module, Mult, Pat, Span, Type,
 };
 use crate::diag::Diagnostic;
 use crate::layout::{LSpanned, LTok};
@@ -273,8 +273,8 @@ fn context_constraints(t: &Type) -> Vec<(String, String)> {
 
 /// A statement of a `do` block.
 enum Stmt {
-    Bind(Pat, Expr), // `pat <- e`  (var ou tuplo, p.ex. `(x, c) <- recv c`)
-    Expr(Expr),      // `e`
+    Bind(BindKind, Pat, Expr), // `pat <- e` / `<-?` / `<-!` (var ou tuplo)
+    Expr(Expr),                     // `e`
 }
 
 impl<'a> Parser<'a> {
@@ -1009,11 +1009,11 @@ impl<'a> Parser<'a> {
             Stmt::Bind(..) => return Err(self.syntax_err("do block ending in <-")),
         };
         for stmt in iter {
-            let (pat, e) = match stmt {
-                Stmt::Bind(pat, e) => (pat, e),
-                Stmt::Expr(e) => (Pat::Wild(sp), e),
+            let (kind, pat, e) = match stmt {
+                Stmt::Bind(kind, pat, e) => (kind, pat, e),
+                Stmt::Expr(e) => (BindKind::Io, Pat::Wild(sp), e),
             };
-            acc = Expr::Case(Box::new(e), vec![(pat, acc)], sp);
+            acc = desugar_bind(kind, pat, e, acc, sp);
         }
         Ok(acc)
     }
@@ -1024,12 +1024,26 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> PResult<Stmt> {
         let save = self.pos;
         if let Ok(pat) = self.parse_apat() {
-            if self.eat(&Tok::LArrow) {
-                return Ok(Stmt::Bind(pat, self.parse_expr()?));
+            if let Some(kind) = self.eat_bind_arrow() {
+                return Ok(Stmt::Bind(kind, pat, self.parse_expr()?));
             }
         }
         self.pos = save; // backtrack: it was an expression, not a bind
         Ok(Stmt::Expr(self.parse_expr()?))
+    }
+
+    /// A `do`-bind arrow at the cursor: `<-` (IO), `<-?` (Maybe), `<-!` (Either).
+    /// Consumes it and returns the monad; `None` (no consume) if the cursor is not a
+    /// bind arrow. `<-?`/`<-!` are lexed as a single `Op` token (maximal munch).
+    fn eat_bind_arrow(&mut self) -> Option<BindKind> {
+        let kind = match self.cur()? {
+            LTok::Tok(Tok::LArrow) => BindKind::Io,
+            LTok::Tok(Tok::Op(s)) if s == "<-?" => BindKind::Maybe,
+            LTok::Tok(Tok::Op(s)) if s == "<-!" => BindKind::Either,
+            _ => return None,
+        };
+        self.pos += 1;
+        Some(kind)
     }
 
     fn parse_lam(&mut self) -> PResult<Expr> {
