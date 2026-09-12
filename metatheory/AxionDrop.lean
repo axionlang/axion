@@ -6,12 +6,14 @@
   freed EXACTLY once and never used after free. Track 1 established that the verifier CATCHES the
   known bug classes (as findings). Track 2 turns the verifier's *own* judgment into a
   machine-checked theorem: **if the judgment accepts a program, its execution cannot double-free,
-  cannot use-after-free, and cannot leak.**
+  cannot use-after-free, and cannot leak — on EVERY control-flow path.**
 
-  This file mechanizes the STRAIGHT-LINE core of that judgment — the shape the verifier abstractly
-  interprets: an ANF let-sequence of resource operations. It is deliberately dependency-free (no
-  Mathlib): the heap and the ownership set are total functions, so the whole development
-  type-checks with a stock `lean` and contains no `sorry`/axioms.
+  This file mechanizes the judgment over a TREE-structured Core with branches (`if`/`case`): the
+  straight-line let-sequence is the branch-free fragment. The soundness proof is the textbook
+  progress + preservation over a small-step machine, so it quantifies over *every* branch path,
+  not one. It is deliberately dependency-free (no Mathlib): the heap and the ownership set are
+  total functions, so the whole development type-checks with a stock `lean` and contains no
+  `sorry`/extra axioms.
 
   Correspondence to `verify.rs`:
     * `Status` / `Heap`            ↔ the runtime a `drop` acts on (a cell is Fresh → Live → Freed).
@@ -19,11 +21,12 @@
     * `Op.alloc`                   ↔ a producer (`MakeCon`/`RtCall` fresh) — `delta::Res` owned.
     * `Op.use`                     ↔ a borrow/read (`use_atom`) — requires the cell live (UAF check).
     * `Op.drop`                    ↔ `do_drop` — requires the cell live (DoubleFree/UAF check).
+    * `Expr.brn`                   ↔ an `if`/`case` with two arms and a continuation.
+    * `Chk.brn` (both arms → same `om`) ↔ `merge_vals` reconciling the arms: the merged state can
+        soundly stand for BOTH runtime heaps only when the arms leave the same owned-set (the
+        balance condition; an imbalance is exactly the conditional-param-return alias V-1 catches,
+        and R-5's copy is what makes both arms balance so a real container branch is admitted).
     * `accepts` (final owned = ∅)  ↔ `leak_check` at a true function exit (AX0911 leak gate).
-
-  The single-path model is faithful because the verifier checks each control-flow path
-  independently and reconciles branches with `merge_vals` (a join); the per-path guarantee below
-  is exactly what each branch must satisfy.
 -/
 
 namespace AxionDrop
@@ -50,13 +53,19 @@ inductive Op where
   | drop  (n : Nat)   -- reclaim `n` (must be live)
   deriving Repr
 
-abbrev Prog := List Op
+/-- The tree-structured Core: a straight-line op followed by a continuation, a branch with two
+    arms and a continuation (the shape `verify.rs` reconciles with `merge_vals`), or a tail. -/
+inductive Expr where
+  | done                          -- end of a path (a function tail / join leaf)
+  | op   (a : Op) (k : Expr)      -- a straight-line op, then `k`
+  | brn  (t e : Expr) (k : Expr)  -- branch on two arms `t`/`e`, then `k` from the merged state
+  deriving Repr
 
 /-! ## Operational semantics (the ground truth the verifier must approximate)
 
-We model execution as a heap transformer that gets STUCK (`none`) exactly on a memory fault:
-`alloc` of an already-touched cell, `use`/`drop` of a non-live cell (use-after-free /
-double-free / use-before-alloc). A program that never gets stuck is memory-safe. -/
+Single ops transform the heap and get STUCK (`none`) exactly on a memory fault. A branch is
+resolved by a small-step machine (below) that may take either arm — so a theorem quantifying over
+all reachable states covers every path. -/
 
 def stepRun (h : Heap) : Op → Option Heap
   -- alloc is unsafe ONLY over a still-LIVE cell (that would abandon a live owner — a leak);
@@ -65,63 +74,71 @@ def stepRun (h : Heap) : Op → Option Heap
   | .use   n => if h n = .live  then some h else none
   | .drop  n => if h n = .live  then some (fun m => if m = n then .freed else h m) else none
 
-def run (h : Heap) : Prog → Option Heap
-  | []      => some h
-  | op :: p => match stepRun h op with
-               | some h' => run h' p
-               | none    => none
+/-- `seq t k` grafts the continuation `k` onto every tail (`done` leaf) of `t` — sequential
+    composition. Running an arm then the continuation is running `seq arm k`. -/
+def seq : Expr → Expr → Expr
+  | .done,      k => k
+  | .op a t',   k => .op a (seq t' k)
+  | .brn a b t',k => .brn a b (seq t' k)
+
+/-- Small-step machine over `(heap, remaining-expr)`. `op` runs one op (stuck if it faults); a
+    branch nondeterministically enters either arm, grafting the continuation after it. -/
+inductive Step : (Heap × Expr) → (Heap × Expr) → Prop where
+  | op  {h a k h'} : stepRun h a = some h' → Step (h, .op a k) (h', k)
+  | brL {h t e k}  : Step (h, .brn t e k) (h, seq t k)
+  | brR {h t e k}  : Step (h, .brn t e k) (h, seq e k)
+
+/-- Reflexive–transitive closure (defined locally to avoid a Mathlib/Batteries dependency). -/
+inductive Star {α : Type} (R : α → α → Prop) : α → α → Prop where
+  | refl {a} : Star R a a
+  | step {a b c} : R a b → Star R b c → Star R a c
 
 /-- The initial heap: nothing allocated yet. -/
 def h0 : Heap := fun _ => .fresh
 
 /-! ## The verifier's judgment (the abstract interpreter of `verify.rs`)
 
-`check` folds the ANF sequence updating the owned-set exactly as `Verifier::term` does:
-`alloc` adds a fresh owner (and REJECTS a re-alloc of a still-owned cell — the shape that would
-double-allocate), `use` requires ownership (the UAF/read check), `drop` requires ownership and
-removes it (the DoubleFree check). It REJECTS (`none`) on any violation. -/
+`stepChk` is the per-op accept/reject transition on the owned-set (exactly `Verifier::term`'s
+update: `alloc` REJECTS a re-alloc of a still-owned cell, `use`/`drop` require ownership, `drop`
+removes it). `Chk o e o'` lifts it to a whole `Expr`, and at a `brn` REQUIRES both arms to reach
+the SAME owned-set `om` before the continuation — the sound core of `merge_vals`. -/
 
 def stepChk (o : Owned) : Op → Option Owned
   | .alloc n => if o n then none else some (fun m => if m = n then true else o m)
   | .use   n => if o n then some o else none
   | .drop  n => if o n then some (fun m => if m = n then false else o m) else none
 
-def check (o : Owned) : Prog → Option Owned
-  | []      => some o
-  | op :: p => match stepChk o op with
-               | some o' => check o' p
-               | none    => none
+inductive Chk : Owned → Expr → Owned → Prop where
+  | done {o} : Chk o .done o
+  | op   {o o' of a k} : stepChk o a = some o' → Chk o' k of → Chk o (.op a k) of
+  | brn  {o om of t e k} : Chk o t om → Chk o e om → Chk om k of → Chk o (.brn t e k) of
 
-/-- A program is ACCEPTED from the empty state iff the judgment runs to completion AND the final
-    owned-set is empty — no corruption along the way, and leak-free at exit (the AX0911 gate). -/
-def accepts (p : Prog) : Prop :=
-  ∃ o, check (fun _ => false) p = some o ∧ (∀ n, o n = false)
+/-- A program is ACCEPTED from the empty state iff the judgment admits it to a final owned-set that
+    is empty — no violation on any arm, arms balanced at every join, and leak-free at exit. -/
+def accepts (e : Expr) : Prop :=
+  ∃ of, Chk (fun _ => false) e of ∧ (∀ n, of n = false)
 
 /-! ## Soundness
 
-The bridge is the invariant that the abstract owned-set is EXACTLY the set of live heap cells:
-`o n = true ↔ h n = live`. It holds initially and every accepted step preserves it, so an accepted
-program's execution can never get stuck. -/
+The coupling invariant: the abstract owned-set is EXACTLY the set of live heap cells. -/
 
-/-- The coupling invariant between the judgment state `o` and the runtime heap `h`. -/
 def Inv (o : Owned) (h : Heap) : Prop := ∀ n, (o n = true ↔ h n = .live)
 
 theorem inv_init : Inv (fun _ => false) h0 := by
   intro n; simp [h0]
 
-/-- Every step the judgment accepts is a step the runtime can also take, and it preserves the
-    invariant. This is the heart of the proof: acceptance ⟹ no stuck step. -/
+/-- The per-op core: an accepted op is a runtime op that preserves the invariant (drops/uses only
+    live cells → no double-free / UAF; alloc only over a non-live cell). -/
 theorem step_sound {o : Owned} {h : Heap} (hinv : Inv o h) :
-    ∀ (op : Op) (o' : Owned), stepChk o op = some o' →
-      ∃ h', stepRun h op = some h' ∧ Inv o' h' := by
-  intro op o' hchk
-  cases op with
+    ∀ (a : Op) (o' : Owned), stepChk o a = some o' →
+      ∃ h', stepRun h a = some h' ∧ Inv o' h' := by
+  intro a o' hchk
+  cases a with
   | alloc n =>
     simp only [stepChk] at hchk
     by_cases hn : o n
     · simp [hn] at hchk
     · simp [hn] at hchk
-      -- ¬ o n, so by Inv the cell is not live ⟹ the runtime alloc succeeds.
       have hnl : h n ≠ .live := fun hl => by simp [(hinv n).mpr hl] at hn
       refine ⟨fun m => if m = n then .live else h m, ?_, ?_⟩
       · simp [stepRun, hnl]
@@ -148,92 +165,164 @@ theorem step_sound {o : Owned} {h : Heap} (hinv : Inv o h) :
       · subst hchk
         intro m
         by_cases hm : m = n <;> simp [hm]
-        · -- m = n: owner removed, cell freed
-          exact (hinv m)
+        exact hinv m
     · simp [hn] at hchk
 
-/-- Lifting `step_sound` over a whole program: if the judgment accepts the sequence `p` from a
-    state coupled to the heap, then the runtime runs `p` to completion (never stuck) into a heap
-    still coupled to the final judgment state. -/
-theorem run_check : ∀ (p : Prog) {o o' : Owned} {h : Heap},
-    Inv o h → check o p = some o' → ∃ h', run h p = some h' ∧ Inv o' h' := by
-  intro p
-  induction p with
-  | nil =>
-    intro o o' h hinv hc
-    simp only [check, Option.some.injEq] at hc
-    subst hc
-    exact ⟨h, rfl, hinv⟩
-  | cons op rest ih =>
-    intro o o' h hinv hc
-    simp only [check] at hc
-    cases hs : stepChk o op with
-    | none => rw [hs] at hc; simp at hc
-    | some o'' =>
-      rw [hs] at hc
-      obtain ⟨h'', hrun, hinv''⟩ := step_sound hinv op o'' hs
-      obtain ⟨h', hrun', hinv'⟩ := ih hinv'' hc
-      refine ⟨h', ?_, hinv'⟩
-      simp only [run, hrun]
-      exact hrun'
+/-- The judgment composes over `seq`: if `t` takes `o` to `om` and `k` takes `om` to `of`, then
+    `seq t k` takes `o` to `of`. (Used to type the machine state after a branch enters an arm.) -/
+theorem chk_seq {o om of : Owned} {t k : Expr}
+    (h1 : Chk o t om) (h2 : Chk om k of) : Chk o (seq t k) of := by
+  induction h1 with
+  | done => exact h2
+  | op hs _ ih => exact Chk.op hs (ih h2)
+  | brn ha hb _ _ _ ihk => exact Chk.brn ha hb (ihk h2)
 
-/-- **No corruption.** An accepted program never gets stuck — i.e. its execution performs no
-    double-free, no use-after-free, and no use/alloc that would fault. (Corresponds to the AX0910
-    hard gate: the verifier accepting the Core proves the emitted native code cannot corrupt.) -/
-theorem no_corruption {p : Prog} (hacc : accepts p) : ∃ h', run h0 p = some h' := by
-  obtain ⟨_, hchk, _⟩ := hacc
-  obtain ⟨h', hrun, _⟩ := run_check p inv_init hchk
-  exact ⟨h', hrun⟩
+/-- A machine state is WELL-TYPED (for a fixed final owned-set `of`) when some abstract state both
+    admits the remaining expression to `of` and is coupled to the current heap. -/
+def WT (of : Owned) (s : Heap × Expr) : Prop :=
+  ∃ o, Chk o s.2 of ∧ Inv o s.1
 
-/-- **No leak.** An accepted program runs to a heap with NO live cell left — every allocated
-    resource was freed. (Corresponds to the AX0911 leak gate: `leak_check` at function exit
-    requiring the owned-set empty.) -/
-theorem no_leak {p : Prog} (hacc : accepts p) :
-    ∃ h', run h0 p = some h' ∧ ∀ n, h' n ≠ .live := by
-  obtain ⟨o, hchk, hempty⟩ := hacc
-  obtain ⟨h', hrun, hinv'⟩ := run_check p inv_init hchk
-  refine ⟨h', hrun, ?_⟩
+/-- **Preservation.** A machine step out of a well-typed state lands in a well-typed state. -/
+theorem preservation {of : Owned} {s s' : Heap × Expr}
+    (hwt : WT of s) (hstep : Step s s') : WT of s' := by
+  obtain ⟨o, hchk, hinv⟩ := hwt
+  cases hstep with
+  | op hrun =>
+    -- s = (h, op a k), s' = (h', k); the op both checks and runs, preserving Inv.
+    cases hchk with
+    | op hchks hk =>
+      obtain ⟨h'', hrun', hinv'⟩ := step_sound hinv _ _ hchks
+      rw [hrun] at hrun'
+      cases hrun'
+      exact ⟨_, hk, hinv'⟩
+  | brL =>
+    -- entering the left arm: heap unchanged; the arm-then-continuation is well-typed via chk_seq.
+    cases hchk with
+    | brn ht _ hk => exact ⟨o, chk_seq ht hk, hinv⟩
+  | brR =>
+    cases hchk with
+    | brn _ he hk => exact ⟨o, chk_seq he hk, hinv⟩
+
+/-- **Progress.** A well-typed state is either finished (`done`) or can take a step — it is never
+    stuck on a memory fault. -/
+theorem progress {of o : Owned} {h : Heap} {e : Expr}
+    (hchk : Chk o e of) (hinv : Inv o h) : e = .done ∨ ∃ s', Step (h, e) s' := by
+  cases hchk with
+  | done => exact Or.inl rfl
+  | op hchks _ =>
+    obtain ⟨h', hrun, _⟩ := step_sound hinv _ _ hchks
+    exact Or.inr ⟨(h', _), Step.op hrun⟩
+  | brn _ _ _ => exact Or.inr ⟨(h, _), Step.brL⟩
+
+/-- A stuck state: not finished, yet unable to step (a memory fault). -/
+def Stuck (s : Heap × Expr) : Prop := s.2 ≠ .done ∧ ¬ ∃ s', Step s s'
+
+/-- Well-typed states are never stuck (progress, repackaged). -/
+theorem not_stuck {of : Owned} {s : Heap × Expr} (hwt : WT of s) : ¬ Stuck s := by
+  obtain ⟨h, e⟩ := s
+  obtain ⟨o, hchk, hinv⟩ := hwt
+  rcases progress hchk hinv with hdone | hstep
+  · rintro ⟨hne, _⟩; exact hne hdone
+  · rintro ⟨_, hns⟩; exact hns hstep
+
+/-- Well-typedness is preserved along any run. -/
+theorem star_wt {of : Owned} {s s' : Heap × Expr}
+    (hwt : WT of s) (hstar : Star Step s s') : WT of s' := by
+  induction hstar with
+  | refl => exact hwt
+  | step hstep _ ih => exact ih (preservation hwt hstep)
+
+/-- **No corruption (on every path).** No state reachable from an accepted program is stuck — i.e.
+    execution never double-frees, never uses-after-free, and never faults, whichever branches it
+    takes. (Corresponds to the AX0910 hard gate.) -/
+theorem no_corruption {e : Expr} (hacc : accepts e) :
+    ∀ s, Star Step (h0, e) s → ¬ Stuck s := by
+  obtain ⟨of, hchk, _⟩ := hacc
+  intro s hstar
+  exact not_stuck (star_wt (of := of) ⟨_, hchk, inv_init⟩ hstar)
+
+/-- A finished expression's incoming and final owned-sets coincide (the only `Chk _ done _`). -/
+theorem chk_done_eq {o of : Owned} (h : Chk o .done of) : o = of := by cases h; rfl
+
+/-- **No leak (on every path).** Whenever an accepted program reaches a finished state, its heap
+    has NO live cell left — every allocated resource was freed. (Corresponds to AX0911.) -/
+theorem no_leak {e : Expr} (hacc : accepts e) :
+    ∀ hf, Star Step (h0, e) (hf, .done) → ∀ n, hf n ≠ .live := by
+  obtain ⟨of, hchk, hempty⟩ := hacc
+  intro hf hstar
+  obtain ⟨o, hchkd, hinv⟩ := star_wt (of := of) ⟨_, hchk, inv_init⟩ hstar
+  have hoeq : o = of := chk_done_eq hchkd
   intro n hln
-  have hon : o n = true := (hinv' n).mpr hln
-  rw [hempty n] at hon
-  simp at hon
+  have hlive : o n = true := (hinv n).mpr hln
+  rw [hoeq, hempty n] at hlive
+  simp at hlive
 
-/-- **Full soundness.** Acceptance implies memory safety AND leak freedom, together. This is the
-    machine-checked statement of what `axionc`'s drop-verifier guarantees for the (straight-line
-    core of the) programs it admits. -/
-theorem sound {p : Prog} (hacc : accepts p) :
-    ∃ h', run h0 p = some h' ∧ ∀ n, h' n ≠ .live :=
-  no_leak hacc
+/-- **Full soundness.** Acceptance implies memory safety AND leak freedom on every path — the
+    machine-checked statement of what `axionc`'s drop-verifier guarantees, now including branches. -/
+theorem sound {e : Expr} (hacc : accepts e) :
+    (∀ s, Star Step (h0, e) s → ¬ Stuck s) ∧
+    (∀ hf, Star Step (h0, e) (hf, .done) → ∀ n, hf n ≠ .live) :=
+  ⟨no_corruption hacc, no_leak hacc⟩
 
 /-! ## Non-vacuity — the judgment actually rejects the bugs (mirrors `verify.rs`'s buggy-Core unit
-tests). These are decided by `rfl`/`decide`, so they are checked, not asserted. -/
+tests). Rather than fragile relation inversion, each rejection is proved by DOGFOODING the main
+theorems: a program that faults or leaks on some path cannot be accepted (contrapositive of
+`no_corruption` / `no_leak`). This also witnesses that the theorems have real bite. -/
 
-/-- A double-free (`drop 0; drop 0`) is REJECTED — `check` returns `none`. -/
-example : check (fun _ => false) [Op.alloc 0, Op.drop 0, Op.drop 0] = none := by decide
+/-- The heap after `alloc 0` from empty (cell 0 live), and after a further `drop 0` (cell 0 freed).
+    Fully concrete, so every runtime transition below is proved by `rfl`. -/
+private def hA : Heap := fun m => if m = 0 then .live else h0 m
+private def hAD : Heap := fun m => if m = 0 then .freed else hA m
+private theorem step_alloc0 : stepRun h0 (.alloc 0) = some hA := rfl
+private theorem step_drop0  : stepRun hA (.drop 0)  = some hAD := rfl
+private theorem drop0_stuck : stepRun hAD (.drop 0) = none := rfl
+private theorem use0_stuck  : stepRun hAD (.use 0)  = none := rfl
 
-/-- A use-after-free (`alloc 0; drop 0; use 0`) is REJECTED. -/
-example : check (fun _ => false) [Op.alloc 0, Op.drop 0, Op.use 0] = none := by decide
+/-- A double-free (`alloc 0; drop 0; drop 0`) is REJECTED — the second `drop 0` faults, so
+    `no_corruption` forbids acceptance. -/
+example : ¬ accepts (.op (.alloc 0) (.op (.drop 0) (.op (.drop 0) .done))) := by
+  intro hacc
+  have hstar : Star Step (h0, .op (.alloc 0) (.op (.drop 0) (.op (.drop 0) .done)))
+      (hAD, .op (.drop 0) .done) :=
+    .step (Step.op step_alloc0) (.step (Step.op step_drop0) .refl)
+  refine no_corruption hacc _ hstar ⟨by simp, ?_⟩
+  rintro ⟨_, hs⟩
+  cases hs with | op hr => rw [drop0_stuck] at hr; simp at hr
 
-/-- A leak (`alloc 0` with no matching drop) is not ACCEPTED (final owned-set nonempty). -/
-example : ¬ accepts [Op.alloc 0] := by
-  rintro ⟨o, hchk, hempty⟩
-  have hfun : o = (fun m => if m = 0 then true else false) := (Option.some.inj hchk).symm
-  have h0 := hempty 0
-  rw [hfun] at h0
-  simp at h0
+/-- A use-after-free (`alloc 0; drop 0; use 0`) is REJECTED — the `use 0` faults. -/
+example : ¬ accepts (.op (.alloc 0) (.op (.drop 0) (.op (.use 0) .done))) := by
+  intro hacc
+  have hstar : Star Step (h0, .op (.alloc 0) (.op (.drop 0) (.op (.use 0) .done)))
+      (hAD, .op (.use 0) .done) :=
+    .step (Step.op step_alloc0) (.step (Step.op step_drop0) .refl)
+  refine no_corruption hacc _ hstar ⟨by simp, ?_⟩
+  rintro ⟨_, hs⟩
+  cases hs with | op hr => rw [use0_stuck] at hr; simp at hr
 
-/-- A balanced program (`alloc 0; use 0; drop 0`) IS accepted — the theorem is non-trivially
-    inhabited. -/
-example : accepts [Op.alloc 0, Op.use 0, Op.drop 0] := by
-  refine ⟨_, rfl, fun n => ?_⟩
+/-- **The new branch property.** UNBALANCED arms are REJECTED: `alloc 0; if _ then drop 0 else ()`
+    frees cell 0 on ONE arm only, so the ELSE path finishes with 0 still live — a leak — and
+    `no_leak` forbids acceptance. This is the sound core of `merge_vals` (an imbalance is the
+    conditional-param-return alias class V-1 catches; R-5's deep-copy is what makes a real
+    container branch balance so both arms leave the same owned-set). -/
+example : ¬ accepts (.op (.alloc 0) (.brn (.op (.drop 0) .done) .done .done)) := by
+  intro hacc
+  -- take the ELSE arm: alloc 0, then brR into `done`, grafted with the `done` continuation.
+  have hstar : Star Step (h0, .op (.alloc 0) (.brn (.op (.drop 0) .done) .done .done)) (hA, .done) :=
+    .step (Step.op step_alloc0) (.step Step.brR .refl)
+  exact (no_leak hacc _ hstar 0) (rfl : hA 0 = .live)
+
+/-- A balanced branching program IS accepted (`alloc 0; if _ then drop 0 else drop 0`): the theorem
+    is non-trivially inhabited over branches too. -/
+example : accepts (.op (.alloc 0) (.brn (.op (.drop 0) .done) (.op (.drop 0) .done) .done)) := by
+  refine ⟨_, Chk.op rfl (Chk.brn (Chk.op rfl Chk.done) (Chk.op rfl Chk.done) Chk.done), fun n => ?_⟩
   by_cases h : n = 0 <;> simp [h]
 
-/-! ## Axiom audit — the soundness theorems depend only on Lean's standard axioms (`propext`,
-`Classical.choice`, `Quot.sound`), never on `sorryAx`. `check.sh` greps this output to gate the
-build: any `sorryAx` fails it. -/
+/-! ## Axiom audit — the soundness theorems depend only on Lean's standard axioms, never on
+`sorryAx`. `check.sh` greps this output to gate the build. -/
 #print axioms sound
 #print axioms no_corruption
 #print axioms no_leak
-#print axioms step_sound
+#print axioms preservation
+#print axioms progress
 
 end AxionDrop
