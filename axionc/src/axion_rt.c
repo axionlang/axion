@@ -91,6 +91,22 @@ void axion_free(long ptr) {
     return;
   free((char *)ptr - 8);
 }
+/* Shallow byte-copy of an `axion_alloc`'d block, reading its total size from the
+ * 8-byte header (R-5, docs/call-site-ownership.md). The copy is byte-identical:
+ * tag + scalar fields correct, and any heap-child POINTERS are duplicated as-is
+ * (shared). Correct on its own only for a pointerless payload (a `String`, or a
+ * `DropWay::Flat` block with no owned heap children); the generated `axion_copy_T`
+ * deep-copier uses it for the shell and then OVERWRITES each heap slot with a
+ * fresh recursive copy, so no child is ever shared across the original/copy.
+ * A tagged immediate (low bit) is a value, not a heap block — returned as-is. */
+long axion_block_copy(long ptr) {
+  if ((ptr & 1) || !ptr)
+    return ptr;
+  long total = *(long *)((char *)ptr - 8);
+  char *base = (char *)axion_xmalloc((size_t)total);
+  memcpy(base, (char *)ptr - 8, (size_t)total);
+  return (long)(base + 8);
+}
 
 /* --- arbitrary-precision Integer (§Listing 1.4): C mirror of src/bigint.rs. An
  * i64 is a BigNum* (boxed). Sign-magnitude, base-1e9 limbs, least-significant first.

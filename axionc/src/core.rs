@@ -4494,7 +4494,19 @@ pub fn lower_with(
     // AXION_NO_ALIAS_COPY (test hook): skip this copy so the RAW unsafe Core is emitted, to
     // prove the drop-verifier CATCHES the conditional-param-return alias on its own (a sound
     // net), rather than only being dodged by the copy. Never set in production.
+    // R-5: container copy targets seeded here (their param types), so the deep-copier
+    // generator below emits `axion_copy_<key>` only for the types a real reused
+    // container-return needs — absent one, no copier is emitted (oracle-neutral).
+    let mut copy_seeds: Vec<Type> = Vec::new();
     if std::env::var_os("AXION_NO_ALIAS_COPY").is_none() {
+        // pure-enum type names (all constructors nullary): unboxed immediates that are
+        // value-copied, so a bare-returned-then-reused enum never double-frees → no copier.
+        let enum_types: HashSet<String> = module
+            .datas
+            .iter()
+            .filter(|d| d.cons.iter().all(|c| c.fields.is_empty()))
+            .map(|d| d.name.clone())
+            .collect();
         let ret_alias = crate::verify::ret_alias_summary(&out);
         let reused = reused_after_call(&out, &ret_alias);
         let mut copy_ctr = 0usize;
@@ -4510,7 +4522,15 @@ pub fn lower_with(
             };
             let copy_params: HashSet<usize> = ra.intersection(ru).copied().collect();
             if !copy_params.is_empty() {
-                normalize_alias_returns(f, ptys, &copy_params, &mut copy_ctr);
+                normalize_alias_returns(
+                    f,
+                    ptys,
+                    &copy_params,
+                    &mut copy_ctr,
+                    &data_types,
+                    &enum_types,
+                    &mut copy_seeds,
+                );
             }
         }
     }
@@ -4705,6 +4725,19 @@ pub fn lower_with(
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
     result.extend(gen_destructors(&recinfo, &parametric_data, &mut mono_seeds));
+    // R-5: per-type deep-copiers `axion_copy_<key>` for the container-return copy
+    // targets seeded above (and, transitively, their heap fields). Emitted only when
+    // a reused container-return actually needs one, so the whole existing corpus is
+    // oracle-neutral. Managed by hand (skipped by Auto-Drop and the verifier), exactly
+    // like the destructors, and added AFTER drop insertion for the same reason.
+    if !copy_seeds.is_empty() {
+        result.extend(gen_copiers(
+            std::mem::take(&mut copy_seeds),
+            module,
+            &recinfo,
+            &parametric_data,
+        ));
+    }
     // F-3 skip-variant destructors (`axion_drop_T_skip_0`) — before the mono
     // generation below, so a skipped remainder's parametric field (`List String`)
     // seeds and gets its `axion_drop_List$String`.
@@ -4984,6 +5017,220 @@ fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term
                 Rhs::Op(call),
                 NO_SPAN,
                 Box::new(term),
+            )),
+        );
+    }
+    term
+}
+
+/// R-5 deep-copier (docs/call-site-ownership.md): generate a per-type `axion_copy_<key>`
+/// for each seed (and, transitively, for every heap-field type reached through
+/// `drop_way`). Mirrors `gen_mono_destructors` — same per-constructor `(offset, DropWay)`
+/// slot resolution under the type-argument substitution, so mono containers (`List$Integer`)
+/// and concrete `data` types are handled uniformly — but emits `copier_body` instead of
+/// `destructor_body`. Managed by hand, so skipped by Auto-Drop and the verifier.
+fn gen_copiers(
+    seeds: Vec<Type>,
+    module: &ast::Module,
+    recinfo: &RecordInfo,
+    parametric_data: &HashSet<String>,
+) -> Vec<CoreFn> {
+    let datas: HashMap<&str, &ast::DataDecl> =
+        module.datas.iter().map(|d| (d.name.as_str(), d)).collect();
+    let mut out = Vec::new();
+    let mut done: HashSet<String> = HashSet::new();
+    let mut work = seeds;
+    while let Some(t) = work.pop() {
+        let Some(key) = mono_key(&t) else { continue };
+        if !done.insert(key.clone()) {
+            continue;
+        }
+        let (head, args) = ty_head_args(&t);
+        let Some(head) = head else { continue };
+        let Some(d) = datas.get(head).copied() else {
+            continue;
+        };
+        let subst: HashMap<String, Type> = d
+            .params
+            .iter()
+            .cloned()
+            .zip(args.iter().map(|a| (*a).clone()))
+            .collect();
+        // per-constructor heap slots under the substitution; each Deep field type is
+        // pushed onto `work`, so its own `axion_copy_<field>` is generated too.
+        let all_slots: Vec<Vec<(i32, DropWay)>> = d
+            .cons
+            .iter()
+            .map(|con| {
+                con.fields
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, f)| {
+                        let rty = subst_ty(&f.ty, &subst);
+                        match drop_way(&rty, recinfo, parametric_data, &mut work) {
+                            DropWay::None => None,
+                            way => Some((recinfo.field_offset(&con.name, i), way)),
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let cons: Vec<(i64, Vec<(i32, DropWay)>)> = d
+            .cons
+            .iter()
+            .zip(all_slots)
+            .map(|(c, slots)| (recinfo.tag(&c.name).unwrap_or(0) as i64, slots))
+            .collect();
+        let p = "_p".to_string();
+        let mut ctr = 0u32;
+        let body = copier_body(
+            &cons,
+            d.cons.len() <= 1,
+            recinfo.is_mixed_type(head),
+            &p,
+            &mut ctr,
+        );
+        out.push(CoreFn {
+            name: format!("axion_copy_{key}"),
+            params: vec![p],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
+            body,
+        });
+    }
+    out
+}
+
+/// The copier body (R-5): shell-copy the block, then overwrite each heap slot with a
+/// fresh recursive copy. `axion_block_copy` duplicates the whole block byte-for-byte
+/// (tag + scalar fields correct; heap-child pointers SHARED), then `emit_field_copies`
+/// replaces every heap slot of the matching constructor with a fresh deep copy — so no
+/// child is ever shared across the original and the copy. Symmetric to `destructor_body`.
+fn copier_body(
+    cons: &[(i64, Vec<(i32, DropWay)>)],
+    single: bool,
+    mixed: bool,
+    p: &str,
+    ctr: &mut u32,
+) -> Term {
+    let q = "_q".to_string();
+    let ret_q = Term::Ret(Rhs::Op(Op::Atom(Atom::Var(q.clone()))), NO_SPAN);
+    let fixups = if single {
+        match cons.first() {
+            Some((_, slots)) => emit_field_copies(slots, p, &q, ctr, ret_q),
+            None => ret_q,
+        }
+    } else {
+        // multi-con: load the tag and one independent `if` per constructor with heap
+        // fields; only the matching tag's slots are deep-copied, the rest already
+        // correct from the shell copy. Falls through to `ret q`.
+        let mut chain = ret_q;
+        for (tag, slots) in cons.iter().rev() {
+            if slots.is_empty() {
+                continue;
+            }
+            let branch = emit_field_copies(slots, p, &q, ctr, unit0());
+            let cmp = fresh_dd(ctr);
+            let ifstep = Term::Let(
+                fresh_dd(ctr),
+                Rhs::If(Atom::Var(cmp.clone()), Box::new(branch), Box::new(unit0())),
+                NO_SPAN,
+                Box::new(chain),
+            );
+            chain = Term::Let(
+                cmp,
+                Rhs::Op(Op::Prim("==".into(), Atom::Var("_tag".into()), Atom::Int(*tag))),
+                NO_SPAN,
+                Box::new(ifstep),
+            );
+        }
+        Term::Let(
+            "_tag".into(),
+            Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), 0)),
+            NO_SPAN,
+            Box::new(chain),
+        )
+    };
+    let alloc_and_fix = Term::Let(
+        q.clone(),
+        Rhs::Op(Op::RtCall {
+            func: "axion_block_copy".into(),
+            args: vec![Atom::Var(p.to_string())],
+            returns: true,
+        }),
+        NO_SPAN,
+        Box::new(fixups),
+    );
+    if mixed {
+        // a tagged immediate (low bit) is a value, not a heap block: return it as-is,
+        // never dereferencing it for the tag/field fixup.
+        let bit = fresh_dd(ctr);
+        Term::Let(
+            bit.clone(),
+            Rhs::Op(Op::Prim("band".into(), Atom::Var(p.to_string()), Atom::Int(1))),
+            NO_SPAN,
+            Box::new(Term::Ret(
+                Rhs::If(
+                    Atom::Var(bit),
+                    Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(p.to_string()))), NO_SPAN)),
+                    Box::new(alloc_and_fix),
+                ),
+                NO_SPAN,
+            )),
+        )
+    } else {
+        alloc_and_fix
+    }
+}
+
+/// Overwrite each heap slot of `q` (the shell copy) with a fresh recursive copy of the
+/// corresponding slot read from `p` (the original): `Deep` → `axion_copy_<name>`, `Flat`
+/// → `axion_block_copy` (a pointerless payload), `Str` → `strAppend x ""`, `Bignum` →
+/// `axion_bignum_copy`. See [`copier_body`].
+fn emit_field_copies(slots: &[(i32, DropWay)], p: &str, q: &str, ctr: &mut u32, cont: Term) -> Term {
+    let mut term = cont;
+    for (off, way) in slots.iter().rev() {
+        let child = fresh_dd(ctr);
+        let fresh = fresh_dd(ctr);
+        let copy = match way {
+            DropWay::Deep(name) => Op::CallDirect(
+                format!("axion_copy_{name}"),
+                vec![Atom::Var(child.clone())],
+                Some(name.clone()),
+            ),
+            DropWay::Flat => Op::RtCall {
+                func: "axion_block_copy".into(),
+                args: vec![Atom::Var(child.clone())],
+                returns: true,
+            },
+            DropWay::Str => Op::RtCall {
+                func: "axion_strcat".into(),
+                args: vec![Atom::Var(child.clone()), Atom::Str(String::new())],
+                returns: true,
+            },
+            DropWay::Bignum => Op::RtCall {
+                func: "axion_bignum_copy".into(),
+                args: vec![Atom::Var(child.clone())],
+                returns: true,
+            },
+            DropWay::None => continue,
+        };
+        term = Term::Let(
+            child.clone(),
+            Rhs::Op(Op::LoadRaw(Atom::Var(p.to_string()), *off)),
+            NO_SPAN,
+            Box::new(Term::Let(
+                fresh.clone(),
+                Rhs::Op(copy),
+                NO_SPAN,
+                Box::new(Term::Let(
+                    fresh_dd(ctr),
+                    Rhs::Op(Op::StoreRaw(Atom::Var(q.to_string()), *off, Atom::Var(fresh))),
+                    NO_SPAN,
+                    Box::new(term),
+                )),
             )),
         );
     }
@@ -6414,6 +6661,10 @@ fn rhs_moves(v: &str, rhs: &Rhs, ba: &BorrowArgs) -> bool {
 
 fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
     match op {
+        // a generated `axion_copy_T` deep-copier (R-5) BORROWS every arg (it reads the
+        // value to clone it, frees nothing) — so a param handed to it stays owned by the
+        // caller and is NOT consumed here (matches delta::op_delta_effect).
+        Op::CallDirect(g, _, _) if g.starts_with("axion_copy_") => false,
         // ba-aware: an arg at a borrowed position is a read, not a move.
         Op::CallDirect(g, xs, _) => {
             let bs = ba.get(g);
@@ -6806,16 +7057,20 @@ fn scan_reuse(
 }
 
 /// How to copy a bare-returned heap param so its return is owned, not an alias.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum CopyKind {
     /// `String` → `strAppend x ""` (a fresh `axion_strcat` copy).
     Str,
     /// `Integer` → `axion_bignum_copy x` (a fresh bignum clone).
     Int,
+    /// A container/`data`/tuple (mono key `k`) → `axion_copy_<k> x`, a generated
+    /// per-type deep-copier (R-5). The `CallDirect` result is owned (key `k`), the
+    /// arg borrowed — see `gen_copiers`.
+    Container(String),
 }
 
 /// The copy op for a target param of the given kind.
-fn alias_copy_op(v: &str, kind: CopyKind) -> Op {
+fn alias_copy_op(v: &str, kind: &CopyKind) -> Op {
     match kind {
         CopyKind::Str => Op::RtCall {
             func: "axion_strcat".into(),
@@ -6827,6 +7082,11 @@ fn alias_copy_op(v: &str, kind: CopyKind) -> Op {
             args: vec![Atom::Var(v.to_string())],
             returns: true,
         },
+        CopyKind::Container(k) => Op::CallDirect(
+            format!("axion_copy_{k}"),
+            vec![Atom::Var(v.to_string())],
+            Some(k.clone()),
+        ),
     }
 }
 
@@ -6836,11 +7096,11 @@ fn alias_copy_op(v: &str, kind: CopyKind) -> Op {
 fn rewrite_alias_tails(t: &mut Term, targets: &HashMap<String, CopyKind>, ctr: &mut usize) {
     match t {
         Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp) if targets.contains_key(v) => {
-            let (sp, kind) = (*sp, targets[v]);
+            let (sp, kind) = (*sp, targets[v].clone());
             let v = v.clone();
             let tmp = format!("$aliascopy{ctr}");
             *ctr += 1;
-            let copy = alias_copy_op(&v, kind);
+            let copy = alias_copy_op(&v, &kind);
             *t = Term::Let(
                 tmp.clone(),
                 Rhs::Op(copy),
@@ -6878,6 +7138,9 @@ fn normalize_alias_returns(
     ptys: &[Type],
     copy_params: &HashSet<usize>,
     ctr: &mut usize,
+    data_types: &HashSet<String>,
+    enum_types: &HashSet<String>,
+    copy_seeds: &mut Vec<Type>,
 ) {
     let owned: HashSet<&String> = f.owned_params.iter().collect();
     let targets: HashMap<String, CopyKind> = f
@@ -6889,7 +7152,22 @@ fn normalize_alias_returns(
         .filter_map(|(_, (p, ty))| match ty.head_con() {
             Some("String") => Some((p.clone(), CopyKind::Str)),
             Some("Integer") => Some((p.clone(), CopyKind::Int)),
-            _ => None, // containers have no copy primitive yet (R-5)
+            // R-5: a `data` container with a CONCRETE mono destructor key gets a generated
+            // per-type deep-copier `axion_copy_<key>`; seed its type so the copier (and,
+            // transitively, its heap fields') is emitted. Restricted to a `data`-decl head
+            // (`gen_copiers` needs the declaration): a tuple (head_con `None`) or a pure
+            // enum (unboxed immediate, value-copied) stays fail-closed → no copier. A
+            // polymorphic key (`mono_key` `None`) also stays fail-closed.
+            _ if ty
+                .head_con()
+                .is_some_and(|h| data_types.contains(h) && !enum_types.contains(h)) =>
+            {
+                mono_key(ty).map(|k| {
+                    copy_seeds.push((*ty).clone());
+                    (p.clone(), CopyKind::Container(k))
+                })
+            }
+            _ => None,
         })
         .collect();
     if !targets.is_empty() {

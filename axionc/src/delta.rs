@@ -88,10 +88,14 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => e.borrows.push(a),
         Op::CallDirect(g, args, ty) => {
             // borrowed positions (pure-borrow callee args) keep the caller's
-            // ownership; everything else moves into the callee
+            // ownership; everything else moves into the callee. A generated
+            // `axion_copy_T` deep-copier (R-5) BORROWS its argument (reads it to
+            // build a fresh clone, frees nothing) and PRODUCES a fresh owned value
+            // (the `ty` key), so the caller keeps and later frees the original.
+            let is_copy = g.starts_with("axion_copy_");
             let bs = ba.get(g);
             for (i, a) in args.iter().enumerate() {
-                let borrowed = bs.is_some_and(|set| set.contains(&i));
+                let borrowed = is_copy || bs.is_some_and(|set| set.contains(&i));
                 if borrowed {
                     e.borrows.push(a);
                 } else {
@@ -600,7 +604,7 @@ pub fn check_drop_coherence(
 ) -> Vec<DeltaErr> {
     let mut out = Vec::new();
     for f in fns {
-        if f.name.starts_with("sess$") || f.name.ends_with("$step") {
+        if f.name.starts_with("sess$") || f.name.ends_with("$step") || f.name.starts_with("axion_copy_") {
             continue;
         }
         let (never_used, used) = drop_sets(drops, &f.name);
@@ -658,7 +662,7 @@ pub fn check_drop_coherence(
 pub fn dump_annotated(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &RecordInfo) -> String {
     let mut out = String::new();
     for f in fns {
-        if f.name.starts_with("sess$") || f.name.ends_with("$step") {
+        if f.name.starts_with("sess$") || f.name.ends_with("$step") || f.name.starts_with("axion_copy_") {
             continue;
         }
         let hdr = if f.is_closure {
@@ -759,7 +763,7 @@ pub fn dump_delta(
     let mut coh_total = 0usize;
     let mut coh_ok = 0usize;
     for f in fns {
-        if f.name.starts_with("sess$") || f.name.ends_with("$step") {
+        if f.name.starts_with("sess$") || f.name.ends_with("$step") || f.name.starts_with("axion_copy_") {
             n_skipped += 1;
             continue;
         }

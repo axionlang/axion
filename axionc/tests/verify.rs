@@ -192,6 +192,34 @@ fn verifier_catches_conditional_param_return_alias_without_the_copy() {
     );
 }
 
+/// R-5 (docs/call-site-ownership.md): the container conditional-param-return class. The normal
+/// build (copy on) emits a generated deep-copier `axion_copy_Lst` and verifies clean; with the
+/// copy off (AXION_NO_ALIAS_COPY) the raw Core aliases the reused `Lst` arg into the dropped
+/// result and the verifier catches it (DropOfAlias) — the same sound net as V-1, now over a
+/// container the copier makes safe to compile.
+#[test]
+fn verifier_catches_container_param_return_alias_without_the_copy() {
+    let path = format!(
+        "{}/tests/fixtures/container_copy_reclaim.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&ok.stdout).contains("no corruption"),
+        "normal build must verify clean (the container deep-copier makes it sound)"
+    );
+    let bad = axionc()
+        .args(["--emit", "verify", &path])
+        .env("AXION_NO_ALIAS_COPY", "1")
+        .output()
+        .unwrap();
+    let bads = String::from_utf8_lossy(&bad.stdout);
+    assert!(
+        bads.contains("FAIL:") && (bads.contains("DropOfAlias") || bads.contains("UseAfterFree")),
+        "without the copy the verifier must catch the container param-return alias, got:\n{bads}"
+    );
+}
+
 /// V-2 (docs/call-site-ownership.md): the verifier catches the multi-param-sum mis-key
 /// bad-free (a scalar payload of `Either Int Int` dropped as the bogus container key `Int$Int`)
 /// via the scalar-base-key check — INDEPENDENTLY of the fixed `cond_elem_key`. With the old

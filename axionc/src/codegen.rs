@@ -486,6 +486,32 @@ extern "C" fn axion_free(ptr: *mut u8) {
     }
 }
 
+/// Shallow byte-copy of an `axion_alloc`'d block (R-5, --dev mirror of the C
+/// `axion_block_copy`): reads the total size from the 8-byte header and duplicates
+/// the whole block. Heap-child pointers are copied as-is (shared); the generated
+/// `axion_copy_T` deep-copier overwrites each heap slot with a fresh recursive copy
+/// afterwards, so nothing is shared across original/copy. A tagged immediate (low
+/// bit) or null is returned unchanged.
+extern "C" fn axion_block_copy(ptr: *mut u8) -> *mut u8 {
+    if (ptr as usize) & 1 != 0 || ptr.is_null() {
+        return ptr;
+    }
+    // SAFETY: only called on an axion_alloc block, valid header at offset -8.
+    unsafe {
+        let base = ptr.sub(8);
+        let total = base.cast::<u64>().read_unaligned() as usize;
+        let layout = std::alloc::Layout::from_size_align(total, 8)
+            .unwrap_or_else(|_| panic!("layout error"));
+        let dst = std::alloc::alloc(layout);
+        if dst.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        std::ptr::copy_nonoverlapping(base, dst, total);
+        HEAP_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        dst.add(8)
+    }
+}
+
 /* --- networking runtime (see axion_rt.c for the C version) --- */
 
 #[repr(C)]
@@ -1807,6 +1833,7 @@ impl Cg {
         builder.symbol("axion_bignum_from_str", axion_bignum_from_str as *const u8);
         builder.symbol("axion_bignum_add", axion_bignum_add as *const u8);
         builder.symbol("axion_bignum_copy", axion_bignum_copy as *const u8);
+        builder.symbol("axion_block_copy", axion_block_copy as *const u8);
         builder.symbol("axion_bignum_sub", axion_bignum_sub as *const u8);
         builder.symbol("axion_bignum_mul", axion_bignum_mul as *const u8);
         builder.symbol("axion_bignum_div", axion_bignum_div as *const u8);
@@ -1997,6 +2024,7 @@ impl Cg {
             ("axion_bignum_from_str", 1, true),
             ("axion_bignum_add", 2, true),
             ("axion_bignum_copy", 1, true),
+            ("axion_block_copy", 1, true),
             ("axion_bignum_sub", 2, true),
             ("axion_bignum_mul", 2, true),
             ("axion_bignum_div", 2, true),

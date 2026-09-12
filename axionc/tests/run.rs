@@ -1203,6 +1203,27 @@ fn mixed_conditional_param_return_reclaims_on_all_backends() {
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n", "{backend:?}");
     }
+    // The same class over a CONTAINER param (R-5): `tagOr` returns its `Lst` param bare on one
+    // branch + fresh on another, and `use2` reuses `xs` after the call. This was fail-closed
+    // (no container copy primitive → verifier rejects the alias, AX0910); R-5 emits a per-type
+    // deep-copier `axion_copy_Lst` and the reuse gate copies the bare return, so it compiles and
+    // runs, ASan/LSan clean, on all three backends.
+    let fc = fixture("container_copy_reclaim.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fc);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "container conditional param-return should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n42\n", "{backend:?}");
+    }
 }
 
 #[test]
