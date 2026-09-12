@@ -86,10 +86,28 @@ join**: the static check inspects both arms and requires them to agree, while a 
 `Chk.brn`-must-balance rule is `merge_vals`, and it is precisely what rejects V-1 and what a `copy`
 repairs. `Op.borrow` models the unsafe interior alias, `Op.copy` models `axion_copy_T`.
 
-## Scope & next slices
+## Drop keys — `AxionKey.lean`
 
-Covered: the linear core, branches (`merge_vals` arm-balance, all paths), and interior aliases
-(borrows, drop-of-alias, dangling use, and the V-1 conditional-alias-return ↔ R-5-copy pair). The
-remaining natural increment is **drop keys** — the `WrongDropKey` cross-check: tag cells with a
-type and require a `drop`'s reclaimer key to match the cell's type (model a mistyped free as a
-fault the checker rejects). It builds on the same progress + preservation skeleton.
+The third file adds `verify.rs`'s `WrongDropKey` cross-check: `do_drop` verifies that a
+`Drop(v, key)`'s reclaimer matches `v`'s type (an `Integer` freed by `axion_bignum_free`, a
+`List$Int` by `axion_drop_List$Int`, …). Freeing with the wrong key is a bad-free — the class
+behind the multi-param mis-key bug V-2 catches. Cells carry a **type** (`Cell.live ty`), drops
+carry the reclaimer **key** (`Op.drop n key`), and the machine faults on a key/type mismatch.
+
+| Theorem | Statement |
+|---|---|
+| `no_corruption` / `no_leak` / `sound` | the guarantees, now over typed cells, on every path |
+| `no_bad_free` | whenever an accepted program reaches a `drop n key`, the cell is live and `key` is exactly its type — the reclaimer always matches (`WrongDropKey`) |
+| `wrong_key_drop_rejected` | dropping a `ty0` value with a `ty1` key can't be accepted (bad-free) |
+| `correct_key_accepted` | a correctly-keyed drop is accepted |
+| `heterogeneous_branch_drop_rejected` | a value that is `ty0` on one arm and `ty1` on the other has no single correct reclaimer, so any drop of it after the join is rejected — the `merge_vals` reconciliation of `Val.key` |
+
+## Scope & remaining work
+
+Covered: the linear core; branches (`merge_vals` arm-balance, all paths); interior aliases
+(borrows, drop-of-alias, dangling use, the V-1 ↔ R-5-copy pair); and drop keys (`WrongDropKey`,
+including the heterogeneous-branch case). These are the memory-safety classes `verify.rs`'s gates
+(AX0910 corruption, AX0911 leak) and Track 1's fixes were built around. Each file uses the same
+progress + preservation skeleton; the natural next step beyond coverage is the **faithfulness
+bridge** — a differential harness checking the Lean judgments agree with `verify.rs` on the corpus,
+tying the model to the code rather than only to prose correspondence tables.
