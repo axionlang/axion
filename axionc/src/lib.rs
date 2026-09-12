@@ -4002,13 +4002,23 @@ partition p xs = case xs of
   Cons y ys -> case partition p ys of
     (l, r) -> if p y then (Cons y l, r) else (l, Cons y r)
 
-sort :: Ord a => List a -> List a
+-- Quicksort. Partitions the tail in ONE pass (`partitionLe`, explicit recursion — no
+-- capturing lambda, no second traversal), so it CONSUMES its list exactly once and compiles
+-- natively over HEAP element types (String/Integer/…). The old body filtered `ys` twice — a
+-- duplication of the heap list no `%1` param can satisfy — so it was rejected by AX0912 over a
+-- heap element (`sort$String`). `partitionLe` returns (<=pivot, >pivot); `pivot` is borrowed by
+-- the comparisons and then moved into the middle `Cons`.
+sort :: Ord a => List a %1 -> List a
 sort xs = case xs of
   Nil -> Nil
-  Cons y ys ->
-    let less = filter (\\z -> le z y) ys in
-    let greq = filter (\\z -> not (le z y)) ys in
-    append (sort less) (Cons y (sort greq))
+  Cons y ys -> case partitionLe y ys of
+    (les, gre) -> append (sort les) (Cons y (sort gre))
+
+partitionLe :: Ord a => a -> List a %1 -> (List a, List a)
+partitionLe pivot ys = case ys of
+  Nil -> (Nil, Nil)
+  Cons z zs -> case partitionLe pivot zs of
+    (les, gre) -> if le z pivot then (Cons z les, gre) else (les, Cons z gre)
 
 intersperse :: a -> List a -> List a
 intersperse sep xs = case xs of
@@ -4166,13 +4176,19 @@ on g f x y = g (f x) (f y)
 -- closure-capture borrow (delta.rs) keeps `y` live to its single consumer `Cons y`, so a
 -- named comparator is leak-free. (`sortOn` is omitted: it would build a closure comparator,
 -- whose env is the documented conservative closure leak.)
-sortBy :: (a -> a -> Bool) -> List a -> List a
+-- Comparator quicksort — the `partitionBy` twin of `sort`/`partitionLe` (one-pass, no
+-- capturing lambda), so it too consumes its list once and reclaims heap elements natively.
+sortBy :: (a -> a -> Bool) -> List a %1 -> List a
 sortBy leq xs = case xs of
   Nil -> Nil
-  Cons y ys ->
-    let less = filter (\\z -> leq z y) ys in
-    let greq = filter (\\z -> not (leq z y)) ys in
-    append (sortBy leq less) (Cons y (sortBy leq greq))
+  Cons y ys -> case partitionBy leq y ys of
+    (les, gre) -> append (sortBy leq les) (Cons y (sortBy leq gre))
+
+partitionBy :: (a -> a -> Bool) -> a -> List a %1 -> (List a, List a)
+partitionBy leq pivot ys = case ys of
+  Nil -> (Nil, Nil)
+  Cons z zs -> case partitionBy leq pivot zs of
+    (les, gre) -> if leq z pivot then (Cons z les, gre) else (les, Cons z gre)
 
 -- List extensions (batch 3) — comparator/predicate HOFs. `nubBy`'s inner `filter (\\z -> not
 -- (p y z))` captures both `p` and the pivot `y`, exercising the closure-capture borrow fix.

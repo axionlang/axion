@@ -52,7 +52,9 @@ enc "wifi" 'correcthorsebatterystaple'
 enc "email/personal" $'hunter2\nuser: me@example.com'
 enc "github/work" $'ghp_worktoken123\nuser: workacct'
 
-EXPECT_LS=$'email/personal\ngithub/work\nwifi'
+# `ls` now renders a TREE (upstream shells to tree(1); we render it natively). Root
+# entries sorted (LC_ALL=C): email/, github/, wifi.gpg — dotfiles (.gpg-id) hidden.
+EXPECT_LS=$'Password Store\n├── email\n│   └── personal\n├── github\n│   └── work\n└── wifi'
 EXPECT_SHOW='correcthorsebatterystaple'
 EXPECT_FIND='github/work'
 EXPECT_GREP=$'github/work:\n  user: workacct'
@@ -74,6 +76,11 @@ check "pass show wifi" "$EXPECT_SHOW" -- show wifi
 check "pass wifi"      "$EXPECT_SHOW" -- wifi
 check "pass find git"  "$EXPECT_FIND" -- find git
 check "pass grep acct" "$EXPECT_GREP" -- grep workacct
+
+# fzf picker: `pass show` with NO name pipes the entry list into fzf and shows the pick.
+# Mock fzf (first on PATH) selects the first candidate; entries sort to email/personal first.
+mkdir -p "$WORK/bin"; printf '#!/bin/sh\nhead -n1\n' > "$WORK/bin/fzf"; chmod +x "$WORK/bin/fzf"
+PATH="$WORK/bin:$PATH" check "pass show (fzf pick)" $'hunter2\nuser: me@example.com' -- show
 
 # `show <missing>` is an ERROR: the message goes to stderr and the exit code is non-zero
 # (stdout stays empty), so it can't use the stdout-agreement harness above.
@@ -166,6 +173,49 @@ for be in "${backends[@]}"; do
   if [ -e "$S/PWNED" ] || [ "$got" != "sekret" ]; then
     echo "✗ [$be] injection-safety (canary=$([ -e "$S/PWNED" ] && echo HIT) got=$(printf '%q' "$got"))"; wfail=1
   else echo "✓ [$be] shell-free: metachar name round-trips, no command injection"; fi
+
+  # insert -m: read a MULTILINE body from stdin until EOF (via `cat` under runCapture) and
+  # store it verbatim. The first line is the password; extra lines are metadata.
+  printf 'first-line-pw\nuser: bob\nurl: example.com\n' | run_be "$be" -- insert -m multi/entry >/dev/null
+  if [ "$(decrypt "$S/multi/entry.gpg")" != $'first-line-pw\nuser: bob\nurl: example.com' ]; then
+    echo "✗ [$be] insert -m multi/entry (got=$(printf '%q' "$(decrypt "$S/multi/entry.gpg")"))"; wfail=1
+  else echo "✓ [$be] insert -m (multiline body round-trips)"; fi
+
+  # edit: decrypt into $EDITOR (scripted non-interactively here) on a RAMFS temp, then
+  # re-encrypt on save. Cover: (1) an existing entry gets new content; (2) a NEW name starts
+  # empty and is created; (3) an unchanged edit rewrites nothing; (4) no plaintext temp lingers.
+  cat > "$WORK/ed-write" <<'E'
+#!/bin/sh
+printf 'edited-pw\nmeta: changed\n' > "$1"
+E
+  chmod +x "$WORK/ed-write"
+  EDITOR="$WORK/ed-write" run_be "$be" -- edit email/personal >/dev/null
+  if [ "$(decrypt "$S/email/personal.gpg")" != $'edited-pw\nmeta: changed' ]; then
+    echo "✗ [$be] edit existing (got=$(printf '%q' "$(decrypt "$S/email/personal.gpg")"))"; wfail=1
+  else echo "✓ [$be] edit (existing entry re-encrypts new content)"; fi
+  EDITOR="$WORK/ed-write" run_be "$be" -- edit fresh/made >/dev/null
+  if [ "$(decrypt "$S/fresh/made.gpg")" != $'edited-pw\nmeta: changed' ]; then
+    echo "✗ [$be] edit new"; wfail=1
+  else echo "✓ [$be] edit (new entry created from empty)"; fi
+  before="$(decrypt "$S/email/personal.gpg")"
+  out="$(EDITOR=true run_be "$be" -- edit email/personal)"
+  if [ "$(decrypt "$S/email/personal.gpg")" != "$before" ] || ! printf '%s' "$out" | grep -q "unchanged"; then
+    echo "✗ [$be] edit unchanged (out=$(printf '%q' "$out"))"; wfail=1
+  else echo "✓ [$be] edit (unchanged → no rewrite)"; fi
+  if ls /dev/shm/pass-axi-* >/dev/null 2>&1 || ls "${TMPDIR:-/tmp}"/pass-axi-* >/dev/null 2>&1; then
+    echo "✗ [$be] edit left a plaintext temp behind"; wfail=1
+  else echo "✓ [$be] edit (RAMFS temp cleaned up)"; fi
+
+  # git passthrough: make the store a repo (so mutations auto-commit), do a mutation, then
+  # `pass git log` must show that commit — proving the argv is forwarded to git in the store.
+  # GIT_* identity is exported so the child git (spawned shell-free by pass) can commit.
+  git -C "$S" init -q 2>/dev/null
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t.t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t.t
+  git -C "$S" add -A >/dev/null 2>&1; git -C "$S" commit -qm seed >/dev/null 2>&1
+  run_be "$be" -- generate gitgen 12 >/dev/null      # auto-commits "Generate gitgen"
+  if ! run_be "$be" -- git log --oneline 2>/dev/null | grep -q "Generate gitgen"; then
+    echo "✗ [$be] git passthrough (log lacks the auto-commit)"; wfail=1
+  else echo "✓ [$be] git (passthrough shows the store's own history)"; fi
 
   # injection safety, shell-STRING paths: find/grep/generate build an `sh -c` pipeline,
   # so every interpolated user value is single-quoted through `shQuote`. A term that

@@ -4479,6 +4479,29 @@ pub fn lower_with(
         f.body = collapse_var_cases(body);
     }
 
+    // Conditional param-return normalization (regions/ownership — the "make it work" fix for
+    // the `condRet`/`fromMaybe` UAF class): a non-`%1` heap-STRING parameter returned BARE on
+    // some tail branch while OTHER branches return a fresh value makes the result a RUNTIME
+    // alias-or-fresh — a caller that reuses the arg drops the result as fresh and frees the
+    // still-borrowed param → use-after-free. No static per-function ownership can choose "free
+    // iff fresh", so rewrite the bare-param return into a COPY (`strAppend x ""`): the return
+    // becomes uniformly owned and the param a borrow, and the EXISTING borrow/summary/drop
+    // analysis below (which all runs after this) is then correct. Runs before
+    // `compute_borrow_args` so every downstream pass sees the copied form. Scoped to String
+    // (the surfaced class) and to MIXED returns, so pure passthroughs (`id`) and embedding
+    // consumers (`append`, whose returned tail is auto-`%1`) are left untouched.
+    {
+        let mut copy_ctr = 0usize;
+        for f in &mut out {
+            if let Some(ptys) = fn_param_types
+                .get(&f.name)
+                .filter(|p| p.len() == f.params.len())
+            {
+                normalize_alias_returns(f, ptys, &mut copy_ctr);
+            }
+        }
+    }
+
     // deep-drop (§2): `data` type of each droppable, so the backend reclaims
     // nested fields via a recursive destructor instead of a flat `free`.
     let recinfo = RecordInfo::build(module);
@@ -6430,12 +6453,17 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         | Op::LoadRaw(..)
         | Op::ArrayNew { .. }
         | Op::Unsupported(_) => false,
+        // putStr/putStrLn (axion_put/axion_puts) only PRINT their String arg — they never
+        // free it (matches `delta::op_delta_effect` and the runtime). Treating them as a move
+        // desynced `compute_borrow_args` (this fn) from `insert_drops` (delta): a param passed
+        // only to putStrLn was judged consumed here → the caller relinquished it, yet the callee
+        // (seeing a borrow) never dropped it → a leak on every guarded/`if` body that prints a
+        // param (`pass`'s `doLs sub`). A borrow: the owner reclaims it.
+        Op::PutStrLn(_) | Op::PutStr(_) => false,
         Op::Atom(a)
         | Op::IntToFloat(a)
         | Op::FloatToInt(a)
         | Op::FloatUnary(_, a)
-        | Op::PutStrLn(a)
-        | Op::PutStr(a)
         | Op::ShowInt(a)
         | Op::ArenaAlloc(a)
         | Op::ArenaMark(a)
@@ -6674,6 +6702,102 @@ fn arm_shell_frees_scrut(scrut: &str, t: &Term) -> bool {
         }
         Term::Let(_, _, _, b) => arm_shell_frees_scrut(scrut, b),
         Term::Ret(_, _) => false,
+    }
+}
+
+/// Classify a function's TAIL returns for alias-return normalization: does it return a
+/// target (non-`%1` String) param BARE (`has_param`), and does it ALSO return a fresh/owned
+/// value (`has_fresh`)? Only tail positions (real function returns) are inspected — a
+/// let-bound `if`/`case` is a value, not a return. See [`normalize_alias_returns`].
+fn scan_alias_tails(
+    t: &Term,
+    targets: &HashSet<String>,
+    params: &HashSet<String>,
+    has_param: &mut bool,
+    has_fresh: &mut bool,
+) {
+    match t {
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => {
+            if targets.contains(v) {
+                *has_param = true;
+            } else if !params.contains(v) {
+                *has_fresh = true; // a local → an owned/fresh value
+            }
+            // a bare NON-target param (Int, `%1` String, …) is a plain passthrough → neither.
+        }
+        Term::Ret(Rhs::Op(_), _) => *has_fresh = true, // any other op yields a fresh/owned value
+        Term::Ret(Rhs::If(_, a, b), _) => {
+            scan_alias_tails(a, targets, params, has_param, has_fresh);
+            scan_alias_tails(b, targets, params, has_param, has_fresh);
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => {
+            for (_, arm) in arms {
+                scan_alias_tails(arm, targets, params, has_param, has_fresh);
+            }
+        }
+        Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => {
+            scan_alias_tails(body, targets, params, has_param, has_fresh);
+        }
+    }
+}
+
+/// Replace each TAIL `ret <targetParam>` with `let t = strAppend param ""; ret t` (a fresh
+/// copy), so the return is owned and the param is borrowed. See [`normalize_alias_returns`].
+fn rewrite_alias_tails(t: &mut Term, targets: &HashSet<String>, ctr: &mut usize) {
+    match t {
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp) if targets.contains(v) => {
+            let (sp, v) = (*sp, v.clone());
+            let tmp = format!("$aliascopy{ctr}");
+            *ctr += 1;
+            let copy = Op::RtCall {
+                func: "axion_strcat".into(),
+                args: vec![Atom::Var(v), Atom::Str(String::new())],
+                returns: true,
+            };
+            *t = Term::Let(
+                tmp.clone(),
+                Rhs::Op(copy),
+                sp,
+                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))), sp)),
+            );
+        }
+        Term::Ret(Rhs::If(_, a, b), _) => {
+            rewrite_alias_tails(a, targets, ctr);
+            rewrite_alias_tails(b, targets, ctr);
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => {
+            for (_, arm) in arms {
+                rewrite_alias_tails(arm, targets, ctr);
+            }
+        }
+        Term::Ret(Rhs::Op(_), _) => {}
+        Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => {
+            rewrite_alias_tails(body, targets, ctr);
+        }
+    }
+}
+
+/// Normalize a MIXED conditional return of a non-`%1` heap-String param into a copy, removing
+/// the runtime alias-or-fresh ambiguity before ownership analysis (see the call site in
+/// `to_core`). Only touched when the function BOTH returns such a param bare AND returns a
+/// fresh value on another path.
+fn normalize_alias_returns(f: &mut CoreFn, ptys: &[Type], ctr: &mut usize) {
+    let owned: HashSet<&String> = f.owned_params.iter().collect();
+    let targets: HashSet<String> = f
+        .params
+        .iter()
+        .zip(ptys)
+        .filter(|(p, ty)| ty.head_con() == Some("String") && !owned.contains(p))
+        .map(|(p, _)| p.clone())
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    let params: HashSet<String> = f.params.iter().cloned().collect();
+    let (mut has_param, mut has_fresh) = (false, false);
+    scan_alias_tails(&f.body, &targets, &params, &mut has_param, &mut has_fresh);
+    if has_param && has_fresh {
+        rewrite_alias_tails(&mut f.body, &targets, ctr);
     }
 }
 

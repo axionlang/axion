@@ -1313,7 +1313,18 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // mirror axion_rt.c so the interpreter agrees with the native backends.
         ("getEnv", [Value::Str(name)]) => Ok(Value::Str(std::env::var(name).unwrap_or_default())),
         ("runCapture", [Value::Str(cmd)]) => {
-            let out = std::process::Command::new("sh").arg("-c").arg(cmd).output();
+            use std::process::Stdio;
+            // Inherit stdin + stderr (match the C runtime's `popen(cmd, "r")`), so a captured
+            // pipeline can read the program's own stdin — `runCapture "cat"` drains it to EOF
+            // (pass's `insert -m`). `.output()` gives the child a closed stdin, which diverges.
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdin(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .stdout(Stdio::piped())
+                .spawn()
+                .and_then(|c| c.wait_with_output());
             Ok(Value::Str(match out {
                 Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
                 Err(_) => String::new(),

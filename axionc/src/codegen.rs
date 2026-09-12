@@ -246,12 +246,20 @@ fn ffi_str(p: *const u8) -> String {
 }
 
 /// `runCapture :: String -> String` — run `cmd` via `sh -c`, capture stdout ("" on
-/// failure). Cranelift reimpl of `axion_run`.
+/// failure). Cranelift reimpl of `axion_run`. stdin and stderr are INHERITED (matching the
+/// C runtime's `popen(cmd, "r")`), so a captured pipeline can itself read the program's
+/// stdin — e.g. `runCapture "cat"` drains stdin to EOF (pass's `insert -m`). `.output()`
+/// would instead give the child a closed stdin, diverging from the LLVM backend.
 extern "C" fn axion_run(cmd: *const u8) -> *const u8 {
+    use std::process::Stdio;
     let out = std::process::Command::new("sh")
         .arg("-c")
         .arg(ffi_str(cmd))
-        .output();
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .spawn()
+        .and_then(|c| c.wait_with_output());
     match out {
         Ok(o) => axion_str_alloc(&o.stdout),
         Err(_) => axion_str_alloc(b""),

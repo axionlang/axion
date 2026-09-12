@@ -1109,6 +1109,62 @@ fn do_notation_monad_binds_short_circuit_on_all_backends() {
 }
 
 #[test]
+fn sort_over_heap_elements_reclaims_on_all_backends() {
+    // Regression: prelude `sort`/`sortBy` over a HEAP element type (String). The old quicksort
+    // filtered the tail twice (a heap duplication) → AX0912 rejected `sort$String`. Now a
+    // one-pass partition consumes its `%1` list and reclaims each element on every backend.
+    let fx = fixture("sort_heap_reclaim.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "sort over heap elements should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "date\nfig\nkiwi\npear\na\nbb\nccc\ndddd\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
+fn mixed_conditional_param_return_reclaims_on_all_backends() {
+    // Regression for the conditional param-return UAF: a non-`%1` String param returned BARE
+    // on one branch while another returns a FRESH value (condRet/fromMaybe/chomp shape) makes
+    // the result a runtime alias-or-fresh; a caller reusing the arg freed it via the result
+    // then used it → native use-after-free (interp + verifier missed it). core.rs now
+    // copy-normalizes the bare-param return so it is uniformly owned and the param borrowed.
+    let fx = fixture("mixed_param_return_reclaim.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "mixed conditional param-return should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "bob|bob\n<none>|\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn either_map_over_multiparam_sum_reclaims_on_all_backends() {
     // Regression for a PRE-EXISTING multi-type-parameter reclamation double-free (core.rs
     // `cond_elem_key`): `case e of Right y -> Right (f y); Left x -> Left x` over `Either a b`

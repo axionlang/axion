@@ -8,49 +8,52 @@
 
 
 
-
-
-
-        let _t1 = call filter p ys  ; Δ{} · makes List
-        ret call filter p ys  ; Δ{} · makes List
-        ret con Cons y _t1  ; Δ{_t1} · moves{_t1}
-      drop _t0
-      drop _t1
+            let _t4 = con Cons z les  ; Δ{_t2 z} · moves{z} · makes List$Int
+            let _t5 = con Cons z gre  ; Δ{_t2 z} · moves{z} · makes List$Int
+            ret tuple _t4 gre  ; Δ{_t2 _t4} · moves{_t4} · makes heap
+            ret tuple les _t5  ; Δ{_t2 _t5} · moves{_t5} · makes heap
+          drop _t0 : tuple$List$Int$List$Int skip{0 1}
+          drop _t2 : tuple$List$Int$List$Int skip{0 1}
+          else
+          let _t1 = call sortBy$$ge les  ; Δ{_t0 y} · makes List$Int
+          let _t2 = call sortBy$$ge gre  ; Δ{_t0 _t1 y} · makes List$Int
+          let _t3 = call ge z pivot  ; Δ{_t2 z}
+          let _t3 = con Cons y _t2  ; Δ{_t0 _t1 _t2 y} · moves{_t2 y} · makes List$Int
+          ret call append$Int _t1 _t3  ; Δ{_t0 _t1 _t3} · moves{_t1 _t3} · makes List$Int
+          ret if _t3 then
+        (les, gre) ->
+        (les, gre) ->
       drop xs
       drop xs
       drop xs
       drop xs
-      drop ys : List$Int
-      else
+      drop ys
+      drop ys
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
+      let _t0 = call partitionBy$$ge y ys  ; Δ{y ys} · moves{ys} · makes tuple$List$Int$List$Int
       let _t0 = call sum ys  ; Δ{}
-      let _t0 = callclo p y  ; Δ{}
-      let _t0 = closure lam$0 y  ; Δ{y ys} · makes heap
-      let _t1 = closure lam$1 y  ; Δ{less y ys} · makes heap
-      let _t2 = call sortBy$$ge less  ; Δ{greq less y} · moves{less} · makes List$Int
-      let _t3 = call sortBy$$ge greq  ; Δ{_t2 greq y} · moves{greq} · makes List$Int
-      let _t4 = con Cons y _t3  ; Δ{_t2 _t3 y} · moves{_t3 y} · makes List$Int
-      let greq = call filter _t1 ys  ; Δ{_t1 less y ys} · makes List$Int
-      let less = call filter _t0 ys  ; Δ{_t0 y ys} · makes List$Int
+      let _t0 = con Nil  ; Δ{} · makes List$Int
+      let _t1 = con Nil  ; Δ{_t0} · makes List$Int
+      let _t2 = call partitionBy$$ge pivot zs  ; Δ{z zs} · moves{zs} · makes tuple$List$Int$List$Int
       ret + y _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret call append$Int _t2 _t4  ; Δ{_t2 _t4} · moves{_t2 _t4} · makes List$Int
+      ret case _t0 of
+      ret case _t2 of
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
-      ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$Int
-      ret if _t0 then
+      ret tuple _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes heap
       ret ys  ; Δ{}
     Cons y ys ->
     Cons y ys ->
-    Cons y ys ->
+    Cons z zs ->
     Cons z zs ->
     Nil ->
     Nil ->
@@ -70,12 +73,11 @@
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
-    ret 0  ; Δ{}
-    ret 1  ; Δ{}
     ret 1  ; Δ{}
     ret == a b  ; Δ{}
-  ; Δ{}
-  ; Δ{}
+  ; Δ{_t0 y}
+  ; Δ{_t2 z}
+  ; Δ{_t2 z}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -90,14 +92,12 @@
   else
   else
   else
-  else
   let _d1000000 = putStrLn _t7  ; Δ{_t7}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _t0 = > a b  ; Δ{}
-  let _t0 = call ge z y  ; Δ{}
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t1 = con Cons 5 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   let _t2 = con Cons 1 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
@@ -109,26 +109,20 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
-  ret call ge z y  ; Δ{}
-  ret call not _t0  ; Δ{}
   ret case xs of
   ret case xs of
   ret case xs of
-  ret case xs of
+  ret case ys of
   ret if _t0 then
-  ret if b then
   ret rtcall axion_array_free _p  ; Δ{}
   ret showInt x  ; Δ{} · makes String
 append$Int xs ys  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
-filter p xs  =
 ge a b  =
-lam$0 [env y]z  =
-lam$1 [env y]z  =
 main  =
-not b  =
+partitionBy$$ge pivot ys  =
 show$Int x  =
 sortBy$$ge xs  =
 sum xs  =
