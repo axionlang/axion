@@ -129,6 +129,11 @@ extern "C" fn axion_bignum_from_str(s: i64) -> i64 {
 extern "C" fn axion_bignum_add(a: i64, b: i64) -> i64 {
     bignum_box(bignum(a).add(bignum(b)))
 }
+/// Deep-copy a boxed Integer into a fresh, independently-owned value — the Cranelift twin of
+/// the C runtime's `axion_bignum_copy`, used by the reuse-gated conditional-param-return copy.
+extern "C" fn axion_bignum_copy(a: i64) -> i64 {
+    bignum_box(bignum(a).clone())
+}
 extern "C" fn axion_bignum_sub(a: i64, b: i64) -> i64 {
     bignum_box(bignum(a).sub(bignum(b)))
 }
@@ -1801,6 +1806,7 @@ impl Cg {
         builder.symbol("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8);
         builder.symbol("axion_bignum_from_str", axion_bignum_from_str as *const u8);
         builder.symbol("axion_bignum_add", axion_bignum_add as *const u8);
+        builder.symbol("axion_bignum_copy", axion_bignum_copy as *const u8);
         builder.symbol("axion_bignum_sub", axion_bignum_sub as *const u8);
         builder.symbol("axion_bignum_mul", axion_bignum_mul as *const u8);
         builder.symbol("axion_bignum_div", axion_bignum_div as *const u8);
@@ -1990,6 +1996,7 @@ impl Cg {
             ("axion_bignum_from_i64", 1, true),
             ("axion_bignum_from_str", 1, true),
             ("axion_bignum_add", 2, true),
+            ("axion_bignum_copy", 1, true),
             ("axion_bignum_sub", 2, true),
             ("axion_bignum_mul", 2, true),
             ("axion_bignum_div", 2, true),

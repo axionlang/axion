@@ -171,6 +171,9 @@ fn is_generated(name: &str) -> bool {
 pub fn verify(lowered: &Lowered) -> Vec<Finding> {
     let (summaries, elem_aliases) =
         compute_summaries(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
+    // R-1/V-1: the whole-value param-return relation, consumed by the CHECK pass so the
+    // verifier catches the conditional-param-return alias on its own (a sound net).
+    let ret_alias = ret_alias_summary(&lowered.fns);
     let mut out = Vec::new();
     for f in &lowered.fns {
         if is_generated(&f.name) {
@@ -182,6 +185,7 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
             &lowered.recinfo,
             &summaries,
             &elem_aliases,
+            &ret_alias,
             PassMode {
                 track_fields: true,
                 poly_elem: false,
@@ -204,6 +208,124 @@ pub fn borrow_return_summary(fns: &[CoreFn], ba: &BorrowArgs, recinfo: &RecordIn
     sums
 }
 
+// ---- R-1: whole-value param-return relation (call-site-ownership.md) --------------------
+//
+// `ret_alias(g)` = the PARAMETER indices whose whole value `g`'s result may BE, on ANY path —
+// following var renames, `if`/`case` branches, and direct calls to other alias-returning
+// functions (a monotone fixpoint). It is DECOUPLED from ownership: `condRet x = if c then x
+// else fresh` → {1} even though the return is "owned" on the fresh branch — the blind spot
+// `borrow_return_summary` has via `rv.owned = any(branch owned)` (verify.rs `merge_vals`),
+// which is exactly why `condRet` UAF'd but `orDefault` (param-OR-param) did not.
+//
+// This is the RAW relation (append→{1}, id→{0} are included even though they are consuming
+// passthroughs); the call-site pass (R-2) intersects it with caller-side argument LIVENESS to
+// copy ONLY on genuine reuse — so an accumulator (never reused) is never copied. R-1 is
+// analysis-only: nothing consumes this yet, so it cannot affect codegen (judgment-first).
+
+/// The params a value (an [`Op`]) may BE, given the current per-var alias environment and the
+/// in-progress cross-function summary.
+fn ra_op(
+    op: &Op,
+    summary: &HashMap<String, HashSet<usize>>,
+    env: &HashMap<String, HashSet<usize>>,
+) -> HashSet<usize> {
+    match op {
+        // a var: whatever it is a param-alias of (a param maps to its own index).
+        Op::Atom(Atom::Var(v)) => env.get(v).cloned().unwrap_or_default(),
+        // a direct call returns param `i` of ITS args for each `i ∈ ret_alias(callee)`; the
+        // result is then whatever THAT arg may be (interprocedural chaining).
+        Op::CallDirect(g, args, _) => {
+            let mut out = HashSet::new();
+            if let Some(callee) = summary.get(g) {
+                for &j in callee {
+                    if let Some(Atom::Var(a)) = args.get(j) {
+                        if let Some(s) = env.get(a) {
+                            out.extend(s);
+                        }
+                    }
+                }
+            }
+            out
+        }
+        // anything else (fresh producer, constructor, primitive, closure call) is not a
+        // whole-value param alias.
+        _ => HashSet::new(),
+    }
+}
+
+/// The params a `Term`'s RESULT may BE. Threads `env` (var → param-alias set) through the
+/// `let` spine; unions the branches of a tail/value `if`/`case`.
+fn ra_term(
+    t: &Term,
+    summary: &HashMap<String, HashSet<usize>>,
+    env: &mut HashMap<String, HashSet<usize>>,
+) -> HashSet<usize> {
+    match t {
+        Term::Let(x, rhs, _, body) => {
+            let xs = ra_rhs(rhs, summary, env);
+            env.insert(x.clone(), xs);
+            ra_term(body, summary, env)
+        }
+        Term::Drop(_, _, _, _, body) => ra_term(body, summary, env),
+        Term::Ret(rhs, _) => ra_rhs(rhs, summary, env),
+    }
+}
+
+fn ra_rhs(
+    rhs: &Rhs,
+    summary: &HashMap<String, HashSet<usize>>,
+    env: &mut HashMap<String, HashSet<usize>>,
+) -> HashSet<usize> {
+    match rhs {
+        Rhs::Op(op) => ra_op(op, summary, env),
+        Rhs::If(_, a, b) => {
+            let mut sa = ra_term(a, summary, env);
+            let sb = ra_term(b, summary, env);
+            sa.extend(sb);
+            sa
+        }
+        Rhs::Case(_, arms) => {
+            let mut out = HashSet::new();
+            for (_, arm) in arms {
+                out.extend(ra_term(arm, summary, env));
+            }
+            out
+        }
+    }
+}
+
+/// R-1 of [`docs/call-site-ownership.md`]: compute `ret_alias` for every function (non-empty
+/// entries only), to a monotone fixpoint over the call graph.
+pub fn ret_alias_summary(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
+    let mut summary: HashMap<String, HashSet<usize>> = HashMap::new();
+    loop {
+        let mut changed = false;
+        for f in fns {
+            if is_generated(&f.name) {
+                continue;
+            }
+            let mut env: HashMap<String, HashSet<usize>> = HashMap::new();
+            for (i, p) in f.params.iter().enumerate() {
+                env.insert(p.clone(), HashSet::from([i]));
+            }
+            let res = ra_term(&f.body, &summary, &mut env);
+            if !res.is_empty() && summary.get(&f.name) != Some(&res) {
+                // grow monotonically (union with any prior entry).
+                let e = summary.entry(f.name.clone()).or_default();
+                let before = e.len();
+                e.extend(res);
+                if e.len() != before {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    summary
+}
+
 /// Per-function ELEMENT-alias summary: parameter indices whose heap ELEMENT the function's
 /// OWNED result shares — it builds a fresh container but embeds a BORROWED element of the
 /// param into it (`take`/`drop`/`filter` over a heap element type: `Cons y …` where `y` is a
@@ -224,6 +346,9 @@ fn compute_summaries(
     let mut sums: Summaries = HashMap::new();
     let mut elem: ElemAliases = HashMap::new();
     let no_elem: ElemAliases = HashMap::new();
+    // the whole-value-alias relation is not needed for the summary dry-runs (it only sharpens
+    // the CHECK pass); pass an empty map here.
+    let no_ret: HashMap<String, HashSet<usize>> = HashMap::new();
     let params_borrowed = |rv: &Val, f: &CoreFn| -> HashSet<usize> {
         f.params
             .iter()
@@ -245,7 +370,7 @@ fn compute_summaries(
                 track_fields: false,
                 poly_elem: false,
             };
-            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, pure_mode, None);
+            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, &no_ret, pure_mode, None);
             let pure_borrowed = params_borrowed(&rv, f);
             let params = if rv.owned {
                 HashSet::new()
@@ -265,7 +390,7 @@ fn compute_summaries(
                 track_fields: true,
                 poly_elem: true,
             };
-            let rve = run_fn(f, ba, recinfo, &sums, &elem, elem_mode, None);
+            let rve = run_fn(f, ba, recinfo, &sums, &elem, &no_ret, elem_mode, None);
             let elem_params: HashSet<usize> = params_borrowed(&rve, f)
                 .difference(&pure_borrowed)
                 .copied()
@@ -284,12 +409,14 @@ fn compute_summaries(
 
 /// Verify one function against the summaries; returns the resource classification of its
 /// return value. `out = None` runs it silently (for summary computation).
+#[allow(clippy::too_many_arguments)]
 fn run_fn(
     f: &CoreFn,
     ba: &BorrowArgs,
     recinfo: &RecordInfo,
     summaries: &Summaries,
     elem_aliases: &ElemAliases,
+    ret_alias: &HashMap<String, HashSet<usize>>,
     mode: PassMode,
     out: Option<&mut Vec<Finding>>,
 ) -> Val {
@@ -347,6 +474,7 @@ fn run_fn(
         leak_exempt: HashSet::new(),
         projections: HashMap::new(),
         borrowed_params,
+        ret_alias,
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -416,6 +544,14 @@ struct Verifier<'a> {
     /// like `dropWhile` — not in `borrow_args`). `consume` flags freeing an interior of one
     /// of THESE (the owner double-frees), but not of a moved-in/view param (this fn owns it).
     borrowed_params: HashSet<String>,
+    /// The WHOLE-VALUE param-return relation (R-1, `ret_alias_summary`): `ret_alias[g]` = the
+    /// param indices `g`'s result may BE. Consumed at call sites (`classify`) to mark a call's
+    /// result as aliasing an argument the callee BORROWS and returns whole — the
+    /// conditional-param-return class (`condRet`) the interior-alias `summaries` miss (they
+    /// exclude whole-value passthroughs). Empty in the summary dry-runs; the real relation is
+    /// supplied only for the CHECK pass, so the verifier catches the alias even if Auto-Drop's
+    /// copy-normalization is absent (a sound net, not a codegen-dodge).
+    ret_alias: &'a HashMap<String, HashSet<usize>>,
 }
 
 impl Verifier<'_> {
@@ -436,6 +572,43 @@ impl Verifier<'_> {
         match t {
             Term::Let(x, rhs, sp, body) => {
                 self.bind(x, rhs, *sp, st);
+                // R-1/V-1 (docs/call-site-ownership.md): a call that may return an argument
+                // WHOLE (`ret_alias`) whose arg is LIVE after this call makes `x` an alias of
+                // that arg — a borrow, not a fresh owned value. Marking it so lets `do_drop` /
+                // use-after-free catch the conditional-param-return UAF (`let picked = condRet
+                // "" name; … name …` — dropping `picked` frees the still-used `name`). Gated on
+                // per-call-site reuse (arg live in `body`): a consumed/never-reused arg
+                // (append, a fold accumulator) is untouched, so `x` stays owned — no false
+                // positive on the safe corpus. This is what makes the verifier a SOUND NET: it
+                // catches the alias even when Auto-Drop's copy-normalization is absent.
+                if let Rhs::Op(Op::CallDirect(g, args, _)) = rhs {
+                    if let Some(ra) = self.ret_alias.get(g) {
+                        let alias: HashSet<String> = ra
+                            .iter()
+                            .filter_map(|&i| match args.get(i) {
+                                Some(Atom::Var(v)) => Some(v.clone()),
+                                _ => None,
+                            })
+                            .filter(|v| {
+                                crate::core::term_mentions_any(
+                                    body,
+                                    &HashSet::from([v.clone()]),
+                                )
+                            })
+                            .collect();
+                        if !alias.is_empty() {
+                            st.insert(
+                                x.clone(),
+                                Val {
+                                    owned: false,
+                                    borrows: alias,
+                                    dead: None,
+                                    key: None,
+                                },
+                            );
+                        }
+                    }
+                }
                 self.term(body, st, tail)
             }
             Term::Drop(x, key, skip, sp, body) => {
@@ -712,6 +885,19 @@ impl Verifier<'_> {
                     });
                     if dbl {
                         self.finding(Cat::DoubleFree, x, sp);
+                    }
+                }
+                // V-2 (docs/call-site-ownership.md): a deep-drop key whose type CONSTRUCTOR is a
+                // primitive SCALAR (`Int$Int` → base `Int`) is ALWAYS a bad-free — you never
+                // deep-drop an Int/Float/Bool/Char. This catches the multi-param-sum mis-key
+                // class (`cond_elem_key`'s naive `$`-split turned `Either$Int$Int`'s Right
+                // payload into the bogus container key `Int$Int`, freeing a scalar) INDEPENDENTLY
+                // of the value's tracked key — which was `None` (scalar) there, so the tagged
+                // cross-check below was skipped and the bad-free slipped through. 0-false-positive:
+                // no legitimate destructor key has a scalar base.
+                if let Some(dk) = key {
+                    if matches!(ctor_base(dk), "Int" | "Float" | "Bool" | "Char") {
+                        self.finding(Cat::WrongDropKey, x, sp);
                     }
                 }
                 // drop-key cross-check: a value KNOWN to be a boxed `Integer`/`String` must be

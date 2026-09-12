@@ -1109,6 +1109,29 @@ fn do_notation_monad_binds_short_circuit_on_all_backends() {
 }
 
 #[test]
+fn dead_owned_let_binding_is_reclaimed_on_all_backends() {
+    // R-4 (docs/call-site-ownership.md): a dead owned let-binding `let x = producer in
+    // body-without-x` (an ignored heap-producing value) used to leak → AX0911 rejected it;
+    // the rename now transfers ownership + drop-type to the binding, so it is reclaimed.
+    let fx = fixture("dead_binding_reclaim.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "dead owned let-binding should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn sort_over_heap_elements_reclaims_on_all_backends() {
     // Regression: prelude `sort`/`sortBy` over a HEAP element type (String). The old quicksort
     // filtered the tail twice (a heap duplication) → AX0912 rejected `sort$String`. Now a
@@ -1161,6 +1184,24 @@ fn mixed_conditional_param_return_reclaims_on_all_backends() {
             "bob|bob\n<none>|\n",
             "{backend:?}"
         );
+    }
+    // The same class over an INTEGER param (R-3) — copy-normalized via axion_bignum_copy, but
+    // only because `useI` reuses `n`; fold accumulators (never reused) stay copy-free.
+    let fi = fixture("mixed_param_return_integer.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fi);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "integer conditional param-return should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n", "{backend:?}");
     }
 }
 

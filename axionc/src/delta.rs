@@ -248,6 +248,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_bignum_mod"
                 || func == "axion_bignum_from_str"
                 || func == "axion_bignum_from_i64"
+                || func == "axion_bignum_copy"
             {
                 if func != "axion_bignum_from_i64" {
                     e.borrows.extend(args.iter());

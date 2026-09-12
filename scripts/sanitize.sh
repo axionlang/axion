@@ -144,6 +144,8 @@ NATIVE=(
   axionc/tests/fixtures/do_monad_bind.axi
   axionc/tests/fixtures/either_map_reclaim.axi
   axionc/tests/fixtures/mixed_param_return_reclaim.axi
+  axionc/tests/fixtures/mixed_param_return_integer.axi
+  axionc/tests/fixtures/dead_binding_reclaim.axi
   axionc/tests/fixtures/sort_heap_reclaim.axi
   axionc/tests/fixtures/land_tuple_upd.axi
   axionc/tests/fixtures/land_owned_poly.axi
@@ -187,7 +189,7 @@ LEAKFREE=(
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field peel_heap_reclaim
-  structural_borrowers_reclaim take_heap_reclaim do_monad_bind either_map_reclaim mixed_param_return_reclaim sort_heap_reclaim
+  structural_borrowers_reclaim take_heap_reclaim do_monad_bind either_map_reclaim mixed_param_return_reclaim mixed_param_return_integer dead_binding_reclaim sort_heap_reclaim
   string_compare capability_sanitize readline_sanitize hello_cli cond_escape_let
   record_update_reclaim record_update_multi record_update_chain
   record_update_escape record_update_escape_read integer_reclaim integer_accumulator

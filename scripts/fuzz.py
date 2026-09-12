@@ -179,6 +179,62 @@ def gen_array(rng):
         ]))
     return PREAMBLE + "\nmain :: Int\nmain = " + " + ".join(terms) + "\n"
 
+def gen_cond_return(rng):
+    """The conditional-param-return / dead-binding / multi-param-sum / caller-reuse family —
+    the shapes the call-site-ownership arc (docs/call-site-ownership.md, R-1..R-4 + V-1/V-2)
+    fixed. A function returns a param BARE on one branch and a fresh value on another (the
+    `condRet`/`fromMaybe`/map-over-Right shape); a caller may REUSE the arg after the call (the
+    UAF trigger) or not (the accumulator-safe case). Over String / Integer / a two-parameter
+    sum, with `let`-renames and passthrough-Left. Every variant must be interp≡native and
+    ASan/LSan-clean; a regression of the copy-normalization or the mis-key surfaces here."""
+    k = rng.randint(0, 7)
+    reuse = rng.random() < 0.6          # caller reuses the arg after the call (the UAF trigger)
+    t = rng.randint(0, 4)
+    if t == 0:                          # conditional-param-return over String
+        tail = f'strAppend "r/" name' if reuse else '"done"'
+        return (f'condS :: String -> String -> String\n'
+                f'condS flag x = if strLen flag == 0 then x else strAppend x "!"\n'
+                f'useS :: String -> String\n'
+                f'useS name = let picked = condS "" name in {tail}\n'
+                f'main :: IO ()\nmain = putStrLn (useS "v{k}")\n')
+    if t == 1:                          # conditional-param-return over Integer
+        tail = f'n + fromInt 1' if reuse else 'fromInt 0'
+        return (f'condI :: Integer -> Integer\n'
+                f'condI x = if x < fromInt 0 then fromInt 0 else x\n'
+                f'useI :: Integer -> Integer\n'
+                f'useI n = let picked = condI n in {tail}\n'
+                f'main :: IO ()\nmain = putStrLn (showInteger (useI (fromInt {k})))\n')
+    if t == 2:                          # dead-binding: an ignored heap producer
+        prod = 'strAppend "u" (showInteger n)' if rng.random() < 0.5 else 'condI n'
+        return (f'condI :: Integer -> Integer\n'
+                f'condI x = if x < fromInt 0 then fromInt 0 else x\n'
+                f'ign :: Integer -> Integer\n'
+                f'ign n = let s = {prod} in n + fromInt 1\n'
+                f'main :: IO ()\nmain = putStrLn (showInteger (ign (fromInt {k})))\n')
+    if t == 3:                          # two-parameter sum: map-over-Right / passthrough-Left (scalar)
+        return (f'mapR :: Either Integer Integer -> Either Integer Integer\n'
+                f'mapR e = case e of\n'
+                f'  Right y -> Right (y + fromInt 1)\n'
+                f'  Left x -> Left x\n'
+                f'showE :: Either Integer Integer -> String\n'
+                f'showE e = case e of\n'
+                f'  Left s -> strAppend "L" (showInteger s)\n'
+                f'  Right v -> strAppend "R" (showInteger v)\n'
+                f'main :: IO ()\n'
+                f'main = putStrLn (showE (mapR (Right (fromInt {k}))))\n')
+    # t == 4: two-parameter sum with a HEAP (String) Left payload, both arms exercised
+    arm = f'Left "e{k}"' if rng.random() < 0.5 else f'Right (fromInt {k})'
+    return (f'mapS :: Either String Integer -> Either String Integer\n'
+            f'mapS e = case e of\n'
+            f'  Right y -> Right (y + fromInt 1)\n'
+            f'  Left s -> Left s\n'
+            f'showS :: Either String Integer -> String\n'
+            f'showS e = case e of\n'
+            f'  Left s -> strAppend "L" s\n'
+            f'  Right v -> strAppend "R" (showInteger v)\n'
+            f'main :: IO ()\n'
+            f'main = putStrLn (showS (mapS ({arm})))\n')
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.12:
@@ -187,6 +243,8 @@ def gen(rng):
         return gen_session(rng)         # full differential (interp supports sessions)
     if r < 0.44:
         return gen_array(rng)           # native-only
+    if r < 0.60:
+        return gen_cond_return(rng)     # call-site-ownership shapes (full differential)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:

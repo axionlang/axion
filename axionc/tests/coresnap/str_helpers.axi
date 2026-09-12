@@ -127,7 +127,6 @@
     else
     else
     else
-    let $aliascopy0 = rtcall axion_strcat s ""  ; Δ{} · makes String
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
     let _dfree = rtcall axion_free _p  ; Δ{}
@@ -160,7 +159,6 @@
     ret "."  ; Δ{}
     ret "false"  ; Δ{}
     ret "true"  ; Δ{}
-    ret $aliascopy0  ; Δ{$aliascopy0} · moves{$aliascopy0}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
@@ -187,6 +185,7 @@
     ret j  ; Δ{}
     ret rtcall axion_substr 0 k s  ; Δ{} · makes String
     ret rtcall axion_substr _t1 _t4 s  ; Δ{} · makes String
+    ret s  ; Δ{}
     ret y  ; Δ{}
     ret y  ; Δ{}
   ; Δ{}

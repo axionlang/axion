@@ -397,6 +397,7 @@ pub fn is_bignum_producer(func: &str) -> bool {
             | "axion_bignum_mod"
             | "axion_bignum_from_i64"
             | "axion_bignum_from_str"
+            | "axion_bignum_copy"
     )
 }
 
@@ -492,6 +493,7 @@ pub fn is_bignum_borrower(func: &str) -> bool {
             | "axion_bignum_lt"
             | "axion_bignum_gt"
             | "axion_bignum_from_str"
+            | "axion_bignum_copy"
     )
 }
 
@@ -4479,25 +4481,36 @@ pub fn lower_with(
         f.body = collapse_var_cases(body);
     }
 
-    // Conditional param-return normalization (regions/ownership — the "make it work" fix for
-    // the `condRet`/`fromMaybe` UAF class): a non-`%1` heap-STRING parameter returned BARE on
-    // some tail branch while OTHER branches return a fresh value makes the result a RUNTIME
-    // alias-or-fresh — a caller that reuses the arg drops the result as fresh and frees the
-    // still-borrowed param → use-after-free. No static per-function ownership can choose "free
-    // iff fresh", so rewrite the bare-param return into a COPY (`strAppend x ""`): the return
-    // becomes uniformly owned and the param a borrow, and the EXISTING borrow/summary/drop
-    // analysis below (which all runs after this) is then correct. Runs before
-    // `compute_borrow_args` so every downstream pass sees the copied form. Scoped to String
-    // (the surfaced class) and to MIXED returns, so pure passthroughs (`id`) and embedding
-    // consumers (`append`, whose returned tail is auto-`%1`) are left untouched.
-    {
+    // Call-site-driven conditional param-return normalization (R-2, docs/call-site-ownership.md;
+    // fixes the `condRet`/`relJoin` UAF class): a non-`%1` heap-String param returned BARE makes
+    // the result alias the arg, so a caller that REUSES the arg after the call — and drops the
+    // result — frees the still-live arg (use-after-free). Copy the bare return (`strAppend x ""`)
+    // so it is uniformly owned and the param a borrow, and the EXISTING borrow/summary/drop
+    // analysis below is then correct. The copy fires ONLY where a caller actually reuses the arg
+    // (`ret_alias(g) ∩ reused(g)`), so never-reused returns (`chomp`) and every fold accumulator
+    // (its `acc` occurs once in `foldl`) keep their zero-cost move — the key difference from the
+    // old mixed-heuristic that copied unconditionally. Runs before `compute_borrow_args`, so the
+    // relations are read off the RAW (pre-copy) Core and every downstream pass sees the result.
+    // AXION_NO_ALIAS_COPY (test hook): skip this copy so the RAW unsafe Core is emitted, to
+    // prove the drop-verifier CATCHES the conditional-param-return alias on its own (a sound
+    // net), rather than only being dodged by the copy. Never set in production.
+    if std::env::var_os("AXION_NO_ALIAS_COPY").is_none() {
+        let ret_alias = crate::verify::ret_alias_summary(&out);
+        let reused = reused_after_call(&out, &ret_alias);
         let mut copy_ctr = 0usize;
         for f in &mut out {
-            if let Some(ptys) = fn_param_types
+            let Some(ptys) = fn_param_types
                 .get(&f.name)
                 .filter(|p| p.len() == f.params.len())
-            {
-                normalize_alias_returns(f, ptys, &mut copy_ctr);
+            else {
+                continue;
+            };
+            let (Some(ra), Some(ru)) = (ret_alias.get(&f.name), reused.get(&f.name)) else {
+                continue;
+            };
+            let copy_params: HashSet<usize> = ra.intersection(ru).copied().collect();
+            if !copy_params.is_empty() {
+                normalize_alias_returns(f, ptys, &copy_params, &mut copy_ctr);
             }
         }
     }
@@ -5702,6 +5715,16 @@ fn collect_drop_types(
         Term::Let(x, rhs, span, body) => {
             if let Rhs::Op(op) = rhs {
                 let mut ty = op.drop_ty();
+                // R-4: a pure rename `let x = src` inherits `src`'s drop-type, so the
+                // ownership the rename transfers (see `scan_body`) is reclaimed with the
+                // RIGHT reclaimer (`drop x : String` → axion_str_drop, not a flat free that
+                // the verifier flags as a WrongDropKey bad-free). `out` is built forward, so
+                // `src`'s type is already recorded.
+                if ty.is_none() {
+                    if let Op::Atom(Atom::Var(src)) = op {
+                        ty = out.get(src).cloned().flatten();
+                    }
+                }
                 // Phase 4: `parMap`'s reply `List` element type is only known from
                 // inference (this binding's span) — the RtCall carries no key field,
                 // so key its drop concretely here for deep element reclamation.
@@ -6681,6 +6704,13 @@ fn cond_elem_key(
             _ => Some(k),
         });
     }
+    // AXION_NAIVE_ELEM_KEY (test hook): the OLD buggy `split_once('$')` that took the whole tail
+    // as one element (`Either$Int$Int` → `Int$Int`). Reproduces the multi-param-sum mis-key
+    // unsafe Core so the drop-verifier's V-2 scalar-base-key check can be proven to catch it.
+    if std::env::var_os("AXION_NAIVE_ELEM_KEY").is_some() {
+        let (_, elem) = scrut_key?.split_once('$')?;
+        return Some(Some(elem.to_string()));
+    }
     // Polymorphic field: resolve the field's own type PARAMETER to the matching argument of the
     // scrutinee's instantiation before classifying — the multi-param-correct path, identical to
     // the `Elab::consumed_elem_key` twin. The old `split_once('$')` took the WHOLE tail as one
@@ -6709,51 +6739,108 @@ fn arm_shell_frees_scrut(scrut: &str, t: &Term) -> bool {
 /// target (non-`%1` String) param BARE (`has_param`), and does it ALSO return a fresh/owned
 /// value (`has_fresh`)? Only tail positions (real function returns) are inspected — a
 /// let-bound `if`/`case` is a value, not a return. See [`normalize_alias_returns`].
-fn scan_alias_tails(
+/// R-2 (docs/call-site-ownership.md): the per-function set of parameter indices that some
+/// CALLER reuses after passing them to a `ret_alias` position — the call-site liveness that
+/// decides whether the callee's bare-param return actually needs a copy. For each call
+/// `let r = g(… aⱼ …); body` where `j ∈ ret_alias(g)` and `aⱼ` is a var, `aⱼ` is "reused" iff
+/// it is mentioned in the continuation `body` (which also catches a rename `let b = aⱼ; … b`,
+/// since the binding mentions `aⱼ`) — a sound over-approximation of live-after. A TAIL call
+/// (`ret g(…)`) has no continuation, so its args are never reused-after. This is what makes the
+/// copy accumulator-safe: a fold combiner's accumulator occurs once in `foldl` (passed to the
+/// combiner, result rebound) and is never mentioned after → never copied.
+fn reused_after_call(
+    fns: &[CoreFn],
+    ret_alias: &HashMap<String, HashSet<usize>>,
+) -> HashMap<String, HashSet<usize>> {
+    let mut reused: HashMap<String, HashSet<usize>> = HashMap::new();
+    for f in fns {
+        scan_reuse(&f.body, ret_alias, &mut reused);
+    }
+    reused
+}
+
+fn scan_reuse(
     t: &Term,
-    targets: &HashSet<String>,
-    params: &HashSet<String>,
-    has_param: &mut bool,
-    has_fresh: &mut bool,
+    ret_alias: &HashMap<String, HashSet<usize>>,
+    reused: &mut HashMap<String, HashSet<usize>>,
 ) {
     match t {
-        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => {
-            if targets.contains(v) {
-                *has_param = true;
-            } else if !params.contains(v) {
-                *has_fresh = true; // a local → an owned/fresh value
+        Term::Let(_, Rhs::Op(Op::CallDirect(g, args, _)), _, body) => {
+            if let Some(ra) = ret_alias.get(g) {
+                for &j in ra {
+                    if let Some(Atom::Var(a)) = args.get(j) {
+                        if term_mentions_any(body, &HashSet::from([a.clone()])) {
+                            reused.entry(g.clone()).or_default().insert(j);
+                        }
+                    }
+                }
             }
-            // a bare NON-target param (Int, `%1` String, …) is a plain passthrough → neither.
+            scan_reuse(body, ret_alias, reused);
         }
-        Term::Ret(Rhs::Op(_), _) => *has_fresh = true, // any other op yields a fresh/owned value
+        Term::Let(_, Rhs::If(_, a, b), _, body) => {
+            scan_reuse(a, ret_alias, reused);
+            scan_reuse(b, ret_alias, reused);
+            scan_reuse(body, ret_alias, reused);
+        }
+        Term::Let(_, Rhs::Case(_, arms), _, body) => {
+            for (_, arm) in arms {
+                scan_reuse(arm, ret_alias, reused);
+            }
+            scan_reuse(body, ret_alias, reused);
+        }
+        Term::Let(_, Rhs::Op(_), _, body) | Term::Drop(_, _, _, _, body) => {
+            scan_reuse(body, ret_alias, reused);
+        }
         Term::Ret(Rhs::If(_, a, b), _) => {
-            scan_alias_tails(a, targets, params, has_param, has_fresh);
-            scan_alias_tails(b, targets, params, has_param, has_fresh);
+            scan_reuse(a, ret_alias, reused);
+            scan_reuse(b, ret_alias, reused);
         }
         Term::Ret(Rhs::Case(_, arms), _) => {
             for (_, arm) in arms {
-                scan_alias_tails(arm, targets, params, has_param, has_fresh);
+                scan_reuse(arm, ret_alias, reused);
             }
         }
-        Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => {
-            scan_alias_tails(body, targets, params, has_param, has_fresh);
-        }
+        // a tail `ret op` (incl. a tail call): no continuation → no reuse-after.
+        Term::Ret(Rhs::Op(_), _) => {}
     }
 }
 
-/// Replace each TAIL `ret <targetParam>` with `let t = strAppend param ""; ret t` (a fresh
-/// copy), so the return is owned and the param is borrowed. See [`normalize_alias_returns`].
-fn rewrite_alias_tails(t: &mut Term, targets: &HashSet<String>, ctr: &mut usize) {
+/// How to copy a bare-returned heap param so its return is owned, not an alias.
+#[derive(Clone, Copy)]
+enum CopyKind {
+    /// `String` → `strAppend x ""` (a fresh `axion_strcat` copy).
+    Str,
+    /// `Integer` → `axion_bignum_copy x` (a fresh bignum clone).
+    Int,
+}
+
+/// The copy op for a target param of the given kind.
+fn alias_copy_op(v: &str, kind: CopyKind) -> Op {
+    match kind {
+        CopyKind::Str => Op::RtCall {
+            func: "axion_strcat".into(),
+            args: vec![Atom::Var(v.to_string()), Atom::Str(String::new())],
+            returns: true,
+        },
+        CopyKind::Int => Op::RtCall {
+            func: "axion_bignum_copy".into(),
+            args: vec![Atom::Var(v.to_string())],
+            returns: true,
+        },
+    }
+}
+
+/// Replace each TAIL `ret <targetParam>` with `let t = <copy param>; ret t` (a fresh copy —
+/// String via strAppend, Integer via axion_bignum_copy), so the return is owned and the param
+/// is borrowed. See [`normalize_alias_returns`].
+fn rewrite_alias_tails(t: &mut Term, targets: &HashMap<String, CopyKind>, ctr: &mut usize) {
     match t {
-        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp) if targets.contains(v) => {
-            let (sp, v) = (*sp, v.clone());
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp) if targets.contains_key(v) => {
+            let (sp, kind) = (*sp, targets[v]);
+            let v = v.clone();
             let tmp = format!("$aliascopy{ctr}");
             *ctr += 1;
-            let copy = Op::RtCall {
-                func: "axion_strcat".into(),
-                args: vec![Atom::Var(v), Atom::Str(String::new())],
-                returns: true,
-            };
+            let copy = alias_copy_op(&v, kind);
             *t = Term::Let(
                 tmp.clone(),
                 Rhs::Op(copy),
@@ -6777,26 +6864,35 @@ fn rewrite_alias_tails(t: &mut Term, targets: &HashSet<String>, ctr: &mut usize)
     }
 }
 
-/// Normalize a MIXED conditional return of a non-`%1` heap-String param into a copy, removing
-/// the runtime alias-or-fresh ambiguity before ownership analysis (see the call site in
-/// `to_core`). Only touched when the function BOTH returns such a param bare AND returns a
-/// fresh value on another path.
-fn normalize_alias_returns(f: &mut CoreFn, ptys: &[Type], ctr: &mut usize) {
+/// Copy the bare-param returns that a caller actually reuses (R-2/R-3, docs/call-site-ownership.md):
+/// for each parameter index in `copy_params` (= `ret_alias(f) ∩ reused(f)`, precomputed by the
+/// caller) that is a non-`%1` heap **String** or **Integer**, rewrite `ret param` → `let t =
+/// copy param; ret t`. A bare-param return is copied only when some caller keeps the arg alive
+/// past the call — so a never-reused return (`chomp`, and every fold ACCUMULATOR, whose `acc`
+/// is never reused by `foldl`) keeps its zero-cost move, while a genuinely-reused one
+/// (`condRet`/`relJoin`) is made owned. The reuse gate is what lets Integer join safely: the
+/// per-iteration bignum clone that regressed the first (ungated) Integer attempt never fires,
+/// because accumulators are not reused. Containers (R-5) need a deep-copy generator — excluded.
+fn normalize_alias_returns(
+    f: &mut CoreFn,
+    ptys: &[Type],
+    copy_params: &HashSet<usize>,
+    ctr: &mut usize,
+) {
     let owned: HashSet<&String> = f.owned_params.iter().collect();
-    let targets: HashSet<String> = f
+    let targets: HashMap<String, CopyKind> = f
         .params
         .iter()
         .zip(ptys)
-        .filter(|(p, ty)| ty.head_con() == Some("String") && !owned.contains(p))
-        .map(|(p, _)| p.clone())
+        .enumerate()
+        .filter(|(i, (p, _))| copy_params.contains(i) && !owned.contains(p))
+        .filter_map(|(_, (p, ty))| match ty.head_con() {
+            Some("String") => Some((p.clone(), CopyKind::Str)),
+            Some("Integer") => Some((p.clone(), CopyKind::Int)),
+            _ => None, // containers have no copy primitive yet (R-5)
+        })
         .collect();
-    if targets.is_empty() {
-        return;
-    }
-    let params: HashSet<String> = f.params.iter().cloned().collect();
-    let (mut has_param, mut has_fresh) = (false, false);
-    scan_alias_tails(&f.body, &targets, &params, &mut has_param, &mut has_fresh);
-    if has_param && has_fresh {
+    if !targets.is_empty() {
         rewrite_alias_tails(&mut f.body, &targets, ctr);
     }
 }
@@ -7019,6 +7115,18 @@ fn scan_body(t: &Term, ba: &BorrowArgs, alloc: &mut HashSet<String>, esc: &mut H
                     // local allocation (Phase A′ annotation, or an always-heap op)
                     if op_produces_heap(op) {
                         alloc.insert(x.clone());
+                    }
+                    // R-4 (docs/call-site-ownership.md): a pure rename `let x = src` MOVES an
+                    // allocated `src` into `x` (delta annotates it `moves{src}`, so `src` is not
+                    // reused afterward). Transfer ownership to `x` so it is droppable — otherwise
+                    // `src` is marked escaped (by the alias below) while `x` is never allocated,
+                    // so NEITHER is in `drp` and an unused binding leaks (`let x = producer in
+                    // body-without-x` → AX0911 rejected). With the transfer, `x` is reclaimed at
+                    // its death point (dropped if dead, or dropped by whoever consumes it).
+                    if let Op::Atom(Atom::Var(src)) = op {
+                        if alloc.contains(src) {
+                            alloc.insert(x.clone());
+                        }
                     }
                     scan_op_escapes(op, ba, esc);
                 }
@@ -7574,7 +7682,7 @@ fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
 }
 
 /// `true` if any variable in `set` is referenced anywhere in `t`.
-fn term_mentions_any(t: &Term, set: &HashSet<String>) -> bool {
+pub fn term_mentions_any(t: &Term, set: &HashSet<String>) -> bool {
     match t {
         Term::Let(_, rhs, _, body) => rhs_mentions_any(rhs, set) || term_mentions_any(body, set),
         Term::Drop(v, _, _, _, body) => set.contains(v) || term_mentions_any(body, set),

@@ -99,6 +99,7 @@ enum Emit {
     Core,
     Delta,
     Verify,
+    RetAlias,
     Clif,
     Llvm,
 }
@@ -187,6 +188,7 @@ pub fn run_cli() -> ExitCode {
                     Some("core") => emit = Emit::Core,
                     Some("delta") => emit = Emit::Delta,
                     Some("verify") => emit = Emit::Verify,
+                    Some("ret-alias") => emit = Emit::RetAlias,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
@@ -376,6 +378,42 @@ pub fn run_cli() -> ExitCode {
         } else {
             ExitCode::FAILURE
         };
+    }
+
+    if emit == Emit::RetAlias {
+        // R-1 (docs/call-site-ownership.md): the whole-value param-return relation. Report-only
+        // — a debug view of the analysis that the future call-site ownership pass (R-2) will
+        // consume. One line per function that may return a parameter, with the param indices.
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            fuse,
+        );
+        let summary = verify::ret_alias_summary(&lowered.fns);
+        let mut rows: Vec<(String, Vec<usize>)> = summary
+            .into_iter()
+            .map(|(f, ps)| {
+                let mut v: Vec<usize> = ps.into_iter().collect();
+                v.sort_unstable();
+                (f, v)
+            })
+            .collect();
+        rows.sort();
+        for (f, ps) in &rows {
+            let list = ps
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            println!("{f}: {{{list}}}");
+        }
+        println!("ret-alias: {} function(s) may return a parameter", rows.len());
+        return ExitCode::SUCCESS;
     }
 
     if emit == Emit::Delta {

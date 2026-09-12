@@ -196,6 +196,17 @@ static BigNum *bn_addsub(const BigNum *a, const BigNum *b, int sub) {
 }
 long axion_bignum_add(long a, long b) { return (long)bn_addsub((BigNum *)a, (BigNum *)b, 0); }
 long axion_bignum_sub(long a, long b) { return (long)bn_addsub((BigNum *)a, (BigNum *)b, 1); }
+/* Deep-copy a boxed Integer (struct + limbs) into a fresh, independently-owned value — used by
+ * the reuse-gated conditional-param-return copy (core.rs) so a bare `ret x` of a REUSED owned
+ * Integer param becomes an owned copy, not an alias the caller would double-free. */
+long axion_bignum_copy(long a) {
+  const BigNum *s = (const BigNum *)a;
+  BigNum *b = bn_make(s->len);
+  b->neg = s->neg;
+  if (s->len > 0)
+    memcpy(b->limbs, s->limbs, (size_t)s->len * sizeof(unsigned int));
+  return (long)b;
+}
 long axion_bignum_mul(long a, long b) {
   BigNum *x = (BigNum *)a, *y = (BigNum *)b;
   if (x->len == 0 || y->len == 0) return (long)bn_make(0);

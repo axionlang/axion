@@ -133,6 +133,119 @@ fn element_alias_double_free_is_caught_by_verifier() {
     );
 }
 
+/// R-1 (docs/call-site-ownership.md): the `ret_alias` whole-value param-return relation.
+/// `ident` returns its param, `orDefault` returns one of two params across an `if`, `app`
+/// returns its tail param on the base case, and `plusOne` returns a fresh scalar (absent).
+/// Decoupled from ownership — the foundation the call-site copy decision (R-2) will consume.
+#[test]
+fn ret_alias_relation_tracks_whole_value_param_returns() {
+    let path = format!(
+        "{}/tests/fixtures/ret_alias_facts.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let out = axionc()
+        .args(["--emit", "ret-alias", &path])
+        .output()
+        .unwrap();
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "ret-alias emit should succeed:\n{s}");
+    for want in ["ident: {0}", "orDefault: {0,1}", "app: {1}"] {
+        assert!(s.contains(want), "ret-alias missing `{want}`, got:\n{s}");
+    }
+    assert!(
+        !s.contains("plusOne"),
+        "plusOne returns a fresh scalar, not a param — must NOT be in ret_alias:\n{s}"
+    );
+    assert!(
+        s.contains("3 function(s)"),
+        "expected exactly 3 param-returning functions, got:\n{s}"
+    );
+}
+
+/// V-1 (docs/call-site-ownership.md): the drop-verifier is a SOUND NET for the
+/// conditional-param-return alias — it catches the use-after-free on the RAW Core (Auto-Drop's
+/// copy-normalization disabled via AXION_NO_ALIAS_COPY), not merely by codegen dodging it. The
+/// normal build (copy on) verifies clean; with the copy off it reports a corruption finding.
+#[test]
+fn verifier_catches_conditional_param_return_alias_without_the_copy() {
+    let path = format!(
+        "{}/tests/fixtures/alias_return_net.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    // copy ON (normal) → clean.
+    let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    let oks = String::from_utf8_lossy(&ok.stdout);
+    assert!(
+        oks.contains("no corruption"),
+        "normal build must verify clean, got:\n{oks}"
+    );
+    // copy OFF (raw unsafe Core) → the verifier must CATCH it.
+    let bad = axionc()
+        .args(["--emit", "verify", &path])
+        .env("AXION_NO_ALIAS_COPY", "1")
+        .output()
+        .unwrap();
+    let bads = String::from_utf8_lossy(&bad.stdout);
+    assert!(
+        bads.contains("FAIL:") && (bads.contains("DropOfAlias") || bads.contains("UseAfterFree")),
+        "without the copy the verifier must catch the conditional-param-return alias, got:\n{bads}"
+    );
+}
+
+/// V-2 (docs/call-site-ownership.md): the verifier catches the multi-param-sum mis-key
+/// bad-free (a scalar payload of `Either Int Int` dropped as the bogus container key `Int$Int`)
+/// via the scalar-base-key check — INDEPENDENTLY of the fixed `cond_elem_key`. With the old
+/// naive key (AXION_NAIVE_ELEM_KEY) the raw Core is a bad-free and the verifier flags
+/// WrongDropKey; the normal build verifies clean.
+#[test]
+fn verifier_catches_multiparam_sum_miskey_without_the_fix() {
+    let path = format!(
+        "{}/tests/fixtures/either_map_reclaim.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&ok.stdout).contains("no corruption"),
+        "normal build must verify clean"
+    );
+    let bad = axionc()
+        .args(["--emit", "verify", &path])
+        .env("AXION_NAIVE_ELEM_KEY", "1")
+        .output()
+        .unwrap();
+    let bads = String::from_utf8_lossy(&bad.stdout);
+    assert!(
+        bads.contains("FAIL:") && bads.contains("WrongDropKey"),
+        "with the naive elem key the verifier must catch the scalar-as-container bad-free, got:\n{bads}"
+    );
+}
+
+/// R-3 (docs/call-site-ownership.md): the reuse-gated Integer copy must NOT touch fold
+/// accumulators. A combiner returns its `acc` param but `foldl` never reuses it after the
+/// call, so the reuse gate leaves it a zero-cost move — no per-iteration `axion_bignum_copy`
+/// (the exact regression that reverted the first, ungated Integer attempt). Guards RSA-shaped
+/// Integer folds against re-introducing it: their Core must contain no `axion_bignum_copy`.
+#[test]
+fn integer_accumulators_are_not_copied() {
+    for fx in [
+        "integer_accumulator.axi",
+        "list_foldl_accum.axi",
+        "rsa_modexp.axi",
+    ] {
+        let path = format!("{}/tests/fixtures/{fx}", env!("CARGO_MANIFEST_DIR"));
+        let out = axionc().args(["--emit", "core", &path]).output().unwrap();
+        let core = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !core.contains("axion_bignum_copy"),
+            "{fx}: reuse gate failed — a fold accumulator was copied per iteration:\n{}",
+            core.lines()
+                .filter(|l| l.contains("bignum_copy"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
 /// The dual of the above: safe list deconstruction (`head`/`tail`/`last`/`uncons`) over a heap
 /// element type must NOT be flagged. These CONSUME (`%1`, `moves{xs}`) the list and return a
 /// FRESH owned part — ownership transfers to the result, so there is no shared element the
