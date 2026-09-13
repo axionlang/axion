@@ -3770,6 +3770,13 @@ pub struct Lowered {
     pub fns: Vec<CoreFn>,
     pub borrow_args: BorrowArgs,
     pub recinfo: RecordInfo,
+    /// Per-function, the monomorphic reclaim key of each parameter position (from the signature —
+    /// `List String` → `Some("List$String")`, a scalar → `None`). The verifier seeds EVERY param's
+    /// scrutinee key from this (not just `%1` params via `owned_drop_ty`), so a `case` on a BORROWED
+    /// container param resolves its extracted elements to their concrete type (`String`) via
+    /// `field_tagged_key` instead of the generic-constructor poly-erasure. Closes the poly-element
+    /// blind spot behind the `axpass` borrowed-list-element double-frees (docs/call-site-ownership).
+    pub param_keys: HashMap<String, Vec<Option<String>>>,
 }
 
 /// Stream-fusion pass: rewrites producer→consumer chains on `List`
@@ -4861,10 +4868,31 @@ pub fn lower_with(
     // §9 structured fork-join worker state machines (same hand-managed nursery
     // arena as the session steps — they bypass the drop analysis too).
     result.extend(parmap_steps);
+    // Per-param mono reclaim key, seeded ONLY for heap CONTAINER params (a `data`/`List`/tuple with
+    // a concrete key) — the ones whose extracted elements need concrete resolution. Scalars,
+    // `String`/`Integer` leaves, and polymorphic containers stay `None` (unchanged), keeping the
+    // blast radius to container scrutinees.
+    let param_keys: HashMap<String, Vec<Option<String>>> = fn_param_types
+        .iter()
+        .map(|(name, tys)| {
+            let keys = tys
+                .iter()
+                .map(|ty| {
+                    if heap_ty(ty, &data_types) {
+                        mono_key(ty)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (name.clone(), keys)
+        })
+        .collect();
     Lowered {
         fns: result,
         borrow_args,
         recinfo,
+        param_keys,
     }
 }
 

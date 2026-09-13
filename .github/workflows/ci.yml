@@ -125,6 +125,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Native runtime under ASan + LSan
         run: AXION_CLANG=clang ./scripts/sanitize.sh
+      # Real-workload gate: the `pass` clone's commands over a NESTED store (fzf picker path) under
+      # ASan — the exact shape two shipped double-frees lived in, which the fixture corpus missed.
+      - name: pass(1) clone under ASan
+        run: AXION_CLANG=clang ./scripts/pass-asan.sh
       # §11: the M:N session scheduler runs on a thread pool → race-freedom must be
       # proven too. The concurrent session fixtures run under ThreadSanitizer.
       - name: Session scheduler under ThreadSanitizer

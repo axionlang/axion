@@ -245,6 +245,7 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
             &elem_aliases,
             &ret_alias,
             &frees_heap,
+            &lowered.param_keys,
             PassMode {
                 track_fields: true,
                 poly_elem: false,
@@ -411,6 +412,7 @@ fn compute_summaries(
     // summary dry-runs never populate `poly_borrowed` (that happens only in the CHECK pass:
     // track_fields && !poly_elem), so `frees_heap` is unused here — an empty map suffices.
     let no_fh: HashMap<String, HashSet<usize>> = HashMap::new();
+    let no_pk: HashMap<String, Vec<Option<String>>> = HashMap::new();
     let params_borrowed = |rv: &Val, f: &CoreFn| -> HashSet<usize> {
         f.params
             .iter()
@@ -432,7 +434,7 @@ fn compute_summaries(
                 track_fields: false,
                 poly_elem: false,
             };
-            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, pure_mode, None);
+            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, pure_mode, None);
             let pure_borrowed = params_borrowed(&rv, f);
             let params = if rv.owned {
                 HashSet::new()
@@ -452,7 +454,7 @@ fn compute_summaries(
                 track_fields: true,
                 poly_elem: true,
             };
-            let rve = run_fn(f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, elem_mode, None);
+            let rve = run_fn(f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, elem_mode, None);
             let elem_params: HashSet<usize> = params_borrowed(&rve, f)
                 .difference(&pure_borrowed)
                 .copied()
@@ -480,6 +482,7 @@ fn run_fn(
     elem_aliases: &ElemAliases,
     ret_alias: &HashMap<String, HashSet<usize>>,
     frees_heap: &HashMap<String, HashSet<usize>>,
+    param_keys: &HashMap<String, Vec<Option<String>>>,
     mode: PassMode,
     out: Option<&mut Vec<Finding>>,
 ) -> Val {
@@ -517,8 +520,18 @@ fn run_fn(
         } else {
             // a borrowed/scalar param: present (so a `Field` read of it is tracked as an
             // interior alias — needed to detect `grab`-style return-of-a-field), owning and
-            // borrowing nothing, so using it is always fine.
-            st.insert(p.clone(), Val::default());
+            // borrowing nothing, so using it is always fine. It carries its CONTAINER mono key
+            // (from the signature) so a `case` on a borrowed `List String` param resolves its
+            // extracted elements to their concrete type — the poly-erasure fix (`field_tagged_key`
+            // needs the scrutinee key; a borrowed param has none from `owned_drop_ty`).
+            let key = param_keys.get(&f.name).and_then(|ks| ks.get(i)).cloned().flatten();
+            st.insert(
+                p.clone(),
+                Val {
+                    key,
+                    ..Default::default()
+                },
+            );
         }
     }
     let borrowed_params: HashSet<String> = borrowed
@@ -737,6 +750,7 @@ impl Verifier<'_> {
         if let Op::CallDirect(g, args, _) = op {
             let borrowed_pos = self.ba.get(g);
             let alias_ret = self.summaries.get(g);
+            let ret_alias_g = self.ret_alias.get(g);
             let frees_h = self.frees_heap.get(g);
             for (i, a) in args.iter().enumerate() {
                 if let Atom::Var(v) = a {
@@ -746,15 +760,19 @@ impl Verifier<'_> {
                     if !borrowed_interior {
                         continue;
                     }
-                    // For a POLY element the callee's own drop is what proves the arg is a heap value
-                    // freed here (its heap-ness was erased at this generic use); for a CONCRETE heap
-                    // element, any non-borrow / non-alias-return position is a free (as before).
-                    let frees = if self.poly_borrowed.contains(v) {
-                        frees_h.is_some_and(|s| s.contains(&i))
-                    } else {
-                        !borrowed_pos.is_some_and(|s| s.contains(&i))
+                    // The callee FREES this arg here (→ double-free of the owner's structure) iff it
+                    // genuinely drops a value at this position (`frees_heap`), OR — for a CONCRETE
+                    // element — it neither borrows it, returns it as an interior alias
+                    // (`summaries`), nor returns it WHOLE (`ret_alias`). Excluding `ret_alias` is
+                    // what stops a whole-value passthrough (`relJoin`/`consume` returning the
+                    // element) from being mis-read as a free at the call — that value ESCAPES into
+                    // the result; a double-free there is a DROP of the result, not this call. A POLY
+                    // element (erased heap-ness) relies on `frees_heap` alone.
+                    let frees = frees_h.is_some_and(|s| s.contains(&i))
+                        || (!self.poly_borrowed.contains(v)
+                            && !borrowed_pos.is_some_and(|s| s.contains(&i))
                             && !alias_ret.is_some_and(|s| s.contains(&i))
-                    };
+                            && !ret_alias_g.is_some_and(|s| s.contains(&i)));
                     if frees {
                         self.finding(Cat::DropOfAlias, v, sp);
                     }
@@ -1179,20 +1197,29 @@ impl Verifier<'_> {
                         // untracked (freeing a scalar is a no-op; only a concrete heap field is a
                         // definite double-free).
                         if self.mode.track_fields {
+                            // Resolve the element's CONCRETE type from the scrutinee's mono key
+                            // (`List$String` → `String`) — available now that borrowed container
+                            // params carry their signature key. A resolved (concrete heap) element is
+                            // tracked with its key and NOT marked poly, so `consume` flags it
+                            // directly (soundly). Only a genuinely UNRESOLVED element (a truly
+                            // polymorphic container, no scrutinee key) falls back to the
+                            // `frees_heap`-gated poly path.
+                            let fkey = scrut_key
+                                .as_deref()
+                                .and_then(|sk| self.recinfo.field_tagged_key(con, i, sk));
                             st.insert(
                                 n.clone(),
                                 Val {
                                     owned: false,
                                     borrows: HashSet::from([scrut.to_string()]),
+                                    key: fkey.clone(),
                                     ..Default::default()
                                 },
                             );
-                            // A POLY element (drop-slot `None`) tracked in the CHECK pass is marked
-                            // `poly_borrowed`: its `consume` flag is deferred to the callee's
-                            // `frees_heap` (does the callee actually free a heap value there?), so a
-                            // `List Int` element instantiating to a scalar is never falsely flagged,
-                            // while a `List String` element consumed by a freeing callee IS caught.
-                            if !self.mode.poly_elem && self.recinfo.field_drop_slot(con, i).is_none() {
+                            if fkey.is_none()
+                                && !self.mode.poly_elem
+                                && self.recinfo.field_drop_slot(con, i).is_none()
+                            {
                                 self.poly_borrowed.insert(n.clone());
                             }
                         }
@@ -1331,6 +1358,7 @@ mod tests {
             fns: vec![f],
             borrow_args: BorrowArgs::new(),
             recinfo: RecordInfo::default(),
+            param_keys: std::collections::HashMap::new(),
         })
     }
 

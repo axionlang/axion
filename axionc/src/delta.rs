@@ -1752,6 +1752,7 @@ mod tests {
             fns,
             borrow_args: l.borrow_args,
             recinfo: l.recinfo,
+            param_keys: l.param_keys,
         };
         crate::verify::verify(&lw)
     }
