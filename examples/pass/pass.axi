@@ -214,14 +214,17 @@ renderNode dir prefix isLast name =
 -- The FLAT list of entry names under `dir` (relative to `rel`, `.gpg` stripped), '\n'-joined
 -- and sorted per level — the candidate list for the fzf picker. Recurses natively via
 -- `entriesOf` (readDir), so it too spawns no subprocesses.
--- Join a relative prefix with an entry name (`rel` empty → just the name). The empty arm
--- returns the `name` PARAM while the other returns a fresh string — a CONDITIONAL param/fresh
--- return that `collectNode` compounds by also borrowing `name` in `dir </> name`. That shape
--- used to compile to a use-after-free (the caller dropped the aliased result and freed the
--- still-borrowed `name`); core.rs now copy-normalizes such a bare-param return automatically,
--- so this idiomatic form is sound on every backend (ASan+LSan clean).
+-- Join a relative prefix with an entry name (`rel` empty → just the name). `name` here is a
+-- BORROWED element of the caller's entry `List String` (which `allEntries` deep-drops), and
+-- `collectNode` drops this result — so returning `name` BARE would alias the borrowed element and
+-- double-free it (the reuse-gated copy-normalization does NOT fire, because no caller reuses `name`
+-- AFTER the call). The empty arm therefore returns a FRESH copy (`strAppend name ""`), keeping the
+-- element owned by its list — sound on every backend (ASan+LSan clean). (The verifier does not yet
+-- catch this whole-value-passthrough-of-a-borrowed-element class without over-flagging legit
+-- closure/HOF views — an interprocedural/monomorphization limitation — so the copy is explicit.)
 relJoin :: String -> String -> String
-relJoin rel name = if strLen rel == 0 then name else strAppend (strAppend rel "/") name
+relJoin rel name =
+  if strLen rel == 0 then strAppend name "" else strAppend (strAppend rel "/") name
 
 allEntries :: String -> String -> String
 allEntries dir rel = collectList dir rel (entriesOf dir)
