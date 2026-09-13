@@ -121,6 +121,7 @@
     _ ->
     drop _t4 : String
     drop _t7 : String
+    drop s : String
     else
     else
     else
@@ -131,6 +132,7 @@
     let _dd3 = if _dd2 then
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+    let _rcl2000000 = rtcall axion_substr _t1 _t4 s  ; Δ{} · makes String
     let _t1 = + k 1  ; Δ{}
     let _t1 = - j 1  ; Δ{}
     let _t1 = == c 9  ; Δ{}
@@ -172,6 +174,7 @@
     ret == _t5 0  ; Δ{}
     ret == _t8 0  ; Δ{}
     ret == x y  ; Δ{}
+    ret _rcl2000000  ; Δ{_rcl2000000} · moves{_rcl2000000}
     ret best  ; Δ{}
     ret call readIntGo s 0 0  ; Δ{} · makes Maybe$Int
     ret con Just acc  ; Δ{} · makes Maybe$Int
@@ -184,7 +187,6 @@
     ret if _t3 then
     ret j  ; Δ{}
     ret rtcall axion_substr 0 k s  ; Δ{} · makes String
-    ret rtcall axion_substr _t1 _t4 s  ; Δ{} · makes String
     ret s  ; Δ{}
     ret y  ; Δ{}
     ret y  ; Δ{}

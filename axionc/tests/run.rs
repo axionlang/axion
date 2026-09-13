@@ -1224,6 +1224,30 @@ fn mixed_conditional_param_return_reclaims_on_all_backends() {
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n42\n", "{backend:?}");
     }
+    // The AX0911 tail-borrow / conditional-escape String leak (the `</>` residual): an owned String
+    // param returned bare on one path but only borrowed at a tail `ret <op v>` on another leaked on
+    // the borrowed path. Now owned String params are reclaimed uniformly and a tail op that borrows
+    // one and returns a non-aliasing result drops it after the return — leak-free on all backends.
+    let ft = fixture("tail_borrow_string.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&ft);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "tail-borrow String reclaim should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "h1\n<p2>\nx3y4\n",
+            "{backend:?}"
+        );
+    }
 }
 
 #[test]

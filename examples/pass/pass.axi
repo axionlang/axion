@@ -54,18 +54,18 @@ resolveStore sd
   | strLen sd > 0 = sd
   | otherwise     = strAppend (getEnv "HOME") "/.password-store"
 
--- Path join, like Haskell's System.FilePath `</>`: join with a single '/', collapsing a
--- separator when the left already ends in one. A pure `String -> String -> String`; an
--- infix `a </> b` lowers to the ordinary call `(</>) a b`, i.e. the SAME `axion_strcat`
--- sequence a hand-written `strAppend` emits — zero abstraction cost. NB: both arms consume
--- `b` only THROUGH `strAppend` (a borrow), never returning it bare — so `b` stays a borrowed
--- param the caller reclaims. A `| … = b` arm (Haskell's "absolute right wins") would instead
--- make `b` an owned param returned on one path but only borrowed at the `strAppend` tail of
--- the others, where reclaim_cond_escape leaves a documented conservative leak. Entry names
--- are never absolute here, so dropping that case is both leak-free AND safer.
+-- Path join, like Haskell's System.FilePath `</>`: an absolute right wins, else join with a
+-- single '/', collapsing a separator when the left already ends in one. A pure
+-- `String -> String -> String`; an infix `a </> b` lowers to the ordinary call `(</>) a b`,
+-- i.e. the SAME `axion_strcat` sequence a hand-written `strAppend` emits — zero abstraction
+-- cost. The `| hasPrefix "/" b = b` arm returns `b` BARE (so `b` is an owned param), while the
+-- other arms only BORROW it through `strAppend` at the tail — the conditional-escape shape that
+-- once leaked `b` on the borrowed paths; Auto-Drop now reclaims an owned String param uniformly
+-- (`axion_str_drop`) and drops it after a borrowing tail call, so this natural form is leak-free.
 infixr 5 </>
 (</>) :: String -> String -> String
 (</>) a b
+  | hasPrefix "/" b = b
   | hasSuffix "/" a = strAppend a b
   | otherwise       = strAppend a (strAppend "/" b)
 
