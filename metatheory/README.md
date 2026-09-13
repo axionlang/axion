@@ -102,12 +102,25 @@ carry the reclaimer **key** (`Op.drop n key`), and the machine faults on a key/t
 | `correct_key_accepted` | a correctly-keyed drop is accepted |
 | `heterogeneous_branch_drop_rejected` | a value that is `ty0` on one arm and `ty1` on the other has no single correct reclaimer, so any drop of it after the join is rejected — the `merge_vals` reconciliation of `Val.key` |
 
+## Faithfulness bridge — `bridge.md`
+
+The proofs above establish only that the *model* is sound. The **bridge** (`metatheory/bridge.md`,
+`axionc/tests/bridge.rs`, run via `metatheory/bridge.sh`) ties the model to the code: for each
+canonical shape it asserts the **real verifier's verdict** on a real `.axi` program equals the
+verdict the **corresponding Lean theorem proves** (and, for rejects, the corruption *kind* too).
+The unsafe shapes are produced with the same default-off hooks Track 1 used (`AXION_NO_ALIAS_COPY`,
+`AXION_NAIVE_ELEM_KEY`), so the verifier analyses exactly the Core the model's unsafe rules
+abstract. `bridge.sh` runs both halves — the Lean proofs (`check.sh`) and the verifier agreement
+(`cargo test --test bridge`) — linked by the per-row `lean_theorem` field. See `bridge.md` for the
+correspondence table and the honest scope notes (it is a curated per-shape pairing, not a
+whole-corpus auto-translation; that heavier `--emit model-trace` widening is the noted follow-up).
+
 ## Scope & remaining work
 
 Covered: the linear core; branches (`merge_vals` arm-balance, all paths); interior aliases
-(borrows, drop-of-alias, dangling use, the V-1 ↔ R-5-copy pair); and drop keys (`WrongDropKey`,
-including the heterogeneous-branch case). These are the memory-safety classes `verify.rs`'s gates
-(AX0910 corruption, AX0911 leak) and Track 1's fixes were built around. Each file uses the same
-progress + preservation skeleton; the natural next step beyond coverage is the **faithfulness
-bridge** — a differential harness checking the Lean judgments agree with `verify.rs` on the corpus,
-tying the model to the code rather than only to prose correspondence tables.
+(borrows, drop-of-alias, dangling use, the V-1 ↔ R-5-copy pair); drop keys (`WrongDropKey`,
+including the heterogeneous-branch case); and a faithfulness bridge tying the model's verdicts to
+the real verifier on the canonical shapes. These are the memory-safety classes `verify.rs`'s gates
+(AX0910 corruption, AX0911 leak) and Track 1's fixes were built around. The heavier follow-up is
+the `--emit model-trace` widening of the bridge from the canonical shapes to the whole in-model
+fragment of the corpus.
