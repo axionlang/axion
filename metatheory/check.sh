@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 LEAN=(nix shell nixpkgs#lean4 --command lean)
-for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionSession.lean; do
+for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionSession.lean AxionFidelity.lean; do
   OUT="$("${LEAN[@]}" "$f" 2>&1)"
   status=$?
   echo "$OUT"
@@ -19,4 +19,4 @@ for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionSessio
     exit 1
   fi
 done
-echo "OK: AxionDrop + AxionAlias + AxionKey + AxionMove + AxionSession metatheory check (no sorry; axioms = propext/Quot.sound only)"
+echo "OK: AxionDrop + AxionAlias + AxionKey + AxionMove + AxionSession + AxionFidelity metatheory check (no sorry; axioms = propext/Quot.sound only)"

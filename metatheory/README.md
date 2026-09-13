@@ -155,8 +155,26 @@ Iris/Actris "medium term"):
 
 Acyclicity is witnessed by a `rank` (a topological order of the cut-tree — the depth `spawn`
 assigns). This is the calculus's claim "deadlock-freedom is a corollary of acyclicity / cut
-elimination," mechanized. Later rungs on the same foundation: **T3 session fidelity** (protocol
-adherence over the reduction) and **T5 cancellation safety**.
+elimination," mechanized.
+
+## Concurrency: session fidelity + cancellation — `AxionFidelity.lean`
+
+Working at the session-TYPE level (§2/§5): session types + duality (`dual` involutive), the
+type-level communication step (§5.1 cut elimination), and the `Closed` cancellation branch (§5.4).
+
+| Theorem | Statement |
+|---|---|
+| `fidelity` (**T3**) | if two ends are dual and they communicate, the continuations are STILL dual — the ends never diverge from the protocol (duality is invariant under reduction) |
+| `comm_enabled` (**T3 progress**) | between dual ends a matching communication is always enabled (unless terminated) — no protocol stall |
+| `dual_dual` | duality is involutive (§2.2) |
+| `cancellation_receivable` (**T5a**) | a well-formed peer offer's dual selection also has a `Closed` branch, so a cancelling end (`select Closed`) is always matched by the peer's `Closed` offer branch — "typing forces the receiver to handle cancellation," no endpoint left un-notified/stuck |
+| `no_self_ancestor` (**T5c**) | in the rank-witnessed spawn forest no node is its own ancestor, so the downward cancellation traversal (`reset` + one `Closed` per child) visits each descendant at most once — every `@cleanup` runs exactly once, nothing re-cancelled |
+
+Together with `AxionSession.lean` (T2/T4), this mechanizes **four of the calculus's five §6
+theorems** at the graph/type level: T2 progress, T3 fidelity, T4 deadlock-freedom, and the T5
+cancellation guarantees — the reachable rungs in stock Lean. §6's full T1/T3/T5 in separation logic
+(Iris/Actris) — value-level subject reduction and the memory-orphan claim — remain the deferred
+medium-term rung.
 
 ## Scope & remaining work
 
