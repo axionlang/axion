@@ -115,12 +115,35 @@ abstract. `bridge.sh` runs both halves — the Lean proofs (`check.sh`) and the 
 correspondence table and the honest scope notes (it is a curated per-shape pairing, not a
 whole-corpus auto-translation; that heavier `--emit model-trace` widening is the noted follow-up).
 
+## Move / escape — `AxionMove.lean`
+
+The other slices can only lose ownership by `drop` (freeing). Real Core loses ownership far more
+often by a **move/escape**: a value handed into a constructor, passed to a `%1` (consuming) call, or
+*returned* to the caller — transferred, not freed, so not a leak. `AxionMove.lean` adds `Op.moveOut`
+(→ `Cell.moved`) and re-proves soundness with it:
+
+| Theorem | Statement |
+|---|---|
+| `no_corruption` / `no_leak` / `sound` | the guarantees, with moves, on every path |
+| `escape_is_leak_free_accepted` | `alloc; moveOut` (transfer out instead of freeing) is **accepted** — a moved-out value is reclaimed elsewhere, not a leak (the case plain `AxionDrop` would wrongly reject) |
+| `use_after_move_rejected` / `drop_after_move_rejected` | using or dropping a value after it's moved out faults |
+| `forgotten_owner_is_leak_rejected` | a value neither dropped nor moved out is still a leak — moves don't weaken leak-freedom |
+
+This is the foundational step toward a whole-corpus `--emit model-trace` bridge: without an
+escape/move op the model can't describe most corpus functions (which return or embed owned values),
+which is why the current bridge is a curated per-shape pairing. `moveOut` ↔ a value leaving Δ in
+`verify.rs` (`DeltaEffect.moves` / `.alias`).
+
 ## Scope & remaining work
 
 Covered: the linear core; branches (`merge_vals` arm-balance, all paths); interior aliases
 (borrows, drop-of-alias, dangling use, the V-1 ↔ R-5-copy pair); drop keys (`WrongDropKey`,
-including the heterogeneous-branch case); and a faithfulness bridge tying the model's verdicts to
-the real verifier on the canonical shapes. These are the memory-safety classes `verify.rs`'s gates
-(AX0910 corruption, AX0911 leak) and Track 1's fixes were built around. The heavier follow-up is
-the `--emit model-trace` widening of the bridge from the canonical shapes to the whole in-model
-fragment of the corpus.
+including the heterogeneous-branch case); moves/escape (`moveOut`, escape-is-not-a-leak); and a
+faithfulness bridge tying the model's verdicts to the real verifier on the canonical shapes.
+
+The remaining piece for a **whole-corpus** `--emit model-trace` bridge (beyond the curated one) is
+the translator plus two more model features it needs: **param-ownership** (a function's parameters
+enter as owned/borrowed, not from `sInit`) and **call effects** (summarizing a callee's move/borrow
+of its args). With `moveOut` now in hand, `alloc`/`moveOut`/`drop`/`use`/`borrow`/`copy` cover the
+per-op vocabulary; params + call-summaries are the remaining modelling work before Core → `Expr`
+translation is faithful across the corpus.
