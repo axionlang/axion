@@ -4670,23 +4670,18 @@ pub fn lower_with(
                     // destructor, or a boxed `Integer`) — NOT a pure enum, whose values
                     // are unboxed immediate tags with no destructor (freeing one corrupts).
                     let is_enum = ty.head_con().is_some_and(|h| recinfo.is_enum_type(h));
-                    // a boxed `String` (reclaimed by `axion_str_drop`, which skips literals) has a
-                    // uniform key like `Integer` — no destructor slot to align — so an owned String
-                    // param that conditionally escapes is reclaimed here too, closing the
-                    // tail-borrow / conditional-escape String leak (the `</>` AX0911 residual).
                     let reclaimable =
                         (heap_ty(ty, &data_types) && mono_key(ty).is_some() && !is_enum)
-                            || ty.head_con() == Some("Integer")
-                            || ty.head_con() == Some("String");
+                            || ty.head_con() == Some("Integer");
                     reclaimable
                         && !ba_set.is_some_and(|s| s.contains(i))
                         && !drp.contains(name.as_str())
                 })
                 .map(|(_, (name, ty))| {
-                    let key = match ty.head_con() {
-                        Some("Integer") => Some("Integer".to_string()),
-                        Some("String") => Some("String".to_string()),
-                        _ => mono_key(ty),
+                    let key = if ty.head_con() == Some("Integer") {
+                        Some("Integer".to_string())
+                    } else {
+                        mono_key(ty)
                     };
                     (name.clone(), key)
                 })
@@ -7327,12 +7322,10 @@ fn reclaim_cond_escape(
             //   · the op BORROWS it (mentions but does not move it out) and the op's result
             //     is FRESH (does not alias it) → dead AFTER the op runs → synthesize a
             //     post-`ret` drop via a temp: `let t = op; drop v…; ret t`. This closes the
-            //     tail-op-borrows-param leak (`ret add t newt`, the Euclid accumulators, and
-            //     a tail `ret userFn v` where `userFn` borrows `v` and returns a fresh result
-            //     — the `</>`/tail-borrow AX0911 residual).
-            // A param the op MOVES out escapes (the result), and one whose result may ALIAS it
-            // (a `Field`/`get` view, or a `CallDirect` that returns an interior alias of a param,
-            // i.e. is in `br`) is kept (a conservative leak, never a double free).
+            //     tail-op-borrows-param leak (`ret add t newt`, the Euclid accumulators).
+            // A param the op MOVES out escapes (the result), and one a NON-fresh op mentions
+            // may be aliased by the result (a `Field`/`get` view) — both are kept (the latter
+            // a conservative leak, never a double free).
             let e = crate::delta::op_delta_effect(&op, ba);
             let moved: HashSet<String> = e
                 .moves
@@ -7344,12 +7337,7 @@ fn reclaim_cond_escape(
                     _ => None,
                 })
                 .collect();
-            // FRESH w.r.t. its borrowed args = a fresh-producing builtin (bignum/string/scalar),
-            // OR a direct call whose return aliases NO param (`g ∉ br`) — the same freshness test
-            // the `let`-handling above uses. A `CallDirect` in `br` may hand back an interior alias
-            // of a borrowed arg, so dropping that arg would free the escaping result (kept instead).
-            let fresh = op_is_fresh_wrt_args(&op)
-                || matches!(&op, Op::CallDirect(g, _, _) if !br.contains_key(g));
+            let fresh = op_is_fresh_wrt_args(&op);
             let mut before = Vec::new();
             let mut after = Vec::new();
             for (v, key) in owned {

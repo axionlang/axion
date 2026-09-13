@@ -50,8 +50,6 @@
     Nil ->
     Nil ->
     _ ->
-    drop d : String
-    drop s : String
     else
     else
     let _dd2 = == _tag 1  ; Δ{}
