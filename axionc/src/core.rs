@@ -4670,18 +4670,27 @@ pub fn lower_with(
                     // destructor, or a boxed `Integer`) — NOT a pure enum, whose values
                     // are unboxed immediate tags with no destructor (freeing one corrupts).
                     let is_enum = ty.head_con().is_some_and(|h| recinfo.is_enum_type(h));
+                    // AXION_STRING_RECLAIM (test hook, DEFAULT OFF): reclaim owned String params
+                    // here too. This is the UNSOUND change reverted in 16ceefb — it double-frees a
+                    // String that is a case-extracted BORROWED element of a container the caller
+                    // deep-drops (the fzf-path `axpass show` bug). Kept behind a flag purely to
+                    // regenerate that unsafe Core so the drop-verifier's element-consume check can
+                    // be proven to CATCH it (never set in production).
+                    let string_reclaim = std::env::var_os("AXION_STRING_RECLAIM").is_some()
+                        && ty.head_con() == Some("String");
                     let reclaimable =
                         (heap_ty(ty, &data_types) && mono_key(ty).is_some() && !is_enum)
-                            || ty.head_con() == Some("Integer");
+                            || ty.head_con() == Some("Integer")
+                            || string_reclaim;
                     reclaimable
                         && !ba_set.is_some_and(|s| s.contains(i))
                         && !drp.contains(name.as_str())
                 })
                 .map(|(_, (name, ty))| {
-                    let key = if ty.head_con() == Some("Integer") {
-                        Some("Integer".to_string())
-                    } else {
-                        mono_key(ty)
+                    let key = match ty.head_con() {
+                        Some("Integer") => Some("Integer".to_string()),
+                        Some("String") => Some("String".to_string()),
+                        _ => mono_key(ty),
                     };
                     (name.clone(), key)
                 })

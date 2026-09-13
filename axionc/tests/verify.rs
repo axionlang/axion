@@ -20,7 +20,9 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
     let mut checked = 0;
     let mut failures = Vec::new();
     let mut leak_fps = Vec::new();
-    for base in ["tests/fixtures", "../examples"] {
+    // `../examples/pass` is included so the real `pass.axi` workload is gated — the fzf-path
+    // double-free that slipped through (16ceefb) was in a subdir the sweep didn't cover.
+    for base in ["tests/fixtures", "../examples", "../examples/pass"] {
         let dir = format!("{}/{base}", env!("CARGO_MANIFEST_DIR"));
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -217,6 +219,36 @@ fn verifier_catches_container_param_return_alias_without_the_copy() {
     assert!(
         bads.contains("FAIL:") && (bads.contains("DropOfAlias") || bads.contains("UseAfterFree")),
         "without the copy the verifier must catch the container param-return alias, got:\n{bads}"
+    );
+}
+
+/// The BORROWED-CONTAINER-ELEMENT double-free (the `axpass show` fzf-path bug, reverted in
+/// 16ceefb): a `String` element extracted from a BORROWED `List String` and passed to a callee that
+/// FREES it, while the owner deep-drops the list, is double-freed. The element's heap-ness is
+/// poly-erased inside the generic consumer, so the verifier resolves it from the callee genuinely
+/// dropping a value there (`frees_heap`). Normal build verifies clean (no String reclaim → the
+/// callee borrows); with AXION_STRING_RECLAIM=1 (the reverted unsound reclaim, hook-gated) the
+/// callee frees the element and the verifier must catch it — at compile time (AX0910).
+#[test]
+fn verifier_catches_borrowed_list_element_double_free() {
+    let path = format!(
+        "{}/tests/fixtures/borrowed_list_elem_consume.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&ok.stdout).contains("no corruption"),
+        "normal build must verify clean (the callee borrows the element)"
+    );
+    let bad = axionc()
+        .args(["--emit", "verify", &path])
+        .env("AXION_STRING_RECLAIM", "1")
+        .output()
+        .unwrap();
+    let bads = String::from_utf8_lossy(&bad.stdout);
+    assert!(
+        bads.contains("FAIL:") && bads.contains("DropOfAlias") && bads.contains("work"),
+        "the verifier must catch the borrowed-list-element double-free in `work`, got:\n{bads}"
     );
 }
 

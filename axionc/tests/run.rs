@@ -1227,6 +1227,30 @@ fn mixed_conditional_param_return_reclaims_on_all_backends() {
 }
 
 #[test]
+fn borrowed_list_element_consumer_runs_on_all_backends() {
+    // The borrowed-container-element shape (`axpass show` fzf path): `work` borrows a `List String`
+    // and passes each element to `consume`. In the normal build `consume` borrows the element, so
+    // it runs leak-free on every backend (the verifier catches the double-free only under the
+    // AXION_STRING_RECLAIM hook — see tests/verify.rs).
+    let fx = fixture("borrowed_list_elem_consume.axi");
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "borrowed-list-element consumer should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "xyxyxy\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn either_map_over_multiparam_sum_reclaims_on_all_backends() {
     // Regression for a PRE-EXISTING multi-type-parameter reclamation double-free (core.rs
     // `cond_elem_key`): `case e of Right y -> Right (f y); Left x -> Left x` over `Either a b`

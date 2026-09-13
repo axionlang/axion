@@ -170,6 +170,60 @@ fn is_generated(name: &str) -> bool {
     name.starts_with("axion_drop_") || name.starts_with("axion_copy_")
 }
 
+/// Per-function: the param indices the function OWNS-AND-FREES — a `Drop(param, Some key, …)` on a
+/// formal parameter anywhere in the body (`insert_drops`' `%1` frees and `reclaim_cond_escape`'s
+/// synthesized drops both). `consume` uses this to flag passing a BORROWED container element to a
+/// callee that frees it: the owner's later deep-drop of the container then double-frees that
+/// element. Keyed on a real free (a `Drop` with a reclaimer), not a move-out (which escapes,
+/// never freed), so a callee that merely embeds/returns the arg is not implicated.
+fn frees_heap_params(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
+    fn scan(t: &crate::core::Term, idx: &HashMap<&str, usize>, out: &mut HashSet<usize>) {
+        use crate::core::{Rhs, Term};
+        let rhs = |r: &Rhs, out: &mut HashSet<usize>| match r {
+            Rhs::Op(_) => {}
+            Rhs::If(_, a, b) => {
+                scan(a, idx, out);
+                scan(b, idx, out);
+            }
+            Rhs::Case(_, arms) => {
+                for (_, b) in arms {
+                    scan(b, idx, out);
+                }
+            }
+        };
+        match t {
+            Term::Let(_, r, _, b) => {
+                rhs(r, out);
+                scan(b, idx, out);
+            }
+            Term::Drop(v, k, _, _, b) => {
+                if k.is_some() {
+                    if let Some(&i) = idx.get(v.as_str()) {
+                        out.insert(i);
+                    }
+                }
+                scan(b, idx, out);
+            }
+            Term::Ret(r, _) => rhs(r, out),
+        }
+    }
+    let mut out = HashMap::new();
+    for f in fns {
+        let idx: HashMap<&str, usize> = f
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.as_str(), i))
+            .collect();
+        let mut s = HashSet::new();
+        scan(&f.body, &idx, &mut s);
+        if !s.is_empty() {
+            out.insert(f.name.clone(), s);
+        }
+    }
+    out
+}
+
 /// Verify every function of a lowered module; returns all findings (corruption + leak).
 pub fn verify(lowered: &Lowered) -> Vec<Finding> {
     let (summaries, elem_aliases) =
@@ -177,6 +231,7 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
     // R-1/V-1: the whole-value param-return relation, consumed by the CHECK pass so the
     // verifier catches the conditional-param-return alias on its own (a sound net).
     let ret_alias = ret_alias_summary(&lowered.fns);
+    let frees_heap = frees_heap_params(&lowered.fns);
     let mut out = Vec::new();
     for f in &lowered.fns {
         if is_generated(&f.name) {
@@ -189,6 +244,7 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
             &summaries,
             &elem_aliases,
             &ret_alias,
+            &frees_heap,
             PassMode {
                 track_fields: true,
                 poly_elem: false,
@@ -352,6 +408,9 @@ fn compute_summaries(
     // the whole-value-alias relation is not needed for the summary dry-runs (it only sharpens
     // the CHECK pass); pass an empty map here.
     let no_ret: HashMap<String, HashSet<usize>> = HashMap::new();
+    // summary dry-runs never populate `poly_borrowed` (that happens only in the CHECK pass:
+    // track_fields && !poly_elem), so `frees_heap` is unused here — an empty map suffices.
+    let no_fh: HashMap<String, HashSet<usize>> = HashMap::new();
     let params_borrowed = |rv: &Val, f: &CoreFn| -> HashSet<usize> {
         f.params
             .iter()
@@ -373,7 +432,7 @@ fn compute_summaries(
                 track_fields: false,
                 poly_elem: false,
             };
-            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, &no_ret, pure_mode, None);
+            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, pure_mode, None);
             let pure_borrowed = params_borrowed(&rv, f);
             let params = if rv.owned {
                 HashSet::new()
@@ -393,7 +452,7 @@ fn compute_summaries(
                 track_fields: true,
                 poly_elem: true,
             };
-            let rve = run_fn(f, ba, recinfo, &sums, &elem, &no_ret, elem_mode, None);
+            let rve = run_fn(f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, elem_mode, None);
             let elem_params: HashSet<usize> = params_borrowed(&rve, f)
                 .difference(&pure_borrowed)
                 .copied()
@@ -420,6 +479,7 @@ fn run_fn(
     summaries: &Summaries,
     elem_aliases: &ElemAliases,
     ret_alias: &HashMap<String, HashSet<usize>>,
+    frees_heap: &HashMap<String, HashSet<usize>>,
     mode: PassMode,
     out: Option<&mut Vec<Finding>>,
 ) -> Val {
@@ -478,6 +538,8 @@ fn run_fn(
         projections: HashMap::new(),
         borrowed_params,
         ret_alias,
+        frees_heap,
+        poly_borrowed: HashSet::new(),
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -555,6 +617,17 @@ struct Verifier<'a> {
     /// supplied only for the CHECK pass, so the verifier catches the alias even if Auto-Drop's
     /// copy-normalization is absent (a sound net, not a codegen-dodge).
     ret_alias: &'a HashMap<String, HashSet<usize>>,
+    /// Per-callee param indices the callee OWNS-AND-FREES (`frees_heap_params`). Used by `consume`
+    /// to decide whether a POLY borrowed container-element passed to a call is actually freed there
+    /// (so the owner's later deep-drop double-frees it) — the heap-ness the element itself can't
+    /// carry under polymorphism comes from the callee genuinely dropping a value at that position.
+    frees_heap: &'a HashMap<String, HashSet<usize>>,
+    /// Case-extracted elements of a BORROWED scrutinee whose heap-ness is POLYMORPHIC (a bare type
+    /// variable — a `String` element of a generic `List String`, drop-slot `None`). Tracked as
+    /// interior aliases of the scrutinee like concrete fields, but their `consume` flag is gated on
+    /// the callee actually freeing a heap value there (`frees_heap`), so a poly element that
+    /// instantiates to a scalar (`List Int`) is never falsely flagged. Populated by `bind_pattern`.
+    poly_borrowed: HashSet<String>,
 }
 
 impl Verifier<'_> {
@@ -664,14 +737,25 @@ impl Verifier<'_> {
         if let Op::CallDirect(g, args, _) = op {
             let borrowed_pos = self.ba.get(g);
             let alias_ret = self.summaries.get(g);
+            let frees_h = self.frees_heap.get(g);
             for (i, a) in args.iter().enumerate() {
                 if let Atom::Var(v) = a {
-                    let frees = !borrowed_pos.is_some_and(|s| s.contains(&i))
-                        && !alias_ret.is_some_and(|s| s.contains(&i));
                     let borrowed_interior = st.get(v).is_some_and(|val| {
                         !val.owned && val.borrows.iter().any(|w| self.borrowed_params.contains(w))
                     });
-                    if frees && borrowed_interior {
+                    if !borrowed_interior {
+                        continue;
+                    }
+                    // For a POLY element the callee's own drop is what proves the arg is a heap value
+                    // freed here (its heap-ness was erased at this generic use); for a CONCRETE heap
+                    // element, any non-borrow / non-alias-return position is a free (as before).
+                    let frees = if self.poly_borrowed.contains(v) {
+                        frees_h.is_some_and(|s| s.contains(&i))
+                    } else {
+                        !borrowed_pos.is_some_and(|s| s.contains(&i))
+                            && !alias_ret.is_some_and(|s| s.contains(&i))
+                    };
+                    if frees {
                         self.finding(Cat::DropOfAlias, v, sp);
                     }
                 }
@@ -1094,9 +1178,7 @@ impl Verifier<'_> {
                         // so — like the leak-exempt policy for owned poly fields — it is left
                         // untracked (freeing a scalar is a no-op; only a concrete heap field is a
                         // definite double-free).
-                        if self.mode.track_fields
-                            && (self.mode.poly_elem || self.recinfo.field_drop_slot(con, i).is_some())
-                        {
+                        if self.mode.track_fields {
                             st.insert(
                                 n.clone(),
                                 Val {
@@ -1105,6 +1187,14 @@ impl Verifier<'_> {
                                     ..Default::default()
                                 },
                             );
+                            // A POLY element (drop-slot `None`) tracked in the CHECK pass is marked
+                            // `poly_borrowed`: its `consume` flag is deferred to the callee's
+                            // `frees_heap` (does the callee actually free a heap value there?), so a
+                            // `List Int` element instantiating to a scalar is never falsely flagged,
+                            // while a `List String` element consumed by a freeing callee IS caught.
+                            if !self.mode.poly_elem && self.recinfo.field_drop_slot(con, i).is_none() {
+                                self.poly_borrowed.insert(n.clone());
+                            }
                         }
                         continue;
                     }
