@@ -134,6 +134,30 @@ escape/move op the model can't describe most corpus functions (which return or e
 which is why the current bridge is a curated per-shape pairing. `moveOut` ↔ a value leaving Δ in
 `verify.rs` (`DeltaEffect.moves` / `.alias`).
 
+## Concurrency: deadlock-freedom — `AxionSession.lean`
+
+The other files mechanize the *memory-safety* verifier. This one opens the *concurrency* half — the
+Axión Session Calculus (`docs/phase-3-calculus.md`). The session runtime is implemented and runs
+(the `session_run_*` fixtures: bound/spawn/send/recv/offer/cancel over the M:N scheduler, leak-free),
+and the frontend enforces the calculus's structural invariants — `AX0302` (an endpoint can't escape
+its `bound` nursery — confinement) and `AX0305` (`spawn` only makes a parent↔child edge — a forest)
+— so the communication graph is acyclic by construction. But the calculus's §6 metatheory (T1–T5)
+was a stated contract, unmechanized. This slice discharges the reachable, graph-structural rung —
+**T2 Progress + T4 Deadlock-freedom** — in stock Lean (§6 defers the separation-logic T1/T3/T5 to
+Iris/Actris "medium term"):
+
+| Theorem | Statement |
+|---|---|
+| `progress` | an acyclic configuration with any active thread always has a **runnable** one (the minimal-rank thread can't be blocked) — T2 |
+| `no_deadlock` | no acyclic configuration is ever deadlocked (all-blocked-with-work) — T4 |
+| `spawn_preserves_acyclic` | forking a fresh higher-ranked child blocked on an existing thread keeps the graph acyclic — deadlock-freedom **by construction**, the invariant `AX0302`/`AX0305` maintain (needs no axioms) |
+| `two_cycle_has_no_rank` + a raw 2-cycle example | acyclicity is **essential**: a cycle admits no rank witness (can't be a `Config`) and genuinely deadlocks — so the guarantee rests on the confinement/forest checks |
+
+Acyclicity is witnessed by a `rank` (a topological order of the cut-tree — the depth `spawn`
+assigns). This is the calculus's claim "deadlock-freedom is a corollary of acyclicity / cut
+elimination," mechanized. Later rungs on the same foundation: **T3 session fidelity** (protocol
+adherence over the reduction) and **T5 cancellation safety**.
+
 ## Scope & remaining work
 
 Covered: the linear core; branches (`merge_vals` arm-balance, all paths); interior aliases
