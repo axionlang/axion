@@ -23,6 +23,9 @@ const CELL_SIZE: i64 = 16;
 
 /// C runtime, embedded and written next to the `.ll` for `clang` to compile.
 const RUNTIME_C: &str = include_str!("axion_rt.c");
+/// The Rust native-runtime staticlib (`axion-rt`), built by `build.rs` and linked alongside the C
+/// runtime — currently provides the bignum primitives (docs/rust-runtime-port.md).
+const RUNTIME_RT_A: &[u8] = include_bytes!(env!("AXION_RT_LIB"));
 
 /// Runtime declarations (the C functions, with a uniform i64 ABI).
 const RT_DECLS: &str = "\
@@ -328,19 +331,26 @@ pub fn build_and_run(
     let pid = std::process::id();
     let ll = dir.join(format!("axion-{pid}.ll"));
     let rt = dir.join(format!("axion-{pid}-rt.c"));
+    let rta = dir.join(format!("axion-{pid}-rt.a"));
     let exe = match out {
         Some(p) => p.to_path_buf(),
         None => dir.join(format!("axion-{pid}.out")),
     };
     std::fs::write(&ll, ir).map_err(|e| e.to_string())?;
     std::fs::write(&rt, RUNTIME_C).map_err(|e| e.to_string())?;
+    std::fs::write(&rta, RUNTIME_RT_A).map_err(|e| e.to_string())?;
 
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
     let mut cmd = std::process::Command::new(&clang);
-    // `-pthread`: the session scheduler (§11) runs tasks on a thread pool.
+    // `-pthread`: the session scheduler (§11) runs tasks on a thread pool. The Rust runtime
+    // staticlib (`axion-rt`, bignum) is linked AFTER the IR that references it, followed by the
+    // system libs its std needs (`-ldl -lm`).
     cmd.args(["-O2", "-flto", "-w", "-pthread"])
         .arg(&ll)
         .arg(&rt)
+        .arg(&rta)
+        .arg("-ldl")
+        .arg("-lm")
         .arg("-o")
         .arg(&exe);
     // FFI (§18): links the user's libraries (direct path) and records their
@@ -358,6 +368,7 @@ pub fn build_and_run(
         .map_err(|e| format!("could not invoke '{clang}' ({e}); set AXION_CLANG or use nix"))?;
     drop(std::fs::remove_file(&ll));
     drop(std::fs::remove_file(&rt));
+    drop(std::fs::remove_file(&rta));
     if !status.success() {
         return Err("clang failed to compile the LLVM IR".into());
     }

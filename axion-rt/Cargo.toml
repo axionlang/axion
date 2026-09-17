@@ -1,0 +1,20 @@
+# The Axión native runtime, in Rust (docs/rust-runtime-port.md). Built to a staticlib and linked
+# into the `--release` (LLVM) executables alongside (for now) the remaining C runtime. Stage 1
+# provides the arbitrary-precision Integer (bignum) primitives by REUSING axionc's tested
+# `src/bigint.rs` — deleting the hand-written C `bn_divmod` (the one place a real memory bug shipped).
+[package]
+name = "axion-rt"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "axion_rt"
+crate-type = ["staticlib"]
+
+# A Rust panic unwinding across the C / LLVM-IR FFI boundary is UB — abort instead.
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

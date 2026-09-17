@@ -94,10 +94,12 @@ and well-mitigated this list is.
    mis-keys a free is caught (the miscompile class). Remaining trusted: the *value-level semantic*
    correctness of all three backends' compute lowering (rests on differential agreement + ASan/LSan +
    fuzz), and Cranelift's reclamation (not yet TV'd — same technique applies).
-2. **`axion_rt.c`** — ~1900 LOC of hand-written C implementing all reclamation primitives
-   (`axion_*_free`, bignum `bn_divmod`, arrays, strings, arena, session runtime, `parMap`). Trusted;
-   checked only by sanitizers + fuzz. *The bignum `bn_divmod` double-free lived here, below the verified
-   line.* Mitigation target: verify or shrink/generate from a checked spec (north star).
+2. **The C runtime `axion_rt.c`** — now ~1676 LOC (was ~1900) of hand-written C: the allocator,
+   arrays, strings, arena, session runtime, `parMap`, networking. Trusted; checked by sanitizers +
+   fuzz. **The bignum is no longer here** — it was ported to the Rust runtime crate `axion-rt`
+   (reusing the tested `src/bigint.rs`), deleting the `bn_divmod` code where the one real memory bug
+   shipped (docs/rust-runtime-port.md, Stage 1). The remaining C is being ported group-by-group
+   (Stages 2–4). Mitigation target: complete the C→Rust port.
 3. **`verify.rs` as Rust** — the checked oracle is itself unverified code standing in for the Lean proofs.
    The 8-shape bridge is the only tie between them. Mitigation target: **M2** (whole-fragment bridge),
    then north-star extraction of the verifier from the model.
