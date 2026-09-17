@@ -45,16 +45,53 @@ shapes, not merely the prose correspondence tables in each file's header.
 ./metatheory/bridge.sh          # Lean proofs (check.sh) + verifier agreement (cargo test bridge)
 ```
 
+## Whole-fragment bridge (`--emit model-trace`) — built
+
+Beyond the 8 curated shapes, the heavier `--emit model-trace` widening is now **implemented and
+gated** (`metatheory/model-trace.sh`, wired into `bridge.sh`). For every corpus fixture,
+`axionc --emit model-trace` translates each function in the **AxionDrop owned-set fragment**
+(`alloc`/`use`/`drop`/`moveOut`/branch) into an `AxionDrop.Expr` term — deriving each op's
+move/borrow/produce classification from the single authority `delta::op_delta_effect`, the same one
+`verify.rs` and Auto-Drop use — and emits
+
+```lean
+example : AxionDrop.acceptsL <T> = <verifier-verdict> := by rfl
+```
+
+These are appended to a copy of `AxionDrop.lean` and type-checked. `AxionDrop.acceptsL` is the
+**executable** checker proven (`AxionDrop.chk_correct`) to decide the relational `accepts`, which
+`AxionDrop.sound` proves memory-safe + leak-free. So each `by rfl` that holds is one function on
+which the model's own judgment **equals** the real verifier's verdict — machine-checked on both
+sides. `AxionDrop`'s `moveOut` (owned-set semantics, added for this) covers functions that return
+or embed owned values; its `brn` compares **owned-sets** (matching `verify.rs`'s `merge_vals`), so
+arms that move out different numbers of temporaries still balance (the
+`build n = if _ then LNil else LCons n (build (n-1))` shape).
+
+`AxionDrop` also models **borrowed params** (a fixed ambient set `B`: `use` admits a borrowed cell,
+`alloc`/`drop`/`moveOut` do not; borrowed cells are the caller's, so they are not leaks) — so a
+function that only *reads* a heap parameter it does not own is in-fragment. A borrowed param that
+*escapes* (is returned/aliased — the AxionAlias borrow-return class) is still out of fragment.
+
+A **non-extracting `case`** (arms with `Int`/wildcard patterns that bind no heap payload — pure
+scalar/tag dispatch) is in-fragment too: it desugars to a right-nested two-armed `brn` (which
+enforces the N-way `merge_vals`). A `Con`/`Var`/`Tuple` pattern binds vars that may be heap payloads
+extracted from the scrutinee (an owned move OR a borrowed alias — AxionKey/AxionAlias territory) and
+stays out of fragment.
+
+Current coverage: **447 of 1220 corpus functions in-fragment, 464 machine-checked agreement
+examples, zero disagreements.** The dominant remaining exclusion is heap-extracting `case` (`Con`
+patterns) — the next widening lever, which needs the reclaimer-key (AxionKey) + interior-alias
+(AxionAlias) models merged into the bridge model.
+
 ## Scope & honesty
 
-- **Curated, not whole-corpus auto-translation.** The bridge pairs each *canonical* shape (the
-  classes AX0910/AX0912/V-1/V-2/R-5 are about) with a real program, rather than mechanically
-  translating every corpus function's Core into the model — the model is a deliberately small
-  abstraction, and most corpus functions use features outside it (closures, arrays, sessions,
-  polymorphic elements). The heavier follow-up is an `--emit model-trace` that lowers each
-  in-model function's final Core (via `delta::op_delta_effect`) into a Lean `Expr` and checks it
-  with an executable transcription of `Chk`, widening coverage from the canonical shapes to the
-  whole in-model fragment.
+- **Conservative fragment, not mistranslation.** The translator (`axionc/src/model_trace.rs`) is
+  conservative: any construct outside the `alloc`/`use`/`drop`/`moveOut` vocabulary — a
+  `case`/extraction, a closure, an interior-`Field` alias, an array/arena/session op, a record
+  update, a borrowed heap param, or a conditional bound in a `let` — puts the function OUT of
+  fragment (skipped and counted in the coverage report), never mistranslated. A shrinking in-model
+  fraction is a visible finding. Interior aliases and reclaimer keys (the `AxionAlias`/`AxionKey`
+  slices) are not yet given executable checkers, so functions using them are out of this fragment.
 - **Leak rejection is not paired.** By design no natural `.axi` fires the AX0911 leak gate (leaks
   are safe false-negatives, reclaimed by Auto-Drop); the Lean `no_leak` theorems correspond to the
   gate itself, whose only firing is synthetic. There is thus no real leak-reject program to pair.

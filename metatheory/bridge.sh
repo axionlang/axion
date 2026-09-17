@@ -11,8 +11,12 @@ echo "== Lean side: model soundness proofs =="
 "$here/check.sh"
 
 echo
-echo "== Code side: verifier agrees with the model =="
+echo "== Code side: verifier agrees with the model (8 canonical shapes) =="
 ( cd "$repo/axionc" && cargo test --test bridge -- --nocapture )
 
 echo
-echo "OK: faithfulness bridge holds (Lean proofs ∧ verifier agreement over the canonical shapes)"
+echo "== Whole-fragment: executable model agrees with the verifier over the corpus =="
+"$here/model-trace.sh"
+
+echo
+echo "OK: faithfulness bridge holds (Lean proofs ∧ verifier agreement — 8 canonical shapes ∧ the whole in-fragment corpus)"

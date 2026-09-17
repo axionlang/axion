@@ -47,6 +47,8 @@ mod codegen;
 mod core;
 mod delta;
 mod verify;
+mod model_trace;
+mod codegen_tv;
 // `Diagnostic` is re-exported (public API of the engine); its fields carry inline
 // comments rather than rustdoc, and its builder methods are used fluently, so waive
 // the doc / must-use requirements that only apply now that it is public.
@@ -99,6 +101,8 @@ enum Emit {
     Core,
     Delta,
     Verify,
+    ModelTrace,
+    CodegenTv,
     RetAlias,
     Clif,
     Llvm,
@@ -188,6 +192,8 @@ pub fn run_cli() -> ExitCode {
                     Some("core") => emit = Emit::Core,
                     Some("delta") => emit = Emit::Delta,
                     Some("verify") => emit = Emit::Verify,
+                    Some("model-trace") => emit = Emit::ModelTrace,
+                    Some("codegen-tv") => emit = Emit::CodegenTv,
                     Some("ret-alias") => emit = Emit::RetAlias,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
@@ -374,6 +380,64 @@ pub fn run_cli() -> ExitCode {
             println!("FAIL: {corruption} corruption finding(s)");
         }
         return if corruption == 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+
+    if emit == Emit::ModelTrace {
+        // M2 whole-fragment bridge: translate each in-AxionMove-fragment function's final Core
+        // into a Lean `AxionMove.Expr` and emit `example : AxionMove.acceptsL <T> = <verdict> :=
+        // by rfl`, so the proven executable model verdict is machine-checked against the real
+        // verifier across the whole fragment (metatheory/bridge.sh appends this to AxionMove.lean).
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            fuse,
+        );
+        print!("{}", model_trace::emit_model_trace(&lowered));
+        return ExitCode::SUCCESS;
+    }
+
+    if emit == Emit::CodegenTv {
+        // M3: codegen reclamation-preservation translation validation. Independently compute the
+        // reclamation the Core `Drop` sites require and the reclamation the emitted LLVM IR actually
+        // performs, and check they match 1:1 (no dropped/duplicated/invented/mis-keyed frees).
+        let ir = match llvm::emit_ir(
+            &module,
+            &inplace,
+            fuse,
+            &analysis.makecon_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+        ) {
+            Ok(ir) => ir,
+            Err(e) => {
+                eprintln!("llvm: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        // Lower with the SAME arguments `emit_ir` uses internally (empty array_tys), so expected and
+        // observed are derived from identical inputs.
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &std::collections::HashMap::new(),
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            fuse,
+        );
+        print!("{}", codegen_tv::report(&lowered, &ir));
+        return if codegen_tv::check(&lowered, &ir).is_empty() {
             ExitCode::SUCCESS
         } else {
             ExitCode::FAILURE

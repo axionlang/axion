@@ -199,8 +199,285 @@ theorem forgotten_owner_is_leak_rejected : ¬ accepts (.op (.alloc 0) .done) := 
     subst hSf
     exact (hleak 0) (by decide)
 
+/-! ## Executable checker (M2 whole-fragment bridge core, move/escape fragment)
+
+`Chk`/`accepts` are `Prop`s over `St = Nat → Cell` with existentials and a "no live cell" condition —
+not runnable. To run the model's OWN judgment on a real function's Core (the `--emit model-trace`
+bridge, now covering functions that MOVE/return owned values), we give an executable checker
+`acceptsL : Expr → Bool` over a finite assoc-list state (default `fresh`), and prove it decides
+`accepts` EXACTLY (`chk_move_correct`). -/
+
+/-- Effective cell of `n`: the first binding in the assoc list, else `fresh` (untouched). -/
+def lookupC (n : Nat) : List (Nat × Cell) → Cell
+  | [] => .fresh
+  | (m, c) :: rest => if m = n then c else lookupC n rest
+
+/-- Reflect the finite state into the total `St`. -/
+def toSt (l : List (Nat × Cell)) : St := fun n => lookupC n l
+
+/-- Update = shadowing prepend (`lookupC` takes the first match). -/
+def setC (n : Nat) (c : Cell) (l : List (Nat × Cell)) : List (Nat × Cell) := (n, c) :: l
+
+theorem toSt_nil : toSt [] = sInit := rfl
+
+theorem setC_toSt {n : Nat} {c : Cell} {l : List (Nat × Cell)} :
+    toSt (setC n c l) = upd (toSt l) n c := by
+  funext m
+  show lookupC m ((n, c) :: l) = (if m = n then c else lookupC m l)
+  simp only [lookupC]
+  by_cases h : m = n
+  · subst h; simp
+  · rw [if_neg (fun heq : n = m => h heq.symm), if_neg h]
+
+def keysOf (l : List (Nat × Cell)) : List Nat := l.map Prod.fst
+
+theorem lookupC_notMem {n : Nat} {l : List (Nat × Cell)} (h : n ∉ keysOf l) :
+    lookupC n l = .fresh := by
+  induction l with
+  | nil => rfl
+  | cons x xs ih =>
+    obtain ⟨m, c⟩ := x
+    simp only [keysOf, List.map_cons, List.mem_cons, not_or] at h
+    obtain ⟨hm, hrest⟩ := h
+    simp only [lookupC, if_neg (fun heq : m = n => hm heq.symm)]
+    exact ih hrest
+
+/-- A boolean ∀ over a key list (self-contained; no `List.all`-lemma dependence). -/
+def allC (p : Nat → Bool) : List Nat → Bool
+  | [] => true
+  | k :: ks => p k && allC p ks
+
+theorem allC_iff {p : Nat → Bool} {ks : List Nat} :
+    allC p ks = true ↔ ∀ k ∈ ks, p k = true := by
+  induction ks with
+  | nil => simp [allC]
+  | cons k ks ih =>
+    simp only [allC, Bool.and_eq_true, ih, List.mem_cons]
+    constructor
+    · rintro ⟨hk, hrest⟩ x (rfl | hx)
+      · exact hk
+      · exact hrest x hx
+    · intro h; exact ⟨h k (Or.inl rfl), fun x hx => h x (Or.inr hx)⟩
+
+def leakFreeL (l : List (Nat × Cell)) : Bool :=
+  allC (fun n => decide (lookupC n l ≠ .live)) (keysOf l)
+
+theorem leakFreeL_iff {l : List (Nat × Cell)} : leakFreeL l = true ↔ ∀ n, toSt l n ≠ .live := by
+  simp only [leakFreeL, allC_iff]
+  constructor
+  · intro h n
+    by_cases hn : n ∈ keysOf l
+    · have := h n hn; simpa using this
+    · show lookupC n l ≠ .live
+      rw [lookupC_notMem hn]; decide
+  · intro h k _; simpa using h k
+
+def stEqL (a b : List (Nat × Cell)) : Bool :=
+  allC (fun n => decide (lookupC n a = lookupC n b)) (keysOf a ++ keysOf b)
+
+theorem stEqL_toSt {a b : List (Nat × Cell)} : stEqL a b = true ↔ toSt a = toSt b := by
+  simp only [stEqL, allC_iff]
+  constructor
+  · intro h
+    funext n
+    show lookupC n a = lookupC n b
+    by_cases hn : n ∈ keysOf a ++ keysOf b
+    · have := h n hn; simpa using this
+    · rw [List.mem_append, not_or] at hn
+      rw [lookupC_notMem hn.1, lookupC_notMem hn.2]
+  · intro h k _
+    have hk : lookupC k a = lookupC k b := by have := congrFun h k; simpa [toSt] using this
+    simpa using hk
+
+/-- Executable per-op transition, mirroring `rstep` on the finite representation. -/
+def rstepL (l : List (Nat × Cell)) : Op → Option (List (Nat × Cell))
+  | .alloc n   => match lookupC n l with | .fresh => some (setC n .live l)  | _ => none
+  | .use n     => match lookupC n l with | .live  => some l                 | _ => none
+  | .drop n    => match lookupC n l with | .live  => some (setC n .freed l) | _ => none
+  | .moveOut n => match lookupC n l with | .live  => some (setC n .moved l) | _ => none
+
+theorem rstepL_sound {l l' : List (Nat × Cell)} {a : Op} (h : rstepL l a = some l') :
+    rstep (toSt l) a = some (toSt l') := by
+  have hlk : toSt l = fun n => lookupC n l := rfl
+  cases a with
+  | alloc n =>
+    simp only [rstepL] at h
+    cases hc : lookupC n l with
+    | fresh =>
+      rw [hc] at h; have hl : l' = setC n .live l := (Option.some.inj h).symm
+      subst hl; simp only [rstep, hlk, hc, setC_toSt]
+    | live => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+  | use n =>
+    simp only [rstepL] at h
+    cases hc : lookupC n l with
+    | live => rw [hc] at h; have : l' = l := (Option.some.inj h).symm; subst this; simp only [rstep, hlk, hc]
+    | fresh => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+  | drop n =>
+    simp only [rstepL] at h
+    cases hc : lookupC n l with
+    | live =>
+      rw [hc] at h; have hl : l' = setC n .freed l := (Option.some.inj h).symm
+      subst hl; simp only [rstep, hlk, hc, setC_toSt]
+    | fresh => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+  | moveOut n =>
+    simp only [rstepL] at h
+    cases hc : lookupC n l with
+    | live =>
+      rw [hc] at h; have hl : l' = setC n .moved l := (Option.some.inj h).symm
+      subst hl; simp only [rstep, hlk, hc, setC_toSt]
+    | fresh => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+
+theorem rstepL_complete {l : List (Nat × Cell)} {a : Op} {Sf : St}
+    (h : rstep (toSt l) a = some Sf) : ∃ l', rstepL l a = some l' ∧ Sf = toSt l' := by
+  have hlk : toSt l = fun n => lookupC n l := rfl
+  cases a with
+  | alloc n =>
+    simp only [rstep, hlk] at h
+    cases hc : lookupC n l with
+    | fresh =>
+      rw [hc] at h
+      refine ⟨setC n .live l, by simp only [rstepL, hc], ?_⟩
+      rw [← Option.some.inj h, setC_toSt, hlk]
+    | live => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+  | use n =>
+    simp only [rstep, hlk] at h
+    cases hc : lookupC n l with
+    | live => rw [hc] at h; exact ⟨l, by simp only [rstepL, hc], (Option.some.inj h).symm⟩
+    | fresh => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+  | drop n =>
+    simp only [rstep, hlk] at h
+    cases hc : lookupC n l with
+    | live =>
+      rw [hc] at h
+      refine ⟨setC n .freed l, by simp only [rstepL, hc], ?_⟩
+      rw [← Option.some.inj h, setC_toSt, hlk]
+    | fresh => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+  | moveOut n =>
+    simp only [rstep, hlk] at h
+    cases hc : lookupC n l with
+    | live =>
+      rw [hc] at h
+      refine ⟨setC n .moved l, by simp only [rstepL, hc], ?_⟩
+      rw [← Option.some.inj h, setC_toSt, hlk]
+    | fresh => rw [hc] at h; simp at h
+    | freed => rw [hc] at h; simp at h
+    | moved => rw [hc] at h; simp at h
+
+/-- Executable whole-`Expr` checker: same recursion shape as `Chk`. -/
+def chkL (l : List (Nat × Cell)) : Expr → Option (List (Nat × Cell))
+  | .done => some l
+  | .op a k =>
+      match rstepL l a with
+      | some l' => chkL l' k
+      | none => none
+  | .brn t e k =>
+      match chkL l t, chkL l e with
+      | some lt, some le => if stEqL lt le then chkL lt k else none
+      | _, _ => none
+
+theorem chkL_sound : ∀ {e : Expr} {l l' : List (Nat × Cell)},
+    chkL l e = some l' → Chk (toSt l) e (toSt l') := by
+  intro e
+  induction e with
+  | done =>
+    intro l l' h; simp only [chkL] at h
+    have : l = l' := Option.some.inj h; subst this; exact Chk.done
+  | op a k ih =>
+    intro l l' h; simp only [chkL] at h
+    cases hstep : rstepL l a with
+    | none => rw [hstep] at h; simp at h
+    | some l1 => rw [hstep] at h; exact Chk.op (rstepL_sound hstep) (ih h)
+  | brn t e2 k iht ihe2 ihk =>
+    intro l l' h; simp only [chkL] at h
+    cases hct : chkL l t with
+    | none => rw [hct] at h; simp at h
+    | some lt =>
+      cases hce : chkL l e2 with
+      | none => rw [hct, hce] at h; simp at h
+      | some le =>
+        rw [hct, hce] at h
+        by_cases hse : stEqL lt le = true
+        · simp only [hse, if_true] at h
+          have hteq : toSt lt = toSt le := (stEqL_toSt).mp hse
+          refine Chk.brn (iht hct) ?_ (ihk h)
+          rw [hteq]; exact ihe2 hce
+        · simp only [hse, Bool.false_eq_true, if_false] at h; simp at h
+
+theorem chkL_complete : ∀ {e : Expr} {l : List (Nat × Cell)} {Sf : St},
+    Chk (toSt l) e Sf → ∃ l', chkL l e = some l' ∧ Sf = toSt l' := by
+  intro e
+  induction e with
+  | done => intro l Sf h; cases h; exact ⟨l, by simp [chkL], rfl⟩
+  | op a k ih =>
+    intro l Sf h
+    cases h with
+    | op hs hk =>
+      obtain ⟨l1, hstep, hl1⟩ := rstepL_complete hs
+      rw [hl1] at hk
+      obtain ⟨l', hck, hsf⟩ := ih hk
+      exact ⟨l', by simp only [chkL, hstep]; exact hck, hsf⟩
+  | brn t e2 k iht ihe2 ihk =>
+    intro l Sf h
+    cases h with
+    | brn ht he hk =>
+      obtain ⟨lt, hct, hlt⟩ := iht ht
+      obtain ⟨le, hce, hle⟩ := ihe2 he
+      have hteq : toSt lt = toSt le := by rw [← hlt, ← hle]
+      have hse : stEqL lt le = true := (stEqL_toSt).mpr hteq
+      rw [hlt] at hk
+      obtain ⟨l', hck, hsf⟩ := ihk hk
+      exact ⟨l', by simp only [chkL, hct, hce, hse, if_true]; exact hck, hsf⟩
+
+/-- A program is accepted by the executable checker iff it checks from `[]` to a leak-free state. -/
+def acceptsL (e : Expr) : Bool :=
+  match chkL [] e with
+  | some l => leakFreeL l
+  | none => false
+
+/-- **The bridge crux (move/escape fragment).** The executable checker decides `accepts` exactly. -/
+theorem chk_move_correct {e : Expr} : acceptsL e = true ↔ accepts e := by
+  constructor
+  · intro h
+    simp only [acceptsL] at h
+    cases hc : chkL [] e with
+    | none => rw [hc] at h; simp at h
+    | some l =>
+      rw [hc] at h
+      have hchk := chkL_sound hc
+      rw [toSt_nil] at hchk
+      exact ⟨toSt l, hchk, (leakFreeL_iff).mp h⟩
+  · rintro ⟨Sf, hchk, hleak⟩
+    rw [show sInit = toSt ([] : List (Nat × Cell)) from toSt_nil.symm] at hchk
+    obtain ⟨l', hc, hsf⟩ := chkL_complete hchk
+    have hlf : leakFreeL l' = true := (leakFreeL_iff).mpr (by rw [← hsf]; exact hleak)
+    simp only [acceptsL, hc, hlf]
+
+/-- The checker RUNS (decided by `rfl`): escape is accepted; forgotten owner / use-after-move /
+    drop-after-move / heterogeneous branch are rejected; a balanced drop-branch is accepted. -/
+example : acceptsL (.op (.alloc 0) (.op (.moveOut 0) .done)) = true := rfl
+example : acceptsL (.op (.alloc 0) .done) = false := rfl
+example : acceptsL (.op (.alloc 0) (.op (.moveOut 0) (.op (.use 0) .done))) = false := rfl
+example : acceptsL (.op (.alloc 0) (.op (.moveOut 0) (.op (.drop 0) .done))) = false := rfl
+example : acceptsL (.op (.alloc 0) (.brn (.op (.drop 0) .done) (.op (.moveOut 0) .done) .done)) = false := rfl
+example : acceptsL (.op (.alloc 0) (.brn (.op (.drop 0) .done) (.op (.drop 0) .done) .done)) = true := rfl
+
 /-! ## Axiom audit. -/
 #print axioms sound
+#print axioms chk_move_correct
 #print axioms escape_is_leak_free_accepted
 #print axioms use_after_move_rejected
 #print axioms drop_after_move_rejected

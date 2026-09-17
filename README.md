@@ -61,12 +61,16 @@ Not claims — **measurements**, under CI:
 | Promise (spec §0) | Verified by |
 |---|---|
 | *No use-after-free, no double-free* | **AddressSanitizer** clean on all native fixtures (`scripts/sanitize.sh`) |
+| *Reclamation is sound (no double-free / UAF / bad-free)* | **`verify.rs` translation validation, default-on every native build** (AX0910/AX0911) — and its judgment is **machine-checked in Lean 4** (`metatheory/`, no `sorry`, `propext`/`Quot.sound` only) |
 | *No memory leaks* | **LeakSanitizer**: `allocs == frees` on the proven subset |
 | *Zero latency, C-level control* | benchmarks: **`--release` ≈ C `-O2`** on fib/loop/simd |
 | *Zero-cost abstraction (generics)* | **monomorphized typeclasses** = hand-written C: dispatch **563 ≈ 564 (C) ≈ 561 (Rust trait)** ms |
 | *No GC — release at static points* | the **arena crushes `malloc`** (~10×) and Rust's `Box` (~16×) in the allocation kernel |
 | *Zero data races / deadlocks — by types* | linearity (race-freedom) + tree topology of `bound` (deadlock-freedom); anchored to a **formal calculus + CFSM model-checking**, and the M:N runtime is **ThreadSanitizer-clean** (`scripts/tsan.sh`) |
 | *Faithful linearity* | **differential against GHC** (Linear Haskell) — same verdict in every scenario |
+
+The exact trust boundary — what is machine-checked, validated per-compilation, tested, and
+trusted — is stated in [`metatheory/GUARANTEE.md`](metatheory/GUARANTEE.md).
 
 Benchmarks (ms, best of 3; same `clang` for C and Axion `--release` —
 [`docs/benchmarks.md`](docs/benchmarks.md)):
