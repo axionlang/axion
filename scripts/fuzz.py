@@ -28,6 +28,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 AXIONC = os.environ.get("AXIONC", str(ROOT / "axionc/target/debug/axionc"))
 CLANG = os.environ.get("AXION_CLANG", "clang")
 RT = str(ROOT / "axionc/src/axion_rt.c")
+# The Rust runtime staticlib (axion-rt: bignum + strings/IO, growing as the C→Rust port proceeds).
+# Built on demand so the ASan link resolves the moved symbols — else it would fail to link and the
+# old code masked that as "ok". See docs/rust-runtime-port.md.
+RT_A = str(ROOT / "axion-rt/target/release/libaxion_rt.a")
+def _ensure_rt_a():
+    if CLANG_OK:  # only needed for the ASan/LLVM leg
+        subprocess.run(["cargo", "build", "--release", "--manifest-path",
+                        str(ROOT / "axion-rt/Cargo.toml")],
+                       capture_output=True, text=True)
 FAILDIR = ROOT / "fuzz-fail"
 
 # ── Preamble: typed building blocks every generated program can call. ──────────────
@@ -334,10 +343,12 @@ def asan_run(src, work, oracle_out):
     if rl != 0:
         return ("ok", None)
     (work / "ir.ll").write_text(ol)
-    rcc, _, _ = run([CLANG, "-fsanitize=address,leak", "-pthread", "-O1", "-w",
-                     str(work / "ir.ll"), RT, "-o", str(work / "p")])
+    rcc, _, ecc = run([CLANG, "-fsanitize=address,leak", "-pthread", "-O1", "-w",
+                       str(work / "ir.ll"), RT, RT_A, "-ldl", "-lm", "-o", str(work / "p")])
     if rcc != 0:
-        return ("ok", None)
+        # A link failure AFTER interp+cranelift agreed means a missing/renamed runtime symbol — a
+        # real regression (e.g. a moved C→Rust function not linked), NOT something to silently pass.
+        return ("verdict", f"native link failed:\n{ecc[-400:]}")
     rr, orr, err = run([str(work / "p")])
     if "use-after-free" in err or "double-free" in err or "invalid pointer" in err:
         return ("corruption", err[-600:])
@@ -381,6 +392,7 @@ def main():
     a = ap.parse_args()
     if not os.path.exists(AXIONC):
         print(f"no axionc at {AXIONC} — build it first"); return 2
+    _ensure_rt_a()  # build the Rust runtime staticlib so the ASan link resolves ported symbols
     print(f"fuzz: seed={a.seed} count={a.count} axionc={AXIONC}")
     tally = {}
     hard = 0

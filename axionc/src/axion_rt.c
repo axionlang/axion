@@ -115,92 +115,10 @@ long axion_block_copy(long ptr) {
  * place a real memory bug shipped. `axion_bignum_to_string` still allocates its String
  * via `axion_alloc` (below), so String reclamation is unchanged. See docs/rust-runtime-port.md. */
 
-/* --- strings / IO --- */
-void axion_puts(long s) { puts((const char *)s); }
-/* putStr: flush so a prompt without a trailing newline appears before a following
- * read (e.g. an interactive passphrase). */
-void axion_put(long s) {
-  fputs((const char *)s, stdout);
-  fflush(stdout);
-}
-/* ePutStr / ePutStrLn — the stderr counterparts of putStr / putStrLn (§CLI: prompts
- * and diagnostics belong on stderr, leaving stdout for real output). stderr is
- * unbuffered, so no explicit flush is needed. */
-void axion_eput(long s) { fputs((const char *)s, stderr); }
-void axion_eputs(long s) {
-  fputs((const char *)s, stderr);
-  fputc('\n', stderr);
-}
-/* Drops a `String`: heap strings carry the `axion_alloc` size header (nonzero at
-   `s-8`); string literals are emitted with a ZERO header (static `.rodata`), so
-   this frees the former and skips the latter. See core.rs string-drop lowering. */
-void axion_str_drop(long s) {
-  if (s && *(long *)(s - 8))
-    axion_free(s);
-}
-long axion_show_int(long n) {
-  char *buf = (char *)axion_alloc(24);
-  snprintf(buf, 24, "%ld", n);
-  return (long)buf;
-}
-
-/* Prints a `Float` (`main :: Float`) as its SHORTEST round-tripping decimal, so
-   --release matches the interpreter/Cranelift (Rust's `{}`), rather than the
-   lossy 6-digit `%g`. Grows the precision until the value parses back exactly. */
-static void float_shortest(double d, char *buf, long cap) {
-  for (int prec = 1; prec <= 17; prec++) {
-    snprintf(buf, cap, "%.*g", prec, d);
-    if (strtod(buf, NULL) == d)
-      break;
-  }
-}
-void axion_print_float(double d) {
-  char buf[32];
-  float_shortest(d, buf, sizeof buf);
-  printf("%s\n", buf);
-}
-
-/* `show :: Float -> String`: the shortest round-tripping decimal, as a heap
-   C-string (like axion_show_int). The i64 arg is the f64 bit pattern. */
-long axion_show_float(long bits) {
-  double d;
-  memcpy(&d, &bits, sizeof d);
-  char *buf = (char *)axion_alloc(32);
-  float_shortest(d, buf, 32);
-  return (long)buf;
-}
-
-/* String concatenation `a ++ b` (both NUL-terminated C-strings) into a fresh
-   heap C-string. Backs the `strAppend` builtin. */
-long axion_strcat(long a, long b) {
-  const char *x = (const char *)a, *y = (const char *)b;
-  long la = (long)strlen(x), lb = (long)strlen(y);
-  char *buf = (char *)axion_alloc(la + lb + 1);
-  memcpy(buf, x, la);
-  memcpy(buf + la, y, lb + 1); /* copies y's NUL too */
-  return (long)buf;
-}
-
-/* --- char-level string primitives (§text). Byte-oriented (ASCII); a String is a
- * NUL-terminated C-string. `strLen`/`charAt` READ the string; `substr` allocates a
- * fresh heap String (reclaimed by axion_str_drop). --- */
-/* strLen :: String -> Int */
-long axion_str_len(long s) { return (long)strlen((const char *)s); }
-/* charAt :: Int -> String -> Int — the byte at index `i`, or -1 out of bounds. */
-long axion_str_at(long i, long s) {
-  const char *x = (const char *)s;
-  long n = (long)strlen(x);
-  if (i < 0 || i >= n)
-    return -1;
-  return (long)(unsigned char)x[i];
-}
-/* strCmp :: String -> String -> Int — byte-lexicographic compare of two
- * NUL-terminated C-strings, normalised to -1/0/1. READS both (no free). Backs
- * the `Eq String`/`Ord String` instances. */
-long axion_str_cmp(long a, long b) {
-  int c = strcmp((const char *)a, (const char *)b);
-  return c < 0 ? -1 : (c > 0 ? 1 : 0);
-}
+/* --- strings / IO + char primitives ---------------------------------------
+ * MOVED TO RUST (axion-rt, Stage 2a, docs/rust-runtime-port.md): axion_puts/put/eput/eputs,
+ * str_drop, show_int, print_float, show_float, strcat, str_len, str_at, str_cmp, substr.
+ * All stdout now flows through the Rust runtime (flushed), so no C/Rust buffer interleaving. */
 
 /* --- OS capability layer (§pass). Effectful primitives for CLI work. String
  * results are fresh reclaimable heap Strings (axion_str_drop); they READ their
@@ -623,23 +541,6 @@ long axion_getargs(long ignored) {
   free(buf);
   return r;
 }
-/* substr :: Int -> Int -> String -> String — `len` bytes from `start`, both
- * clamped to the string's bounds; a fresh NUL-terminated heap String. */
-long axion_substr(long start, long len, long s) {
-  const char *x = (const char *)s;
-  long n = (long)strlen(x);
-  if (start < 0)
-    start = 0;
-  if (start > n)
-    start = n;
-  long avail = n - start;
-  long take = len < 0 ? 0 : (len > avail ? avail : len);
-  char *buf = (char *)axion_alloc(take + 1);
-  memcpy(buf, x + start, take);
-  buf[take] = 0;
-  return (long)buf;
-}
-
 /* --- arenas (§3): bump-allocator over fixed chunks (stable pointers) --- */
 #define ARENA_CHUNK (64 * 1024)
 typedef struct Chunk {

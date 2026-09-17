@@ -3918,10 +3918,14 @@ fn native_runtime_is_leak_free_under_lsan() {
         std::fs::write(&ll, &ir.stdout).unwrap();
         // compile with ASan + LSan
         let exe = dir.join(format!("{name}.san"));
+        // Link the C runtime AND the Rust runtime staticlib (`axion-rt`: bignum + strings/IO, and
+        // more as the C→Rust port proceeds); `AXION_RT_LIB` is set by build.rs.
         let cc = std::process::Command::new(&clang)
             .args(["-fsanitize=address,leak", "-pthread", "-O1", "-w"])
             .arg(&ll)
             .arg(&rt)
+            .arg(env!("AXION_RT_LIB"))
+            .args(["-ldl", "-lm"])
             .arg("-o")
             .arg(&exe)
             .status()
