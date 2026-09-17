@@ -235,16 +235,54 @@ def gen_cond_return(rng):
             f'main :: IO ()\n'
             f'main = putStrLn (showS (mapS ({arm})))\n')
 
+def gen_bignum(rng):
+    # Integer arithmetic hammering the bignum runtime — `bn_divmod` and the reclamation of its
+    # long-division intermediates, exactly where a real double-free / leak once lived (rsa_modexp /
+    # integer_divmod). Full differential: the interpreter's exact Rust bignum is the oracle for the
+    # C `--release` bignum, and ASan/LSan hunt corruption/leaks in the div/mod reclamation paths.
+    pre = (
+        "facI :: Integer -> Integer\n"
+        "facI n = if n == fromInt 0 then fromInt 1 else n * facI (n - fromInt 1)\n"
+        "gcdI :: Integer -> Integer -> Integer\n"
+        "gcdI a b = if b == fromInt 0 then a else gcdI b (a `mod` b)\n"
+        "modpow :: Integer -> Integer -> Integer -> Integer\n"
+        "modpow b e m = if e == fromInt 0 then fromInt 1 else "
+        "if e `mod` (fromInt 2) == fromInt 0 "
+        "then (let h = modpow b (e `div` (fromInt 2)) m in (h * h) `mod` m) "
+        "else (b * modpow b (e - fromInt 1) m) `mod` m\n"
+    )
+    r = rng.random()
+    if r < 0.4:
+        expr = f"facI (fromInt {rng.randint(10, 90)})"
+    elif r < 0.7:
+        expr = f"gcdI (facI (fromInt {rng.randint(5, 30)})) (fromInt {rng.randint(1, 10**9)})"
+    else:
+        expr = (f"modpow (fromInt {rng.randint(2, 9999)}) (fromInt {rng.randint(1, 400)}) "
+                f"(fromInt {rng.randint(3, 999999)})")
+    return pre + "main :: IO ()\nmain = putStrLn (showInteger (" + expr + "))\n"
+
+def gen_deep(rng):
+    # Nested heap containers built and reclaimed → the recursive deep-drop destructors
+    # (`axion_drop_List$List$Int`) and their per-element frees. Full differential.
+    n = rng.randint(1, 8)
+    pre = "mkRow :: Int -> List Int\nmkRow k = range 1 k\n"
+    expr = f"sum (map sum (map mkRow (range 1 {n})))"
+    return pre + "main :: IO ()\nmain = putStrLn (show (" + expr + "))\n"
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
-    if r < 0.12:
+    if r < 0.10:
         return gen_arena(rng)           # native-only
-    if r < 0.30:
+    if r < 0.26:
         return gen_session(rng)         # full differential (interp supports sessions)
-    if r < 0.44:
+    if r < 0.38:
         return gen_array(rng)           # native-only
-    if r < 0.60:
+    if r < 0.50:
         return gen_cond_return(rng)     # call-site-ownership shapes (full differential)
+    if r < 0.62:
+        return gen_bignum(rng)          # bignum reclamation (full differential + ASan/LSan)
+    if r < 0.70:
+        return gen_deep(rng)            # nested-container deep-drop (full differential)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:
