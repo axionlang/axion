@@ -74,9 +74,10 @@ bench_kernel() {
   local k="$1"
   # Axion --dev (JIT)
   run "$k:dev" "$AXIONC" --backend cranelift "bench/$k.axi"
-  # Axion --release (LLVM -O2 -flto)
-  if "$AXIONC" --emit llvm "bench/$k.axi" > "$tmp/$k.ll" 2>/dev/null \
-     && "$CLANG" -O2 -flto -w -pthread "$tmp/$k.ll" "$RT" -o "$tmp/${k}_rel" 2>/dev/null; then
+  # Axion --release (LLVM -O2 -flto). Build via `axionc --release -o` so the link matches production
+  # exactly — it links BOTH the C runtime and the Rust runtime staticlib (`axion-rt`, e.g. bignum);
+  # `axionc` uses the same `$AXION_CLANG` (LLVM) as the C/Rust comparison tiers, so the ratio is fair.
+  if "$AXIONC" --release -o "$tmp/${k}_rel" "bench/$k.axi" 2>/dev/null; then
     run "$k:rel" "$tmp/${k}_rel"
   else run "$k:rel" SKIP; fi
 }
