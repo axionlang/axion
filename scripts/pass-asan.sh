@@ -25,8 +25,12 @@ S="$W/store"; mkdir -p "$S/web" "$S/email/work"
 # fzf stub: echo the first candidate (a deterministic "selection") so `show`/`edit` are non-interactive.
 mkdir -p "$W/bin"; printf '#!/bin/sh\nhead -n1\n' > "$W/bin/fzf"; chmod +x "$W/bin/fzf"
 
+# Build + link the Rust runtime staticlib (axion-rt: strings/IO + OS-capability, which pass leans on
+# heavily) alongside the C runtime. See docs/rust-runtime-port.md.
+cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "FAIL: axion-rt build"; exit 1; }
 "$AXIONC" --emit llvm examples/pass/pass.axi > "$W/ir.ll" 2>/dev/null || { echo "FAIL: pass.axi did not lower"; exit 1; }
-"$CLANG" -fsanitize=address -pthread -O1 -w "$W/ir.ll" axionc/src/axion_rt.c -o "$W/axpass" 2>/dev/null \
+"$CLANG" -fsanitize=address -pthread -O1 -w "$W/ir.ll" axionc/src/axion_rt.c \
+  axion-rt/target/release/libaxion_rt.a -ldl -lm -o "$W/axpass" 2>/dev/null \
   || { echo "FAIL: ASan build failed"; exit 1; }
 
 fail=0

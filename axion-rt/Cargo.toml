@@ -12,6 +12,10 @@ publish = false
 name = "axion_rt"
 crate-type = ["staticlib"]
 
+[dependencies]
+# Only for `termios` (terminal echo-off in `readSecret`); everything else uses std.
+libc = "0.2"
+
 # A Rust panic unwinding across the C / LLVM-IR FFI boundary is UB — abort instead.
 [profile.release]
 panic = "abort"

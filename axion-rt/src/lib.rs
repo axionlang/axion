@@ -167,6 +167,295 @@ pub unsafe extern "C" fn axion_substr(start: i64, len: i64, s: i64) -> i64 {
     alloc_str(&x[start as usize..(start + take) as usize])
 }
 
+// ─── OS capability layer (Stage 2b) ──────────────────────────────────────────────────────────
+// Effectful CLI primitives, now on `std::fs`/`std::process`/`std::io` instead of hand-written
+// fork/exec/pipe/dirent C. String results are fresh reclaimable heap Strings; args are READ.
+
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
+
+/// A runtime `String` (i64) as an `&OsStr` path/command (bytes, not necessarily UTF-8).
+#[inline]
+unsafe fn os<'a>(s: i64) -> &'a OsStr {
+    OsStr::from_bytes(str_bytes(s))
+}
+
+/// `getEnv name` — the env var's value, or "".
+#[no_mangle]
+pub unsafe extern "C" fn axion_getenv(name: i64) -> i64 {
+    match std::env::var_os(os(name)) {
+        Some(v) => alloc_str(v.as_bytes()),
+        None => alloc_str(b""),
+    }
+}
+
+/// `runCapture cmd` — run via the shell, capture stdout as a String ("" on failure).
+#[no_mangle]
+pub unsafe extern "C" fn axion_run(cmd: i64) -> i64 {
+    match std::process::Command::new("sh").arg("-c").arg(os(cmd)).output() {
+        Ok(o) => alloc_str(&o.stdout),
+        Err(_) => alloc_str(b""),
+    }
+}
+
+/// `runStatus cmd` — run via the shell, return the exit status (-1 if it could not run).
+#[no_mangle]
+pub unsafe extern "C" fn axion_system(cmd: i64) -> i64 {
+    match std::process::Command::new("sh").arg("-c").arg(os(cmd)).status() {
+        Ok(st) => st.code().map_or(-1, i64::from),
+        Err(_) => -1,
+    }
+}
+
+/// `readFile path` — the file's bytes as a String ("" if unreadable). NUL-terminated, so embedded
+/// NULs truncate the text (the String model), matching the old C.
+#[no_mangle]
+pub unsafe extern "C" fn axion_read_file(path: i64) -> i64 {
+    match std::fs::read(os(path)) {
+        Ok(bytes) => alloc_str(&bytes),
+        Err(_) => alloc_str(b""),
+    }
+}
+
+/// `writeFile path content` — write `content` (mode 0600), truncating. 0 / -1.
+#[no_mangle]
+pub unsafe extern "C" fn axion_write_file(path: i64, content: i64) -> i64 {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let r = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(os(path))
+        .and_then(|mut f| f.write_all(str_bytes(content)));
+    if r.is_err() {
+        -1
+    } else {
+        0
+    }
+}
+
+/// `fileExists path` — 1 if it exists, else 0.
+#[no_mangle]
+pub unsafe extern "C" fn axion_file_exists(path: i64) -> i64 {
+    i64::from(std::path::Path::new(os(path)).exists())
+}
+
+/// `makeDir path` — create `path` and any missing parents (mode 0700). Always 0 (matches the C).
+#[no_mangle]
+pub unsafe extern "C" fn axion_mkdir_p(path: i64) -> i64 {
+    use std::os::unix::fs::DirBuilderExt;
+    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(os(path));
+    0
+}
+
+/// `removeFile path` — unlink. 0 / -1.
+#[no_mangle]
+pub unsafe extern "C" fn axion_unlink(path: i64) -> i64 {
+    if std::fs::remove_file(os(path)).is_err() {
+        -1
+    } else {
+        0
+    }
+}
+
+/// `renameFile from to` — rename. 0 / -1.
+#[no_mangle]
+pub unsafe extern "C" fn axion_rename(from: i64, to: i64) -> i64 {
+    if std::fs::rename(os(from), os(to)).is_err() {
+        -1
+    } else {
+        0
+    }
+}
+
+/// `readDir path` — entries (excluding `.`/`..`, which `read_dir` already omits) joined by '\n',
+/// or "" if it can't be opened. Uses the same Rust `read_dir` as the interpreter oracle.
+#[no_mangle]
+pub unsafe extern "C" fn axion_readdir(path: i64) -> i64 {
+    let rd = match std::fs::read_dir(os(path)) {
+        Ok(rd) => rd,
+        Err(_) => return alloc_str(b""),
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    for ent in rd.flatten() {
+        if !buf.is_empty() {
+            buf.push(b'\n');
+        }
+        buf.extend_from_slice(ent.file_name().as_bytes());
+    }
+    alloc_str(&buf)
+}
+
+/// `randHex n` — `n` cryptographically-random bytes from /dev/urandom as 2n lowercase hex chars
+/// (empty if n<=0 or the source is unavailable).
+#[no_mangle]
+pub unsafe extern "C" fn axion_rand_hex(n: i64) -> i64 {
+    use std::io::Read;
+    if n <= 0 {
+        return alloc_str(b"");
+    }
+    let mut raw = vec![0u8; n as usize];
+    match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut raw)) {
+        Ok(()) => {}
+        Err(_) => return alloc_str(b""),
+    }
+    const HX: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = Vec::with_capacity(2 * raw.len());
+    for b in raw {
+        hex.push(HX[(b >> 4) as usize]);
+        hex.push(HX[(b & 15) as usize]);
+    }
+    alloc_str(&hex)
+}
+
+/// Read one stdin line (newline stripped, "" at EOF). With `hide` and a tty, echo is disabled for
+/// the read (passphrase entry) and a newline is emitted to stderr afterward; on a pipe it degrades
+/// to a plain read (so it stays testable).
+unsafe fn read_line_impl(hide: bool) -> i64 {
+    use std::io::BufRead;
+    let mut saved: libc::termios = std::mem::zeroed();
+    let is_tty = hide && libc::tcgetattr(0, &mut saved) == 0;
+    if is_tty {
+        let mut raw = saved;
+        raw.c_lflag &= !libc::ECHO;
+        libc::tcsetattr(0, libc::TCSAFLUSH, &raw);
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut h = std::io::stdin().lock();
+        let _ = h.read_until(b'\n', &mut buf);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    }
+    if is_tty {
+        libc::tcsetattr(0, libc::TCSAFLUSH, &saved);
+        write_err(b"", true); // the user's Enter wasn't echoed — emit a newline
+    }
+    alloc_str(&buf)
+}
+
+/// `readLine _` — one echoed stdin line. The Int arg is an ignored placeholder (forces re-read).
+#[no_mangle]
+pub unsafe extern "C" fn axion_read_line(_unused: i64) -> i64 {
+    read_line_impl(false)
+}
+/// `readSecret _` — one stdin line with terminal echo OFF (passphrase entry).
+#[no_mangle]
+pub unsafe extern "C" fn axion_read_secret(_unused: i64) -> i64 {
+    read_line_impl(true)
+}
+
+/// Shell-free exec (§pass): run `argv_joined` (argv elements '\n'-separated; argv[0] = program) with
+/// NO shell — nothing word-split/glob-expanded/injection-prone — feeding `stdin_str` on stdin only
+/// when non-empty (else inherit the tty, so a child's pinentry works). `want_stdout` captures the
+/// child's stdout as a String; otherwise returns the exit status. "" / -1 if it can't be spawned.
+unsafe fn exec_impl(argv_joined: i64, stdin_str: i64, want_stdout: bool) -> i64 {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    let joined = str_bytes(argv_joined);
+    let fail = || if want_stdout { unsafe { alloc_str(b"") } } else { -1 };
+    if joined.is_empty() || joined[0] == b'\n' {
+        return fail();
+    }
+    let mut parts = joined.split(|&b| b == b'\n');
+    let prog = parts.next().unwrap_or(b"");
+    let mut cmd = Command::new(OsStr::from_bytes(prog));
+    for a in parts {
+        cmd.arg(OsStr::from_bytes(a));
+    }
+    let input = str_bytes(stdin_str);
+    let feed = !input.is_empty();
+    cmd.stdin(if feed { Stdio::piped() } else { Stdio::inherit() });
+    cmd.stdout(if want_stdout { Stdio::piped() } else { Stdio::inherit() });
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return fail(),
+    };
+    if feed {
+        if let Some(mut si) = child.stdin.take() {
+            let _ = si.write_all(input); // dropped here → child sees EOF
+        }
+    }
+    if want_stdout {
+        let mut out = Vec::new();
+        if let Some(mut so) = child.stdout.take() {
+            let _ = so.read_to_end(&mut out);
+        }
+        let _ = child.wait();
+        alloc_str(&out)
+    } else {
+        match child.wait() {
+            Ok(st) => st.code().map_or(-1, i64::from),
+            Err(_) => -1,
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_exec_capture(argv_joined: i64, stdin_str: i64) -> i64 {
+    exec_impl(argv_joined, stdin_str, true)
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_exec_status(argv_joined: i64, stdin_str: i64) -> i64 {
+    exec_impl(argv_joined, stdin_str, false)
+}
+
+/// `exitWith code` — terminate the process (never returns; the Int return sits in expr position).
+#[no_mangle]
+pub extern "C" fn axion_exit(code: i64) -> i64 {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(code as i32);
+}
+
+// Command-line arguments: a standalone `--release` binary's `main(argc, argv)` hands them here.
+static ARGS: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_set_args(argc: i64, argv: i64) {
+    let p = argv as *const *const std::os::raw::c_char;
+    let mut v = Vec::with_capacity(argc.max(0) as usize);
+    for i in 0..argc.max(0) {
+        let s = *p.add(i as usize);
+        v.push(if s.is_null() {
+            Vec::new()
+        } else {
+            std::ffi::CStr::from_ptr(s).to_bytes().to_vec()
+        });
+    }
+    let _ = ARGS.set(v);
+}
+
+/// `getArg i` — the i-th program argument (0-based over argv[1..], excluding argv[0]), a FRESH
+/// String ("" if out of range).
+#[no_mangle]
+pub unsafe extern "C" fn axion_getarg(i: i64) -> i64 {
+    let args = ARGS.get();
+    let idx = i + 1; // skip the program name
+    match args {
+        Some(a) if i >= 0 && (idx as usize) < a.len() => alloc_str(&a[idx as usize]),
+        _ => alloc_str(b""),
+    }
+}
+
+/// `getArgs _` — argv[1..] joined by '\n', a fresh String.
+#[no_mangle]
+pub unsafe extern "C" fn axion_getargs(_ignored: i64) -> i64 {
+    let mut buf: Vec<u8> = Vec::new();
+    if let Some(a) = ARGS.get() {
+        for arg in a.iter().skip(1) {
+            if !buf.is_empty() {
+                buf.push(b'\n');
+            }
+            buf.extend_from_slice(arg);
+        }
+    }
+    alloc_str(&buf)
+}
+
 #[inline]
 fn box_bn(b: BigInt) -> i64 {
     Box::into_raw(Box::new(b)) as i64
