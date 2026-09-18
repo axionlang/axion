@@ -69,6 +69,121 @@ pub unsafe extern "C" fn axion_block_copy(ptr: i64) -> i64 {
     nb.add(8) as i64
 }
 
+// ─── arenas (Stage 3b) ───────────────────────────────────────────────────────────────────────
+// Bump allocator over fixed 64 KiB chunks (stable pointers), bulk-reset. `unsafe` mirrors the exact
+// C layout: a `Chunk` is `[prev: *mut Chunk][cap: i64][off: i64]` (24-byte header) followed by
+// `cap` bytes of `data`; libc-backed so it interoperates with the remaining C heap.
+
+const ARENA_CHUNK: i64 = 64 * 1024;
+
+#[repr(C)]
+struct ChunkHdr {
+    prev: *mut ChunkHdr,
+    cap: i64,
+    off: i64,
+    // `data[cap]` follows the header (flexible array member in the C).
+}
+#[repr(C)]
+struct Arena {
+    cur: *mut ChunkHdr,
+}
+#[repr(C)]
+struct Mark {
+    arena: *mut Arena,
+    chunk: *mut ChunkHdr,
+    off: i64,
+}
+
+unsafe fn chunk_new(cap: i64, prev: *mut ChunkHdr) -> *mut ChunkHdr {
+    let c = libc::malloc(std::mem::size_of::<ChunkHdr>() + cap as usize) as *mut ChunkHdr;
+    if c.is_null() {
+        oom();
+    }
+    (*c).prev = prev;
+    (*c).cap = cap;
+    (*c).off = 0;
+    c
+}
+#[inline]
+unsafe fn chunk_data(c: *mut ChunkHdr) -> *mut u8 {
+    (c as *mut u8).add(std::mem::size_of::<ChunkHdr>())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_arena_new() -> i64 {
+    let a = libc::malloc(std::mem::size_of::<Arena>()) as *mut Arena;
+    if a.is_null() {
+        oom();
+    }
+    (*a).cur = chunk_new(ARENA_CHUNK, std::ptr::null_mut());
+    a as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_arena_alloc(arena: i64, size: i64) -> i64 {
+    let a = arena as *mut Arena;
+    let mut size = (size + 7) & !7i64;
+    if size < 1 {
+        size = 8;
+    }
+    let mut c = (*a).cur;
+    if (*c).off + size > (*c).cap {
+        let cap = if size > ARENA_CHUNK { size } else { ARENA_CHUNK };
+        c = chunk_new(cap, (*a).cur);
+        (*a).cur = c;
+    }
+    let p = chunk_data(c).add((*c).off as usize);
+    (*c).off += size;
+    p as i64
+}
+
+/// Bulk reset: free every chunk and the arena itself.
+#[no_mangle]
+pub unsafe extern "C" fn axion_arena_reset(arena: i64) {
+    let a = arena as *mut Arena;
+    let mut c = (*a).cur;
+    while !c.is_null() {
+        let prev = (*c).prev;
+        libc::free(c as *mut libc::c_void);
+        c = prev;
+    }
+    libc::free(a as *mut libc::c_void);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_arena_mark(arena: i64) -> i64 {
+    let a = arena as *mut Arena;
+    let m = libc::malloc(std::mem::size_of::<Mark>()) as *mut Mark;
+    if m.is_null() {
+        oom();
+    }
+    (*m).arena = a;
+    (*m).chunk = (*a).cur;
+    (*m).off = (*(*a).cur).off;
+    m as i64
+}
+
+/// Restore the bump pointer to the mark (freeing chunks allocated since).
+#[no_mangle]
+pub unsafe extern "C" fn axion_arena_release(mark: i64) {
+    let m = mark as *mut Mark;
+    let a = (*m).arena;
+    while (*a).cur != (*m).chunk {
+        let prev = (*(*a).cur).prev;
+        libc::free((*a).cur as *mut libc::c_void);
+        (*a).cur = prev;
+    }
+    (*(*a).cur).off = (*m).off;
+    libc::free(m as *mut libc::c_void);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_arena_promote(target: i64, cell: i64, size: i64) -> i64 {
+    let dst = axion_arena_alloc(target, size);
+    std::ptr::copy_nonoverlapping(cell as *const u8, dst as *mut u8, size as usize);
+    dst
+}
+
 // ─── strings / IO (Stage 2a) ─────────────────────────────────────────────────────────────────
 // A `String` is a NUL-terminated byte buffer passed as an i64 pointer; heap ones carry the
 // `axion_alloc` size header at offset −8 (so `axion_str_drop` reclaims them and skips `.rodata`

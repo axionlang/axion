@@ -104,90 +104,9 @@ extern long axion_block_copy(long ptr);
  * randHex, readLine, readSecret, execCapture, execStatus, exitWith, setArgs/getArg/getArgs.
  * Now on std::fs / std::process / std::io (fork/exec/pipe/dirent/termios gone from C). */
 
-/* --- arenas (§3): bump-allocator over fixed chunks (stable pointers) --- */
-#define ARENA_CHUNK (64 * 1024)
-typedef struct Chunk {
-  struct Chunk *prev;
-  long cap, off;
-  char data[];
-} Chunk;
-typedef struct {
-  Chunk *cur;
-} Arena;
-typedef struct {
-  Arena *arena;
-  Chunk *chunk;
-  long off;
-} Mark;
-
-static Chunk *chunk_new(long cap, Chunk *prev) {
-  Chunk *c = (Chunk *)axion_xmalloc(sizeof(Chunk) + cap);
-  c->prev = prev;
-  c->cap = cap;
-  c->off = 0;
-  return c;
-}
-
-long axion_arena_new(void) {
-  Arena *a = (Arena *)axion_xmalloc(sizeof(Arena));
-  a->cur = chunk_new(ARENA_CHUNK, NULL);
-  return (long)a;
-}
-
-long axion_arena_alloc(long arena, long size) {
-  Arena *a = (Arena *)arena;
-  size = (size + 7) & ~7L;
-  if (size < 1) size = 8;
-  Chunk *c = a->cur;
-  if (c->off + size > c->cap) {
-    long cap = size > ARENA_CHUNK ? size : ARENA_CHUNK;
-    c = chunk_new(cap, a->cur);
-    a->cur = c;
-  }
-  char *p = c->data + c->off;
-  c->off += size;
-  return (long)p;
-}
-
-/* bulk reset: drops all the chunks at once */
-void axion_arena_reset(long arena) {
-  Arena *a = (Arena *)arena;
-  Chunk *c = a->cur;
-  while (c) {
-    Chunk *p = c->prev;
-    free(c);
-    c = p;
-  }
-  free(a);
-}
-
-long axion_arena_mark(long arena) {
-  Arena *a = (Arena *)arena;
-  Mark *m = (Mark *)axion_xmalloc(sizeof(Mark));
-  m->arena = a;
-  m->chunk = a->cur;
-  m->off = a->cur->off;
-  return (long)m;
-}
-
-/* restores the bump-pointer to the mark (frees the chunks allocated since) */
-void axion_arena_release(long mark) {
-  Mark *m = (Mark *)mark;
-  Arena *a = m->arena;
-  while (a->cur != m->chunk) {
-    Chunk *p = a->cur->prev;
-    free(a->cur);
-    a->cur = p;
-  }
-  a->cur->off = m->off;
-  free(m);
-}
-
-long axion_arena_promote(long target, long cell, long size) {
-  long dst = axion_arena_alloc(target, size);
-  memcpy((void *)dst, (void *)cell, (size_t)size);
-  return dst;
-}
+/* --- arenas (§3) ----------------------------------------------------------
+ * MOVED TO RUST (axion-rt, Stage 3b): axion_arena_new/alloc/reset/mark/release/promote —
+ * libc-backed bump allocator, same 24-byte Chunk header layout. See docs/rust-runtime-port.md. */
 
 /* --- linear U8 Buffer (§4/§5): [len(i64)][bytes…]. The bulk operations
  * (sum) and in-place ones (iota/xor) are loops that clang -O2 auto-vectorizes; with
