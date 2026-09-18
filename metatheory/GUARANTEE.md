@@ -14,8 +14,9 @@ it says so.
 ## 1. The top-level claim
 
 > **Theorem (informal, conditional).** Let `P` be any program that `axionc` *accepts* and compiles to
-> native code **without** the `--no-verify` or `--allow-leaks` escape hatches. Assume the trusted base of
-> §4 is correct. Then, on **every** control-flow path, execution of the compiled binary:
+> native code **without** the `--no-verify` or `--allow-leaks` escape hatches — the configuration a
+> **`--certified` build enforces and stamps** (M5). Assume the trusted base of §4 is correct. Then, on
+> **every** control-flow path, execution of the compiled binary:
 > 1. never frees a heap resource twice (**no double-free**),
 > 2. never uses a heap resource after it is freed (**no use-after-free**),
 > 3. never frees a resource with the wrong reclaimer (**no bad-free / `WrongDropKey`**), and
@@ -26,8 +27,11 @@ it says so.
 > system is **deadlock-free** with **session fidelity** and **cancellation-safety** — established at the
 > graph/type level (§5 notes the value-level rung that remains deferred).
 
-The guarantee is **conditional on the trusted base** and **scoped to the non-bypassed configuration**. The
-rest of this document is the decomposition of that conditional into checked and trusted parts.
+The guarantee is **conditional on the trusted base** and **scoped to the non-bypassed configuration** — a
+scope that is now **machine-enforceable**: `axionc --certified` (M5) refuses `--no-verify`/`--allow-leaks`,
+requires a native build, runs the full verifier (AX0910 + AX0911, and the AX0912 native-alias floor), and
+stamps the artifact on success, so a certified build provably occupies exactly the theorem's hypothesis.
+The rest of this document is the decomposition of that conditional into checked and trusted parts.
 
 ---
 
@@ -116,11 +120,12 @@ and well-mitigated this list is.
 
 ## 5. Escape hatches and characterized incompleteness
 
-- **`--no-verify`** (`lib.rs:153`, gate at 457): bypasses the verifier entirely (both AX0910 and AX0911).
-  **A program the verifier flagged as a double-free can be emitted.** The top-level claim explicitly
-  excludes this configuration. Mitigation target: **M5** (certified build mode refuses it).
-- **`--allow-leaks`** (`lib.rs:154`, gate at 544): permits AX0911 leaks but **keeps** AX0910 corruption
-  checking. Leaks are safe (no corruption), so this weakens only clause (4) of the claim.
+- **`--no-verify`**: bypasses the verifier entirely (both AX0910 and AX0911). **A program the verifier
+  flagged as a double-free can be emitted.** The top-level claim explicitly excludes this configuration.
+  **Mitigated (M5, DONE):** `axionc --certified` refuses this flag (exit 2), so the guarantee-bearing
+  configuration is machine-enforceable rather than merely documented.
+- **`--allow-leaks`**: permits AX0911 leaks but **keeps** AX0910 corruption checking. Leaks are safe (no
+  corruption), so this weakens only clause (4) of the claim. **`--certified` refuses it too** (M5).
 - **AX0912 native floor** (`lib.rs:468-503`, `heap_alias_violations`): an element-aliasing borrower
   (`filter`/`take`/`head`/`last`) instantiated at a **heap** element type, and a nested-tuple poly-payload
   the monomorphizer cannot lower, are **rejected for native emit**. This is **sound-by-construction** — a
@@ -159,8 +164,10 @@ The trusted base of §4 and the deferrals of §5 are the frontier. In descending
   compute lowering. (Destructor generation-vs-type-layout is a direct `RecordInfo` loop, ASan/LSan-gated.)
 - **M4 — bounded-exhaustive checking**: enumerate every well-typed in-model program up to size *k* through
   the M2 bridge + sanitizers, turning "~9000 random" into "none missed up to *k*".
-- **M5 — certified build mode**: refuse `--no-verify`/`--allow-leaks` and stamp verification status,
-  closing the §5 bypass hole for the guarantee-bearing configuration.
+- **M5 — certified build mode (DONE)**: `axionc --certified` refuses `--no-verify`/`--allow-leaks`,
+  requires a native build, runs the full verifier, and stamps verification status on success — closing
+  the §5 bypass hole for the guarantee-bearing configuration (`certified_build_mode_enforces_verification`
+  in `tests/run.rs` locks in all four behaviors).
 - **North star**: extract `verify.rs` from the Lean model (removes trusted item 3 entirely); mechanize
   T1/T3/T5 in Iris/Actris; shrink the `unsafe` in `axion-rt` toward zero / verify it (trusted item 2).
 

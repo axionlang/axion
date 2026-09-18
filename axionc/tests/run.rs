@@ -34,6 +34,66 @@ fn hello_compiles_and_runs() {
 }
 
 #[test]
+fn certified_build_mode_enforces_verification() {
+    // M5 (metatheory/GUARANTEE.md §5): `--certified` makes the guarantee-bearing
+    // configuration explicit and unbypassable. Uses `--backend cranelift` so the test
+    // needs no clang — the same verifier gate + certification logic run there.
+
+    // 1. A clean native build is certified: it succeeds, runs, and STAMPS the status to
+    //    stderr (stdout stays the program's own output).
+    let ok = axionc()
+        .args(["--certified", "--backend", "cranelift", &fixture("heap_loop.axi")])
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    assert_eq!(String::from_utf8_lossy(&ok.stdout), "90300\n");
+    assert!(
+        String::from_utf8_lossy(&ok.stderr).contains("CERTIFIED"),
+        "a clean certified build must stamp its status: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    // 2. The escape hatches are REFUSED (exit 2) — a certified build cannot silence the
+    //    verifier, in either direction.
+    for bypass in [["--no-verify"], ["--allow-leaks"]] {
+        let mut c = axionc();
+        c.args(["--certified", "--backend", "cranelift"]);
+        c.args(bypass);
+        let r = c.arg(fixture("heap_loop.axi")).output().unwrap();
+        assert_eq!(
+            r.status.code(),
+            Some(2),
+            "--certified {bypass:?} must be refused with exit 2"
+        );
+    }
+
+    // 3. `--certified` on the interpreter is refused (nothing to certify — no manual
+    //    reclamation).
+    let interp = axionc()
+        .args(["--certified", &fixture("heap_loop.axi")])
+        .output()
+        .unwrap();
+    assert_eq!(interp.status.code(), Some(2), "--certified interp must be refused");
+
+    // 4. A program the verifier REJECTS cannot be certified: the build fails (AX0912
+    //    here) and is NOT stamped. The whole point — a certified artifact provably went
+    //    through the gate.
+    let bad = axionc()
+        .args([
+            "--certified",
+            "--backend",
+            "cranelift",
+            &fixture("tuple_element_extract_reject.axi"),
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "a gate-rejected program must not certify");
+    let bad_err = String::from_utf8_lossy(&bad.stderr);
+    assert!(bad_err.contains("AX0912"), "expected the rejection diagnostic: {bad_err}");
+    assert!(!bad_err.contains("CERTIFIED"), "a rejected build must NOT be stamped: {bad_err}");
+}
+
+#[test]
 fn fib_compiles_and_runs() {
     let out = axionc().arg(example("02_fib.axi")).output().unwrap();
     assert!(out.status.success());

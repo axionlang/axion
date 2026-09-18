@@ -61,7 +61,7 @@ Not claims — **measurements**, under CI:
 | Promise (spec §0) | Verified by |
 |---|---|
 | *No use-after-free, no double-free* | **AddressSanitizer** clean on all native fixtures (`scripts/sanitize.sh`) |
-| *Reclamation is sound (no double-free / UAF / bad-free)* | **`verify.rs` translation validation, default-on every native build** (AX0910/AX0911) — and its judgment is **machine-checked in Lean 4** (`metatheory/`, no `sorry`, `propext`/`Quot.sound` only) |
+| *Reclamation is sound (no double-free / UAF / bad-free)* | **`verify.rs` translation validation, default-on every native build** (AX0910/AX0911) — and its judgment is **machine-checked in Lean 4** (`metatheory/`, no `sorry`, `propext`/`Quot.sound` only). `axionc --certified` enforces the no-bypass config and stamps it |
 | *No memory leaks* | **LeakSanitizer**: `allocs == frees` on the proven subset |
 | *Zero latency, C-level control* | benchmarks: **`--release` ≈ C `-O2`** on fib/loop/simd |
 | *Zero-cost abstraction (generics)* | **monomorphized typeclasses** = hand-written C: dispatch **563 ≈ 564 (C) ≈ 561 (Rust trait)** ms |

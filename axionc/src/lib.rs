@@ -138,6 +138,7 @@ pub fn run_cli() -> ExitCode {
     let mut fuse = false;
     let mut no_verify = false;
     let mut allow_leaks = false;
+    let mut certified = false;
     let mut out_path: Option<String> = None;
 
     let mut prog_args: Vec<String> = Vec::new();
@@ -156,6 +157,7 @@ pub fn run_cli() -> ExitCode {
             "--fuse" => fuse = true,
             "--no-verify" => no_verify = true,
             "--allow-leaks" => allow_leaks = true,
+            "--certified" => certified = true,
             "--release" => backend = Backend::Llvm,
             "-o" | "--output" => {
                 i += 1;
@@ -227,6 +229,43 @@ pub fn run_cli() -> ExitCode {
 
     // Publish the program's argv for the interpreter/Cranelift `getArgs`.
     let _ = PROG_ARGS.set(prog_args);
+
+    // M5 — the `--certified` build mode. It makes the memory-safety guarantee's
+    // load-bearing configuration explicit and enforced: the drop-balance verifier
+    // (AX0910 corruption + AX0911 leaks, and the AX0912 native-alias floor) MUST run
+    // with NO bypass. So `--certified` is incompatible with the escape hatches, and it
+    // only certifies a NATIVE build (interp does no manual reclamation — there is
+    // nothing to certify). On success the build is stamped (see the gate below). This
+    // closes the one unconditional hole in the top-level theorem (metatheory/GUARANTEE.md
+    // §5): a certified artifact provably went through the verifier.
+    let native_build = emit == Emit::Clif
+        || emit == Emit::Llvm
+        || backend == Backend::Cranelift
+        || backend == Backend::Llvm;
+    if certified {
+        if no_verify || allow_leaks {
+            eprintln!(
+                "--certified refuses verification bypass flags: remove --no-verify/--allow-leaks \
+                 (a certified build must pass the full drop-balance verifier — AX0910 + AX0911)"
+            );
+            return ExitCode::from(2);
+        }
+        if check_only {
+            eprintln!(
+                "--certified certifies a NATIVE build's reclamation, not a --check-only run; \
+                 use it with --release, -o <exe>, or --backend cranelift/llvm"
+            );
+            return ExitCode::from(2);
+        }
+        if !native_build {
+            eprintln!(
+                "--certified applies to native builds only (the interpreter does no manual \
+                 reclamation, so there is nothing to certify); use --release, -o <exe>, or \
+                 --backend cranelift/llvm"
+            );
+            return ExitCode::from(2);
+        }
+    }
 
     let path = match path {
         Some(p) => p,
@@ -518,12 +557,7 @@ pub fn run_cli() -> ExitCode {
     // NOT make the program safe, it only silences the gate). Interp is not gated — it does
     // no manual reclamation. The `--emit core/drops/delta/verify` inspection modes returned
     // earlier, so they are unaffected.
-    if !no_verify
-        && (emit == Emit::Clif
-            || emit == Emit::Llvm
-            || backend == Backend::Cranelift
-            || backend == Backend::Llvm)
-    {
+    if !no_verify && native_build {
         // Interim guard (pending the arrow-ownership arc): reject an element-aliasing
         // borrower (`filter`/`take`/…) instantiated at a HEAP element type — the native
         // backend would double-free the shared element. Sound-by-construction: a clean
@@ -624,6 +658,18 @@ pub fn run_cli() -> ExitCode {
                 eprint!("{}", d.render(&path, &src, &lines));
             }
             return ExitCode::FAILURE;
+        }
+
+        // M5 stamp: reaching here means the gate ran (native build, no bypass) and the
+        // verifier found no corruption AND no leaks. Under `--certified` that is the whole
+        // guarantee-bearing configuration — record it (to stderr, so a run's stdout stays
+        // the program's own output).
+        if certified {
+            eprintln!(
+                "axionc: CERTIFIED {path} — reclamation verified sound by verify.rs: no \
+                 double-free/use-after-free (AX0910), no leaks (AX0911), no unsound native \
+                 aliasing (AX0912); no verification bypass in effect."
+            );
         }
     }
 
@@ -5148,6 +5194,7 @@ fn print_usage() {
          axionc -o <exe> <file>         compile to a standalone executable (implies --release)\n  \
          axionc --no-verify <file>      skip the default-on drop-balance safety gate\n  \
          axionc --allow-leaks <file>    permit leaks (AX0911); still gate on corruption\n  \
+         axionc --certified --release <file>  native build that MUST pass the verifier (no bypass), stamped\n  \
          axionc --explain AX0001        explain an error code"
     );
 }
