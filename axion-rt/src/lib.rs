@@ -69,6 +69,548 @@ pub unsafe extern "C" fn axion_block_copy(ptr: i64) -> i64 {
     nb.add(8) as i64
 }
 
+// ─── flat collections (Stage 3c) ─────────────────────────────────────────────────────────────
+// Buffers/Arrays are `[len:i64][elems…]` blocks allocated with `libc::malloc` and freed with
+// `libc::free` (no −8 header). TritVec/I8/I32 are allocated with `axion_alloc` (header at −8) and
+// freed by the generic `axion_free`. Each type keeps its C alloc/free pairing exactly, so blocks
+// stay interchangeable during the transition. The reductions are tight slice loops the way the C
+// was, so `-O2` autovectorizes them; `unsafe` is confined to the pointer/length reads.
+
+#[inline]
+unsafe fn blen(p: i64) -> i64 {
+    *(p as *const i64)
+}
+#[inline]
+fn bounds_abort(kind: &str, idx: i64, n: i64) -> ! {
+    eprintln!("axion: {kind} bounds — index {idx} out of range [0, {n})");
+    std::process::abort();
+}
+#[inline]
+fn len_mismatch(kind: &str, n: i64, m: i64) -> ! {
+    eprintln!("axion: {kind} — length mismatch {n} vs {m}");
+    std::process::abort();
+}
+
+// Balanced-ternary decode LUT (§10.C): TRIT_LUT[byte][k] = weight (−1/0/+1) of the k-th packed trit.
+// Computed at compile time (const), replacing the C `__attribute__((constructor))` init.
+const fn build_trit_lut() -> [[i8; 5]; 256] {
+    let mut lut = [[0i8; 5]; 256];
+    let mut b = 0usize;
+    while b < 243 {
+        let mut x = b;
+        let mut k = 0usize;
+        while k < 5 {
+            lut[b][k] = (x % 3) as i8 - 1;
+            x /= 3;
+            k += 1;
+        }
+        b += 1;
+    }
+    lut
+}
+const TRIT_LUT: [[i8; 5]; 256] = build_trit_lut();
+const POW3: [i64; 5] = [1, 3, 9, 27, 81];
+
+// --- linear U8 Buffer: [len][bytes…], libc-malloc/free ---
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_new(n: i64) -> i64 {
+    let bytes = if n < 0 { 0 } else { n } as usize;
+    let b = libc::malloc(8 + bytes) as *mut u8;
+    if b.is_null() {
+        oom();
+    }
+    *(b as *mut i64) = n;
+    std::ptr::write_bytes(b.add(8), 0, bytes);
+    b as i64
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_iota(buf: i64) -> i64 {
+    let n = blen(buf);
+    let d = (buf as *mut u8).add(8);
+    for i in 0..n {
+        *d.add(i as usize) = (i & 0xFF) as u8;
+    }
+    buf
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_xor(buf: i64, key: i64) -> i64 {
+    let n = blen(buf);
+    let d = (buf as *mut u8).add(8);
+    for i in 0..n as usize {
+        *d.add(i) ^= key as u8;
+    }
+    buf
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_sum(buf: i64) -> i64 {
+    let n = blen(buf) as usize;
+    let d = std::slice::from_raw_parts((buf as *const u8).add(8), n);
+    d.iter().map(|&x| x as i64).sum()
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_free(buf: i64) -> i64 {
+    libc::free(buf as *mut libc::c_void);
+    0
+}
+
+// --- linear dense Array (i64): [len][elem…], libc-malloc/free ---
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_new(len: i64, init: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let b = libc::malloc(8 + n as usize * 8) as *mut u8;
+    if b.is_null() {
+        oom();
+    }
+    *(b as *mut i64) = n;
+    let d = b.add(8) as *mut i64;
+    for i in 0..n as usize {
+        *d.add(i) = init;
+    }
+    b as i64
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_get(arr: i64, idx: i64) -> i64 {
+    let n = blen(arr);
+    if idx < 0 || idx >= n {
+        bounds_abort("array", idx, n);
+    }
+    *(arr as *const u8).add(8).cast::<i64>().add(idx as usize)
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_set(arr: i64, idx: i64, val: i64) -> i64 {
+    let n = blen(arr);
+    if idx < 0 || idx >= n {
+        bounds_abort("array", idx, n);
+    }
+    *(arr as *mut u8).add(8).cast::<i64>().add(idx as usize) = val;
+    arr
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_len(arr: i64) -> i64 {
+    blen(arr)
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_free(arr: i64) {
+    libc::free(arr as *mut libc::c_void);
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_sum(arr: i64) -> i64 {
+    let n = blen(arr) as usize;
+    let d = std::slice::from_raw_parts((arr as *const u8).add(8).cast::<i64>(), n);
+    d.iter().sum()
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_dot(a: i64, b: i64) -> i64 {
+    let (n, m) = (blen(a), blen(b));
+    if n != m {
+        len_mismatch("array_dot", n, m);
+    }
+    let da = std::slice::from_raw_parts((a as *const u8).add(8).cast::<i64>(), n as usize);
+    let db = std::slice::from_raw_parts((b as *const u8).add(8).cast::<i64>(), n as usize);
+    da.iter().zip(db).map(|(&x, &y)| x * y).sum()
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_iota(len: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let b = libc::malloc(8 + n as usize * 8) as *mut u8;
+    if b.is_null() {
+        oom();
+    }
+    *(b as *mut i64) = n;
+    let d = b.add(8) as *mut i64;
+    for i in 0..n {
+        *d.add(i as usize) = i;
+    }
+    b as i64
+}
+
+// --- TritVec: base-243 packed balanced ternary, axion_alloc/axion_free ---
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_new(len: i64, init_weight: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let d = (init_weight + 1).clamp(0, 2);
+    let nbytes = (n + 4) / 5;
+    let p = axion_alloc(8 + nbytes);
+    *(p as *mut i64) = n;
+    let data = (p as *mut u8).add(8);
+    let packed = (d * 121) as u8; // 121 = 1+3+9+27+81
+    for i in 0..nbytes as usize {
+        *data.add(i) = packed;
+    }
+    p
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_get(tv: i64, idx: i64) -> i64 {
+    let n = blen(tv);
+    if idx < 0 || idx >= n {
+        bounds_abort("tritvec", idx, n);
+    }
+    let data = (tv as *const u8).add(8);
+    i64::from(TRIT_LUT[*data.add((idx / 5) as usize) as usize][(idx % 5) as usize])
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_set(tv: i64, idx: i64, weight: i64) -> i64 {
+    let n = blen(tv);
+    if idx < 0 || idx >= n {
+        bounds_abort("tritvec", idx, n);
+    }
+    let d = (weight + 1).clamp(0, 2);
+    let data = (tv as *mut u8).add(8);
+    let place = POW3[(idx % 5) as usize];
+    let byte = i64::from(*data.add((idx / 5) as usize));
+    let old_digit = i64::from(TRIT_LUT[byte as usize][(idx % 5) as usize]) + 1;
+    *data.add((idx / 5) as usize) = (byte + (d - old_digit) * place) as u8;
+    tv
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_len(tv: i64) -> i64 {
+    blen(tv)
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_iota(len: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let nbytes = (n + 4) / 5;
+    let p = axion_alloc(8 + nbytes);
+    *(p as *mut i64) = n;
+    let data = (p as *mut u8).add(8);
+    for b in 0..nbytes {
+        let base = b * 5;
+        let mut byte = 0i64;
+        let mut k = 0i64;
+        while k < 5 && base + k < n {
+            let w = ((base + k) % 3) - 1;
+            byte += (w + 1) * POW3[k as usize];
+            k += 1;
+        }
+        *data.add(b as usize) = byte as u8;
+    }
+    p
+}
+
+// --- I8Array: compact signed bytes, axion_alloc/axion_free ---
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_new(len: i64, init: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let p = axion_alloc(8 + n);
+    *(p as *mut i64) = n;
+    let d = (p as *mut i8).byte_add(8);
+    for i in 0..n as usize {
+        *d.add(i) = init as i8;
+    }
+    p
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_iota(len: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let p = axion_alloc(8 + n);
+    *(p as *mut i64) = n;
+    let d = (p as *mut i8).byte_add(8);
+    let mut i = 0i64;
+    while i + 3 <= n {
+        *d.add(i as usize) = -1;
+        *d.add(i as usize + 1) = 0;
+        *d.add(i as usize + 2) = 1;
+        i += 3;
+    }
+    while i < n {
+        *d.add(i as usize) = ((i % 3) - 1) as i8;
+        i += 1;
+    }
+    p
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_get(arr: i64, idx: i64) -> i64 {
+    let n = blen(arr);
+    if idx < 0 || idx >= n {
+        bounds_abort("i8", idx, n);
+    }
+    i64::from(*(arr as *const i8).byte_add(8).add(idx as usize))
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_set(arr: i64, idx: i64, val: i64) -> i64 {
+    let n = blen(arr);
+    if idx < 0 || idx >= n {
+        bounds_abort("i8", idx, n);
+    }
+    *(arr as *mut i8).byte_add(8).add(idx as usize) = val as i8;
+    arr
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_len(arr: i64) -> i64 {
+    blen(arr)
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_sum(arr: i64) -> i64 {
+    let n = blen(arr) as usize;
+    let d = std::slice::from_raw_parts((arr as *const i8).byte_add(8), n);
+    d.iter().map(|&x| x as i64).sum()
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_dot(arr: i64, act_arr: i64) -> i64 {
+    let (n, m) = (blen(arr), blen(act_arr));
+    if n != m {
+        len_mismatch("i8_dot", n, m);
+    }
+    let w = std::slice::from_raw_parts((arr as *const i8).byte_add(8), n as usize);
+    let act = std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), n as usize);
+    w.iter().zip(act).map(|(&x, &y)| x as i64 * y).sum()
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_dot_i8(a: i64, b: i64) -> i64 {
+    let (n, m) = (blen(a), blen(b));
+    if n != m {
+        len_mismatch("i8_dot_i8", n, m);
+    }
+    let wa = std::slice::from_raw_parts((a as *const i8).byte_add(8), n as usize);
+    let wb = std::slice::from_raw_parts((b as *const i8).byte_add(8), n as usize);
+    // Blocked: accumulate int8×int8 into an i32 partial within safe chunks (so the inner loop
+    // vectorizes — it won't into an i64 acc), then flush. BLK*127*127 < i32::MAX.
+    const BLK: usize = 32768;
+    let mut acc: i64 = 0;
+    for chunk in wa.chunks(BLK).zip(wb.chunks(BLK)) {
+        let (ca, cb) = chunk;
+        let mut part: i32 = 0;
+        for (&x, &y) in ca.iter().zip(cb) {
+            part += i32::from(x) * i32::from(y);
+        }
+        acc += i64::from(part);
+    }
+    acc
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i8_matvec_sum(arr: i64, act_arr: i64, k_width: i64) -> i64 {
+    let n = blen(arr);
+    let alen = blen(act_arr);
+    if k_width <= 0 || alen < k_width {
+        len_mismatch("i8_matvec_sum", k_width, alen);
+    }
+    let w = std::slice::from_raw_parts((arr as *const i8).byte_add(8), n as usize);
+    let act = std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), alen as usize);
+    let mut acc = 0i64;
+    let mut k = 0usize;
+    for &wi in w {
+        acc += i64::from(wi) * *act.get_unchecked(k);
+        k += 1;
+        if k == k_width as usize {
+            k = 0;
+        }
+    }
+    acc
+}
+
+// --- I32Array: compact signed 32-bit, axion_alloc/axion_free ---
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_new(len: i64, init: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let p = axion_alloc(8 + n * 4);
+    *(p as *mut i64) = n;
+    let d = (p as *mut i32).byte_add(8);
+    for i in 0..n as usize {
+        *d.add(i) = init as i32;
+    }
+    p
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_iota(len: i64) -> i64 {
+    let n = if len < 0 { 0 } else { len };
+    let p = axion_alloc(8 + n * 4);
+    *(p as *mut i64) = n;
+    let d = (p as *mut i32).byte_add(8);
+    for i in 0..n {
+        *d.add(i as usize) = i as i32;
+    }
+    p
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_get(arr: i64, idx: i64) -> i64 {
+    let n = blen(arr);
+    if idx < 0 || idx >= n {
+        bounds_abort("i32", idx, n);
+    }
+    i64::from(*(arr as *const i32).byte_add(8).add(idx as usize))
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_set(arr: i64, idx: i64, val: i64) -> i64 {
+    let n = blen(arr);
+    if idx < 0 || idx >= n {
+        bounds_abort("i32", idx, n);
+    }
+    *(arr as *mut i32).byte_add(8).add(idx as usize) = val as i32;
+    arr
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_len(arr: i64) -> i64 {
+    blen(arr)
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_sum(arr: i64) -> i64 {
+    let n = blen(arr) as usize;
+    let d = std::slice::from_raw_parts((arr as *const i32).byte_add(8), n);
+    d.iter().map(|&x| x as i64).sum()
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_dot(arr: i64, act_arr: i64) -> i64 {
+    let (n, m) = (blen(arr), blen(act_arr));
+    if n != m {
+        len_mismatch("i32_dot", n, m);
+    }
+    let w = std::slice::from_raw_parts((arr as *const i32).byte_add(8), n as usize);
+    let act = std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), n as usize);
+    w.iter().zip(act).map(|(&x, &y)| i64::from(x) * y).sum()
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_i32_matvec_sum(arr: i64, act_arr: i64, k_width: i64) -> i64 {
+    let n = blen(arr);
+    let alen = blen(act_arr);
+    if k_width <= 0 || alen < k_width {
+        len_mismatch("i32_matvec_sum", k_width, alen);
+    }
+    let w = std::slice::from_raw_parts((arr as *const i32).byte_add(8), n as usize);
+    let act = std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), alen as usize);
+    let mut acc = 0i64;
+    let mut k = 0usize;
+    for &wi in w {
+        acc += i64::from(wi) * *act.get_unchecked(k);
+        k += 1;
+        if k == k_width as usize {
+            k = 0;
+        }
+    }
+    acc
+}
+
+// --- fused ternary dot / matvec (decode 5 trits/byte via LUT) ---
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_dot(tv: i64, arr: i64) -> i64 {
+    let n = blen(tv);
+    let alen = blen(arr);
+    if alen < n {
+        len_mismatch("tritvec_dot", alen, n);
+    }
+    let data = std::slice::from_raw_parts((tv as *const u8).add(8), ((n + 4) / 5) as usize);
+    let act = std::slice::from_raw_parts((arr as *const u8).add(8).cast::<i64>(), alen as usize);
+    let mut acc = 0i64;
+    for (b, &byte) in data.iter().enumerate() {
+        let w = &TRIT_LUT[byte as usize];
+        let base = b * 5;
+        if base + 5 <= n as usize {
+            acc += i64::from(w[0]) * *act.get_unchecked(base)
+                + i64::from(w[1]) * *act.get_unchecked(base + 1)
+                + i64::from(w[2]) * *act.get_unchecked(base + 2)
+                + i64::from(w[3]) * *act.get_unchecked(base + 3)
+                + i64::from(w[4]) * *act.get_unchecked(base + 4);
+        } else {
+            let mut k = 0;
+            while base + k < n as usize {
+                acc += i64::from(*w.get_unchecked(k)) * *act.get_unchecked(base + k);
+                k += 1;
+            }
+        }
+    }
+    acc
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_from_buffer(buf: i64, n: i64) -> i64 {
+    let trits = if n < 0 { 0 } else { n };
+    let nbytes = (trits + 4) / 5;
+    let buflen = blen(buf);
+    if buflen < nbytes {
+        len_mismatch("tritvec_from_buffer", buflen, nbytes);
+    }
+    let p = axion_alloc(8 + nbytes);
+    *(p as *mut i64) = trits;
+    std::ptr::copy_nonoverlapping(
+        (buf as *const u8).add(8),
+        (p as *mut u8).add(8),
+        nbytes as usize,
+    );
+    p
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_tritvec_matvec_sum(tv: i64, arr: i64, k_width: i64) -> i64 {
+    let n = blen(tv);
+    let alen = blen(arr);
+    if k_width <= 0 || alen < k_width {
+        len_mismatch("tritvec_matvec_sum", k_width, alen);
+    }
+    let data = std::slice::from_raw_parts((tv as *const u8).add(8), ((n + 4) / 5) as usize);
+    let act = std::slice::from_raw_parts((arr as *const u8).add(8).cast::<i64>(), alen as usize);
+    let mut acc = 0i64;
+    let mut k = 0usize;
+    for (b, &byte) in data.iter().enumerate() {
+        let w = &TRIT_LUT[byte as usize];
+        let base = b * 5;
+        let mut j = 0;
+        while j < 5 && base + j < n as usize {
+            acc += i64::from(*w.get_unchecked(j)) * *act.get_unchecked(k);
+            k += 1;
+            if k == k_width as usize {
+                k = 0;
+            }
+            j += 1;
+        }
+    }
+    acc
+}
+
+// --- List Int ↔ Buffer, foldBytes ---
+#[no_mangle]
+pub unsafe extern "C" fn axion_list_to_buf(list: i64) -> i64 {
+    // Cons: tag=1 at +0, elem @ +8, tail @ +16; Nil = tagged immediate (low bit).
+    let mut len = 0i64;
+    let mut p = list;
+    while p != 0 && p & 1 == 0 {
+        if *(p as *const i64) == 1 {
+            len += 1;
+            p = *((p + 16) as *const i64);
+        } else {
+            break;
+        }
+    }
+    let buf = axion_buf_new(len);
+    let d = (buf as *mut u8).add(8);
+    let mut i = 0usize;
+    let mut p = list;
+    while p != 0 && p & 1 == 0 {
+        if *(p as *const i64) == 1 {
+            *d.add(i) = (*((p + 8) as *const i64) & 0xFF) as u8;
+            i += 1;
+            p = *((p + 16) as *const i64);
+        } else {
+            break;
+        }
+    }
+    buf
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_to_list(buf: i64) -> i64 {
+    let n = blen(buf);
+    let d = (buf as *const u8).add(8);
+    let mut list = 1i64; // tagged Nil
+    let mut i = n - 1;
+    while i >= 0 {
+        let cell = axion_alloc(24); // tag + elem + tail
+        *(cell as *mut i64) = 1; // Cons tag
+        *((cell + 8) as *mut i64) = i64::from(*d.add(i as usize));
+        *((cell + 16) as *mut i64) = list;
+        list = cell;
+        i -= 1;
+    }
+    list
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_fold_bytes(f: i64, init: i64, buf: i64) -> i64 {
+    // `f` is a closure {fn_ptr, captures…}; its first word is fn_ptr(closure, acc, byte).
+    let fn_ptr: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(*(f as *const i64));
+    let n = blen(buf);
+    let d = (buf as *const u8).add(8);
+    let mut acc = init;
+    for i in 0..n as usize {
+        acc = fn_ptr(f, acc, i64::from(*d.add(i)));
+    }
+    acc
+}
+
 // ─── arenas (Stage 3b) ───────────────────────────────────────────────────────────────────────
 // Bump allocator over fixed 64 KiB chunks (stable pointers), bulk-reset. `unsafe` mirrors the exact
 // C layout: a `Chunk` is `[prev: *mut Chunk][cap: i64][off: i64]` (24-byte header) followed by
