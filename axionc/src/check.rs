@@ -302,6 +302,10 @@ pub fn check_one_func(f: &Func, env: &SigEnv) -> Vec<Diagnostic> {
     let mut diags = Diagnostics::new();
     let mut out = Analysis::default();
     check_func(f, &env.globals, &env.ctx, &mut diags, &mut out);
+    // AX0920 (dropped `where` effect) depends only on this function's own body +
+    // where-clauses, so it belongs to the per-decl unit — matching the whole-module
+    // `check` which runs `warn_dropped_effects` over every function.
+    warn_dropped_in_func(f, &mut diags);
     diags.items
 }
 
