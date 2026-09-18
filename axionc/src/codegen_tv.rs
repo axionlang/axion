@@ -10,8 +10,13 @@
 //! It is sound *by independence*: the EXPECTED reclamation multiset is computed from the Core (a
 //! `Term::Drop` in user functions; the `Op`-level `CallDirect(axion_drop_*)` / `RtCall(axion_free|
 //! axion_str_drop|axion_bignum_free)` child-drops and shell free in GENERATED destructor bodies —
-//! M3.5); the OBSERVED multiset is parsed from the emitted IR text. A lowering that loses/dupes/
+//! M3.5); the OBSERVED multiset is parsed from the emitted code. A lowering that loses/dupes/
 //! mis-emits a free makes the two disagree.
+//!
+//! BOTH native backends are validated against the SAME `expected()`: `observed()` parses LLVM IR
+//! text (`--emit codegen-tv`), and `observed_clif()` parses Cranelift CLIF (`--emit codegen-tv-clif`).
+//! CLIF names functions/callees by `FuncId` index (`u0:N`), not symbol, so the CLIF path resolves
+//! those indices through the maps `codegen::emit_ir_tv` returns.
 //!
 //! Scope note: this validates the Core → IR LOWERING of reclamation (including destructor bodies).
 //! It does NOT re-derive whether a destructor's Core matches the type's ownership layout — that
@@ -181,6 +186,75 @@ fn observed(ir: &str) -> HashMap<String, Bag> {
     out
 }
 
+/// Parse the leading run of ASCII digits as a `u32` (e.g. the `N` in `u0:N`, the `K` in `fnK`).
+fn lead_u32(s: &str) -> Option<u32> {
+    s.split(|c: char| !c.is_ascii_digit())
+        .next()
+        .filter(|d| !d.is_empty())
+        .and_then(|d| d.parse().ok())
+}
+
+/// Observed reclamation multiset per user function, parsed from emitted Cranelift CLIF.
+///
+/// CLIF names functions and callees by `FuncId` index (`u0:N`), not symbol, so we resolve through
+/// the maps from `codegen::emit_ir_tv`: `fn_names[N]` identifies the enclosing `function u0:N`, and
+/// a `fnK = [colocated] u0:M sig…` line binds the local funcref `fnK` to callee index `M`; a
+/// `call fnK(...)` then counts as reclamation iff `reclaim_callees[M]` is a free token.
+fn observed_clif(
+    clif: &str,
+    fn_names: &HashMap<u32, String>,
+    reclaim_callees: &HashMap<u32, String>,
+) -> HashMap<String, Bag> {
+    let mut out: HashMap<String, Bag> = HashMap::new();
+    let mut cur: Option<String> = None;
+    let mut local: HashMap<u32, String> = HashMap::new(); // fnK index → reclamation token
+    for line in clif.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("function u0:") {
+            local.clear();
+            cur = lead_u32(rest)
+                .and_then(|n| fn_names.get(&n))
+                .filter(|name| !is_copier(name))
+                .map(|name| {
+                    out.entry(name.clone()).or_default();
+                    name.clone()
+                });
+            continue;
+        }
+        if t == "}" {
+            cur = None;
+            local.clear();
+            continue;
+        }
+        // `fnK = [colocated] u0:M sig…` — bind a local funcref to its callee index.
+        if let Some((lhs, rhs)) = t.split_once('=') {
+            if let Some(k) = lhs.trim().strip_prefix("fn").and_then(lead_u32) {
+                let rhs = rhs.trim();
+                let after = rhs.strip_prefix("colocated ").unwrap_or(rhs);
+                if let Some(m) = after.strip_prefix("u0:").and_then(lead_u32) {
+                    if let Some(tok) = reclaim_callees.get(&m) {
+                        local.insert(k, tok.clone());
+                    }
+                }
+                continue;
+            }
+        }
+        // `call fnK(...)` (possibly `vN = call fnK(...)`) — count if fnK is a reclamation callee.
+        if let Some(name) = &cur {
+            if let Some(after) = t.split_once("call fn").map(|(_, r)| r) {
+                if let Some(k) = lead_u32(after) {
+                    if let Some(tok) = local.get(&k).cloned() {
+                        if let Some(bag) = out.get_mut(name) {
+                            bump(bag, tok);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A reclamation-preservation discrepancy for one function.
 #[derive(Debug)]
 pub struct TvFinding {
@@ -190,12 +264,10 @@ pub struct TvFinding {
     pub observed: i64,
 }
 
-/// Check that the emitted IR's reclamation matches the Core's drop sites, per function.
-pub fn check(lowered: &Lowered, ir: &str) -> Vec<TvFinding> {
-    let exp = expected(lowered);
-    let obs = observed(ir);
+/// Per-function multiset diff between EXPECTED (Core) and OBSERVED (emitted IR) reclamation.
+fn diff(exp: &HashMap<String, Bag>, obs: &HashMap<String, Bag>) -> Vec<TvFinding> {
     let mut findings = Vec::new();
-    for (func, ebag) in &exp {
+    for (func, ebag) in exp {
         let obag = obs.get(func).cloned().unwrap_or_default();
         // union of kinds
         let mut kinds: std::collections::HashSet<&String> = ebag.keys().collect();
@@ -219,6 +291,22 @@ pub fn check(lowered: &Lowered, ir: &str) -> Vec<TvFinding> {
     findings
 }
 
+/// Check that the emitted LLVM IR's reclamation matches the Core's drop sites, per function.
+pub fn check(lowered: &Lowered, ir: &str) -> Vec<TvFinding> {
+    diff(&expected(lowered), &observed(ir))
+}
+
+/// Check that the emitted Cranelift CLIF's reclamation matches the Core's drop sites, per function
+/// (the `--dev` analogue of [`check`]; needs the `FuncId`→name maps from `codegen::emit_ir_tv`).
+pub fn check_clif(
+    lowered: &Lowered,
+    clif: &str,
+    fn_names: &HashMap<u32, String>,
+    reclaim_callees: &HashMap<u32, String>,
+) -> Vec<TvFinding> {
+    diff(&expected(lowered), &observed_clif(clif, fn_names, reclaim_callees))
+}
+
 /// Human-readable report for `--emit codegen-tv`.
 pub fn report(lowered: &Lowered, ir: &str) -> String {
     let findings = check(lowered, ir);
@@ -233,6 +321,34 @@ pub fn report(lowered: &Lowered, ir: &str) -> String {
     for f in &findings {
         out.push_str(&format!(
             "  MISMATCH in `{}`: {} — Core expects {}, IR emits {}\n",
+            f.func, f.kind, f.expected, f.observed
+        ));
+    }
+    if findings.is_empty() {
+        out.push_str("  OK: emitted reclamation matches Core drop sites 1:1\n");
+    }
+    out
+}
+
+/// Human-readable report for `--emit codegen-tv-clif` (the Cranelift `--dev` path).
+pub fn report_clif(
+    lowered: &Lowered,
+    clif: &str,
+    fn_names: &HashMap<u32, String>,
+    reclaim_callees: &HashMap<u32, String>,
+) -> String {
+    let findings = check_clif(lowered, clif, fn_names, reclaim_callees);
+    let exp = expected(lowered);
+    let total: i64 = exp.values().flat_map(|b| b.values()).sum();
+    let mut out = format!(
+        "codegen-tv-clif: {} reclamation call(s) across {} user function(s); {} discrepancy(ies)\n",
+        total,
+        exp.len(),
+        findings.len()
+    );
+    for f in &findings {
+        out.push_str(&format!(
+            "  MISMATCH in `{}`: {} — Core expects {}, CLIF emits {}\n",
             f.func, f.kind, f.expected, f.observed
         ));
     }
@@ -343,6 +459,81 @@ mod tests {
         let f = check(&lo, ir_leak);
         assert_eq!(f.len(), 1);
         assert_eq!((f[0].kind.as_str(), f[0].expected, f[0].observed), ("axion_free", 1, 0));
+    }
+
+    // --- CLIF observer (the Cranelift `--dev` path) ---
+
+    /// A CLIF `myfn` (index 100) that calls `axion_free` (callee index 4) `n` times.
+    fn clif_with_frees(n: usize) -> String {
+        let mut s = String::from(
+            "function u0:100(i64) -> i64 system_v {\n    sig0 = (i64) system_v\n    fn0 = u0:4 sig0\nblock0(v0: i64):\n",
+        );
+        for _ in 0..n {
+            s.push_str("    call fn0(v0)\n");
+        }
+        s.push_str("    v1 = iconst.i64 0\n    return v1\n}\n");
+        s
+    }
+
+    fn clif_maps() -> (HashMap<u32, String>, HashMap<u32, String>) {
+        let fn_names = HashMap::from([(100u32, "myfn".to_string())]);
+        let reclaim = HashMap::from([(4u32, "axion_free".to_string())]);
+        (fn_names, reclaim)
+    }
+
+    #[test]
+    fn clif_matching_reclamation_passes() {
+        let lo = one_free_lowered();
+        let (fnn, rc) = clif_maps();
+        assert!(check_clif(&lo, &clif_with_frees(1), &fnn, &rc).is_empty());
+    }
+
+    #[test]
+    fn clif_dropped_free_is_caught() {
+        // backend LEAK: Core drops once, CLIF frees zero times.
+        let lo = one_free_lowered();
+        let (fnn, rc) = clif_maps();
+        let f = check_clif(&lo, &clif_with_frees(0), &fnn, &rc);
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].kind.as_str(), f[0].expected, f[0].observed), ("axion_free", 1, 0));
+    }
+
+    #[test]
+    fn clif_duplicated_free_is_caught() {
+        // backend DOUBLE-FREE: Core drops once, CLIF frees twice.
+        let lo = one_free_lowered();
+        let (fnn, rc) = clif_maps();
+        let f = check_clif(&lo, &clif_with_frees(2), &fnn, &rc);
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].expected, f[0].observed), (1, 2));
+    }
+
+    #[test]
+    fn clif_colocated_destructor_call_resolves_to_deep_drop_token() {
+        // A `Term::Drop` keyed to a generated destructor `axion_drop_Foo` must be OBSERVED as the
+        // `ax_axion_drop_Foo` token when the CLIF calls it via `fnK = colocated u0:M`.
+        let mut lo = one_free_lowered();
+        if let Term::Drop(_, ty, _, _, _) = &mut lo.fns[0].body {
+            *ty = Some("Foo".into());
+        }
+        // register Foo as a destructor so `expected` classifies the drop as `ax_axion_drop_Foo`.
+        lo.fns.push(CoreFn {
+            name: "axion_drop_Foo".into(),
+            params: vec!["_p".into()],
+            captures: vec![],
+            is_closure: false,
+            owned_params: vec![],
+            owned_drop_ty: vec![],
+            body: Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+        });
+        // CLIF: myfn (100) calls the destructor (index 7) once; destructor body (u0:7) is empty.
+        let clif = "function u0:100(i64) -> i64 system_v {\n    sig0 = (i64) -> i64 system_v\n    fn0 = colocated u0:7 sig0\nblock0(v0: i64):\n    v1 = call fn0(v0)\n    v2 = iconst.i64 0\n    return v2\n}\nfunction u0:7(i64) -> i64 system_v {\nblock0(v0: i64):\n    return v0\n}\n";
+        let fnn = HashMap::from([(100u32, "myfn".to_string()), (7u32, "axion_drop_Foo".to_string())]);
+        let rc = HashMap::from([(7u32, "ax_axion_drop_Foo".to_string())]);
+        assert!(
+            check_clif(&lo, clif, &fnn, &rc).is_empty(),
+            "the colocated destructor call must be observed as ax_axion_drop_Foo"
+        );
     }
 
     #[test]

@@ -103,6 +103,7 @@ enum Emit {
     Verify,
     ModelTrace,
     CodegenTv,
+    CodegenTvClif,
     RetAlias,
     Clif,
     Llvm,
@@ -196,6 +197,7 @@ pub fn run_cli() -> ExitCode {
                     Some("verify") => emit = Emit::Verify,
                     Some("model-trace") => emit = Emit::ModelTrace,
                     Some("codegen-tv") => emit = Emit::CodegenTv,
+                    Some("codegen-tv-clif") => emit = Emit::CodegenTvClif,
                     Some("ret-alias") => emit = Emit::RetAlias,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
@@ -477,6 +479,39 @@ pub fn run_cli() -> ExitCode {
         );
         print!("{}", codegen_tv::report(&lowered, &ir));
         return if codegen_tv::check(&lowered, &ir).is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+
+    if emit == Emit::CodegenTvClif {
+        // M3 for the Cranelift `--dev` backend: the same reclamation-preservation TV, over the
+        // emitted CLIF. Lower ONCE and feed the same Core to both EXPECTED and the CLIF emitter, so
+        // any discrepancy is a real lowering fault (dropped/duplicated/invented/mis-keyed free).
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &std::collections::HashMap::new(),
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            fuse,
+        );
+        let (clif, fn_names, reclaim) =
+            match codegen::emit_ir_tv(&lowered, core::RecordInfo::build(&module)) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("cranelift: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+        print!(
+            "{}",
+            codegen_tv::report_clif(&lowered, &clif, &fn_names, &reclaim)
+        );
+        return if codegen_tv::check_clif(&lowered, &clif, &fn_names, &reclaim).is_empty() {
             ExitCode::SUCCESS
         } else {
             ExitCode::FAILURE

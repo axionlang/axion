@@ -255,6 +255,31 @@ impl Cg {
         Ok(())
     }
 
+    /// Reclamation-TV symbol maps, keyed by `FuncId` index (the `u0:N` in emitted CLIF, since
+    /// `ctx.func.name = UserFuncName::user(0, id)`). `fn_names` maps each DEFINING function's
+    /// index → its name (to identify the `function u0:N` a body belongs to); `reclaim_callees`
+    /// maps each reclamation CALLEE's index → the token `codegen_tv::expected` uses, so a
+    /// `fnK = u0:M` / `call fnK` pair in the CLIF resolves to the same free the Core `Drop` did.
+    /// Must be read after `declare_all` (user fns + generated `axion_drop_*` destructors declared).
+    fn reclaim_tv_maps(&self) -> (HashMap<u32, String>, HashMap<u32, String>) {
+        let mut fn_names = HashMap::new();
+        let mut reclaim = HashMap::new();
+        for (name, (id, _)) in &self.ids {
+            fn_names.insert(id.as_u32(), name.clone());
+            // a generated destructor called as reclamation → token `ax_axion_drop_KEY`.
+            if name.starts_with("axion_drop_") {
+                reclaim.insert(id.as_u32(), format!("ax_{name}"));
+            }
+        }
+        reclaim.insert(self.free_id.as_u32(), "axion_free".to_string());
+        for rt in ["axion_str_drop", "axion_bignum_free"] {
+            if let Some((id, _)) = self.rt_fns.get(rt) {
+                reclaim.insert(id.as_u32(), rt.to_string());
+            }
+        }
+        (fn_names, reclaim)
+    }
+
     /// Builds the body of a Core function and returns the filled `Context`.
     fn build(&mut self, f: &CoreFn) -> Result<Context, String> {
         let (id, _) = self.ids[&f.name];
@@ -1359,4 +1384,26 @@ pub fn emit_ir(
         out.push_str(&format!("{}\n", ctx.func.display()));
     }
     Ok(out)
+}
+
+/// Emit the `--dev`/Cranelift CLIF for `lowered` AND the reclamation-TV symbol maps (§6). The CLIF
+/// text names functions/callees by `FuncId` index (`u0:N`), not symbol; the maps let
+/// `codegen_tv::observed_clif` resolve those indices back to the reclamation tokens
+/// `codegen_tv::expected` produces — so the Cranelift backend's emitted frees can be checked 1:1
+/// against the Core `Drop` sites, exactly as the LLVM path is. Lowering is done by the caller so
+/// EXPECTED and OBSERVED share identical Core.
+/// CLIF text + the reclamation-TV symbol maps: `(clif, fn_names, reclaim_callees)`, all keyed by
+/// `FuncId` index (see [`Cg::reclaim_tv_maps`]).
+pub type TvClif = (String, HashMap<u32, String>, HashMap<u32, String>);
+
+pub fn emit_ir_tv(lowered: &core::Lowered, records: RecordInfo) -> Result<TvClif, String> {
+    let mut cg = Cg::new(records)?;
+    cg.declare_all(&lowered.fns)?;
+    let mut out = String::new();
+    for f in &lowered.fns {
+        let ctx = cg.build(f)?;
+        out.push_str(&format!("{}\n", ctx.func.display()));
+    }
+    let (fn_names, reclaim) = cg.reclaim_tv_maps();
+    Ok((out, fn_names, reclaim))
 }

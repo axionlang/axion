@@ -76,7 +76,7 @@ is sound: accepted ⟹ no double-free / UAF / bad-free / leak, on every path.
 | Concurrency: fidelity + cancellation | `AxionFidelity.*` (`fidelity` T3, `cancellation_receivable` T5a, `no_self_ancestor` T5c) | — | — | — |
 | Real program's Core actually satisfies the judgment | — | **`verify.rs`** (AX0910/AX0911) | — | — |
 | Front-end acceptance (parse/infer/linearity) is sound | — | — | fixtures, fuzz | the front-end passes |
-| Backend lowering preserves **reclamation** (LLVM path, incl. destructor bodies) | — | **`codegen_tv.rs`**: emitted IR's frees match the Core reclamation 1:1 — user-fn `Drop`s AND generated `axion_drop_*` destructor child-drops/shell frees — checked per-compile; corpus gate validates **2529 calls, 0 discrepancies** (`tests/codegen_tv.rs`) | teeth unit-tests catch dropped/duplicated/mis-keyed/destructor-shell frees | value-level *semantic* correctness of lowering, and destructor-generation-vs-type-layout (ASan/LSan-gated), still trusted |
+| Backend lowering preserves **reclamation** (**BOTH** native backends, incl. destructor bodies) | — | **`codegen_tv.rs`**: emitted frees match the Core reclamation 1:1 — user-fn `Drop`s AND generated `axion_drop_*` destructor child-drops/shell frees. **LLVM** IR (`--emit codegen-tv`, `tests/codegen_tv.rs`) AND **Cranelift** CLIF (`--emit codegen-tv-clif`, `tests/codegen_tv_clif.rs`): each validates **2525 calls over 251 fixtures, 0 discrepancies**, and the two agree per-fixture | teeth unit-tests (LLVM + CLIF) catch dropped/duplicated/mis-keyed/destructor-shell frees | value-level *semantic* correctness of lowering, and destructor-generation-vs-type-layout (ASan/LSan-gated), still trusted |
 | Backend lowering preserves *semantics* (compute) | — | — | `runtime_backends_agree` (`run.rs:4458`), `props_mem.rs`, ASan/LSan, ~9000 fuzz | **all of `codegen.rs`, `llvm.rs`, `interp.rs`** |
 | Runtime reclamation primitives | key-matching *discipline* modeled in `AxionKey` | — | ASan/LSan (`sanitize.sh`), fuzz | **`axion-rt` (Rust; 0 LOC C)** |
 | Model faithfully abstracts `verify.rs` | — | — | **8 curated shapes** (`bridge.rs`) + **whole in-fragment corpus**: executable `AxionDrop.acceptsL` (proven == `accepts`) machine-checked to equal the verifier's verdict on **464 functions** (`--emit model-trace`, `metatheory/model-trace.sh`) | functions outside the `alloc/use/drop/moveOut/borrowed-param/branch/scalar-case` fragment (heap-extracting `case`/keys, escaping borrows, closures, arrays, sessions) |
@@ -93,11 +93,11 @@ Each item below is load-bearing and **not** machine-checked. Irreproachability i
 and well-mitigated this list is.
 
 1. **The three backends** — `codegen.rs` (Cranelift), `llvm.rs` (LLVM IR), `interp.rs`. *Reclamation
-   preservation on the LLVM path is now translation-validated per-compile* (**M3**, `codegen_tv.rs`):
-   the emitted IR's frees must match the Core `Drop` sites 1:1, so a lowering that drops/duplicates/
-   mis-keys a free is caught (the miscompile class). Remaining trusted: the *value-level semantic*
-   correctness of all three backends' compute lowering (rests on differential agreement + ASan/LSan +
-   fuzz), and Cranelift's reclamation (not yet TV'd — same technique applies).
+   preservation on **both native backends** is now translation-validated* (**M3**, `codegen_tv.rs`):
+   the emitted frees — LLVM IR *and* Cranelift CLIF — must match the Core `Drop` sites 1:1, so a
+   lowering that drops/duplicates/mis-keys a free is caught (the miscompile class). Remaining trusted:
+   the *value-level semantic* correctness of all three backends' compute lowering (rests on
+   differential agreement + ASan/LSan + fuzz).
 2. **The runtime `axion-rt`** — now **100% Rust, 0 lines of C** (was ~1900 LOC of hand-written C).
    The **entire** runtime is the Rust crate `axion-rt`: bignum (reuses `src/bigint.rs`), strings/IO,
    the OS-capability layer (fs/subprocess/rand/tty/args), the heap allocator, arenas, the flat
@@ -153,15 +153,16 @@ The trusted base of §4 and the deferrals of §5 are the frontier. In descending
   replaces "proved a toy + spot-checked 8 cases" with corpus-wide agreement over the modeled fragment.
   Remaining widening: executable checkers for the interior-alias (`AxionAlias`) and reclaimer-key
   (`AxionKey`) slices, to pull more functions in-fragment.
-- **M3 — reclamation-preservation TV for codegen: DONE (LLVM path).** `axionc/src/codegen_tv.rs` +
-  `--emit codegen-tv` independently derive the reclamation the Core `Drop` sites require and the
-  reclamation the emitted LLVM IR performs, and check they match 1:1 per function. Corpus gate
-  (`tests/codegen_tv.rs`): 1397 reclamation calls validated across the corpus, zero discrepancies; teeth
-  unit-tests confirm it catches a dropped/duplicated/mis-keyed free. Attacks trusted item (1) — the layer
-  where the real historical bugs lived. **M3.5** extended it to the generated `axion_drop_*` destructor
-  bodies (their `Op`-level child-drops + shell frees), raising the validated surface to 2529 calls.
-  Remaining: extend the same TV to the Cranelift backend, and (a larger step) value-level semantic TV of
-  compute lowering. (Destructor generation-vs-type-layout is a direct `RecordInfo` loop, ASan/LSan-gated.)
+- **M3 — reclamation-preservation TV for codegen: DONE (BOTH native backends).** `axionc/src/codegen_tv.rs`
+  independently derives the reclamation the Core `Drop` sites require and the reclamation the emitted code
+  performs, and checks they match 1:1 per function. **LLVM** via `--emit codegen-tv` (`tests/codegen_tv.rs`)
+  and **Cranelift** via `--emit codegen-tv-clif` (`tests/codegen_tv_clif.rs`, resolving CLIF's `u0:N`
+  FuncId indices through the `codegen::emit_ir_tv` symbol maps): each validates **2525 calls over 251
+  fixtures with zero discrepancies, and the two agree per-fixture**; teeth unit-tests (LLVM + CLIF) confirm
+  a dropped/duplicated/mis-keyed/destructor-shell free is caught. **M3.5** covers the generated
+  `axion_drop_*` destructor bodies (`Op`-level child-drops + shell frees). Attacks trusted item (1) — the
+  layer where the real historical bugs lived. Remaining (larger step): value-level semantic TV of compute
+  lowering. (Destructor generation-vs-type-layout is a direct `RecordInfo` loop, ASan/LSan-gated.)
 - **M4 — bounded-exhaustive checking**: enumerate every well-typed in-model program up to size *k* through
   the M2 bridge + sanitizers, turning "~9000 random" into "none missed up to *k*".
 - **M5 — certified build mode (DONE)**: `axionc --certified` refuses `--no-verify`/`--allow-leaks`,
