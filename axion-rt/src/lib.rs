@@ -20,11 +20,53 @@ mod bigint;
 use bigint::BigInt;
 use std::cmp::Ordering;
 
-extern "C" {
-    // The header-carrying allocator/free, still provided by the (remaining) C runtime (Stage 3):
-    // `String` results carry the `axion_alloc` size header so `axion_str_drop` reclaims them.
-    fn axion_alloc(size: i64) -> i64;
-    fn axion_free(ptr: i64);
+// ─── heap allocator with a size header (Stage 3a) ────────────────────────────────────────────
+// The Axión heap block: `[total: i64 header][payload…]`, `axion_alloc` returns the payload pointer
+// (base+8) and `axion_free` reads the header at −8. Backed by `libc::malloc`/`free` so blocks stay
+// byte-for-byte interchangeable with the C runtime that still links alongside (session/net use the
+// same libc heap). `unsafe` is confined here and mirrors the old C layout exactly.
+
+fn oom() -> ! {
+    eprintln!("axion: out of memory");
+    std::process::exit(1);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_alloc(size: i64) -> i64 {
+    let total = (if size < 1 { 1 } else { size }) + 8;
+    let base = libc::malloc(total as usize) as *mut u8;
+    if base.is_null() {
+        oom();
+    }
+    *(base as *mut i64) = total; // size header
+    base.add(8) as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_free(ptr: i64) {
+    // a tagged immediate (low bit set: a nullary constructor of a mixed sum type) is not a heap
+    // allocation — nothing to free.
+    if ptr & 1 != 0 {
+        return;
+    }
+    libc::free((ptr as *mut u8).sub(8) as *mut libc::c_void);
+}
+
+/// Shallow byte-copy of an `axion_alloc`'d block, reading its total size from the −8 header (R-5).
+/// A tagged immediate (low bit) or null is returned as-is.
+#[no_mangle]
+pub unsafe extern "C" fn axion_block_copy(ptr: i64) -> i64 {
+    if ptr & 1 != 0 || ptr == 0 {
+        return ptr;
+    }
+    let base = (ptr as *mut u8).sub(8);
+    let total = *(base as *const i64);
+    let nb = libc::malloc(total as usize) as *mut u8;
+    if nb.is_null() {
+        oom();
+    }
+    std::ptr::copy_nonoverlapping(base, nb, total as usize);
+    nb.add(8) as i64
 }
 
 // ─── strings / IO (Stage 2a) ─────────────────────────────────────────────────────────────────

@@ -77,36 +77,14 @@ long axion_run_main(long fnptr) {
   return a.ret;
 }
 
-/* --- heap with a size header (Auto-Drop, §2) --- */
-long axion_alloc(long size) {
-  long total = (size < 1 ? 1 : size) + 8;
-  char *base = (char *)axion_xmalloc(total);
-  *(long *)base = total;
-  return (long)(base + 8);
-}
-void axion_free(long ptr) {
-  /* a tagged immediate (low bit set: a nullary constructor of a mixed sum type)
-     is not a heap allocation — nothing to free. */
-  if (ptr & 1)
-    return;
-  free((char *)ptr - 8);
-}
-/* Shallow byte-copy of an `axion_alloc`'d block, reading its total size from the
- * 8-byte header (R-5, docs/call-site-ownership.md). The copy is byte-identical:
- * tag + scalar fields correct, and any heap-child POINTERS are duplicated as-is
- * (shared). Correct on its own only for a pointerless payload (a `String`, or a
- * `DropWay::Flat` block with no owned heap children); the generated `axion_copy_T`
- * deep-copier uses it for the shell and then OVERWRITES each heap slot with a
- * fresh recursive copy, so no child is ever shared across the original/copy.
- * A tagged immediate (low bit) is a value, not a heap block — returned as-is. */
-long axion_block_copy(long ptr) {
-  if ((ptr & 1) || !ptr)
-    return ptr;
-  long total = *(long *)((char *)ptr - 8);
-  char *base = (char *)axion_xmalloc((size_t)total);
-  memcpy(base, (char *)ptr - 8, (size_t)total);
-  return (long)(base + 8);
-}
+/* --- heap with a size header (Auto-Drop, §2) ---
+ * MOVED TO RUST (axion-rt, Stage 3a, docs/rust-runtime-port.md): axion_alloc/axion_free/
+ * axion_block_copy are now the Rust runtime's libc-malloc-based header allocator (`[total][payload]`,
+ * byte-identical to the old C, so blocks stay interchangeable). Declared here so the remaining C
+ * (arenas, collections, session) can still call them — resolved by linking axion-rt. */
+extern long axion_alloc(long size);
+extern void axion_free(long ptr);
+extern long axion_block_copy(long ptr);
 
 /* --- arbitrary-precision Integer (§Listing 1.4) ---------------------------
  * MOVED TO RUST: the bignum primitives (`axion_bignum_*`) now live in the Rust
