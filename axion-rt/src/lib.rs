@@ -611,6 +611,306 @@ pub unsafe extern "C" fn axion_fold_bytes(f: i64, init: i64, buf: i64) -> i64 {
     acc
 }
 
+// ─── M:N session scheduler (Stage 4b) ────────────────────────────────────────────────────────
+// A task is a state machine `step(sched, state) -> 1=done / 2=re-run / 0=blocked`. Tasks run on a
+// pool of std::threads; ONE mutex guards the shared state, held only during channel ops — the
+// `step` compute runs lock-free in parallel. Session-type linearity makes every channel SPSC, so
+// the mutex is the only sync; deadlock-freedom is guaranteed by types (AX0302). Blocked tasks park
+// and are woken by any send; a generation counter closes the lost-wakeup window. The `Sched` is
+// shared across threads by raw i64 pointer (like the C), sound because every field access is under
+// the mutex; `unsafe` covers that shared deref and the raw step-fn / state-pointer calls.
+
+use std::collections::VecDeque;
+use std::sync::{Mutex, MutexGuard};
+
+type SessStep = extern "C" fn(i64, i64) -> i64;
+
+struct SessEp {
+    q: VecDeque<i64>,
+}
+struct SessTask {
+    step: SessStep,
+    state: i64,
+}
+struct Inner {
+    eps: Vec<SessEp>,
+    peer: Vec<usize>,
+    tasks: Vec<SessTask>,
+    ready: VecDeque<usize>,
+    blocked: Vec<usize>,
+    running: i64,
+    gen: u64,
+    allocs: Vec<i64>, // task-state blocks, freed in bulk at run end
+    budget: i64,
+    done: bool,
+    result: i64,
+    par: bool,        // parMap: finish when ALL tasks are done (no single root)
+    ncompleted: usize,
+}
+struct Sched {
+    m: Mutex<Inner>,
+}
+
+// panic=abort in this crate ⇒ a mutex can never be poisoned; recover the guard regardless.
+#[inline]
+fn lock(s: &Sched) -> MutexGuard<'_, Inner> {
+    s.m.lock().unwrap_or_else(|e| e.into_inner())
+}
+#[inline]
+unsafe fn sched<'a>(p: i64) -> &'a Sched {
+    &*(p as *const Sched)
+}
+
+#[no_mangle]
+pub extern "C" fn axion_sess_new() -> i64 {
+    let s = Box::new(Sched {
+        m: Mutex::new(Inner {
+            eps: Vec::new(),
+            peer: Vec::new(),
+            tasks: Vec::new(),
+            ready: VecDeque::new(),
+            blocked: Vec::new(),
+            running: 0,
+            gen: 0,
+            allocs: Vec::new(),
+            budget: 2_000_000_000,
+            done: false,
+            result: 0,
+            par: false,
+            ncompleted: 0,
+        }),
+    });
+    Box::into_raw(s) as i64
+}
+
+fn new_ep(inner: &mut Inner) -> usize {
+    let id = inner.eps.len();
+    inner.eps.push(SessEp { q: VecDeque::new() });
+    inner.peer.push(0);
+    id
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_channel(sched_p: i64) -> i64 {
+    let mut g = lock(sched(sched_p));
+    let a = new_ep(&mut g);
+    let b = new_ep(&mut g);
+    g.peer[a] = b;
+    g.peer[b] = a;
+    a as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_send(sched_p: i64, ep: i64, v: i64) {
+    let mut g = lock(sched(sched_p));
+    let peer = g.peer[ep as usize];
+    g.eps[peer].q.push_back(v);
+    g.gen += 1;
+    // wake every parked task (any send may unblock a receiver).
+    let woken: Vec<usize> = g.blocked.drain(..).collect();
+    for i in woken {
+        g.ready.push_back(i);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_pending(sched_p: i64, ep: i64) -> i64 {
+    let g = lock(sched(sched_p));
+    i64::from(!g.eps[ep as usize].q.is_empty())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_recv(sched_p: i64, ep: i64) -> i64 {
+    let mut g = lock(sched(sched_p));
+    g.eps[ep as usize].q.pop_front().unwrap_or(0)
+}
+
+/// A zeroed task-state block owned by the scheduler (freed in bulk at run end).
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_alloc(sched_p: i64, nbytes: i64) -> i64 {
+    let p = libc::calloc(1, if nbytes < 8 { 8 } else { nbytes } as usize) as i64;
+    if p == 0 {
+        oom();
+    }
+    lock(sched(sched_p)).allocs.push(p);
+    p
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_spawn(sched_p: i64, step: i64, state: i64) {
+    let mut g = lock(sched(sched_p));
+    let i = g.tasks.len();
+    g.tasks.push(SessTask {
+        step: std::mem::transmute::<i64, SessStep>(step),
+        state,
+    });
+    g.ready.push_back(i);
+}
+
+/// One worker: pull a ready task, run its step WITHOUT the lock, then mark done / re-park.
+unsafe fn sess_worker(sched_p: i64) {
+    let s = sched(sched_p);
+    loop {
+        let (i, step, st, gen0) = {
+            let mut g = lock(s);
+            if g.done {
+                return;
+            }
+            if g.ready.is_empty() {
+                // nothing runnable: if nothing is running and tasks are parked, deadlock (types forbid).
+                let stuck = g.running == 0 && !g.blocked.is_empty();
+                drop(g);
+                if stuck {
+                    eprintln!("session scheduler: no progress (deadlock)");
+                    std::process::exit(1);
+                }
+                std::thread::yield_now();
+                continue;
+            }
+            g.budget -= 1;
+            if g.budget <= 0 {
+                eprintln!("session scheduler: budget exhausted");
+                std::process::exit(1);
+            }
+            let i = g.ready.pop_front().unwrap_or(0);
+            g.running += 1;
+            let t = &g.tasks[i];
+            (i, t.step, t.state, g.gen)
+        };
+
+        let fin = step(sched_p, st); // runs WITHOUT the lock (parallel)
+
+        let mut g = lock(s);
+        g.running -= 1;
+        if fin == 1 {
+            if g.par {
+                g.ncompleted += 1;
+                if g.ncompleted == g.tasks.len() {
+                    g.done = true;
+                }
+            } else if i == 0 {
+                g.result = *(st as *const i64);
+                g.done = true;
+            }
+        } else if fin == 2 || g.gen != gen0 {
+            // 2: the task looped (recursion) → re-run. Also the lost-wakeup guard: a send during
+            // this step → re-run, don't park.
+            g.ready.push_back(i);
+        } else {
+            g.blocked.push(i);
+        }
+    }
+}
+
+fn sess_nthreads() -> usize {
+    if let Ok(env) = std::env::var("AXION_SESS_THREADS") {
+        if let Ok(n) = env.parse::<usize>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
+}
+
+/// Run `nthreads` workers over the scheduler until `done`, then join them.
+unsafe fn run_pool(sched_p: i64) {
+    let n = sess_nthreads();
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let p = sched_p; // i64 is Send; each thread derefs it under the mutex.
+        handles.push(std::thread::spawn(move || unsafe { sess_worker(p) }));
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+}
+
+/// Free the scheduler's endpoint queues and task-state blocks, then the Sched box.
+unsafe fn sess_free(sched_p: i64) -> i64 {
+    let boxed = Box::from_raw(sched_p as *mut Sched);
+    let inner = lock(&boxed);
+    for &a in &inner.allocs {
+        libc::free(a as *mut libc::c_void);
+    }
+    let result = inner.result;
+    drop(inner);
+    drop(boxed); // Vec/VecDeque fields free themselves
+    result
+}
+
+/// Run the root task (task 0) on the pool until it finishes; return its result (state[0]).
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_run(sched_p: i64, step: i64, state: i64) -> i64 {
+    axion_sess_spawn(sched_p, step, state); // root = task 0
+    run_pool(sched_p);
+    sess_free(sched_p)
+}
+
+/// Structured fork-join (parMap): one worker per input, preload each input, run all to completion,
+/// then collect replies into a List (Cons/Nil, in input order).
+#[no_mangle]
+pub unsafe extern "C" fn axion_par_map(step: i64, state_size: i64, ep_slot: i64, inputs: i64) -> i64 {
+    let sp = axion_sess_new();
+    lock(sched(sp)).par = true;
+
+    // count inputs (Cons chain: tag=1 @ +0, elem @ +8, tail @ +16; Nil = tagged immediate)
+    let mut n = 0i64;
+    let mut p = inputs;
+    while p != 0 && p & 1 == 0 {
+        n += 1;
+        p = *((p + 16) as *const i64);
+    }
+    let mut pep: Vec<i64> = Vec::with_capacity(n.max(1) as usize);
+
+    let mut p = inputs;
+    while p != 0 && p & 1 == 0 {
+        let v = *((p + 8) as *const i64);
+        let next = *((p + 16) as *const i64);
+        let a = axion_sess_channel(sp); // a = parent end, a+1 = child end
+        let st = axion_sess_alloc(sp, state_size);
+        *((st + ep_slot) as *mut i64) = a + 1; // the worker's endpoint parameter
+        axion_sess_send(sp, a, v); // preload the input → worker's first recv
+        axion_sess_spawn(sp, step, st);
+        pep.push(a);
+        axion_free(p); // parMap owns the input list — free each cons cell
+        p = next;
+    }
+
+    if n > 0 {
+        run_pool(sp);
+    }
+
+    // collect replies in input order into a Cons list.
+    let mut list = 1i64; // Nil
+    let mut j = n - 1;
+    while j >= 0 {
+        let r = axion_sess_recv(sp, pep[j as usize]);
+        let cell = axion_alloc(24);
+        *(cell as *mut i64) = 1; // Cons tag
+        *((cell + 8) as *mut i64) = r;
+        *((cell + 16) as *mut i64) = list;
+        list = cell;
+        j -= 1;
+    }
+    sess_free(sp);
+    list
+}
+
+/// Run `main` (an i64()-returning fn pointer) on a thread with a large (1 GiB) stack, so deep
+/// non-tail recursion grows toward RAM instead of overflowing the default stack.
+#[no_mangle]
+pub unsafe extern "C" fn axion_run_main(fnptr: i64) -> i64 {
+    let f = std::mem::transmute::<i64, extern "C" fn() -> i64>(fnptr);
+    match std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || f())
+    {
+        Ok(h) => h.join().unwrap_or(0),
+        Err(_) => f(), // fallback: run on the current stack
+    }
+}
+
 // ─── networking (Stage 4a) ───────────────────────────────────────────────────────────────────
 // Thin TCP syscall wrappers over an fd-based ABI (functions take/return raw fds as i64), so `libc`
 // is the faithful backing (std::net's owned-fd model fights the raw-fd contract). `ax_net_recv`

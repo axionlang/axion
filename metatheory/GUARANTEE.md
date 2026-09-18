@@ -42,8 +42,8 @@ final drop-inserted Core  (core::Lowered)
   │  verify.rs                               → TV-PER-COMPILE (AX0910 corruption, AX0911 leak)
   │  heap_alias_violations                   → AX0912 conservative native floor
   ▼
-codegen.rs (Cranelift) / llvm.rs (→ C)       → TRUSTED (differential-tested only)
-  │  + axion_rt.c (~1900 LOC C runtime)       → TRUSTED (ASan/LSan + fuzz only)
+codegen.rs (Cranelift) / llvm.rs (→ LLVM IR)  → TRUSTED (differential-tested only)
+  │  + axion-rt (Rust staticlib, 0 LOC C)     → TRUSTED (ASan/LSan + fuzz only)
   ▼
 native binary
 ```
@@ -74,7 +74,7 @@ is sound: accepted ⟹ no double-free / UAF / bad-free / leak, on every path.
 | Front-end acceptance (parse/infer/linearity) is sound | — | — | fixtures, fuzz | the front-end passes |
 | Backend lowering preserves **reclamation** (LLVM path, incl. destructor bodies) | — | **`codegen_tv.rs`**: emitted IR's frees match the Core reclamation 1:1 — user-fn `Drop`s AND generated `axion_drop_*` destructor child-drops/shell frees — checked per-compile; corpus gate validates **2529 calls, 0 discrepancies** (`tests/codegen_tv.rs`) | teeth unit-tests catch dropped/duplicated/mis-keyed/destructor-shell frees | value-level *semantic* correctness of lowering, and destructor-generation-vs-type-layout (ASan/LSan-gated), still trusted |
 | Backend lowering preserves *semantics* (compute) | — | — | `runtime_backends_agree` (`run.rs:4458`), `props_mem.rs`, ASan/LSan, ~9000 fuzz | **all of `codegen.rs`, `llvm.rs`, `interp.rs`** |
-| C runtime reclamation primitives | key-matching *discipline* modeled in `AxionKey` | — | ASan/LSan (`sanitize.sh`), fuzz | **`axion_rt.c` (~1900 LOC)** |
+| Runtime reclamation primitives | key-matching *discipline* modeled in `AxionKey` | — | ASan/LSan (`sanitize.sh`), fuzz | **`axion-rt` (Rust; 0 LOC C)** |
 | Model faithfully abstracts `verify.rs` | — | — | **8 curated shapes** (`bridge.rs`) + **whole in-fragment corpus**: executable `AxionDrop.acceptsL` (proven == `accepts`) machine-checked to equal the verifier's verdict on **464 functions** (`--emit model-trace`, `metatheory/model-trace.sh`) | functions outside the `alloc/use/drop/moveOut/borrowed-param/branch/scalar-case` fragment (heap-extracting `case`/keys, escaping borrows, closures, arrays, sessions) |
 | `verify.rs` implementation itself is correct | — | — | its verdicts on fixtures/fuzz; bridge on 8 shapes | **the verifier's own Rust** |
 
@@ -94,14 +94,18 @@ and well-mitigated this list is.
    mis-keys a free is caught (the miscompile class). Remaining trusted: the *value-level semantic*
    correctness of all three backends' compute lowering (rests on differential agreement + ASan/LSan +
    fuzz), and Cranelift's reclamation (not yet TV'd — same technique applies).
-2. **The C runtime `axion_rt.c`** — now ~523 LOC (was ~1900) of hand-written C: **only the M:N
-   session/parMap scheduler + networking remain**. Trusted; checked by sanitizers + fuzz. Everything
-   else — bignum, strings/IO, the OS-capability layer (fs/subprocess/rand/tty/args), the heap
-   allocator, arenas, and the flat collections (arrays/buffers/tritvec/i8/i32) — is now the Rust
-   runtime crate `axion-rt` (bignum reuses `src/bigint.rs`; `std::io`/`std::fs`/`std::process`; `libc`
-   only for `termios` + the `malloc`/`free`-backed header allocator), with `unsafe` confined to small,
-   documented pointer/layout blocks (docs/rust-runtime-port.md, Stages 1–3c). Remaining C (Stage 4):
-   the scheduler + net. Mitigation target: complete the C→Rust port.
+2. **The runtime `axion-rt`** — now **100% Rust, 0 lines of C** (was ~1900 LOC of hand-written C).
+   The **entire** runtime is the Rust crate `axion-rt`: bignum (reuses `src/bigint.rs`), strings/IO,
+   the OS-capability layer (fs/subprocess/rand/tty/args), the heap allocator, arenas, the flat
+   collections (arrays/buffers/tritvec/i8/i32), networking, **and the M:N session/parMap scheduler**
+   (`std::thread` + `Mutex<Inner>`) — the C→Rust port is complete (docs/rust-runtime-port.md, Stages
+   1–4b; `axion_rt.c` deleted). It builds with `std::io`/`std::fs`/`std::process`/`std::thread`; `libc`
+   only for `termios`, the `malloc`/`free`-backed header allocator, and the TCP wrappers. `unsafe` is
+   confined to small, documented pointer/layout/FFI blocks. This shrinks the C in the TCB to **zero**
+   and lifts a decisive property for free: because the scheduler's shared state lives behind
+   `Mutex<Inner>`, **data-race-freedom is now a compile-time guarantee** (Rust `Send`/`Sync` + the
+   borrow checker), not a per-run ThreadSanitizer sample. Still trusted (checked by ASan/LSan + fuzz +
+   the concurrency stress gate `scripts/tsan.sh`): the `unsafe` blocks and the value-level behavior.
 3. **`verify.rs` as Rust** — the checked oracle is itself unverified code standing in for the Lean proofs.
    The 8-shape bridge is the only tie between them. Mitigation target: **M2** (whole-fragment bridge),
    then north-star extraction of the verifier from the model.
@@ -158,7 +162,7 @@ The trusted base of §4 and the deferrals of §5 are the frontier. In descending
 - **M5 — certified build mode**: refuse `--no-verify`/`--allow-leaks` and stamp verification status,
   closing the §5 bypass hole for the guarantee-bearing configuration.
 - **North star**: extract `verify.rs` from the Lean model (removes trusted item 3 entirely); mechanize
-  T1/T3/T5 in Iris/Actris; verify `axion_rt.c` (trusted item 2).
+  T1/T3/T5 in Iris/Actris; shrink the `unsafe` in `axion-rt` toward zero / verify it (trusted item 2).
 
 ---
 

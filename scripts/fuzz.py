@@ -27,7 +27,6 @@ import os, sys, random, subprocess, tempfile, pathlib, argparse
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AXIONC = os.environ.get("AXIONC", str(ROOT / "axionc/target/debug/axionc"))
 CLANG = os.environ.get("AXION_CLANG", "clang")
-RT = str(ROOT / "axionc/src/axion_rt.c")
 # The Rust runtime staticlib (axion-rt: bignum + strings/IO, growing as the C→Rust port proceeds).
 # Built on demand so the ASan link resolves the moved symbols — else it would fail to link and the
 # old code masked that as "ok". See docs/rust-runtime-port.md.
@@ -344,7 +343,7 @@ def asan_run(src, work, oracle_out):
         return ("ok", None)
     (work / "ir.ll").write_text(ol)
     rcc, _, ecc = run([CLANG, "-fsanitize=address,leak", "-pthread", "-O1", "-w",
-                       str(work / "ir.ll"), RT, RT_A, "-ldl", "-lm", "-o", str(work / "p")])
+                       str(work / "ir.ll"), RT_A, "-ldl", "-lm", "-o", str(work / "p")])
     if rcc != 0:
         # A link failure AFTER interp+cranelift agreed means a missing/renamed runtime symbol — a
         # real regression (e.g. a moved C→Rust function not linked), NOT something to silently pass.

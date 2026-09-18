@@ -28,6 +28,8 @@ if ! "$CLANG" --version >/dev/null 2>&1; then
 fi
 AXIONC="axionc/target/debug/axionc"
 [ -x "$AXIONC" ] || (cd axionc && cargo build -q)
+cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "axion-rt build failed"; exit 2; }
+RT_A="axion-rt/target/release/libaxion_rt.a"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -37,7 +39,7 @@ echo
 
 echo "1) compute-bound (bench/sess_compute.axi: 4× fib 34) — wall time vs threads:"
 "$AXIONC" --emit llvm bench/sess_compute.axi >"$WORK/c.ll" 2>/dev/null
-"$CLANG" -O2 -flto -w -pthread "$WORK/c.ll" axionc/src/axion_rt.c -o "$WORK/compute"
+"$CLANG" -O2 -flto -w -pthread "$WORK/c.ll" "$RT_A" -ldl -lm -o "$WORK/compute"
 for t in 1 2 4 8; do
   best=""
   for _ in 1 2 3; do

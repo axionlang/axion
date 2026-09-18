@@ -1,7 +1,7 @@
 //! `--release` backend (§18): lowers the **same Axion Core IR** (see `core.rs`)
-//! to **textual LLVM IR** and compiles with `clang -O2 -flto`, linking a small
-//! **C runtime** (`axion_rt.c`) — `-flto` lets LLVM inline the hot
-//! operations (bump-alloc, alloc) into the caller. Unlike `inkwell`/`llvm-sys`,
+//! to **textual LLVM IR** and compiles with `clang -O2 -flto`, linking the
+//! **Rust runtime staticlib** (`axion-rt` — the former `axion_rt.c`, fully ported
+//! to Rust; see docs/rust-runtime-port.md). Unlike `inkwell`/`llvm-sys`,
 //! it adds no build dependencies to `axionc` (builds with pure `cargo`);
 //! `clang` is only a runtime dependency (`AXION_CLANG`, or on PATH — e.g. via nix).
 //!
@@ -21,13 +21,13 @@ use std::collections::HashSet;
 /// Size of an arena `Cell` (bytes), equal to the runtime.
 const CELL_SIZE: i64 = 16;
 
-/// C runtime, embedded and written next to the `.ll` for `clang` to compile.
-const RUNTIME_C: &str = include_str!("axion_rt.c");
-/// The Rust native-runtime staticlib (`axion-rt`), built by `build.rs` and linked alongside the C
-/// runtime — currently provides the bignum primitives (docs/rust-runtime-port.md).
+/// The native runtime, now entirely Rust (`axion-rt`), built by `build.rs` and linked into the
+/// `--release` executable. The C runtime (`axion_rt.c`) has been fully ported and removed
+/// (docs/rust-runtime-port.md, Stages 1–4). `RT_DECLS` below still declares the symbols in the
+/// emitted IR; they resolve to this staticlib at link.
 const RUNTIME_RT_A: &[u8] = include_bytes!(env!("AXION_RT_LIB"));
 
-/// Runtime declarations (the C functions, with a uniform i64 ABI).
+/// Runtime declarations (the `axion-rt` functions, with a uniform i64 ABI).
 const RT_DECLS: &str = "\
 declare void @axion_puts(i64)
 declare void @axion_put(i64)
@@ -330,24 +330,21 @@ pub fn build_and_run(
     let dir = std::env::temp_dir();
     let pid = std::process::id();
     let ll = dir.join(format!("axion-{pid}.ll"));
-    let rt = dir.join(format!("axion-{pid}-rt.c"));
     let rta = dir.join(format!("axion-{pid}-rt.a"));
     let exe = match out {
         Some(p) => p.to_path_buf(),
         None => dir.join(format!("axion-{pid}.out")),
     };
     std::fs::write(&ll, ir).map_err(|e| e.to_string())?;
-    std::fs::write(&rt, RUNTIME_C).map_err(|e| e.to_string())?;
     std::fs::write(&rta, RUNTIME_RT_A).map_err(|e| e.to_string())?;
 
     let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
     let mut cmd = std::process::Command::new(&clang);
-    // `-pthread`: the session scheduler (§11) runs tasks on a thread pool. The Rust runtime
-    // staticlib (`axion-rt`, bignum) is linked AFTER the IR that references it, followed by the
-    // system libs its std needs (`-ldl -lm`).
+    // Compile the program IR and link the Rust runtime staticlib (`axion-rt`, which now IS the whole
+    // runtime) after the IR that references it, plus the system libs its std needs. `-pthread`: the
+    // session scheduler runs tasks on std::threads.
     cmd.args(["-O2", "-flto", "-w", "-pthread"])
         .arg(&ll)
-        .arg(&rt)
         .arg(&rta)
         .arg("-ldl")
         .arg("-lm")
@@ -367,7 +364,6 @@ pub fn build_and_run(
         .status()
         .map_err(|e| format!("could not invoke '{clang}' ({e}); set AXION_CLANG or use nix"))?;
     drop(std::fs::remove_file(&ll));
-    drop(std::fs::remove_file(&rt));
     drop(std::fs::remove_file(&rta));
     if !status.success() {
         return Err("clang failed to compile the LLVM IR".into());

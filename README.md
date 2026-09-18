@@ -66,7 +66,7 @@ Not claims — **measurements**, under CI:
 | *Zero latency, C-level control* | benchmarks: **`--release` ≈ C `-O2`** on fib/loop/simd |
 | *Zero-cost abstraction (generics)* | **monomorphized typeclasses** = hand-written C: dispatch **563 ≈ 564 (C) ≈ 561 (Rust trait)** ms |
 | *No GC — release at static points* | the **arena crushes `malloc`** (~10×) and Rust's `Box` (~16×) in the allocation kernel |
-| *Zero data races / deadlocks — by types* | linearity (race-freedom) + tree topology of `bound` (deadlock-freedom); anchored to a **formal calculus + CFSM model-checking**, and the M:N runtime is **ThreadSanitizer-clean** (`scripts/tsan.sh`) |
+| *Zero data races / deadlocks — by types* | linearity (race-freedom) + tree topology of `bound` (deadlock-freedom); anchored to a **formal calculus + CFSM model-checking**. The M:N runtime is now **safe Rust**, so data-race-freedom is a **compile-time guarantee** (`Mutex<Inner>` + `Send`/`Sync`); `scripts/tsan.sh` stress-tests scheduler correctness across worker counts |
 | *Faithful linearity* | **differential against GHC** (Linear Haskell) — same verdict in every scenario |
 
 The exact trust boundary — what is machine-checked, validated per-compilation, tested, and
@@ -179,8 +179,10 @@ calmly and tested, without breaking the philosophy:
 - **M:N sessions (Layer 2b, in progress)** — **both** native runtimes (`--dev`
   Rust and `--release` C/pthreads) run tasks on a **pool of OS threads**: four
   workers each computing `fib` run in parallel (measured CPU ≈ 4–5× wall), with
-  deterministic results (session types ⇒ no races), and the runtime is
-  **ThreadSanitizer-clean** (`scripts/tsan.sh`). Blocked tasks park until a `send`
+  deterministic results (session types ⇒ no races), and the scheduler is
+  **safe Rust** so data-race-freedom holds by construction (`Mutex<Inner>` +
+  `Send`/`Sync`); `scripts/tsan.sh` stress-tests its correctness across worker
+  counts. Blocked tasks park until a `send`
   wakes them (lost-wakeup-safe via a generation counter). **Work-stealing is
   deferred on measured grounds** — the global mutex tops out at ~10–14 M
   channel-ops/s but no expressible session comes near it (an O(N²) fan-in codegen

@@ -23,7 +23,6 @@ if [ ! -x "$AXIONC" ]; then
   echo "building axionc..."
   (cd axionc && cargo build -q) || { echo "build failed"; exit 2; }
 fi
-RT="axionc/src/axion_rt.c"
 # The Rust runtime staticlib (axion-rt: bignum + strings/IO + OS-capability, growing as the C→Rust
 # port proceeds); build + link it so the moved symbols resolve. See docs/rust-runtime-port.md.
 cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "axion-rt build failed"; exit 2; }
@@ -206,7 +205,7 @@ is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return
 
 compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if native
   "$AXIONC" --emit llvm "$1" >"$WORK/ir.ll" 2>/dev/null || return 1
-  "$CLANG" -fsanitize=address,leak -pthread -O1 -w "$WORK/ir.ll" "$RT" "$RT_A" -ldl -lm -o "$2" 2>/dev/null
+  "$CLANG" -fsanitize=address,leak -pthread -O1 -w "$WORK/ir.ll" "$RT_A" -ldl -lm -o "$2" 2>/dev/null
 }
 
 fail=0; corr=0; leak=0

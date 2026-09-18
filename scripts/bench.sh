@@ -26,7 +26,6 @@ cd "$(dirname "$0")/.."
 
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 CLANG="${AXION_CLANG:-clang}"
-RT="axionc/src/axion_rt.c"
 RUNS="${RUNS:-3}"
 
 # Perf-regression gate (§13): the correctness check below guards RESULTS; this guards SPEED.

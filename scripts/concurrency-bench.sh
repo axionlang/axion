@@ -16,6 +16,8 @@ CLANG="${AXION_CLANG:-clang}"
 command -v "$CLANG" >/dev/null 2>&1 || { echo "clang not found (set AXION_CLANG)"; exit 2; }
 AXIONC="axionc/target/debug/axionc"
 [ -x "$AXIONC" ] || (cd axionc && cargo build -q)
+cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "axion-rt build failed"; exit 2; }
+RT_A="axion-rt/target/release/libaxion_rt.a"
 RUNS="${RUNS:-5}"
 N=34
 WORK="$(mktemp -d)"
@@ -57,16 +59,16 @@ if command -v rustc >/dev/null 2>&1; then
   row "Rust (threads)" "$WORK/rs" "$N" 1 :: "$WORK/rs" "$N" 4
 fi
 
-# Axion --release (LLVM -O2 -flto + C runtime), thread count via AXION_SESS_THREADS
+# Axion --release (LLVM -O2 -flto + Rust runtime), thread count via AXION_SESS_THREADS
 "$AXIONC" --emit llvm bench/conc.axi >"$WORK/a.ll" 2>/dev/null
-"$CLANG" -O2 -flto -w -pthread "$WORK/a.ll" axionc/src/axion_rt.c -o "$WORK/ax"
+"$CLANG" -O2 -flto -w -pthread "$WORK/a.ll" "$RT_A" -ldl -lm -o "$WORK/ax"
 row "Axion --release" env AXION_SESS_THREADS=1 "$WORK/ax" :: env AXION_SESS_THREADS=4 "$WORK/ax"
 
 # Axion --release, `parMap` form (§9): the same workload written with the fork-join
 # combinator (bench/conc_parmap.axi) instead of hand-unrolled spawn/send/recv/close.
 # Same worker state machine on the same M:N scheduler ⇒ the two rows should track.
 "$AXIONC" --emit llvm bench/conc_parmap.axi >"$WORK/ap.ll" 2>/dev/null
-"$CLANG" -O2 -flto -w -pthread "$WORK/ap.ll" axionc/src/axion_rt.c -o "$WORK/axp"
+"$CLANG" -O2 -flto -w -pthread "$WORK/ap.ll" "$RT_A" -ldl -lm -o "$WORK/axp"
 row "Axion (parMap)" env AXION_SESS_THREADS=1 "$WORK/axp" :: env AXION_SESS_THREADS=4 "$WORK/axp"
 
 echo

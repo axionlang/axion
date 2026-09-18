@@ -1,8 +1,12 @@
 # Porting the `--release` runtime from C to Rust
 
-**Status:** proposal / scoping. **Goal:** replace the hand-written C runtime (`axionc/src/axion_rt.c`,
-~1900 LOC, 124 raw `malloc`/`free`/`memcpy` sites) with a Rust runtime, shrinking the trusted computing
-base at the layer where the only real memory bug ever shipped (the `bn_divmod` double-free/leak).
+**Status: COMPLETE (Stages 1–4b).** The hand-written C runtime (`axionc/src/axion_rt.c`, ~1900 LOC, 124
+raw `malloc`/`free`/`memcpy` sites) has been fully replaced by the Rust crate `axion-rt` and **deleted** —
+the `--release` path now links a Rust staticlib and the TCB contains **zero lines of C**. This shrank the
+trusted computing base at the layer where the only real memory bug ever shipped (the `bn_divmod`
+double-free/leak) and made the session scheduler's data-race-freedom a **compile-time** property
+(`Mutex<Inner>` + `Send`/`Sync`) rather than a ThreadSanitizer sample. The stage table below records the
+plan as executed.
 
 ## Why
 

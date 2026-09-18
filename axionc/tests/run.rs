@@ -3865,7 +3865,6 @@ fn native_runtime_is_leak_free_under_lsan() {
     {
         return;
     }
-    let rt = format!("{}/src/axion_rt.c", env!("CARGO_MANIFEST_DIR"));
     let dir = std::env::temp_dir().join(format!("axion-lsan-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -3918,12 +3917,11 @@ fn native_runtime_is_leak_free_under_lsan() {
         std::fs::write(&ll, &ir.stdout).unwrap();
         // compile with ASan + LSan
         let exe = dir.join(format!("{name}.san"));
-        // Link the C runtime AND the Rust runtime staticlib (`axion-rt`: bignum + strings/IO, and
-        // more as the C→Rust port proceeds); `AXION_RT_LIB` is set by build.rs.
+        // Link the Rust runtime staticlib (`axion-rt`, which now IS the whole runtime — the C is
+        // fully ported and gone); `AXION_RT_LIB` is set by build.rs.
         let cc = std::process::Command::new(&clang)
             .args(["-fsanitize=address,leak", "-pthread", "-O1", "-w"])
             .arg(&ll)
-            .arg(&rt)
             .arg(env!("AXION_RT_LIB"))
             .args(["-ldl", "-lm"])
             .arg("-o")
