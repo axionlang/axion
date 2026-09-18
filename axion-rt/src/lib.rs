@@ -611,6 +611,138 @@ pub unsafe extern "C" fn axion_fold_bytes(f: i64, init: i64, buf: i64) -> i64 {
     acc
 }
 
+// ─── networking (Stage 4a) ───────────────────────────────────────────────────────────────────
+// Thin TCP syscall wrappers over an fd-based ABI (functions take/return raw fds as i64), so `libc`
+// is the faithful backing (std::net's owned-fd model fights the raw-fd contract). `ax_net_recv`
+// returns an `axion_alloc`'d, `axion_free`-compatible String.
+
+/// `ax_net_connect(host, port)` → fd (≥0), or −errno on failure.
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_connect(host_ptr: i64, port: i64) -> i64 {
+    let mut hints: libc::addrinfo = std::mem::zeroed();
+    hints.ai_family = libc::AF_UNSPEC;
+    hints.ai_socktype = libc::SOCK_STREAM;
+    let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+    let r = libc::getaddrinfo(host_ptr as *const libc::c_char, std::ptr::null(), &hints, &mut res);
+    if r != 0 || res.is_null() {
+        return -i64::from(if r != 0 { r } else { libc::EAI_FAIL });
+    }
+    let mut fd = -1i32;
+    let mut rp = res;
+    while !rp.is_null() {
+        fd = libc::socket((*rp).ai_family, (*rp).ai_socktype, (*rp).ai_protocol);
+        if fd >= 0 {
+            // patch the port into the resolved sockaddr (getaddrinfo left it 0).
+            if (*rp).ai_family == libc::AF_INET {
+                (*((*rp).ai_addr as *mut libc::sockaddr_in)).sin_port = (port as u16).to_be();
+            } else {
+                (*((*rp).ai_addr as *mut libc::sockaddr_in6)).sin6_port = (port as u16).to_be();
+            }
+            if libc::connect(fd, (*rp).ai_addr, (*rp).ai_addrlen) == 0 {
+                break;
+            }
+            libc::close(fd);
+            fd = -1;
+        }
+        rp = (*rp).ai_next;
+    }
+    libc::freeaddrinfo(res);
+    if fd >= 0 {
+        i64::from(fd)
+    } else {
+        -i64::from(errno())
+    }
+}
+
+/// `ax_net_listen(port)` → listening fd (≥0), or −errno.
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_listen(port: i64) -> i64 {
+    let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+    if fd < 0 {
+        return -i64::from(errno());
+    }
+    let opt: libc::c_int = 1;
+    libc::setsockopt(
+        fd,
+        libc::SOL_SOCKET,
+        libc::SO_REUSEADDR,
+        std::ptr::addr_of!(opt).cast(),
+        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+    );
+    let mut addr: libc::sockaddr_in = std::mem::zeroed();
+    addr.sin_family = libc::AF_INET as libc::sa_family_t;
+    addr.sin_addr.s_addr = libc::INADDR_ANY.to_be();
+    addr.sin_port = (port as u16).to_be();
+    if libc::bind(
+        fd,
+        std::ptr::addr_of!(addr).cast(),
+        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+    ) < 0
+        || libc::listen(fd, 128) < 0
+    {
+        let e = errno();
+        libc::close(fd);
+        return -i64::from(e);
+    }
+    i64::from(fd)
+}
+
+/// `ax_net_accept(listen_fd)` → client fd (≥0, blocks), or −errno.
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_accept(listen_fd: i64) -> i64 {
+    let c = libc::accept(listen_fd as libc::c_int, std::ptr::null_mut(), std::ptr::null_mut());
+    if c >= 0 {
+        i64::from(c)
+    } else {
+        -i64::from(errno())
+    }
+}
+
+/// `ax_net_send(fd, data)` → bytes sent (uses strlen), or −errno.
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_send(fd: i64, data_ptr: i64) -> i64 {
+    let bytes = str_bytes(data_ptr);
+    let n = libc::send(
+        fd as libc::c_int,
+        data_ptr as *const libc::c_void,
+        bytes.len(),
+        libc::MSG_NOSIGNAL,
+    );
+    if n >= 0 {
+        n as i64
+    } else {
+        -i64::from(errno())
+    }
+}
+
+/// `ax_net_recv(fd)` → a fresh `axion_free`-compatible String ("" on close/error).
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_recv(fd: i64) -> i64 {
+    let mut buf = [0u8; 4096];
+    let n = libc::recv(
+        fd as libc::c_int,
+        buf.as_mut_ptr().cast(),
+        buf.len() - 1,
+        0,
+    );
+    if n <= 0 {
+        alloc_str(b"")
+    } else {
+        alloc_str(&buf[..n as usize])
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_close(fd: i64) {
+    libc::close(fd as libc::c_int);
+}
+
+#[inline]
+fn errno() -> i32 {
+    // SAFETY: `__errno_location` returns a valid per-thread pointer.
+    unsafe { *libc::__errno_location() }
+}
+
 // ─── arenas (Stage 3b) ───────────────────────────────────────────────────────────────────────
 // Bump allocator over fixed 64 KiB chunks (stable pointers), bulk-reset. `unsafe` mirrors the exact
 // C layout: a `Chunk` is `[prev: *mut Chunk][cap: i64][off: i64]` (24-byte header) followed by
