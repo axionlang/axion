@@ -19,4 +19,8 @@ echo "== Whole-fragment: executable model agrees with the verifier over the corp
 "$here/model-trace.sh"
 
 echo
-echo "OK: faithfulness bridge holds (Lean proofs ∧ verifier agreement — 8 canonical shapes ∧ the whole in-fragment corpus)"
+echo "== Bounded-exhaustive (M4): model agrees with the verifier on EVERY program up to size k =="
+"$here/exhaustive.sh"
+
+echo
+echo "OK: faithfulness bridge holds (Lean proofs ∧ verifier agreement — 8 canonical shapes ∧ the whole in-fragment corpus ∧ the bounded-exhaustive family)"

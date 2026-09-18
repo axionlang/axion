@@ -163,8 +163,16 @@ The trusted base of §4 and the deferrals of §5 are the frontier. In descending
   `axion_drop_*` destructor bodies (`Op`-level child-drops + shell frees). Attacks trusted item (1) — the
   layer where the real historical bugs lived. Remaining (larger step): value-level semantic TV of compute
   lowering. (Destructor generation-vs-type-layout is a direct `RecordInfo` loop, ASan/LSan-gated.)
-- **M4 — bounded-exhaustive checking**: enumerate every well-typed in-model program up to size *k* through
-  the M2 bridge + sanitizers, turning "~9000 random" into "none missed up to *k*".
+- **M4 — bounded-exhaustive checking (DONE)**: a generator enumerates EVERY program in a bounded
+  drop/move/branch fragment up to size *k* (k≤3 ⇒ 98 programs), and checks two oracles exhaustively —
+  turning "~9000 random cases" into "none missed up to *k*". **Runtime half** (`tests/exhaustive.rs`,
+  clang-only, CI-friendly): every program the verifier ACCEPTS (28) runs AddressSanitizer +
+  LeakSanitizer-clean, and the 70 rejects are genuine AX0910/AX0911 — so *accept ⇒ safe* holds on the
+  whole family. **Model half** (`metatheory/exhaustive.sh`, wired into `bridge.sh`): the same 98
+  programs yield 311 `acceptsL … = ⟨verifier-verdict⟩ := by rfl` examples that Lean type-checks — so the
+  proven-sound model AGREES with the verifier on every in-fragment program. Together: **model == verifier
+  == runtime, exhaustively over the family** (the arm-fate combinations sweep the branch-merge decision
+  boundary where the historical drop-balance bugs lived).
 - **M5 — certified build mode (DONE)**: `axionc --certified` refuses `--no-verify`/`--allow-leaks`,
   requires a native build, runs the full verifier, and stamps verification status on success — closing
   the §5 bypass hole for the guarantee-bearing configuration (`certified_build_mode_enforces_verification`
