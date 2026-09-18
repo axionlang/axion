@@ -4423,12 +4423,12 @@ fn agree_across_backends(fx: &str, expected: &str) {
     assert_eq!(String::from_utf8_lossy(&llvm.stdout), expected, "{fx} llvm");
 }
 
-/// Drift guard: run `fx` on both NATIVE backends and assert their stdout is
-/// identical — the `--dev` Cranelift JIT uses the Rust runtime reimpls
-/// (`codegen.rs`), `--release` uses the C runtime (`axion_rt.c`). The two are
-/// maintained separately (the price of a C-toolchain-free `--dev`), so any silent
-/// divergence must fail loudly. No hardcoded expected value: the guarantee is that
-/// the two runtimes *match*, whatever they compute.
+/// Backend-codegen agreement: run `fx` on both NATIVE backends and assert their stdout is
+/// identical. Both now register the SAME runtime (`axion-rt`) — the Cranelift `--dev` JIT via
+/// `runtime_symbols()`, the LLVM `--release` path via the linked staticlib — so RUNTIME drift is
+/// structurally impossible (the two hand-maintained runtimes that this guard was created for no
+/// longer exist; docs/rust-runtime-port.md). What remains worth checking is that the two CODE
+/// GENERATORS lower the same program to the same behavior. No hardcoded expected value.
 fn native_agree(fx: &str) {
     let cl = axionc()
         .args(["--backend", "cranelift", &fixture(fx)])
@@ -4458,11 +4458,12 @@ fn native_agree(fx: &str) {
 
 #[test]
 fn runtime_backends_agree() {
-    // The C (--release, axion_rt.c) and Rust (--dev, codegen.rs) runtimes are
-    // duplicated by design; this guards them against silent drift by exercising the
-    // drift-prone deterministic compute ops over broad/edge inputs (int reductions
-    // crossing the i8DotI8 int32-block boundary, the matvecs with wrapping K, the
-    // base-243 codec across byte boundaries) and asserting both backends agree.
+    // Both native backends now execute ONE runtime (`axion-rt`), so the runtime-drift this test
+    // was created to catch can no longer occur (the second, hand-maintained runtime is gone —
+    // C→Rust port complete). Retained as a backend-CODEGEN agreement check: it exercises the
+    // deterministic compute ops over broad/edge inputs (int reductions crossing the i8DotI8
+    // int32-block boundary, the matvecs with wrapping K, the base-243 codec across byte
+    // boundaries) and asserts the Cranelift and LLVM code generators lower them identically.
     for fx in [
         "drift_reductions.axi",
         "drift_matvec.axi",

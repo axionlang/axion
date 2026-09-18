@@ -20,11 +20,52 @@ mod bigint;
 use bigint::BigInt;
 use std::cmp::Ordering;
 
+// ─── heap-stats counters (feature `heap-stats`) ──────────────────────────────────────────────
+// The Cranelift `--dev` JIT enables this feature to power `AXION_HEAP_STATS` accounting (the
+// reclamation tests assert allocs == frees on `--dev`). The `--release` staticlib (built
+// separately by axionc's build.rs) is built WITHOUT it, so the hot alloc/free path carries zero
+// counter overhead there. Relaxed atomics: exact totals, no ordering needed.
+#[cfg(feature = "heap-stats")]
+mod stats {
+    use std::sync::atomic::AtomicU64;
+    pub(crate) static HEAP_ALLOCS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static HEAP_FREES: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static ARENA_NEWS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static ARENA_RESETS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static CELL_ALLOCS: AtomicU64 = AtomicU64::new(0);
+}
+
+/// One heap-stat increment; a no-op unless built with the `heap-stats` feature.
+macro_rules! stat_inc {
+    ($c:ident) => {{
+        #[cfg(feature = "heap-stats")]
+        crate::stats::$c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }};
+}
+
+/// `(heap_allocs, heap_frees, arena_news, arena_resets, cell_allocs)` since process start.
+/// Populated only when built with the `heap-stats` feature (the `--dev` rlib); all zero otherwise.
+#[must_use]
+pub fn heap_stats() -> (u64, u64, u64, u64, u64) {
+    #[cfg(feature = "heap-stats")]
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            stats::HEAP_ALLOCS.load(Relaxed),
+            stats::HEAP_FREES.load(Relaxed),
+            stats::ARENA_NEWS.load(Relaxed),
+            stats::ARENA_RESETS.load(Relaxed),
+            stats::CELL_ALLOCS.load(Relaxed),
+        )
+    }
+    #[cfg(not(feature = "heap-stats"))]
+    (0, 0, 0, 0, 0)
+}
+
 // ─── heap allocator with a size header (Stage 3a) ────────────────────────────────────────────
 // The Axión heap block: `[total: i64 header][payload…]`, `axion_alloc` returns the payload pointer
-// (base+8) and `axion_free` reads the header at −8. Backed by `libc::malloc`/`free` so blocks stay
-// byte-for-byte interchangeable with the C runtime that still links alongside (session/net use the
-// same libc heap). `unsafe` is confined here and mirrors the old C layout exactly.
+// (base+8) and `axion_free` reads the header at −8. Backed by `libc::malloc`/`free`. `unsafe` is
+// confined here and mirrors the original C layout exactly (so pre-port blocks stay compatible).
 
 fn oom() -> ! {
     eprintln!("axion: out of memory");
@@ -39,6 +80,7 @@ pub unsafe extern "C" fn axion_alloc(size: i64) -> i64 {
         oom();
     }
     *(base as *mut i64) = total; // size header
+    stat_inc!(HEAP_ALLOCS);
     base.add(8) as i64
 }
 
@@ -50,6 +92,7 @@ pub unsafe extern "C" fn axion_free(ptr: i64) {
         return;
     }
     libc::free((ptr as *mut u8).sub(8) as *mut libc::c_void);
+    stat_inc!(HEAP_FREES);
 }
 
 /// Shallow byte-copy of an `axion_alloc`'d block, reading its total size from the −8 header (R-5).
@@ -66,6 +109,7 @@ pub unsafe extern "C" fn axion_block_copy(ptr: i64) -> i64 {
         oom();
     }
     std::ptr::copy_nonoverlapping(base, nb, total as usize);
+    stat_inc!(HEAP_ALLOCS);
     nb.add(8) as i64
 }
 
@@ -1090,6 +1134,7 @@ pub unsafe extern "C" fn axion_arena_new() -> i64 {
         oom();
     }
     (*a).cur = chunk_new(ARENA_CHUNK, std::ptr::null_mut());
+    stat_inc!(ARENA_NEWS);
     a as i64
 }
 
@@ -1108,6 +1153,7 @@ pub unsafe extern "C" fn axion_arena_alloc(arena: i64, size: i64) -> i64 {
     }
     let p = chunk_data(c).add((*c).off as usize);
     (*c).off += size;
+    stat_inc!(CELL_ALLOCS);
     p as i64
 }
 
@@ -1122,6 +1168,7 @@ pub unsafe extern "C" fn axion_arena_reset(arena: i64) {
         c = prev;
     }
     libc::free(a as *mut libc::c_void);
+    stat_inc!(ARENA_RESETS);
 }
 
 #[no_mangle]
@@ -1218,7 +1265,9 @@ pub unsafe extern "C" fn axion_eputs(s: i64) {
 /// header (static `.rodata`) and are skipped.
 #[no_mangle]
 pub unsafe extern "C" fn axion_str_drop(s: i64) {
-    if s != 0 && *((s - 8) as *const i64) != 0 {
+    // A string LITERAL points into `.rodata` at an arbitrary (unaligned) byte offset, so the −8
+    // header read must be unaligned; only heap strings (from `axion_alloc`) are 8-aligned there.
+    if s != 0 && ((s - 8) as *const i64).read_unaligned() != 0 {
         axion_free(s);
     }
 }
@@ -1560,6 +1609,20 @@ pub unsafe extern "C" fn axion_set_args(argc: i64, argv: i64) {
     let _ = ARGS.set(v);
 }
 
+/// Set the program arguments from Rust — for the Cranelift `--dev` JIT, whose in-process `main`
+/// receives no C `argv` (the `--release` path instead calls `axion_set_args` from C `main`).
+/// `args` is argv[1..] (the real arguments, no program name — matching axionc's `PROG_ARGS`); a
+/// placeholder argv[0] is prepended so `axion_getarg`/`axion_getargs` index identically on both
+/// native backends.
+pub fn set_args_rs(args: &[String]) {
+    let mut v: Vec<Vec<u8>> = Vec::with_capacity(args.len() + 1);
+    v.push(b"axion".to_vec()); // placeholder for the program name (argv[0])
+    for a in args {
+        v.push(a.as_bytes().to_vec());
+    }
+    let _ = ARGS.set(v);
+}
+
 /// `getArg i` — the i-th program argument (0-based over argv[1..], excluding argv[0]), a FRESH
 /// String ("" if out of range).
 #[no_mangle]
@@ -1678,4 +1741,122 @@ pub unsafe extern "C" fn axion_bignum_to_string(p: i64) -> i64 {
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len());
     *buf.add(bytes.len()) = 0; // NUL terminator
     buf as i64
+}
+
+/// The runtime symbols the Cranelift `--dev` JIT registers, as (name, address).
+///
+/// SINGLE SOURCE OF TRUTH for the runtime ABI surface: the LLVM `--release` path links these
+/// same `#[no_mangle]` symbols from the staticlib, and `--dev` registers these pointers directly
+/// with its JIT — so BOTH native backends now execute this one runtime (there is no second,
+/// hand-maintained reimplementation to drift out of sync).
+#[must_use]
+pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
+    vec![
+        ("axion_bignum_to_string", axion_bignum_to_string as *const u8),
+        ("axion_tritvec_from_buffer", axion_tritvec_from_buffer as *const u8),
+        ("axion_tritvec_matvec_sum", axion_tritvec_matvec_sum as *const u8),
+        ("axion_alloc", axion_alloc as *const u8),
+        ("axion_arena_alloc", axion_arena_alloc as *const u8),
+        ("axion_arena_mark", axion_arena_mark as *const u8),
+        ("axion_arena_new", axion_arena_new as *const u8),
+        ("axion_arena_promote", axion_arena_promote as *const u8),
+        ("axion_arena_release", axion_arena_release as *const u8),
+        ("axion_arena_reset", axion_arena_reset as *const u8),
+        ("axion_array_dot", axion_array_dot as *const u8),
+        ("axion_array_free", axion_array_free as *const u8),
+        ("axion_array_get", axion_array_get as *const u8),
+        ("axion_array_iota", axion_array_iota as *const u8),
+        ("axion_array_len", axion_array_len as *const u8),
+        ("axion_array_new", axion_array_new as *const u8),
+        ("axion_array_set", axion_array_set as *const u8),
+        ("axion_array_sum", axion_array_sum as *const u8),
+        ("axion_bignum_add", axion_bignum_add as *const u8),
+        ("axion_bignum_copy", axion_bignum_copy as *const u8),
+        ("axion_bignum_div", axion_bignum_div as *const u8),
+        ("axion_bignum_eq", axion_bignum_eq as *const u8),
+        ("axion_bignum_free", axion_bignum_free as *const u8),
+        ("axion_bignum_from_i64", axion_bignum_from_i64 as *const u8),
+        ("axion_bignum_from_str", axion_bignum_from_str as *const u8),
+        ("axion_bignum_gt", axion_bignum_gt as *const u8),
+        ("axion_bignum_lt", axion_bignum_lt as *const u8),
+        ("axion_bignum_mod", axion_bignum_mod as *const u8),
+        ("axion_bignum_mul", axion_bignum_mul as *const u8),
+        ("axion_bignum_sub", axion_bignum_sub as *const u8),
+        ("axion_block_copy", axion_block_copy as *const u8),
+        ("axion_buf_free", axion_buf_free as *const u8),
+        ("axion_buf_iota", axion_buf_iota as *const u8),
+        ("axion_buf_new", axion_buf_new as *const u8),
+        ("axion_buf_sum", axion_buf_sum as *const u8),
+        ("axion_buf_xor", axion_buf_xor as *const u8),
+        ("axion_eput", axion_eput as *const u8),
+        ("axion_eputs", axion_eputs as *const u8),
+        ("axion_exec_capture", axion_exec_capture as *const u8),
+        ("axion_exec_status", axion_exec_status as *const u8),
+        ("axion_exit", axion_exit as *const u8),
+        ("axion_file_exists", axion_file_exists as *const u8),
+        ("axion_fold_bytes", axion_fold_bytes as *const u8),
+        ("axion_free", axion_free as *const u8),
+        ("axion_getarg", axion_getarg as *const u8),
+        ("axion_getargs", axion_getargs as *const u8),
+        ("axion_getenv", axion_getenv as *const u8),
+        ("axion_i32_dot", axion_i32_dot as *const u8),
+        ("axion_i32_get", axion_i32_get as *const u8),
+        ("axion_i32_iota", axion_i32_iota as *const u8),
+        ("axion_i32_len", axion_i32_len as *const u8),
+        ("axion_i32_matvec_sum", axion_i32_matvec_sum as *const u8),
+        ("axion_i32_new", axion_i32_new as *const u8),
+        ("axion_i32_set", axion_i32_set as *const u8),
+        ("axion_i32_sum", axion_i32_sum as *const u8),
+        ("axion_i8_dot", axion_i8_dot as *const u8),
+        ("axion_i8_dot_i8", axion_i8_dot_i8 as *const u8),
+        ("axion_i8_get", axion_i8_get as *const u8),
+        ("axion_i8_iota", axion_i8_iota as *const u8),
+        ("axion_i8_len", axion_i8_len as *const u8),
+        ("axion_i8_matvec_sum", axion_i8_matvec_sum as *const u8),
+        ("axion_i8_new", axion_i8_new as *const u8),
+        ("axion_i8_set", axion_i8_set as *const u8),
+        ("axion_i8_sum", axion_i8_sum as *const u8),
+        ("axion_mkdir_p", axion_mkdir_p as *const u8),
+        ("axion_par_map", axion_par_map as *const u8),
+        ("axion_put", axion_put as *const u8),
+        ("axion_puts", axion_puts as *const u8),
+        ("axion_rand_hex", axion_rand_hex as *const u8),
+        ("axion_readdir", axion_readdir as *const u8),
+        ("axion_read_file", axion_read_file as *const u8),
+        ("axion_read_line", axion_read_line as *const u8),
+        ("axion_read_secret", axion_read_secret as *const u8),
+        ("axion_rename", axion_rename as *const u8),
+        ("axion_run", axion_run as *const u8),
+        ("axion_sess_alloc", axion_sess_alloc as *const u8),
+        ("axion_sess_channel", axion_sess_channel as *const u8),
+        ("axion_sess_new", axion_sess_new as *const u8),
+        ("axion_sess_pending", axion_sess_pending as *const u8),
+        ("axion_sess_recv", axion_sess_recv as *const u8),
+        ("axion_sess_run", axion_sess_run as *const u8),
+        ("axion_sess_send", axion_sess_send as *const u8),
+        ("axion_sess_spawn", axion_sess_spawn as *const u8),
+        ("axion_show_float", axion_show_float as *const u8),
+        ("axion_show_int", axion_show_int as *const u8),
+        ("axion_str_at", axion_str_at as *const u8),
+        ("axion_strcat", axion_strcat as *const u8),
+        ("axion_str_cmp", axion_str_cmp as *const u8),
+        ("axion_str_drop", axion_str_drop as *const u8),
+        ("axion_str_len", axion_str_len as *const u8),
+        ("axion_substr", axion_substr as *const u8),
+        ("axion_system", axion_system as *const u8),
+        ("axion_tritvec_dot", axion_tritvec_dot as *const u8),
+        ("axion_tritvec_get", axion_tritvec_get as *const u8),
+        ("axion_tritvec_iota", axion_tritvec_iota as *const u8),
+        ("axion_tritvec_len", axion_tritvec_len as *const u8),
+        ("axion_tritvec_new", axion_tritvec_new as *const u8),
+        ("axion_tritvec_set", axion_tritvec_set as *const u8),
+        ("axion_unlink", axion_unlink as *const u8),
+        ("axion_write_file", axion_write_file as *const u8),
+        ("ax_net_accept", ax_net_accept as *const u8),
+        ("ax_net_close", ax_net_close as *const u8),
+        ("ax_net_connect", ax_net_connect as *const u8),
+        ("ax_net_listen", ax_net_listen as *const u8),
+        ("ax_net_recv", ax_net_recv as *const u8),
+        ("ax_net_send", ax_net_send as *const u8),
+    ]
 }

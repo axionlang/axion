@@ -2,8 +2,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Builds the Rust native-runtime staticlib (`axion-rt`, docs/rust-runtime-port.md) and hands its
 //! path to the compiler via `AXION_RT_LIB`, so `llvm.rs` can `include_bytes!` it and link it into
-//! `--release` executables alongside the (shrinking) C runtime. Only for native, non-wasm builds —
-//! the wasm playground (`--no-default-features --features wasm`) has no native backend.
+//! `--release` executables. `axion-rt` IS the whole runtime now (the C is fully ported + gone), and
+//! the `--dev` Cranelift JIT links the same crate as an rlib dependency — one runtime for both
+//! backends. This staticlib build is heap-stats-free (zero alloc-path overhead); the `--dev` rlib
+//! enables `heap-stats`. Only for native, non-wasm builds — the wasm playground has no backend.
 
 use std::path::PathBuf;
 use std::process::Command;

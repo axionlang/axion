@@ -73,8 +73,14 @@ matched-LLVM cross-lang LTO can be revisited later.
   the step-function call is the one genuine `unsafe` transmute. Validate with `session_run_*` fixtures +
   `tsan.sh` + `gen_session` fuzzing.
 
-Once complete, the Cranelift backend can also link `axion-rt` (replacing its inline runtime) — **one Rust
-runtime for all three backends**, retiring `runtime_backends_agree`'s drift concern.
+**DONE:** the Cranelift `--dev` backend now also uses `axion-rt` — it depends on the crate as an rlib
+and registers its functions with the JIT via `axion_rt::runtime_symbols()` (the single source of truth
+for the ABI surface), replacing the ~100 hand-maintained reimplementations that used to live in
+`codegen.rs`. **One Rust runtime for all three backends** (interp = Rust `Drop`; `--dev` = this crate via
+the JIT; `--release` = this crate via the staticlib). `runtime_backends_agree`'s runtime-drift concern is
+structurally retired — kept only as a lighter backend-codegen agreement check. A `heap-stats` cargo
+feature (on for the `--dev` rlib, off for the `--release` staticlib) powers the `AXION_HEAP_STATS` leak
+accounting without adding overhead to the release alloc path.
 
 ## Cross-cutting requirements
 - **ABI unchanged**: every export is `extern "C"` over i64 → the emitted IR and `codegen_tv.rs` are

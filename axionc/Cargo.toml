@@ -34,7 +34,7 @@ default = ["cst", "native", "lsp"]
 # The native backends (Cranelift `--dev` + LLVM `--release`) and the FFI runtime.
 # Default-on; a `--no-default-features` wasm build drops them (they can't target
 # wasm32) and runs programs through the interpreter instead.
-native = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
+native = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native", "dep:axion-rt"]
 # The salsa incremental query engine (§8). The LSP pulls it in so the server
 # reuses memoized parses (prelude + unchanged imports) across edits.
 salsa = ["dep:salsa"]
@@ -68,6 +68,14 @@ cranelift = { version = "0.116", optional = true }
 cranelift-jit = { version = "0.116", optional = true }
 cranelift-module = { version = "0.116", optional = true }
 cranelift-native = { version = "0.116", optional = true }
+
+# The Rust runtime (docs/rust-runtime-port.md). Embedded as a staticlib for `--release`
+# by build.rs; also linked here as an rlib so the Cranelift `--dev` JIT registers the
+# SAME runtime functions (one runtime for both backends). Optional (`native`) — a wasm
+# build drops it (it uses libc/threads, not wasm32).
+# `heap-stats` powers the `--dev` JIT's AXION_HEAP_STATS leak accounting (allocs == frees);
+# the `--release` staticlib is built without it (zero alloc-path overhead).
+axion-rt = { path = "../axion-rt", optional = true, features = ["heap-stats"] }
 
 # Browser playground (optional — `--features wasm`). Pinned to match the local
 # `wasm-bindgen` CLI (the crate and CLI versions must agree).

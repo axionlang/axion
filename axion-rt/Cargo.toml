@@ -1,7 +1,8 @@
-# The Axión native runtime, in Rust (docs/rust-runtime-port.md). Built to a staticlib and linked
-# into the `--release` (LLVM) executables alongside (for now) the remaining C runtime. Stage 1
-# provides the arbitrary-precision Integer (bignum) primitives by REUSING axionc's tested
-# `src/bigint.rs` — deleting the hand-written C `bn_divmod` (the one place a real memory bug shipped).
+# The Axión native runtime, in Rust (docs/rust-runtime-port.md) — the WHOLE runtime (the C→Rust port
+# is complete; there is no C runtime left). Built as a `staticlib` for the `--release`/LLVM link, and
+# consumed as an `rlib` by axionc's Cranelift `--dev` JIT (one runtime for both native backends). It
+# REUSES axionc's tested `src/bigint.rs` for bignum — deleting the hand-written C `bn_divmod`, the one
+# place a real memory bug ever shipped.
 [package]
 name = "axion-rt"
 version = "0.0.0"
@@ -10,7 +11,15 @@ publish = false
 
 [lib]
 name = "axion_rt"
-crate-type = ["staticlib"]
+# `staticlib` for the `--release`/LLVM link (embedded via build.rs); `rlib` so the
+# Cranelift `--dev` backend can depend on this crate and register the SAME runtime
+# functions with its JIT (one runtime for both native backends — no reimpl to drift).
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# Heap accounting for the Cranelift `--dev` JIT's `AXION_HEAP_STATS` leak gate (allocs == frees).
+# Off by default so the `--release` staticlib's alloc/free path has zero counter overhead.
+heap-stats = []
 
 [dependencies]
 # Only for `termios` (terminal echo-off in `readSecret`); everything else uses std.

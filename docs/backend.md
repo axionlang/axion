@@ -11,26 +11,28 @@
 > eta-expansion). See the Core with `axionc --emit core` and the LLVM IR with
 > `axionc --emit llvm`.
 
-### Two runtimes, by design — and the drift guard
+### One runtime for both native backends
 
-The runtime exists **twice**: `axion_rt.c` (linked by `--release` via `clang -flto`,
-which inlines it into the hot loop) and ~73 Rust `extern "C"` reimplementations in
-`codegen.rs` (registered as symbols for the `--dev` Cranelift JIT). This is
-deliberate, not an oversight: it keeps `--dev` **self-contained** — pure cargo build,
-no C toolchain to build *or* run (`clang` is only a `--release` runtime dependency).
-Unifying them would force a build-time C compiler or a `clang` dependency on `--dev`,
-losing that. (A runtime is also the trusted, inherently-`unsafe` core either way — in
-Rust it is ~all `unsafe` raw-pointer work; the safety Axion sells is compiler-enforced
-on *Axion programs*, not the runtime TCB.)
+Both native backends now execute the **same** runtime — the Rust crate `axion-rt`
+(docs/rust-runtime-port.md). `--release` links it as a staticlib (`clang -O2 -flto`,
+which inlines it into the hot loop); `--dev`'s Cranelift JIT registers the identical
+functions as symbols via `axion_rt::runtime_symbols()` (its single source of truth for
+the ABI surface). This keeps `--dev` **self-contained** — pure cargo build, no C
+toolchain to build *or* run — because `axion-rt` is ordinary Rust (only `libc` for a
+few syscalls), so no C compiler is ever needed for `--dev`. (A runtime is the trusted,
+inherently-`unsafe` core either way; what Axion sells is compiler-enforced safety on
+*Axion programs* — and moving the runtime to Rust shrinks that `unsafe` core to small,
+audited blocks.)
 
-The real hazard is **silent drift** — changing one runtime but not the other. The
-`runtime_backends_agree` test (`tests/run.rs`) guards against it: the `drift_*.axi`
-fixtures exercise the drift-prone deterministic ops (int reductions crossing the
-`i8DotI8` int32-block boundary, the matvecs with a wrapping K, the base-243 codec
-across byte boundaries) and assert `--dev` (Rust runtime) output == `--release` (C
-runtime) output. Any divergence fails loudly (verified by deliberately perturbing a
-reimpl). Scheduler/networking drift is nondeterministic/IO and is left to the session
-fixtures + TSan.
+Previously the runtime existed **twice** — `axion_rt.c` for `--release` and ~100 Rust
+`extern "C"` reimplementations in `codegen.rs` for `--dev` — with a `runtime_backends_agree`
+drift guard against changing one but not the other. The C→Rust port unified them, so
+runtime drift is now **structurally impossible**. The `runtime_backends_agree` test
+(`tests/run.rs`) is retained in a lighter role — a backend-*codegen* agreement check:
+the `drift_*.axi` fixtures still exercise the deterministic ops (int reductions crossing
+the `i8DotI8` int32-block boundary, the matvecs with a wrapping K, the base-243 codec
+across byte boundaries) and assert the Cranelift and LLVM code generators lower them
+identically.
 
 This `--dev` backend, over `cranelift-jit`, is a **plain Core→Cranelift emitter**:
 multi-clause desugaring, `where` *lifting* and closure conversion have already
