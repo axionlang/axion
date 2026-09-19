@@ -34,8 +34,14 @@ inputs() { ls axionc/tests/fixtures/*.axi examples/*.axi 2>/dev/null; }
 
 ok=0; skipped=0; fail=0
 for f in $(inputs); do
-  # recover_partial.axi is deliberately malformed — it never lowers to Core.
-  case "$(basename "$f")" in recover_partial.axi) skipped=$((skipped + 1)); continue ;; esac
+  # Deliberate negative fixtures, skipped to match `tests/verify.rs`:
+  #   · recover_partial.axi     — malformed; never lowers to Core.
+  #   · user_alias_borrow.axi   — a hand-written element-aliasing borrower; the verifier is
+  #     SUPPOSED to report corruption on it (independently agreeing with AX0912's native
+  #     rejection — the soundness win, not a false positive). See tests/verify.rs:48.
+  case "$(basename "$f")" in
+    recover_partial.axi | user_alias_borrow.axi) skipped=$((skipped + 1)); continue ;;
+  esac
 
   out=$("$AXIONC" --emit verify "$f" 2>&1)
   if echo "$out" | grep -q "^FAIL:"; then
