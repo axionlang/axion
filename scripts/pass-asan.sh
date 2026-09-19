@@ -60,5 +60,7 @@ run cp web webcopy   # directory copy (recursive, shell-free)
 run rm -r webcopy    # recursive subtree remove
 run mv email mail    # directory rename
 run rm -rf ghost     # bundled flags + force on a missing entry (no error)
+run show -c2 github  # -c<n> line-select parse + clipCopy/nthLine path
+run generate -i github  # in-place generate parse path
 
 [ "$fail" = 0 ] && echo "OK: pass(1) commands ASan-clean over a nested store" || { echo "pass ASan gate FAILED"; exit 1; }

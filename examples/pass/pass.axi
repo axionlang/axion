@@ -4,19 +4,20 @@
 -- else $HOME/.password-store); `pass` shells out to `gpg` for crypto (ciphertext
 -- stays in files — only plaintext crosses into Axión) and to `find` for listing.
 -- Dispatch mirrors upstream pass:
---   pass init <gpg-id>      → create the store + write its .gpg-id recipient
+--   pass init <gpg-id>      → create the store, write its .gpg-id recipient, and `git init`
 --   pass                    → draw the whole store as a tree
 --   pass ls  [subdir]       → tree of the store (or of <subdir>)
---   pass show [-c] [<name>] → decrypt and print <name> (`-c`: copy 1st line to clipboard;
---                             no <name> + fzf installed → pick interactively)
+--   pass show [-c[n]] [<name>] → decrypt and print <name> (`-c[n]`: copy line n (default 1) to
+--                             clipboard; no <name> + fzf installed → pick interactively)
 --   pass <name>             → decrypt and print <name> (bare-name shorthand)
 --   pass find <term>        → list entries whose path matches <term>
 --   pass grep <search>      → search decrypted contents
 --   pass rm [-r] [-f] <name>→ delete an entry, or a whole subtree with `-r`
 --   pass mv <old> <new>     → rename an entry OR a subdirectory
 --   pass cp <old> <new>     → copy an entry OR a subdirectory (`-r` implied for dirs)
---   pass generate [-c] [-n] [-f] <name> [n] → random n-char password (default 25); `-n` = no
---                             symbols, `-c` = to clipboard, `-f` = overwrite without asking
+--   pass generate [-c] [-n] [-f] [-i] <name> [n] → random n-char password (default 25); `-n` = no
+--                             symbols, `-c` = to clipboard, `-f` = overwrite w/o asking, `-i` =
+--                             in-place (replace only line 1, keep metadata)
 --   pass insert [-m|-e] [-f] <name> → read a passphrase (echo off), a multiline body (`-m`),
 --                             or an echoed line (`-e`)
 --   pass edit [<name>]      → decrypt into $EDITOR (on RAMFS), re-encrypt on save
@@ -114,6 +115,18 @@ firstLineGo s i n =
   if i >= n then ""
   else (if charAt i s == 10 then "" else substr i 1 s ++ firstLineGo s (i + 1) n)
 
+-- The n-th line (1-indexed) of a decrypted entry — the `pass show -c<n>` selector (upstream
+-- copies line <n>, default 1). `skipLines` advances past (n-1) newlines, then `firstLineGo`
+-- reads that line to its end. Out of range → "".
+skipLines :: String -> Int -> Int -> Int -> Int
+skipLines s i n k =
+  if k <= 0 then i
+  else if i >= n then i
+  else if charAt i s == 10 then skipLines s (i + 1) n (k - 1)
+  else skipLines s (i + 1) n k
+nthLine :: Int -> String -> String
+nthLine ln s = firstLineGo s (skipLines s 0 (strLen s) (ln - 1)) (strLen s)
+
 -- Is command `c` on PATH? (0 = yes.) A shell probe with no user input — injection-safe.
 hasCmd :: String -> Int
 hasCmd c = runStatus (("command -v " ++ shQuote c) ++ " >/dev/null 2>&1")
@@ -159,13 +172,13 @@ clipWithRestore =
 -- Copy the FIRST LINE of <plaintext> to the clipboard (saving/restoring the prior contents after
 -- 45s), then report (to stderr, so a piped stdout stays clean). Aborts if no clipboard tool exists.
 -- The secret is fed on the pipeline's STDIN via `execStatus … (firstLine plaintext)`.
-clipCopy :: String -> String -> IO ()
-clipCopy plaintext name
+clipCopy :: Int -> String -> String -> IO ()
+clipCopy ln plaintext name
   | strLen plaintext == 0 = die (strAppend "Error: could not decrypt " name)
   | strLen clipTool == 0  = die "Error: no clipboard tool found (install wl-clipboard, xclip, or xsel)"
   | otherwise             = do
-      execStatus (strAppend "sh\n-c\n" clipWithRestore) (firstLine plaintext)
-      ePutStrLn (("Copied " ++ name) ++ " to clipboard. Will clear in 45 seconds.")
+      execStatus (strAppend "sh\n-c\n" clipWithRestore) (nthLine ln plaintext)
+      ePutStrLn (((("Copied " ++ name) ++ " (line ") ++ showInt ln) ++ ") to clipboard. Will clear in 45 seconds.")
 
 -- `pass show [-c] [<name>]`: decrypt the entry (gpg via execCapture — explicit argv, no
 -- shell) and either print it or (`-c`) copy its first line to the clipboard. With no name,
@@ -173,17 +186,17 @@ clipCopy plaintext name
 -- BORROWED here (never returned from a helper), so the fresh fzf pick and the borrowed argv
 -- name both flow into `showFound` without a conditional alias/fresh return (which would
 -- desync the interprocedural alias summary → a use-after-free).
-showEntry :: Bool -> String -> IO ()
-showEntry clip name
-  | strLen name > 0   = showFound clip name
-  | hasCmd "fzf" == 0 = showFound clip fzfPick
-  | otherwise         = die "Usage: pass show [-c] <name>"
+showEntry :: Bool -> Int -> String -> IO ()
+showEntry clip ln name
+  | strLen name > 0   = showFound clip ln name
+  | hasCmd "fzf" == 0 = showFound clip ln fzfPick
+  | otherwise         = die "Usage: pass show [-c[n]] <name>"
 
-showFound :: Bool -> String -> IO ()
-showFound clip name
+showFound :: Bool -> Int -> String -> IO ()
+showFound clip ln name
   | fileExists (entryPath name) == 0 =
       die (strAppend "Error: " (strAppend name " is not in the password store."))
-  | clip                             = clipCopy (execCapture (decryptArgv (entryPath name)) "") name
+  | clip                             = clipCopy ln (execCapture (decryptArgv (entryPath name)) "") name
   | otherwise                        = putStr (execCapture (decryptArgv (entryPath name)) "")
 
 -- `pass ls [subdir]` / bare `pass`: draw the store as an indented TREE (upstream shells
@@ -380,6 +393,15 @@ genCmd :: String -> String -> Int -> String -> String
 genCmd entry gpgid len charset =
   "e=" ++ shQuote entry ++ "; g=" ++ shQuote gpgid ++ "; mkdir -p \"$(dirname \"$e\")\" && pw=$(LC_ALL=C tr -dc " ++ charset ++ " </dev/urandom | head -c " ++ showInt len ++ ") && printf '%s' \"$pw\" | gpg -e --batch --yes -r \"$(head -1 \"$g\")\" -o \"$e\" && printf '%s\\n' \"$pw\""
 
+-- `generate -i` (in-place): replace ONLY the first line of an EXISTING entry with the new
+-- password, keeping any subsequent metadata lines. Decrypts the entry, swaps line 1 for the
+-- fresh password (`tail -n +2` keeps the rest), re-encrypts, and prints the new password. The
+-- secret never touches a process argv (piped to gpg via a shell group). Fails if the entry does
+-- not exist (empty decrypt → the `&&` chain aborts → `genReport` reports the error).
+genInPlaceCmd :: String -> String -> Int -> String -> String
+genInPlaceCmd entry gpgid len charset =
+  "e=" ++ shQuote entry ++ "; g=" ++ shQuote gpgid ++ "; pw=$(LC_ALL=C tr -dc " ++ charset ++ " </dev/urandom | head -c " ++ showInt len ++ ") && old=$(gpg -d --quiet \"$e\" 2>/dev/null) && { printf '%s\\n' \"$pw\"; printf '%s' \"$old\" | tail -n +2; } | gpg -e --batch --yes -r \"$(head -1 \"$g\")\" -o \"$e\" && printf '%s\\n' \"$pw\""
+
 -- Report the outcome of `generate`: an empty capture means the pipeline failed (most often
 -- no `.gpg-id`); otherwise commit and either print the password (header + value) or, with
 -- `-c`, copy it to the clipboard instead of echoing it.
@@ -389,7 +411,7 @@ genReport clip name out
       die (("Error: could not generate " ++ name) ++ " (is the store initialized with a .gpg-id?)")
   | clip            = do
       gitCommit (strAppend "Generate " name)
-      clipCopy out name
+      clipCopy 1 out name
   | otherwise       = do
       putStrLn (("The generated password for " ++ name) ++ " is:")
       gitCommit (strAppend "Generate " name)
@@ -398,16 +420,19 @@ genReport clip name out
 -- `pass generate [-c] [-n] [-f] <name> [length]`: create a random password, encrypt it, then
 -- print it (or copy it with `-c`). `-n` drops symbols; `-f` overwrites an existing entry without
 -- asking. Flags are parsed by `hasFlag`; the name/length are the positionals (`posArg`).
-genEntry :: Bool -> Bool -> Bool -> String -> String -> IO ()
-genEntry clip noSym force name lenArg
-  | strLen name == 0 = die "Usage: pass generate [-c] [-n] <name> [length]"
+genEntry :: Bool -> Bool -> Bool -> Bool -> String -> String -> IO ()
+genEntry clip noSym force inPlace name lenArg
+  | strLen name == 0 = die "Usage: pass generate [-c] [-n] [-i] <name> [length]"
+  | inPlace          = do   -- replace only the first line of an existing entry
+      out <- runCapture (genInPlaceCmd (entryPath name) gpgId (fromMaybe 25 (readInt lenArg)) (genCharset noSym))
+      genReport clip name out
   | otherwise        = do
       ensureOverwrite force name
       out <- runCapture (genCmd (entryPath name) gpgId (fromMaybe 25 (readInt lenArg)) (genCharset noSym))
       genReport clip name out
 
 doGenerate :: IO ()
-doGenerate = genEntry (hasFlag "c") (hasFlag "n") (hasFlag "f") (posArg 0) (posArg 1)
+doGenerate = genEntry (hasFlag "c") (hasFlag "n") (hasFlag "f") (hasFlag "i") (posArg 0) (posArg 1)
 
 -- Build a shell-free argv for `gpg -e` to <entry> for <recipient>. gpg reads the
 -- plaintext from stdin (execStatus's second argument) — so the secret never appears
@@ -618,6 +643,31 @@ posBase i =
 posArg :: Int -> String
 posArg r = getArg (posBase 1 + r)
 
+-- Index of byte `c` in `s[i..n)`, or -1.
+idxOf :: Int -> String -> Int -> Int -> Int
+idxOf c s i n =
+  if i >= n then 0 - 1
+  else if charAt i s == c then i
+  else idxOf c s (i + 1) n
+
+-- The numeric suffix ATTACHED to a single-char option (getopt optional-arg style: `-c3` → 3),
+-- scanning the leading flag tokens; `dflt` if the flag is absent or bare (`-c`). Used for
+-- `show -c[n]` (copy the n-th line).
+optNumFrom :: Int -> Int -> Int -> Int
+optNumFrom c dflt i =
+  let a = getArg i in
+  if strLen a == 0 then dflt
+  else if a == "--" then dflt
+  else if hasPrefix "-" a
+       then optNumTok c dflt a (idxOf c a 1 (strLen a)) i
+       else dflt
+optNumTok :: Int -> Int -> String -> Int -> Int -> Int
+optNumTok c dflt a k i =
+  if k < 0 then optNumFrom c dflt (i + 1)
+  else fromMaybe dflt (readInt (substr (k + 1) (strLen a - (k + 1)) a))
+optNum :: String -> Int -> Int
+optNum f dflt = optNumFrom (charAt 0 f) dflt 1
+
 -- `pass init <gpg-id>`: create the store directory and write its `.gpg-id` recipient file,
 -- then commit. New entries encrypt to this key id (see `insertFinish`/`genCmd`/`encryptTo`).
 doInit :: String -> IO ()
@@ -626,6 +676,7 @@ doInit gid
   | otherwise       = do
       makeDir storeDir
       writeFile gpgId (strAppend gid "\n")
+      runStatus (("d=" ++ shQuote storeDir) ++ "; test -d \"$d/.git\" || git -C \"$d\" init -q >/dev/null 2>&1; true")
       gitCommit (strAppend "Set GPG id to " gid)
       putStrLn (strAppend "Password store initialized for " gid)
 
@@ -654,12 +705,12 @@ usageText =
   "Usage:\n" ++
   "  pass init <gpg-id>            initialize the store for a GPG key id\n" ++
   "  pass [ls] [subdir]            list entries as a tree\n" ++
-  "  pass show [-c] [name]        show an entry (-c: copy 1st line to clipboard 45s)\n" ++
+  "  pass show [-c[n]] [name]     show an entry (-c[n]: copy line n (default 1) to clipboard 45s)\n" ++
   "  pass find <term>              list entry names matching term\n" ++
   "  pass grep <text>              search decrypted contents\n" ++
   "  pass insert [-e|-m] [-f] name add an entry (-e echo, -m multiline, -f force)\n" ++
   "  pass edit [name]              edit an entry in $EDITOR\n" ++
-  "  pass generate [-c][-n][-f] name [len]  make a random password\n" ++
+  "  pass generate [-c][-n][-f][-i] name [len]  make a random password (-i: in-place, keep metadata)\n" ++
   "  pass rm [-r] [-f] <name>      remove an entry or subtree\n" ++
   "  pass mv <old> <new>           rename an entry or subdir\n" ++
   "  pass cp <old> <new>           copy an entry or subdir\n" ++
@@ -672,7 +723,7 @@ usageText =
 dispatch :: String -> IO ()
 dispatch cmd = case cmd of
   "init"      -> doInit (posArg 0)
-  "show"      -> showEntry (hasFlag "c") (posArg 0)
+  "show"      -> showEntry (hasFlag "c") (optNum "c" 1) (posArg 0)
   "ls"        -> doLs (posArg 0)
   "list"      -> doLs (posArg 0)
   "find"      -> doFind (posArg 0)
@@ -696,7 +747,7 @@ dispatch cmd = case cmd of
   "version"   -> doVersion
   "--version" -> doVersion
   ""          -> doLs ""
-  other       -> showEntry False other
+  other       -> showEntry False 1 other
 
 main :: IO ()
 main = dispatch (getArg 0)
