@@ -1,18 +1,17 @@
 name: ci
 
 on:
-  # `main` gets CI on every push; every OTHER branch gets it through its pull request
-  # (open one BEFORE merging — see CONTRIBUTING.md). This is the no-duplicate pattern:
-  # a PR branch is checked once via `pull_request`, `main` once via `push`.
+  # This repo works on `main`: every push to it is checked. (`pull_request` is kept so a
+  # PR, if anyone ever opens one, is also checked — but the normal flow is push to `main`.)
   push:
     branches: [main]
   pull_request:
 
-# Supersede in-flight runs on the same ref when new commits arrive — but never cancel a
-# `main` run (every landed commit is tested to completion).
+# Supersede an in-flight run on the same ref when a newer push arrives (saves runner time
+# on rapid re-pushes).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 jobs:
   # Phase 0 — the EDSL bench (Haskell) runs in the flake's reproducible dev shell.
