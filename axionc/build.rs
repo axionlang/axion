@@ -37,10 +37,17 @@ fn main() {
     assert!(status.success(), "axion-rt staticlib build failed");
 
     let lib = rt_target.join("release").join("libaxion_rt.a");
-    assert!(lib.exists(), "axion-rt staticlib not found at {}", lib.display());
+    assert!(
+        lib.exists(),
+        "axion-rt staticlib not found at {}",
+        lib.display()
+    );
     println!("cargo:rustc-env=AXION_RT_LIB={}", lib.display());
 
     println!("cargo:rerun-if-changed={}", rt.join("src/lib.rs").display());
     println!("cargo:rerun-if-changed={}", rt.join("Cargo.toml").display());
-    println!("cargo:rerun-if-changed={}", manifest.join("src/bigint.rs").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("src/bigint.rs").display()
+    );
 }

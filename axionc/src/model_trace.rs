@@ -180,7 +180,11 @@ impl Tr<'_> {
                 self.next = saved_next;
                 let ae = self.tr_term(ee)?;
                 self.ids = saved;
-                Ok(MExpr::Brn(Box::new(at), Box::new(ae), Box::new(MExpr::Done)))
+                Ok(MExpr::Brn(
+                    Box::new(at),
+                    Box::new(ae),
+                    Box::new(MExpr::Done),
+                ))
             }
             // A tail `case` with only NON-EXTRACTING patterns (`Int`/wildcard — bind no heap
             // pattern variable) is pure scalar/tag dispatch: desugar to a right-nested `brn` over
@@ -225,7 +229,11 @@ fn nest_arms(arms: Vec<MExpr>) -> MExpr {
             if rest.is_empty() {
                 first
             } else {
-                MExpr::Brn(Box::new(first), Box::new(nest_arms(rest)), Box::new(MExpr::Done))
+                MExpr::Brn(
+                    Box::new(first),
+                    Box::new(nest_arms(rest)),
+                    Box::new(MExpr::Done),
+                )
             }
         }
     }

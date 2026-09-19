@@ -434,7 +434,9 @@ fn compute_summaries(
                 track_fields: false,
                 poly_elem: false,
             };
-            let rv = run_fn(f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, pure_mode, None);
+            let rv = run_fn(
+                f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, pure_mode, None,
+            );
             let pure_borrowed = params_borrowed(&rv, f);
             let params = if rv.owned {
                 HashSet::new()
@@ -454,7 +456,9 @@ fn compute_summaries(
                 track_fields: true,
                 poly_elem: true,
             };
-            let rve = run_fn(f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, elem_mode, None);
+            let rve = run_fn(
+                f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, elem_mode, None,
+            );
             let elem_params: HashSet<usize> = params_borrowed(&rve, f)
                 .difference(&pure_borrowed)
                 .copied()
@@ -524,7 +528,11 @@ fn run_fn(
             // (from the signature) so a `case` on a borrowed `List String` param resolves its
             // extracted elements to their concrete type — the poly-erasure fix (`field_tagged_key`
             // needs the scrutinee key; a borrowed param has none from `owned_drop_ty`).
-            let key = param_keys.get(&f.name).and_then(|ks| ks.get(i)).cloned().flatten();
+            let key = param_keys
+                .get(&f.name)
+                .and_then(|ks| ks.get(i))
+                .cloned()
+                .flatten();
             st.insert(
                 p.clone(),
                 Val {
@@ -679,10 +687,7 @@ impl Verifier<'_> {
                                 _ => None,
                             })
                             .filter(|v| {
-                                crate::core::term_mentions_any(
-                                    body,
-                                    &HashSet::from([v.clone()]),
-                                )
+                                crate::core::term_mentions_any(body, &HashSet::from([v.clone()]))
                             })
                             .collect();
                         if !alias.is_empty() {
@@ -949,7 +954,10 @@ impl Verifier<'_> {
         // function) still EMBEDS its borrowed operands — keep the inherited borrows so the
         // element-alias summary sees the share (`take` returns a list embedding a borrowed
         // element). Not owned here (unknown key); the concrete call site supplies ownership.
-        if self.mode.poly_elem && !inherited.is_empty() && matches!(op, Op::MakeCon { .. } | Op::MakeTuple(_)) {
+        if self.mode.poly_elem
+            && !inherited.is_empty()
+            && matches!(op, Op::MakeCon { .. } | Op::MakeTuple(_))
+        {
             return Val {
                 owned: false,
                 borrows: inherited,

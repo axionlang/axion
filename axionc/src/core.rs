@@ -5178,7 +5178,11 @@ fn copier_body(
             );
             chain = Term::Let(
                 cmp,
-                Rhs::Op(Op::Prim("==".into(), Atom::Var("_tag".into()), Atom::Int(*tag))),
+                Rhs::Op(Op::Prim(
+                    "==".into(),
+                    Atom::Var("_tag".into()),
+                    Atom::Int(*tag),
+                )),
                 NO_SPAN,
                 Box::new(ifstep),
             );
@@ -5206,12 +5210,19 @@ fn copier_body(
         let bit = fresh_dd(ctr);
         Term::Let(
             bit.clone(),
-            Rhs::Op(Op::Prim("band".into(), Atom::Var(p.to_string()), Atom::Int(1))),
+            Rhs::Op(Op::Prim(
+                "band".into(),
+                Atom::Var(p.to_string()),
+                Atom::Int(1),
+            )),
             NO_SPAN,
             Box::new(Term::Ret(
                 Rhs::If(
                     Atom::Var(bit),
-                    Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(p.to_string()))), NO_SPAN)),
+                    Box::new(Term::Ret(
+                        Rhs::Op(Op::Atom(Atom::Var(p.to_string()))),
+                        NO_SPAN,
+                    )),
                     Box::new(alloc_and_fix),
                 ),
                 NO_SPAN,
@@ -5226,7 +5237,13 @@ fn copier_body(
 /// corresponding slot read from `p` (the original): `Deep` → `axion_copy_<name>`, `Flat`
 /// → `axion_block_copy` (a pointerless payload), `Str` → `strAppend x ""`, `Bignum` →
 /// `axion_bignum_copy`. See [`copier_body`].
-fn emit_field_copies(slots: &[(i32, DropWay)], p: &str, q: &str, ctr: &mut u32, cont: Term) -> Term {
+fn emit_field_copies(
+    slots: &[(i32, DropWay)],
+    p: &str,
+    q: &str,
+    ctr: &mut u32,
+    cont: Term,
+) -> Term {
     let mut term = cont;
     for (off, way) in slots.iter().rev() {
         let child = fresh_dd(ctr);
@@ -5264,7 +5281,11 @@ fn emit_field_copies(slots: &[(i32, DropWay)], p: &str, q: &str, ctr: &mut u32, 
                 NO_SPAN,
                 Box::new(Term::Let(
                     fresh_dd(ctr),
-                    Rhs::Op(Op::StoreRaw(Atom::Var(q.to_string()), *off, Atom::Var(fresh))),
+                    Rhs::Op(Op::StoreRaw(
+                        Atom::Var(q.to_string()),
+                        *off,
+                        Atom::Var(fresh),
+                    )),
                     NO_SPAN,
                     Box::new(term),
                 )),
@@ -8642,22 +8663,26 @@ impl Elab<'_> {
                     if let (true, CPat::Tuple(subs)) = (deep_safe, &pat) {
                         self.dty(s)
                             .and_then(|key| {
-                                self.recinfo.tuple_elem_drops(&key, subs.len()).map(|elems| {
-                                    let skip: Vec<usize> = subs
-                                        .iter()
-                                        .enumerate()
-                                        .filter_map(|(i, sp)| match sp {
-                                            CPat::Var(n)
-                                                if elems.get(i).is_some_and(Option::is_some)
-                                                    && body_moves_var(n, &b, self.ba) =>
-                                            {
-                                                Some(i)
-                                            }
-                                            _ => None,
-                                        })
-                                        .collect();
-                                    (key, subs.len(), skip)
-                                })
+                                self.recinfo
+                                    .tuple_elem_drops(&key, subs.len())
+                                    .map(|elems| {
+                                        let skip: Vec<usize> = subs
+                                            .iter()
+                                            .enumerate()
+                                            .filter_map(|(i, sp)| match sp {
+                                                CPat::Var(n)
+                                                    if elems
+                                                        .get(i)
+                                                        .is_some_and(Option::is_some)
+                                                        && body_moves_var(n, &b, self.ba) =>
+                                                {
+                                                    Some(i)
+                                                }
+                                                _ => None,
+                                            })
+                                            .collect();
+                                        (key, subs.len(), skip)
+                                    })
                             })
                             .filter(|(_, _, skip)| !skip.is_empty())
                     } else {
@@ -8685,8 +8710,7 @@ impl Elab<'_> {
                     }
                     self.collect_payload_aliases(&b, &mut alias);
                     b = self.place_deep_drop_skip(b, s, &Some(key), &alias, &skip);
-                } else if let (false, CPat::Tuple(subs), Some(key)) =
-                    (deep_safe, &pat, self.dty(s))
+                } else if let (false, CPat::Tuple(subs), Some(key)) = (deep_safe, &pat, self.dty(s))
                 {
                     // A `%1`-consumed TUPLE whose arm result IS heap: a field escaped into the
                     // result, so a whole-tuple deep-drop would double-free it. Reclaim via a

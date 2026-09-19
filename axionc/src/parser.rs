@@ -274,7 +274,7 @@ fn context_constraints(t: &Type) -> Vec<(String, String)> {
 /// A statement of a `do` block.
 enum Stmt {
     Bind(BindKind, Pat, Expr), // `pat <- e` / `<-?` / `<-!` (var ou tuplo)
-    Expr(Expr),                     // `e`
+    Expr(Expr),                // `e`
 }
 
 impl<'a> Parser<'a> {

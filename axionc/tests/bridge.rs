@@ -173,5 +173,8 @@ fn lean_model_and_verifier_agree_on_every_canonical_shape() {
         "Lean model and verifier disagree:\n{}",
         disagreements.join("\n")
     );
-    assert!(agreed >= 8, "expected all canonical shapes to be checked, got {agreed}");
+    assert!(
+        agreed >= 8,
+        "expected all canonical shapes to be checked, got {agreed}"
+    );
 }

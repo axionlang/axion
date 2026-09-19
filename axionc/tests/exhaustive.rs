@@ -168,7 +168,10 @@ fn verifier_accept_is_sanitizer_sound_over_the_bounded_family() {
 
     // Sanity: the family is non-trivial and exercised BOTH sides of the decision boundary.
     assert_eq!(accepted + rejected, total);
-    assert!(accepted > 0 && rejected > 0, "family must span accept AND reject: {accepted} acc / {rejected} rej");
+    assert!(
+        accepted > 0 && rejected > 0,
+        "family must span accept AND reject: {accepted} acc / {rejected} rej"
+    );
     if have_clang {
         assert_eq!(
             sanitized, accepted,

@@ -42,10 +42,19 @@ fn certified_build_mode_enforces_verification() {
     // 1. A clean native build is certified: it succeeds, runs, and STAMPS the status to
     //    stderr (stdout stays the program's own output).
     let ok = axionc()
-        .args(["--certified", "--backend", "cranelift", &fixture("heap_loop.axi")])
+        .args([
+            "--certified",
+            "--backend",
+            "cranelift",
+            &fixture("heap_loop.axi"),
+        ])
         .output()
         .unwrap();
-    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&ok.stdout), "90300\n");
     assert!(
         String::from_utf8_lossy(&ok.stderr).contains("CERTIFIED"),
@@ -73,7 +82,11 @@ fn certified_build_mode_enforces_verification() {
         .args(["--certified", &fixture("heap_loop.axi")])
         .output()
         .unwrap();
-    assert_eq!(interp.status.code(), Some(2), "--certified interp must be refused");
+    assert_eq!(
+        interp.status.code(),
+        Some(2),
+        "--certified interp must be refused"
+    );
 
     // 4. A program the verifier REJECTS cannot be certified: the build fails (AX0912
     //    here) and is NOT stamped. The whole point — a certified artifact provably went
@@ -87,10 +100,19 @@ fn certified_build_mode_enforces_verification() {
         ])
         .output()
         .unwrap();
-    assert!(!bad.status.success(), "a gate-rejected program must not certify");
+    assert!(
+        !bad.status.success(),
+        "a gate-rejected program must not certify"
+    );
     let bad_err = String::from_utf8_lossy(&bad.stderr);
-    assert!(bad_err.contains("AX0912"), "expected the rejection diagnostic: {bad_err}");
-    assert!(!bad_err.contains("CERTIFIED"), "a rejected build must NOT be stamped: {bad_err}");
+    assert!(
+        bad_err.contains("AX0912"),
+        "expected the rejection diagnostic: {bad_err}"
+    );
+    assert!(
+        !bad_err.contains("CERTIFIED"),
+        "a rejected build must NOT be stamped: {bad_err}"
+    );
 }
 
 #[test]
@@ -1041,7 +1063,11 @@ fn structural_borrowers_over_heap_reclaim_on_all_backends() {
             "structural borrowers over heap should run ({backend:?}): {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nc\n2\n1\n", "{backend:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "a\nc\n2\n1\n",
+            "{backend:?}"
+        );
     }
 }
 
@@ -1282,7 +1308,11 @@ fn mixed_conditional_param_return_reclaims_on_all_backends() {
             "container conditional param-return should run ({backend:?}): {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n42\n", "{backend:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "12\n42\n",
+            "{backend:?}"
+        );
     }
 }
 
@@ -1306,7 +1336,11 @@ fn borrowed_list_element_consumer_runs_on_all_backends() {
             "borrowed-list-element consumer should run ({backend:?}): {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "xyxyxy\n", "{backend:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "xyxyxy\n",
+            "{backend:?}"
+        );
     }
 }
 

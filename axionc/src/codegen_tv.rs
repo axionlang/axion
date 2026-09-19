@@ -50,7 +50,11 @@ fn op_free_token(op: &Op) -> Option<String> {
 
 /// The reclamation runtime function a `Term::Drop(ty, skip)` lowers to — the exact 4-way
 /// classification `llvm.rs` uses, re-derived here independently as the SPEC.
-fn classify(ty: Option<&str>, skip: &[usize], drop_keys: &std::collections::HashSet<String>) -> String {
+fn classify(
+    ty: Option<&str>,
+    skip: &[usize],
+    drop_keys: &std::collections::HashSet<String>,
+) -> String {
     match ty {
         Some("String") => "axion_str_drop".to_string(),
         Some("Integer") => "axion_bignum_free".to_string(),
@@ -304,7 +308,10 @@ pub fn check_clif(
     fn_names: &HashMap<u32, String>,
     reclaim_callees: &HashMap<u32, String>,
 ) -> Vec<TvFinding> {
-    diff(&expected(lowered), &observed_clif(clif, fn_names, reclaim_callees))
+    diff(
+        &expected(lowered),
+        &observed_clif(clif, fn_names, reclaim_callees),
+    )
 }
 
 /// Human-readable report for `--emit codegen-tv`.
@@ -458,7 +465,10 @@ mod tests {
         let ir_leak = "define i64 @\"ax_axion_drop_Foo\"(i64 %_p) {\nentry:\n  ret i64 0\n}\n";
         let f = check(&lo, ir_leak);
         assert_eq!(f.len(), 1);
-        assert_eq!((f[0].kind.as_str(), f[0].expected, f[0].observed), ("axion_free", 1, 0));
+        assert_eq!(
+            (f[0].kind.as_str(), f[0].expected, f[0].observed),
+            ("axion_free", 1, 0)
+        );
     }
 
     // --- CLIF observer (the Cranelift `--dev` path) ---
@@ -495,7 +505,10 @@ mod tests {
         let (fnn, rc) = clif_maps();
         let f = check_clif(&lo, &clif_with_frees(0), &fnn, &rc);
         assert_eq!(f.len(), 1);
-        assert_eq!((f[0].kind.as_str(), f[0].expected, f[0].observed), ("axion_free", 1, 0));
+        assert_eq!(
+            (f[0].kind.as_str(), f[0].expected, f[0].observed),
+            ("axion_free", 1, 0)
+        );
     }
 
     #[test]
@@ -528,7 +541,10 @@ mod tests {
         });
         // CLIF: myfn (100) calls the destructor (index 7) once; destructor body (u0:7) is empty.
         let clif = "function u0:100(i64) -> i64 system_v {\n    sig0 = (i64) -> i64 system_v\n    fn0 = colocated u0:7 sig0\nblock0(v0: i64):\n    v1 = call fn0(v0)\n    v2 = iconst.i64 0\n    return v2\n}\nfunction u0:7(i64) -> i64 system_v {\nblock0(v0: i64):\n    return v0\n}\n";
-        let fnn = HashMap::from([(100u32, "myfn".to_string()), (7u32, "axion_drop_Foo".to_string())]);
+        let fnn = HashMap::from([
+            (100u32, "myfn".to_string()),
+            (7u32, "axion_drop_Foo".to_string()),
+        ]);
         let rc = HashMap::from([(7u32, "ax_axion_drop_Foo".to_string())]);
         assert!(
             check_clif(&lo, clif, &fnn, &rc).is_empty(),
@@ -544,7 +560,7 @@ mod tests {
             *ty = Some("String".into()); // Core expects axion_str_drop
         }
         let f = check(&lo, &ir_with_frees(1)); // IR emits axion_free
-        // one missing str_drop + one spurious free
+                                               // one missing str_drop + one spurious free
         assert_eq!(f.len(), 2);
     }
 }

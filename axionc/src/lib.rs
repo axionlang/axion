@@ -44,11 +44,11 @@ mod bigint;
 mod check;
 #[cfg(feature = "native")]
 mod codegen;
+mod codegen_tv;
 mod core;
 mod delta;
-mod verify;
 mod model_trace;
-mod codegen_tv;
+mod verify;
 // `Diagnostic` is re-exported (public API of the engine); its fields carry inline
 // comments rather than rustdoc, and its builder methods are used fluently, so waive
 // the doc / must-use requirements that only apply now that it is public.
@@ -550,7 +550,10 @@ pub fn run_cli() -> ExitCode {
                 .join(",");
             println!("{f}: {{{list}}}");
         }
-        println!("ret-alias: {} function(s) may return a parameter", rows.len());
+        println!(
+            "ret-alias: {} function(s) may return a parameter",
+            rows.len()
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -2807,9 +2810,7 @@ fn extracted_element_is_tuple(ty: &ast::Type) -> bool {
         return false;
     };
     // peel shape `(a, List a)`: the element is `cs[0]`, the `List` sibling is structural.
-    if cs.len() == 2
-        && matches!(&cs[1], ast::Type::App(f, _) if f.head_con() == Some("List"))
-    {
+    if cs.len() == 2 && matches!(&cs[1], ast::Type::App(f, _) if f.head_con() == Some("List")) {
         return matches!(cs[0], ast::Type::Tuple(_));
     }
     // a plain tuple element (`take`/`head`/… over `List (x,y)` → `List (x,y)` / `Maybe (x,y)`).
@@ -2869,7 +2870,6 @@ fn heap_alias_violations(
     }
     out
 }
-
 
 /// `true` if `ty` is a bare SCALAR primitive (`Int`/`Float`/`Bool`/`Char`) — an unboxed
 /// immediate that is COPYABLE and needs no reclamation, so it is never `%1`. Distinct from a
@@ -3515,10 +3515,13 @@ fn desugar_strpat_in_expr(e: &mut ast::Expr, diags: &mut Diagnostics) {
             }
         }
         Tuple(es, _) => es.iter_mut().for_each(|x| desugar_strpat_in_expr(x, diags)),
-        RecordCon(_, fs, _) => fs.iter_mut().for_each(|(_, x)| desugar_strpat_in_expr(x, diags)),
+        RecordCon(_, fs, _) => fs
+            .iter_mut()
+            .for_each(|(_, x)| desugar_strpat_in_expr(x, diags)),
         RecordUpd(base, fs, _) => {
             desugar_strpat_in_expr(base, diags);
-            fs.iter_mut().for_each(|(_, x)| desugar_strpat_in_expr(x, diags));
+            fs.iter_mut()
+                .for_each(|(_, x)| desugar_strpat_in_expr(x, diags));
         }
         Lam(_, body, _) => desugar_strpat_in_expr(body, diags),
     }
@@ -3570,7 +3573,11 @@ fn report_strpat_error(diags: &mut Diagnostics, sp: ast::Span, _malformed: bool)
             "a `case` with string-literal patterns must be `\"lit\" -> …` arms \
              followed by exactly one catch-all (`_` or a variable)",
         )
-        .label(sp.0, sp.1, "string patterns are never exhaustive on their own"),
+        .label(
+            sp.0,
+            sp.1,
+            "string patterns are never exhaustive on their own",
+        ),
     );
 }
 

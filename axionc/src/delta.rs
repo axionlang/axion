@@ -604,7 +604,10 @@ pub fn check_drop_coherence(
 ) -> Vec<DeltaErr> {
     let mut out = Vec::new();
     for f in fns {
-        if f.name.starts_with("sess$") || f.name.ends_with("$step") || f.name.starts_with("axion_copy_") {
+        if f.name.starts_with("sess$")
+            || f.name.ends_with("$step")
+            || f.name.starts_with("axion_copy_")
+        {
             continue;
         }
         let (never_used, used) = drop_sets(drops, &f.name);
@@ -662,7 +665,10 @@ pub fn check_drop_coherence(
 pub fn dump_annotated(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &RecordInfo) -> String {
     let mut out = String::new();
     for f in fns {
-        if f.name.starts_with("sess$") || f.name.ends_with("$step") || f.name.starts_with("axion_copy_") {
+        if f.name.starts_with("sess$")
+            || f.name.ends_with("$step")
+            || f.name.starts_with("axion_copy_")
+        {
             continue;
         }
         let hdr = if f.is_closure {
@@ -763,7 +769,10 @@ pub fn dump_delta(
     let mut coh_total = 0usize;
     let mut coh_ok = 0usize;
     for f in fns {
-        if f.name.starts_with("sess$") || f.name.ends_with("$step") || f.name.starts_with("axion_copy_") {
+        if f.name.starts_with("sess$")
+            || f.name.ends_with("$step")
+            || f.name.starts_with("axion_copy_")
+        {
             n_skipped += 1;
             continue;
         }
