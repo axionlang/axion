@@ -16,10 +16,15 @@
 //! AGREE with the real verifier on every in-fragment function — the whole-fragment upgrade over the
 //! 8 curated shapes.
 //!
+//! An OWNED-scrutinee heap-extracting `case` IS in-fragment: `verify.rs::bind_pattern` transfers each
+//! CONCRETE-heap field OUT as a fresh owned resource, modeled here as an `alloc` per extracted field
+//! (the arm then drops/moves it). A BORROWED-scrutinee peel (interior-alias fields → `bref`) is NOT —
+//! it needs `AxionExtract`.
+//!
 //! SOUNDNESS OF THE BRIDGE rests on the fragment classification being HONEST: the translator is
-//! CONSERVATIVE — any construct outside the alloc/use/drop/moveOut vocabulary (a `case`/extraction, a closure,
-//! an interior-`Field` alias, an array/arena/session op, a record update, a borrowed heap param, or
-//! a conditional bound in a `let`) makes the function OUT of fragment (skipped and counted), never
+//! CONSERVATIVE — any construct outside its vocabulary (a borrowed-scrutinee `case`, a closure, an
+//! interior-`Field` alias, an array/arena/session op, a record update, a borrowed-param escape, or a
+//! conditional/case bound in a `let`) makes the function OUT of fragment (skipped and counted), never
 //! mistranslated. A shrinking in-model fraction is a visible finding, not a silent pass.
 
 use crate::core::{Atom, BorrowArgs, CPat, CoreFn, Lowered, Op, RecordInfo, Rhs, Term};
@@ -49,7 +54,6 @@ fn is_generated(name: &str) -> bool {
 
 struct Tr<'a> {
     ba: &'a BorrowArgs,
-    #[allow(dead_code)]
     recinfo: &'a RecordInfo,
     /// heap variables currently tracked → their model cell id.
     ids: HashMap<String, u32>,
@@ -186,25 +190,74 @@ impl Tr<'_> {
                     Box::new(MExpr::Done),
                 ))
             }
-            // A tail `case` with only NON-EXTRACTING patterns (`Int`/wildcard — bind no heap
-            // pattern variable) is pure scalar/tag dispatch: desugar to a right-nested `brn` over
-            // the arms (each arm runs from the same incoming state; all arms must reach the same
-            // owned-set, which nested `brn` enforces). A `Con`/`Var`/`Tuple` pattern binds vars that
-            // may be heap payloads extracted from the scrutinee (owned move OR borrowed alias — the
-            // AxionKey/AxionAlias territory), so it stays out of this fragment.
-            Term::Ret(Rhs::Case(_, arms), _) => {
-                if !arms.iter().all(|(p, _)| is_trivial_pat(p)) {
-                    return Err("case (heap extraction)");
+            // A tail `case`. Two in-fragment sub-cases:
+            //   (1) all arms NON-EXTRACTING (`Int`/wildcard): pure scalar/tag dispatch → right-nested
+            //       `brn` (all arms must reach the same owned-set — the N-way `merge_vals`).
+            //   (2) OWNED-scrutinee heap extraction (`case xs of Cons y ys -> …`, `xs` an owned/`%1`
+            //       heap value): per `verify.rs::bind_pattern`, each CONCRETE-heap field transfers OUT
+            //       as a fresh OWNED resource (a child of the scrutinee) — modeled as `alloc`; the arm
+            //       then drops/moves each child and drops the scrutinee shell, exactly balancing.
+            //       POLYMORPHIC fields (bare type var, no concrete drop slot) are leak-exempt and left
+            //       untracked (matching the verifier). A BORROWED-scrutinee peel makes the fields
+            //       interior aliases (`bref`) — that needs `AxionExtract` and stays out of THIS
+            //       (AxionDrop owned-set) fragment.
+            Term::Ret(Rhs::Case(scrut, arms), _) => {
+                if arms.iter().all(|(p, _)| is_trivial_pat(p)) {
+                    let saved = self.ids.clone();
+                    let saved_next = self.next;
+                    let mut arm_exprs = Vec::new();
+                    for (i, (_, body)) in arms.iter().enumerate() {
+                        if i > 0 {
+                            self.ids = saved.clone();
+                            self.next = saved_next;
+                        }
+                        arm_exprs.push(self.tr_term(body)?);
+                    }
+                    self.ids = saved;
+                    return Ok(nest_arms(arm_exprs));
+                }
+                // (2) heap extraction — require an OWNED tracked heap scrutinee.
+                let sid = match scrut {
+                    Atom::Var(s) => *self
+                        .ids
+                        .get(s)
+                        .ok_or("case scrutinee not an owned heap value")?,
+                    _ => return Err("case scrutinee not a var"),
+                };
+                if self.borrowed.contains(&sid) {
+                    return Err("borrowed-scrutinee extraction");
                 }
                 let saved = self.ids.clone();
                 let saved_next = self.next;
                 let mut arm_exprs = Vec::new();
-                for (i, (_, body)) in arms.iter().enumerate() {
+                for (i, (pat, body)) in arms.iter().enumerate() {
                     if i > 0 {
                         self.ids = saved.clone();
                         self.next = saved_next;
                     }
-                    arm_exprs.push(self.tr_term(body)?);
+                    // Introduce each CONCRETE-heap extracted field as a fresh owned resource (the arm
+                    // body's own drop/move reclaims it; the scrutinee shell is dropped there too).
+                    let mut pre = Vec::new();
+                    match pat {
+                        CPat::Int(_) | CPat::Wild => {}
+                        CPat::Con(con, subs) => {
+                            for (fi, sub) in subs.iter().enumerate() {
+                                match sub {
+                                    CPat::Var(v) if self.recinfo.field_is_heap(con, fi) => {
+                                        let id = self.fresh();
+                                        self.ids.insert(v.clone(), id);
+                                        pre.push(MOp::Alloc(id));
+                                    }
+                                    // poly (no concrete slot) or scalar field: untracked, like the verifier.
+                                    CPat::Var(_) | CPat::Wild | CPat::Int(_) => {}
+                                    _ => return Err("nested extraction pattern"),
+                                }
+                            }
+                        }
+                        _ => return Err("case extraction pattern"),
+                    }
+                    let arm_body = self.tr_term(body)?;
+                    arm_exprs.push(prepend(pre, arm_body));
                 }
                 self.ids = saved;
                 Ok(nest_arms(arm_exprs))
