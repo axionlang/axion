@@ -43,16 +43,22 @@ main = bound $ acceptLoop (netListen 8080)     -- acceptLoop: accept (yields) �
 
 ## Stages (each independently verifiable; mirrors the C→Rust port's staging)
 
-- **Stage 0 — non-blocking net ops (runtime).** In `axion-rt`: set accepted/connected sockets
-  `O_NONBLOCK`; `ax_net_recv`/`accept`/`send` return a distinguished **EWOULDBLOCK sentinel** instead
-  of blocking. Verify with a hand-driven non-blocking loopback echo (Rust unit test in the crate).
-- **Stage 1 — scheduler fd-park + poll (runtime).** Extend the scheduler `Inner`: a parked-fd map
-  (worker → fd + interest). New step outcome "blocked-on-fd(fd)". When `ready` is empty and workers
-  are fd-parked (and none channel-blocked), `poll`/`epoll` the fd set (real readiness wait, replacing
-  the deadlock exit for that case) and re-ready the ready workers. Keep channel-blocked (gen/send)
-  wakeups separate. Support a **never-completing nursery** (an infinite acceptor): the budget /
-  "no-progress = deadlock" checks must not false-fire while workers are legitimately fd-parked.
-  Re-validate with **TSan** (the scheduler is the concurrency TCB).
+- **Stage 0 — non-blocking net ops (runtime). ✅ DONE.** `axion-rt` gained `ax_net_set_nonblocking`
+  + `ax_net_wouldblock()` (the `i64::MIN` sentinel); `ax_net_accept`/`recv`/`send` return the
+  sentinel on `EAGAIN`/`EWOULDBLOCK` instead of blocking (harmless for blocking fds — they never hit
+  it, so the sequential server is unchanged), and `recv` keeps `""` (orderly close) distinct from the
+  sentinel. Verified by `axionc/tests/net_nonblocking.rs` (hand-driven non-blocking loopback echo).
+- **Stage 1 — scheduler fd-park + poll (runtime). ✅ DONE.** The scheduler `Inner` gained `fd_parked`
+  + `polling`; a step that gets the sentinel calls `axion_sess_park_fd(sched, fd, want_write)` (stashed
+  thread-locally, since steps run lock-free) and returns 0, and the worker routes it to `fd_parked`
+  instead of the channel-`blocked` list. When nothing is runnable and only fd-parked tasks remain,
+  one worker `poll`s the fd set (200 ms timeout) and re-readies the ready ones; deadlock is declared
+  ONLY when channel-blocked tasks remain with **no** fd-parked tasks (so an acceptor waiting on the
+  network never false-trips it). Race-free by construction: `fd_parked`/`polling` are touched only
+  under the existing mutex, `poll` runs on an owned snapshot, `PARK_FD` is per-thread. Verified by
+  `axionc/tests/sched_fd_park.rs` (a reader parks on a socket, `poll` wakes it on a background send).
+  Whole-corpus TSan/ASan re-validated by CI's sanitize gates. *(Residual: the step budget still
+  counts down over a server's lifetime — fine for the flagship, noted for production.)*
 - **Stage 2 — `Sock`/`Listener` linear types + async op builtins (front-end).** `infer.rs` types,
   `check.rs` linearity (threaded `%1`, Auto-Drop close), prelude declarations for
   `netListen`/`netAccept`/`netRecv`/`netSend`/`netClose`. Interp implementations first (POSIX

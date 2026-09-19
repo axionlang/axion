@@ -676,12 +676,23 @@ struct SessTask {
     step: SessStep,
     state: i64,
 }
+/// A task parked on a socket fd (async sockets, Stage 1): it returned 0 (blocked) after a
+/// non-blocking net op yielded the would-block sentinel, and registered its fd via
+/// `axion_sess_park_fd`. The scheduler `poll`s these fds and re-readies the ready ones — a wakeup
+/// source SEPARATE from channel sends (which drive the `blocked` list).
+struct FdPark {
+    task: usize,
+    fd: i32,
+    want_write: bool,
+}
 struct Inner {
     eps: Vec<SessEp>,
     peer: Vec<usize>,
     tasks: Vec<SessTask>,
     ready: VecDeque<usize>,
     blocked: Vec<usize>,
+    fd_parked: Vec<FdPark>, // tasks waiting on socket readiness (poll), not on a channel send
+    polling: bool,          // one worker owns the poll() at a time
     running: i64,
     gen: u64,
     allocs: Vec<i64>, // task-state blocks, freed in bulk at run end
@@ -693,6 +704,13 @@ struct Inner {
 }
 struct Sched {
     m: Mutex<Inner>,
+}
+
+// A step runs WITHOUT the scheduler lock, so it can't touch `Inner` directly. When it decides to
+// park on a socket fd it stashes (fd, want_write) in this thread-local; the same worker thread
+// consumes it right after `step` returns (see `sess_worker`). Thread-local ⇒ no cross-worker race.
+thread_local! {
+    static PARK_FD: std::cell::Cell<Option<(i32, bool)>> = const { std::cell::Cell::new(None) };
 }
 
 // panic=abort in this crate ⇒ a mutex can never be poisoned; recover the guard regardless.
@@ -714,6 +732,8 @@ pub extern "C" fn axion_sess_new() -> i64 {
             tasks: Vec::new(),
             ready: VecDeque::new(),
             blocked: Vec::new(),
+            fd_parked: Vec::new(),
+            polling: false,
             running: 0,
             gen: 0,
             allocs: Vec::new(),
@@ -769,6 +789,17 @@ pub unsafe extern "C" fn axion_sess_recv(sched_p: i64, ep: i64) -> i64 {
     g.eps[ep as usize].q.pop_front().unwrap_or(0)
 }
 
+/// Register that the CURRENT step is parking on a socket fd (async sockets, Stage 1): after a
+/// non-blocking net op returned [`AX_NET_WOULDBLOCK`], the step calls this and then returns 0
+/// (blocked). The scheduler routes it to the fd-poll wakeup path instead of the channel path.
+/// `want_write != 0` polls for writability (a would-block `send`); otherwise readability.
+/// `sched_p` is unused (the record is stashed thread-locally until the worker re-locks) but kept
+/// in the signature so the compiler lowers it like the other `axion_sess_*` ops.
+#[no_mangle]
+pub extern "C" fn axion_sess_park_fd(_sched_p: i64, fd: i64, want_write: i64) {
+    PARK_FD.with(|p| p.set(Some((fd as i32, want_write != 0))));
+}
+
 /// A zeroed task-state block owned by the scheduler (freed in bulk at run end).
 #[no_mangle]
 pub unsafe extern "C" fn axion_sess_alloc(sched_p: i64, nbytes: i64) -> i64 {
@@ -791,6 +822,33 @@ pub unsafe extern "C" fn axion_sess_spawn(sched_p: i64, step: i64, state: i64) {
     g.ready.push_back(i);
 }
 
+/// `poll()` the given (task, fd, want_write) set with a short timeout; return the tasks whose fd is
+/// ready (readable/writable, or hung-up/errored — `revents != 0`). Runs WITHOUT the scheduler lock.
+fn poll_fds(watch: &[(usize, i32, bool)]) -> Vec<usize> {
+    if watch.is_empty() {
+        return Vec::new();
+    }
+    let mut pfds: Vec<libc::pollfd> = watch
+        .iter()
+        .map(|&(_, fd, ww)| libc::pollfd {
+            fd,
+            events: if ww { libc::POLLOUT } else { libc::POLLIN },
+            revents: 0,
+        })
+        .collect();
+    // 200 ms timeout so the poller periodically returns to re-check `done` / new parks.
+    let n = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, 200) };
+    let mut woken = Vec::new();
+    if n > 0 {
+        for (idx, pfd) in pfds.iter().enumerate() {
+            if pfd.revents != 0 {
+                woken.push(watch[idx].0);
+            }
+        }
+    }
+    woken
+}
+
 /// One worker: pull a ready task, run its step WITHOUT the lock, then mark done / re-park.
 unsafe fn sess_worker(sched_p: i64) {
     let s = sched(sched_p);
@@ -801,14 +859,46 @@ unsafe fn sess_worker(sched_p: i64) {
                 return;
             }
             if g.ready.is_empty() {
-                // nothing runnable: if nothing is running and tasks are parked, deadlock (types forbid).
-                let stuck = g.running == 0 && !g.blocked.is_empty();
-                drop(g);
-                if stuck {
+                // Real deadlock ONLY when channel-blocked tasks remain with nothing running AND no
+                // task waiting on a socket: those sends will never come (types forbid this). If any
+                // task is fd-parked, the network can still wake us — poll instead of giving up.
+                if g.running == 0 && !g.blocked.is_empty() && g.fd_parked.is_empty() {
+                    drop(g);
                     eprintln!("session scheduler: no progress (deadlock)");
                     std::process::exit(1);
                 }
-                std::thread::yield_now();
+                // Quiescent with tasks waiting on sockets: one worker polls for readiness and
+                // re-readies the ready tasks (async sockets, Stage 1).
+                if g.running == 0 && !g.fd_parked.is_empty() && !g.polling {
+                    g.polling = true;
+                    let mut watch: Vec<(usize, i32, bool)> = Vec::with_capacity(g.fd_parked.len());
+                    for f in &g.fd_parked {
+                        watch.push((f.task, f.fd, f.want_write));
+                    }
+                    drop(g);
+                    let woken = poll_fds(&watch);
+                    let mut g = lock(s);
+                    g.polling = false;
+                    let mut k = 0;
+                    while k < g.fd_parked.len() {
+                        if woken.contains(&g.fd_parked[k].task) {
+                            let f = g.fd_parked.swap_remove(k);
+                            g.ready.push_back(f.task);
+                        } else {
+                            k += 1;
+                        }
+                    }
+                    continue;
+                }
+                // Another worker is polling, or steps are still running: back off without pegging a
+                // core (a network-idle server otherwise spins).
+                let idle = g.polling || !g.fd_parked.is_empty();
+                drop(g);
+                if idle {
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                } else {
+                    std::thread::yield_now();
+                }
                 continue;
             }
             g.budget -= 1;
@@ -823,6 +913,7 @@ unsafe fn sess_worker(sched_p: i64) {
         };
 
         let fin = step(sched_p, st); // runs WITHOUT the lock (parallel)
+        let park = PARK_FD.with(|p| p.take()); // consume any fd-park the step registered
 
         let mut g = lock(s);
         g.running -= 1;
@@ -840,6 +931,10 @@ unsafe fn sess_worker(sched_p: i64) {
             // 2: the task looped (recursion) → re-run. Also the lost-wakeup guard: a send during
             // this step → re-run, don't park.
             g.ready.push_back(i);
+        } else if let Some((fd, want_write)) = park {
+            // Blocked on a socket: wait for fd readiness (poll), not a channel send.
+            let entry = FdPark { task: i, fd, want_write };
+            g.fd_parked.push(entry);
         } else {
             g.blocked.push(i);
         }
@@ -1874,6 +1969,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_sess_alloc", axion_sess_alloc as *const u8),
         ("axion_sess_channel", axion_sess_channel as *const u8),
         ("axion_sess_new", axion_sess_new as *const u8),
+        ("axion_sess_park_fd", axion_sess_park_fd as *const u8),
         ("axion_sess_pending", axion_sess_pending as *const u8),
         ("axion_sess_recv", axion_sess_recv as *const u8),
         ("axion_sess_run", axion_sess_run as *const u8),
