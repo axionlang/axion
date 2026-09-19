@@ -195,7 +195,7 @@ showEntry :: Bool -> Int -> String -> IO ()
 showEntry showAll ln name
   | strLen name > 0   = showFound showAll ln name
   | hasCmd "fzf" == 0 = showFound showAll ln fzfPick
-  | otherwise         = die "Usage: pass show [-c[n]|-s] <name>"
+  | otherwise         = die "Usage: axpass show [-c[n]|-s] <name>"
 
 showFound :: Bool -> Int -> String -> IO ()
 showFound showAll ln name
@@ -311,7 +311,7 @@ doLs sub
 -- `pass find <term>`: list entry names whose path matches <term> (case-insensitive).
 doFind :: String -> IO ()
 doFind term
-  | strLen term == 0 = die "Usage: pass find <term>"
+  | strLen term == 0 = die "Usage: axpass find <term>"
   | otherwise        = putStr (runCapture ("cd " ++ shQuote storeDir ++ " 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sed 's#^\\./##;s#\\.gpg$##' | sort | grep -i -- " ++ shQuote term))
 
 -- `pass grep <search>`: decrypt every entry and print those whose CONTENT matches
@@ -319,7 +319,7 @@ doFind term
 -- writes plaintext to a pipe grep reads — it never touches disk.
 doGrep :: String -> IO ()
 doGrep search
-  | strLen search == 0 = die "Usage: pass grep <search>"
+  | strLen search == 0 = die "Usage: axpass grep <search>"
   | otherwise          = putStr (runCapture ("cd " ++ shQuote storeDir ++ " 2>/dev/null && find . -name '*.gpg' 2>/dev/null | sort | while read f; do m=$(gpg -d --quiet \"$f\" 2>/dev/null | grep -i -- " ++ shQuote search ++ "); if [ -n \"$m\" ]; then echo \"${f#./}\" | sed 's#\\.gpg$#:#'; echo \"$m\" | sed 's/^/  /'; fi; done"))
 
 -- The store's recipient file (holds the GPG key id entries are encrypted to).
@@ -340,7 +340,7 @@ gitCommit msg =
 -- the "not in the store" error (like `rm -f`).
 doRm :: String -> IO ()
 doRm name
-  | strLen name == 0                 = die "Usage: pass rm [-r] <name>"
+  | strLen name == 0                 = die "Usage: axpass rm [-r] <name>"
   | fileExists (entryPath name) == 1 = do
       removeFile (entryPath name)
       gitCommit (strAppend "Remove " name)
@@ -357,8 +357,8 @@ doRm name
 -- `dirName` + `makeDir` (no shell `$(dirname …)`), then commit. renameFile is a primitive.
 doMv :: String -> String -> IO ()
 doMv old new
-  | strLen old == 0                 = die "Usage: pass mv <old> <new>"
-  | strLen new == 0                 = die "Usage: pass mv <old> <new>"
+  | strLen old == 0                 = die "Usage: axpass mv <old> <new>"
+  | strLen new == 0                 = die "Usage: axpass mv <old> <new>"
   | fileExists (entryPath old) == 1 = do   -- a single .gpg entry
       makeDir (dirName (entryPath new))
       renameFile (entryPath old) (entryPath new)
@@ -376,8 +376,8 @@ doMv old new
 -- argv), creating the new parent dir, then commit.
 doCp :: String -> String -> IO ()
 doCp old new
-  | strLen old == 0                 = die "Usage: pass cp <old> <new>"
-  | strLen new == 0                 = die "Usage: pass cp <old> <new>"
+  | strLen old == 0                 = die "Usage: axpass cp <old> <new>"
+  | strLen new == 0                 = die "Usage: axpass cp <old> <new>"
   | fileExists (entryPath old) == 1 = do   -- a single .gpg entry
       makeDir (dirName (entryPath new))
       execStatus (("cp\n--\n" ++ entryPath old) ++ ("\n" ++ entryPath new)) ""
@@ -435,7 +435,7 @@ genReport clip name out
 -- asking. Flags are parsed by `hasFlag`; the name/length are the positionals (`posArg`).
 genEntry :: Bool -> Bool -> Bool -> Bool -> String -> String -> IO ()
 genEntry clip noSym force inPlace name lenArg
-  | strLen name == 0 = die "Usage: pass generate [-c] [-n] [-i] <name> [length]"
+  | strLen name == 0 = die "Usage: axpass generate [-c] [-n] [-i] <name> [length]"
   | inPlace          = do   -- replace only the first line of an existing entry
       out <- runCapture (genInPlaceCmd (entryPath name) gpgId (fromMaybe 25 (readInt lenArg)) (genCharset noSym))
       genReport clip name out
@@ -487,7 +487,7 @@ readOne echo = if echo then readLine 0 else readSecret 0
 -- stdout — and flush immediately before each read.
 doInsert :: Bool -> Bool -> String -> IO ()
 doInsert echo force name
-  | strLen name == 0 = die "Usage: pass insert [-e|-m] <name>"
+  | strLen name == 0 = die "Usage: axpass insert [-e|-m] <name>"
   | otherwise        = do
       ensureOverwrite force name
       ePutStr (strAppend "Enter password for " (strAppend name ": "))
@@ -503,7 +503,7 @@ doInsert echo force name
 -- SURFACED gap: a `readAll`/EOF-sentinel stdin primitive would remove the `cat` shell-out).
 doInsertMulti :: Bool -> String -> IO ()
 doInsertMulti force name
-  | strLen name == 0 = die "Usage: pass insert -m <name>"
+  | strLen name == 0 = die "Usage: axpass insert -m <name>"
   | otherwise        = do
       ensureOverwrite force name
       ePutStrLn (("Enter contents of " ++ name) ++ " and press Ctrl+D when finished:")
@@ -557,7 +557,7 @@ doEdit :: String -> IO ()
 doEdit name
   | strLen name > 0   = editEntry name
   | hasCmd "fzf" == 0 = editEntry fzfPick
-  | otherwise         = die "Usage: pass edit <name>"
+  | otherwise         = die "Usage: axpass edit <name>"
 
 editEntry :: String -> IO ()
 editEntry name = runEdit name (editTmp name) (currentPlain name)
@@ -685,7 +685,7 @@ optNum f dflt = optNumFrom (charAt 0 f) dflt 1
 -- then commit. New entries encrypt to this key id (see `insertFinish`/`genCmd`/`encryptTo`).
 doInit :: String -> IO ()
 doInit gid
-  | strLen gid == 0 = die "Usage: pass init <gpg-id>"
+  | strLen gid == 0 = die "Usage: axpass init <gpg-id>"
   | otherwise       = do
       makeDir storeDir
       writeFile gpgId (strAppend gid "\n")
@@ -716,19 +716,19 @@ doHelp = putStr usageText
 usageText :: String
 usageText =
   "Usage:\n" ++
-  "  pass init <gpg-id>            initialize the store for a GPG key id\n" ++
-  "  pass [ls] [subdir]            list entries as a tree\n" ++
-  "  pass show [-c[n]|-s] [name]  clip the login line (2) by default; -c[n] clips line n (1=pw); -s prints all\n" ++
-  "  pass find <term>              list entry names matching term\n" ++
-  "  pass grep <text>              search decrypted contents\n" ++
-  "  pass insert [-e|-m] [-f] name add an entry (-e echo, -m multiline, -f force)\n" ++
-  "  pass edit [name]              edit an entry in $EDITOR\n" ++
-  "  pass generate [-c][-n][-f][-i] name [len]  make a random password (-i: in-place, keep metadata)\n" ++
-  "  pass rm [-r] [-f] <name>      remove an entry or subtree\n" ++
-  "  pass mv <old> <new>           rename an entry or subdir\n" ++
-  "  pass cp <old> <new>           copy an entry or subdir\n" ++
-  "  pass git <args...>            run git in the store\n" ++
-  "  pass help | version\n"
+  "  axpass init <gpg-id>            initialize the store for a GPG key id\n" ++
+  "  axpass [ls] [subdir]            list entries as a tree\n" ++
+  "  axpass show [-c[n]|-s] [name]  clip the login line (2) by default; -c[n] clips line n (1=pw); -s prints all\n" ++
+  "  axpass find <term>              list entry names matching term\n" ++
+  "  axpass grep <text>              search decrypted contents\n" ++
+  "  axpass insert [-e|-m] [-f] name add an entry (-e echo, -m multiline, -f force)\n" ++
+  "  axpass edit [name]              edit an entry in $EDITOR\n" ++
+  "  axpass generate [-c][-n][-f][-i] name [len]  make a random password (-i: in-place, keep metadata)\n" ++
+  "  axpass rm [-r] [-f] <name>      remove an entry or subtree\n" ++
+  "  axpass mv <old> <new>           rename an entry or subdir\n" ++
+  "  axpass cp <old> <new>           copy an entry or subdir\n" ++
+  "  axpass git <args...>            run git in the store\n" ++
+  "  axpass help | version\n"
 
 -- Command dispatch on the command word with a string-literal `case` (the catch-all `other`
 -- binds the word — a bare `pass <name>` decrypts it). Flags are parsed by `hasFlag`, positional
