@@ -1931,6 +1931,55 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // Async sockets (docs/async-sockets.md): `Sock`/`Listener` are LINEAR fd resources
+        // (must-use, no Drop — like `Ep`; the checker's MUST_USE_PRIMS + consumers enforce
+        // close-exactly-once). recv/send BORROW the socket (repeatable), close CONSUMES it.
+        // HM types are monomorphic here; linearity/borrow is `check.rs`'s job.
+        let sock = || Ty::Con("Sock".into(), vec![]);
+        let listener = || Ty::Con("Listener".into(), vec![]);
+        let io_u = || Ty::Con("IO".into(), vec![Ty::Con("()".into(), vec![])]);
+        let mono = |t: Ty| Scheme { vars: vec![], ty: t };
+        // netConnect :: String -> Int -> Sock
+        env.insert(
+            "netConnect".into(),
+            mono(Ty::Fun(
+                Box::new(string()),
+                Box::new(Ty::Fun(Box::new(int()), Box::new(sock()))),
+            )),
+        );
+        // netListen :: Int -> Listener
+        env.insert(
+            "netListen".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(listener()))),
+        );
+        // netAccept :: Listener -> Sock
+        env.insert(
+            "netAccept".into(),
+            mono(Ty::Fun(Box::new(listener()), Box::new(sock()))),
+        );
+        // netRecv :: Sock -> String
+        env.insert(
+            "netRecv".into(),
+            mono(Ty::Fun(Box::new(sock()), Box::new(string()))),
+        );
+        // netSend :: Sock -> String -> Int
+        env.insert(
+            "netSend".into(),
+            mono(Ty::Fun(
+                Box::new(sock()),
+                Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
+            )),
+        );
+        // netClose :: Sock -> IO ()
+        env.insert(
+            "netClose".into(),
+            mono(Ty::Fun(Box::new(sock()), Box::new(io_u()))),
+        );
+        // netCloseL :: Listener -> IO ()
+        env.insert(
+            "netCloseL".into(),
+            mono(Ty::Fun(Box::new(listener()), Box::new(io_u()))),
+        );
         // structured-concurrency nursery (§9). `bound` opens a nursery whose
         // body is confined (endpoints don't escape — `check_bound_escapes`);
         // `newChannel` creates a dual endpoint pair; `spawn` forks a child that

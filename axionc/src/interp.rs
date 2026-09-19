@@ -283,7 +283,7 @@ fn builtin_arity(name: &str) -> usize {
     match name {
         "substr" => 3,
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
-        | "renameFile" | "execCapture" | "execStatus" => 2,
+        | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" => 2,
         _ => 1,
     }
 }
@@ -759,6 +759,35 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "join",
             args: Vec::new(),
         }),
+        // typed async-socket ops (docs/async-sockets.md) — Sock/Listener are i64 fds at runtime.
+        "netConnect" => Ok(Value::Builtin {
+            name: "netConnect",
+            args: Vec::new(),
+        }),
+        "netListen" => Ok(Value::Builtin {
+            name: "netListen",
+            args: Vec::new(),
+        }),
+        "netAccept" => Ok(Value::Builtin {
+            name: "netAccept",
+            args: Vec::new(),
+        }),
+        "netRecv" => Ok(Value::Builtin {
+            name: "netRecv",
+            args: Vec::new(),
+        }),
+        "netSend" => Ok(Value::Builtin {
+            name: "netSend",
+            args: Vec::new(),
+        }),
+        "netClose" => Ok(Value::Builtin {
+            name: "netClose",
+            args: Vec::new(),
+        }),
+        "netCloseL" => Ok(Value::Builtin {
+            name: "netCloseL",
+            args: Vec::new(),
+        }),
         _ => Err(format!("name not found at runtime: '{name}'")),
     }
 }
@@ -879,6 +908,20 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
             type_name(&other)
         )),
     }
+}
+
+/// Maps a typed async-socket builtin (docs/async-sockets.md) to the underlying libc socket op
+/// implemented in `net_call_foreign`. `Sock`/`Listener` are i64 fds, so the mapping is a rename.
+fn net_alias(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "netConnect" => "ax_net_connect",
+        "netListen" => "ax_net_listen",
+        "netAccept" => "ax_net_accept",
+        "netRecv" => "ax_net_recv",
+        "netSend" => "ax_net_send",
+        "netClose" | "netCloseL" => "ax_net_close",
+        _ => return None,
+    })
 }
 
 /// Networking FFI fallback — uses POSIX socket APIs directly (the interpreter
@@ -1270,6 +1313,25 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
 }
 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
+    // Async-socket ops (docs/async-sockets.md) delegate to the libc socket impls (`net_call_foreign`)
+    // — Sock/Listener are i64 fds. `netClose`/`netCloseL` return `()` (the fd is consumed).
+    if let Some(ax) = net_alias(name) {
+        #[cfg(feature = "native")]
+        {
+            let r = net_call_foreign(ax, &args)
+                .ok_or_else(|| format!("{name}: socket operation failed"))?;
+            return Ok(if name == "netClose" || name == "netCloseL" {
+                Value::Unit
+            } else {
+                r
+            });
+        }
+        #[cfg(not(feature = "native"))]
+        {
+            let _ = ax;
+            return Err(format!("{name}: sockets require the 'native' feature"));
+        }
+    }
     match (name, args.as_slice()) {
         // stdout writes go to the sink immediately (streamed or captured) and return
         // `()`; output ordering follows strict evaluation order, matching native.

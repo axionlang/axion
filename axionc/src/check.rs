@@ -34,7 +34,8 @@ use std::collections::{HashMap, HashSet};
 /// Primitive types **without `Drop`** (must-use): forgetting them is an error, not Auto-Drop.
 /// `Drop` propagates structurally: a record is must-use if any field is.
 /// Everything else is droppable by default (§2).
-const MUST_USE_PRIMS: &[&str] = &["Ep", "Token", "Endpoint", "Transaction", "Buffer"];
+const MUST_USE_PRIMS: &[&str] =
+    &["Ep", "Token", "Endpoint", "Transaction", "Buffer", "Sock", "Listener"];
 
 /// A `free` injected by Auto-Drop at the death point of a linear resource.
 #[derive(Debug, Clone)]
@@ -136,6 +137,14 @@ pub fn is_effectful(name: &str) -> bool {
             | "ax_net_send"
             | "ax_net_recv"
             | "ax_net_close"
+            // typed async-socket ops (docs/async-sockets.md): also every-occurrence effects
+            | "netConnect"
+            | "netListen"
+            | "netAccept"
+            | "netSend"
+            | "netRecv"
+            | "netClose"
+            | "netCloseL"
     )
 }
 
@@ -1344,6 +1353,14 @@ pub fn builtins() -> HashSet<String> {
         "exitWith",
         "getArgs",
         "getArg",
+        // typed async-socket ops (docs/async-sockets.md)
+        "netConnect",
+        "netListen",
+        "netAccept",
+        "netRecv",
+        "netSend",
+        "netClose",
+        "netCloseL",
         "otherwise",
         "True",
         "False",
@@ -2188,6 +2205,17 @@ fn build_ctx(module: &Module) -> Ctx {
     }
     // `split` consumes the %1 it divides (to split it into two %0.5 halves).
     consumers.insert("split".to_string(), vec![Mult::One]);
+    // Async sockets (docs/async-sockets.md): `Sock`/`Listener` are linear fd resources.
+    // recv/send/accept BORROW the socket (Many — repeatable reads/writes, like a Buffer read);
+    // close CONSUMES it (One), so linearity enforces close-exactly-once. The String/Int args are
+    // inert (Many). Constructors (connect/listen) take inert args and return a fresh owned resource.
+    consumers.insert("netConnect".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("netListen".to_string(), vec![Mult::Many]);
+    consumers.insert("netAccept".to_string(), vec![Mult::Many]);
+    consumers.insert("netRecv".to_string(), vec![Mult::Many]);
+    consumers.insert("netSend".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("netClose".to_string(), vec![Mult::One]);
+    consumers.insert("netCloseL".to_string(), vec![Mult::One]);
     // Buffer U8 linear (§4/§5): as ops in-place (bufIota/xorInPlace) e o `free`
     // consume the %1 Buffer (xorInPlace returns a fresh %1 — the linear thread);
     // sumBytes/withBuffer only borrow.

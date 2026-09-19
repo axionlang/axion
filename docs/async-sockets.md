@@ -59,10 +59,19 @@ main = bound $ acceptLoop (netListen 8080)     -- acceptLoop: accept (yields) �
   `axionc/tests/sched_fd_park.rs` (a reader parks on a socket, `poll` wakes it on a background send).
   Whole-corpus TSan/ASan re-validated by CI's sanitize gates. *(Residual: the step budget still
   counts down over a server's lifetime — fine for the flagship, noted for production.)*
-- **Stage 2 — `Sock`/`Listener` linear types + async op builtins (front-end).** `infer.rs` types,
-  `check.rs` linearity (threaded `%1`, Auto-Drop close), prelude declarations for
-  `netListen`/`netAccept`/`netRecv`/`netSend`/`netClose`. Interp implementations first (POSIX
-  fallback, like today's `ax_net_*`) so the whole thing runs on the interpreter end-to-end.
+- **Stage 2 — `Sock`/`Listener` linear types + async op builtins (front-end). ✅ DONE.**
+  `Sock`/`Listener` are `MUST_USE_PRIMS` (linear, no Drop — like `Ep`); `netConnect`/`netListen`/
+  `netAccept`/`netRecv`/`netSend`/`netClose`/`netCloseL` are builtins (not prelude text → no oracle
+  churn) registered in `infer.rs` (monomorphic types), `check.rs` (`builtins()` + `is_effectful` +
+  `consumers`: recv/send/accept BORROW the socket = `Many`, close CONSUMES = `One`, so linearity
+  forces **close-exactly-once**), and `interp.rs` (`net*` delegate to the libc `net_call_foreign`
+  impls — `Sock`/`Listener` are i64 fds). Verified by `axionc/tests/net_sock.rs`: a `%1`-`Sock`
+  handler round-trips against a background echo server on the interpreter, AND the checker rejects
+  forgot-close (AX0002), double-close (AX0001), and use-after-close (AX0004). *(Enforcement covers a
+  `Sock %1` PARAMETER — the handler pattern the flagship uses; a fresh un-threaded local from
+  `netAccept`/`netConnect` isn't must-use-tracked, same as `Buffer`, which relies on the
+  handler/scoped pattern. Native codegen of `net*` is Stage 3 — until then a `net*` program compiles
+  only on the interpreter.)*
 - **Stage 3 — `SessGen` socket-suspension-points (compiler).** Make each async socket op a suspension
   point: emit `attempt non-blocking op; on EWOULDBLOCK save resume + the fd and return
   blocked-on-fd; on resume, retry`. Reuses the existing `susp`/`resume`/state-block machinery
