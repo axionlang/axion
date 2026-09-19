@@ -85,7 +85,10 @@ fn scheduler_parks_a_worker_on_a_socket_fd_and_poll_wakes_it() {
         let result = axion_rt::axion_sess_run(sp, reader_step as *const () as i64, st);
 
         sender.join().unwrap();
-        assert_eq!(result, 1, "reader should complete after poll wakes it on socket readiness");
+        assert_eq!(
+            result, 1,
+            "reader should complete after poll wakes it on socket readiness"
+        );
         assert!(
             ENTRIES.load(Ordering::SeqCst) >= 2,
             "reader must have parked at least once then resumed (entries = {})",
