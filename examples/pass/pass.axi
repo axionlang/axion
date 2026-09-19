@@ -7,9 +7,10 @@
 --   pass init <gpg-id>      → create the store, write its .gpg-id recipient, and `git init`
 --   pass                    → draw the whole store as a tree
 --   pass ls  [subdir]       → tree of the store (or of <subdir>)
---   pass show [-c[n]] [<name>] → decrypt and print <name> (`-c[n]`: copy line n (default 1) to
---                             clipboard; no <name> + fzf installed → pick interactively)
---   pass <name>             → decrypt and print <name> (bare-name shorthand)
+--   pass show [<name>]      → copy the LOGIN line (line 2, the email) to the clipboard (default);
+--                             `-c[n]` copies line n instead (default 1 = the password); `-s` prints
+--                             the whole entry to stdout; no <name> + fzf → pick interactively
+--   pass <name>             → decrypt and PRINT <name> in full (bare-name shorthand)
 --   pass find <term>        → list entries whose path matches <term>
 --   pass grep <search>      → search decrypted contents
 --   pass rm [-r] [-f] <name>→ delete an entry, or a whole subtree with `-r`
@@ -176,28 +177,39 @@ clipCopy :: Int -> String -> String -> IO ()
 clipCopy ln plaintext name
   | strLen plaintext == 0 = die (strAppend "Error: could not decrypt " name)
   | strLen clipTool == 0  = die "Error: no clipboard tool found (install wl-clipboard, xclip, or xsel)"
+  | strLen (nthLine ln plaintext) == 0 =
+      die (((("Error: " ++ name) ++ " has no line ") ++ showInt ln) ++ " to copy")
   | otherwise             = do
       execStatus (strAppend "sh\n-c\n" clipWithRestore) (nthLine ln plaintext)
       ePutStrLn (((("Copied " ++ name) ++ " (line ") ++ showInt ln) ++ ") to clipboard. Will clear in 45 seconds.")
 
--- `pass show [-c] [<name>]`: decrypt the entry (gpg via execCapture — explicit argv, no
--- shell) and either print it or (`-c`) copy its first line to the clipboard. With no name,
--- fall back to an fzf picker over the store (if fzf is installed). The name is only ever
--- BORROWED here (never returned from a helper), so the fresh fzf pick and the borrowed argv
--- name both flow into `showFound` without a conditional alias/fresh return (which would
--- desync the interprocedural alias summary → a use-after-free).
+-- `pass show`: by DEFAULT copy the LOGIN line (line 2 — the email/username) to the clipboard;
+-- `-c[n]` copies line n instead (default 1 = the password); `-s` prints the WHOLE entry to stdout
+-- with no clipboard. gpg runs shell-free via execCapture (explicit argv). With no <name>, fall back
+-- to an fzf picker (if installed). The name is only ever BORROWED here (never returned from a
+-- helper), so the fresh fzf pick and the borrowed argv name both flow into `showFound` without a
+-- conditional alias/fresh return (which would desync the interprocedural alias summary → a UAF).
+-- `showAll` = the `-s` mode (print everything); otherwise clip line `ln`.
 showEntry :: Bool -> Int -> String -> IO ()
-showEntry clip ln name
-  | strLen name > 0   = showFound clip ln name
-  | hasCmd "fzf" == 0 = showFound clip ln fzfPick
-  | otherwise         = die "Usage: pass show [-c[n]] <name>"
+showEntry showAll ln name
+  | strLen name > 0   = showFound showAll ln name
+  | hasCmd "fzf" == 0 = showFound showAll ln fzfPick
+  | otherwise         = die "Usage: pass show [-c[n]|-s] <name>"
 
 showFound :: Bool -> Int -> String -> IO ()
-showFound clip ln name
+showFound showAll ln name
   | fileExists (entryPath name) == 0 =
       die (strAppend "Error: " (strAppend name " is not in the password store."))
-  | clip                             = clipCopy ln (execCapture (decryptArgv (entryPath name)) "") name
-  | otherwise                        = putStr (execCapture (decryptArgv (entryPath name)) "")
+  | showAll                          = putStr (execCapture (decryptArgv (entryPath name)) "")
+  | otherwise                        = clipCopy ln (execCapture (decryptArgv (entryPath name)) "") name
+
+-- Flag dispatch for `show`: `-s` → print all; `-c[n]` → clip line n (default 1 = password);
+-- neither → clip line 2 (the login email — the default).
+doShow :: IO ()
+doShow
+  | hasFlag "s" = showEntry True 0 (posArg 0)
+  | hasFlag "c" = showEntry False (optNum "c" 1) (posArg 0)
+  | otherwise   = showEntry False 2 (posArg 0)
 
 -- `pass ls [subdir]` / bare `pass`: draw the store as an indented TREE (upstream shells
 -- out to tree(1); we render it natively). Each directory level lists its entries sorted,
@@ -705,7 +717,7 @@ usageText =
   "Usage:\n" ++
   "  pass init <gpg-id>            initialize the store for a GPG key id\n" ++
   "  pass [ls] [subdir]            list entries as a tree\n" ++
-  "  pass show [-c[n]] [name]     show an entry (-c[n]: copy line n (default 1) to clipboard 45s)\n" ++
+  "  pass show [-c[n]|-s] [name]  clip the login line (2) by default; -c[n] clips line n (1=pw); -s prints all\n" ++
   "  pass find <term>              list entry names matching term\n" ++
   "  pass grep <text>              search decrypted contents\n" ++
   "  pass insert [-e|-m] [-f] name add an entry (-e echo, -m multiline, -f force)\n" ++
@@ -723,7 +735,7 @@ usageText =
 dispatch :: String -> IO ()
 dispatch cmd = case cmd of
   "init"      -> doInit (posArg 0)
-  "show"      -> showEntry (hasFlag "c") (optNum "c" 1) (posArg 0)
+  "show"      -> doShow
   "ls"        -> doLs (posArg 0)
   "list"      -> doLs (posArg 0)
   "find"      -> doFind (posArg 0)
@@ -747,7 +759,7 @@ dispatch cmd = case cmd of
   "version"   -> doVersion
   "--version" -> doVersion
   ""          -> doLs ""
-  other       -> showEntry False 1 other
+  other       -> showEntry True 0 other
 
 main :: IO ()
 main = dispatch (getArg 0)
