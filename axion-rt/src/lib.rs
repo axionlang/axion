@@ -751,7 +751,7 @@ pub unsafe extern "C" fn axion_sess_send(sched_p: i64, ep: i64, v: i64) {
     g.eps[peer].q.push_back(v);
     g.gen += 1;
     // wake every parked task (any send may unblock a receiver).
-    let woken: Vec<usize> = g.blocked.drain(..).collect();
+    let woken = std::mem::take(&mut g.blocked);
     for i in woken {
         g.ready.push_back(i);
     }
