@@ -960,6 +960,39 @@ pub unsafe extern "C" fn axion_run_main(fnptr: i64) -> i64 {
 // is the faithful backing (std::net's owned-fd model fights the raw-fd contract). `ax_net_recv`
 // returns an `axion_alloc`'d, `axion_free`-compatible String.
 
+/// The would-block sentinel returned by the non-blocking net ops (`ax_net_accept`/`recv`/`send`)
+/// when the underlying socket is `O_NONBLOCK` and the syscall returned `EAGAIN`/`EWOULDBLOCK`. It is
+/// `i64::MIN` so it can never collide with a valid fd (≥0), a byte count (≥0), a real `−errno`
+/// (small, `≥ −4095`), or a heap String pointer (a positive address). The scheduler treats it as
+/// "park this worker on the fd"; the compiler (Stage 3) compares against `ax_net_wouldblock()`.
+pub const AX_NET_WOULDBLOCK: i64 = i64::MIN;
+
+/// Runtime-queryable value of [`AX_NET_WOULDBLOCK`] (single source of truth for the JIT + tests).
+#[no_mangle]
+pub extern "C" fn ax_net_wouldblock() -> i64 {
+    AX_NET_WOULDBLOCK
+}
+
+#[inline]
+unsafe fn errno_is_wouldblock() -> bool {
+    let e = errno();
+    e == libc::EAGAIN || e == libc::EWOULDBLOCK
+}
+
+/// `ax_net_set_nonblocking(fd)` → 0 on success, `−errno` on failure. Sets `O_NONBLOCK` so the
+/// accept/recv/send ops surface [`AX_NET_WOULDBLOCK`] instead of blocking the scheduler thread.
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_set_nonblocking(fd: i64) -> i64 {
+    let flags = libc::fcntl(fd as libc::c_int, libc::F_GETFL, 0);
+    if flags < 0 {
+        return -i64::from(errno());
+    }
+    if libc::fcntl(fd as libc::c_int, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+        return -i64::from(errno());
+    }
+    0
+}
+
 /// `ax_net_connect(host, port)` → fd (≥0), or −errno on failure.
 #[no_mangle]
 pub unsafe extern "C" fn ax_net_connect(host_ptr: i64, port: i64) -> i64 {
@@ -1031,12 +1064,16 @@ pub unsafe extern "C" fn ax_net_listen(port: i64) -> i64 {
     i64::from(fd)
 }
 
-/// `ax_net_accept(listen_fd)` → client fd (≥0, blocks), or −errno.
+/// `ax_net_accept(listen_fd)` → client fd (≥0), [`AX_NET_WOULDBLOCK`] if the listen fd is
+/// non-blocking and no connection is pending, or −errno. The accepted client fd is left in the
+/// listen fd's blocking mode; the caller sets it non-blocking via `ax_net_set_nonblocking`.
 #[no_mangle]
 pub unsafe extern "C" fn ax_net_accept(listen_fd: i64) -> i64 {
     let c = libc::accept(listen_fd as libc::c_int, std::ptr::null_mut(), std::ptr::null_mut());
     if c >= 0 {
         i64::from(c)
+    } else if errno_is_wouldblock() {
+        AX_NET_WOULDBLOCK
     } else {
         -i64::from(errno())
     }
@@ -1054,12 +1091,17 @@ pub unsafe extern "C" fn ax_net_send(fd: i64, data_ptr: i64) -> i64 {
     );
     if n >= 0 {
         n as i64
+    } else if errno_is_wouldblock() {
+        AX_NET_WOULDBLOCK
     } else {
         -i64::from(errno())
     }
 }
 
-/// `ax_net_recv(fd)` → a fresh `axion_free`-compatible String ("" on close/error).
+/// `ax_net_recv(fd)` → a fresh `axion_free`-compatible String ("" on orderly close/error), or
+/// [`AX_NET_WOULDBLOCK`] if the fd is non-blocking and no data is ready. Note "" (orderly close,
+/// `recv` == 0) is DISTINCT from the would-block sentinel, so the caller can tell "peer closed"
+/// (stop) from "not ready yet" (park).
 #[no_mangle]
 pub unsafe extern "C" fn ax_net_recv(fd: i64) -> i64 {
     let mut buf = [0u8; 4096];
@@ -1069,10 +1111,12 @@ pub unsafe extern "C" fn ax_net_recv(fd: i64) -> i64 {
         buf.len() - 1,
         0,
     );
-    if n <= 0 {
-        alloc_str(b"")
-    } else {
+    if n > 0 {
         alloc_str(&buf[..n as usize])
+    } else if n < 0 && errno_is_wouldblock() {
+        AX_NET_WOULDBLOCK
+    } else {
+        alloc_str(b"")
     }
 }
 
@@ -1858,5 +1902,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("ax_net_listen", ax_net_listen as *const u8),
         ("ax_net_recv", ax_net_recv as *const u8),
         ("ax_net_send", ax_net_send as *const u8),
+        ("ax_net_set_nonblocking", ax_net_set_nonblocking as *const u8),
+        ("ax_net_wouldblock", ax_net_wouldblock as *const u8),
     ]
 }
