@@ -52,5 +52,13 @@ run grep foo
 run edit web/reddit
 run git status
 run                  # bare = ls
+# newer commands: flag parsing (getopt), init, recursive rm -r, directory mv/cp, help/version.
+run version
+run help
+run init TESTKEY     # writes .gpg-id
+run cp web webcopy   # directory copy (recursive, shell-free)
+run rm -r webcopy    # recursive subtree remove
+run mv email mail    # directory rename
+run rm -rf ghost     # bundled flags + force on a missing entry (no error)
 
 [ "$fail" = 0 ] && echo "OK: pass(1) commands ASan-clean over a nested store" || { echo "pass ASan gate FAILED"; exit 1; }
