@@ -16,14 +16,16 @@
 //! AGREE with the real verifier on every in-fragment function — the whole-fragment upgrade over the
 //! 8 curated shapes.
 //!
-//! An OWNED-scrutinee heap-extracting `case` IS in-fragment: `verify.rs::bind_pattern` transfers each
-//! CONCRETE-heap field OUT as a fresh owned resource, modeled here as an `alloc` per extracted field
-//! (the arm then drops/moves it). A BORROWED-scrutinee peel (interior-alias fields → `bref`) is NOT —
-//! it needs `AxionExtract`.
+//! A heap-extracting `case` IS in-fragment (both scrutinee kinds), mirroring `verify.rs::bind_pattern`:
+//! for an OWNED scrutinee each CONCRETE-heap field transfers OUT as a fresh owned resource (`alloc`;
+//! the arm then drops/moves it); for a BORROWED scrutinee each is an interior ALIAS, modeled as an
+//! extra `borrowed` (B) cell — use OK, move/drop rejected, never a leak (sound because a borrowed
+//! param's owner is never freed in-frame). POLYMORPHIC fields (no concrete drop slot) are left
+//! untracked, exactly as the verifier's leak-exempt policy.
 //!
 //! SOUNDNESS OF THE BRIDGE rests on the fragment classification being HONEST: the translator is
-//! CONSERVATIVE — any construct outside its vocabulary (a borrowed-scrutinee `case`, a closure, an
-//! interior-`Field` alias, an array/arena/session op, a record update, a borrowed-param escape, or a
+//! CONSERVATIVE — any construct outside its vocabulary (a closure, an interior-`Field` alias, an
+//! array/arena/session op, a record update, a borrowed-value ESCAPE (move-out of a borrow), or a
 //! conditional/case bound in a `let`) makes the function OUT of fragment (skipped and counted), never
 //! mistranslated. A shrinking in-model fraction is a visible finding, not a silent pass.
 
@@ -57,10 +59,15 @@ struct Tr<'a> {
     recinfo: &'a RecordInfo,
     /// heap variables currently tracked → their model cell id.
     ids: HashMap<String, u32>,
-    /// cell ids of BORROWED heap params (caller-owned, use-only). Moving one OUT (returning/aliasing
-    /// a borrow) is the AxionAlias borrow-return class, outside this fragment — so it is rejected.
+    /// cell ids of BORROWED heap cells (caller-owned, use-only): borrowed params AND fields extracted
+    /// from a borrowed scrutinee (interior aliases — use OK, move/drop rejected, never a leak). They
+    /// seed `AxionDrop.acceptsL [B]` as `borrowed`. Moving one OUT is the AxionAlias borrow-return
+    /// class, outside this fragment — so it is rejected.
     borrowed: HashSet<u32>,
     next: u32,
+    /// a SEPARATE high id space for borrowed extracted fields, so their ids never collide with the
+    /// per-arm-reused owned `next` ids (an id can't be both owned-`alloc`ed and seeded `borrowed`).
+    borrow_next: u32,
 }
 
 impl Tr<'_> {
@@ -216,7 +223,12 @@ impl Tr<'_> {
                     self.ids = saved;
                     return Ok(nest_arms(arm_exprs));
                 }
-                // (2) heap extraction — require an OWNED tracked heap scrutinee.
+                // (2) heap extraction. `scrut_borrowed` selects the two field treatments, EXACTLY as
+                // `verify.rs::bind_pattern`: an OWNED scrutinee transfers each concrete-heap field out
+                // as a fresh OWNED resource (`alloc`); a BORROWED scrutinee makes each an interior
+                // ALIAS — modeled as an additional `borrowed` (B) cell (use OK, move/drop rejected,
+                // never a leak — sound because a borrowed PARAM's owner is never freed in-frame, so
+                // there is no dangling-alias hazard that `bref` would otherwise guard).
                 let sid = match scrut {
                     Atom::Var(s) => *self
                         .ids
@@ -224,9 +236,7 @@ impl Tr<'_> {
                         .ok_or("case scrutinee not an owned heap value")?,
                     _ => return Err("case scrutinee not a var"),
                 };
-                if self.borrowed.contains(&sid) {
-                    return Err("borrowed-scrutinee extraction");
-                }
+                let scrut_borrowed = self.borrowed.contains(&sid);
                 let saved = self.ids.clone();
                 let saved_next = self.next;
                 let mut arm_exprs = Vec::new();
@@ -235,8 +245,6 @@ impl Tr<'_> {
                         self.ids = saved.clone();
                         self.next = saved_next;
                     }
-                    // Introduce each CONCRETE-heap extracted field as a fresh owned resource (the arm
-                    // body's own drop/move reclaims it; the scrutinee shell is dropped there too).
                     let mut pre = Vec::new();
                     match pat {
                         CPat::Int(_) | CPat::Wild => {}
@@ -244,9 +252,19 @@ impl Tr<'_> {
                             for (fi, sub) in subs.iter().enumerate() {
                                 match sub {
                                     CPat::Var(v) if self.recinfo.field_is_heap(con, fi) => {
-                                        let id = self.fresh();
-                                        self.ids.insert(v.clone(), id);
-                                        pre.push(MOp::Alloc(id));
+                                        if scrut_borrowed {
+                                            // interior alias of a borrowed scrutinee → a B cell (high
+                                            // id space; accumulated across arms into the final B).
+                                            let id = self.borrow_next;
+                                            self.borrow_next += 1;
+                                            self.ids.insert(v.clone(), id);
+                                            self.borrowed.insert(id);
+                                        } else {
+                                            // owned child transferred out of the scrutinee.
+                                            let id = self.fresh();
+                                            self.ids.insert(v.clone(), id);
+                                            pre.push(MOp::Alloc(id));
+                                        }
                                     }
                                     // poly (no concrete slot) or scalar field: untracked, like the verifier.
                                     CPat::Var(_) | CPat::Wild | CPat::Int(_) => {}
@@ -321,9 +339,9 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
         ids: HashMap::new(),
         borrowed: HashSet::new(),
         next: 0,
+        borrow_next: 1_000_000,
     };
     let mut param_ops = Vec::new();
-    let mut borrowed = Vec::new();
     if let Some(keys) = pkeys {
         for (i, p) in f.params.iter().enumerate() {
             let is_heap = keys.get(i).is_some_and(|k| k.is_some());
@@ -333,13 +351,16 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
                 if owned.contains(p) {
                     param_ops.push(MOp::Alloc(id)); // owned: starts live, must be freed/moved out
                 } else {
-                    tr.borrowed.insert(id);
-                    borrowed.push(id); // borrowed: caller-owned, use-only, not a leak
+                    tr.borrowed.insert(id); // borrowed: caller-owned, use-only, not a leak
                 }
             }
         }
     }
     let body = tr.tr_term(&f.body)?;
+    // The FINAL borrowed set = borrowed params + any fields extracted from a borrowed scrutinee
+    // (accumulated during translation) — all seed `AxionDrop.acceptsL [B]` as `borrowed`.
+    let mut borrowed: Vec<u32> = tr.borrowed.iter().copied().collect();
+    borrowed.sort_unstable();
     Ok((prepend(param_ops, body), borrowed))
 }
 
