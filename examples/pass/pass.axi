@@ -10,7 +10,8 @@
 --   pass show [<name>]      → copy the LOGIN line (line 2, the email) to the clipboard (default);
 --                             `-c[n]` copies line n instead (default 1 = the password); `-s` prints
 --                             the whole entry to stdout; no <name> + fzf → pick interactively
---   pass <name>             → decrypt and PRINT <name> in full (bare-name shorthand)
+--   pass <name>             → bare shorthand: copy the PASSWORD (line 1) to the clipboard
+--                             (`pass -s <name>` prints the whole entry instead)
 --   pass find <term>        → list entries whose path matches <term>
 --   pass grep <search>      → search decrypted contents
 --   pass rm [-r] [-f] <name>→ delete an entry, or a whole subtree with `-r`
@@ -758,8 +759,13 @@ dispatch cmd = case cmd of
   "-h"        -> doHelp
   "version"   -> doVersion
   "--version" -> doVersion
+  -- bare `axpass -s <name>` == `axpass show -s <name>` (print the whole entry). The flag is
+  -- argv[0] here (no subcommand), so the name is argv[1].
+  "-s"        -> showEntry True 0 (getArg 1)
   ""          -> doLs ""
-  other       -> showEntry True 0 other
+  -- bare `axpass <name>` == `axpass show -c <name>`: copy the PASSWORD (line 1) to the clipboard.
+  -- (`show` WITHOUT the bare shorthand defaults to the login line instead — see doShow.)
+  other       -> showEntry False 1 other
 
 main :: IO ()
 main = dispatch (getArg 0)
