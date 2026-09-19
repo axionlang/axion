@@ -34,8 +34,15 @@ use std::collections::{HashMap, HashSet};
 /// Primitive types **without `Drop`** (must-use): forgetting them is an error, not Auto-Drop.
 /// `Drop` propagates structurally: a record is must-use if any field is.
 /// Everything else is droppable by default (§2).
-const MUST_USE_PRIMS: &[&str] =
-    &["Ep", "Token", "Endpoint", "Transaction", "Buffer", "Sock", "Listener"];
+const MUST_USE_PRIMS: &[&str] = &[
+    "Ep",
+    "Token",
+    "Endpoint",
+    "Transaction",
+    "Buffer",
+    "Sock",
+    "Listener",
+];
 
 /// A `free` injected by Auto-Drop at the death point of a linear resource.
 #[derive(Debug, Clone)]

@@ -71,7 +71,11 @@ fn sock_client_round_trips_against_a_background_echo_server_on_the_interpreter()
 /// Compile-only: assert the given source is REJECTED with the given diagnostic code.
 fn assert_rejected(tag: &str, code: &str, src: &str) {
     let path = temp_axi(tag, src);
-    let out = axionc().args(["--emit", "core"]).arg(&path).output().unwrap();
+    let out = axionc()
+        .args(["--emit", "core"])
+        .arg(&path)
+        .output()
+        .unwrap();
     let _ = std::fs::remove_file(&path);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);

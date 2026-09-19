@@ -1938,7 +1938,10 @@ impl<'a> Infer<'a> {
         let sock = || Ty::Con("Sock".into(), vec![]);
         let listener = || Ty::Con("Listener".into(), vec![]);
         let io_u = || Ty::Con("IO".into(), vec![Ty::Con("()".into(), vec![])]);
-        let mono = |t: Ty| Scheme { vars: vec![], ty: t };
+        let mono = |t: Ty| Scheme {
+            vars: vec![],
+            ty: t,
+        };
         // netConnect :: String -> Int -> Sock
         env.insert(
             "netConnect".into(),
