@@ -5,7 +5,7 @@
 -- stays in files — only plaintext crosses into Axión) and to `find` for listing.
 -- Dispatch mirrors upstream pass:
 --   pass init <gpg-id>      → create the store, write its .gpg-id recipient, and `git init`
---   pass                    → draw the whole store as a tree
+--   pass                    → `show` with no name: fzf-pick an entry, then clip its login line
 --   pass ls  [subdir]       → tree of the store (or of <subdir>)
 --   pass show [<name>]      → copy the LOGIN line (line 2, the email) to the clipboard (default);
 --                             `-c[n]` copies line n instead (default 1 = the password); `-s` prints
@@ -762,7 +762,9 @@ dispatch cmd = case cmd of
   -- bare `axpass -s <name>` == `axpass show -s <name>` (print the whole entry). The flag is
   -- argv[0] here (no subcommand), so the name is argv[1].
   "-s"        -> showEntry True 0 (getArg 1)
-  ""          -> doLs ""
+  -- bare `axpass` (no args) == `axpass show` (no name): fzf-pick an entry, then clip its login
+  -- line. `axpass ls` still draws the tree.
+  ""          -> doShow
   -- bare `axpass <name>` == `axpass show -c <name>`: copy the PASSWORD (line 1) to the clipboard.
   -- (`show` WITHOUT the bare shorthand defaults to the login line instead — see doShow.)
   other       -> showEntry False 1 other

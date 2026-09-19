@@ -51,7 +51,7 @@ run find red
 run grep foo
 run edit web/reddit
 run git status
-run                  # bare = ls
+run                  # bare (no args) = show: fzf-pick → clip the login line
 # newer commands: flag parsing (getopt), init, recursive rm -r, directory mv/cp, help/version.
 run version
 run help
