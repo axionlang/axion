@@ -2004,15 +2004,16 @@ impl<'a> Infer<'a> {
                 ty: Ty::Tuple(vec![ep(0), ep(1)]),
             },
         );
-        // spawn :: forall a b c. (Ep a -> b) -> Ep c
+        // spawn :: forall a b. a -> b  (permissive HM — session fidelity is checked structurally in
+        // check_sessions, and the socket-vs-session spawn shape is resolved at lowering, gen_spawn).
+        // A session spawn passes a PARTIALLY-applied worker `(Ep a -> b)` and binds an `Ep c` back;
+        // a socket spawn (Stage 4) passes a FULLY-applied `handler s :: IO ()` and binds unit — both
+        // fit `a -> b`, which the old `(Ep a -> b) -> Ep c` could not express.
         env.insert(
             "spawn".into(),
             Scheme {
-                vars: vec![0, 1, 2],
-                ty: Ty::Fun(
-                    Box::new(Ty::Fun(Box::new(ep(0)), Box::new(Ty::Var(1)))),
-                    Box::new(ep(2)),
-                ),
+                vars: vec![0, 1],
+                ty: Ty::Fun(Box::new(Ty::Var(0)), Box::new(Ty::Var(1))),
             },
         );
         // parMap :: forall a b c d. (Ep a -> b) -> List c -> List d

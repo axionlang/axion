@@ -986,6 +986,19 @@ pub unsafe extern "C" fn axion_sess_run(sched_p: i64, step: i64, state: i64) -> 
     sess_free(sched_p)
 }
 
+/// Like `axion_sess_run`, but runs the nursery in PAR mode: it finishes only when EVERY task has
+/// completed (not just the root). Used by a socket server (async sockets, docs/async-sockets.md) so
+/// the `bound` nursery waits for every spawned per-connection handler — a fire-and-forget `spawn
+/// (handler s)` has no channel back to the acceptor, so root-completion is not the right join point.
+/// A never-terminating acceptor keeps the pool alive until the process is killed.
+#[no_mangle]
+pub unsafe extern "C" fn axion_sess_run_par(sched_p: i64, step: i64, state: i64) -> i64 {
+    lock(sched(sched_p)).par = true;
+    axion_sess_spawn(sched_p, step, state); // root = task 0
+    run_pool(sched_p);
+    sess_free(sched_p)
+}
+
 /// Structured fork-join (parMap): one worker per input, preload each input, run all to completion,
 /// then collect replies into a List (Cons/Nil, in input order).
 #[no_mangle]
@@ -1976,6 +1989,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_sess_pending", axion_sess_pending as *const u8),
         ("axion_sess_recv", axion_sess_recv as *const u8),
         ("axion_sess_run", axion_sess_run as *const u8),
+        ("axion_sess_run_par", axion_sess_run_par as *const u8),
         ("axion_sess_send", axion_sess_send as *const u8),
         ("axion_sess_spawn", axion_sess_spawn as *const u8),
         ("axion_show_float", axion_show_float as *const u8),

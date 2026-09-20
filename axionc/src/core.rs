@@ -3462,6 +3462,46 @@ impl SessGen<'_> {
             let tl = &self.all[&target];
             (tl.size, tl.step.clone(), tl.param_slots.clone())
         };
+        // Socket-spawn (async sockets, docs/async-sockets.md Stage 4): a `Sock`/`Listener` worker has
+        // NO channel endpoint — `spawn (handler s)` provides a value for EVERY param (args == slots),
+        // so seed every param slot directly and DON'T create a channel. (A session worker instead
+        // leaves its LAST param — the peer endpoint — for the channel, i.e. args < slots.)
+        if target_args.len() == slots.len() && !slots.is_empty() {
+            let mut binds = Vec::new();
+            let cs = self.fresh();
+            binds.push((
+                cs.clone(),
+                Self::rt(
+                    "axion_sess_alloc",
+                    vec![Self::sched_atom(), Atom::Int(size as i64)],
+                    true,
+                ),
+            ));
+            for (slot, arg) in slots.iter().zip(target_args.iter()) {
+                let v = self.val(arg, &mut binds);
+                binds.push((
+                    self.fresh(),
+                    Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
+                ));
+            }
+            let fa = self.fresh();
+            binds.push((fa.clone(), Rhs::Op(Op::FuncAddr(step))));
+            binds.push((
+                self.fresh(),
+                Self::rt(
+                    "axion_sess_spawn",
+                    vec![Self::sched_atom(), Atom::Var(fa), Atom::Var(cs)],
+                    false,
+                ),
+            ));
+            // fire-and-forget: no channel back to the parent, so the bind (usually `_`) is unit.
+            let mut pv = Vec::new();
+            pat_vars(pat, &mut pv);
+            if let Some(c) = pv.first() {
+                binds.push((c.clone(), Rhs::Op(Op::Atom(Atom::Int(0)))));
+            }
+            return wrap(binds, self.gen_cont(rest), NO_SPAN);
+        }
         let mut binds = Vec::new();
         let a = self.fresh();
         binds.push((
@@ -3754,7 +3794,21 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
             &layouts,
         ));
     }
-    // driver `main`: create scheduler, alloc root state, run, return result
+    // driver `main`: create scheduler, alloc root state, run, return result. A socket server (a
+    // worker takes a `Sock`/`Listener` — spawned fire-and-forget, no channel back) runs in PAR mode
+    // so the `bound` nursery waits for every per-connection handler, not just the root (Stage 4).
+    let is_socket_server = workers.iter().any(|wf| {
+        wf.sig.as_ref().is_some_and(|s| {
+            s.param_types()
+                .iter()
+                .any(|t| matches!(t.head_con(), Some("Sock" | "Listener")))
+        })
+    });
+    let run_fn = if is_socket_server {
+        "axion_sess_run_par"
+    } else {
+        "axion_sess_run"
+    };
     let size = layouts["main"].size;
     let driver = Term::Let(
         "sess$sched".into(),
@@ -3771,7 +3825,7 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
             Box::new(Term::Let(
                 "sess$res".into(),
                 Rhs::Op(Op::RtCall {
-                    func: "axion_sess_run".into(),
+                    func: run_fn.into(),
                     args: vec![
                         Atom::Var("sess$sched".into()),
                         Atom::Var("sess$fa".into()),
