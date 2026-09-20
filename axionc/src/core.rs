@@ -3367,11 +3367,7 @@ impl SessGen<'_> {
         if set_nb {
             binds.push((
                 self.fresh(),
-                Self::rt(
-                    "ax_net_set_nonblocking",
-                    vec![Atom::Var(rv.clone())],
-                    true,
-                ),
+                Self::rt("ax_net_set_nonblocking", vec![Atom::Var(rv.clone())], true),
             ));
         }
         let mut pv = Vec::new();
