@@ -72,11 +72,17 @@ main = bound $ acceptLoop (netListen 8080)     -- acceptLoop: accept (yields) �
   `netAccept`/`netConnect` isn't must-use-tracked, same as `Buffer`, which relies on the
   handler/scoped pattern. Native codegen of `net*` is Stage 3 — until then a `net*` program compiles
   only on the interpreter.)*
-- **Stage 3 — `SessGen` socket-suspension-points (compiler).** Make each async socket op a suspension
-  point: emit `attempt non-blocking op; on EWOULDBLOCK save resume + the fd and return
-  blocked-on-fd; on resume, retry`. Reuses the existing `susp`/`resume`/state-block machinery
-  (core.rs `SessGen`). Lower to the Stage-0 non-blocking runtime ops. Now handlers run natively on
-  `--dev`/`--release`.
+- **Stage 3 — `SessGen` socket-suspension-points (compiler). ✅ DONE.** In a `bound $ do` session,
+  `netRecv`/`netAccept`/`netSend` are now suspension points (`collect_suspensions` + `gen_netsusp`):
+  attempt the non-blocking op, and on `ax_net_wouldblock()` call `axion_sess_park_fd(sched, fd,
+  want_write)` and suspend (save live locals, resume=idx+1, return 0) — on resume the region re-runs
+  and retries. `netListen`/`netConnect`/`netClose` are plain runtime calls (`gen_netplain`); a created
+  listener/accepted socket is set `O_NONBLOCK` so its ops yield. `sess_builtin_rt` maps the ops to the
+  `ax_net_*` symbols; codegen (cranelift) + `llvm.rs` declare them; session source functions are
+  pruned from normal native lowering (a net-only session `main` has no non-native tell). `ax_net_close`
+  now returns `i64`. Verified end-to-end on **all three backends** (interp, `--dev`, `--release`): an
+  Axión `bound $ do` echo server handles a real TCP client (`axionc/tests/net_server.rs`). *(This is
+  the single-task async server; concurrent spawn-per-connection is Stage 4.)*
 - **Stage 4 — the flagship + gates.** `examples/echoserver.axi` (or a small line-protocol server):
   accept loop spawns a session handler per connection. A **multi-client test harness** (connect N
   clients concurrently, assert all echoes) on all three backends; TSan on the scheduler; ASan/LSan

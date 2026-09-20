@@ -1215,9 +1215,12 @@ pub unsafe extern "C" fn ax_net_recv(fd: i64) -> i64 {
     }
 }
 
+/// `ax_net_close(fd)` → 0. Returns an i64 (not void) so the session codegen can treat every socket
+/// op as a value-returning `RtCall` uniformly (the result is discarded).
 #[no_mangle]
-pub unsafe extern "C" fn ax_net_close(fd: i64) {
+pub unsafe extern "C" fn ax_net_close(fd: i64) -> i64 {
     libc::close(fd as libc::c_int);
+    0
 }
 
 #[inline]

@@ -217,6 +217,16 @@ impl Cg {
             ("axion_sess_spawn", 3, false),
             ("axion_sess_run", 3, true),
             ("axion_par_map", 4, true),
+            ("axion_sess_park_fd", 3, false),
+            // async sockets (docs/async-sockets.md): the net ops the session steps call by RtCall.
+            ("ax_net_connect", 2, true),
+            ("ax_net_listen", 1, true),
+            ("ax_net_accept", 1, true),
+            ("ax_net_send", 2, true),
+            ("ax_net_recv", 1, true),
+            ("ax_net_close", 1, true),
+            ("ax_net_wouldblock", 0, true),
+            ("ax_net_set_nonblocking", 1, true),
         ] {
             rt_fns.insert(name.into(), (import(&mut module, name, nparams, ret)?, ret));
         }

@@ -530,6 +530,12 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "exitWith" => ("axion_exit", 1),
         "getArgs" => ("axion_getargs", 1),
         "getArg" => ("axion_getarg", 1),
+        // async sockets (docs/async-sockets.md): the non-suspending ops, for value/arg position
+        // (e.g. `netAccept (netListen p)`). The suspending ops (netRecv/netAccept/netSend) are NOT
+        // here on purpose — they must be case-scrutinee suspension points (see gen_netsusp).
+        "netConnect" => ("ax_net_connect", 2),
+        "netListen" => ("ax_net_listen", 1),
+        "netClose" | "netCloseL" => ("ax_net_close", 1),
         _ => return None,
     })
 }
@@ -2945,7 +2951,10 @@ fn collect_suspensions<'a>(
     };
     let head = sess_spine(scrut).0;
     let is_offer = head == Some("offer");
-    if head == Some("recv") || is_offer {
+    // Async sockets (docs/async-sockets.md): netRecv/netAccept/netSend can yield the would-block
+    // sentinel, so they are suspension points too (park on the fd, resume on readiness).
+    let is_netsusp = matches!(head, Some("netRecv" | "netAccept" | "netSend"));
+    if head == Some("recv") || is_offer || is_netsusp {
         out.push((e, scope.clone()));
     }
     if arms.len() == 1 && !is_offer {
@@ -3203,6 +3212,29 @@ impl SessGen<'_> {
             Some("select") => self.gen_select(&arms[0].0, &args, &arms[0].1),
             Some("cancel") => self.gen_cancel(args[0], &arms[0].1),
             Some("close") => self.gen_close(&arms[0].0, &arms[0].1),
+            // async-socket suspension points (docs/async-sockets.md): attempt the non-blocking op,
+            // and on the would-block sentinel park the fd + suspend; otherwise bind + continue.
+            Some("netRecv") => {
+                self.gen_netsusp("ax_net_recv", 0, false, &arms[0].0, &arms[0].1, &args, key)
+            }
+            // an accepted socket is set non-blocking so its own recv/send can yield.
+            Some("netAccept") => {
+                self.gen_netsusp("ax_net_accept", 0, true, &arms[0].0, &arms[0].1, &args, key)
+            }
+            Some("netSend") => {
+                self.gen_netsusp("ax_net_send", 1, false, &arms[0].0, &arms[0].1, &args, key)
+            }
+            // non-suspending socket ops: a plain runtime call, then continue. The listen/connect fd
+            // is set non-blocking (true) so accept/recv on it yield instead of blocking a pool thread.
+            Some("netListen") => {
+                self.gen_netplain("ax_net_listen", true, &arms[0].0, &arms[0].1, &args)
+            }
+            Some("netConnect") => {
+                self.gen_netplain("ax_net_connect", true, &arms[0].0, &arms[0].1, &args)
+            }
+            Some("netClose" | "netCloseL") => {
+                self.gen_netplain("ax_net_close", false, &arms[0].0, &arms[0].1, &args)
+            }
             _ => self.gen_tail(e),
         }
     }
@@ -3248,6 +3280,106 @@ impl SessGen<'_> {
             ),
             NO_SPAN,
         )
+    }
+
+    /// Async-socket suspension point (docs/async-sockets.md): `x <- netRecv s`, `s <- netAccept l`,
+    /// or `_ <- netSend s v`. Attempt the non-blocking op; if it returns the would-block sentinel,
+    /// register the fd with the scheduler (`axion_sess_park_fd`, `want_write` for a send) and suspend
+    /// (save live locals, resume=idx+1, return 0); otherwise bind the result and continue. On resume
+    /// the region re-runs from here, so the op is simply retried against the now-ready fd.
+    #[allow(clippy::too_many_arguments)]
+    fn gen_netsusp(
+        &mut self,
+        op_ax: &str,
+        want_write: i64,
+        nb_result: bool,
+        pat: &Pat,
+        rest: &Expr,
+        args: &[&Expr],
+        span: Span,
+    ) -> Term {
+        let idx = self.susp[&span];
+        let mut binds = Vec::new();
+        let fd = self.val(args[0], &mut binds);
+        let mut rt_args = vec![fd.clone()];
+        for a in &args[1..] {
+            rt_args.push(self.val(a, &mut binds));
+        }
+        let rv = self.fresh();
+        binds.push((rv.clone(), Self::rt(op_ax, rt_args, true)));
+        let wb = self.fresh();
+        binds.push((wb.clone(), Self::rt("ax_net_wouldblock", vec![], true)));
+        let is_wb = self.fresh();
+        binds.push((
+            is_wb.clone(),
+            Rhs::Op(Op::Prim("==".into(), Atom::Var(rv.clone()), Atom::Var(wb))),
+        ));
+        // continue: bind the result to the pattern's (single) var, then continue. An accepted
+        // socket is made non-blocking so its own recv/send yield (rather than block a pool thread).
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        let mut cbinds = Vec::new();
+        if let Some(v0) = pv.first() {
+            cbinds.push((v0.clone(), Rhs::Op(Op::Atom(Atom::Var(rv.clone())))));
+        }
+        if nb_result {
+            cbinds.push((
+                self.fresh(),
+                Self::rt("ax_net_set_nonblocking", vec![Atom::Var(rv)], true),
+            ));
+        }
+        let cont = wrap(cbinds, self.gen_cont(rest), NO_SPAN);
+        // blocked: park the fd (read=0 / write=1), then suspend.
+        let park = (
+            self.fresh(),
+            Self::rt(
+                "axion_sess_park_fd",
+                vec![Self::sched_atom(), fd, Atom::Int(want_write)],
+                false,
+            ),
+        );
+        let blocked = wrap(vec![park], self.block(idx), NO_SPAN);
+        wrap(
+            binds,
+            Term::Ret(
+                Rhs::If(Atom::Var(is_wb), Box::new(blocked), Box::new(cont)),
+                NO_SPAN,
+            ),
+            NO_SPAN,
+        )
+    }
+
+    /// A non-suspending socket op (`netListen`/`netConnect`/`netClose`/`netCloseL`): a plain runtime
+    /// call whose result is bound to the pattern's var (if any), then continue.
+    fn gen_netplain(
+        &mut self,
+        op_ax: &str,
+        set_nb: bool,
+        pat: &Pat,
+        rest: &Expr,
+        args: &[&Expr],
+    ) -> Term {
+        let mut binds = Vec::new();
+        let atoms: Vec<Atom> = args.iter().map(|a| self.val(a, &mut binds)).collect();
+        let rv = self.fresh();
+        binds.push((rv.clone(), Self::rt(op_ax, atoms, true)));
+        // set the created listener/socket non-blocking so accept/recv on it yield (async sockets).
+        if set_nb {
+            binds.push((
+                self.fresh(),
+                Self::rt(
+                    "ax_net_set_nonblocking",
+                    vec![Atom::Var(rv.clone())],
+                    true,
+                ),
+            ));
+        }
+        let mut pv = Vec::new();
+        pat_vars(pat, &mut pv);
+        if let Some(v0) = pv.first() {
+            binds.push((v0.clone(), Rhs::Op(Op::Atom(Atom::Var(rv)))));
+        }
+        wrap(binds, self.gen_cont(rest), NO_SPAN)
     }
 
     /// `case offer ep of { L1 d -> B1 ; … }` — a label suspension + dispatch.
@@ -4224,6 +4356,37 @@ pub fn lower_with(
     // §9 structured fork-join: worker state machines for every `parMap` target,
     // plus the map the lowering uses to emit `axion_par_map`. Runs pre-eta.
     let (parmap_steps, parmap_map) = parmap_worker_steps(orig_module, &native_fn_names);
+    // Session source functions (main's `bound` body + its transitive `spawn` targets) are compiled
+    // to state machines by `session_fns` above; drop them from normal native lowering so they are
+    // not emitted twice. For an `Ep`-typed worker the transitive-candidacy loop already removes it
+    // via its non-native `Ep` param, but a net-only session `main` or a `Sock`/`Listener` worker has
+    // no such non-native tell, so prune explicitly (async sockets, docs/async-sockets.md Stage 3).
+    if let Some(bound_body) = orig_module
+        .funcs
+        .iter()
+        .find(|f| f.name == "main")
+        .and_then(sess_clause_body)
+        .and_then(as_bound)
+    {
+        native_ok.remove("main");
+        let mut worklist = Vec::new();
+        let mut seen = HashSet::new();
+        spawn_targets(bound_body, &mut worklist);
+        while let Some(name) = worklist.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            native_ok.remove(&name);
+            if let Some(b) = orig_module
+                .funcs
+                .iter()
+                .find(|f| f.name == name)
+                .and_then(sess_clause_body)
+            {
+                spawn_targets(b, &mut worklist);
+            }
+        }
+    }
     // function arities, to split over-applied spines (`(f a) b`): top-level functions
     // by name, and `where`-locals by their mangled `parent$w` key (the lowering
     // resolves a call's name through the same mangling before looking up here).
