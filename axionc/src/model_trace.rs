@@ -106,7 +106,19 @@ impl Tr<'_> {
             | Op::Promote(..)
             | Op::ArenaMark(_)
             | Op::ArenaRelease(_) => return Err("arena"),
-            Op::RtCall { .. } => return Err("rtcall/session"),
+            // Session/socket/concurrency runtime ops model channel/fd state, not heap ownership —
+            // genuinely out of the drop fragment. EVERY other rtcall (string/IO/capability builtin:
+            // axion_strcat/getenv/read_file/exec/…) has a clean heap-drop effect that
+            // `op_delta_effect` already classifies — the SAME authority verify.rs uses — so it
+            // translates generically below, exactly like a `CallDirect`.
+            Op::RtCall { func, .. }
+                if func.starts_with("axion_sess_")
+                    || func.starts_with("ax_net_")
+                    || func == "axion_par_map" =>
+            {
+                return Err("session/socket op")
+            }
+            Op::RtCall { .. } => {}
             Op::Ffi { .. } => return Err("ffi"),
             Op::LoadRaw(..) | Op::StoreRaw(..) | Op::FuncAddr(_) | Op::Unsupported(_) => {
                 return Err("raw/unsupported")
