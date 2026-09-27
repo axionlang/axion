@@ -137,3 +137,60 @@ fn native_cranelift_concurrent_echo_server_handles_many_clients() {
         assert_eq!(got, sent, "each concurrent client should get its own echo");
     }
 }
+
+/// A KEEP-ALIVE handler loops (recv/echo) until the peer closes — needs `SessGen` branch support
+/// (`if` in the session spine, with a suspension + self-recursion in one arm). Assert one connection
+/// gets MULTIPLE messages echoed on the SAME socket. Concurrent clients exercise the fd-poll set.
+#[test]
+fn native_cranelift_keepalive_echo_server() {
+    let port = free_port();
+    let src = format!(
+        "handler :: Sock %1 -> IO ()\n\
+         handler s = do\n\
+        \x20 msg <- netRecv s\n\
+        \x20 if strLen msg == 0\n\
+        \x20   then netClose s\n\
+        \x20   else do\n\
+        \x20     _ <- netSend s msg\n\
+        \x20     handler s\n\
+         serve :: Listener %1 -> IO ()\n\
+         serve l = do\n\
+        \x20 s <- netAccept l\n\
+        \x20 _ <- spawn (handler s)\n\
+        \x20 serve l\n\
+         main :: Int\n\
+         main = bound $ do\n\
+        \x20 l <- netListen {port}\n\
+        \x20 _ <- spawn (serve l)\n\
+        \x20 0\n"
+    );
+    let path = std::env::temp_dir().join(format!("axion_ka_{}_{port}.axi", std::process::id()));
+    std::fs::write(&path, src).unwrap();
+    let child = axionc()
+        .args(["--backend", "cranelift"])
+        .arg(&path)
+        .spawn()
+        .unwrap();
+    let _guard = Kill(child);
+    drop(connect_retry(port));
+
+    let mut handles = Vec::new();
+    for c in 0..3 {
+        handles.push(std::thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            // several round-trips on ONE persistent connection (keep-alive).
+            for i in 0..5 {
+                let m = format!("c{c}-{i}");
+                s.write_all(m.as_bytes()).unwrap();
+                let mut buf = [0u8; 64];
+                let r = s.read(&mut buf).unwrap();
+                assert_eq!(&buf[..r], m.as_bytes(), "keep-alive round-trip {i} for client {c}");
+            }
+        }));
+    }
+    let _ = std::fs::remove_file(&path);
+    for h in handles {
+        h.join().unwrap();
+    }
+}

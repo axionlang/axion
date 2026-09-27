@@ -2936,6 +2936,9 @@ fn collect_bound_vars(e: &Expr, out: &mut Vec<String>) {
             pat_vars(pat, out);
             collect_bound_vars(body, out);
         }
+    } else if let Expr::If(_, t, el, _) = e {
+        collect_bound_vars(t, out);
+        collect_bound_vars(el, out);
     }
 }
 
@@ -2946,6 +2949,13 @@ fn collect_suspensions<'a>(
     scope: &mut Vec<String>,
     out: &mut Vec<(&'a Expr, Vec<String>)>,
 ) {
+    // Descend both arms of an `if` in the session spine (they bind no new vars at the `if` itself),
+    // so suspensions inside a branch (e.g. `netSend` in a keep-alive loop) get resume indices.
+    if let Expr::If(_, then_e, else_e, _) = e {
+        collect_suspensions(then_e, scope, out);
+        collect_suspensions(else_e, scope, out);
+        return;
+    }
     let Expr::Case(scrut, arms, _) = e else {
         return;
     };
@@ -3197,8 +3207,23 @@ impl SessGen<'_> {
         )
     }
 
-    /// Lowers one session continuation expression (a `Case` chain or a tail).
+    /// Lowers one session continuation expression (a `Case` chain, an `if` branch, or a tail).
     fn gen_cont(&mut self, e: &Expr) -> Term {
+        // A branch in the session spine (e.g. a keep-alive handler: `if empty then netClose s else
+        // …; handler s`). Evaluate the condition, then dispatch — each arm is itself a continuation
+        // that may suspend, self-recurse, or close. Suspensions inside the arms are collected by
+        // `collect_suspensions` (which descends `If`), so their resume indices are already assigned.
+        if let Expr::If(cond, then_e, else_e, _) = e {
+            let mut binds = Vec::new();
+            let c = self.val(cond, &mut binds);
+            let t = self.gen_cont(then_e);
+            let el = self.gen_cont(else_e);
+            return wrap(
+                binds,
+                Term::Ret(Rhs::If(c, Box::new(t), Box::new(el)), NO_SPAN),
+                NO_SPAN,
+            );
+        }
         let Expr::Case(scrut, arms, _) = e else {
             return self.gen_tail(e);
         };

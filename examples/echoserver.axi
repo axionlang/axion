@@ -17,12 +17,18 @@
 -- Runs on `--dev` (Cranelift) and `--release` (LLVM): `serve` never returns, so the server runs
 -- until it is killed, handling connections forever. Point a client at it: `nc 127.0.0.1 8080`.
 
--- One connection: echo the bytes back once, then close the socket (consumed exactly once).
+-- One connection, KEEP-ALIVE: read a chunk and echo it back, looping until the peer closes (an
+-- empty read). `netClose s` consumes the socket exactly once on the close path; on the echo path
+-- the socket threads into the recursive `handler s`. Both paths consume `s` once — the linear
+-- checker verifies it across the branch, so no leak and no double-close are possible.
 handler :: Sock %1 -> IO ()
 handler s = do
   msg <- netRecv s
-  _ <- netSend s msg
-  netClose s
+  if strLen msg == 0
+    then netClose s
+    else do
+      _ <- netSend s msg
+      handler s
 
 -- The accept loop: wait for a connection (yields until one arrives), fork a handler for it, and
 -- loop — forever. `l` (the Listener) threads through the tail call; the handlers run in parallel.

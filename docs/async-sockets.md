@@ -100,6 +100,23 @@ main = bound $ acceptLoop (netListen 8080)     -- acceptLoop: accept (yields) �
   concurrent integration test covers correctness; a shell gate that drives a listening server was
   deferred over process-lifecycle friction in the sandbox.)*
 
+## Benchmark-readiness hardening (post-arc)
+
+Two follow-ups so a network benchmark is *fair* (not the eventfd I first floated — the poll loop only
+runs when `running==0`, so its fd set is never stale and active traffic is not bound by the 200 ms
+idle timeout; an eventfd would solve a non-problem):
+
+- **Keep-alive handler.** `SessGen` now lowers `if` in a session body (`gen_cont` + `collect_suspensions`
+  + `collect_bound_vars` descend both arms), so a handler can loop `recv`/echo until the peer closes —
+  with a suspension (`netSend`) and a self-recursive tail in one arm and `netClose` in the other. The
+  linear checker verifies the socket is consumed exactly once *per branch*. `examples/echoserver.axi`
+  is now keep-alive.
+- **Condvar wakeup.** Idle workers park on a `Condvar` (with a 50 ms timeout safety-net) instead of a
+  `sleep(200µs)` busy-backoff; readying a task (send/spawn/step-requeue/poller) notifies, so a
+  newly-ready task is picked up immediately. Standard `Mutex`+`Condvar` (TSan-clean); no lost wakeups
+  (state is lock-guarded and `wait_timeout` is atomic), and the timeout means a missed notify degrades
+  to a brief re-check, never a hang. Verified by a keep-alive multi-round-trip test (`net_server.rs`).
+
 ## Critical files
 - `axion-rt/src/lib.rs` — Stage 0 (non-blocking net ops + sentinel) and Stage 1 (scheduler fd-park +
   poll loop, `Inner` fields).

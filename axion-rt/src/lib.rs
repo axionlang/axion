@@ -704,6 +704,10 @@ struct Inner {
 }
 struct Sched {
     m: Mutex<Inner>,
+    // Idle workers park on this instead of busy-sleeping; woken when work appears (a task readied by
+    // a send/spawn/step, or the poller re-arming ready fds). A timeout on the wait is a safety net
+    // against a missed notify, so a lost wakeup degrades to a small re-check delay, never a hang.
+    cv: std::sync::Condvar,
 }
 
 // A step runs WITHOUT the scheduler lock, so it can't touch `Inner` directly. When it decides to
@@ -743,6 +747,7 @@ pub extern "C" fn axion_sess_new() -> i64 {
             par: false,
             ncompleted: 0,
         }),
+        cv: std::sync::Condvar::new(),
     });
     Box::into_raw(s) as i64
 }
@@ -775,6 +780,8 @@ pub unsafe extern "C" fn axion_sess_send(sched_p: i64, ep: i64, v: i64) {
     for i in woken {
         g.ready.push_back(i);
     }
+    drop(g);
+    sched(sched_p).cv.notify_all(); // a task became runnable → wake an idle worker
 }
 
 #[no_mangle]
@@ -820,6 +827,8 @@ pub unsafe extern "C" fn axion_sess_spawn(sched_p: i64, step: i64, state: i64) {
         state,
     });
     g.ready.push_back(i);
+    drop(g);
+    sched(sched_p).cv.notify_all(); // a new task is runnable → wake an idle worker
 }
 
 /// `poll()` the given (task, fd, want_write) set with a short timeout; return the tasks whose fd is
@@ -879,26 +888,32 @@ unsafe fn sess_worker(sched_p: i64) {
                     let woken = poll_fds(&watch);
                     let mut g = lock(s);
                     g.polling = false;
+                    let mut readied = false;
                     let mut k = 0;
                     while k < g.fd_parked.len() {
                         if woken.contains(&g.fd_parked[k].task) {
                             let f = g.fd_parked.swap_remove(k);
                             g.ready.push_back(f.task);
+                            readied = true;
                         } else {
                             k += 1;
                         }
                     }
+                    drop(g);
+                    if readied {
+                        s.cv.notify_all(); // fd(s) became ready → wake idle workers to run them
+                    }
                     continue;
                 }
-                // Another worker is polling, or steps are still running: back off without pegging a
-                // core (a network-idle server otherwise spins).
-                let idle = g.polling || !g.fd_parked.is_empty();
-                drop(g);
-                if idle {
-                    std::thread::sleep(std::time::Duration::from_micros(200));
-                } else {
-                    std::thread::yield_now();
-                }
+                // Nothing runnable for this worker right now (another worker owns the poll, or steps
+                // are still running elsewhere). Park on the condvar until work is readied — NOT a
+                // busy-sleep, so a newly-ready task is picked up immediately. The 50 ms timeout is a
+                // safety-net: a missed notify degrades to a brief re-check, never a hang.
+                let (guard, _) = s
+                    .cv
+                    .wait_timeout(g, std::time::Duration::from_millis(50))
+                    .unwrap_or_else(|e| e.into_inner());
+                drop(guard);
                 continue;
             }
             g.budget -= 1;
@@ -917,26 +932,35 @@ unsafe fn sess_worker(sched_p: i64) {
 
         let mut g = lock(s);
         g.running -= 1;
+        let mut wake = false;
         if fin == 1 {
             if g.par {
                 g.ncompleted += 1;
                 if g.ncompleted == g.tasks.len() {
                     g.done = true;
+                    wake = true; // let every idle worker observe `done` and exit
                 }
             } else if i == 0 {
                 g.result = *(st as *const i64);
                 g.done = true;
+                wake = true;
             }
         } else if fin == 2 || g.gen != gen0 {
             // 2: the task looped (recursion) → re-run. Also the lost-wakeup guard: a send during
             // this step → re-run, don't park.
             g.ready.push_back(i);
+            wake = true; // a task is runnable again
         } else if let Some((fd, want_write)) = park {
-            // Blocked on a socket: wait for fd readiness (poll), not a channel send.
+            // Blocked on a socket: wait for fd readiness (poll), not a channel send. The current
+            // worker loops and becomes the poller, so no wakeup is needed here.
             let entry = FdPark { task: i, fd, want_write };
             g.fd_parked.push(entry);
         } else {
             g.blocked.push(i);
+        }
+        drop(g);
+        if wake {
+            s.cv.notify_all();
         }
     }
 }
