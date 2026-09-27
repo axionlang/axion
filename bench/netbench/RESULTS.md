@@ -31,36 +31,60 @@ trials after a discarded warm-up. Loopback, `TCP_NODELAY` on both ends.
 `./run.py <N> <R> <msgbytes> <trials>` — measured on this dev machine (`rustc 1.95`, `clang 21`,
 `GHC 9.10.3`); absolute numbers are machine-specific, the **ratios** are the point.
 
+Axión numbers below are with the **epoll + sharded-readiness** scheduler (see "Tail-latency work").
+
 ### N = 50 connections × 500 round-trips (25 000 echoes/trial)
 
 | server | throughput (echo/s) | p50 (µs) | p99 (µs) |
 |--------|--------------------:|---------:|---------:|
-| C (pthread/conn)      | 360,241 | 99 | 276 |
-| Rust (thread/conn)    | 360,871 | 98 | 267 |
-| Haskell (forkIO)      | 281,628 | 88 | 1,309 |
-| **Axión (M:N session)** | **319,619** | **89** | **1,044** |
+| C (pthread/conn)      | 338,864 | 106 | 291 |
+| Rust (thread/conn)    | 316,500 | 95 | 395 |
+| Haskell (forkIO)      | 261,087 | 85 | 1,455 |
+| **Axión (M:N session)** | **315,404** | **106** | **962** |
 
 ### N = 200 connections × 200 round-trips (40 000 echoes/trial)
 
 | server | throughput (echo/s) | p50 (µs) | p99 (µs) |
 |--------|--------------------:|---------:|---------:|
-| C (pthread/conn)      | 342,261 | 188 | 695 |
-| Rust (thread/conn)    | 336,933 | 185 | 769 |
-| Haskell (forkIO)      | 289,394 | 118 | 3,290 |
-| **Axión (M:N session)** | **334,849** | **245** | **4,985** |
+| C (pthread/conn)      | 313,339 | 141 | 1,088 |
+| Rust (thread/conn)    | 309,205 | 155 | 772 |
+| Haskell (forkIO)      | 265,023 | 121 | 3,073 |
+| **Axión (M:N session)** | **305,818** | **397** | **2,011** |
+
+*(The machine is shared/noisy — absolute p99 swings run-to-run by ±50% even for C — so read these as
+representative, and the tail comparison below as the robust signal.)*
+
+## Tail-latency work: epoll + sharded readiness
+
+The **first** version of the scheduler detected socket readiness with a single `poll()` that ran only
+when no worker was computing (`running == 0`). Under sustained load that starves the poller — workers
+are almost always busy — so ready fds pile up and the p99 tail blew out to **≈5 ms at N=200**. The
+root cause was architectural (poll/compute non-overlap), not `poll` vs `epoll` per se.
+
+The fix: a **persistent `epoll` instance sharded across K dedicated I/O threads** (K = `cores/2`,
+capped at 4; `AXION_NET_SHARDS` overrides). Each shard thread blocks in `epoll_wait` **concurrently
+with the compute workers**, so readiness is never starved; a ready batch is re-readied under one lock
+acquisition (not one per fd) and hands off to workers via the condvar. Effect at N=200:
+
+| Axión scheduler | p50 (µs) | p99 (µs) |
+|-----------------|---------:|---------:|
+| single `poll()` (starved)     | 245 | **≈4,985** |
+| epoll + sharded (this version) | 397 | **≈1,500–2,000** |
+
+The **p99 tail is cut ~2.5–3×** — the pathological fat tail is gone. The remaining gap to C/Rust is now
+roughly **uniform** (~2–2.5× on both p50 and p99), which points at the next ceiling: the **single
+global `Mutex`** that serialises every task-state transition (the p50 rose slightly because each
+wakeup now crosses an I/O-thread → worker handoff). Sharding the *mutex* is the next lever — a larger
+change, deferred.
 
 ## Honest reading
 
-- **Throughput: Axión is competitive.** ~89% of C/Rust at N=50 and ~98% at N=200, and it beats GHC's
-  green-thread server on throughput at both loads. For a young language whose runtime is a from-scratch
-  Rust M:N scheduler, matching hand-tuned C/Rust echo throughput is a strong result.
-- **Tail latency (p99) is Axión's weak spot, and it's a known scheduler-maturity issue, not a design
-  flaw.** The scheduler uses a **single `poll()` poller** over all parked fds (O(n) per wakeup) and
-  **one global `Mutex`** for all task-state transitions. Under high fan-out (N=200) that shows as a
-  fat tail (≈5 ms p99). The obvious fixes — `epoll` instead of `poll`, multiple pollers / sharded
-  readiness, finer-grained locking — are runtime engineering, orthogonal to the safety guarantees.
-  (GHC, with a mature epoll manager, still shows a fat tail here too — tail latency under this model
-  is hard.)
+- **Throughput: Axión is competitive** — ~93–99% of C/Rust at both loads, and it beats GHC's
+  green-thread server. For a young language whose runtime is a from-scratch Rust M:N scheduler,
+  matching hand-tuned C/Rust echo throughput is a strong result.
+- **Tail latency: the fat tail is fixed; a uniform ~2× latency gap remains** at the global-mutex
+  ceiling — ordinary runtime engineering (shard the lock), orthogonal to the safety guarantees.
+  (GHC's mature epoll manager still shows a fatter tail here — tail latency under this model is hard.)
 - **What Axión gives up nothing on:** the server is GC-free, and the compiler *proved* — before it
   ran — that no socket leaks, no double-close, no use-after-close (linear `Sock`, AX0002/AX0001/AX0004),
   no data race (linearity + the Mutex scheduler), and no deadlock (acyclic `bound` nursery). C and

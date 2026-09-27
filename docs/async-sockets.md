@@ -116,6 +116,14 @@ idle timeout; an eventfd would solve a non-problem):
   newly-ready task is picked up immediately. Standard `Mutex`+`Condvar` (TSan-clean); no lost wakeups
   (state is lock-guarded and `wait_timeout` is atomic), and the timeout means a missed notify degrades
   to a brief re-check, never a hang. Verified by a keep-alive multi-round-trip test (`net_server.rs`).
+- **epoll + sharded readiness (tail-latency fix).** The single `poll()`-when-`running==0` poller
+  starved under sustained load (workers are always busy → ready fds pile up → ≈5 ms p99 at N=200).
+  Replaced with a **persistent `epoll` sharded across K dedicated I/O threads** (K = `cores/2`, cap 4;
+  `AXION_NET_SHARDS`), each blocked in `epoll_wait` **concurrently with the compute workers**, re-arming
+  fds level-triggered (DEL on wake / re-ADD on next park) with the (fd, task) packed in
+  `epoll_event.data`, batching a ready set under one lock, and woken on shutdown by an eventfd. Cut the
+  N=200 p99 tail ≈2.5–3× (see `bench/netbench/RESULTS.md`). Remaining gap is the single global `Mutex`
+  (the next lever). No compiler change — entirely in `axion-rt`'s scheduler.
 
 ## Critical files
 - `axion-rt/src/lib.rs` — Stage 0 (non-blocking net ops + sentinel) and Stage 1 (scheduler fd-park +

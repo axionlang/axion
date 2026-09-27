@@ -680,19 +680,13 @@ struct SessTask {
 /// non-blocking net op yielded the would-block sentinel, and registered its fd via
 /// `axion_sess_park_fd`. The scheduler `poll`s these fds and re-readies the ready ones — a wakeup
 /// source SEPARATE from channel sends (which drive the `blocked` list).
-struct FdPark {
-    task: usize,
-    fd: i32,
-    want_write: bool,
-}
 struct Inner {
     eps: Vec<SessEp>,
     peer: Vec<usize>,
     tasks: Vec<SessTask>,
     ready: VecDeque<usize>,
     blocked: Vec<usize>,
-    fd_parked: Vec<FdPark>, // tasks waiting on socket readiness (poll), not on a channel send
-    polling: bool,          // one worker owns the poll() at a time
+    n_parked: usize, // tasks currently waiting on socket readiness (registered with an epoll shard)
     running: i64,
     gen: u64,
     allocs: Vec<i64>, // task-state blocks, freed in bulk at run end
@@ -702,12 +696,49 @@ struct Inner {
     par: bool,        // parMap: finish when ALL tasks are done (no single root)
     ncompleted: usize,
 }
+
+/// One readiness SHARD (async sockets, tail-latency work): a persistent `epoll` instance plus an
+/// `eventfd` used to wake its I/O thread on shutdown. Socket fds are hashed to a shard by `fd % K`,
+/// and each shard has a dedicated thread blocked in `epoll_wait` — so readiness is detected
+/// CONCURRENTLY with the compute workers (no "poll only when idle" starvation) and in O(ready)
+/// rather than O(parked). The eventfd is registered in the epoll with data `EPOLL_SHUTDOWN`.
+struct Shard {
+    epfd: i32,
+    evfd: i32,
+}
+const EPOLL_SHUTDOWN: u64 = u64::MAX;
+
+/// Pack (fd, task) into an `epoll_event.data.u64` so a ready event carries both the fd (to remove
+/// from the set) and the task (to re-ready) with no side table. `task` fits in 32 bits in practice.
+#[inline]
+fn pack_fd_task(fd: i32, task: usize) -> u64 {
+    ((fd as u32 as u64) << 32) | (task as u64 & 0xffff_ffff)
+}
+
 struct Sched {
     m: Mutex<Inner>,
     // Idle workers park on this instead of busy-sleeping; woken when work appears (a task readied by
-    // a send/spawn/step, or the poller re-arming ready fds). A timeout on the wait is a safety net
+    // a send/spawn/step, or an epoll shard re-readying an fd). A timeout on the wait is a safety net
     // against a missed notify, so a lost wakeup degrades to a small re-check delay, never a hang.
     cv: std::sync::Condvar,
+    shards: Vec<Shard>, // epoll readiness shards (see `Shard`); `fd % shards.len()` picks one
+}
+
+/// Number of epoll readiness shards (dedicated I/O threads). `AXION_NET_SHARDS` overrides; otherwise
+/// scales with cores (`cores/2`, clamped to [1,4]) — measured to give the best tail latency at high
+/// connection fan-out (where readiness+wakeup work spread across shards keeps the p99 down) without
+/// oversubscribing small machines. The shard threads mostly block in `epoll_wait`, so idle cost is
+/// negligible (e.g. a `parMap` with no sockets just parks them until shutdown).
+fn sess_nshards() -> usize {
+    if let Ok(env) = std::env::var("AXION_NET_SHARDS") {
+        if let Ok(n) = env.parse::<usize>() {
+            if n >= 1 {
+                return n;
+            }
+        }
+    }
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    (cores / 2).clamp(1, 4)
 }
 
 // A step runs WITHOUT the scheduler lock, so it can't touch `Inner` directly. When it decides to
@@ -729,6 +760,22 @@ unsafe fn sched<'a>(p: i64) -> &'a Sched {
 
 #[no_mangle]
 pub extern "C" fn axion_sess_new() -> i64 {
+    // One epoll instance + eventfd per readiness shard; the eventfd is registered so a shutdown
+    // signal wakes the shard's `epoll_wait` immediately (no timeout polling → no shutdown latency).
+    let mut shards = Vec::new();
+    for _ in 0..sess_nshards() {
+        // SAFETY: standard Linux epoll/eventfd setup; fds are closed in `sess_free`.
+        unsafe {
+            let epfd = libc::epoll_create1(0);
+            let evfd = libc::eventfd(0, 0);
+            let mut ev = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: EPOLL_SHUTDOWN,
+            };
+            libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, evfd, &mut ev);
+            shards.push(Shard { epfd, evfd });
+        }
+    }
     let s = Box::new(Sched {
         m: Mutex::new(Inner {
             eps: Vec::new(),
@@ -736,8 +783,7 @@ pub extern "C" fn axion_sess_new() -> i64 {
             tasks: Vec::new(),
             ready: VecDeque::new(),
             blocked: Vec::new(),
-            fd_parked: Vec::new(),
-            polling: false,
+            n_parked: 0,
             running: 0,
             gen: 0,
             allocs: Vec::new(),
@@ -748,6 +794,7 @@ pub extern "C" fn axion_sess_new() -> i64 {
             ncompleted: 0,
         }),
         cv: std::sync::Condvar::new(),
+        shards,
     });
     Box::into_raw(s) as i64
 }
@@ -831,31 +878,65 @@ pub unsafe extern "C" fn axion_sess_spawn(sched_p: i64, step: i64, state: i64) {
     sched(sched_p).cv.notify_all(); // a new task is runnable → wake an idle worker
 }
 
-/// `poll()` the given (task, fd, want_write) set with a short timeout; return the tasks whose fd is
-/// ready (readable/writable, or hung-up/errored — `revents != 0`). Runs WITHOUT the scheduler lock.
-fn poll_fds(watch: &[(usize, i32, bool)]) -> Vec<usize> {
-    if watch.is_empty() {
-        return Vec::new();
-    }
-    let mut pfds: Vec<libc::pollfd> = watch
-        .iter()
-        .map(|&(_, fd, ww)| libc::pollfd {
-            fd,
-            events: if ww { libc::POLLOUT } else { libc::POLLIN },
-            revents: 0,
-        })
-        .collect();
-    // 200 ms timeout so the poller periodically returns to re-check `done` / new parks.
-    let n = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, 200) };
-    let mut woken = Vec::new();
-    if n > 0 {
-        for (idx, pfd) in pfds.iter().enumerate() {
-            if pfd.revents != 0 {
-                woken.push(watch[idx].0);
+/// One epoll readiness shard's dedicated I/O thread: block in `epoll_wait`, and for each ready fd
+/// remove it from the set (level-triggered → remove on wake, re-added when the task next parks) and
+/// re-ready its task, then wake a compute worker. The eventfd (data `EPOLL_SHUTDOWN`) breaks the
+/// loop at shutdown. Runs CONCURRENTLY with the workers, so socket readiness is never starved by
+/// busy workers — the tail-latency fix vs the old "poll only when running==0" poller.
+unsafe fn epoll_worker(sched_p: i64, shard: usize) {
+    let s = sched(sched_p);
+    let epfd = s.shards[shard].epfd;
+    let mut evs: [libc::epoll_event; 64] = std::mem::zeroed();
+    loop {
+        let n = libc::epoll_wait(epfd, evs.as_mut_ptr(), 64, -1);
+        if n < 0 {
+            if lock(s).done {
+                return;
             }
+            continue; // EINTR etc.
+        }
+        // Collect the whole ready batch (DEL each fd — level-triggered, re-added on next park —
+        // WITHOUT the lock), then take the scheduler lock ONCE to re-ready them and notify. Batching
+        // the lock keeps the I/O thread from contending with the workers on every single fd.
+        let mut woke: Vec<usize> = Vec::new();
+        let mut shutdown = false;
+        // index access on purpose: `epoll_event` is `#[repr(packed)]`, so the `u64` field must be
+        // read by value out of the array element (an iterator ref would be an unaligned borrow).
+        #[allow(clippy::needless_range_loop)]
+        for idx in 0..n as usize {
+            let data = evs[idx].u64; // copy out of the packed epoll_event
+            if data == EPOLL_SHUTDOWN {
+                shutdown = true;
+                continue; // the eventfd is written only on shutdown
+            }
+            let fd = (data >> 32) as i32;
+            let task = (data & 0xffff_ffff) as usize;
+            libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut());
+            woke.push(task);
+        }
+        if !woke.is_empty() {
+            let mut g = lock(s);
+            for t in &woke {
+                g.ready.push_back(*t);
+            }
+            g.n_parked -= woke.len();
+            drop(g);
+            s.cv.notify_all();
+        }
+        if shutdown {
+            return;
         }
     }
-    woken
+}
+
+/// Wake every idle worker AND every epoll shard I/O thread — used when `done` is set so all pool
+/// threads observe it and exit promptly (the eventfd write wakes an `epoll_wait` immediately).
+unsafe fn wake_all(s: &Sched) {
+    s.cv.notify_all();
+    let one: u64 = 1;
+    for sh in &s.shards {
+        libc::write(sh.evfd, std::ptr::addr_of!(one).cast(), 8);
+    }
 }
 
 /// One worker: pull a ready task, run its step WITHOUT the lock, then mark done / re-park.
@@ -869,45 +950,16 @@ unsafe fn sess_worker(sched_p: i64) {
             }
             if g.ready.is_empty() {
                 // Real deadlock ONLY when channel-blocked tasks remain with nothing running AND no
-                // task waiting on a socket: those sends will never come (types forbid this). If any
-                // task is fd-parked, the network can still wake us — poll instead of giving up.
-                if g.running == 0 && !g.blocked.is_empty() && g.fd_parked.is_empty() {
+                // task waiting on a socket: those sends will never come (types forbid this). A
+                // socket-parked task can still be woken by an epoll shard, so it is not a deadlock.
+                if g.running == 0 && !g.blocked.is_empty() && g.n_parked == 0 {
                     drop(g);
                     eprintln!("session scheduler: no progress (deadlock)");
                     std::process::exit(1);
                 }
-                // Quiescent with tasks waiting on sockets: one worker polls for readiness and
-                // re-readies the ready tasks (async sockets, Stage 1).
-                if g.running == 0 && !g.fd_parked.is_empty() && !g.polling {
-                    g.polling = true;
-                    let mut watch: Vec<(usize, i32, bool)> = Vec::with_capacity(g.fd_parked.len());
-                    for f in &g.fd_parked {
-                        watch.push((f.task, f.fd, f.want_write));
-                    }
-                    drop(g);
-                    let woken = poll_fds(&watch);
-                    let mut g = lock(s);
-                    g.polling = false;
-                    let mut readied = false;
-                    let mut k = 0;
-                    while k < g.fd_parked.len() {
-                        if woken.contains(&g.fd_parked[k].task) {
-                            let f = g.fd_parked.swap_remove(k);
-                            g.ready.push_back(f.task);
-                            readied = true;
-                        } else {
-                            k += 1;
-                        }
-                    }
-                    drop(g);
-                    if readied {
-                        s.cv.notify_all(); // fd(s) became ready → wake idle workers to run them
-                    }
-                    continue;
-                }
-                // Nothing runnable for this worker right now (another worker owns the poll, or steps
-                // are still running elsewhere). Park on the condvar until work is readied — NOT a
-                // busy-sleep, so a newly-ready task is picked up immediately. The 50 ms timeout is a
+                // Nothing runnable for this worker right now. Park on the condvar until work is
+                // readied — by another worker finishing, or by an epoll shard thread re-readying a
+                // socket-parked task and notifying. NOT a busy-sleep. The 50 ms timeout is a
                 // safety-net: a missed notify degrades to a brief re-check, never a hang.
                 let (guard, _) = s
                     .cv
@@ -932,34 +984,41 @@ unsafe fn sess_worker(sched_p: i64) {
 
         let mut g = lock(s);
         g.running -= 1;
-        let mut wake = false;
+        let mut readied = false;
         if fin == 1 {
             if g.par {
                 g.ncompleted += 1;
                 if g.ncompleted == g.tasks.len() {
                     g.done = true;
-                    wake = true; // let every idle worker observe `done` and exit
                 }
             } else if i == 0 {
                 g.result = *(st as *const i64);
                 g.done = true;
-                wake = true;
             }
         } else if fin == 2 || g.gen != gen0 {
             // 2: the task looped (recursion) → re-run. Also the lost-wakeup guard: a send during
             // this step → re-run, don't park.
             g.ready.push_back(i);
-            wake = true; // a task is runnable again
+            readied = true;
         } else if let Some((fd, want_write)) = park {
-            // Blocked on a socket: wait for fd readiness (poll), not a channel send. The current
-            // worker loops and becomes the poller, so no wakeup is needed here.
-            let entry = FdPark { task: i, fd, want_write };
-            g.fd_parked.push(entry);
+            // Blocked on a socket: register the fd with its epoll shard (fd % K). The shard's I/O
+            // thread re-readies the task when the fd becomes ready. Registered under the lock so
+            // `n_parked` and the epoll set stay consistent.
+            let shard = (fd as usize) % s.shards.len();
+            let mut ev = libc::epoll_event {
+                events: if want_write { libc::EPOLLOUT } else { libc::EPOLLIN } as u32,
+                u64: pack_fd_task(fd, i),
+            };
+            libc::epoll_ctl(s.shards[shard].epfd, libc::EPOLL_CTL_ADD, fd, &mut ev);
+            g.n_parked += 1;
         } else {
             g.blocked.push(i);
         }
+        let done_now = g.done;
         drop(g);
-        if wake {
+        if done_now {
+            wake_all(s);
+        } else if readied {
             s.cv.notify_all();
         }
     }
@@ -976,10 +1035,17 @@ fn sess_nthreads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
 }
 
-/// Run `nthreads` workers over the scheduler until `done`, then join them.
+/// Run the pool until `done`, then join: one dedicated epoll I/O thread per readiness shard
+/// (concurrent with compute) plus `nthreads` compute workers. On `done` a worker calls `wake_all`,
+/// whose eventfd writes wake the epoll threads so every thread exits promptly.
 unsafe fn run_pool(sched_p: i64) {
+    let nshards = sched(sched_p).shards.len();
+    let mut handles = Vec::new();
+    for shard in 0..nshards {
+        let p = sched_p;
+        handles.push(std::thread::spawn(move || unsafe { epoll_worker(p, shard) }));
+    }
     let n = sess_nthreads();
-    let mut handles = Vec::with_capacity(n);
     for _ in 0..n {
         let p = sched_p; // i64 is Send; each thread derefs it under the mutex.
         handles.push(std::thread::spawn(move || unsafe { sess_worker(p) }));
@@ -989,9 +1055,13 @@ unsafe fn run_pool(sched_p: i64) {
     }
 }
 
-/// Free the scheduler's endpoint queues and task-state blocks, then the Sched box.
+/// Free the scheduler's endpoint queues, task-state blocks, and epoll shard fds, then the Sched box.
 unsafe fn sess_free(sched_p: i64) -> i64 {
     let boxed = Box::from_raw(sched_p as *mut Sched);
+    for sh in &boxed.shards {
+        libc::close(sh.epfd);
+        libc::close(sh.evfd);
+    }
     let inner = lock(&boxed);
     for &a in &inner.allocs {
         libc::free(a as *mut libc::c_void);
