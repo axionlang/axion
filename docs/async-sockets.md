@@ -122,8 +122,11 @@ idle timeout; an eventfd would solve a non-problem):
   `AXION_NET_SHARDS`), each blocked in `epoll_wait` **concurrently with the compute workers**, re-arming
   fds level-triggered (DEL on wake / re-ADD on next park) with the (fd, task) packed in
   `epoll_event.data`, batching a ready set under one lock, and woken on shutdown by an eventfd. Cut the
-  N=200 p99 tail ≈2.5–3× (see `bench/netbench/RESULTS.md`). Remaining gap is the single global `Mutex`
-  (the next lever). No compiler change — entirely in `axion-rt`'s scheduler.
+  N=200 p99 tail ≈2.5–3× (see `bench/netbench/RESULTS.md`). No compiler change — entirely in
+  `axion-rt`'s scheduler. A worker-count sweep then showed the remaining ~2× gap is NOT the global
+  `Mutex` (throughput scales with cores, no contention collapse) but the intrinsic per-request
+  coordination of the M:N model (epoll→worker hand-off + step save/restore) vs zero-coordination
+  thread-per-connection — so sharding the mutex was measured and rejected as the wrong lever.
 
 ## Critical files
 - `axion-rt/src/lib.rs` — Stage 0 (non-blocking net ops + sentinel) and Stage 1 (scheduler fd-park +

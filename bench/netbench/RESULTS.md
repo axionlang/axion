@@ -72,19 +72,43 @@ acquisition (not one per fd) and hands off to workers via the condvar. Effect at
 | epoll + sharded (this version) | 397 | **≈1,500–2,000** |
 
 The **p99 tail is cut ~2.5–3×** — the pathological fat tail is gone. The remaining gap to C/Rust is now
-roughly **uniform** (~2–2.5× on both p50 and p99), which points at the next ceiling: the **single
-global `Mutex`** that serialises every task-state transition (the p50 rose slightly because each
-wakeup now crosses an I/O-thread → worker handoff). Sharding the *mutex* is the next lever — a larger
-change, deferred.
+roughly **uniform** (~2× on both p50 and p99).
+
+### Is the global mutex the next lever? Measured: **no.**
+
+The obvious hypothesis was that the single `Mutex<Inner>` serialising every task-state transition was
+the ceiling, so the next step would be to shard it. A worker-count sweep (N=200, `AXION_SESS_THREADS`)
+disproves that — throughput *scales up* with workers and p50 *drops*, then flattens at the core count:
+
+| workers | throughput | p50 | note |
+|--------:|-----------:|----:|------|
+| 1 | ~130k | ~970 µs | worker-bound |
+| 2 | ~195k | ~700 µs | |
+| 4 | ~235k | ~530 µs | |
+| 8 | ~245k | ~470 µs | flattens (= 8 cores) |
+| 12 | ~230k | ~510 µs | *oversubscription*, not lock-collapse |
+
+Lock contention would make throughput **plateau or collapse** as workers rise; instead it climbs to
+core-saturation and only dips when threads oversubscribe the 8 cores. **The mutex is not the
+bottleneck.** The remaining ~2× is the intrinsic **per-request coordination cost of the M:N model** —
+every socket wakeup crosses an epoll-thread → worker hand-off (condvar) plus a `SessGen` step
+save/restore, work that thread-per-connection C/Rust simply don't do (the same OS thread blocks in
+`recv` and continues on its own stack). Closing it would mean integrating the reactor into the
+workers (a per-core runtime, tasks pinned, no cross-thread hand-off) — a large architectural change,
+and even then M:N task-switching keeps some overhead. That ~2× is a reasonable price for the model
+that makes the server GC-free and memory/race/deadlock-safe *at compile time*; sharding the mutex
+would not move it.
 
 ## Honest reading
 
 - **Throughput: Axión is competitive** — ~93–99% of C/Rust at both loads, and it beats GHC's
   green-thread server. For a young language whose runtime is a from-scratch Rust M:N scheduler,
   matching hand-tuned C/Rust echo throughput is a strong result.
-- **Tail latency: the fat tail is fixed; a uniform ~2× latency gap remains** at the global-mutex
-  ceiling — ordinary runtime engineering (shard the lock), orthogonal to the safety guarantees.
-  (GHC's mature epoll manager still shows a fatter tail here — tail latency under this model is hard.)
+- **Tail latency: the fat tail is fixed; a uniform ~2× latency gap remains** — and a worker-count
+  sweep shows it is *not* the mutex (throughput scales with cores, no contention collapse; see above),
+  but the intrinsic per-request coordination of the M:N model vs zero-coordination thread-per-conn.
+  It is the price of the model that makes the server GC-free and memory/race/deadlock-safe at compile
+  time. (GHC's mature epoll manager still shows a fatter tail here — tail latency under this model is hard.)
 - **What Axión gives up nothing on:** the server is GC-free, and the compiler *proved* — before it
   ran — that no socket leaks, no double-close, no use-after-close (linear `Sock`, AX0002/AX0001/AX0004),
   no data race (linearity + the Mutex scheduler), and no deadlock (acyclic `bound` nursery). C and
