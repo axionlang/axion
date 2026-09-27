@@ -93,11 +93,29 @@ core-saturation and only dips when threads oversubscribe the 8 cores. **The mute
 bottleneck.** The remaining ~2× is the intrinsic **per-request coordination cost of the M:N model** —
 every socket wakeup crosses an epoll-thread → worker hand-off (condvar) plus a `SessGen` step
 save/restore, work that thread-per-connection C/Rust simply don't do (the same OS thread blocks in
-`recv` and continues on its own stack). Closing it would mean integrating the reactor into the
-workers (a per-core runtime, tasks pinned, no cross-thread hand-off) — a large architectural change,
-and even then M:N task-switching keeps some overhead. That ~2× is a reasonable price for the model
-that makes the server GC-free and memory/race/deadlock-safe *at compile time*; sharding the mutex
-would not move it.
+`recv` and continues on its own stack). Closing it would mean removing the epoll→worker hand-off — so that was spiked next.
+
+### Spiked and rejected: "run-on-reactor" affinity
+
+The obvious hand-off fix: let the epoll shard thread **run the ready socket step itself** (recv/echo/
+re-park loop) instead of waking a worker — a connection's whole keep-alive lifecycle then stays on
+one thread, hand-off- and condvar-free. Implemented as a spike and measured (K = shard count):
+
+- At low concurrency (N=50) p50 matched C/Rust (~85 µs). But
+- it **regressed throughput ~13%** (≈306k → ≈265k, i.e. 95% → ~78% of C/Rust) and did **not** improve
+  p99. Cause: a reactor thread runs *its* shard's ready fds **serially inline**, whereas the hand-off
+  model's shared ready queue lets **all** workers grab **any** ready task — better load-spreading that
+  outweighs the hand-off cost. No free lunch: the hand-off buys work-balancing.
+
+So the run-on-reactor change was **reverted** — the hand-off design is better. The lesson (again):
+the residual ~2× is not a single removable bottleneck; it is the M:N shared-scheduler model's
+coordination + load-balancing machinery vs thread-per-connection's zero-coordination, perfectly
+parallel (one OS thread per connection) model. At *moderate* load (N=50) Axión is already near parity
+(p50 ~104 vs ~100, ~94% throughput); the gap only opens at high fan-out, and it is the price of the
+model that makes the server GC-free and memory/race/deadlock-safe *at compile time*. Neither sharding
+the mutex nor running on the reactor moves it; the only thing that would is abandoning the shared M:N
+scheduler for a pinned per-core runtime with work-stealing — a large, risky rewrite whose payoff the
+spike suggests is small. Not worth it.
 
 ## Honest reading
 
