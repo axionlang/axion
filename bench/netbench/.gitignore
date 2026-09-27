@@ -1,0 +1,8 @@
+# compiled benchmark binaries + GHC intermediates (rebuilt via the commands in RESULTS.md)
+echo_rust
+echo_c
+echo_hs
+echo_axion
+loadgen
+*.o
+*.hi
