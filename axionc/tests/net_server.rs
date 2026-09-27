@@ -185,7 +185,11 @@ fn native_cranelift_keepalive_echo_server() {
                 s.write_all(m.as_bytes()).unwrap();
                 let mut buf = [0u8; 64];
                 let r = s.read(&mut buf).unwrap();
-                assert_eq!(&buf[..r], m.as_bytes(), "keep-alive round-trip {i} for client {c}");
+                assert_eq!(
+                    &buf[..r],
+                    m.as_bytes(),
+                    "keep-alive round-trip {i} for client {c}"
+                );
             }
         }));
     }
