@@ -1445,6 +1445,7 @@ pub fn builtins() -> HashSet<String> {
         "spawn",
         "parMap",
         "connect",
+        "pipe3",
         // arbitrary-precision Integer (§ Listing 1.4)
         "fromInt",
         "showInteger",
@@ -2322,6 +2323,10 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("parMap".to_string(), vec![Mult::Many, Mult::Many]);
     // worker↔worker (§9): `connect prod cons` borrows both worker closures (inert Many).
     consumers.insert("connect".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert(
+        "pipe3".to_string(),
+        vec![Mult::Many, Mult::Many, Mult::Many],
+    );
     // FFI imports: the arguments (Int) are borrowed.
     for fo in &module.foreigns {
         let arity = fo.sig.param_mults().len();

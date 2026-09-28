@@ -129,6 +129,35 @@ def forestEx : Config where
 example : ¬ deadlocked forestEx := no_deadlock forestEx
 example : ∃ i ∈ forestEx.live, runnable forestEx i := progress forestEx (by decide)
 
+/-- A CHAIN configuration — the worker↔worker `pipe3` topology: a producer (thread 0, runnable), a
+    relay (thread 1, blocked on the producer), and a consumer (thread 2, blocked on the relay),
+    ranked by position in the pipeline. Data flows 0→1→2; the waits-for graph is the reverse chain
+    (2 waits 1 waits 0), which the rank `id` witnesses acyclic. So `pipe3` is a valid `Config` and
+    `progress`/`no_deadlock` cover it — deadlock-freedom of the chain needs NO new theorem, only that
+    a linear pipeline admits a rank (position). -/
+def chainEx : Config where
+  live := [0, 1, 2]
+  waits := fun i => if i = 2 then some 1 else if i = 1 then some 0 else none
+  rank := id
+  acyclic := by
+    intro i j h
+    by_cases h2 : i = 2
+    · subst h2; injection h with h; subst h; decide
+    · by_cases h1 : i = 1
+      · subst h1; injection h with h; subst h; decide
+      · rw [if_neg h2, if_neg h1] at h; exact absurd h (by simp)
+  peer_live := by
+    intro i j _ h
+    by_cases h2 : i = 2
+    · subst h2; injection h with h; subst h; decide
+    · by_cases h1 : i = 1
+      · subst h1; injection h with h; subst h; decide
+      · rw [if_neg h2, if_neg h1] at h; exact absurd h (by simp)
+
+/-- The `pipe3` chain is never deadlocked, and `progress` exhibits the runnable producer. -/
+example : ¬ deadlocked chainEx := no_deadlock chainEx
+example : ∃ i ∈ chainEx.live, runnable chainEx i := progress chainEx (by decide)
+
 /-! ## `spawn` preserves acyclicity (deadlock-freedom BY CONSTRUCTION). -/
 
 /-- Forking a fresh child `k` (a new, higher rank than every existing thread) that is either

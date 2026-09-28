@@ -418,6 +418,13 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
                     return run_connect(prog, env, args[0], args[1]);
                 }
             }
+            // `pipe3 s1 s2 s3` (§9): worker↔worker CHAIN — producer→relay→consumer over two channels
+            // (data flows worker→worker→worker, not via a parent); returns the consumer's result.
+            if let (Some("pipe3"), args) = app_head(e) {
+                if args.len() == 3 {
+                    return run_pipe3(prog, env, args[0], args[1], args[2]);
+                }
+            }
             let callee = eval(prog, env, f)?;
             let arg = eval(prog, env, x)?;
             apply(prog, callee, arg)
@@ -1842,6 +1849,40 @@ fn fork_child(f: Value, arg: Value) -> Result<Task, RunError> {
     }
 }
 
+/// Like `fork_child` but seeds TWO endpoint arguments — for a `pipe3` relay stage
+/// `\up down -> …` that recvs from upstream on `up` and sends downstream on `down`.
+fn fork_child2(f: Value, up: Value, down: Value) -> Result<Task, RunError> {
+    match f {
+        Value::Closure { def, env, mut args } => {
+            let clause = def.clauses.first().ok_or("pipe3: closure with no clause")?;
+            args.push(up);
+            args.push(down);
+            if args.len() != clause.pats.len() {
+                return Err(format!(
+                    "pipe3: relay takes {} argument(s), got {}",
+                    clause.pats.len(),
+                    args.len()
+                ));
+            }
+            let child = child_env(&env);
+            for (p, a) in clause.pats.iter().zip(args.iter()) {
+                match_pat(p, a, &child);
+            }
+            match &clause.body {
+                Body::Plain(b) => Ok(Task {
+                    cont: b.clone(),
+                    env: child,
+                }),
+                _ => Err("pipe3: guarded body not supported".into()),
+            }
+        }
+        other => Err(format!(
+            "pipe3 expects a function, got {}",
+            type_name(&other)
+        )),
+    }
+}
+
 /// The cooperative scheduler: runs the root task (of the `bound`) and its children until
 /// the root finishes. Round-robin; a sweep with no progress and live tasks is
 /// deadlock (should not happen — the types guarantee it, AX0302).
@@ -2041,6 +2082,79 @@ fn run_connect(
         }
         if !progressed {
             return Err("deadlock in the connect scheduler (types guarantee it cannot)".into());
+        }
+    }
+}
+
+/// Worker↔worker chain `pipe3 s1 s2 s3`: PRODUCER → RELAY → CONSUMER wired by two channels
+/// (`c1`: s1→s2, `c2`: s2→s3). The relay `s2` holds two endpoints (recv-from-`s1`, send-to-`s3`).
+/// Runs all three to quiescence; returns the consumer's finished value. Deadlock-free by
+/// construction (a linear 3-node chain; the round-robin cannot stall unless the types are violated).
+fn run_pipe3(
+    prog: &Program,
+    env: &Env,
+    s1_expr: &Expr,
+    s2_expr: &Expr,
+    s3_expr: &Expr,
+) -> Result<Value, RunError> {
+    let s1 = eval(prog, env, s1_expr)?;
+    let s2 = eval(prog, env, s2_expr)?;
+    let s3 = eval(prog, env, s3_expr)?;
+    let mut sched = Sched {
+        bufs: Vec::new(),
+        peer: Vec::new(),
+    };
+    let (a1, b1) = sched.new_channel(); // s1 sends on a1, s2 recvs on b1
+    let (a2, b2) = sched.new_channel(); // s2 sends on a2, s3 recvs on b2
+    const CONS: usize = 2;
+    let mut tasks: Vec<Option<Task>> = vec![
+        Some(fork_child(s1, Value::Endpoint(a1))?),
+        Some(fork_child2(s2, Value::Endpoint(b1), Value::Endpoint(a2))?),
+        Some(fork_child(s3, Value::Endpoint(b2))?),
+    ];
+    let mut result: Option<Value> = None;
+    let mut budget: u64 = 5_000_000;
+    loop {
+        let mut progressed = false;
+        let mut live = false;
+        let n = tasks.len();
+        for i in 0..n {
+            loop {
+                budget -= 1;
+                if budget == 0 {
+                    return Err("pipe3 scheduler: no progress (limit)".into());
+                }
+                let Some(task) = tasks[i].take() else { break };
+                let mut spawned = Vec::new();
+                let out = step(prog, &mut sched, task, &mut spawned);
+                for t in spawned {
+                    tasks.push(Some(t));
+                }
+                match out? {
+                    StepOut::Went(t) => {
+                        tasks[i] = Some(t);
+                        progressed = true;
+                    }
+                    StepOut::Blocked(t) => {
+                        tasks[i] = Some(t);
+                        live = true;
+                        break;
+                    }
+                    StepOut::Done(v) => {
+                        progressed = true;
+                        if i == CONS {
+                            result = Some(v);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if !live {
+            return result.ok_or_else(|| "pipe3: consumer finished without a result".into());
+        }
+        if !progressed {
+            return Err("deadlock in the pipe3 scheduler (types guarantee it cannot)".into());
         }
     }
 }

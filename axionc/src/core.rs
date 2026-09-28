@@ -1353,6 +1353,15 @@ fn parmap_targets(e: &Expr, out: &mut Vec<String>) {
             }
         }
     }
+    // worker↔worker chain `pipe3 s1 s2 s3`: each of the three stages gets a `<name>$step` state
+    // machine (the middle stage is two-endpoint, resolved from its layout), so collect all three.
+    if let (Some("pipe3"), args) = sess_spine(e) {
+        for a in args.iter().take(3) {
+            if let Expr::Var(n, _) = a {
+                out.push(n.clone());
+            }
+        }
+    }
     match e {
         Expr::App(f, a, _) | Expr::BinOp(_, f, a, _) => {
             parmap_targets(f, out);
@@ -1517,7 +1526,7 @@ struct Lower<'a> {
     /// §9 structured fork-join: worker name → (step-fn name, state size, endpoint
     /// param slot) for every `parMap` target, so a `parMap` call lowers to the
     /// `axion_par_map` runtime driver.
-    parmap_workers: &'a HashMap<String, (String, i32, i32)>,
+    parmap_workers: &'a HashMap<String, (String, i32, i32, i32)>,
     /// Names bound locally in the function being lowered (params, `let`s, lambda
     /// params, `case` pattern vars). A bare reference to one of these is a local
     /// variable even if a same-named nullary global (CAF) exists — it shadows it.
@@ -1991,7 +2000,8 @@ impl Lower<'_> {
             // live inside the driver's own scheduler, never in the linear world.
             ("parMap", 2) => {
                 if let Expr::Var(wname, _) = args[0] {
-                    if let Some((step, size, ep_slot)) = self.parmap_workers.get(wname).cloned() {
+                    if let Some((step, size, ep_slot, _)) = self.parmap_workers.get(wname).cloned()
+                    {
                         let xs = self.atom(args[1], buf);
                         let fa = self.fresh();
                         buf.push((fa.clone(), Rhs::Op(Op::FuncAddr(step)), NO_SPAN));
@@ -2030,7 +2040,7 @@ impl Lower<'_> {
             // size, ep_slot) triple for each. The channel lives inside the driver's own scheduler.
             ("connect", 2) => {
                 if let (Expr::Var(pname, _), Expr::Var(cname, _)) = (args[0], args[1]) {
-                    if let (Some((ps, psz, pep)), Some((cs, csz, cep))) = (
+                    if let (Some((ps, psz, pep, _)), Some((cs, csz, cep, _))) = (
                         self.parmap_workers.get(pname).cloned(),
                         self.parmap_workers.get(cname).cloned(),
                     ) {
@@ -2054,6 +2064,52 @@ impl Lower<'_> {
                 }
                 return Op::Unsupported(
                     "connect: both workers must be named top-level session functions".into(),
+                );
+            }
+            // §9 worker↔worker chain: `pipe3 s1 s2 s3` → the `axion_pipe3` runtime driver — a
+            // producer→relay→consumer pipeline (the N=3 generalization of `connect`). The relay
+            // `s2` holds TWO endpoints (recv-from-`s1`, send-to-`s3`), so it contributes both its
+            // up- and down-slots; `s1`/`s3` are single-endpoint like connect's prod/cons. Data
+            // flows worker→worker→worker; the driver returns `s3`'s result. Deadlock-free by
+            // construction: a linear chain is rank-ordered (rank = position).
+            ("pipe3", 3) => {
+                if let (Expr::Var(n1, _), Expr::Var(n2, _), Expr::Var(n3, _)) =
+                    (args[0], args[1], args[2])
+                {
+                    if let (Some(w1), Some(w2), Some(w3)) = (
+                        self.parmap_workers.get(n1).cloned(),
+                        self.parmap_workers.get(n2).cloned(),
+                        self.parmap_workers.get(n3).cloned(),
+                    ) {
+                        let (s1, sz1, down1, _) = w1; // producer: down-endpoint only
+                        let (s2, sz2, up2, down2) = w2; // relay: recv up2, send down2
+                        let (s3, sz3, up3, _) = w3; // consumer: up-endpoint only
+                        let a1 = self.fresh();
+                        buf.push((a1.clone(), Rhs::Op(Op::FuncAddr(s1)), NO_SPAN));
+                        let a2 = self.fresh();
+                        buf.push((a2.clone(), Rhs::Op(Op::FuncAddr(s2)), NO_SPAN));
+                        let a3 = self.fresh();
+                        buf.push((a3.clone(), Rhs::Op(Op::FuncAddr(s3)), NO_SPAN));
+                        return Op::RtCall {
+                            func: "axion_pipe3".into(),
+                            args: vec![
+                                Atom::Var(a1),
+                                Atom::Int(sz1 as i64),
+                                Atom::Int(down1 as i64),
+                                Atom::Var(a2),
+                                Atom::Int(sz2 as i64),
+                                Atom::Int(up2 as i64),
+                                Atom::Int(down2 as i64),
+                                Atom::Var(a3),
+                                Atom::Int(sz3 as i64),
+                                Atom::Int(up3 as i64),
+                            ],
+                            returns: true,
+                        };
+                    }
+                }
+                return Op::Unsupported(
+                    "pipe3: all three stages must be named top-level session functions".into(),
                 );
             }
             _ => {}
@@ -2524,7 +2580,7 @@ fn lower_func(
     parametric_data: &HashSet<String>,
     makecon_tys: &HashMap<Span, Type>,
     array_tys: &HashMap<Span, Type>,
-    parmap_workers: &HashMap<String, (String, i32, i32)>,
+    parmap_workers: &HashMap<String, (String, i32, i32, i32)>,
     fn_arity: &HashMap<String, usize>,
     where_captures: &HashMap<String, Vec<String>>,
     integer_pats: &HashSet<Span>,
@@ -2840,11 +2896,12 @@ impl Eta {
                 // each to its state machine — mirrors why session lowering runs pre-eta.
                 let is_parmap = matches!(head, Expr::Var(n, _) if n == "parMap");
                 let is_connect = matches!(head, Expr::Var(n, _) if n == "connect");
+                let is_pipe3 = matches!(head, Expr::Var(n, _) if n == "pipe3");
                 let targs: Vec<Expr> = args
                     .iter()
                     .enumerate()
                     .map(|(i, a)| {
-                        if (is_parmap && i == 0) || (is_connect && i < 2) {
+                        if (is_parmap && i == 0) || (is_connect && i < 2) || (is_pipe3 && i < 3) {
                             (*a).clone()
                         } else {
                             self.expr(a)
@@ -3933,7 +3990,10 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
 /// emit `axion_par_map`. Runs on the ORIGINAL (pre-eta) AST so the worker is a bare
 /// name. Empty if the module uses no `parMap`.
 /// `parMap` worker name → (step-fn name, state size, endpoint-param byte offset).
-type ParmapWorkers = HashMap<String, (String, i32, i32)>;
+// worker name → (step-fn name, state size, up/first-endpoint slot, down/second-endpoint slot).
+// Single-endpoint workers (parMap/connect) leave down == up; a `pipe3` relay stage has two
+// endpoints (recv-from-upstream, send-to-downstream), so it reads both slots.
+type ParmapWorkers = HashMap<String, (String, i32, i32, i32)>;
 
 fn parmap_worker_steps(
     module: &ast::Module,
@@ -4006,8 +4066,12 @@ fn parmap_worker_steps(
             owned_drop_ty: Vec::new(),
             body: step_body,
         });
-        let ep_slot = lay.param_slots.first().copied().unwrap_or(16);
-        map.insert(wf.name.clone(), (lay.step.clone(), lay.size, ep_slot));
+        let up_slot = lay.param_slots.first().copied().unwrap_or(16);
+        let down_slot = lay.param_slots.get(1).copied().unwrap_or(up_slot);
+        map.insert(
+            wf.name.clone(),
+            (lay.step.clone(), lay.size, up_slot, down_slot),
+        );
     }
     (fns, map)
 }

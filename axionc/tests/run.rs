@@ -5206,3 +5206,27 @@ fn connect_worker_to_worker_runs_on_all_backends() {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n", "{backend:?}");
     }
 }
+
+#[test]
+fn pipe3_worker_chain_runs_on_all_backends() {
+    // §9 worker↔worker CHAIN: `pipe3 prod relay cons` is the N=3 generalization of `connect` — a
+    // producer sends 20 to a relay, which doubles it and sends 40 to a consumer, which returns it.
+    // Data flows worker→worker→worker (the relay holds two endpoints); deadlock-free by construction
+    // (linear chain, rank = position). Identical on interp, cranelift, and llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = example("pipe3.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "pipe3 should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "40\n", "{backend:?}");
+    }
+}

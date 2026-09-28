@@ -2051,6 +2051,31 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // pipe3 :: forall a b c d e f g. (Ep a -> b) -> (Ep c -> Ep d -> e) -> (Ep f -> g) -> g
+        // worker↔worker chain (§9): the N=3 generalization of `connect` — a PRODUCER (`s1`), a RELAY
+        // (`s2`, TWO endpoints: recv-from-`s1`, send-to-`s3`), and a CONSUMER (`s3`). Data flows
+        // worker→worker→worker; returns the consumer's result. Deadlock-free by construction (a
+        // linear 3-node chain, rank = position). Permissive HM like `connect`; fidelity is
+        // `check_sessions`'s job.
+        env.insert(
+            "pipe3".into(),
+            Scheme {
+                vars: vec![0, 1, 2, 3, 4, 5, 6],
+                ty: Ty::Fun(
+                    Box::new(Ty::Fun(Box::new(ep(0)), Box::new(Ty::Var(1)))),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Fun(
+                            Box::new(ep(2)),
+                            Box::new(Ty::Fun(Box::new(ep(3)), Box::new(Ty::Var(4)))),
+                        )),
+                        Box::new(Ty::Fun(
+                            Box::new(Ty::Fun(Box::new(ep(5)), Box::new(Ty::Var(6)))),
+                            Box::new(Ty::Var(6)),
+                        )),
+                    )),
+                ),
+            },
+        );
         // session choice (§6/§9): `select L c` chooses the label `L` (⊕) and
         // advances; `offer c` receives the choice (&) and consumes the endpoint. Permissive
         // types — fidelity/exhaustiveness is `check_sessions`'s job.

@@ -1173,6 +1173,47 @@ pub unsafe extern "C" fn axion_connect(
     result
 }
 
+/// Worker↔worker CHAIN `pipe3` — the N=3 generalization of `axion_connect`: a PRODUCER (`s1`), a
+/// RELAY (`s2`), and a CONSUMER (`s3`) wired by TWO internal channels (`c1`: s1→s2, `c2`: s2→s3).
+/// `s1` sends on its down-end, `s2` recvs on its up-end + sends on its down-end, `s3` recvs on its
+/// up-end and returns the final value (its state[0], as connect's consumer does). Data flows
+/// worker→worker→worker — never through the parent. Deadlock-free by construction: the waits-for
+/// graph is the chain (s3 waits s2 waits s1), rank = position, so it is acyclic. Like the other
+/// combinators the channels live inside this nursery and never enter the linear/`bound` checker.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn axion_pipe3(
+    s1_step: i64,
+    s1_size: i64,
+    s1_down: i64,
+    s2_step: i64,
+    s2_size: i64,
+    s2_up: i64,
+    s2_down: i64,
+    s3_step: i64,
+    s3_size: i64,
+    s3_up: i64,
+) -> i64 {
+    let sp = axion_sess_new();
+    lock(sched(sp)).par = true;
+    let c1 = axion_sess_channel(sp); // s1 send-end c1 ↔ s2 recv-end c1+1
+    let c2 = axion_sess_channel(sp); // s2 send-end c2 ↔ s3 recv-end c2+1
+    let st1 = axion_sess_alloc(sp, s1_size);
+    *((st1 + s1_down) as *mut i64) = c1;
+    let st2 = axion_sess_alloc(sp, s2_size);
+    *((st2 + s2_up) as *mut i64) = c1 + 1;
+    *((st2 + s2_down) as *mut i64) = c2;
+    let st3 = axion_sess_alloc(sp, s3_size);
+    *((st3 + s3_up) as *mut i64) = c2 + 1;
+    axion_sess_spawn(sp, s1_step, st1);
+    axion_sess_spawn(sp, s2_step, st2);
+    axion_sess_spawn(sp, s3_step, st3);
+    run_pool(sp);
+    let result = *(st3 as *const i64); // consumer's result slot (state[0]) — read before sess_free
+    sess_free(sp);
+    result
+}
+
 /// Run `main` (an i64()-returning fn pointer) on a thread with a large (1 GiB) stack, so deep
 /// non-tail recursion grows toward RAM instead of overflowing the default stack.
 #[no_mangle]
@@ -2098,6 +2139,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_mkdir_p", axion_mkdir_p as *const u8),
         ("axion_par_map", axion_par_map as *const u8),
         ("axion_connect", axion_connect as *const u8),
+        ("axion_pipe3", axion_pipe3 as *const u8),
         ("axion_put", axion_put as *const u8),
         ("axion_puts", axion_puts as *const u8),
         ("axion_rand_hex", axion_rand_hex as *const u8),
