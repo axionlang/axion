@@ -96,8 +96,13 @@ impl Tr<'_> {
             | Op::MakeRecord { .. }
             | Op::ShowInt(_)
             | Op::PutStr(_)
-            | Op::PutStrLn(_) => {}
-            Op::MakeClosure { .. } | Op::CallClosure(..) => return Err("closure"),
+            | Op::PutStrLn(_)
+            // A closure: `op_delta_effect` BORROWS its captures (→ `use`; the enclosing frame keeps
+            // and frees them at their real consumer) and produces the closure cell (→ `alloc`),
+            // which Auto-Drop then `drop`s (local) or which is moved out (escaping) — both balance.
+            // A closure CALL moves its args (→ `moveOut`); the callee (`nonstrict`) is not tracked.
+            | Op::MakeClosure { .. }
+            | Op::CallClosure(..) => {}
             Op::Field { .. } => return Err("field-alias (borrow)"),
             Op::UpdateRecord { .. } => return Err("record-update"),
             Op::ArrayNew { .. } => return Err("array"),
