@@ -5183,3 +5183,26 @@ fn num_arithmetic_does_not_mix_int_and_float() {
         "expected an Int/Float mismatch, output: {text}"
     );
 }
+
+#[test]
+fn connect_worker_to_worker_runs_on_all_backends() {
+    // §9 worker↔worker: `connect prod cons` runs a producer + consumer on the two ends of ONE
+    // channel — the producer sends 42 DIRECTLY to the consumer (peer-to-peer, not via `main`) — and
+    // returns the consumer's result. Deadlock-free by construction; identical on all three backends.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = example("connect.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "connect should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n", "{backend:?}");
+    }
+}

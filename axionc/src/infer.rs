@@ -2033,6 +2033,24 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // connect :: forall a b c d. (Ep a -> b) -> (Ep c -> d) -> d
+        // worker↔worker (§9): spawns a PRODUCER and a CONSUMER on the two ends of ONE channel — the
+        // producer sends directly to the consumer (peer-to-peer, not via the parent) — runs both,
+        // and returns the consumer's result. Its own self-contained nursery, deadlock-free by
+        // construction (2-node chain). Permissive HM like `parMap`; fidelity is `check_sessions`'s job.
+        env.insert(
+            "connect".into(),
+            Scheme {
+                vars: vec![0, 1, 2, 3],
+                ty: Ty::Fun(
+                    Box::new(Ty::Fun(Box::new(ep(0)), Box::new(Ty::Var(1)))),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Fun(Box::new(ep(2)), Box::new(Ty::Var(3)))),
+                        Box::new(Ty::Var(3)),
+                    )),
+                ),
+            },
+        );
         // session choice (§6/§9): `select L c` chooses the label `L` (⊕) and
         // advances; `offer c` receives the choice (&) and consumes the endpoint. Permissive
         // types — fidelity/exhaustiveness is `check_sessions`'s job.

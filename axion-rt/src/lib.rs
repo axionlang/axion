@@ -1143,6 +1143,36 @@ pub unsafe extern "C" fn axion_par_map(step: i64, state_size: i64, ep_slot: i64,
     list
 }
 
+/// Worker↔worker `connect` (docs/async-sockets.md sibling — the concurrency-topology milestone):
+/// create ONE channel, spawn the PRODUCER on one end and the CONSUMER on the other, run BOTH to
+/// completion (PAR mode), and return the consumer's result (its state[0]). The producer sends
+/// DIRECTLY to the consumer — a peer-to-peer edge, not routed through the parent. Deadlock-free by
+/// construction: a 2-node chain is trivially rank-ordered. Like `axion_par_map`, the channel lives
+/// inside this combinator's own nursery and never enters the linear/`bound` checker.
+#[no_mangle]
+pub unsafe extern "C" fn axion_connect(
+    prod_step: i64,
+    prod_size: i64,
+    prod_ep: i64,
+    cons_step: i64,
+    cons_size: i64,
+    cons_ep: i64,
+) -> i64 {
+    let sp = axion_sess_new();
+    lock(sched(sp)).par = true;
+    let a = axion_sess_channel(sp); // a ↔ a+1
+    let ps = axion_sess_alloc(sp, prod_size);
+    *((ps + prod_ep) as *mut i64) = a; // producer's endpoint = send-end `a`
+    let cs = axion_sess_alloc(sp, cons_size);
+    *((cs + cons_ep) as *mut i64) = a + 1; // consumer's endpoint = recv-end `a+1`
+    axion_sess_spawn(sp, prod_step, ps);
+    axion_sess_spawn(sp, cons_step, cs);
+    run_pool(sp);
+    let result = *(cs as *const i64); // consumer's result slot (state[0]) — read before sess_free
+    sess_free(sp);
+    result
+}
+
 /// Run `main` (an i64()-returning fn pointer) on a thread with a large (1 GiB) stack, so deep
 /// non-tail recursion grows toward RAM instead of overflowing the default stack.
 #[no_mangle]
@@ -2067,6 +2097,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_i8_sum", axion_i8_sum as *const u8),
         ("axion_mkdir_p", axion_mkdir_p as *const u8),
         ("axion_par_map", axion_par_map as *const u8),
+        ("axion_connect", axion_connect as *const u8),
         ("axion_put", axion_put as *const u8),
         ("axion_puts", axion_puts as *const u8),
         ("axion_rand_hex", axion_rand_hex as *const u8),

@@ -1344,6 +1344,15 @@ fn parmap_targets(e: &Expr, out: &mut Vec<String>) {
             out.push(n.clone());
         }
     }
+    // worker↔worker `connect prod cons`: both workers get a `<name>$step` state machine, exactly
+    // like a parMap worker (single endpoint), so collect both named args.
+    if let (Some("connect"), args) = sess_spine(e) {
+        for a in args.iter().take(2) {
+            if let Expr::Var(n, _) = a {
+                out.push(n.clone());
+            }
+        }
+    }
     match e {
         Expr::App(f, a, _) | Expr::BinOp(_, f, a, _) => {
             parmap_targets(f, out);
@@ -2013,6 +2022,38 @@ impl Lower<'_> {
                 }
                 return Op::Unsupported(
                     "parMap: the worker must be a named top-level session function".into(),
+                );
+            }
+            // §9 worker↔worker: `connect prod cons` → the `axion_connect` runtime driver. Both
+            // workers' state machines + layouts (size, endpoint slot) were resolved pre-eta (via
+            // `parmap_targets`); materialize both step addresses and hand the runtime the (step,
+            // size, ep_slot) triple for each. The channel lives inside the driver's own scheduler.
+            ("connect", 2) => {
+                if let (Expr::Var(pname, _), Expr::Var(cname, _)) = (args[0], args[1]) {
+                    if let (Some((ps, psz, pep)), Some((cs, csz, cep))) = (
+                        self.parmap_workers.get(pname).cloned(),
+                        self.parmap_workers.get(cname).cloned(),
+                    ) {
+                        let pfa = self.fresh();
+                        buf.push((pfa.clone(), Rhs::Op(Op::FuncAddr(ps)), NO_SPAN));
+                        let cfa = self.fresh();
+                        buf.push((cfa.clone(), Rhs::Op(Op::FuncAddr(cs)), NO_SPAN));
+                        return Op::RtCall {
+                            func: "axion_connect".into(),
+                            args: vec![
+                                Atom::Var(pfa),
+                                Atom::Int(psz as i64),
+                                Atom::Int(pep as i64),
+                                Atom::Var(cfa),
+                                Atom::Int(csz as i64),
+                                Atom::Int(cep as i64),
+                            ],
+                            returns: true,
+                        };
+                    }
+                }
+                return Op::Unsupported(
+                    "connect: both workers must be named top-level session functions".into(),
                 );
             }
             _ => {}
@@ -2794,16 +2835,16 @@ impl Eta {
             },
             Expr::App(_, _, _) => {
                 let (head, args) = spine(e);
-                // `parMap worker xs`: keep the worker argument as a bare name (do NOT
-                // eta-wrap it into `\v -> worker v`), so the native lowering can
-                // resolve it to the worker's state machine — mirrors why session
-                // lowering runs pre-eta.
+                // `parMap worker xs` / `connect prod cons`: keep the worker argument(s) as bare
+                // names (do NOT eta-wrap into `\v -> worker v`), so the native lowering can resolve
+                // each to its state machine — mirrors why session lowering runs pre-eta.
                 let is_parmap = matches!(head, Expr::Var(n, _) if n == "parMap");
+                let is_connect = matches!(head, Expr::Var(n, _) if n == "connect");
                 let targs: Vec<Expr> = args
                     .iter()
                     .enumerate()
                     .map(|(i, a)| {
-                        if is_parmap && i == 0 {
+                        if (is_parmap && i == 0) || (is_connect && i < 2) {
                             (*a).clone()
                         } else {
                             self.expr(a)

@@ -218,6 +218,7 @@ impl Cg {
             ("axion_sess_run", 3, true),
             ("axion_sess_run_par", 3, true),
             ("axion_par_map", 4, true),
+            ("axion_connect", 6, true),
             ("axion_sess_park_fd", 3, false),
             // async sockets (docs/async-sockets.md): the net ops the session steps call by RtCall.
             ("ax_net_connect", 2, true),

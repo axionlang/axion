@@ -411,6 +411,13 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
                     return run_par_map(prog, env, args[0], args[1]);
                 }
             }
+            // `connect prod cons` (§9): worker↔worker — a producer and consumer on the two ends of
+            // ONE channel (peer-to-peer, not via a parent); returns the consumer's result.
+            if let (Some("connect"), args) = app_head(e) {
+                if args.len() == 2 {
+                    return run_connect(prog, env, args[0], args[1]);
+                }
+            }
             let callee = eval(prog, env, f)?;
             let arg = eval(prog, env, x)?;
             apply(prog, callee, arg)
@@ -1968,6 +1975,74 @@ fn run_par_map(
         }
     }
     Ok(vec_to_list(results))
+}
+
+/// Worker↔worker `connect prod cons` (§9): run a PRODUCER and a CONSUMER on the two ends of ONE
+/// channel — the producer sends directly to the consumer (peer-to-peer, not via a parent) — and
+/// return the CONSUMER's result (its tail value). Deadlock-free by construction (2-node chain).
+fn run_connect(
+    prog: &Program,
+    env: &Env,
+    prod_expr: &Expr,
+    cons_expr: &Expr,
+) -> Result<Value, RunError> {
+    let prod = eval(prog, env, prod_expr)?;
+    let cons = eval(prog, env, cons_expr)?;
+    let mut sched = Sched {
+        bufs: Vec::new(),
+        peer: Vec::new(),
+    };
+    let (a, b) = sched.new_channel(); // a ↔ b: producer sends on `a`, consumer recvs on `b`
+    const CONS: usize = 1;
+    let mut tasks: Vec<Option<Task>> = vec![
+        Some(fork_child(prod, Value::Endpoint(a))?),
+        Some(fork_child(cons, Value::Endpoint(b))?),
+    ];
+    let mut result: Option<Value> = None;
+    let mut budget: u64 = 5_000_000;
+    loop {
+        let mut progressed = false;
+        let mut live = false;
+        let n = tasks.len();
+        for i in 0..n {
+            loop {
+                budget -= 1;
+                if budget == 0 {
+                    return Err("connect scheduler: no progress (limit)".into());
+                }
+                let Some(task) = tasks[i].take() else { break };
+                let mut spawned = Vec::new();
+                let out = step(prog, &mut sched, task, &mut spawned);
+                for t in spawned {
+                    tasks.push(Some(t));
+                }
+                match out? {
+                    StepOut::Went(t) => {
+                        tasks[i] = Some(t);
+                        progressed = true;
+                    }
+                    StepOut::Blocked(t) => {
+                        tasks[i] = Some(t);
+                        live = true;
+                        break;
+                    }
+                    StepOut::Done(v) => {
+                        progressed = true;
+                        if i == CONS {
+                            result = Some(v);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if !live {
+            return result.ok_or_else(|| "connect: consumer finished without a result".into());
+        }
+        if !progressed {
+            return Err("deadlock in the connect scheduler (types guarantee it cannot)".into());
+        }
+    }
 }
 
 /// Cooperative scheduler variant for `parMap`: runs *all* sibling tasks (there is no
