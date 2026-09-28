@@ -1689,10 +1689,22 @@ pub unsafe extern "C" fn axion_getenv(name: i64) -> i64 {
     }
 }
 
-/// `runCapture cmd` — run via the shell, capture stdout as a String ("" on failure).
+/// `runCapture cmd` — run via the shell, capture stdout as a String ("" on failure). Inherits both
+/// stdin and stderr (matching the interp oracle and the C runtime's `popen(cmd, "r")`) so a captured
+/// pipeline can read the PROGRAM's own stdin — `runCapture "cat"` drains it to EOF (pass's
+/// `insert -m`). `.output()` gives the child a CLOSED stdin, which diverges from interp (backends
+/// must agree).
 #[no_mangle]
 pub unsafe extern "C" fn axion_run(cmd: i64) -> i64 {
-    match std::process::Command::new("sh").arg("-c").arg(os(cmd)).output() {
+    use std::process::Stdio;
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(os(cmd))
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .output();
+    match out {
         Ok(o) => alloc_str(&o.stdout),
         Err(_) => alloc_str(b""),
     }
