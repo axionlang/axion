@@ -33,9 +33,9 @@ a `List String` — the latter would trip a native heap-element aliasing issue.
 
 | Command | Behavior |
 |---|---|
-| `pass` / `pass ls` | list entry names (relative paths, `.gpg` stripped), sorted |
-| `pass show <name>` | decrypt `<name>.gpg` and print it |
-| `pass <name>` | bare-name shorthand for `show` |
+| `pass` / `pass ls` | `ls` renders the store as a tree; bare `pass` picks an entry with fzf |
+| `pass show [-c[n]\|-q[n]\|-s] <name>` | clip the login line (2) by default; `-c[n]` clips line n (1 = password); `-q[n]` shows line n as a QR (via `qrencode`, secret on stdin); `-s` prints the whole entry |
+| `pass <name>` | bare-name shorthand: clip the password (line 1) |
 | `pass find <term>` (alias `search`) | list entries whose path matches `<term>` (case-insensitive) |
 | `pass grep <search>` | decrypt every entry, print those whose content matches, with the matching lines |
 
@@ -46,7 +46,7 @@ a `List String` — the latter would trip a native heap-element aliasing issue.
 | `pass rm <name>` (alias `remove`/`delete`) | delete an entry |
 | `pass mv <old> <new>` (alias `rename`) | rename an entry, creating the new parent dir |
 | `pass cp <old> <new>` (alias `copy`) | copy an entry |
-| `pass generate <name> [length]` | generate a random `A-Za-z0-9` password (default 25), encrypt it, and print it |
+| `pass generate [-c][-n][-f][-i][-q] <name> [length]` | generate a random password (default 25), encrypt it, and print it (`-c` clip, `-n` no symbols, `-i` in-place, `-q` show a QR) |
 | `pass insert <name>` (alias `add`) | read a passphrase twice with **terminal echo off**, then encrypt it |
 
 Every mutation **auto-commits** the store when it is a git repo (silent and

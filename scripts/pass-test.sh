@@ -52,10 +52,9 @@ enc "wifi" 'correcthorsebatterystaple'
 enc "email/personal" $'hunter2\nuser: me@example.com'
 enc "github/work" $'ghp_worktoken123\nuser: workacct'
 
-# `ls` now renders a TREE (upstream shells to tree(1); we render it natively). Root
-# entries sorted (LC_ALL=C): email/, github/, wifi.gpg — dotfiles (.gpg-id) hidden.
+# `ls` renders a TREE (upstream shells to tree(1); we render it natively). Root entries
+# sorted (LC_ALL=C): email/, github/, wifi.gpg — dotfiles (.gpg-id) hidden.
 EXPECT_LS=$'Password Store\n├── email\n│   └── personal\n├── github\n│   └── work\n└── wifi'
-EXPECT_SHOW='correcthorsebatterystaple'
 EXPECT_FIND='github/work'
 EXPECT_GREP=$'github/work:\n  user: workacct'
 
@@ -70,17 +69,47 @@ check() { # label expected -- prog args...
   ./scripts/axi-check.sh --label "$label" --expect "$expect" "$PASS" -- "$@" || fail=1
 }
 
-check "pass ls"        "$EXPECT_LS"   -- ls
-check "pass (no args)" "$EXPECT_LS"   --
-check "pass show wifi" "$EXPECT_SHOW" -- show wifi
-check "pass wifi"      "$EXPECT_SHOW" -- wifi
-check "pass find git"  "$EXPECT_FIND" -- find git
-check "pass grep acct" "$EXPECT_GREP" -- grep workacct
+# STDOUT content (deterministic → the all-backends-agree harness). `show`/bare now CLIP by
+# default (checked below), so content is asserted through `-s` (print the whole entry).
+check "pass ls"                     "$EXPECT_LS"                    -- ls
+check "pass show -s wifi"           'correcthorsebatterystaple'    -- show -s wifi
+check "pass -s wifi"                'correcthorsebatterystaple'    -- -s wifi
+check "pass show -s email/personal" $'hunter2\nuser: me@example.com' -- show -s email/personal
+check "pass find git"               "$EXPECT_FIND"                  -- find git
+check "pass grep acct"              "$EXPECT_GREP"                  -- grep workacct
 
-# fzf picker: `pass show` with NO name pipes the entry list into fzf and shows the pick.
-# Mock fzf (first on PATH) selects the first candidate; entries sort to email/personal first.
-mkdir -p "$WORK/bin"; printf '#!/bin/sh\nhead -n1\n' > "$WORK/bin/fzf"; chmod +x "$WORK/bin/fzf"
-PATH="$WORK/bin:$PATH" check "pass show (fzf pick)" $'hunter2\nuser: me@example.com' -- show
+# CLIPBOARD behaviour (the redesigned default). Mock wl-copy/wl-paste with a file, run ONE
+# backend (the effect isn't on stdout), and assert what landed on the "clipboard": `show` clips
+# the LOGIN line (2) by default; bare `pass <name>` and `show -c` clip the PASSWORD (line 1). A
+# mock fzf (first on PATH) selects the first candidate (entries sort email/personal first).
+mkdir -p "$WORK/bin"; CLIP="$WORK/clip"
+printf '#!/bin/sh\ncat > "%s"\n' "$CLIP" > "$WORK/bin/wl-copy"
+printf '#!/bin/sh\ncat "%s" 2>/dev/null\n' "$CLIP" > "$WORK/bin/wl-paste"
+printf '#!/bin/sh\nhead -n1\n' > "$WORK/bin/fzf"
+chmod +x "$WORK/bin/wl-copy" "$WORK/bin/wl-paste" "$WORK/bin/fzf"
+
+clip_run() { rm -f "$CLIP"; PATH="$WORK/bin:$PATH" "$AXIONC" run --backend interp "$PASS" -- "$@" >/dev/null 2>&1; }
+assert_clip() { # label expected
+  local got; got="$(cat "$CLIP" 2>/dev/null)"
+  if [ "$got" = "$2" ]; then echo "✓ $1: clipboard == expected"
+  else echo "✗ $1: clip=$(printf '%q' "$got") expected=$(printf '%q' "$2")"; fail=1; fi
+}
+clip_run show email/personal;    assert_clip "show default clips login line" 'user: me@example.com'
+clip_run email/personal;         assert_clip "bare name clips password"      'hunter2'
+clip_run show -c email/personal; assert_clip "show -c clips password"        'hunter2'
+clip_run show;                   assert_clip "show fzf-pick clips login"     'user: me@example.com'
+
+# `-q` renders the selected line as a QR code. With qrencode present the ANSI QR art is non-empty
+# on stdout; without it the command fails GRACEFULLY. The secret never touches argv either way.
+if command -v qrencode >/dev/null 2>&1; then
+  out="$(PATH="$WORK/bin:$PATH" "$AXIONC" run --backend interp "$PASS" -- show -q wifi 2>/dev/null)"
+  if [ -n "$out" ]; then echo "✓ show -q wifi: rendered a QR code"
+  else echo "✗ show -q wifi: empty output"; fail=1; fi
+else
+  err="$("$AXIONC" run --backend interp "$PASS" -- show -q wifi 2>&1 >/dev/null)"
+  if printf '%s' "$err" | grep -q "qrencode not found"; then echo "✓ show -q wifi: graceful error (no qrencode)"
+  else echo "✗ show -q wifi: expected a graceful 'qrencode not found' error"; fail=1; fi
+fi
 
 # `show <missing>` is an ERROR: the message goes to stderr and the exit code is non-zero
 # (stdout stays empty), so it can't use the stdout-agreement harness above.
@@ -169,7 +198,7 @@ for be in "${backends[@]}"; do
   # the entry must round-trip byte-for-byte.
   inj="a\$(touch $S/PWNED) b'c"
   printf 'sekret\nsekret\n' | run_be "$be" -- insert "$inj" >/dev/null
-  got="$(run_be "$be" -- show "$inj")"
+  got="$(run_be "$be" -- show -s "$inj")"   # -s prints (default `show` now clips)
   if [ -e "$S/PWNED" ] || [ "$got" != "sekret" ]; then
     echo "✗ [$be] injection-safety (canary=$([ -e "$S/PWNED" ] && echo HIT) got=$(printf '%q' "$got"))"; wfail=1
   else echo "✓ [$be] shell-free: metachar name round-trips, no command injection"; fi

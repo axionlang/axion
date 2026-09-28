@@ -204,10 +204,37 @@ showFound showAll ln name
   | showAll                          = putStr (execCapture (decryptArgv (entryPath name)) "")
   | otherwise                        = clipCopy ln (execCapture (decryptArgv (entryPath name)) "") name
 
--- Flag dispatch for `show`: `-s` → print all; `-c[n]` → clip line n (default 1 = password);
--- neither → clip line 2 (the login email — the default).
+-- `-q[n]`: render line `ln` (default 1 = the password) as a QR code via qrencode, printed to the
+-- terminal. Like `clipCopy`, the secret NEVER touches a process argv — it is fed to qrencode on
+-- STDIN (`-r /dev/stdin`, via `execCapture`'s second argument), and only the ANSI-art QR crosses
+-- back. Dies gracefully if qrencode is absent or the selected line is empty.
+qrShow :: Int -> String -> String -> IO ()
+qrShow ln plaintext name
+  | strLen plaintext == 0            = die (strAppend "Error: could not decrypt " name)
+  | hasCmd "qrencode" > 0            = die "Error: qrencode not found (install qrencode to use -q)"
+  | strLen (nthLine ln plaintext) == 0 =
+      die (((("Error: " ++ name) ++ " has no line ") ++ showInt ln) ++ " to encode")
+  | otherwise                        =
+      putStr (execCapture "qrencode\n-t\nansiutf8\n-o\n-\n-r\n/dev/stdin" (nthLine ln plaintext))
+
+qrFound :: Int -> String -> IO ()
+qrFound ln name
+  | fileExists (entryPath name) == 0 =
+      die (strAppend "Error: " (strAppend name " is not in the password store."))
+  | otherwise                        = qrShow ln (execCapture (decryptArgv (entryPath name)) "") name
+
+-- `show -q` with no <name> falls back to the fzf picker, exactly like the clip/print modes.
+qrEntry :: Int -> String -> IO ()
+qrEntry ln name
+  | strLen name > 0   = qrFound ln name
+  | hasCmd "fzf" == 0 = qrFound ln fzfPick
+  | otherwise         = die "Usage: axpass show -q[n] <name>"
+
+-- Flag dispatch for `show`: `-q[n]` → QR of line n (default 1); `-s` → print all; `-c[n]` → clip
+-- line n (default 1 = password); none → clip line 2 (the login email — the default).
 doShow :: IO ()
 doShow
+  | hasFlag "q" = qrEntry (optNum "q" 1) (posArg 0)
   | hasFlag "s" = showEntry True 0 (posArg 0)
   | hasFlag "c" = showEntry False (optNum "c" 1) (posArg 0)
   | otherwise   = showEntry False 2 (posArg 0)
@@ -418,10 +445,13 @@ genInPlaceCmd entry gpgid len charset =
 -- Report the outcome of `generate`: an empty capture means the pipeline failed (most often
 -- no `.gpg-id`); otherwise commit and either print the password (header + value) or, with
 -- `-c`, copy it to the clipboard instead of echoing it.
-genReport :: Bool -> String -> String -> IO ()
-genReport clip name out
+genReport :: Bool -> Bool -> String -> String -> IO ()
+genReport qr clip name out
   | strLen out == 0 =
       die (("Error: could not generate " ++ name) ++ " (is the store initialized with a .gpg-id?)")
+  | qr              = do   -- render the fresh password as a QR code (secret via qrencode stdin)
+      gitCommit (strAppend "Generate " name)
+      qrShow 1 out name
   | clip            = do
       gitCommit (strAppend "Generate " name)
       clipCopy 1 out name
@@ -433,19 +463,20 @@ genReport clip name out
 -- `pass generate [-c] [-n] [-f] <name> [length]`: create a random password, encrypt it, then
 -- print it (or copy it with `-c`). `-n` drops symbols; `-f` overwrites an existing entry without
 -- asking. Flags are parsed by `hasFlag`; the name/length are the positionals (`posArg`).
-genEntry :: Bool -> Bool -> Bool -> Bool -> String -> String -> IO ()
-genEntry clip noSym force inPlace name lenArg
-  | strLen name == 0 = die "Usage: axpass generate [-c] [-n] [-i] <name> [length]"
+genEntry :: Bool -> Bool -> Bool -> Bool -> Bool -> String -> String -> IO ()
+genEntry qr clip noSym force inPlace name lenArg
+  | strLen name == 0 = die "Usage: axpass generate [-c] [-n] [-i] [-q] <name> [length]"
   | inPlace          = do   -- replace only the first line of an existing entry
       out <- runCapture (genInPlaceCmd (entryPath name) gpgId (fromMaybe 25 (readInt lenArg)) (genCharset noSym))
-      genReport clip name out
+      genReport qr clip name out
   | otherwise        = do
       ensureOverwrite force name
       out <- runCapture (genCmd (entryPath name) gpgId (fromMaybe 25 (readInt lenArg)) (genCharset noSym))
-      genReport clip name out
+      genReport qr clip name out
 
 doGenerate :: IO ()
-doGenerate = genEntry (hasFlag "c") (hasFlag "n") (hasFlag "f") (hasFlag "i") (posArg 0) (posArg 1)
+doGenerate =
+  genEntry (hasFlag "q") (hasFlag "c") (hasFlag "n") (hasFlag "f") (hasFlag "i") (posArg 0) (posArg 1)
 
 -- Build a shell-free argv for `gpg -e` to <entry> for <recipient>. gpg reads the
 -- plaintext from stdin (execStatus's second argument) — so the secret never appears
@@ -718,12 +749,12 @@ usageText =
   "Usage:\n" ++
   "  axpass init <gpg-id>            initialize the store for a GPG key id\n" ++
   "  axpass [ls] [subdir]            list entries as a tree\n" ++
-  "  axpass show [-c[n]|-s] [name]  clip the login line (2) by default; -c[n] clips line n (1=pw); -s prints all\n" ++
+  "  axpass show [-c[n]|-q[n]|-s] [name]  clip login line (2) by default; -c[n] clips line n (1=pw); -q[n] QR; -s prints all\n" ++
   "  axpass find <term>              list entry names matching term\n" ++
   "  axpass grep <text>              search decrypted contents\n" ++
   "  axpass insert [-e|-m] [-f] name add an entry (-e echo, -m multiline, -f force)\n" ++
   "  axpass edit [name]              edit an entry in $EDITOR\n" ++
-  "  axpass generate [-c][-n][-f][-i] name [len]  make a random password (-i: in-place, keep metadata)\n" ++
+  "  axpass generate [-c][-n][-f][-i][-q] name [len]  make a random password (-i: in-place; -q: show QR)\n" ++
   "  axpass rm [-r] [-f] <name>      remove an entry or subtree\n" ++
   "  axpass mv <old> <new>           rename an entry or subdir\n" ++
   "  axpass cp <old> <new>           copy an entry or subdir\n" ++
