@@ -5230,3 +5230,35 @@ fn pipe3_worker_chain_runs_on_all_backends() {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "40\n", "{backend:?}");
     }
 }
+
+#[test]
+fn readkey_reads_raw_bytes_on_all_backends() {
+    // readKey reads ONE raw byte per call (no Enter). On a pipe it degrades to a plain 1-byte read,
+    // so feeding "xy" yields two keypresses; readkey_sanitize.axi echoes both → "xy". Identical on
+    // interp, cranelift, and llvm; each returned key is a fresh heap String consumed by putStr.
+    use std::io::Write;
+    use std::process::Stdio;
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("readkey_sanitize.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let mut child = axionc()
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"xy").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "readKey should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "xy", "{backend:?}");
+    }
+}

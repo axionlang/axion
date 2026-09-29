@@ -418,6 +418,7 @@ pub fn is_string_producer(func: &str) -> bool {
             | "axion_readdir"
             | "axion_read_line"
             | "axion_read_secret"
+            | "axion_read_key"
             | "axion_rand_hex"
             | "axion_getargs"
             | "axion_getarg"
@@ -526,6 +527,7 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "readDir" => ("axion_readdir", 1),
         "readLine" => ("axion_read_line", 1),
         "readSecret" => ("axion_read_secret", 1),
+        "readKey" => ("axion_read_key", 1),
         "randHex" => ("axion_rand_hex", 1),
         "exitWith" => ("axion_exit", 1),
         "getArgs" => ("axion_getargs", 1),
@@ -1853,6 +1855,9 @@ impl Lower<'_> {
         }
         if name == "readSecret" && args.len() == 1 {
             return self.rtcall("axion_read_secret", &args, true, buf);
+        }
+        if name == "readKey" && args.len() == 1 {
+            return self.rtcall("axion_read_key", &args, true, buf);
         }
         if name == "randHex" && args.len() == 1 {
             return self.rtcall("axion_rand_hex", &args, true, buf);

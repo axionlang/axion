@@ -1860,6 +1860,43 @@ pub unsafe extern "C" fn axion_read_secret(_unused: i64) -> i64 {
     read_line_impl(true)
 }
 
+/// Read ONE keypress in raw mode — a single byte, no Enter — returned as a 1-char String (`""` at
+/// EOF). On a tty, `ICANON|ECHO` are cleared (with `VMIN=1/VTIME=0`) for a blocking single-byte read
+/// and restored after; on a pipe (`tcgetattr` fails) it degrades to a plain 1-byte read, so a
+/// scripted key stream (`printf 'jkq' | …`) stays testable. Powers the TUI event loop (`readKey`).
+unsafe fn read_key_impl() -> i64 {
+    use std::io::Read;
+    let mut saved: libc::termios = std::mem::zeroed();
+    let is_tty = libc::tcgetattr(0, &mut saved) == 0;
+    if is_tty {
+        let mut raw = saved;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        libc::tcsetattr(0, libc::TCSAFLUSH, &raw);
+    }
+    let mut b = [0u8; 1];
+    let n = {
+        let mut h = std::io::stdin().lock();
+        h.read(&mut b).unwrap_or(0)
+    };
+    if is_tty {
+        libc::tcsetattr(0, libc::TCSAFLUSH, &saved);
+    }
+    if n == 1 {
+        alloc_str(&b)
+    } else {
+        alloc_str(b"") // EOF
+    }
+}
+
+/// `readKey _` — one raw keypress as a 1-char String (`""` at EOF). The Int arg is an ignored
+/// placeholder (forces re-read per occurrence, like `readLine`).
+#[no_mangle]
+pub unsafe extern "C" fn axion_read_key(_unused: i64) -> i64 {
+    read_key_impl()
+}
+
 /// Shell-free exec (§pass): run `argv_joined` (argv elements '\n'-separated; argv[0] = program) with
 /// NO shell — nothing word-split/glob-expanded/injection-prone — feeding `stdin_str` on stdin only
 /// when non-empty (else inherit the tty, so a child's pinentry works). `want_stdout` captures the
@@ -2159,6 +2196,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_read_file", axion_read_file as *const u8),
         ("axion_read_line", axion_read_line as *const u8),
         ("axion_read_secret", axion_read_secret as *const u8),
+        ("axion_read_key", axion_read_key as *const u8),
         ("axion_rename", axion_rename as *const u8),
         ("axion_run", axion_run as *const u8),
         ("axion_sess_alloc", axion_sess_alloc as *const u8),

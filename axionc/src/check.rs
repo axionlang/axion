@@ -132,6 +132,7 @@ pub fn is_effectful(name: &str) -> bool {
             | "renameFile"
             | "readLine"
             | "readSecret"
+            | "readKey"
             | "exitWith"
             | "putStr"
             | "putStrLn"
@@ -1356,6 +1357,7 @@ pub fn builtins() -> HashSet<String> {
         "readDir",
         "readLine",
         "readSecret",
+        "readKey",
         "randHex",
         "exitWith",
         "getArgs",

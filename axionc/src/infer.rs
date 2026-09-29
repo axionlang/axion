@@ -1764,6 +1764,10 @@ impl<'a> Infer<'a> {
             mono(Ty::Fun(Box::new(int()), Box::new(string()))), // dummy Int → an echo-off line
         );
         env.insert(
+            "readKey".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))), // dummy Int → one raw keypress ("" at EOF)
+        );
+        env.insert(
             "randHex".into(),
             mono(Ty::Fun(Box::new(int()), Box::new(string()))), // n bytes → 2n hex chars
         );

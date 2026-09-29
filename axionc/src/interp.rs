@@ -336,6 +336,42 @@ pub fn read_stdin_line(hide: bool) -> String {
     }
 }
 
+/// Read ONE keypress in raw mode — a single byte, no Enter — as a 1-char String (`""` at EOF).
+/// On a tty, `stty raw -echo` disables line-buffering + echo for the read and is restored via
+/// `stty sane` (a no-op on a pipe, so a scripted `printf 'jkq' | …` still works); the raw byte is
+/// read either way. Mirrors the native `read_key_impl` (axion-rt). Powers the TUI `readKey`.
+pub fn read_key() -> String {
+    use std::io::Read;
+    struct RawGuard(bool);
+    impl RawGuard {
+        fn on() -> RawGuard {
+            let ok = std::process::Command::new("stty")
+                .args(["raw", "-echo"])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            RawGuard(ok)
+        }
+    }
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = std::process::Command::new("stty")
+                    .arg("sane")
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+    }
+    let _guard = RawGuard::on();
+    let mut b = [0u8; 1];
+    match std::io::stdin().lock().read(&mut b) {
+        Ok(1) => String::from_utf8_lossy(&b).into_owned(),
+        _ => String::new(), // EOF or error
+    }
+}
+
 /// Run a program with an explicit argv (`joined`, elements separated by '\n', argv[0]
 /// first) and `input` fed on its stdin — NO shell, so nothing is word-split or
 /// injection-prone and a secret can reach the child over the pipe. Returns the child's
@@ -727,6 +763,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "readSecret" => Ok(Value::Builtin {
             name: "readSecret",
+            args: Vec::new(),
+        }),
+        "readKey" => Ok(Value::Builtin {
+            name: "readKey",
             args: Vec::new(),
         }),
         "exitWith" => Ok(Value::Builtin {
@@ -1473,6 +1513,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         }
         ("readLine", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(false))),
         ("readSecret", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(true))),
+        ("readKey", [Value::Int(_)]) => Ok(Value::Str(read_key())),
         // NOTE: the interpreter accumulates stdout as `Io` and prints it only when the
         // program ends, so any stdout produced BEFORE `exitWith` is lost here (the native
         // backends stream, so they print it). Write pre-exit output to stderr (`ePutStr*`,
