@@ -159,3 +159,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang gnupg qrencode
       - name: pass(1) clone behavioral test (gpg keyring, all backends)
         run: PASS_TEST_REQUIRE=1 ./scripts/pass-test.sh
+
+  # METATHEORY (Track 2) — the mechanized soundness proofs AND the faithfulness bridge (the Lean
+  # model's verdict == the real verifier's) must hold. Previously run ONLY on developer machines, so
+  # like pass-test.sh it could silently rot — a model that has drifted from the compiler proves
+  # nothing. `bridge.sh` = check.sh (7 Lean files: AxionDrop/Alias/Key/Move/Extract/Session/Fidelity,
+  # no `sorry`, axioms = propext/Quot.sound) + `cargo test --test bridge` (8 canonical shapes) +
+  # model-trace.sh (the model agrees with the verifier over the whole in-fragment corpus, ~79%) +
+  # exhaustive.sh (bounded-exhaustive: EVERY program in the drop/move/branch family up to size k).
+  # Needs Nix (lean4) + Rust (axionc). ~4 min compute once lean4 is fetched.
+  metatheory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Lean model soundness + faithfulness bridge (proofs ∧ verifier agreement)
+        run: ./metatheory/bridge.sh
