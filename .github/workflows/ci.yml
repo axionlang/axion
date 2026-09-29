@@ -141,3 +141,21 @@ jobs:
       # proven too. The concurrent session fixtures run under ThreadSanitizer.
       - name: Session scheduler under ThreadSanitizer
         run: AXION_CLANG=clang ./scripts/tsan.sh
+
+  # BEHAVIORAL — the `pass` clone must actually WORK end-to-end, not just be memory-safe. Stands up
+  # a throwaway GnuPG keyring + password store and drives every command through interp/cranelift/llvm
+  # (they must AGREE + produce the right on-disk/clipboard/QR effect). This is the gate that was
+  # MISSING: pass-test.sh lived only on developer machines, so it silently rotted when `show` was
+  # redesigned to clip-by-default (and that masked a native runCapture-stdin regression in `insert
+  # -m`). PASS_TEST_REQUIRE=1 makes a missing gpg a HARD failure here — a silent skip is the trap.
+  behavioral:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+      # clang: the --release/LLVM backend + linking. gnupg: the throwaway keyring (ed25519,
+      # %no-protection). qrencode: exercises `show -q`/`generate -q`'s REAL QR render path.
+      - name: Install clang, gnupg, qrencode
+        run: sudo apt-get update && sudo apt-get install -y clang gnupg qrencode
+      - name: pass(1) clone behavioral test (gpg keyring, all backends)
+        run: PASS_TEST_REQUIRE=1 ./scripts/pass-test.sh

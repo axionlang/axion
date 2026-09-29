@@ -12,9 +12,20 @@ cd "$(dirname "$0")/.."
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 PASS="examples/pass/pass.axi"
 
-if ! command -v gpg >/dev/null 2>&1 || ! command -v find >/dev/null 2>&1; then
-  echo "gpg/find not available — skipping pass-test"
+# By default this test SKIPS cleanly on a host without gpg/find (e.g. a minimal image). In CI we
+# WANT it to actually run — a silent skip there is false confidence (exactly how the behavioral
+# suite rotted undetected). Set PASS_TEST_REQUIRE=1 to turn every skip into a hard FAILURE.
+skip_or_fail() { # message
+  if [ -n "${PASS_TEST_REQUIRE:-}" ]; then
+    echo "FATAL (PASS_TEST_REQUIRE): $1" >&2
+    exit 1
+  fi
+  echo "$1 — skipping pass-test"
   exit 0
+}
+
+if ! command -v gpg >/dev/null 2>&1 || ! command -v find >/dev/null 2>&1; then
+  skip_or_fail "gpg/find not available"
 fi
 if [ ! -x "$AXIONC" ]; then
   echo "building axionc…"
@@ -41,8 +52,7 @@ Expire-Date: 0
 %commit
 EOF
 if ! gpg --batch --quiet --gen-key "$WORK/keygen" 2>/dev/null; then
-  echo "could not generate a test gpg key — skipping pass-test"
-  exit 0
+  skip_or_fail "could not generate a test gpg key"
 fi
 
 mkdir -p "$PASSWORD_STORE_DIR/github" "$PASSWORD_STORE_DIR/email"
