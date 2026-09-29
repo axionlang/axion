@@ -64,6 +64,12 @@ struct Tr<'a> {
     /// seed `AxionDrop.acceptsL [B]` as `borrowed`. Moving one OUT is the AxionAlias borrow-return
     /// class, outside this fragment — so it is rejected.
     borrowed: HashSet<u32>,
+    /// cell ids bound from a CALL (`CallDirect`/`CallClosure`): a callee may return an interior
+    /// alias of an arg (`grabHead xs = Just (head-of-xs)`), which the owned-set model cannot verify
+    /// as alias-free. So `case`-extracting fields from a call-result scrutinee is out of fragment
+    /// (the `user_alias_borrow` interprocedural double-free). A param or locally-built scrutinee
+    /// (foldl's `xs`) is NOT suspect — its ownership is manifest.
+    alias_suspect: HashSet<u32>,
     next: u32,
     /// a SEPARATE high id space for borrowed extracted fields, so their ids never collide with the
     /// per-arm-reused owned `next` ids (an id can't be both owned-`alloc`ed and seeded `borrowed`).
@@ -167,6 +173,12 @@ impl Tr<'_> {
                     let id = self.fresh();
                     self.ids.insert(x.to_string(), id);
                     ops.push(MOp::Alloc(id));
+                    // A call result may carry an interior alias of an arg — mark it so a later `case`
+                    // on it does not mistake its extracted fields for owned (the owned-set model
+                    // cannot see interprocedural aliasing; the verifier's summaries can).
+                    if matches!(op, Op::CallDirect(..) | Op::CallClosure(..)) {
+                        self.alias_suspect.insert(id);
+                    }
                 }
                 None => {
                     // escaping result: allocate then transfer out (returned to caller).
@@ -253,6 +265,11 @@ impl Tr<'_> {
                         .ok_or("case scrutinee not an owned heap value")?,
                     _ => return Err("case scrutinee not a var"),
                 };
+                // An alias-carrying scrutinee (from a ret-alias call): its extracted fields are
+                // interprocedural aliases the owned-set model cannot represent — out of fragment.
+                if self.alias_suspect.contains(&sid) {
+                    return Err("case on an interprocedural alias");
+                }
                 let scrut_borrowed = self.borrowed.contains(&sid);
                 let saved = self.ids.clone();
                 let saved_next = self.next;
@@ -268,23 +285,33 @@ impl Tr<'_> {
                         CPat::Con(con, subs) => {
                             for (fi, sub) in subs.iter().enumerate() {
                                 match sub {
-                                    CPat::Var(v) if self.recinfo.field_is_heap(con, fi) => {
+                                    CPat::Var(v) => {
+                                        let field_heap = self.recinfo.field_is_heap(con, fi);
                                         if scrut_borrowed {
                                             // interior alias of a borrowed scrutinee → a B cell (high
-                                            // id space; accumulated across arms into the final B).
-                                            let id = self.borrow_next;
-                                            self.borrow_next += 1;
-                                            self.ids.insert(v.clone(), id);
-                                            self.borrowed.insert(id);
-                                        } else {
-                                            // owned child transferred out of the scrutinee.
+                                            // id space; accumulated across arms into the final B). A
+                                            // borrowed poly field stays untracked (AxionExtract
+                                            // territory), as before.
+                                            if field_heap {
+                                                let id = self.borrow_next;
+                                                self.borrow_next += 1;
+                                                self.ids.insert(v.clone(), id);
+                                                self.borrowed.insert(id);
+                                            }
+                                        } else if field_heap || dropped_within(v, body) {
+                                            // Owned child transferred out of the scrutinee: heap by
+                                            // static type, OR a polymorphic field the SPECIALIZED arm
+                                            // actually consumes as a concrete heap resource (`drop y :
+                                            // Integer`) — exactly what the verifier tracks. A poly
+                                            // field instantiated to a SCALAR is not consumed → stays
+                                            // untracked (leak-exempt), matching the verifier.
                                             let id = self.fresh();
                                             self.ids.insert(v.clone(), id);
                                             pre.push(MOp::Alloc(id));
                                         }
                                     }
-                                    // poly (no concrete slot) or scalar field: untracked, like the verifier.
-                                    CPat::Var(_) | CPat::Wild | CPat::Int(_) => {}
+                                    // scalar field / unconsumed poly: untracked, like the verifier.
+                                    CPat::Wild | CPat::Int(_) => {}
                                     _ => return Err("nested extraction pattern"),
                                 }
                             }
@@ -304,6 +331,36 @@ impl Tr<'_> {
 /// A pattern that binds no heap payload — pure scalar/tag dispatch, safe for the owned-set fragment.
 fn is_trivial_pat(p: &CPat) -> bool {
     matches!(p, CPat::Int(_) | CPat::Wild)
+}
+
+/// Is `v` FREED by a `drop` somewhere in `t`? A `drop` is Auto-Drop's reclaim of an owned HEAP
+/// resource — scalars are NEVER dropped — so a `drop v` is a reliable signal that `v` is an owned
+/// heap cell this frame must account for, even when `v`'s STATIC type is polymorphic (`foldl`'s
+/// accumulator `b`, a `Cons` element in `List a`) but the SPECIALIZED Core drops it as a concrete
+/// heap value (`drop z : Integer`). `field_is_heap` (concrete-only) misses that; the drop does not.
+///
+/// We deliberately do NOT treat a MOVE as the signal — that was unsound: a SCALAR operand also
+/// "moves" into a constructor/recursive call (`Cons lo …`, `range (lo+1) hi`), so keying on moves
+/// alloc'd scalars as heap and leaked them on branches that don't re-move them. And an owned heap
+/// value that is only moved OUT (never dropped) needs no model cell at all — leaving it untracked is
+/// already balanced (no alloc, no free), and `tr_op` skips the move of an untracked var. Sound either
+/// way: miss a drop → the later `drop v` bails the function out of fragment (never mistranslated); a
+/// spurious alloc → an un-freed cell leaks in the model → the `by rfl` fails and model-trace.sh
+/// reports it (never a silent unsound pass).
+fn dropped_within(v: &str, t: &Term) -> bool {
+    match t {
+        Term::Drop(x, _, _, _, k) => x == v || dropped_within(v, k),
+        Term::Let(_, rhs, _, k) => rhs_drops(v, rhs) || dropped_within(v, k),
+        Term::Ret(rhs, _) => rhs_drops(v, rhs),
+    }
+}
+
+fn rhs_drops(v: &str, rhs: &Rhs) -> bool {
+    match rhs {
+        Rhs::Op(_) => false,
+        Rhs::If(_, tt, ee) => dropped_within(v, tt) || dropped_within(v, ee),
+        Rhs::Case(_, arms) => arms.iter().any(|(_, b)| dropped_within(v, b)),
+    }
 }
 
 /// Fold case arms (each translated from the same incoming state) into a right-nested two-armed
@@ -355,6 +412,7 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
         recinfo: &lowered.recinfo,
         ids: HashMap::new(),
         borrowed: HashSet::new(),
+        alias_suspect: HashSet::new(),
         next: 0,
         borrow_next: 1_000_000,
     };
@@ -370,6 +428,16 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
                 } else {
                     tr.borrowed.insert(id); // borrowed: caller-owned, use-only, not a leak
                 }
+            } else if dropped_within(p, &f.body) {
+                // A POLYMORPHIC param (static key erased to a type variable — `foldl`'s accumulator
+                // `b`) that the SPECIALIZED body consumes as a concrete heap resource (`drop z :
+                // Integer`, or moves it out) is an OWNED heap param, exactly as the verifier treats
+                // it. A poly param instantiated to a scalar is not consumed → stays untracked. Sound
+                // by the same self-gating as the field case: a mis-guess makes the emitted `by rfl`
+                // fail, never a silent pass.
+                let id = tr.fresh();
+                tr.ids.insert(p.clone(), id);
+                param_ops.push(MOp::Alloc(id));
             }
         }
     }
