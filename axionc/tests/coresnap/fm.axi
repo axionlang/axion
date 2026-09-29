@@ -321,9 +321,9 @@
     ret == x y  ; Δ{}
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{}
-    ret a  ; Δ{}
     ret best  ; Δ{}
     ret call consLine s i n _t1  ; Δ{} · makes List$String
+    ret call dup a  ; Δ{} · makes String
     ret call loop cwd _t4 clip  ; Δ{}
     ret call loop cwd sel clip  ; Δ{}
     ret con Nil  ; Δ{} · makes List$String
@@ -392,6 +392,7 @@
   ; Δ{}
   drop _t0 : List$String
   drop _t0 : List$String
+  drop _t0 : String
   drop _t0 : String
   drop _t0 : String
   drop _t0 : String
@@ -487,7 +488,7 @@
   let _t1 = call lastIndex 47 s 0 _t0  ; Δ{}
   let _t1 = call lines _t0  ; Δ{_t0} · makes List$String
   let _t1 = call shEsc s 0 _t0  ; Δ{} · makes String
-  let _t1 = call startDir _t0  ; Δ{_t0} · moves{_t0} · makes String
+  let _t1 = call startDir _t0  ; Δ{_t0} · makes String
   let _t1 = if _t0 then
   let _t1 = rtcall axion_str_len s  ; Δ{}
   let _t1 = rtcall axion_str_len s  ; Δ{}
