@@ -184,6 +184,7 @@ impl Cg {
             ("axion_read_line", 1, true),
             ("axion_read_secret", 1, true),
             ("axion_read_key", 1, true),
+            ("axion_chr", 1, true),
             ("axion_rand_hex", 1, true),
             ("axion_exit", 1, true),
             ("axion_getargs", 1, true),

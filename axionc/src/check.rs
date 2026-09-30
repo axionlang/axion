@@ -1358,6 +1358,7 @@ pub fn builtins() -> HashSet<String> {
         "readLine",
         "readSecret",
         "readKey",
+        "chr",
         "randHex",
         "exitWith",
         "getArgs",

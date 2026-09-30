@@ -769,6 +769,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "readKey",
             args: Vec::new(),
         }),
+        "chr" => Ok(Value::Builtin {
+            name: "chr",
+            args: Vec::new(),
+        }),
         "exitWith" => Ok(Value::Builtin {
             name: "exitWith",
             args: Vec::new(),
@@ -1514,6 +1518,9 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("readLine", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(false))),
         ("readSecret", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(true))),
         ("readKey", [Value::Int(_)]) => Ok(Value::Str(read_key())),
+        // `chr n`: the byte n as a 1-char String (inverse of charAt). Intended for 0-127 (ASCII +
+        // control, incl. ESC=27 for ANSI), where this matches the native raw-byte alloc exactly.
+        ("chr", [Value::Int(n)]) => Ok(Value::Str(((*n as u8) as char).to_string())),
         // NOTE: the interpreter accumulates stdout as `Io` and prints it only when the
         // program ends, so any stdout produced BEFORE `exitWith` is lost here (the native
         // backends stream, so they print it). Write pre-exit output to stderr (`ePutStr*`,

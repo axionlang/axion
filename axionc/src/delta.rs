@@ -230,6 +230,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_read_line"
                 || func == "axion_read_secret"
                 || func == "axion_read_key"
+                || func == "axion_chr"
                 || func == "axion_rand_hex"
                 || func == "axion_getargs"
                 || func == "axion_getarg"

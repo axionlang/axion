@@ -5262,3 +5262,25 @@ fn readkey_reads_raw_bytes_on_all_backends() {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "xy", "{backend:?}");
     }
 }
+
+#[test]
+fn chr_builds_bytes_on_all_backends() {
+    // chr n = the byte n as a 1-char String (inverse of charAt), for building ANSI in-language.
+    // chr_sanitize.axi prints "A" (65) then ESC (27) + "[2J"; assert the exact bytes on every backend.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("chr_sanitize.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "chr should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, b"A\x1b[2J", "{backend:?}");
+    }
+}
