@@ -159,11 +159,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang gnupg qrencode
       - name: pass(1) clone behavioral test (gpg keyring, all backends)
         run: PASS_TEST_REQUIRE=1 ./scripts/pass-test.sh
-      # The TUI file manager (examples/fm.axi) driven headlessly — a scripted key stream at a
-      # throwaway tree, asserting navigation frames + delete/rename/mkdir/copy effects on every
-      # backend. The second flagship's regression gate; keeps `readKey` + the event loop honest.
-      - name: file-manager behavioral test (all backends)
-        run: ./scripts/fm-test.sh
+      # The `fff` file-manager rewrite (examples/fff.axi) driven headlessly — a scripted key stream
+      # at a throwaway tree (HOME sandboxed), asserting navigation frames + mkdir/mkfile/rename/
+      # trash/copy/bulk-rename effects on every backend. Keeps the flagship + readKey/chr honest.
+      - name: fff file-manager behavioral test (all backends)
+        run: ./scripts/fff-test.sh
 
   # METATHEORY (Track 2) — the mechanized soundness proofs AND the faithfulness bridge (the Lean
   # model's verdict == the real verifier's) must hold. Previously run ONLY on developer machines, so
