@@ -7586,6 +7586,69 @@ fn normalize_alias_returns(
     }
 }
 
+/// The drop key of an op whose result is a FRESH OWNED heap value that cannot alias an operand —
+/// a String/Integer producer, `ShowInt`, or a direct call to a function that returns NO interior
+/// alias of its args (`g ∉ br`) carrying a known heap return key. `None` for scalars, literals
+/// (`Atom(Str/Int)`), bare var returns (a possible param alias), `Field`/getters, and alias-
+/// returning calls — so an arm that could alias an owned value never gets reclaimed here.
+fn op_owned_key(op: &Op, br: &HashMap<String, HashSet<usize>>) -> Option<String> {
+    match op {
+        Op::CallDirect(g, _, Some(k)) if !br.contains_key(g) => Some(k.clone()),
+        Op::ShowInt(_) => Some("String".into()),
+        Op::RtCall { .. } => fresh_let_producer_key(op),
+        _ => None,
+    }
+}
+
+/// The owned-heap key produced at the TAIL of an `if`/`case` arm. The arm is ANF — a chain of
+/// `let`s ending in `ret <var>` — so we thread a binding→key env: at `ret v` the key is whatever
+/// `v` was bound with (`None` for a borrowed param / non-producer). A direct `ret <op>` or a nested
+/// conditional tail resolves inline. `None` unless the arm provably yields a fresh owned heap value.
+fn arm_owned_key(t: &Term, br: &HashMap<String, HashSet<usize>>) -> Option<String> {
+    arm_owned_key_env(t, br, &mut HashMap::new())
+}
+fn arm_owned_key_env(
+    t: &Term,
+    br: &HashMap<String, HashSet<usize>>,
+    env: &mut HashMap<String, Option<String>>,
+) -> Option<String> {
+    match t {
+        Term::Let(x, rhs, _, b) => {
+            let k = match rhs {
+                Rhs::Op(op) => op_owned_key(op, br),
+                Rhs::If(..) | Rhs::Case(..) => cond_temp_key(rhs, br),
+            };
+            env.insert(x.clone(), k);
+            arm_owned_key_env(b, br, env)
+        }
+        Term::Drop(_, _, _, _, b) => arm_owned_key_env(b, br, env),
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => env.get(v).cloned().flatten(),
+        Term::Ret(Rhs::Op(op), _) => op_owned_key(op, br),
+        Term::Ret(rhs @ (Rhs::If(..) | Rhs::Case(..)), _) => cond_temp_key(rhs, br),
+    }
+}
+
+/// If `rhs` is a conditional whose EVERY arm yields a fresh owned heap value of the SAME key, that
+/// key — so a `let x = if/case … (all heap arms)` result is a genuinely-owned temp that must be
+/// reclaimed at its (unconditional) death point, exactly as the verifier already scores it. Returns
+/// `None` when any arm is a literal/scalar/alias (the MIXED case needs branch-sensitive handling and
+/// is left to the tail-position idiom), so this never introduces a double-free.
+fn cond_temp_key(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Option<String> {
+    match rhs {
+        Rhs::If(_, th, el) => {
+            let k = arm_owned_key(th, br)?;
+            (arm_owned_key(el, br) == Some(k.clone())).then_some(k)
+        }
+        Rhs::Case(_, arms) => {
+            let mut it = arms.iter();
+            let first = arm_owned_key(&it.next()?.1, br)?;
+            it.all(|(_, a)| arm_owned_key(a, br) == Some(first.clone()))
+                .then_some(first)
+        }
+        Rhs::Op(_) => None,
+    }
+}
+
 fn reclaim_cond_escape(
     body: Term,
     owned: Vec<(String, Option<String>)>,
@@ -7638,6 +7701,18 @@ fn reclaim_cond_escape(
                 // the result never aliases an arg; if it is consumed/dropped downstream the
                 // `Drop`/move handling removes it before any second free.
                 if let Some(key) = fresh_let_producer_key(op) {
+                    if !owned.iter().any(|(v, _)| v == &x) {
+                        owned.push((x.clone(), Some(key)));
+                    }
+                }
+            } else if matches!(&rhs, Rhs::If(..) | Rhs::Case(..)) {
+                // A `let x = if/case … in …` whose EVERY arm yields a fresh owned heap value: x is a
+                // genuinely-owned temp consumed (unconditionally) downstream, but `insert_drops`
+                // never marked it (its producer is a conditional, not a recognized op) → a leak the
+                // verifier flags. Seed it here so the tail logic reclaims it at its death point —
+                // removing the tail-position workaround for all-heap-arm conditionals (fff's rows).
+                // MIXED (a literal/alias arm) → `cond_temp_key` is None → left alone (no double-free).
+                if let Some(key) = cond_temp_key(&rhs, br) {
                     if !owned.iter().any(|(v, _)| v == &x) {
                         owned.push((x.clone(), Some(key)));
                     }

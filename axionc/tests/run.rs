@@ -5284,3 +5284,26 @@ fn chr_builds_bytes_on_all_backends() {
         assert_eq!(out.stdout, b"A\x1b[2J", "{backend:?}");
     }
 }
+
+#[test]
+fn cond_temp_reclaim_runs_on_all_backends() {
+    // Regression for the conditional-owned-temp reclaimer fix: `strAppend "x" (if c then up s else
+    // dn s)` — an all-heap-arm `if` TEMP consumed downstream — is reclaimed (was a leak → the fff
+    // tail-position workaround). Prints "xHIHI" identically on interp, cranelift, and llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("cond_temp_reclaim.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "cond_temp_reclaim should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "xHIHI", "{backend:?}");
+    }
+}

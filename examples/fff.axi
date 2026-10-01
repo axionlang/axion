@@ -143,20 +143,18 @@ markChar marked full = if markedHas marked full then "*" else " "
 colorName :: String -> String
 colorName raw = if hasSuffix "/" raw then paint "1;34" raw else dup raw
 
--- A conditional that PRODUCES a heap value must sit in TAIL position (a move-out), never as a
--- consumed sub-expression / let-binding — the latter trips the known conditional-owned-temp leak.
--- So the cursor/non-cursor split is a tail `if` between two row builders.
-wrapRow :: String -> String
-wrapRow s = strAppend (csi "K") (strAppend s "\n")
-rowSel :: String -> String -> String -> String
-rowSel raw marked cwd =
-  wrapRow (paint "7" (strAppend (markChar marked (cwd </> stripSlash raw)) (strAppend " " (dup raw))))
-rowUnsel :: String -> String -> String -> String
-rowUnsel raw marked cwd =
-  wrapRow (strAppend (markChar marked (cwd </> stripSlash raw)) (strAppend " " (colorName raw)))
+-- The cursor row is reverse-video; others color dirs blue. The heap-producing `if` can now sit
+-- INLINE (consumed by the surrounding strAppend) — the reclaimer reclaims an all-heap-arm
+-- conditional temp at its death point, so the earlier tail-position (rowSel/rowUnsel) workaround
+-- is no longer needed.
 rowFor :: String -> Int -> Int -> String -> String -> String
 rowFor raw i sel marked cwd =
-  if i == sel then rowSel raw marked cwd else rowUnsel raw marked cwd
+  strAppend (csi "K")
+    (strAppend
+      (if i == sel
+       then paint "7" (strAppend (markChar marked (cwd </> stripSlash raw)) (strAppend " " (dup raw)))
+       else strAppend (markChar marked (cwd </> stripSlash raw)) (strAppend " " (colorName raw)))
+      "\n")
 
 -- Bottom status line: (pos/total), [n] selected (program), cwd — in reverse video, pinned to row.
 posStr :: Int -> Int -> String
