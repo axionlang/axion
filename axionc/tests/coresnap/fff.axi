@@ -497,10 +497,7 @@
       drop _t6 : String
       drop _t6 : String
       drop _t7 : String
-      drop b1 : String
-      drop b2 : String
       drop e : String
-      drop k : String
       drop m
       drop m
       drop v : String
@@ -524,7 +521,6 @@
       else
       else
       else
-      let _d1000000 = call arrowKey b2  ; Δ{b2 k} · makes String
       let _d1000000 = call cmdKey prompt rows cwd acc _t10  ; Δ{_t10} · makes String
       let _d1000000 = call step cwd sel marked prog hidden rows _t2  ; Δ{_t2}
       let _d1000000 = putStr _t3  ; Δ{_t3}
@@ -630,8 +626,6 @@
       let _t8 = + _t5 _t7  ; Δ{}
       let _t8 = call nEntries cwd hidden  ; Δ{}
       let _t9 = call clampSel _t7 _t8  ; Δ{}
-      let b1 = rtcall axion_read_key 0  ; Δ{k} · makes String
-      let b2 = rtcall axion_read_key 0  ; Δ{k} · makes String
       ret ""  ; Δ{}
       ret ""  ; Δ{}
       ret ""  ; Δ{}
@@ -656,7 +650,6 @@
       ret 1  ; Δ{}
       ret 1  ; Δ{}
       ret == _t4 10  ; Δ{}
-      ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -710,7 +703,6 @@
       ret if _t5 then
       ret if _t6 then
       ret if _t7 then
-      ret k  ; Δ{k} · moves{k}
     Cons o os ->
     Cons s ss ->
     Cons y ys ->
@@ -799,8 +791,11 @@
     drop _t8 : String
     drop _t9 : String
     drop _t9 : String
+    drop b1 : String
+    drop b2 : String
     drop fav : String
     drop fav : String
+    drop k : String
     drop v : String
     else
     else
@@ -819,7 +814,7 @@
     else
     else
     else
-    else
+    let _d1000000 = call arrowKey b2  ; Δ{b2 k} · makes String
     let _d1000000 = call loop _t2 0 marked prog hidden rows  ; Δ{_t2}
     let _d1000000 = call loop _t3 0 marked prog hidden rows  ; Δ{_t3}
     let _d1000000 = call loop fav 0 marked prog hidden rows  ; Δ{fav}
@@ -886,7 +881,6 @@
     let _t3 = - _t2 k  ; Δ{}
     let _t3 = == _t2 0  ; Δ{}
     let _t3 = == _t2 13  ; Δ{}
-    let _t3 = == _t2 27  ; Δ{k}
     let _t3 = == _t2 c  ; Δ{}
     let _t3 = > _t2 0  ; Δ{e v}
     let _t3 = call </> cwd _t0  ; Δ{_t0} · makes String
@@ -934,6 +928,8 @@
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
+    let b1 = rtcall axion_read_key 0  ; Δ{k} · makes String
+    let b2 = rtcall axion_read_key 0  ; Δ{k} · makes String
     let e = rtcall axion_getenv "EDITOR"  ; Δ{v} · makes String
     ret " "  ; Δ{}
     ret ""  ; Δ{}
@@ -949,6 +945,7 @@
     ret "ls -p --group-directories-first -- "  ; Δ{}
     ret - rows 3  ; Δ{}
     ret 0  ; Δ{fav}
+    ret 0  ; Δ{k}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
@@ -972,9 +969,11 @@
     ret 1  ; Δ{}
     ret 1  ; Δ{}
     ret 1  ; Δ{}
+    ret == _t2 27  ; Δ{k}
     ret == _t5 0  ; Δ{}
     ret == _t8 0  ; Δ{}
     ret == x y  ; Δ{}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{}
@@ -1025,7 +1024,6 @@
     ret if _t2 then
     ret if _t2 then
     ret if _t2 then
-    ret if _t3 then
     ret if _t3 then
     ret if _t3 then
     ret if _t3 then
@@ -1371,6 +1369,7 @@
   else
   else
   else
+  else
   let _d1000000 = call </> cwd _t0  ; Δ{_t0} · makes String
   let _d1000000 = call bnGo _t1  ; Δ{_t1} · makes String
   let _d1000000 = call elemBy$String p _t0  ; Δ{_t0}
@@ -1506,7 +1505,6 @@
   let _t0 = rtcall axion_strcat c "m"  ; Δ{} · makes String
   let _t0 = showInt rows  ; Δ{} · makes String
   let _t1 = < _t0 1  ; Δ{}
-  let _t1 = == _t0 0  ; Δ{k}
   let _t1 = == _t0 0  ; Δ{}
   let _t1 = == _t0 0  ; Δ{}
   let _t1 = == _t0 0  ; Δ{}
@@ -1515,6 +1513,7 @@
   let _t1 = == _t0 0  ; Δ{}
   let _t1 = == _t0 0  ; Δ{}
   let _t1 = == i sel  ; Δ{_t0}
+  let _t1 = > _t0 0  ; Δ{k}
   let _t1 = > _t0 0  ; Δ{v}
   let _t1 = > _t0 0  ; Δ{v}
   let _t1 = > _t0 0  ; Δ{}
@@ -1610,6 +1609,7 @@
   let _t3 = call drawRows _t1 0 start _t2 sel marked cwd  ; Δ{_t0 _t1} · makes String
   let _t3 = call linesFrom s _t2 n  ; Δ{_t1} · makes List$String
   let _t3 = call selPath cwd hidden sel  ; Δ{} · makes String
+  let _t3 = if _t1 then
   let _t3 = if _t1 then
   let _t3 = rtcall axion_strcat "] (" _t2  ; Δ{_t1 _t2} · makes String
   let _t3 = rtcall axion_strcat "nohup xdg-open " _t2  ; Δ{_t2} · makes String
@@ -1767,10 +1767,10 @@
   ret if _t1 then
   ret if _t1 then
   ret if _t1 then
-  ret if _t1 then
   ret if _t2 then
   ret if _t2 then
   ret if _t2 then
+  ret if _t3 then
   ret if _t8 then
   ret if b then
   ret rtcall axion_array_free _p  ; Δ{}

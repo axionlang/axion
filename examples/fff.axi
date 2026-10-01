@@ -224,10 +224,10 @@ dupOrAcc comp acc = if strLen comp > 0 then comp else dup acc
 readMainKey :: Int -> String
 readMainKey dummy =
   let k = readKey 0 in
-  if strLen k == 0 then k
-  else if charAt 0 k == 27
-       then let b1 = readKey 0 in let b2 = readKey 0 in arrowKey b2
-       else k
+  -- short-circuit: `charAt 0 k` runs only on a non-empty key (ESC starts an arrow sequence).
+  if strLen k > 0 && charAt 0 k == 27
+  then let b1 = readKey 0 in let b2 = readKey 0 in arrowKey b2
+  else k
 arrowKey :: String -> String
 arrowKey b =
   if b == "A" then "k"
