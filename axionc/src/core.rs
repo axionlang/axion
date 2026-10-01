@@ -660,11 +660,20 @@ impl RecordInfo {
                 let mut owned = HashSet::new();
                 let mut field_param: HashMap<usize, usize> = HashMap::new();
                 for (i, f) in c.fields.iter().enumerate() {
-                    // a `data`-typed field is a heap allocation owned by the
-                    // record → must be reclaimed when the parent dies. Tuples and
-                    // non-heap (Int/String/Buffer/function) are left out (see docs).
+                    // A heap-owning field is a separate allocation a flat `free` would leave
+                    // behind → it must be reclaimed when the record dies (its `drop_way`
+                    // picks the right reclaimer: a `data` destructor or the tagged
+                    // `axion_str_drop`). `String` is heap (`strAppend`/`substr` allocate), so a
+                    // constructor that owns one — `Var String`, `CloV String …` — must free it;
+                    // the tagged reclaimer is safe on a static-literal string too. Bare `Int`,
+                    // `Buffer`, and functions are non-heap and left out. `Integer` is heap too
+                    // but is NOT reclaimed here: a borrowing field-extractor (`getV r = rv r`)
+                    // returns the field as an interior alias, so a `map getV` over a container
+                    // of such records would double-free the shared bignum against the record's
+                    // deep-drop (the alias-borrower-through-a-HOF class, [[axion-partial-consumer-uaf]])
+                    // — left as a conservative leak until that analysis covers record fields.
                     if let Some(h) = f.ty.head_con() {
-                        if data_names.contains(h) {
+                        if data_names.contains(h) || h == "String" {
                             // store the FULL field type (not just the head), so the
                             // destructor generator can key a parametric field on its
                             // mono key (`List String` → `axion_drop_List$String`,
@@ -758,7 +767,20 @@ impl RecordInfo {
         let head = *toks.get(*pos)?;
         *pos += 1;
         if head == "tuple" {
-            return None;
+            // A tuple's arity is NOT encoded in the mono key (`tuple$Expr$Int` could be a
+            // 2-tuple or the prefix of a longer key), so it cannot be split in the middle of a
+            // larger key. But as the FINAL argument it is exactly the remainder — consume all
+            // remaining tokens. A tuple in a NON-final position leaves `pos != toks.len()`, so
+            // `split_mono_key` bails (→ a conservative leak, never a double free). This lets a
+            // poly field instantiated to a tuple resolve — `Either String (Expr, Int)` → Right's
+            // `tuple$Expr$Int` — so its reclamation (notion-2) fires instead of leaking.
+            let mut key = String::from("tuple");
+            while *pos < toks.len() {
+                key.push('$');
+                key.push_str(toks[*pos]);
+                *pos += 1;
+            }
+            return Some(key);
         }
         let n = self.type_arity.get(head).copied().unwrap_or(0);
         let mut key = head.to_string();

@@ -1,6 +1,7 @@
 
 
 
+
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       ret 0  ; Δ{}
@@ -15,12 +16,17 @@
   ; Δ{}
   ; Δ{}
   else
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let p' = update! p { status = "Running"}  ; Δ{} · makes heap
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret p'  ; Δ{p'} · moves{p'}
   ret rtcall axion_array_free _p  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =
+axion_drop_Process _p  =
 updateKernel p  =

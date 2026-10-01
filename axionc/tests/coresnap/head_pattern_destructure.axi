@@ -5,6 +5,7 @@
 
 
 
+
           drop _t7
           drop _t9 : String
           let _d1000000 = putStrLn _t9  ; Δ{_t9}
@@ -48,11 +49,15 @@
   drop _t0 : Named
   drop _t1 : String
   else
+  let _dd0 = loadraw _p+0  ; Δ{}
+  let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = con Named "hi" 3  ; Δ{} · makes Named
   let _t1 = call label _t0  ; Δ{_t0} · makes String
   let _t2 = putStrLn _t1  ; Δ{_t1}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret case _p0 of
   ret case _p0 of
@@ -63,6 +68,7 @@
 age _p0  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
+axion_drop_Named _p  =
 label _p0  =
 main  =
 show$Int x  =

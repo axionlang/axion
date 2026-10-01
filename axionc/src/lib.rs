@@ -3077,35 +3077,30 @@ fn moved_into_consuming(
     e: &ast::Expr,
     consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
 ) -> bool {
-    match e {
-        ast::Expr::App(_, _, _) => {
-            let (head, args) = core::spine(e);
-            let here = if let ast::Expr::Var(g, _) = head {
-                consuming.get(g).is_some_and(|cp| {
-                    args.iter()
-                        .enumerate()
-                        .any(|(i, a)| cp.contains(&i) && is_var_named(a, name))
-                })
-            } else {
-                false
-            };
-            here || args
-                .iter()
-                .any(|a| moved_into_consuming(name, a, consuming))
+    if let ast::Expr::App(_, _, _) = e {
+        let (head, args) = core::spine(e);
+        let here = if let ast::Expr::Var(g, _) = head {
+            consuming.get(g).is_some_and(|cp| {
+                args.iter()
+                    .enumerate()
+                    .any(|(i, a)| cp.contains(&i) && is_var_named(a, name))
+            })
+        } else {
+            false
+        };
+        if here {
+            return true;
         }
-        ast::Expr::If(_, t, el, _) => {
-            moved_into_consuming(name, t, consuming) || moved_into_consuming(name, el, consuming)
-        }
-        ast::Expr::Case(_, arms, _) => arms
-            .iter()
-            .any(|(_, b)| moved_into_consuming(name, b, consuming)),
-        ast::Expr::Let(_, body, _) => moved_into_consuming(name, body, consuming),
-        ast::Expr::Tuple(es, _) => es.iter().any(|x| moved_into_consuming(name, x, consuming)),
-        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => fs
-            .iter()
-            .any(|(_, x)| moved_into_consuming(name, x, consuming)),
-        _ => false,
     }
+    // Recurse into EVERY sub-expression — covers `App` args, `BinOp` operands
+    // (`sum a + sum b` hides each `sum a`), `if`/`case` arms, `let` bindings AND body,
+    // tuples, records, and lambda bodies. A consuming move nested under any of these is a
+    // genuine escape; missing one would leave a field consumed but its owner unfreed (leak).
+    let mut found = false;
+    for_each_subexpr(e, &mut |sub| {
+        found = found || moved_into_consuming(name, sub, consuming);
+    });
+    found
 }
 
 /// `true` if `name` is moved as an argument into a CLOSURE application — a spine whose
@@ -3120,26 +3115,21 @@ fn moved_into_closure(
     e: &ast::Expr,
     closures: &std::collections::HashSet<String>,
 ) -> bool {
-    match e {
-        ast::Expr::App(_, _, _) => {
-            let (head, args) = core::spine(e);
-            let here = matches!(head, ast::Expr::Var(g, _) if closures.contains(g))
-                && args.iter().any(|a| is_var_named(a, name));
-            here || args.iter().any(|a| moved_into_closure(name, a, closures))
+    if let ast::Expr::App(_, _, _) = e {
+        let (head, args) = core::spine(e);
+        if matches!(head, ast::Expr::Var(g, _) if closures.contains(g))
+            && args.iter().any(|a| is_var_named(a, name))
+        {
+            return true;
         }
-        ast::Expr::If(_, t, el, _) => {
-            moved_into_closure(name, t, closures) || moved_into_closure(name, el, closures)
-        }
-        ast::Expr::Case(_, arms, _) => arms
-            .iter()
-            .any(|(_, b)| moved_into_closure(name, b, closures)),
-        ast::Expr::Let(_, body, _) => moved_into_closure(name, body, closures),
-        ast::Expr::Tuple(es, _) => es.iter().any(|x| moved_into_closure(name, x, closures)),
-        ast::Expr::RecordCon(_, fs, _) | ast::Expr::RecordUpd(_, fs, _) => fs
-            .iter()
-            .any(|(_, x)| moved_into_closure(name, x, closures)),
-        _ => false,
     }
+    // Recurse into every sub-expression, same completeness rationale as
+    // `moved_into_consuming` (a closure move may hide under a `BinOp`, `let`, etc.).
+    let mut found = false;
+    for_each_subexpr(e, &mut |sub| {
+        found = found || moved_into_closure(name, sub, closures);
+    });
+    found
 }
 
 /// `true` if `name` escapes on EVERY control-flow path of `e` — returned/embedded or
@@ -3186,6 +3176,20 @@ fn param_is_pure_escape(
     // function-typed params of `f` are the closures its elements may be consumed by
     // (foldr's combiner `f`): an element moved into `f y` escapes into that closure.
     let closures = arrow_typed_params(f);
+    // ANCHOR GATE. A param may be marked consuming by the pure-escape fixpoint only if it
+    // has a GENUINE escape — one that does not lean on `f`'s OWN optimistic consuming
+    // mark. Otherwise a self-recursive deep-copier justifies itself circularly: the
+    // fixpoint tentatively marks `f`'s param `%1`, then `moved_into_consuming` reads a
+    // field handed to a self-recursive call (`copyExpr a`) as "escaping into a consuming
+    // callee" — but that callee IS `f`, whose consuming-ness is the very thing under test.
+    // A deep-copier (`copyExpr e = Add (copyExpr a) (copyExpr b)`) moves no field into an
+    // owned position EXCEPT through itself; that is a BORROW (read, rebuild fresh), so it
+    // must stay `Many` — only then may a borrowed interior be copied without a double-free.
+    // `append` is unaffected: its element `z` is embedded DIRECTLY in `Cons z …` (a genuine
+    // escape), anchoring it even though its spine `zs` escapes only via the self-call.
+    if !param_has_genuine_escape(f, idx, con_field_heap, consuming, &closures) {
+        return false;
+    }
     let mut saw = false;
     for clause in &f.clauses {
         let bodies: Vec<&ast::Expr> = match &clause.body {
@@ -3228,6 +3232,149 @@ fn param_is_pure_escape(
         }
     }
     saw
+}
+
+/// `true` if SOME heap field of param `idx` escapes GENUINELY — i.e. with `f`'s own
+/// optimistic consuming-mark withdrawn, so a self-recursive call does NOT count as an
+/// escape. A genuine escape is: embedded in a fresh constructor / returned directly
+/// (`escapes_via_result`), moved into a higher-order closure (`moved_into_closure`), or
+/// moved into a CONSUMING position of a callee OTHER than `f`. This ANCHORS a param as a
+/// real consumer; a pure deep-copier has none (its fields only flow into `f` itself).
+///
+/// Completeness (soundness): every function that MUST consume (a borrowed field would be
+/// double-freed) moves some field into an owned position not counting self-recursion, so
+/// it has a genuine escape here. A function with NO genuine escape can always borrow
+/// safely — its self-recursion borrows, and any base-case view-return is itself a genuine
+/// `escapes_via_result`. The scan mirrors `p_path_ok`'s traversal (head-`Con` params and
+/// `case param of`, following the recursive spine) so it does not miss a real anchor.
+fn param_has_genuine_escape(
+    f: &ast::Func,
+    idx: usize,
+    cfh: &std::collections::HashMap<String, Vec<bool>>,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    closures: &std::collections::HashSet<String>,
+) -> bool {
+    // `consuming` with `f` removed: a move into `f` itself is then NOT an escape.
+    let wo_self: std::collections::HashMap<String, std::collections::HashSet<usize>> = consuming
+        .iter()
+        .filter(|(k, _)| *k != &f.name)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let genuine = |b: &str, body: &ast::Expr| {
+        escapes_via_result(b, body)
+            || moved_into_closure(b, body, closures)
+            || moved_into_consuming(b, body, &wo_self)
+    };
+    for clause in &f.clauses {
+        let bodies: Vec<&ast::Expr> = match &clause.body {
+            ast::Body::Plain(e) => vec![e],
+            ast::Body::Guarded(arms) => arms.iter().map(|(_, r)| r).collect(),
+        };
+        match clause.pats.get(idx) {
+            // A TUPLE-destructured param keeps the ORIGINAL optimistic treatment: a function
+            // that takes a tuple apart OWNS it (it deep-drops whatever cells it does not move
+            // out). Tuples were never subject to the self-recursive-copier false positive —
+            // that is a DATA (`Con`) shape — so they are always "anchored" (treated consuming).
+            Some(ast::Pat::Tuple(_, _)) => return true,
+            // head-destructured data param: `f (Cons z zs) = <z embedded>`
+            Some(ast::Pat::Con(con, subs, _))
+                if arm_field_genuine(con, subs, &bodies, cfh, &genuine) =>
+            {
+                return true
+            }
+            // `case param of …` (possibly nested down the recursive spine)
+            Some(ast::Pat::Var(p, _)) => {
+                for body in &bodies {
+                    // `case param of (a, b) -> …`: tuple destructure of the param → optimistic.
+                    if has_tuple_case(p, body) || case_field_genuine(p, body, cfh, &genuine) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `true` if some HEAP field of `Con subs` (per `cfh`) escapes genuinely in any `body`.
+fn arm_field_genuine(
+    con: &str,
+    subs: &[ast::Pat],
+    bodies: &[&ast::Expr],
+    cfh: &std::collections::HashMap<String, Vec<bool>>,
+    genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+) -> bool {
+    let Some(heaps) = cfh.get(con) else {
+        return false;
+    };
+    subs.iter().enumerate().any(|(fi, sp)| {
+        matches!(sp, ast::Pat::Var(b, _) if heaps.get(fi).copied().unwrap_or(false)
+            && bodies.iter().any(|body| genuine(b, body)))
+    })
+}
+
+/// `true` if some binder of a TUPLE destructure escapes genuinely in any `body`. Unlike
+/// `true` if `e` destructures `p` with a TUPLE pattern anywhere (`case p of (a, b) -> …`).
+/// Such a param keeps the optimistic "consuming" treatment (see `param_has_genuine_escape`).
+fn has_tuple_case(p: &str, e: &ast::Expr) -> bool {
+    if let ast::Expr::Case(scrut, arms, _) = e {
+        if is_var_named(scrut, p)
+            && arms
+                .iter()
+                .any(|(pat, _)| matches!(pat, ast::Pat::Tuple(..)))
+        {
+            return true;
+        }
+    }
+    let mut found = false;
+    for_each_subexpr(e, &mut |sub| {
+        found = found || has_tuple_case(p, sub);
+    });
+    found
+}
+
+/// Walks `e` for a `case <p> of Con subs -> arm` and reports whether any heap field of
+/// that destructure escapes genuinely. Follows the recursive spine (a spine binder is the
+/// "rest of `p`", so a deeper `case` on it is still a destructure of `p`). A TUPLE arm on a
+/// spine binder is treated as an anchor (optimistic consuming, like a tuple param).
+fn case_field_genuine(
+    p: &str,
+    e: &ast::Expr,
+    cfh: &std::collections::HashMap<String, Vec<bool>>,
+    genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+) -> bool {
+    if let ast::Expr::Case(scrut, arms, _) = e {
+        if is_var_named(scrut, p) {
+            for (pat, body) in arms {
+                let subs = match pat {
+                    ast::Pat::Con(con, subs, _) => {
+                        if arm_field_genuine(con, subs, &[body], cfh, genuine) {
+                            return true;
+                        }
+                        subs
+                    }
+                    // a tuple field of the spine → optimistic anchor (tuples are never the
+                    // self-recursive-copier false positive).
+                    ast::Pat::Tuple(..) => return true,
+                    _ => continue,
+                };
+                // follow the spine: recurse on each binder as a fresh "rest of p"
+                for sp in subs {
+                    if let ast::Pat::Var(b, _) = sp {
+                        if case_field_genuine(b, body, cfh, genuine) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut found = false;
+    for_each_subexpr(e, &mut |sub| {
+        found = found || case_field_genuine(p, sub, cfh, genuine);
+    });
+    found
 }
 
 /// The parameter names of `f` whose signature type is a function (arrow) — the

@@ -116,6 +116,28 @@ pub enum BindKind {
 /// short-circuit arm (`Nothing -> Nothing` / `Left e -> Left e`). Shared by both
 /// parsers so the two front-ends can never diverge on the desugaring.
 pub fn desugar_bind(kind: BindKind, pat: Pat, scrut: Expr, cont: Expr, sp: Span) -> Expr {
+    // A COMPOUND bind pattern over Maybe/Either (`(l, p1) <-! e`) would otherwise sit NESTED
+    // inside the monad constructor — `Right (l, p1)` — which the native backends reject, and
+    // whose extraction of an escaping field leaves the intermediate tuple shell unreclaimed.
+    // Bind a fresh intermediate whole, then destructure it in a SEPARATE `case`: the two
+    // single-level extractions (con then tuple/con) are each soundly reclaimed, and no pattern
+    // is nested in a constructor. The `$`-prefixed name is unwritable in source, so it captures
+    // nothing; the span keys it uniquely so nested binds don't collide. NOT for plain `<-` (Io):
+    // that lowers to `case scrut of pat -> cont` with NO constructor wrapping, so a compound
+    // pattern is already single-level — and wrapping it would hide a session endpoint behind the
+    // intermediate, tripping the protocol-completion check (AX0301).
+    let (pat, cont) = match (kind, pat) {
+        (BindKind::Io, p) | (_, p @ (Pat::Var(_, _) | Pat::Wild(_))) => (p, cont),
+        (_, compound) => {
+            let tmp = format!("$bind{}", sp.0);
+            let inner = Expr::Case(
+                Box::new(Expr::Var(tmp.clone(), sp)),
+                vec![(compound, cont)],
+                sp,
+            );
+            (Pat::Var(tmp, sp), inner)
+        }
+    };
     let case = |arms| Expr::Case(Box::new(scrut), arms, sp);
     match kind {
         BindKind::Io => case(vec![(pat, cont)]),
