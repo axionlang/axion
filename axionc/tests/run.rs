@@ -5307,3 +5307,26 @@ fn cond_temp_reclaim_runs_on_all_backends() {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "xHIHI", "{backend:?}");
     }
 }
+
+#[test]
+fn shortcircuit_bool_ops_on_all_backends() {
+    // `&&`/`||` are short-circuit (desugar to a lazy `if`): shortcircuit.axi guards a `100 div 0`
+    // behind a false `&&` / true `||`, so the dead div never runs (strict would be a runtime
+    // error), and checks the truth table. Prints "ok" identically on interp, cranelift, llvm.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("shortcircuit.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "shortcircuit should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n", "{backend:?}");
+    }
+}

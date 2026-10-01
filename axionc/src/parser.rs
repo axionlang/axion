@@ -1434,6 +1434,22 @@ fn make_binop(op: String, l: Expr, r: Expr, sp: Span) -> Expr {
     match op.as_str() {
         ":" => cons_expr(l, r, sp),
         "." => app2(Expr::Var("compose".to_string(), sp), l, r, sp),
+        // SHORT-CIRCUIT: `a && b` / `a || b` desugar to a lazy `if` so the RHS is evaluated only
+        // when the LHS doesn't decide the result. As prelude FUNCTIONS they would be strict (both
+        // args forced before the body), a real footgun for guarded indices/division. (The `(&&)`/
+        // `(||)` prelude bindings remain for value use, e.g. `foldr (&&) True`.)
+        "&&" => Expr::If(
+            Box::new(l),
+            Box::new(r),
+            Box::new(Expr::Con("False".to_string(), sp)),
+            sp,
+        ),
+        "||" => Expr::If(
+            Box::new(l),
+            Box::new(Expr::Con("True".to_string(), sp)),
+            Box::new(r),
+            sp,
+        ),
         _ => Expr::BinOp(op, Box::new(l), Box::new(r), sp),
     }
 }

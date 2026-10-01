@@ -1796,6 +1796,20 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
                 ":" => app2(Expr::Con("Cons".into(), sp), l, rhs, sp),
                 "." => app2(Expr::Var("compose".into(), sp), l, rhs, sp),
                 "$" => Expr::App(Box::new(l), Box::new(rhs), sp),
+                // SHORT-CIRCUIT `&&`/`||` → a lazy `if` (mirrors parser.rs::make_binop); the RHS
+                // runs only when the LHS doesn't decide the result.
+                "&&" => Expr::If(
+                    Box::new(l),
+                    Box::new(rhs),
+                    Box::new(Expr::Con("False".into(), sp)),
+                    sp,
+                ),
+                "||" => Expr::If(
+                    Box::new(l),
+                    Box::new(Expr::Con("True".into(), sp)),
+                    Box::new(rhs),
+                    sp,
+                ),
                 _ => Expr::BinOp(op, Box::new(l), Box::new(rhs), sp),
             })
         }

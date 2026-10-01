@@ -23,23 +23,25 @@
 
 
 
-
-
-                                      drop _t31 : String
-                                      let _d1000000 = putStrLn _t31  ; Δ{_t31}
-                                      let _t28 = 0  ; Δ{}
-                                      let _t29 = 1  ; Δ{}
-                                      let _t30 = call || _t28 _t29  ; Δ{}
-                                      let _t31 = call show$Bool _t30  ; Δ{} · makes String
+                                        ret 1  ; Δ{}
+                                        ret 1  ; Δ{}
+                                      drop _t29 : String
+                                      else
+                                      let _d1000000 = putStrLn _t29  ; Δ{_t29}
+                                      let _t27 = 0  ; Δ{}
+                                      let _t28 = if _t27 then
+                                      let _t29 = call show$Bool _t28  ; Δ{} · makes String
                                       ret _d1000000  ; Δ{}
                                     _ ->
-                                  drop _t26 : String
+                                    ret 0  ; Δ{}
+                                    ret 0  ; Δ{}
+                                  drop _t25 : String
+                                  else
                                   let _t23 = 1  ; Δ{}
-                                  let _t24 = 0  ; Δ{}
-                                  let _t25 = call && _t23 _t24  ; Δ{}
-                                  let _t26 = call show$Bool _t25  ; Δ{} · makes String
-                                  let _t27 = putStrLn _t26  ; Δ{_t26}
-                                  ret case _t27 of
+                                  let _t24 = if _t23 then
+                                  let _t25 = call show$Bool _t24  ; Δ{} · makes String
+                                  let _t26 = putStrLn _t25  ; Δ{_t25}
+                                  ret case _t26 of
                                 _ ->
                               drop _t21 : String
                               let _t21 = call baseName "a/b/c"  ; Δ{} · makes String
@@ -168,11 +170,11 @@
     ret 0  ; Δ{}
     ret 1  ; Δ{}
     ret 1  ; Δ{}
-    ret 1  ; Δ{}
     ret == _t5 0  ; Δ{}
     ret == _t8 0  ; Δ{}
     ret == x y  ; Δ{}
     ret best  ; Δ{}
+    ret call <=$Int c 57  ; Δ{}
     ret call readIntGo s 0 0  ; Δ{} · makes Maybe$Int
     ret con Just acc  ; Δ{} · makes Maybe$Int
     ret con Nothing  ; Δ{} · makes Maybe$Int
@@ -186,8 +188,7 @@
     ret rtcall axion_substr 0 k s  ; Δ{} · makes String
     ret rtcall axion_substr _t1 _t4 s  ; Δ{} · makes String
     ret s  ; Δ{}
-    ret y  ; Δ{}
-    ret y  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -238,7 +239,6 @@
   else
   else
   else
-  else
   let _dd0 = band _p 1  ; Δ{}
   let _dd1 = if _dd0 then
   let _dd4 = band _p 1  ; Δ{}
@@ -261,7 +261,6 @@
   let _t0 = rtcall axion_str_len s  ; Δ{}
   let _t1 = < i _t0  ; Δ{}
   let _t1 = == _t0 0  ; Δ{}
-  let _t1 = call <=$Int c 57  ; Δ{}
   let _t1 = call >=$Int i _t0  ; Δ{}
   let _t1 = call >=$Int i _t0  ; Δ{}
   let _t1 = call lastIndex 47 s 0 _t0  ; Δ{}
@@ -279,7 +278,6 @@
   let _t4 = - _t2 _t3  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call && _t0 _t1  ; Δ{}
   ret call baseAfter s _t1  ; Δ{} · makes String
   ret call dirBefore s _t1  ; Δ{} · makes String
   ret call le$Int x y  ; Δ{}
@@ -291,20 +289,18 @@
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
+  ret if _t0 then
   ret if _t1 then
   ret if _t1 then
   ret if _t1 then
   ret if _t1 then
   ret if _t2 then
   ret if _t2 then
-  ret if x then
-  ret if x then
   ret if x then
   ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_substr _t0 _t4 s  ; Δ{} · makes String
   ret showInt x  ; Δ{} · makes String
   ret showInt x  ; Δ{} · makes String
-&& x y  =
 <=$Int x y  =
 >=$Int x y  =
 axion_drop_Array _p  =
@@ -330,4 +326,3 @@ showArg$Int x  =
 trim s  =
 trimEnd s j  =
 trimStart s i  =
-|| x y  =
