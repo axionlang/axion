@@ -164,6 +164,11 @@ jobs:
       # trash/copy/bulk-rename effects on every backend. Keeps the flagship + readKey/chr honest.
       - name: fff file-manager behavioral test (all backends)
         run: ./scripts/fff-test.sh
+      # The `lambda` interpreter (examples/lambda.axi) — the third flagship, exercising the
+      # functional core (recursive ADTs, deep copiers, an environment). Feeds source programs on
+      # argv and asserts the evaluated result on every backend (interp == dev == release).
+      - name: lambda interpreter behavioral test (all backends)
+        run: ./scripts/lambda-test.sh
 
   # METATHEORY (Track 2) — the mechanized soundness proofs AND the faithfulness bridge (the Lean
   # model's verdict == the real verifier's) must hold. Previously run ONLY on developer machines, so

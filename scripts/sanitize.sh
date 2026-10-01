@@ -66,6 +66,7 @@ NATIVE=(
   axionc/tests/fixtures/escape_local_borrow.axi
   axionc/tests/fixtures/case_extract_escape.axi
   axionc/tests/fixtures/tuple_extract_escape.axi
+  axionc/tests/fixtures/land_borrowing_copier.axi
   axionc/tests/fixtures/hof_unsigned_closure.axi
   axionc/tests/fixtures/hof_lambda_closure.axi
   axionc/tests/fixtures/hof_partial_closure.axi
@@ -79,6 +80,7 @@ NATIVE=(
   axionc/tests/fixtures/chr_sanitize.axi
   axionc/tests/fixtures/cond_temp_reclaim.axi
   examples/fff.axi
+  examples/lambda.axi
   axionc/tests/fixtures/hello_cli.axi
   axionc/tests/fixtures/cond_escape_let.axi
   axionc/tests/fixtures/heap_loop.axi
@@ -199,11 +201,12 @@ LEAKFREE=(
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field peel_heap_reclaim
   structural_borrowers_reclaim take_heap_reclaim do_monad_bind either_map_reclaim mixed_param_return_reclaim mixed_param_return_integer container_copy_reclaim borrowed_list_elem_consume dead_binding_reclaim sort_heap_reclaim
-  string_compare capability_sanitize readline_sanitize readkey_sanitize chr_sanitize cond_temp_reclaim fff hello_cli cond_escape_let
+  string_compare capability_sanitize readline_sanitize readkey_sanitize chr_sanitize cond_temp_reclaim fff lambda hello_cli cond_escape_let
   record_update_reclaim record_update_multi record_update_chain
   record_update_escape record_update_escape_read integer_reclaim integer_accumulator
   field_alias_return integer_divmod rsa_modexp escape_local_borrow
   case_extract_escape tuple_extract_escape hof_unsigned_closure hof_lambda_closure hof_partial_closure curried_caf curried_partial
+  land_borrowing_copier
 )
 is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 
