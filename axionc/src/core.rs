@@ -4960,6 +4960,18 @@ pub fn lower_with(
                 .or_insert_with(|| vec![ast::Mult::Many; f.params.len()]);
         }
     }
+    // Uniformize MIXED conditional-owned temps (`let x = if c then <fresh heap> else s`) by
+    // copying the non-owned arms — BEFORE borrow analysis, so the copied arm reads its source as a
+    // borrow and every downstream pass (borrow-args, call annotations, drops) stays consistent.
+    // Closes the mixed conditional-owned-temp leak (the #1 flagship gotcha); the all-heap case was
+    // already handled by `reclaim_cond_escape`'s seeding.
+    for f in &mut out {
+        let body = std::mem::replace(
+            &mut f.body,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+        );
+        f.body = normalize_mixed_cond_lets(body);
+    }
     let borrow_args = compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
 
     // Regions/lifetimes (§): a function whose return is, on EVERY path, a pure interior heap
@@ -7671,6 +7683,138 @@ fn cond_temp_key(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Option<Stri
     }
 }
 
+/// For a `let x = if/case` whose arms MIX an owned-heap value (key `String`/`Integer`) with a
+/// non-owned ATOM tail (a literal or borrowed param — `if c then strAppend … else s`), COPY the
+/// non-owned arms (`ret s` → `ret strAppend s ""`, or `axion_bignum_copy` for `Integer`) so EVERY
+/// arm is uniformly owned. Then `x` is a genuinely-owned temp the all-heap reclaim already seeds —
+/// closing the MIXED conditional-owned-temp leak (the #1 flagship gotcha) without a branch-
+/// sensitive drop. Returns the rewritten `rhs` + its uniform key, or `None` when not a cleanly-
+/// copyable mixed case (a disagreeing key, a non-`String`/`Integer` key, or a non-atom tail) —
+/// left conservative (still a leak, never a double free).
+fn copy_mixed_cond_arms(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Option<(Rhs, String)> {
+    let arms: Vec<&Term> = match rhs {
+        Rhs::If(_, th, el) => vec![th, el],
+        Rhs::Case(_, arms) => arms.iter().map(|(_, a)| a).collect(),
+        Rhs::Op(_) => return None,
+    };
+    let mut key: Option<String> = None;
+    let mut any_nonowned = false;
+    for a in &arms {
+        match arm_owned_key(a, br) {
+            Some(k) => {
+                if key.get_or_insert_with(|| k.clone()) != &k {
+                    return None; // arms yield different owned keys — not uniform
+                }
+            }
+            None => any_nonowned = true,
+        }
+    }
+    let key = key?; // at least one arm must be a recognized owned heap producer
+    if !any_nonowned {
+        return None; // all owned → the existing all-heap path handles it
+    }
+    if key != "String" && key != "Integer" {
+        return None; // only these heap primitives have a stock 1-value copier
+    }
+    let rewrite = |a: Term, br: &HashMap<String, HashSet<usize>>| -> Option<Term> {
+        if arm_owned_key(&a, br).is_some() {
+            Some(a) // owned arm: already the key, keep as-is
+        } else {
+            wrap_tail_copy(a, &key)
+        }
+    };
+    let new_rhs = match rhs.clone() {
+        Rhs::If(c, th, el) => Rhs::If(c, Box::new(rewrite(*th, br)?), Box::new(rewrite(*el, br)?)),
+        Rhs::Case(s, arms) => Rhs::Case(
+            s,
+            arms.into_iter()
+                .map(|(p, a)| rewrite(a, br).map(|a| (p, a)))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Rhs::Op(_) => return None,
+    };
+    Some((new_rhs, key))
+}
+
+/// Pre-pass (BEFORE borrow analysis): uniformize a `let x = if/case` whose arms MIX an owned-heap
+/// producer with a bare-atom tail (`let x = if c then strAppend … else s`) by COPYING the non-owned
+/// arms. Must run before `compute_borrow_args`: the copied arm merely READS its source (a borrow),
+/// so the caller reclaims the argument and `x` becomes a uniformly-owned temp the all-heap reclaim
+/// seeds. (Running it later would change a param consumed→borrowed after the caller's call-site
+/// annotation was already fixed as a move → the argument freed by neither → a leak.) Only non-tail
+/// `let` conditionals; a TAIL `ret if/case` escapes and is the caller's / ret-alias pass's domain.
+fn normalize_mixed_cond_lets(t: Term) -> Term {
+    let empty: HashMap<String, HashSet<usize>> = HashMap::new();
+    fn norm_rhs(rhs: Rhs) -> Rhs {
+        match rhs {
+            Rhs::If(c, th, el) => Rhs::If(
+                c,
+                Box::new(normalize_mixed_cond_lets(*th)),
+                Box::new(normalize_mixed_cond_lets(*el)),
+            ),
+            Rhs::Case(s, arms) => Rhs::Case(
+                s,
+                arms.into_iter()
+                    .map(|(p, a)| (p, normalize_mixed_cond_lets(a)))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+    match t {
+        Term::Let(x, rhs, sp, b) => {
+            let rhs = if matches!(&rhs, Rhs::If(..) | Rhs::Case(..))
+                && cond_temp_key(&rhs, &empty).is_none()
+            {
+                copy_mixed_cond_arms(&rhs, &empty)
+                    .map(|(r, _)| r)
+                    .unwrap_or(rhs)
+            } else {
+                rhs
+            };
+            Term::Let(
+                x,
+                norm_rhs(rhs),
+                sp,
+                Box::new(normalize_mixed_cond_lets(*b)),
+            )
+        }
+        Term::Drop(v, k, sk, sp, b) => {
+            Term::Drop(v, k, sk, sp, Box::new(normalize_mixed_cond_lets(*b)))
+        }
+        Term::Ret(rhs, sp) => Term::Ret(norm_rhs(rhs), sp),
+    }
+}
+
+/// Descend to the TAIL `ret <atom>` of an arm and wrap the atom in a copy so the arm yields an
+/// OWNED heap value (`strAppend a ""` for a `String`, `axion_bignum_copy a` for an `Integer`).
+/// `None` if the tail is not a simple atom return (a nested conditional / op) — left conservative.
+fn wrap_tail_copy(t: Term, key: &str) -> Option<Term> {
+    match t {
+        Term::Let(x, r, sp, b) => Some(Term::Let(x, r, sp, Box::new(wrap_tail_copy(*b, key)?))),
+        Term::Drop(v, k, sk, sp, b) => {
+            Some(Term::Drop(v, k, sk, sp, Box::new(wrap_tail_copy(*b, key)?)))
+        }
+        Term::Ret(Rhs::Op(Op::Atom(a)), sp) => {
+            let op = if key == "Integer" {
+                Op::RtCall {
+                    func: "axion_bignum_copy".into(),
+                    args: vec![a],
+                    returns: true,
+                }
+            } else {
+                Op::RtCall {
+                    func: "axion_strcat".into(),
+                    args: vec![a, Atom::Str(String::new())],
+                    returns: true,
+                }
+            };
+            Some(Term::Ret(Rhs::Op(op), sp))
+        }
+        Term::Ret(_, _) => None,
+    }
+}
+
 fn reclaim_cond_escape(
     body: Term,
     owned: Vec<(String, Option<String>)>,
@@ -7733,7 +7877,8 @@ fn reclaim_cond_escape(
                 // never marked it (its producer is a conditional, not a recognized op) → a leak the
                 // verifier flags. Seed it here so the tail logic reclaims it at its death point —
                 // removing the tail-position workaround for all-heap-arm conditionals (fff's rows).
-                // MIXED (a literal/alias arm) → `cond_temp_key` is None → left alone (no double-free).
+                // MIXED arms are uniformized to all-owned by `normalize_mixed_cond_lets` (a pre-pass
+                // before borrow analysis), so by here they reach `cond_temp_key` as all-heap.
                 if let Some(key) = cond_temp_key(&rhs, br) {
                     if !owned.iter().any(|(v, _)| v == &x) {
                         owned.push((x.clone(), Some(key)));
