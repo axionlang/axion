@@ -184,6 +184,21 @@ into CI. A true 1:1 embedding of the real Rust verifier into the Lean operationa
 CompCert-scale — the north star to name, not a step to scope. The explicit Ownership IR (§3) is what
 makes even verdict-equivalence cheap: both sides reason over the same `ExtractOp` primitives.
 
+**DONE — widened to the whole corpus.** `metatheory/model-trace.sh` now runs `--emit model-trace`
+over `tests/fixtures` + `examples` + `examples/pass` (was fixtures-only), emitting one
+`AxionDrop.acceptsL <T> = <verifier-verdict> := by rfl` per in-fragment function and type-checking
+them all in Lean. Result: the executable model agrees with the real verifier on **all 1279
+in-fragment functions** (1262 in-model of 1671 corpus functions) — ~3× the prior ~464-example
+coverage. The widening EARNED ITS KEEP: it surfaced a translator self-gating hole — a function that
+builds a closure and calls it (`main` of `03_linear_buffer`) modeled the closure CELL as a tracked
+`alloc` whose `nonstrict` consumption was untracked, a phantom leak the verifier does not see. Fixed
+by not tracking the closure cell (the verifier never reclaims a closure env — a documented
+non-reclaimed class), keeping model≡verifier. TWO HONESTY CAVEATS (recorded in the script header):
+this bridge certifies the DROP-VERIFIER (AX0910/AX0911) vs the Lean model — NOT the tag-checker
+(AX0913), which is separately guarded by `cargo test --test tag_check`; and it certifies the
+verifier's own verdict, so a leak the verifier itself does not model (the Integer-in-data residual)
+is outside both by construction.
+
 ## 6. Tradeoff matrix
 
 | | A: conservative floor | B: move-vs-copy rule | C: status quo |

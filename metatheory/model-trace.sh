@@ -10,6 +10,12 @@
 # (bridge.rs) to the whole in-fragment corpus, and reports coverage.
 #
 # Exit 0 = the model agrees with the verifier on every in-fragment function.
+#
+# SCOPE (two honesty caveats): this bridge certifies the DROP-BALANCE verifier (`--emit verify`,
+# AX0910/AX0911) against the Lean owned-set model. It does NOT cover the ExtractOp TAG-CHECKER
+# (AX0913) — that is a separate analysis, regression-guarded by `cargo test --test tag_check`.
+# And it certifies the verifier's own verdict; a leak the verifier itself does not model (e.g. the
+# Integer-in-data drop_slots residual) is outside both the verifier and this bridge by construction.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
@@ -30,7 +36,10 @@ cp "$here/AxionDrop.lean" "$gen"
 
 tot=0
 inm=0
-for f in "$repo"/axionc/tests/fixtures/*.axi; do
+# The whole corpus: the fixtures AND the flagship examples (lambda / typecheck / fff / pass …),
+# so the bridge covers the real workloads, not only the curated fixtures.
+for f in "$repo"/axionc/tests/fixtures/*.axi "$repo"/examples/*.axi "$repo"/examples/pass/*.axi; do
+  [ -f "$f" ] || continue
   out="$("$AX" --emit model-trace "$f" 2>/dev/null || true)"
   [ -z "$out" ] && continue
   cov="$(printf '%s\n' "$out" | grep -o 'coverage: [0-9]* in-model of [0-9]*' || true)"

@@ -166,8 +166,13 @@ impl Tr<'_> {
                 }
             }
         }
-        // produced heap result
-        if e.produces.is_some() {
+        // produced heap result. EXCEPTION: a `MakeClosure` cell is NOT a tracked resource here —
+        // the verifier never reclaims a closure environment (a documented non-reclaimed class), and
+        // its consumption at the `CallClosure` is `nonstrict` (untracked above), so modeling the
+        // cell as an `alloc` would strand it as a phantom leak the verifier does not see (the
+        // `main`-builds-a-closure shape that the whole-corpus widening surfaced). Leaving it
+        // untracked keeps the model's verdict equal to the verifier's.
+        if e.produces.is_some() && !matches!(op, Op::MakeClosure { .. }) {
             match bind {
                 Some(x) => {
                     let id = self.fresh();

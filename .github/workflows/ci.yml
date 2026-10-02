@@ -179,7 +179,8 @@ jobs:
   # like pass-test.sh it could silently rot — a model that has drifted from the compiler proves
   # nothing. `bridge.sh` = check.sh (7 Lean files: AxionDrop/Alias/Key/Move/Extract/Session/Fidelity,
   # no `sorry`, axioms = propext/Quot.sound) + `cargo test --test bridge` (8 canonical shapes) +
-  # model-trace.sh (the model agrees with the verifier over the whole in-fragment corpus, ~79%) +
+  # model-trace.sh (the model agrees with the verifier over the whole in-fragment corpus —
+  # fixtures + examples + examples/pass, ~1279 machine-checked functions, 1262/1671 in-model) +
   # exhaustive.sh (bounded-exhaustive: EVERY program in the drop/move/branch family up to size k).
   # Needs Nix (lean4) + Rust (axionc). ~4 min compute once lean4 is fetched.
   metatheory:
