@@ -221,6 +221,16 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
 2. **Refactor `AX0910` to check tags only** — co-designed with Step 1 so the verifier inspects the
    `ExtractOp` nodes rather than re-deriving ownership. This is the decoupling that kills the echo
    chamber.
+   **Started — tuple extension + second-opinion checker landed:** `classify_extractions` now also
+   tags tuple scrutinees (element types recovered from the arity-encoded mono-key; local-tuple
+   scrutinees are honest under-coverage, never a wrong tag). `core::tag_check` + `--emit tag-check`
+   is the second opinion: from a TYPE-based tag borrow-return summary it reports any site that frees
+   the same `(scrutinee, getter)` field **≥2 times** — the real double-free, so a sound single
+   extraction is never flagged. Proven on the corpus (tests/tag_check.rs): **0 false positives over
+   the whole ASan-clean corpus** (faithful) AND it **flags the Integer grab-via-case reuse that
+   `--emit verify` reports clean** (strictly stronger — the drop_slots gate hid the Integer field;
+   the type-based tags do not). Still non-gating. Remaining before the flip: realize the tags in
+   lowering (so the checker can gate as the sole authority, Step 3).
 3. **Interprocedural liveness summaries** — add the per-function "consumes vs borrows its container
    arg" summary so the taxed cases (P3, grab-reuse) get `MoveOut`/`ExplicitCopy` across call
    boundaries. Retire the `case_arms` *decision* branches as each is subsumed (keep the emit

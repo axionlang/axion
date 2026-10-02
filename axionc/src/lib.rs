@@ -106,6 +106,7 @@ enum Emit {
     CodegenTvClif,
     RetAlias,
     ExtractTags,
+    TagCheck,
     Clif,
     Llvm,
 }
@@ -201,6 +202,7 @@ pub fn run_cli() -> ExitCode {
                     Some("codegen-tv-clif") => emit = Emit::CodegenTvClif,
                     Some("ret-alias") => emit = Emit::RetAlias,
                     Some("extract-tags") => emit = Emit::ExtractTags,
+                    Some("tag-check") => emit = Emit::TagCheck,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
@@ -580,6 +582,7 @@ pub fn run_cli() -> ExitCode {
             &module,
             &lowered.recinfo,
             &lowered.borrow_args,
+            &lowered.param_keys,
         );
         let (mut mv, mut br, mut cp, mut ip) = (0usize, 0usize, 0usize, 0usize);
         for ff in &facts {
@@ -610,6 +613,39 @@ pub fn run_cli() -> ExitCode {
              {ip} hinge on a callee (need the interprocedural summary)",
             facts.len()
         );
+        return ExitCode::SUCCESS;
+    }
+
+    if emit == Emit::TagCheck {
+        // docs/safety-model-spike.md (Option B, Step 2): the tag-checker as a SECOND OPINION —
+        // report every site that DROPS a value the ExtractOp tags prove is a borrow. Empty on the
+        // ASan-clean corpus (faithful); fires on the Integer grab-via-case reuse where AX0910 is
+        // blind (strictly stronger). NON-gating; Step 3 flips it to the sole authority.
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            fuse,
+        );
+        let facts = core::classify_extractions(
+            &lowered.fns,
+            &module,
+            &lowered.recinfo,
+            &lowered.borrow_args,
+            &lowered.param_keys,
+        );
+        let viol = core::tag_check(&lowered.fns, &facts);
+        for v in &viol {
+            println!(
+                "tag-check VIOLATION: {} frees `{}`'s field (via `{}`) {} times — double-free",
+                v.func, v.scrut, v.callee, v.count
+            );
+        }
+        println!("tag-check: {} violation(s)", viol.len());
         return ExitCode::SUCCESS;
     }
 
@@ -5437,6 +5473,7 @@ fn print_usage() {
          axionc --emit core <file>      Axion Core IR (ANF) — the shared lowering\n  \
          axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
          axionc --emit extract-tags <f> ownership tags on heap-field case-extractions (report)\n  \
+         axionc --emit tag-check <file> second-opinion tag-checker: double-free report (non-gating)\n  \
          axionc --emit clif <file>      Cranelift IR of the Int core (--dev backend)\n  \
          axionc --emit llvm <file>      LLVM IR of the Int core (--release backend)\n  \
          axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \

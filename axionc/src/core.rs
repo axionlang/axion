@@ -7390,10 +7390,14 @@ impl ExtractOp {
 pub struct ExtractFact {
     pub func: String,
     pub con: String,
+    pub scrut: String,
     pub field: String,
     pub slot: usize,
     pub tag: ExtractOp,
     pub interproc: bool,
+    /// the field IS the whole result of its function on this path (a grab) — so a `BorrowRef`
+    /// here means the function returns a borrow of the scrutinee (the tag-based borrow-return).
+    pub bare: bool,
 }
 
 /// Classify every `Con` heap-field extraction in the lowered module by the intra-procedural
@@ -7406,6 +7410,7 @@ pub fn classify_extractions(
     module: &ast::Module,
     recinfo: &RecordInfo,
     ba: &BorrowArgs,
+    param_keys: &HashMap<String, Vec<Option<String>>>,
 ) -> Vec<ExtractFact> {
     // con → declared field types, for a type-based heap test independent of drop_slots.
     let field_tys: HashMap<String, Vec<Type>> = module
@@ -7430,7 +7435,21 @@ pub fn classify_extractions(
         // local producer); a borrowed param is not droppable → not owned.
         let mut owned: HashSet<String> = f.owned_params.iter().cloned().collect();
         owned.extend(droppable_vars(f, ba));
-        extract_walk(&f.body, &f.name, &field_tys, recinfo, ba, &owned, &mut out);
+        // param name → its mono reclaim key (tuple scrutinee element types are recovered from this
+        // via `tuple_elem_drops` — available now that tuple keys encode arity).
+        let pkey: HashMap<String, String> = param_keys
+            .get(&f.name)
+            .map(|ks| {
+                f.params
+                    .iter()
+                    .zip(ks)
+                    .filter_map(|(p, k)| k.clone().map(|k| (p.clone(), k)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        extract_walk(
+            &f.body, &f.name, &field_tys, &pkey, recinfo, ba, &owned, &mut out,
+        );
     }
     out
 }
@@ -7456,6 +7475,7 @@ fn extract_walk(
     t: &Term,
     func: &str,
     field_tys: &HashMap<String, Vec<Type>>,
+    pkey: &HashMap<String, String>,
     recinfo: &RecordInfo,
     ba: &BorrowArgs,
     owned: &HashSet<String>,
@@ -7463,14 +7483,59 @@ fn extract_walk(
 ) {
     match t {
         Term::Let(_, rhs, _, body) => {
-            extract_rhs(rhs, func, field_tys, recinfo, ba, owned, out);
-            extract_walk(body, func, field_tys, recinfo, ba, owned, out);
+            extract_rhs(rhs, func, field_tys, pkey, recinfo, ba, owned, out);
+            extract_walk(body, func, field_tys, pkey, recinfo, ba, owned, out);
         }
         Term::Drop(_, _, _, _, body) => {
-            extract_walk(body, func, field_tys, recinfo, ba, owned, out)
+            extract_walk(body, func, field_tys, pkey, recinfo, ba, owned, out)
         }
-        Term::Ret(rhs, _) => extract_rhs(rhs, func, field_tys, recinfo, ba, owned, out),
+        Term::Ret(rhs, _) => extract_rhs(rhs, func, field_tys, pkey, recinfo, ba, owned, out),
     }
+}
+
+/// Emit one `ExtractFact` for a mentioned heap field binder `n` at `slot` of `con`/tuple scrutinee
+/// `s`, applying the intra-procedural container-liveness tag rule. Shared by the `Con` and `Tuple`
+/// arms so both use identical logic.
+#[allow(clippy::too_many_arguments)]
+fn push_extract_fact(
+    func: &str,
+    con: &str,
+    scrut: &str,
+    n: &str,
+    slot: usize,
+    owned_scrut: bool,
+    body: &Term,
+    ba: &BorrowArgs,
+    out: &mut Vec<ExtractFact>,
+) {
+    if !term_mentions_any(body, &HashSet::from([n.to_string()])) {
+        return; // dead discard → reclaimed by the destructor, not an extract-and-use
+    }
+    let escapes = body_moves_var(n, body, ba);
+    // The WHOLE result IS the field (grab) vs the field EMBEDDED into a new structure / handed to a
+    // consuming call. A grab out of a borrowed container is a borrow-return, not a copy.
+    let bare = returns_var_bare(n, body);
+    let embedded = embedded_in_builder(n, body);
+    let tag = if !escapes {
+        ExtractOp::BorrowRef
+    } else if owned_scrut {
+        ExtractOp::MoveOut // field moves out of the dying container
+    } else if bare && !embedded {
+        ExtractOp::BorrowRef // grab: caller's live container still owns it
+    } else {
+        ExtractOp::ExplicitCopy // escapes a surviving container
+    };
+    let interproc = escapes && mentioned_in_call_arg(n, body);
+    out.push(ExtractFact {
+        func: func.to_string(),
+        con: con.to_string(),
+        scrut: scrut.to_string(),
+        field: n.to_string(),
+        slot,
+        tag,
+        interproc,
+        bare,
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7478,6 +7543,7 @@ fn extract_rhs(
     rhs: &Rhs,
     func: &str,
     field_tys: &HashMap<String, Vec<Type>>,
+    pkey: &HashMap<String, String>,
     recinfo: &RecordInfo,
     ba: &BorrowArgs,
     owned: &HashSet<String>,
@@ -7486,55 +7552,75 @@ fn extract_rhs(
     match rhs {
         Rhs::Op(_) => {}
         Rhs::If(_, a, b) => {
-            extract_walk(a, func, field_tys, recinfo, ba, owned, out);
-            extract_walk(b, func, field_tys, recinfo, ba, owned, out);
+            extract_walk(a, func, field_tys, pkey, recinfo, ba, owned, out);
+            extract_walk(b, func, field_tys, pkey, recinfo, ba, owned, out);
         }
         Rhs::Case(scrut, arms) => {
             if let Atom::Var(s) = scrut {
                 let owned_scrut = owned.contains(s);
                 for (pat, body) in arms {
-                    if let CPat::Con(con, subs) = pat {
-                        let tys = field_tys.get(con);
-                        for (i, sub) in subs.iter().enumerate() {
-                            if let CPat::Var(n) = sub {
-                                let is_heap = tys
-                                    .and_then(|t| t.get(i))
-                                    .is_some_and(|ty| field_ty_heap(ty, recinfo));
-                                if !is_heap {
-                                    continue;
+                    match pat {
+                        CPat::Con(con, subs) => {
+                            let tys = field_tys.get(con);
+                            for (i, sub) in subs.iter().enumerate() {
+                                if let CPat::Var(n) = sub {
+                                    let is_heap = tys
+                                        .and_then(|t| t.get(i))
+                                        .is_some_and(|ty| field_ty_heap(ty, recinfo));
+                                    if is_heap {
+                                        push_extract_fact(
+                                            func,
+                                            con,
+                                            s,
+                                            n,
+                                            i,
+                                            owned_scrut,
+                                            body,
+                                            ba,
+                                            out,
+                                        );
+                                    }
                                 }
-                                if !term_mentions_any(body, &HashSet::from([n.clone()])) {
-                                    continue; // dead discard → reclaimed by the destructor
-                                }
-                                let escapes = body_moves_var(n, body, ba);
-                                // The WHOLE result IS the field (grab) vs the field EMBEDDED into a
-                                // new structure / handed to a consuming call. A grab out of a
-                                // borrowed container is a borrow-return, not a copy.
-                                let bare = returns_var_bare(n, body);
-                                let embedded = embedded_in_builder(n, body);
-                                let tag = if !escapes {
-                                    ExtractOp::BorrowRef
-                                } else if owned_scrut {
-                                    ExtractOp::MoveOut // field moves out of the dying container
-                                } else if bare && !embedded {
-                                    ExtractOp::BorrowRef // grab: caller's live container still owns it
-                                } else {
-                                    ExtractOp::ExplicitCopy // escapes a surviving container
-                                };
-                                let interproc = escapes && mentioned_in_call_arg(n, body);
-                                out.push(ExtractFact {
-                                    func: func.to_string(),
-                                    con: con.clone(),
-                                    field: n.clone(),
-                                    slot: i,
-                                    tag,
-                                    interproc,
-                                });
                             }
                         }
+                        CPat::Tuple(subs) => {
+                            // Element heap-ness from the scrutinee's mono key (recoverable for a
+                            // param; arity-encoded tuple keys segment unambiguously). A non-param
+                            // or unkeyed tuple scrutinee stays untagged for now (follow-up: thread
+                            // local tuple keys) — honest under-coverage, never a wrong tag.
+                            let elem_heap: Option<Vec<bool>> = pkey.get(s).and_then(|k| {
+                                recinfo
+                                    .tuple_elem_drops(k, subs.len())
+                                    .map(|ds| ds.iter().map(Option::is_some).collect())
+                            });
+                            for (i, sub) in subs.iter().enumerate() {
+                                if let CPat::Var(n) = sub {
+                                    let is_heap = elem_heap
+                                        .as_ref()
+                                        .and_then(|v| v.get(i))
+                                        .copied()
+                                        .unwrap_or(false);
+                                    if is_heap {
+                                        let con = format!("tuple{}", subs.len());
+                                        push_extract_fact(
+                                            func,
+                                            &con,
+                                            s,
+                                            n,
+                                            i,
+                                            owned_scrut,
+                                            body,
+                                            ba,
+                                            out,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                     // nested extractions inside the arm
-                    extract_walk(body, func, field_tys, recinfo, ba, owned, out);
+                    extract_walk(body, func, field_tys, pkey, recinfo, ba, owned, out);
                 }
             }
         }
@@ -7574,6 +7660,137 @@ fn embedded_in_builder(v: &str, t: &Term) -> bool {
         Term::Let(_, rhs, _, body) => rhs_has(v, rhs) || embedded_in_builder(v, body),
         Term::Drop(_, _, _, _, body) => embedded_in_builder(v, body),
         Term::Ret(rhs, _) => rhs_has(v, rhs),
+    }
+}
+
+// --- Step 2: the tag-checker (docs/safety-model-spike.md) ---------------------------------
+//
+// A SECOND OPINION that validates the ExtractOp tags against linear scope, independent of how they
+// were chosen. Non-gating (Step 3 flips it to the sole authority). The one check it realizes now:
+// a value the tags prove is a BORROW (a call to a function that bare-returns a `BorrowRef` of a
+// parameter) must not be DROPPED as owned — doing so double-frees against the container's owner.
+// Because the borrow-return summary is sourced from the TYPE-based tags, it sees `Integer` fields
+// the drop_slots-gated interior-alias summary misses → it is strictly STRONGER than AX0910 today
+// (it rejects the Integer grab-via-case reuse the current verifier reports clean).
+
+/// A tag-check violation: the field `callee` bare-returns as a borrow of `scrut` is extracted and
+/// DROPPED more than once from the SAME `scrut` — the same heap cell freed twice (a double-free the
+/// drop_slots-gated verifier is blind to over `Integer`). A SINGLE extract-and-drop is sound under
+/// the current extractor-ownership model (the field is freed exactly once), so only the repeat is
+/// flagged — which is precisely why it is 0-false-positive on the ASan-clean corpus.
+#[derive(Debug, Clone)]
+pub struct TagViolation {
+    pub func: String,
+    pub scrut: String,
+    pub callee: String,
+    pub count: usize,
+}
+
+/// `f -> {param indices whose field f bare-returns as a BorrowRef}`, from the ExtractOp tags.
+fn tag_borrow_returns(fns: &[CoreFn], facts: &[ExtractFact]) -> HashMap<String, HashSet<usize>> {
+    let param_idx: HashMap<&str, HashMap<&str, usize>> = fns
+        .iter()
+        .map(|f| {
+            (
+                f.name.as_str(),
+                f.params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (p.as_str(), i))
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut out: HashMap<String, HashSet<usize>> = HashMap::new();
+    for ff in facts {
+        if ff.tag == ExtractOp::BorrowRef && ff.bare {
+            if let Some(idx) = param_idx
+                .get(ff.func.as_str())
+                .and_then(|m| m.get(ff.scrut.as_str()))
+            {
+                out.entry(ff.func.clone()).or_default().insert(*idx);
+            }
+        }
+    }
+    out
+}
+
+/// Step 2 tag-checker (second opinion, NON-gating): every site that DROPS a `BorrowRef`-returning
+/// call result. Empty on the ASan-clean corpus (faithful); fires on the Integer grab-via-case reuse
+/// (strictly stronger than AX0910). See the section header.
+pub fn tag_check(fns: &[CoreFn], facts: &[ExtractFact]) -> Vec<TagViolation> {
+    let borrow_ret = tag_borrow_returns(fns, facts);
+    let mut out = Vec::new();
+    for f in fns {
+        if f.name.starts_with("axion_") {
+            continue;
+        }
+        // var → (scrutinee it borrows, callee); then tally DROPS per (scrutinee, callee).
+        let mut borrows: HashMap<String, (String, String)> = HashMap::new();
+        let mut dropped: HashMap<(String, String), usize> = HashMap::new();
+        tag_walk(&f.body, &borrow_ret, &mut borrows, &mut dropped);
+        for ((scrut, callee), count) in dropped {
+            if count >= 2 {
+                out.push(TagViolation {
+                    func: f.name.clone(),
+                    scrut,
+                    callee,
+                    count,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn tag_walk(
+    t: &Term,
+    borrow_ret: &HashMap<String, HashSet<usize>>,
+    borrows: &mut HashMap<String, (String, String)>,
+    dropped: &mut HashMap<(String, String), usize>,
+) {
+    match t {
+        Term::Let(x, rhs, _, body) => {
+            if let Rhs::Op(Op::CallDirect(g, args, _)) = rhs {
+                // the result borrows the arg at the (first) returned-param index.
+                if let Some(idx) = borrow_ret.get(g).and_then(|s| s.iter().min().copied()) {
+                    if let Some(Atom::Var(scrut)) = args.get(idx) {
+                        borrows.insert(x.clone(), (scrut.clone(), g.clone()));
+                    }
+                }
+            }
+            match rhs {
+                Rhs::If(_, a, b) => {
+                    tag_walk(a, borrow_ret, borrows, dropped);
+                    tag_walk(b, borrow_ret, borrows, dropped);
+                }
+                Rhs::Case(_, arms) => {
+                    for (_, arm) in arms {
+                        tag_walk(arm, borrow_ret, borrows, dropped);
+                    }
+                }
+                Rhs::Op(_) => {}
+            }
+            tag_walk(body, borrow_ret, borrows, dropped);
+        }
+        Term::Drop(x, _, _, _, body) => {
+            if let Some(key) = borrows.get(x).cloned() {
+                *dropped.entry(key).or_default() += 1;
+            }
+            tag_walk(body, borrow_ret, borrows, dropped);
+        }
+        Term::Ret(rhs, _) => match rhs {
+            Rhs::If(_, a, b) => {
+                tag_walk(a, borrow_ret, borrows, dropped);
+                tag_walk(b, borrow_ret, borrows, dropped);
+            }
+            Rhs::Case(_, arms) => {
+                for (_, arm) in arms {
+                    tag_walk(arm, borrow_ret, borrows, dropped);
+                }
+            }
+            Rhs::Op(_) => {}
+        },
     }
 }
 
