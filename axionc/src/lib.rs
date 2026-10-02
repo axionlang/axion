@@ -4141,7 +4141,11 @@ dirBefore s k = if k < 0 then \".\" else substr 0 k s
 baseName :: String -> String
 baseName s = baseAfter s (lastIndex 47 s 0 (0 - 1))
 baseAfter :: String -> Int -> String
-baseAfter s k = if k < 0 then s else substr (k + 1) (strLen s - k - 1) s
+-- no `/`: the basename IS the whole string — return a FRESH COPY (not the borrowed `s` itself),
+-- so `baseName` always yields an OWNED String. Returning `s` bare aliased a borrowed arg, and a
+-- caller that drops the result while the arg's owner frees it double-freed (the `bnGo`/`editTmp`
+-- class the drop-verifier now catches via `ret_alias` on a borrowed interior).
+baseAfter s k = if k < 0 then strAppend s \"\" else substr (k + 1) (strLen s - k - 1) s
 -- Print an error to stderr and exit non-zero (§CLI). Polymorphic result (it never
 -- returns) so it fits any position, e.g. an error arm of an `IO ()` command.
 die :: String -> a

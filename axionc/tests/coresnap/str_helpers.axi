@@ -185,9 +185,9 @@
     ret if _t3 then
     ret if _t3 then
     ret j  ; Δ{}
+    ret rtcall axion_strcat s ""  ; Δ{} · makes String
     ret rtcall axion_substr 0 k s  ; Δ{} · makes String
     ret rtcall axion_substr _t1 _t4 s  ; Δ{} · makes String
-    ret s  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

@@ -1035,11 +1035,11 @@
     ret k  ; Δ{k} · moves{k}
     ret n  ; Δ{}
     ret rtcall axion_strcat a b  ; Δ{} · makes String
+    ret rtcall axion_strcat s ""  ; Δ{} · makes String
     ret rtcall axion_substr 0 _t2 s  ; Δ{} · makes String
     ret rtcall axion_substr 0 _t3 s  ; Δ{} · makes String
     ret rtcall axion_substr 0 k s  ; Δ{} · makes String
     ret rtcall axion_substr _t1 _t4 s  ; Δ{} · makes String
-    ret s  ; Δ{}
     ret sel  ; Δ{}
     ret v  ; Δ{v} · moves{v}
     ret v  ; Δ{v} · moves{v}
