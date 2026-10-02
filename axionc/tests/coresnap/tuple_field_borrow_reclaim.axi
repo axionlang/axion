@@ -11,7 +11,7 @@
       drop _t0 : Integer
       drop a : Integer
       drop b : Integer
-      drop t : tuple$Integer$Integer skip{0 1}
+      drop t : tuple2$Integer$Integer skip{0 1}
       drop xs
       drop xs
       drop xs
@@ -24,10 +24,10 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Integer$Integer _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$Integer$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Integer$Integer _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$Integer$Integer _dd2  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
       let _t0 = call sndSum y  ; Δ{y ys} · moves{y} · makes Integer
       let _t0 = call sumL ys  ; Δ{y ys} · moves{ys} · makes Integer
@@ -108,9 +108,9 @@
   let _t3 = call big  ; Δ{_t2} · makes Integer
   let _t4 = call big  ; Δ{_t2 _t3} · makes Integer
   let _t5 = tuple _t3 _t4  ; Δ{_t2 _t3 _t4} · moves{_t3 _t4} · makes heap
-  let _t6 = con Nil  ; Δ{_t2 _t5} · makes List$tuple$Integer$Integer
-  let _t7 = con Cons _t5 _t6  ; Δ{_t2 _t5 _t6} · moves{_t5 _t6} · makes List$tuple$Integer$Integer
-  let _t8 = con Cons _t2 _t7  ; Δ{_t2 _t7} · moves{_t2 _t7} · makes List$tuple$Integer$Integer
+  let _t6 = con Nil  ; Δ{_t2 _t5} · makes List$tuple2$Integer$Integer
+  let _t7 = con Cons _t5 _t6  ; Δ{_t2 _t5 _t6} · moves{_t5 _t6} · makes List$tuple2$Integer$Integer
+  let _t8 = con Cons _t2 _t7  ; Δ{_t2 _t7} · moves{_t2 _t7} · makes List$tuple2$Integer$Integer
   let _t9 = call map$$sndSum _t8  ; Δ{_t8} · moves{_t8} · makes List$Integer
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -125,8 +125,8 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Integer _p  =
-axion_drop_List$tuple$Integer$Integer _p  =
-axion_drop_tuple$Integer$Integer _p  =
+axion_drop_List$tuple2$Integer$Integer _p  =
+axion_drop_tuple2$Integer$Integer _p  =
 big  =
 main  =
 map$$sndSum xs  =

@@ -11,8 +11,8 @@
 
           drop _t1 : List$String
           drop _t13 : String
-          drop p : tuple$String$List$String skip{0 1}
-          drop p : tuple$String$List$String skip{0}
+          drop p : tuple2$String$List$String skip{0 1}
+          drop p : tuple2$String$List$String skip{0}
           let _d1000000 = call length _t1  ; Δ{_t1 p}
           let _d1000000 = putStrLn _t13  ; Δ{_t13}
           let _t1 = con Cons h t  ; Δ{p} · makes List$String
@@ -31,7 +31,7 @@
       drop _t0
       drop _t0
       drop _t0
-      drop _t0 : Maybe$tuple$String$List$String
+      drop _t0 : Maybe$tuple2$String$List$String
       drop _t6 : String
       drop xs
       drop xs : List$String
@@ -40,7 +40,7 @@
       let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$String _dd0  ; Δ{}
-      let _dd1 = call axion_drop_tuple$String$List$String _dd0  ; Δ{}
+      let _dd1 = call axion_drop_tuple2$String$List$String _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
       let _t0 = call length ys  ; Δ{}
@@ -125,8 +125,8 @@
   let _dd7 = if _dd6 then
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
-  let _t0 = call uncons$String xs  ; Δ{} · makes Maybe$tuple$String$List$String
-  let _t0 = call uncons$String xs  ; Δ{} · makes Maybe$tuple$String$List$String
+  let _t0 = call uncons$String xs  ; Δ{} · makes Maybe$tuple2$String$List$String
+  let _t0 = call uncons$String xs  ; Δ{} · makes Maybe$tuple2$String$List$String
   let _t0 = con Nil  ; Δ{} · makes List$String
   let _t1 = con Cons "b" _t0  ; Δ{_t0} · moves{_t0} · makes List$String
   let _t2 = con Cons "a" _t1  ; Δ{_t1} · moves{_t1} · makes List$String
@@ -146,9 +146,9 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$String _p  =
-axion_drop_Maybe$tuple$String$List$String _p  =
-axion_drop_tuple$String$List$String _p  =
-axion_drop_tuple$String$List$String_skip_0 _p  =
+axion_drop_Maybe$tuple2$String$List$String _p  =
+axion_drop_tuple2$String$List$String _p  =
+axion_drop_tuple2$String$List$String_skip_0 _p  =
 firstOr xs  =
 length xs  =
 main  =

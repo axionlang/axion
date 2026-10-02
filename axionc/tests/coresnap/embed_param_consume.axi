@@ -4,7 +4,7 @@
 
 
 
-      drop t : tuple$Box$Int
+      drop t : tuple2$Box$Int
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _t0 = field v bb  ; Δ{t}
@@ -29,7 +29,7 @@
   let _dd5 = if _dd4 then
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = record Box { v = 7}  ; Δ{} · makes Box
-  let _t1 = call wrap _t0  ; Δ{_t0} · moves{_t0} · makes tuple$Box$Int
+  let _t1 = call wrap _t0  ; Δ{_t0} · moves{_t0} · makes tuple2$Box$Int
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret call useT _t1  ; Δ{_t1} · moves{_t1}
@@ -38,7 +38,7 @@
   ret tuple b 5  ; Δ{} · makes heap
 axion_drop_Array _p  =
 axion_drop_List _p  =
-axion_drop_tuple$Box$Int _p  =
+axion_drop_tuple2$Box$Int _p  =
 main  =
 useT t  =
 wrap b  =

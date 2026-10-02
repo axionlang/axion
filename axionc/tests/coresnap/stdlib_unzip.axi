@@ -36,19 +36,19 @@
         Cons b bs ->
         Nil ->
       drop ab
-      drop ab : tuple$List$Int$List$Int
+      drop ab : tuple2$List$Int$List$Int
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Int$Int _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Int$Int$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$Int$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple3$Int$Int$Int _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Int$Int _dd2  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Int$Int$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$Int$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple3$Int$Int$Int _dd2  ; Δ{}
       let _t0 = call sum a  ; Δ{ab}
       let _t0 = call sum ys  ; Δ{}
       let _t0 = con Cons a as_  ; Δ{}
@@ -133,9 +133,9 @@
   drop _t0
   drop _t12 : List$Int
   drop _t15 : List$Int
-  drop _t16 : List$tuple$Int$Int$Int
+  drop _t16 : List$tuple3$Int$Int$Int
   drop _t19 : String
-  drop _t4 : List$tuple$Int$Int
+  drop _t4 : List$tuple2$Int$Int
   drop _t9 : List$Int
   else
   else
@@ -168,13 +168,13 @@
   let _t13 = con Nil  ; Δ{_t12 _t9} · makes List$Int
   let _t14 = con Cons 200 _t13  ; Δ{_t12 _t13 _t9} · moves{_t13} · makes List$Int
   let _t15 = con Cons 100 _t14  ; Δ{_t12 _t14 _t9} · moves{_t14} · makes List$Int
-  let _t16 = call zip3 _t9 _t12 _t15  ; Δ{_t12 _t15 _t9} · makes List$tuple$Int$Int$Int
+  let _t16 = call zip3 _t9 _t12 _t15  ; Δ{_t12 _t15 _t9} · makes List$tuple3$Int$Int$Int
   let _t17 = call sum3 _t16  ; Δ{_t16}
   let _t18 = + _t6 _t17  ; Δ{}
   let _t19 = call show$Int _t18  ; Δ{} · makes String
-  let _t2 = con Nil  ; Δ{_t0 _t1} · makes List$tuple$Int$Int
-  let _t3 = con Cons _t1 _t2  ; Δ{_t0 _t1 _t2} · moves{_t1 _t2} · makes List$tuple$Int$Int
-  let _t4 = con Cons _t0 _t3  ; Δ{_t0 _t3} · moves{_t0 _t3} · makes List$tuple$Int$Int
+  let _t2 = con Nil  ; Δ{_t0 _t1} · makes List$tuple2$Int$Int
+  let _t3 = con Cons _t1 _t2  ; Δ{_t0 _t1 _t2} · moves{_t1 _t2} · makes List$tuple2$Int$Int
+  let _t4 = con Cons _t0 _t3  ; Δ{_t0 _t3} · moves{_t0 _t3} · makes List$tuple2$Int$Int
   let _t5 = call unzip _t4  ; Δ{_t4}
   let _t6 = call sumBoth _t5  ; Δ{}
   let _t7 = con Nil  ; Δ{} · makes List$Int
@@ -203,11 +203,11 @@ add3 a b c  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
-axion_drop_List$tuple$Int$Int _p  =
-axion_drop_List$tuple$Int$Int$Int _p  =
-axion_drop_tuple$Int$Int _p  =
-axion_drop_tuple$Int$Int$Int _p  =
-axion_drop_tuple$List$Int$List$Int _p  =
+axion_drop_List$tuple2$Int$Int _p  =
+axion_drop_List$tuple3$Int$Int$Int _p  =
+axion_drop_tuple2$Int$Int _p  =
+axion_drop_tuple2$List$Int$List$Int _p  =
+axion_drop_tuple3$Int$Int$Int _p  =
 consBoth a b ab  =
 lam$0 [env ]a b c  =
 main  =

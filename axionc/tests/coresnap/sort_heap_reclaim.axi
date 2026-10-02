@@ -19,10 +19,10 @@
             ret tuple _t4 gre  ; Δ{_t2} · makes heap
             ret tuple les _t5  ; Δ{_t2 _t5} · moves{_t5} · makes heap
             ret tuple les _t5  ; Δ{_t2} · makes heap
-          drop _t0 : tuple$List$String$List$String skip{0 1}
-          drop _t0 : tuple$List$String$List$String skip{0 1}
-          drop _t2 : tuple$List$String$List$String skip{0 1}
-          drop _t2 : tuple$List$String$List$String skip{0 1}
+          drop _t0 : tuple2$List$String$List$String skip{0 1}
+          drop _t0 : tuple2$List$String$List$String skip{0 1}
+          drop _t2 : tuple2$List$String$List$String skip{0 1}
+          drop _t2 : tuple2$List$String$List$String skip{0 1}
           else
           else
           let _t1 = call sort$String les  ; Δ{_t0 y} · makes List$String
@@ -67,8 +67,8 @@
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
       let _t0 = call append$String zs ys  ; Δ{z zs} · moves{zs} · makes List$String
-      let _t0 = call partitionBy$$byLen y ys  ; Δ{y ys} · moves{ys} · makes tuple$List$String$List$String
-      let _t0 = call partitionLe$String y ys  ; Δ{y ys} · moves{ys} · makes tuple$List$String$List$String
+      let _t0 = call partitionBy$$byLen y ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$String$List$String
+      let _t0 = call partitionLe$String y ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$String$List$String
       let _t0 = call unlines ss  ; Δ{} · makes String
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{} · makes List$String
@@ -80,8 +80,8 @@
       let _t12 = con Cons "ccc" _t11  ; Δ{_t11} · moves{_t11} · makes List$String
       let _t13 = call sortBy$$byLen _t12  ; Δ{_t12} · moves{_t12} · makes List$String
       let _t14 = call unlines _t13  ; Δ{_t13} · makes String
-      let _t2 = call partitionBy$$byLen pivot zs  ; Δ{z zs} · moves{zs} · makes tuple$List$String$List$String
-      let _t2 = call partitionLe$String pivot zs  ; Δ{z zs} · moves{zs} · makes tuple$List$String$List$String
+      let _t2 = call partitionBy$$byLen pivot zs  ; Δ{z zs} · moves{zs} · makes tuple2$List$String$List$String
+      let _t2 = call partitionLe$String pivot zs  ; Δ{z zs} · moves{zs} · makes tuple2$List$String$List$String
       let _t8 = con Nil  ; Δ{} · makes List$String
       let _t9 = con Cons "bb" _t8  ; Δ{_t8} · moves{_t8} · makes List$String
       ret ""  ; Δ{}

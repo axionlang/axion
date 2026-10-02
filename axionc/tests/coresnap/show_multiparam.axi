@@ -35,10 +35,10 @@
 
 
 
-                      drop _t15 : Pair$tuple$Int$Int$Bool
+                      drop _t15 : Pair$tuple2$Int$Int$Bool
                       drop _t16 : String
                       let _d1000000 = putStrLn _t16  ; Δ{_t16}
-                      let _t15 = call tupField  ; Δ{} · makes Pair$tuple$Int$Int$Bool
+                      let _t15 = call tupField  ; Δ{} · makes Pair$tuple2$Int$Int$Bool
                       let _t16 = call show$Pair$(Int,Int)$Bool _t15  ; Δ{_t15} · makes String
                       ret _d1000000  ; Δ{}
                     _ ->
@@ -291,8 +291,8 @@
   let _dd0 = loadraw _p+8  ; Δ{}
   let _dd1 = call axion_drop_Either$Int$Bool _dd0  ; Δ{}
   let _dd1 = call axion_drop_Maybe$Int _dd0  ; Δ{}
-  let _dd1 = call axion_drop_tuple$Int$Int _dd0  ; Δ{}
-  let _dd1 = call axion_drop_tuple$Int$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_tuple2$Int$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_tuple2$Int$Int _dd0  ; Δ{}
   let _dd1 = if _dd0 then
   let _dd2 = loadraw _p+0  ; Δ{}
   let _dd3 = call axion_drop_Either$Int$Bool _dd2  ; Δ{}
@@ -363,7 +363,7 @@
   ret case ys of
   ret con Both 9 _t0  ; Δ{} · makes These$Int$Bool
   ret con Cons _t0 _t4  ; Δ{_t0 _t4} · moves{_t0 _t4} · makes List$Either$Int$Bool
-  ret con Pair _t0 _t1  ; Δ{_t0} · moves{_t0} · makes Pair$tuple$Int$Int$Bool
+  ret con Pair _t0 _t1  ; Δ{_t0} · moves{_t0} · makes Pair$tuple2$Int$Int$Bool
   ret con Pair _t1 _t2  ; Δ{_t1 _t2} · moves{_t1 _t2} · makes Pair$Either$Int$Bool$Maybe$Int
   ret con Right _t0  ; Δ{} · makes Either$Int$Bool
   ret con Tri 1 _t0 2  ; Δ{} · makes Tri$Int$Bool$Int
@@ -379,14 +379,14 @@ axion_drop_List$Either$Int$Bool _p  =
 axion_drop_Maybe$Int _p  =
 axion_drop_Pair$Either$Int$Bool _p  =
 axion_drop_Pair$Either$Int$Bool$Maybe$Int _p  =
-axion_drop_Pair$tuple$Int$Int _p  =
-axion_drop_Pair$tuple$Int$Int$Bool _p  =
+axion_drop_Pair$tuple2$Int$Int _p  =
+axion_drop_Pair$tuple2$Int$Int$Bool _p  =
 axion_drop_These$Int _p  =
 axion_drop_These$Int$Bool _p  =
 axion_drop_Tri$Int _p  =
 axion_drop_Tri$Int$Bool _p  =
 axion_drop_Tri$Int$Bool$Int _p  =
-axion_drop_tuple$Int$Int _p  =
+axion_drop_tuple2$Int$Int _p  =
 both  =
 inList  =
 main  =

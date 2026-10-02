@@ -3,7 +3,7 @@
 
 
 
-      drop t : tuple$Box$Box
+      drop t : tuple2$Box$Box
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _t0 = field v a  ; Δ{t}
@@ -40,6 +40,6 @@
   ret rtcall axion_array_free _p  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =
-axion_drop_tuple$Box$Box _p  =
+axion_drop_tuple2$Box$Box _p  =
 main  =
 useTuple t  =

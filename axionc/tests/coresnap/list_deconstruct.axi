@@ -119,7 +119,7 @@
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _dd1 = call axion_drop_tuple$Int$List$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_tuple2$Int$List$Int _dd0  ; Δ{}
       let _t0 = < n 1  ; Δ{y ys}
       let _t0 = call double y  ; Δ{y ys}
       let _t0 = call show$Int c0  ; Δ{} · makes String
@@ -281,7 +281,7 @@
   drop _t0 : String
   drop _t1 : String
   drop _t1 : String
-  drop _t4 : Maybe$tuple$Int$List$Int
+  drop _t4 : Maybe$tuple2$Int$List$Int
   drop _t5 : String
   else
   else
@@ -317,7 +317,7 @@
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t2 = con Cons 2 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
   let _t3 = con Cons 1 _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
-  let _t4 = call uncons$Int _t3  ; Δ{_t3} · moves{_t3} · makes Maybe$tuple$Int$List$Int
+  let _t4 = call uncons$Int _t3  ; Δ{_t3} · moves{_t3} · makes Maybe$tuple2$Int$List$Int
   let _t5 = call show$Maybe$(Int,List$Int) _t4  ; Δ{_t4} · makes String
   let _t6 = putStrLn _t5  ; Δ{_t5}
   ret + x x  ; Δ{}
@@ -353,8 +353,8 @@ axion_drop_List _p  =
 axion_drop_List$Int _p  =
 axion_drop_Maybe$Int _p  =
 axion_drop_Maybe$List$Int _p  =
-axion_drop_Maybe$tuple$Int$List$Int _p  =
-axion_drop_tuple$Int$List$Int _p  =
+axion_drop_Maybe$tuple2$Int$List$Int _p  =
+axion_drop_tuple2$Int$List$Int _p  =
 double x  =
 drop$Int n xs  =
 head$Int xs  =

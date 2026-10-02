@@ -28,10 +28,10 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$String _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$String$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$String$Int _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
-      let _dd3 = call axion_drop_tuple$String$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$String$Int _dd2  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
       let _t0 = call eq$String x y  ; Δ{}
       ret 0  ; Δ{}
@@ -107,7 +107,7 @@
   ; Δ{}
   drop _t0
   drop _t17 : List$String
-  drop _t21 : List$tuple$String$Int
+  drop _t21 : List$tuple2$String$Int
   else
   else
   else
@@ -145,14 +145,14 @@
   let _t17 = con Cons "apple" _t16  ; Δ{_t16} · moves{_t16} · makes List$String
   let _t18 = call elemBy$String "banana" _t17  ; Δ{_t17}
   let _t19 = if _t18 then
-  let _t2 = con Nil  ; Δ{_t0 _t1} · makes List$tuple$String$Int
+  let _t2 = con Nil  ; Δ{_t0 _t1} · makes List$tuple2$String$Int
   let _t2 = if _t1 then
   let _t20 = + _t14 _t19  ; Δ{}
-  let _t21 = call tbl  ; Δ{} · makes List$tuple$String$Int
+  let _t21 = call tbl  ; Δ{} · makes List$tuple2$String$Int
   let _t22 = call lookup$String "banana" _t21  ; Δ{_t21} · makes Maybe$Int
   let _t23 = call fromMaybe 0 _t22  ; Δ{_t22} · moves{_t22}
   let _t24 = * _t23 32  ; Δ{}
-  let _t3 = con Cons _t1 _t2  ; Δ{_t0 _t1 _t2} · moves{_t1 _t2} · makes List$tuple$String$Int
+  let _t3 = con Cons _t1 _t2  ; Δ{_t0 _t1 _t2} · moves{_t1 _t2} · makes List$tuple2$String$Int
   let _t3 = rtcall axion_str_cmp "abc" "abd"  ; Δ{}
   let _t4 = == _t3 0  ; Δ{}
   let _t5 = if _t4 then
@@ -171,15 +171,15 @@
   ret case m of
   ret case xs of
   ret case xs of
-  ret con Cons _t0 _t3  ; Δ{_t0 _t3} · moves{_t0 _t3} · makes List$tuple$String$Int
+  ret con Cons _t0 _t3  ; Δ{_t0 _t3} · moves{_t0 _t3} · makes List$tuple2$String$Int
   ret rtcall axion_array_free _p  ; Δ{}
   ret x  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$String _p  =
-axion_drop_List$tuple$String$Int _p  =
+axion_drop_List$tuple2$String$Int _p  =
 axion_drop_Maybe$Int _p  =
-axion_drop_tuple$String$Int _p  =
+axion_drop_tuple2$String$Int _p  =
 elemBy$String x xs  =
 eq$String x y  =
 fromMaybe d m  =

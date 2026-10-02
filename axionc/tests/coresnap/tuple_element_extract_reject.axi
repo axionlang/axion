@@ -15,7 +15,7 @@
 
 
 
-      drop t : tuple$Integer$Integer skip{0}
+      drop t : tuple2$Integer$Integer skip{0}
       drop xs
       drop xs
       drop xs
@@ -33,17 +33,17 @@
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Integer$Integer _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$Integer$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Integer$Integer _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$Integer$Integer _dd2  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
       let _t0 = call addI z y  ; Δ{y ys} · makes Integer
       let _t0 = call fstT y  ; Δ{y ys} · moves{y} · makes Integer
-      let _t0 = call pairUp y  ; Δ{y ys} · moves{y} · makes tuple$Integer$Integer
+      let _t0 = call pairUp y  ; Δ{y ys} · moves{y} · makes tuple2$Integer$Integer
       let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t1 = call map$$fstT ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
-      let _t1 = call map$$pairUp ys  ; Δ{_t0 ys} · moves{ys} · makes List$tuple$Integer$Integer
+      let _t1 = call map$$pairUp ys  ; Δ{_t0 ys} · moves{ys} · makes List$tuple2$Integer$Integer
       let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -56,11 +56,11 @@
       ret a  ; Δ{t}
       ret call foldl$$addI _t0 ys  ; Δ{_t0 ys} · moves{_t0 ys} · makes Integer
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
-      ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$tuple$Integer$Integer
+      ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$tuple2$Integer$Integer
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$Integer
-      ret con Nil  ; Δ{} · makes List$tuple$Integer$Integer
+      ret con Nil  ; Δ{} · makes List$tuple2$Integer$Integer
       ret z  ; Δ{}
     (a, b) ->
     Cons y ys ->
@@ -176,9 +176,9 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$Integer _p  =
-axion_drop_List$tuple$Integer$Integer _p  =
-axion_drop_tuple$Integer$Integer _p  =
-axion_drop_tuple$Integer$Integer_skip_0 _p  =
+axion_drop_List$tuple2$Integer$Integer _p  =
+axion_drop_tuple2$Integer$Integer _p  =
+axion_drop_tuple2$Integer$Integer_skip_0 _p  =
 foldl$$addI z xs  =
 fstT t  =
 map$$fstT xs  =

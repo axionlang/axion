@@ -5,7 +5,7 @@
 
 
 
-      drop t : tuple$List$Integer$Integer skip{1}
+      drop t : tuple2$List$Integer$Integer skip{1}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
@@ -73,7 +73,7 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Integer _p  =
-axion_drop_tuple$List$Integer$Integer _p  =
-axion_drop_tuple$List$Integer$Integer_skip_1 _p  =
+axion_drop_tuple2$List$Integer$Integer _p  =
+axion_drop_tuple2$List$Integer$Integer_skip_1 _p  =
 main  =
 sndOf t  =

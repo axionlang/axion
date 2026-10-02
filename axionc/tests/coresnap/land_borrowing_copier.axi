@@ -9,7 +9,7 @@
 
 
 
-      drop p : tuple$String$String skip{0}
+      drop p : tuple2$String$String skip{0}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _t0 = call sizeT a  ; Δ{}
@@ -105,8 +105,8 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_T _p  =
-axion_drop_tuple$String$String _p  =
-axion_drop_tuple$String$String_skip_0 _p  =
+axion_drop_tuple2$String$String _p  =
+axion_drop_tuple2$String$String_skip_0 _p  =
 copyT t  =
 dupT t  =
 fstStr p  =

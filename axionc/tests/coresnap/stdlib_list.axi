@@ -49,13 +49,13 @@
                                       let _t60 = call show$Int _t59  ; Δ{} · makes String
                                       ret _d1000000  ; Δ{}
                                     _ ->
-                                  drop _t49 : List$tuple$Int$Int
+                                  drop _t49 : List$tuple2$Int$Int
                                   drop _t52 : String
                                   let _t45 = tuple 1 10  ; Δ{} · makes heap
                                   let _t46 = tuple 2 20  ; Δ{_t45} · makes heap
-                                  let _t47 = con Nil  ; Δ{_t45 _t46} · makes List$tuple$Int$Int
-                                  let _t48 = con Cons _t46 _t47  ; Δ{_t45 _t46 _t47} · moves{_t46 _t47} · makes List$tuple$Int$Int
-                                  let _t49 = con Cons _t45 _t48  ; Δ{_t45 _t48} · moves{_t45 _t48} · makes List$tuple$Int$Int
+                                  let _t47 = con Nil  ; Δ{_t45 _t46} · makes List$tuple2$Int$Int
+                                  let _t48 = con Cons _t46 _t47  ; Δ{_t45 _t46 _t47} · moves{_t46 _t47} · makes List$tuple2$Int$Int
+                                  let _t49 = con Cons _t45 _t48  ; Δ{_t45 _t48} · moves{_t45 _t48} · makes List$tuple2$Int$Int
                                   let _t50 = call lookup$Int 2 _t49  ; Δ{_t49} · makes Maybe$Int
                                   let _t51 = call fromMaybe 99 _t50  ; Δ{_t50} · moves{_t50}
                                   let _t52 = call show$Int _t51  ; Δ{} · makes String
@@ -105,7 +105,7 @@
                 _ ->
               drop _t17 : String
               let _t14 = call range 1 6  ; Δ{} · makes List$Int
-              let _t15 = call span$$lt5 _t14  ; Δ{_t14} · moves{_t14} · makes tuple$List$Int$List$Int
+              let _t15 = call span$$lt5 _t14  ; Δ{_t14} · moves{_t14} · makes tuple2$List$Int$List$Int
               let _t16 = call sumPair _t15  ; Δ{_t15} · moves{_t15}
               let _t17 = call show$Int _t16  ; Δ{} · makes String
               let _t18 = putStrLn _t17  ; Δ{_t17}
@@ -131,7 +131,7 @@
         let _d1000000 = call incMaybe _t1  ; Δ{_t1} · makes Maybe$Int
         let _t1 = call findIndex$$lt5 ys  ; Δ{} · makes Maybe$Int
         let _t1 = call takeWhile$$lt5 ys  ; Δ{y ys} · moves{ys} · makes List$Int
-        let _t3 = call span$$lt5 ys  ; Δ{y ys} · moves{ys} · makes tuple$List$Int$List$Int
+        let _t3 = call span$$lt5 ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$Int$List$Int
         let _t3 = con Nil  ; Δ{}
         let _t4 = con Cons y ys  ; Δ{}
         let _t4 = con Nil  ; Δ{y ys} · makes List$Int
@@ -143,7 +143,7 @@
         ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
         ret call and ys  ; Δ{}
         ret call consFst y _t6  ; Δ{}
-        ret call consFst$Int y _t3  ; Δ{_t3 y} · moves{_t3 y} · makes tuple$List$Int$List$Int
+        ret call consFst$Int y _t3  ; Δ{_t3 y} · moves{_t3 y} · makes tuple2$List$Int$List$Int
         ret call dropWhile$$lt5 ys  ; Δ{y ys} · moves{ys} · makes List$Int
         ret call or ys  ; Δ{}
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Int
@@ -155,8 +155,8 @@
       drop _t5 : List$Int
       drop _t7 : String
       drop ab
-      drop ab : tuple$List$Int$List$Int
-      drop ab : tuple$List$Int$List$Int skip{0 1}
+      drop ab : tuple2$List$Int$List$Int
+      drop ab : tuple2$List$Int$List$Int skip{0 1}
       drop m
       drop m
       drop xs
@@ -187,11 +187,11 @@
       let _dd1 = call axion_drop_List$Bool _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$List$Int _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Int$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$Int$Int _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Int$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$Int$Int _dd2  ; Δ{}
       let _t0 = + i 1  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call concat$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
@@ -488,10 +488,10 @@ axion_drop_List _p  =
 axion_drop_List$Bool _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$List$Int _p  =
-axion_drop_List$tuple$Int$Int _p  =
+axion_drop_List$tuple2$Int$Int _p  =
 axion_drop_Maybe$Int _p  =
-axion_drop_tuple$Int$Int _p  =
-axion_drop_tuple$List$Int$List$Int _p  =
+axion_drop_tuple2$Int$Int _p  =
+axion_drop_tuple2$List$Int$List$Int _p  =
 concat$Int xs  =
 concatMap$$dup xs  =
 consFst y ab  =

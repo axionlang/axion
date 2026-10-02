@@ -4,7 +4,7 @@
 
 
 
-      drop t : tuple$Box$Box skip{0}
+      drop t : tuple2$Box$Box skip{0}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       ret 0  ; Δ{}
@@ -46,7 +46,7 @@
   ret rtcall axion_array_free _p  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =
-axion_drop_tuple$Box$Box _p  =
-axion_drop_tuple$Box$Box_skip_0 _p  =
+axion_drop_tuple2$Box$Box _p  =
+axion_drop_tuple2$Box$Box_skip_0 _p  =
 fstBox t  =
 main  =

@@ -12,8 +12,8 @@
             let _t5 = con Cons z gre  ; Δ{_t2 z} · moves{z} · makes List$Int
             ret tuple _t4 gre  ; Δ{_t2 _t4} · moves{_t4} · makes heap
             ret tuple les _t5  ; Δ{_t2 _t5} · moves{_t5} · makes heap
-          drop _t0 : tuple$List$Int$List$Int skip{0 1}
-          drop _t2 : tuple$List$Int$List$Int skip{0 1}
+          drop _t0 : tuple2$List$Int$List$Int skip{0 1}
+          drop _t2 : tuple2$List$Int$List$Int skip{0 1}
           else
           let _t1 = call sortBy$$ge les  ; Δ{_t0 y} · makes List$Int
           let _t2 = call sortBy$$ge gre  ; Δ{_t0 _t1 y} · makes List$Int
@@ -34,11 +34,11 @@
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
-      let _t0 = call partitionBy$$ge y ys  ; Δ{y ys} · moves{ys} · makes tuple$List$Int$List$Int
+      let _t0 = call partitionBy$$ge y ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$Int$List$Int
       let _t0 = call sum ys  ; Δ{}
       let _t0 = con Nil  ; Δ{} · makes List$Int
       let _t1 = con Nil  ; Δ{_t0} · makes List$Int
-      let _t2 = call partitionBy$$ge pivot zs  ; Δ{z zs} · moves{zs} · makes tuple$List$Int$List$Int
+      let _t2 = call partitionBy$$ge pivot zs  ; Δ{z zs} · moves{zs} · makes tuple2$List$Int$List$Int
       ret + y _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}

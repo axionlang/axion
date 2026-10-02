@@ -142,33 +142,33 @@
             ret con Left "trailing tokens after expression"  ; Δ{$bind14755} · makes Either$String$Expr
             ret con Right _t3  ; Δ{_t3} · moves{_t3} · makes Either$String$Value
             ret con Right e  ; Δ{$bind14755} · makes Either$String$Expr
-          drop $bind10005 : tuple$Expr$Int skip{0}
-          drop $bind10190 : tuple$Expr$Int skip{0}
-          drop $bind10481 : tuple$Expr$Int skip{0}
-          drop $bind11899 : tuple$Expr$Int skip{0}
-          drop $bind12776 : tuple$Expr$Int skip{0}
-          drop $bind13356 : tuple$Expr$Int skip{0}
-          drop $bind13717 : tuple$Expr$Int skip{0}
-          drop $bind13907 : tuple$Expr$Int skip{0}
-          drop $bind14226 : tuple$Expr$Int skip{0}
-          drop $bind14574 : tuple$Expr$Int skip{0}
-          drop $bind14755 : tuple$Expr$Int skip{0}
-          drop $bind8418 : tuple$Expr$Int skip{0}
-          drop $bind8802 : tuple$Expr$Int skip{0}
-          drop $bind9148 : tuple$Expr$Int skip{0}
-          drop $bind9528 : tuple$Expr$Int skip{0}
-          drop $bind9690 : tuple$Expr$Int skip{0}
+          drop $bind10005 : tuple2$Expr$Int skip{0}
+          drop $bind10190 : tuple2$Expr$Int skip{0}
+          drop $bind10481 : tuple2$Expr$Int skip{0}
+          drop $bind11899 : tuple2$Expr$Int skip{0}
+          drop $bind12776 : tuple2$Expr$Int skip{0}
+          drop $bind13356 : tuple2$Expr$Int skip{0}
+          drop $bind13717 : tuple2$Expr$Int skip{0}
+          drop $bind13907 : tuple2$Expr$Int skip{0}
+          drop $bind14226 : tuple2$Expr$Int skip{0}
+          drop $bind14574 : tuple2$Expr$Int skip{0}
+          drop $bind14755 : tuple2$Expr$Int skip{0}
+          drop $bind8418 : tuple2$Expr$Int skip{0}
+          drop $bind8802 : tuple2$Expr$Int skip{0}
+          drop $bind9148 : tuple2$Expr$Int skip{0}
+          drop $bind9528 : tuple2$Expr$Int skip{0}
+          drop $bind9690 : tuple2$Expr$Int skip{0}
           drop _t0
           drop _t0
           drop _t1
           drop _t1
           drop _t1
           drop _t1
-          drop _t2 : List$tuple$String$Value
+          drop _t2 : List$tuple2$String$Value
           drop _t4 : String
           drop body : Expr
           drop body : Expr
-          drop cenv : List$tuple$String$Value
+          drop cenv : List$tuple2$String$Value
           drop p : String
           else
           else
@@ -195,13 +195,13 @@
           let _t2 = call eval env b  ; Δ{na} · makes Either$String$Value
           let _t2 = call mkBin op l r  ; Δ{$bind8802} · makes Expr
           let _t2 = call mkBin op l r  ; Δ{$bind9528} · makes Expr
-          let _t2 = con Cons _t1 cenv  ; Δ{_t1 body cenv} · moves{_t1 cenv} · makes List$tuple$String$Value
+          let _t2 = con Cons _t1 cenv  ; Δ{_t1 body cenv} · moves{_t1 cenv} · makes List$tuple2$String$Value
           let _t2 = con Mul l r  ; Δ{$bind10005} · makes Expr
           let _t2 = tuple _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes heap
           let _t2 = tuple _t1 p1  ; Δ{$bind12776 _t1} · moves{_t1} · makes heap
           let _t2 = tuple _t1 p1  ; Δ{$bind13717 _t1} · moves{_t1} · makes heap
           let _t2 = tuple _t1 p1  ; Δ{$bind14574 _t1} · moves{_t1} · makes heap
-          let _t3 = call copyEnv rest  ; Δ{_t2} · makes List$tuple$String$Value
+          let _t3 = call copyEnv rest  ; Δ{_t2} · makes List$tuple2$String$Value
           let _t3 = tuple _t2 p2  ; Δ{$bind8802 _t2} · moves{_t2} · makes heap
           let _t4 = == x y  ; Δ{}
           let _t4 = call run "let twice = \\f -> \\x -> f (f x) in twice (\\n -> n * n) 3"  ; Δ{} · makes String
@@ -212,31 +212,31 @@
           ret 1  ; Δ{}
           ret == _t8 0  ; Δ{}
           ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
-          ret call expectWord toks ")" e p1  ; Δ{$bind11899} · makes Either$String$tuple$Expr$Int
-          ret call pAddLoop toks _t2 p2  ; Δ{$bind9528 _t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-          ret call pAddLoop toks l p1  ; Δ{$bind9148} · makes Either$String$tuple$Expr$Int
-          ret call pAppLoop toks _t1 p2  ; Δ{$bind10481 _t1} · moves{_t1} · makes Either$String$tuple$Expr$Int
-          ret call pAppLoop toks l p1  ; Δ{$bind10190} · makes Either$String$tuple$Expr$Int
-          ret call pCmpAfter toks l p1  ; Δ{$bind8418} · makes Either$String$tuple$Expr$Int
-          ret call pIfElse toks c tb p1  ; Δ{$bind14226} · makes Either$String$tuple$Expr$Int
-          ret call pIfThen toks c p1  ; Δ{$bind13907} · makes Either$String$tuple$Expr$Int
-          ret call pLetIn toks nm rhs p1  ; Δ{$bind13356} · makes Either$String$tuple$Expr$Int
-          ret call pMulLoop toks _t2 p2  ; Δ{$bind10005 _t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-          ret call pMulLoop toks l p1  ; Δ{$bind9690} · makes Either$String$tuple$Expr$Int
+          ret call expectWord toks ")" e p1  ; Δ{$bind11899} · makes Either$String$tuple2$Expr$Int
+          ret call pAddLoop toks _t2 p2  ; Δ{$bind9528 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+          ret call pAddLoop toks l p1  ; Δ{$bind9148} · makes Either$String$tuple2$Expr$Int
+          ret call pAppLoop toks _t1 p2  ; Δ{$bind10481 _t1} · moves{_t1} · makes Either$String$tuple2$Expr$Int
+          ret call pAppLoop toks l p1  ; Δ{$bind10190} · makes Either$String$tuple2$Expr$Int
+          ret call pCmpAfter toks l p1  ; Δ{$bind8418} · makes Either$String$tuple2$Expr$Int
+          ret call pIfElse toks c tb p1  ; Δ{$bind14226} · makes Either$String$tuple2$Expr$Int
+          ret call pIfThen toks c p1  ; Δ{$bind13907} · makes Either$String$tuple2$Expr$Int
+          ret call pLetIn toks nm rhs p1  ; Δ{$bind13356} · makes Either$String$tuple2$Expr$Int
+          ret call pMulLoop toks _t2 p2  ; Δ{$bind10005 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+          ret call pMulLoop toks l p1  ; Δ{$bind9690} · makes Either$String$tuple2$Expr$Int
           ret call tokLoop s j _t14  ; Δ{_t14} · moves{_t14} · makes List$Tok
           ret call tokSym s i c acc  ; Δ{} · makes List$Tok
           ret case _t2 of
           ret case _t5 of
-          ret con Cons _t2 _t3  ; Δ{_t2 _t3} · moves{_t2 _t3} · makes List$tuple$String$Value
+          ret con Cons _t2 _t3  ; Δ{_t2 _t3} · moves{_t2 _t3} · makes List$tuple2$String$Value
           ret con Eq l r  ; Δ{} · makes Expr
           ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
           ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
           ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
           ret con Lt l r  ; Δ{} · makes Expr
-          ret con Right _t2  ; Δ{$bind12776 _t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-          ret con Right _t2  ; Δ{$bind13717 _t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-          ret con Right _t2  ; Δ{$bind14574 _t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-          ret con Right _t3  ; Δ{$bind8802 _t3} · moves{_t3} · makes Either$String$tuple$Expr$Int
+          ret con Right _t2  ; Δ{$bind12776 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+          ret con Right _t2  ; Δ{$bind13717 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+          ret con Right _t2  ; Δ{$bind14574 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+          ret con Right _t3  ; Δ{$bind8802 _t3} · moves{_t3} · makes Either$String$tuple2$Expr$Int
           ret if _t2 then
           ret if _t2 then
           ret if _t2 then
@@ -301,13 +301,13 @@
         ret == c 13  ; Δ{}
         ret call kindAt rest _t1  ; Δ{}
         ret call numAt rest _t1  ; Δ{}
-        ret call pAtomSym toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
+        ret call pAtomSym toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
         ret call tokKind t  ; Δ{}
         ret call tokLoop s j _t9  ; Δ{_t9} · moves{_t9} · makes List$Tok
         ret call tokNum t  ; Δ{}
         ret call tokWord t  ; Δ{} · makes String
         ret call wordAt rest _t1  ; Δ{} · makes String
-        ret con Left "unexpected end of input"  ; Δ{} · makes Either$String$tuple$Expr$Int
+        ret con Left "unexpected end of input"  ; Δ{} · makes Either$String$tuple2$Expr$Int
         ret con Mul l r  ; Δ{} · makes Expr
         ret if _t10 then
         ret if _t3 then
@@ -359,7 +359,7 @@
       drop _t1
       drop _t2 : String
       drop _t2 : String
-      drop _t4 : List$tuple$String$Value
+      drop _t4 : List$tuple2$String$Value
       drop _t8 : String
       drop c : Expr
       drop c : Expr
@@ -402,11 +402,11 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Tok _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$String$Value _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$String$Value _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_Tok _dd2  ; Δ{}
-      let _dd3 = call axion_drop_tuple$String$Value _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$String$Value _dd2  ; Δ{}
       let _t0 = == i 0  ; Δ{}
       let _t0 = == i 0  ; Δ{}
       let _t0 = == i 0  ; Δ{}
@@ -442,7 +442,7 @@
       let _t2 = == c 10  ; Δ{}
       let _t2 = == op 2  ; Δ{}
       let _t2 = == op 2  ; Δ{}
-      let _t2 = call copyEnv env  ; Δ{_t0 _t1} · makes List$tuple$String$Value
+      let _t2 = call copyEnv env  ; Δ{_t0 _t1} · makes List$tuple2$String$Value
       let _t2 = call copyExpr b  ; Δ{_t1} · makes Expr
       let _t2 = call copyExpr body  ; Δ{_t1} · makes Expr
       let _t2 = call run "let add = \\x -> \\y -> x + y in add 3 4"  ; Δ{} · makes String
@@ -457,8 +457,8 @@
       let _t25 = con Cons _t24 acc  ; Δ{_t24} · moves{_t24} · makes List$Tok
       let _t3 = + i 1  ; Δ{}
       let _t3 = + i 1  ; Δ{}
-      let _t3 = call copyEnv env  ; Δ{_t1 _t2} · makes List$tuple$String$Value
-      let _t3 = call copyEnv env  ; Δ{_t2} · makes List$tuple$String$Value
+      let _t3 = call copyEnv env  ; Δ{_t1 _t2} · makes List$tuple2$String$Value
+      let _t3 = call copyEnv env  ; Δ{_t2} · makes List$tuple2$String$Value
       let _t3 = call copyExpr a  ; Δ{} · makes Expr
       let _t3 = call isKeyword _t2  ; Δ{_t2}
       let _t3 = putStrLn _t2  ; Δ{_t2}
@@ -468,7 +468,7 @@
       let _t4 = call copyExpr b  ; Δ{_t3} · makes Expr
       let _t4 = call isDigitCh c  ; Δ{}
       let _t4 = con CloV _t1 _t2 _t3  ; Δ{_t1 _t2 _t3} · moves{_t1 _t2 _t3} · makes Value
-      let _t4 = con Cons _t2 _t3  ; Δ{_t2 _t3} · moves{_t2 _t3} · makes List$tuple$String$Value
+      let _t4 = con Cons _t2 _t3  ; Δ{_t2 _t3} · moves{_t2 _t3} · makes List$tuple2$String$Value
       let _t4 = rtcall axion_str_cmp x "if"  ; Δ{}
       let _t4 = tuple l p  ; Δ{} · makes heap
       let _t4 = tuple l p  ; Δ{} · makes heap
@@ -537,11 +537,11 @@
       ret call isAlnumCh c  ; Δ{}
       ret call isDigitCh c  ; Δ{}
       ret call not _t3  ; Δ{}
-      ret call pAddStep toks 1 l p  ; Δ{} · makes Either$String$tuple$Expr$Int
-      ret call pAtomName toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-      ret call pCmpTail toks 4 l p  ; Δ{} · makes Either$String$tuple$Expr$Int
-      ret call pIf toks _t7  ; Δ{} · makes Either$String$tuple$Expr$Int
-      ret call pLam toks _t7  ; Δ{} · makes Either$String$tuple$Expr$Int
+      ret call pAddStep toks 1 l p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+      ret call pAtomName toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+      ret call pCmpTail toks 4 l p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+      ret call pIf toks _t7  ; Δ{} · makes Either$String$tuple2$Expr$Int
+      ret call pLam toks _t7  ; Δ{} · makes Either$String$tuple2$Expr$Int
       ret call readIntGo s _t4 _t8  ; Δ{} · makes Maybe$Int
       ret call revToksGo rest _t0  ; Δ{_t0 rest} · moves{_t0 rest} · makes List$Tok
       ret call scanWhile s _t3 kind  ; Δ{}
@@ -585,34 +585,34 @@
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
       ret con Left _t0  ; Δ{_t0} · moves{_t0} · makes Either$String$Value
-      ret con Left _t9  ; Δ{_t9} · moves{_t9} · makes Either$String$tuple$Expr$Int
+      ret con Left _t9  ; Δ{_t9} · moves{_t9} · makes Either$String$tuple2$Expr$Int
       ret con Let _t15 _t16 _t17  ; Δ{_t15 _t16 _t17} · moves{_t15 _t16 _t17} · makes Expr
       ret con Lt _t9 _t10  ; Δ{_t10 _t9} · moves{_t10 _t9} · makes Expr
       ret con Mul _t5 _t6  ; Δ{_t5 _t6} · moves{_t5 _t6} · makes Expr
-      ret con Nil  ; Δ{} · makes List$tuple$String$Value
+      ret con Nil  ; Δ{} · makes List$tuple2$String$Value
       ret con Nothing  ; Δ{} · makes Maybe$Int
       ret con Num n  ; Δ{} · makes Expr
       ret con Right _t0  ; Δ{_t0} · moves{_t0} · makes Either$String$Value
-      ret con Right _t11  ; Δ{_t11} · moves{_t11} · makes Either$String$tuple$Expr$Int
+      ret con Right _t11  ; Δ{_t11} · moves{_t11} · makes Either$String$tuple2$Expr$Int
       ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$Value
-      ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple$Expr$Int
-      ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple$Expr$Int
+      ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple2$Expr$Int
+      ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple2$Expr$Int
       ret con Right n  ; Δ{} · makes Either$String$Int
       ret con Sub _t3 _t4  ; Δ{_t3 _t4} · moves{_t3 _t4} · makes Expr
       ret con Sub l r  ; Δ{} · makes Expr
@@ -775,9 +775,9 @@
     let _dd0 = loadraw _p+8  ; Δ{}
     let _dd1 = call axion_drop_Expr _dd0  ; Δ{}
     let _dd1 = call axion_drop_Expr _dd0  ; Δ{}
-    let _dd1 = call axion_drop_List$tuple$String$Value _dd0  ; Δ{}
+    let _dd1 = call axion_drop_List$tuple2$String$Value _dd0  ; Δ{}
     let _dd1 = call axion_drop_Value _dd0  ; Δ{}
-    let _dd1 = call axion_drop_tuple$Expr$Int _dd0  ; Δ{}
+    let _dd1 = call axion_drop_tuple2$Expr$Int _dd0  ; Δ{}
     let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
     let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
     let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
@@ -974,37 +974,37 @@
     ret call <=$Int c 57  ; Δ{}
     ret call <=$Int c 57  ; Δ{}
     ret call isDigitCh c  ; Δ{}
-    ret call pAddStep toks 0 l p  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pAppStep toks l p  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pCmpTail toks 3 l p  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pIfElseB toks c tb _t3  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pIfThenB toks c _t3  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pLamBody toks _t2 _t3  ; Δ{_t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-    ret call pLamFinish toks nm _t3  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pLet toks _t3  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pLetBody toks nm rhs _t3  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pLetEq toks _t2 _t3  ; Δ{_t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-    ret call pLetRhs toks nm _t3  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pMulStep toks l p  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret call pParen toks _t3  ; Δ{} · makes Either$String$tuple$Expr$Int
+    ret call pAddStep toks 0 l p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pAppStep toks l p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pCmpTail toks 3 l p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pIfElseB toks c tb _t3  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pIfThenB toks c _t3  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pLamBody toks _t2 _t3  ; Δ{_t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+    ret call pLamFinish toks nm _t3  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pLet toks _t3  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pLetBody toks nm rhs _t3  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pLetEq toks _t2 _t3  ; Δ{_t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+    ret call pLetRhs toks nm _t3  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pMulStep toks l p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret call pParen toks _t3  ; Δ{} · makes Either$String$tuple2$Expr$Int
     ret call readIntGo s 0 0  ; Δ{} · makes Maybe$Int
     ret call reverseToks acc  ; Δ{} · makes List$Tok
     ret call tokLoop s _t7 _t10  ; Δ{_t10} · moves{_t10} · makes List$Tok
     ret con Add l r  ; Δ{} · makes Expr
     ret con Just acc  ; Δ{} · makes Maybe$Int
-    ret con Left "expected '->' in lambda"  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret con Left "expected '=' in let"  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret con Left "expected 'else'"  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret con Left "expected 'in' in let"  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret con Left "expected 'then'"  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret con Left "expected a name after 'let'"  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret con Left "expected a parameter name after '\\'"  ; Δ{} · makes Either$String$tuple$Expr$Int
-    ret con Left _t5  ; Δ{_t5} · moves{_t5} · makes Either$String$tuple$Expr$Int
+    ret con Left "expected '->' in lambda"  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret con Left "expected '=' in let"  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret con Left "expected 'else'"  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret con Left "expected 'in' in let"  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret con Left "expected 'then'"  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret con Left "expected a name after 'let'"  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret con Left "expected a parameter name after '\\'"  ; Δ{} · makes Either$String$tuple2$Expr$Int
+    ret con Left _t5  ; Δ{_t5} · moves{_t5} · makes Either$String$tuple2$Expr$Int
     ret con Nothing  ; Δ{} · makes Maybe$Int
-    ret con Right _t1  ; Δ{_t1} · moves{_t1} · makes Either$String$tuple$Expr$Int
-    ret con Right _t2  ; Δ{_t2} · moves{_t2} · makes Either$String$tuple$Expr$Int
-    ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple$Expr$Int
-    ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple$Expr$Int
+    ret con Right _t1  ; Δ{_t1} · moves{_t1} · makes Either$String$tuple2$Expr$Int
+    ret con Right _t2  ; Δ{_t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
+    ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple2$Expr$Int
+    ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple2$Expr$Int
     ret i  ; Δ{}
     ret if _t1 then
     ret if _t1 then
@@ -1192,7 +1192,7 @@
   ; Δ{}
   drop _t0
   drop _t0 : List$Tok
-  drop _t0 : List$tuple$String$Value
+  drop _t0 : List$tuple2$String$Value
   drop _t0 : String
   drop _t0 : String
   drop _t0 : String
@@ -1352,19 +1352,19 @@
   let _t0 = call isAlphaCh c  ; Δ{}
   let _t0 = call kindAt toks p  ; Δ{}
   let _t0 = call kindAt toks p  ; Δ{}
-  let _t0 = call pAdd toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pApp toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pAtom toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pAtom toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks 0  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t0 = call pMul toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
+  let _t0 = call pAdd toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pApp toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pAtom toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pAtom toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks 0  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pExpr toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t0 = call pMul toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
   let _t0 = call parseAt toks  ; Δ{} · makes Either$String$Expr
   let _t0 = call readInt s  ; Δ{} · makes Maybe$Int
   let _t0 = call run "1 + 2 * 3"  ; Δ{} · makes String
@@ -1381,7 +1381,7 @@
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let _t0 = con Nil  ; Δ{} · makes List$Tok
   let _t0 = con Nil  ; Δ{} · makes List$Tok
-  let _t0 = con Nil  ; Δ{} · makes List$tuple$String$Value
+  let _t0 = con Nil  ; Δ{} · makes List$tuple2$String$Value
   let _t0 = rtcall axion_getarg 0  ; Δ{} · makes String
   let _t0 = rtcall axion_str_cmp s "*"  ; Δ{s}
   let _t0 = rtcall axion_str_cmp s "+"  ; Δ{s}
@@ -1404,9 +1404,9 @@
   let _t1 = call >=$Int i _t0  ; Δ{}
   let _t1 = call >=$Int i _t0  ; Δ{}
   let _t1 = call eval _t0 e  ; Δ{_t0} · makes Either$String$Value
-  let _t1 = call pAdd toks _t0  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t1 = call pApp toks _t0  ; Δ{} · makes Either$String$tuple$Expr$Int
-  let _t1 = call pMul toks _t0  ; Δ{} · makes Either$String$tuple$Expr$Int
+  let _t1 = call pAdd toks _t0  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t1 = call pApp toks _t0  ; Δ{} · makes Either$String$tuple2$Expr$Int
+  let _t1 = call pMul toks _t0  ; Δ{} · makes Either$String$tuple2$Expr$Int
   let _t1 = if _t0 then
   let _t1 = putStrLn _t0  ; Δ{_t0}
   let _t1 = rtcall axion_str_cmp _t0 "("  ; Δ{_t0}
@@ -1459,7 +1459,7 @@
   ret call fromMaybe 0 _t0  ; Δ{_t0} · moves{_t0}
   ret call le$Int x y  ; Δ{}
   ret call le$Int y x  ; Δ{}
-  ret call pCmp toks p  ; Δ{} · makes Either$String$tuple$Expr$Int
+  ret call pCmp toks p  ; Δ{} · makes Either$String$tuple2$Expr$Int
   ret call revToksGo ts _t0  ; Δ{_t0} · moves{_t0} · makes List$Tok
   ret call tokLoop s 0 _t0  ; Δ{_t0} · moves{_t0} · makes List$Tok
   ret case _t0 of
@@ -1546,16 +1546,16 @@ axion_drop_Either$String _p  =
 axion_drop_Either$String$Expr _p  =
 axion_drop_Either$String$Int _p  =
 axion_drop_Either$String$Value _p  =
-axion_drop_Either$String$tuple$Expr$Int _p  =
+axion_drop_Either$String$tuple2$Expr$Int _p  =
 axion_drop_Expr _p  =
 axion_drop_List _p  =
 axion_drop_List$Tok _p  =
-axion_drop_List$tuple$String$Value _p  =
+axion_drop_List$tuple2$String$Value _p  =
 axion_drop_Maybe$Int _p  =
 axion_drop_Tok _p  =
 axion_drop_Value _p  =
-axion_drop_tuple$Expr$Int _p  =
-axion_drop_tuple$String$Value _p  =
+axion_drop_tuple2$Expr$Int _p  =
+axion_drop_tuple2$String$Value _p  =
 copyEnv env  =
 copyExpr e  =
 copyStr s  =

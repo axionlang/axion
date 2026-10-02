@@ -31,21 +31,21 @@
                           let _t30 = call show$((Int,Int),(Int,Int)) _t29  ; Δ{_t29} · makes String
                           ret _d1000000  ; Δ{}
                         _ ->
-                      drop _t24 : Maybe$tuple$Int$Int
+                      drop _t24 : Maybe$tuple2$Int$Int
                       drop _t25 : String
                       let _t23 = tuple 1 2  ; Δ{} · makes heap
-                      let _t24 = con Just _t23  ; Δ{_t23} · moves{_t23} · makes Maybe$tuple$Int$Int
+                      let _t24 = con Just _t23  ; Δ{_t23} · moves{_t23} · makes Maybe$tuple2$Int$Int
                       let _t25 = call show$Maybe$(Int,Int) _t24  ; Δ{_t24} · makes String
                       let _t26 = putStrLn _t25  ; Δ{_t25}
                       ret case _t26 of
                     _ ->
-                  drop _t20 : List$tuple$Int$Int
+                  drop _t20 : List$tuple2$Int$Int
                   drop _t21 : String
                   let _t16 = tuple 1 2  ; Δ{} · makes heap
                   let _t17 = tuple 3 4  ; Δ{_t16} · makes heap
-                  let _t18 = con Nil  ; Δ{_t16 _t17} · makes List$tuple$Int$Int
-                  let _t19 = con Cons _t17 _t18  ; Δ{_t16 _t17 _t18} · moves{_t17 _t18} · makes List$tuple$Int$Int
-                  let _t20 = con Cons _t16 _t19  ; Δ{_t16 _t19} · moves{_t16 _t19} · makes List$tuple$Int$Int
+                  let _t18 = con Nil  ; Δ{_t16 _t17} · makes List$tuple2$Int$Int
+                  let _t19 = con Cons _t17 _t18  ; Δ{_t16 _t17 _t18} · moves{_t17 _t18} · makes List$tuple2$Int$Int
+                  let _t20 = con Cons _t16 _t19  ; Δ{_t16 _t19} · moves{_t16 _t19} · makes List$tuple2$Int$Int
                   let _t21 = call show$List$(Int,Int) _t20  ; Δ{_t20} · makes String
                   let _t22 = putStrLn _t21  ; Δ{_t21}
                   ret case _t22 of
@@ -135,10 +135,10 @@
       let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Int$Int _dd0  ; Δ{}
-      let _dd1 = call axion_drop_tuple$Int$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$Int$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_tuple2$Int$Int _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Int$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$Int$Int _dd2  ; Δ{}
       let _t0 = call show$(Int,Int) c0  ; Δ{} · makes String
       let _t0 = call show$(Int,Int) y  ; Δ{} · makes String
       let _t0 = call show$(Int,Int) z  ; Δ{} · makes String
@@ -352,10 +352,10 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
-axion_drop_List$tuple$Int$Int _p  =
+axion_drop_List$tuple2$Int$Int _p  =
 axion_drop_Maybe$Int _p  =
-axion_drop_Maybe$tuple$Int$Int _p  =
-axion_drop_tuple$Int$Int _p  =
+axion_drop_Maybe$tuple2$Int$Int _p  =
+axion_drop_tuple2$Int$Int _p  =
 main  =
 show$((Int,Int),(Int,Int)) p  =
 show$(Int,Int) p  =

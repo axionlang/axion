@@ -740,16 +740,18 @@ impl RecordInfo {
         )
     }
 
-    /// Segments a tuple mono-key (`tuple$List$Integer$Integer`) into its `arity` element sub-keys
-    /// (`["List$Integer", "Integer"]`), using constructor arities to walk the `$`-joined token
-    /// stream (`List` has arity 1 → it consumes the next element key). `None` if the stream can't
-    /// be segmented into exactly `arity` elements — in particular a NESTED TUPLE element, whose own
-    /// arity is not encoded in the key (`tuple$...`), so it stays the conservative shell-only free
-    /// (the documented nested-tuple-in-tuple residual).
+    /// Segments a tuple mono-key (`tuple2$List$Integer$Integer`) into its `arity` element sub-keys
+    /// (`["List$Integer", "Integer"]`), using constructor arities (and the arity encoded in each
+    /// `tupleN` head) to walk the `$`-joined token stream. A NESTED TUPLE element now segments
+    /// unambiguously (`tuple2$tuple2$String$String$tuple2$String$String` → two `tuple2$String$String`
+    /// elements), closing the former nested-tuple-in-tuple residual. `None` if the head is not a
+    /// `tupleN` of the expected arity, or the stream can't be segmented into exactly `arity` elements.
     fn split_tuple_key(&self, key: &str, arity: usize) -> Option<Vec<String>> {
         let mut it = key.split('$');
-        if it.next() != Some("tuple") {
-            return None;
+        let head = it.next()?;
+        let enc = head.strip_prefix("tuple").and_then(|s| s.parse::<usize>().ok())?;
+        if enc != arity {
+            return None; // key arity disagrees with the pattern arity — bail (never mis-free)
         }
         let toks: Vec<&str> = it.collect();
         let mut pos = 0usize;
@@ -761,24 +763,18 @@ impl RecordInfo {
     }
 
     /// Consumes one full mono sub-key from `toks` at `pos`, recursing for a constructor's arguments
-    /// (`List` arity 1 → one following sub-key). A nested `tuple` token bails (`None`): its arity is
-    /// not encoded, so the segmentation is ambiguous.
+    /// (`List` arity 1 → one following sub-key). A `tupleN` token encodes its arity N (see
+    /// `mono_key`), so it consumes exactly N sub-keys and recurses — a NESTED tuple anywhere in the
+    /// stream now segments unambiguously (the previous arity-less `tuple` token could only be the
+    /// final remainder).
     fn consume_one_key(&self, toks: &[&str], pos: &mut usize) -> Option<String> {
         let head = *toks.get(*pos)?;
         *pos += 1;
-        if head == "tuple" {
-            // A tuple's arity is NOT encoded in the mono key (`tuple$Expr$Int` could be a
-            // 2-tuple or the prefix of a longer key), so it cannot be split in the middle of a
-            // larger key. But as the FINAL argument it is exactly the remainder — consume all
-            // remaining tokens. A tuple in a NON-final position leaves `pos != toks.len()`, so
-            // `split_mono_key` bails (→ a conservative leak, never a double free). This lets a
-            // poly field instantiated to a tuple resolve — `Either String (Expr, Int)` → Right's
-            // `tuple$Expr$Int` — so its reclamation (notion-2) fires instead of leaking.
-            let mut key = String::from("tuple");
-            while *pos < toks.len() {
+        if let Some(arity) = head.strip_prefix("tuple").and_then(|s| s.parse::<usize>().ok()) {
+            let mut key = head.to_string(); // "tupleN"
+            for _ in 0..arity {
                 key.push('$');
-                key.push_str(toks[*pos]);
-                *pos += 1;
+                key.push_str(&self.consume_one_key(toks, pos)?);
             }
             return Some(key);
         }
@@ -5762,7 +5758,16 @@ fn mono_key(t: &Type) -> Option<String> {
     match t {
         Type::Tuple(ts) => {
             let parts: Vec<String> = ts.iter().map(mono_key).collect::<Option<Vec<_>>>()?;
-            Some(format!("tuple${}", parts.join("$")))
+            // Encode the ARITY in the head token (`tuple2$A$B`, `tuple3$A$B$C`) so a NESTED
+            // tuple key is unambiguously segmentable: `consume_one_key` reads N from `tupleN`
+            // and consumes exactly N sub-keys, recursing. Without the count, `tuple$tuple$…`
+            // could not be split (the inner arities were lost), forcing a conservative
+            // shell-free/leak for every nested-tuple reclamation.
+            if parts.is_empty() {
+                Some("tuple0".to_string())
+            } else {
+                Some(format!("tuple{}${}", parts.len(), parts.join("$")))
+            }
         }
         _ => {
             let (head, args) = ty_head_args(t);

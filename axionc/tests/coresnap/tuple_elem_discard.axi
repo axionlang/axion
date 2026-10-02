@@ -7,7 +7,7 @@
 
 
 
-          drop t : tuple$Box$Box skip{0}
+          drop t : tuple2$Box$Box skip{0}
           let _t0 = call mapFst ts  ; Δ{t ts} · moves{ts} · makes List$Box
           ret con Cons a _t0  ; Δ{_t0 t} · moves{_t0} · makes List$Box
         (a, b) ->
@@ -21,10 +21,10 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Box _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Box$Box _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$Box$Box _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Box$Box _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$Box$Box _dd2  ; Δ{}
       let _dd3 = rtcall axion_free _dd2  ; Δ{}
       let _t0 = call countV t  ; Δ{t} · moves{t}
       ret + 1 _t0  ; Δ{}
@@ -94,9 +94,9 @@
   let _t3 = record Box { v = 4}  ; Δ{_t2} · makes Box
   let _t4 = record Box { v = 9}  ; Δ{_t2 _t3} · makes Box
   let _t5 = tuple _t3 _t4  ; Δ{_t2 _t3 _t4} · moves{_t3 _t4} · makes heap
-  let _t6 = con Nil  ; Δ{_t2 _t5} · makes List$tuple$Box$Box
-  let _t7 = con Cons _t5 _t6  ; Δ{_t2 _t5 _t6} · moves{_t5 _t6} · makes List$tuple$Box$Box
-  let _t8 = con Cons _t2 _t7  ; Δ{_t2 _t7} · moves{_t2 _t7} · makes List$tuple$Box$Box
+  let _t6 = con Nil  ; Δ{_t2 _t5} · makes List$tuple2$Box$Box
+  let _t7 = con Cons _t5 _t6  ; Δ{_t2 _t5 _t6} · moves{_t5 _t6} · makes List$tuple2$Box$Box
+  let _t8 = con Cons _t2 _t7  ; Δ{_t2 _t7} · moves{_t2 _t7} · makes List$tuple2$Box$Box
   let _t9 = call mapFst _t8  ; Δ{_t8} · moves{_t8} · makes List$Box
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -110,9 +110,9 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Box _p  =
-axion_drop_List$tuple$Box$Box _p  =
-axion_drop_tuple$Box$Box _p  =
-axion_drop_tuple$Box$Box_skip_0 _p  =
+axion_drop_List$tuple2$Box$Box _p  =
+axion_drop_tuple2$Box$Box _p  =
+axion_drop_tuple2$Box$Box_skip_0 _p  =
 countV xs  =
 main  =
 mapFst xs  =

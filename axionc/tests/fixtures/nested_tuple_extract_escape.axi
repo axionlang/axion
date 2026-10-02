@@ -8,14 +8,15 @@
 -- segmentable (`tuple_elem_drops` → None — inner arities aren't encoded in the key), so
 -- `mentioned_slots` stayed empty and the skip set was empty.
 --
--- FIX: when the tuple mono-key is unsegmentable AND a field is mentioned (so it may escape),
--- shell-free the OUTER cell only — the escaping field survives and any non-escaping heap siblings
--- LEAK (sound — the documented nested-tuple-in-tuple residual; a leak, never a double-free). A
--- dead-discard nested tuple (no field mentioned) still deep-drops, so no needless leak.
+-- FIX: tuple mono-keys now ENCODE THEIR ARITY (`tuple2$…`), so a nested-tuple key segments
+-- unambiguously (`consume_one_key` reads N from `tupleN` and consumes exactly N sub-keys). The
+-- case-arm skip-destructor path therefore resolves the inner element types, SKIPS the escaped
+-- field, and deep-frees the remaining siblings precisely — no UAF and no leak. (The earlier
+-- shell-free fallback for an unsegmentable key is retained as a belt-and-suspenders path, but
+-- with arity-encoded keys it is no longer reached for a flat nested tuple.)
 --
--- interp == cranelift == llvm = "p"; ASan clean (NO double-free / UAF). NOTE: a conservative
--- residual leak of the unsegmentable sibling remains (outside the LEAKFREE gate) until tuple mono
--- keys encode their arity. The SOUNDNESS win — the UAF is gone — is what this fixture locks.
+-- interp == cranelift == llvm = "p"; ASan + LSan clean — the escaping field survives, every
+-- sibling is reclaimed. In the LEAKFREE gate.
 useNT :: ((String, String), (String, String)) -> String
 useNT t = case t of
   (a, b) -> case a of

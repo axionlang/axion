@@ -42,9 +42,9 @@
       drop m : Maybe$Int
       drop m : Maybe$Int
       drop p
-      drop p : tuple$Int$Int
-      drop p : tuple$Int$Int
-      drop p : tuple$Int$Int
+      drop p : tuple2$Int$Int
+      drop p : tuple2$Int$Int
+      drop p : tuple2$Int$Int
       else
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -223,7 +223,7 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 axion_drop_Maybe$Int _p  =
-axion_drop_tuple$Int$Int _p  =
+axion_drop_tuple2$Int$Int _p  =
 const x y  =
 curry$$fst x y  =
 elemIndex$Int x xs  =

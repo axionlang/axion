@@ -28,7 +28,7 @@
         Cons b bs ->
         Nil ->
         Nil ->
-      drop p : tuple$Int$Int
+      drop p : tuple2$Int$Int
       drop xs
       drop xs
       drop xs
@@ -44,11 +44,11 @@
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$List$Int _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$tuple$Int$Int _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$Int$Int _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
-      let _dd3 = call axion_drop_tuple$Int$Int _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$Int$Int _dd2  ; Δ{}
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call concat$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
@@ -198,7 +198,7 @@
   let _t38 = con Cons 6 _t37  ; Δ{_t36 _t37} · moves{_t37} · makes List$Int
   let _t39 = con Cons 5 _t38  ; Δ{_t36 _t38} · moves{_t38} · makes List$Int
   let _t4 = con Cons 4 _t3  ; Δ{_t2 _t3} · moves{_t3} · makes List$Int
-  let _t40 = call zip _t36 _t39  ; Δ{_t36 _t39} · makes List$tuple$Int$Int
+  let _t40 = call zip _t36 _t39  ; Δ{_t36 _t39} · makes List$tuple2$Int$Int
   let _t41 = call map$$snd _t40  ; Δ{_t40} · moves{_t40} · makes List$Int
   let _t42 = call sum _t41  ; Δ{_t41}
   let _t5 = con Cons 3 _t4  ; Δ{_t2 _t4} · moves{_t4} · makes List$Int
@@ -230,8 +230,8 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$List$Int _p  =
-axion_drop_List$tuple$Int$Int _p  =
-axion_drop_tuple$Int$Int _p  =
+axion_drop_List$tuple2$Int$Int _p  =
+axion_drop_tuple2$Int$Int _p  =
 concat$Int xs  =
 hoflam11 a b  =
 lam$0 [env ]a b  =

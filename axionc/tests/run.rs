@@ -1610,10 +1610,9 @@ fn nested_tuple_extract_escape_runs_on_all_backends() {
     // SOUNDNESS lock: a heap field of a NESTED-tuple scrutinee that escapes into the arm's heap
     // result (`useNT t = case t of (a,b) -> case a of (x,y) -> x`) previously lowered the outer
     // `drop t` as a full deep drop that freed the inner tuple `a`, then the nested `case a` read
-    // freed `a` → a verifier-blind UAF (every native backend aborted). The unsegmentable
-    // nested-tuple key now triggers a shell-free of the outer cell, so the escaping field survives.
-    // All three backends agree "p" with no double-free (a conservative sibling leak remains — see
-    // the fixture header — so this is NOT in the LEAKFREE sanitize set, only ASan-gated).
+    // freed `a` → a verifier-blind UAF (every native backend aborted). Tuple mono-keys now encode
+    // arity (`tuple2$…`), so the nested key segments: the skip-destructor path spares the escaping
+    // field and reclaims the siblings precisely. All three backends agree "p", ASan + LSan clean.
     for backend in [
         vec!["--backend", "interp"],
         vec!["--backend", "cranelift"],
