@@ -105,6 +105,7 @@ enum Emit {
     CodegenTv,
     CodegenTvClif,
     RetAlias,
+    ExtractTags,
     Clif,
     Llvm,
 }
@@ -199,11 +200,12 @@ pub fn run_cli() -> ExitCode {
                     Some("codegen-tv") => emit = Emit::CodegenTv,
                     Some("codegen-tv-clif") => emit = Emit::CodegenTvClif,
                     Some("ret-alias") => emit = Emit::RetAlias,
+                    Some("extract-tags") => emit = Emit::ExtractTags,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
                         eprintln!(
-                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'delta', 'clif' or 'llvm'"
+                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'delta', 'verify', 'ret-alias', 'extract-tags', 'clif' or 'llvm'"
                         );
                         return ExitCode::from(2);
                     }
@@ -553,6 +555,60 @@ pub fn run_cli() -> ExitCode {
         println!(
             "ret-alias: {} function(s) may return a parameter",
             rows.len()
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    if emit == Emit::ExtractTags {
+        // docs/safety-model-spike.md (Option B, Step 1): the explicit ExtractOp tags, chosen by the
+        // intra-procedural container-liveness rule. READ-ONLY — a measurement view the future
+        // tag-checker (Step 2) and the lowering (Step 3) will consume. One line per heap-field
+        // `case`-extraction, plus a summary of how many sites the intra rule tags confidently vs.
+        // how many hinge on a callee (the interprocedural summary).
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            fuse,
+        );
+        let facts = core::classify_extractions(
+            &lowered.fns,
+            &module,
+            &lowered.recinfo,
+            &lowered.borrow_args,
+        );
+        let (mut mv, mut br, mut cp, mut ip) = (0usize, 0usize, 0usize, 0usize);
+        for ff in &facts {
+            match ff.tag {
+                core::ExtractOp::MoveOut => mv += 1,
+                core::ExtractOp::BorrowRef => br += 1,
+                core::ExtractOp::ExplicitCopy => cp += 1,
+            }
+            if ff.interproc {
+                ip += 1;
+            }
+            println!(
+                "{}: {} {}.{} (slot {}){}",
+                ff.func,
+                ff.tag.as_str(),
+                ff.con,
+                ff.field,
+                ff.slot,
+                if ff.interproc {
+                    "  [needs-interproc]"
+                } else {
+                    ""
+                }
+            );
+        }
+        println!(
+            "extract-tags: {} extraction(s) — MoveOut {mv}, BorrowRef {br}, ExplicitCopy {cp}; \
+             {ip} hinge on a callee (need the interprocedural summary)",
+            facts.len()
         );
         return ExitCode::SUCCESS;
     }
@@ -5380,6 +5436,7 @@ fn print_usage() {
          axionc --emit arenas <file>    NLL reset points of sub-arenas (static)\n  \
          axionc --emit core <file>      Axion Core IR (ANF) — the shared lowering\n  \
          axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
+         axionc --emit extract-tags <f> ownership tags on heap-field case-extractions (report)\n  \
          axionc --emit clif <file>      Cranelift IR of the Int core (--dev backend)\n  \
          axionc --emit llvm <file>      LLVM IR of the Int core (--release backend)\n  \
          axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \

@@ -209,6 +209,15 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
    (this *is* §4, done properly — `AX0913`). Lower every heap-field extraction to
    `MoveOut`/`BorrowRef`/`ExplicitCopy`. Start with the container-liveness decision done
    *intra-procedurally*; emit `AX0913` where the local pass cannot prove a sound tag.
+   **Started — read-only slice landed:** `core::classify_extractions` + `--emit extract-tags`
+   tag every `Con` heap-field `case`-extraction by the intra rule (type-based heap test, so
+   `Integer` is visible — it was the blind spot), non-gating. **Corpus measurement (285 files, 129
+   with extractions, 889 sites): MoveOut 317 / BorrowRef 511 / ExplicitCopy 61; 627 (71%) the intra
+   rule tags confidently, 262 (29%) hinge on a callee** → that 29% is precisely the work the Step-3
+   interprocedural summary buys. Two refinements this slice forced: the heap test must be
+   type-based (not `con_drop_slots`, which hides `Integer`), and a bare-returned field from a
+   borrowed container is a grab (`BorrowRef`), not a copy. Remaining to gate: tuple scrutinees,
+   then the tag-checker (Step 2).
 2. **Refactor `AX0910` to check tags only** — co-designed with Step 1 so the verifier inspects the
    `ExtractOp` nodes rather than re-deriving ownership. This is the decoupling that kills the echo
    chamber.

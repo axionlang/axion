@@ -749,7 +749,9 @@ impl RecordInfo {
     fn split_tuple_key(&self, key: &str, arity: usize) -> Option<Vec<String>> {
         let mut it = key.split('$');
         let head = it.next()?;
-        let enc = head.strip_prefix("tuple").and_then(|s| s.parse::<usize>().ok())?;
+        let enc = head
+            .strip_prefix("tuple")
+            .and_then(|s| s.parse::<usize>().ok())?;
         if enc != arity {
             return None; // key arity disagrees with the pattern arity — bail (never mis-free)
         }
@@ -770,7 +772,10 @@ impl RecordInfo {
     fn consume_one_key(&self, toks: &[&str], pos: &mut usize) -> Option<String> {
         let head = *toks.get(*pos)?;
         *pos += 1;
-        if let Some(arity) = head.strip_prefix("tuple").and_then(|s| s.parse::<usize>().ok()) {
+        if let Some(arity) = head
+            .strip_prefix("tuple")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
             let mut key = head.to_string(); // "tupleN"
             for _ in 0..arity {
                 key.push('$');
@@ -7345,6 +7350,256 @@ fn droppable_vars(f: &CoreFn, ba: &BorrowArgs) -> HashSet<String> {
     let mut escaped = HashSet::new();
     scan_body(&f.body, ba, &mut allocated, &mut escaped);
     allocated.difference(&escaped).cloned().collect()
+}
+
+// --- ExtractOp tags (docs/safety-model-spike.md, Option B, Step 1) -------------------------
+//
+// The explicit Ownership-IR move toward a verifier that CHECKS an ownership decision instead of
+// RE-DERIVING it. This first slice is READ-ONLY: it classifies every heap-field `case`-extraction
+// by the intra-procedural container-liveness rule and reports the tags (via `--emit extract-tags`),
+// so we can measure, on the real corpus, how many sites the intra rule can tag confidently vs. how
+// many hinge on a callee's consume/borrow behaviour (the interprocedural summary, Step 3). It does
+// NOT gate and does NOT change lowering. Scoped to `Con` (record/`data`) heap fields — the live
+// frontier (grab-via-case, Integer-in-data); tuple scrutinees are the immediate follow-up.
+
+/// How a heap field leaves (or does not leave) its container at a `case`-extraction site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractOp {
+    /// Ownership transfers out of a DYING (owned) container; its destructor must SKIP the slot.
+    MoveOut,
+    /// An interior alias of a LIVE container; the container still owns it and frees it once.
+    BorrowRef,
+    /// The value escapes a surviving container, so it needs a fresh owned duplicate.
+    ExplicitCopy,
+}
+
+impl ExtractOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExtractOp::MoveOut => "MoveOut",
+            ExtractOp::BorrowRef => "BorrowRef",
+            ExtractOp::ExplicitCopy => "ExplicitCopy",
+        }
+    }
+}
+
+/// One classified heap-field extraction. `interproc` marks a tag whose soundness hinges on whether
+/// the callee the field escapes INTO consumes or borrows it — i.e. the intra-procedural rule had to
+/// guess and the real decision needs the Step-3 per-function summary.
+#[derive(Debug, Clone)]
+pub struct ExtractFact {
+    pub func: String,
+    pub con: String,
+    pub field: String,
+    pub slot: usize,
+    pub tag: ExtractOp,
+    pub interproc: bool,
+}
+
+/// Classify every `Con` heap-field extraction in the lowered module by the intra-procedural
+/// container-liveness rule (read-only; see the section header). `module` supplies the constructors'
+/// declared field TYPES, so heap-ness is judged by TYPE (`Integer` included) rather than by
+/// `con_drop_slots` — which excludes `Integer` and would blind the analysis exactly where a bug
+/// lives.
+pub fn classify_extractions(
+    fns: &[CoreFn],
+    module: &ast::Module,
+    recinfo: &RecordInfo,
+    ba: &BorrowArgs,
+) -> Vec<ExtractFact> {
+    // con → declared field types, for a type-based heap test independent of drop_slots.
+    let field_tys: HashMap<String, Vec<Type>> = module
+        .datas
+        .iter()
+        .flat_map(|d| {
+            d.cons.iter().map(|c| {
+                (
+                    c.name.clone(),
+                    c.fields.iter().map(|f| f.ty.clone()).collect(),
+                )
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for f in fns {
+        // generated destructors/copiers manage memory by hand — not Auto-Drop extractions.
+        if f.name.starts_with("axion_") {
+            continue;
+        }
+        // a scrutinee is OWNED by this fn iff this fn reclaims it (a `%1` param or a droppable
+        // local producer); a borrowed param is not droppable → not owned.
+        let mut owned: HashSet<String> = f.owned_params.iter().cloned().collect();
+        owned.extend(droppable_vars(f, ba));
+        extract_walk(&f.body, &f.name, &field_tys, recinfo, ba, &owned, &mut out);
+    }
+    out
+}
+
+/// A field's declared type needs heap reclamation — `Integer`/`String`/`data`/`List`/tuple/poly,
+/// but not `Int`/`Float`/`Bool`/`Char`/`Buffer`/function or an unboxed enum. Type-based so it is
+/// NOT gated on `con_drop_slots` (which drops `Integer`).
+fn field_ty_heap(ty: &Type, recinfo: &RecordInfo) -> bool {
+    match ty {
+        Type::Var(_) => true,   // polymorphic — may instantiate to heap
+        Type::Tuple(_) => true, // heap cell
+        _ => match ty.head_con() {
+            Some("Int" | "Float" | "Bool" | "Char" | "Buffer") => false,
+            Some(h) if recinfo.is_enum_type(h) => false, // unboxed immediate
+            Some(_) => true,
+            None => false, // function / unknown
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_walk(
+    t: &Term,
+    func: &str,
+    field_tys: &HashMap<String, Vec<Type>>,
+    recinfo: &RecordInfo,
+    ba: &BorrowArgs,
+    owned: &HashSet<String>,
+    out: &mut Vec<ExtractFact>,
+) {
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            extract_rhs(rhs, func, field_tys, recinfo, ba, owned, out);
+            extract_walk(body, func, field_tys, recinfo, ba, owned, out);
+        }
+        Term::Drop(_, _, _, _, body) => {
+            extract_walk(body, func, field_tys, recinfo, ba, owned, out)
+        }
+        Term::Ret(rhs, _) => extract_rhs(rhs, func, field_tys, recinfo, ba, owned, out),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_rhs(
+    rhs: &Rhs,
+    func: &str,
+    field_tys: &HashMap<String, Vec<Type>>,
+    recinfo: &RecordInfo,
+    ba: &BorrowArgs,
+    owned: &HashSet<String>,
+    out: &mut Vec<ExtractFact>,
+) {
+    match rhs {
+        Rhs::Op(_) => {}
+        Rhs::If(_, a, b) => {
+            extract_walk(a, func, field_tys, recinfo, ba, owned, out);
+            extract_walk(b, func, field_tys, recinfo, ba, owned, out);
+        }
+        Rhs::Case(scrut, arms) => {
+            if let Atom::Var(s) = scrut {
+                let owned_scrut = owned.contains(s);
+                for (pat, body) in arms {
+                    if let CPat::Con(con, subs) = pat {
+                        let tys = field_tys.get(con);
+                        for (i, sub) in subs.iter().enumerate() {
+                            if let CPat::Var(n) = sub {
+                                let is_heap = tys
+                                    .and_then(|t| t.get(i))
+                                    .is_some_and(|ty| field_ty_heap(ty, recinfo));
+                                if !is_heap {
+                                    continue;
+                                }
+                                if !term_mentions_any(body, &HashSet::from([n.clone()])) {
+                                    continue; // dead discard → reclaimed by the destructor
+                                }
+                                let escapes = body_moves_var(n, body, ba);
+                                // The WHOLE result IS the field (grab) vs the field EMBEDDED into a
+                                // new structure / handed to a consuming call. A grab out of a
+                                // borrowed container is a borrow-return, not a copy.
+                                let bare = returns_var_bare(n, body);
+                                let embedded = embedded_in_builder(n, body);
+                                let tag = if !escapes {
+                                    ExtractOp::BorrowRef
+                                } else if owned_scrut {
+                                    ExtractOp::MoveOut // field moves out of the dying container
+                                } else if bare && !embedded {
+                                    ExtractOp::BorrowRef // grab: caller's live container still owns it
+                                } else {
+                                    ExtractOp::ExplicitCopy // escapes a surviving container
+                                };
+                                let interproc = escapes && mentioned_in_call_arg(n, body);
+                                out.push(ExtractFact {
+                                    func: func.to_string(),
+                                    con: con.clone(),
+                                    field: n.clone(),
+                                    slot: i,
+                                    tag,
+                                    interproc,
+                                });
+                            }
+                        }
+                    }
+                    // nested extractions inside the arm
+                    extract_walk(body, func, field_tys, recinfo, ba, owned, out);
+                }
+            }
+        }
+    }
+}
+
+/// `true` if `v` is, on some path, the WHOLE result of `t` (a bare `ret v`) — the grab shape.
+fn returns_var_bare(v: &str, t: &Term) -> bool {
+    match t {
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(x))), _) => x == v,
+        Term::Ret(Rhs::Op(_), _) => false,
+        Term::Ret(Rhs::If(_, a, b), _) => returns_var_bare(v, a) || returns_var_bare(v, b),
+        Term::Ret(Rhs::Case(_, arms), _) => arms.iter().any(|(_, a)| returns_var_bare(v, a)),
+        Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => returns_var_bare(v, b),
+    }
+}
+
+/// `true` if `v` is embedded into a freshly built structure (`MakeCon`/`MakeTuple`/`MakeRecord`)
+/// anywhere in `t` — a genuine escape into a value that can outlive the container.
+fn embedded_in_builder(v: &str, t: &Term) -> bool {
+    fn op_has(v: &str, op: &Op) -> bool {
+        let hit = |a: &Atom| matches!(a, Atom::Var(x) if x == v);
+        match op {
+            Op::MakeTuple(args) | Op::MakeCon { args, .. } => args.iter().any(hit),
+            Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| hit(a)),
+            _ => false,
+        }
+    }
+    fn rhs_has(v: &str, rhs: &Rhs) -> bool {
+        match rhs {
+            Rhs::Op(op) => op_has(v, op),
+            Rhs::If(_, a, b) => embedded_in_builder(v, a) || embedded_in_builder(v, b),
+            Rhs::Case(_, arms) => arms.iter().any(|(_, a)| embedded_in_builder(v, a)),
+        }
+    }
+    match t {
+        Term::Let(_, rhs, _, body) => rhs_has(v, rhs) || embedded_in_builder(v, body),
+        Term::Drop(_, _, _, _, body) => embedded_in_builder(v, body),
+        Term::Ret(rhs, _) => rhs_has(v, rhs),
+    }
+}
+
+/// `true` if `v` appears as an argument of a direct/closure call anywhere in `t` — the escape whose
+/// move-vs-borrow nature depends on the callee (so an intra-procedural tag over it is a guess).
+fn mentioned_in_call_arg(v: &str, t: &Term) -> bool {
+    fn op_has(v: &str, op: &Op) -> bool {
+        let hit = |a: &Atom| matches!(a, Atom::Var(x) if x == v);
+        match op {
+            Op::CallDirect(_, args, _) => args.iter().any(hit),
+            Op::CallClosure(_, args) => args.iter().any(hit),
+            _ => false,
+        }
+    }
+    fn rhs_has(v: &str, rhs: &Rhs) -> bool {
+        match rhs {
+            Rhs::Op(op) => op_has(v, op),
+            Rhs::If(_, a, b) => mentioned_in_call_arg(v, a) || mentioned_in_call_arg(v, b),
+            Rhs::Case(_, arms) => arms.iter().any(|(_, a)| mentioned_in_call_arg(v, a)),
+        }
+    }
+    match t {
+        Term::Let(_, rhs, _, body) => rhs_has(v, rhs) || mentioned_in_call_arg(v, body),
+        Term::Drop(_, _, _, _, body) => mentioned_in_call_arg(v, body),
+        Term::Ret(rhs, _) => rhs_has(v, rhs),
+    }
 }
 
 /// Reclaims a conditionally-escaping OWNED heap parameter in a tail-position
