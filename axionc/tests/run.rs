@@ -1577,6 +1577,31 @@ fn grab_case_field_runs_on_all_backends() {
 }
 
 #[test]
+fn tuple_cond_return_reuse_runs_on_all_backends() {
+    // R-5 tuple deep-copier (P3): `pickT c t = if c>0 then ("x","y") else t` returns its tuple
+    // param WHOLE on one branch; `go` consumes both the returned alias AND `t`. Before the tuple
+    // copier the reuse-gated copy couldn't fire (tuple had no CopyKind → silent fail-closed) → a
+    // verifier-blind double-free. `gen_copiers` now emits `axion_copy_tuple$String$String`, so the
+    // reused return is copied fresh; all three backends agree "pqpq", ASan + LSan clean.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("tuple_cond_return_reuse.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "tuple_cond_return_reuse should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "pqpq\n", "{backend:?}");
+    }
+}
+
+#[test]
 fn record_update_multi_field_runs_on_all_backends() {
     // Updating two non-adjacent heap fields yields a MULTI-ELEMENT skip set {0,2} — the
     // order-sensitive skip-destructor name must be sorted. Leak-free (sanitize.sh). = 2.

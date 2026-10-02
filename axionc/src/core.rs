@@ -5469,6 +5469,37 @@ fn gen_copiers(
         if !done.insert(key.clone()) {
             continue;
         }
+        // TUPLE copier: a tuple has no `data` decl — one implicit constructor (tag 0) whose
+        // heap slots sit at `i*8`. Build its slots (threading `work` so a container/`data`
+        // element gets its own `axion_copy_<elem>` too) and reuse the single-con `copier_body`
+        // (shell-copy + per-heap-slot fixup). A nested-tuple element is `DropWay::None` (the
+        // documented nested-tuple-in-tuple residual, shared not freed by its destructor → a
+        // leak, never a double-free). Mirrors `gen_tuple_destructors`.
+        if let Type::Tuple(ts) = &t {
+            let slots: Vec<(i32, DropWay)> = ts
+                .iter()
+                .enumerate()
+                .filter_map(
+                    |(i, el)| match drop_way(el, recinfo, parametric_data, &mut work) {
+                        DropWay::None => None,
+                        way => Some((i as i32 * 8, way)),
+                    },
+                )
+                .collect();
+            let p = "_p".to_string();
+            let mut ctr = 0u32;
+            let body = copier_body(&[(0i64, slots)], true, false, &p, &mut ctr);
+            out.push(CoreFn {
+                name: format!("axion_copy_{key}"),
+                params: vec![p],
+                captures: Vec::new(),
+                is_closure: false,
+                owned_params: Vec::new(),
+                owned_drop_ty: Vec::new(),
+                body,
+            });
+            continue;
+        }
         let (head, args) = ty_head_args(&t);
         let Some(head) = head else { continue };
         let Some(d) = datas.get(head).copied() else {
@@ -7594,25 +7625,39 @@ fn normalize_alias_returns(
         .zip(ptys)
         .enumerate()
         .filter(|(i, (p, _))| copy_params.contains(i) && !owned.contains(p))
-        .filter_map(|(_, (p, ty))| match ty.head_con() {
-            Some("String") => Some((p.clone(), CopyKind::Str)),
-            Some("Integer") => Some((p.clone(), CopyKind::Int)),
+        .filter_map(|(_, (p, ty))| {
+            if let Some("String") = ty.head_con() {
+                return Some((p.clone(), CopyKind::Str));
+            }
+            if let Some("Integer") = ty.head_con() {
+                return Some((p.clone(), CopyKind::Int));
+            }
+            // R-5 TUPLE copier: a reused tuple param-return (`pickT c t = if … else t`, caller
+            // reuses `t`) needs a fresh owned copy `axion_copy_tuple$…`. Concrete mono key only
+            // (`mono_key` `None` for a poly element → fail-closed); `gen_copiers` emits the
+            // tuple copier (single implicit con, `i*8` slots) + transitively its element copiers.
+            if matches!(ty, Type::Tuple(_)) {
+                return mono_key(ty).map(|k| {
+                    copy_seeds.push((*ty).clone());
+                    (p.clone(), CopyKind::Container(k))
+                });
+            }
             // R-5: a `data` container with a CONCRETE mono destructor key gets a generated
             // per-type deep-copier `axion_copy_<key>`; seed its type so the copier (and,
             // transitively, its heap fields') is emitted. Restricted to a `data`-decl head
-            // (`gen_copiers` needs the declaration): a tuple (head_con `None`) or a pure
-            // enum (unboxed immediate, value-copied) stays fail-closed → no copier. A
-            // polymorphic key (`mono_key` `None`) also stays fail-closed.
-            _ if ty
+            // (`gen_copiers` needs the declaration): a pure enum (unboxed immediate,
+            // value-copied) stays fail-closed → no copier. A polymorphic key (`mono_key`
+            // `None`) also stays fail-closed.
+            if ty
                 .head_con()
-                .is_some_and(|h| data_types.contains(h) && !enum_types.contains(h)) =>
+                .is_some_and(|h| data_types.contains(h) && !enum_types.contains(h))
             {
-                mono_key(ty).map(|k| {
+                return mono_key(ty).map(|k| {
                     copy_seeds.push((*ty).clone());
                     (p.clone(), CopyKind::Container(k))
-                })
+                });
             }
-            _ => None,
+            None
         })
         .collect();
     if !targets.is_empty() {
