@@ -394,6 +394,24 @@ pub fn ret_alias_summary(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
 /// double-frees the shared element — the class AX0912 guards and the verifier used to miss.
 type ElemAliases = std::collections::HashMap<String, HashSet<usize>>;
 
+/// The function's return is, on EVERY path, a BARE variable (`ret a`) rather than a freshly
+/// built value (`ret Cons y ys`, `ret strAppend …`). This distinguishes a GRAB — the whole
+/// result IS a (possibly case-extracted) interior alias of a parameter, a pure borrow-return —
+/// from an EMBED — a fresh OWNED container that merely shares a borrowed element. Field-tracking
+/// classifies both as non-owned (a poly `Cons y ys` has no concrete key → `owned == false`), so
+/// `owned` alone cannot tell them apart; the structural shape can. Only a grab belongs in the
+/// PURE summary (which nulls the call's ownership so Auto-Drop stops freeing the borrowed result);
+/// an embed stays in the ELEM summary (the AX0912 double-free-of-shared-element guard).
+fn ret_is_bare_var(t: &Term) -> bool {
+    match t {
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(_))), _) => true,
+        Term::Ret(Rhs::Op(_), _) => false,
+        Term::Ret(Rhs::If(_, a, b), _) => ret_is_bare_var(a) && ret_is_bare_var(b),
+        Term::Ret(Rhs::Case(_, arms), _) => arms.iter().all(|(_, a)| ret_is_bare_var(a)),
+        Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => ret_is_bare_var(b),
+    }
+}
+
 /// Fixpoint over the call graph: a function returns a PURE interior alias of param `i` when
 /// its `ret` is an interior pointer (`owned == false`) that borrows `i` — which may flow
 /// through a call to another alias-returning function, so it iterates to a fixed point
@@ -438,15 +456,11 @@ fn compute_summaries(
                 f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, pure_mode, None,
             );
             let pure_borrowed = params_borrowed(&rv, f);
-            let params = if rv.owned {
+            let orig_pure = if rv.owned {
                 HashSet::new()
             } else {
                 pure_borrowed.clone()
             };
-            if sums.get(&f.name) != Some(&params) {
-                sums.insert(f.name.clone(), params);
-                changed = true;
-            }
             // ELEM-alias pass: field-tracking ON so a case-extracted borrowed ELEMENT is seen.
             // The params the return borrows ONLY under element-tracking (`P_elem − P_pure`) are
             // the ones shared via a CONSTRUCTOR embed (`take`: `Cons y …` embeds a borrowed
@@ -459,10 +473,40 @@ fn compute_summaries(
             let rve = run_fn(
                 f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, elem_mode, None,
             );
-            let elem_params: HashSet<usize> = params_borrowed(&rve, f)
-                .difference(&pure_borrowed)
-                .copied()
-                .collect();
+            let elem_full = params_borrowed(&rve, f);
+            // GRAB-VIA-CASE promotion: the track_fields-OFF pure pass cannot see a case-extracted
+            // field (`getName r = case r of R a b -> a`), so it classifies the bare-field return as
+            // a fresh OWNED value and records NO pure alias — core.rs then drops the call result,
+            // double-freeing the borrowed field (a verifier-blind UAF). Field-tracking (`rve`) sees
+            // the return IS a borrowed interior (`owned == false`); if the return is also
+            // structurally a bare var (a grab, not an embedding constructor) and the pure pass
+            // missed it, promote those borrows into the PURE summary. That makes
+            // `borrow_return_summary` null the call's ownership (no stray drop) AND lets the CHECK
+            // pass see the alias — closing the hole without touching the embed/AX0912 path. A
+            // SINGLE insert of the final pure set keeps the fixpoint monotone (two inserts would
+            // oscillate orig↔promoted and never converge).
+            let grab_via_case = !rve.owned
+                && orig_pure.is_empty()
+                && !elem_full.is_empty()
+                && ret_is_bare_var(&f.body);
+            let params = if grab_via_case {
+                elem_full.clone()
+            } else {
+                orig_pure
+            };
+            if sums.get(&f.name) != Some(&params) {
+                sums.insert(f.name.clone(), params.clone());
+                changed = true;
+            }
+            // Embed share (ELEM): the borrows a FRESH-container return carries that the pure
+            // relation does not. Non-grab: subtract the original pure set (`P_elem − P_pure`,
+            // unchanged). Grab: everything was promoted to pure → empty.
+            let elem_sub = if grab_via_case {
+                &elem_full
+            } else {
+                &pure_borrowed
+            };
+            let elem_params: HashSet<usize> = elem_full.difference(elem_sub).copied().collect();
             if elem.get(&f.name) != Some(&elem_params) {
                 elem.insert(f.name.clone(), elem_params);
                 changed = true;

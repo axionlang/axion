@@ -1546,6 +1546,37 @@ fn borrow_returning_function_runs_on_all_backends() {
 }
 
 #[test]
+fn grab_case_field_runs_on_all_backends() {
+    // The CASE-extraction twin of `borrow_returning_function`: `getName r = case r of R a b -> a`
+    // returns a heap field of its BORROWED argument BARE. `useBoth` calls it TWICE over the same
+    // `r`, so before the grab-via-case fix each call-result was (wrongly) classified owned and
+    // dropped → a verifier-blind double-free of the one field `a` on every native backend. The
+    // pure-summary now sees the bare case-extracted-field return as an interior alias, so the call
+    // is borrow-returning (no drop) and `main`'s deep-drop of the `R` frees `a` once. All three
+    // backends agree "foofoo"; ASan + LSan clean (sanitize.sh).
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("grab_case_field.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "grab_case_field should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "foofoo\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
 fn record_update_multi_field_runs_on_all_backends() {
     // Updating two non-adjacent heap fields yields a MULTI-ELEMENT skip set {0,2} — the
     // order-sensitive skip-destructor name must be sorted. Leak-free (sanitize.sh). = 2.
