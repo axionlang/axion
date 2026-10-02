@@ -241,6 +241,21 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
    lowering. REMAINING Step-3 work (follow-on commits): realize the tags in lowering so a reused
    grab is auto-copied (compiles soundly rather than merely rejected); the interprocedural liveness
    summary for the 29%; retire the `case_arms` decision branches; then the whole-corpus bridge.
+
+   **Auto-copy realization ATTEMPTED + found BLOCKED (not shipped).** Making the Integer grab-reuse
+   *compile* (CSE `getF r + getF r` → `let x = getF r in x + x`, or copy the 2nd result) removes the
+   double-free but leaves a LEAK: the record's Integer fields have no destructor owner
+   (`con_drop_slots` excludes `Integer` — re-adding it breaks `map getV`, see axion-drop-verifier),
+   so an un-extracted Integer sibling leaks, and the copy approach additionally leaves an un-dropped
+   field-alias the drop_slots-based verifier reads as a leak (AX0911 FP) — both verifier-blind.
+   Confirmed the sibling leak is PRE-EXISTING (a single-use extraction from a 2-Integer-field record
+   already LSan-leaks the unused field). And every `AX0913` violation is necessarily an Integer
+   field (String/`data` grabs are already borrow-returning → never violate), so the realization is
+   ENTIRELY blocked by the Integer-in-data ownership gap: auto-copy would only trade a double-free
+   for a leak, both unsound, so the `AX0913` REJECTION stands as the correct sound floor. The true
+   unlock for "compiles soundly" here is giving Integer fields a PER-SITE (move-vs-borrow)
+   destructor owner driven by the tags — Option B's core move-vs-copy rule with interprocedural
+   liveness (the deep lever) — NOT a local lowering patch. Deferred to that.
 3. **Interprocedural liveness summaries** — add the per-function "consumes vs borrows its container
    arg" summary so the taxed cases (P3, grab-reuse) get `MoveOut`/`ExplicitCopy` across call
    boundaries. Retire the `case_arms` *decision* branches as each is subsumed (keep the emit
