@@ -9361,10 +9361,40 @@ impl Elab<'_> {
                     // `tuple_discard_drops` left leaking (`firstOr xs = … (x, _) -> x`), plus the
                     // shell. Falls back to a plain shell `axion_free` when all heap slots are
                     // skipped (`emit_drop`).
-                    let skip: Vec<usize> = mentioned_slots.iter().copied().collect();
-                    self.tuple_skip_seeds
-                        .push((key.clone(), subs.len(), skip.clone()));
-                    b = Term::Drop(s.clone(), Some(key), skip, term_span(&b), Box::new(b));
+                    //
+                    // GUARD: only when the tuple mono-key is SEGMENTABLE (`tuple_elem_drops` Some).
+                    // A NESTED-tuple key (`tuple$tuple$String$String$…`) is ambiguous — its inner
+                    // arities are not encoded — so neither this skip-destructor nor `mentioned_slots`
+                    // can be computed, and an empty skip would deep-drop the WHOLE tuple, freeing a
+                    // field that escaped into the heap result (`useB t = case t of (a,b) -> a` over a
+                    // nested tuple → UAF). For that case shell-free the outer cell only: the escaping
+                    // field survives and any non-escaping heap siblings LEAK (sound — the documented
+                    // nested-tuple-in-tuple residual; a leak, never a double-free).
+                    if self.recinfo.tuple_elem_drops(&key, subs.len()).is_some() {
+                        let skip: Vec<usize> = mentioned_slots.iter().copied().collect();
+                        self.tuple_skip_seeds
+                            .push((key.clone(), subs.len(), skip.clone()));
+                        b = Term::Drop(s.clone(), Some(key), skip, term_span(&b), Box::new(b));
+                    } else {
+                        // Unparseable nested-tuple key. Only a MENTIONED field can escape into the
+                        // heap result (or flow into an inner `case`); a deep-drop of the whole tuple
+                        // would then free it → UAF. Shell-free only in that case (escaping field
+                        // survives, unclassifiable siblings LEAK — sound). With NO field mentioned
+                        // (all dead discards) the whole-tuple deep-drop is correct and frees the
+                        // nested inners, so keep it — no needless leak.
+                        let any_mentioned = subs.iter().any(|sp| {
+                            matches!(sp, CPat::Var(n)
+                                if term_mentions_any(&b, &HashSet::from([n.clone()])))
+                        });
+                        if any_mentioned {
+                            b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));
+                        } else {
+                            let ty = self.dty(s);
+                            let mut alias = HashSet::from([s.clone()]);
+                            self.collect_payload_aliases(&b, &mut alias);
+                            b = self.place_deep_drop(b, s, &ty, &alias);
+                        }
+                    }
                 } else if let (false, CPat::Tuple(subs)) = (deep_safe, &pat) {
                     b = self.tuple_discard_drops(b, subs, s);
                     b = Term::Drop(s.clone(), None, Vec::new(), term_span(&b), Box::new(b));

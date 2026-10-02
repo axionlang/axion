@@ -65,6 +65,7 @@ NATIVE=(
   axionc/tests/fixtures/field_alias_return.axi
   axionc/tests/fixtures/grab_case_field.axi
   axionc/tests/fixtures/tuple_cond_return_reuse.axi
+  axionc/tests/fixtures/nested_tuple_extract_escape.axi
   axionc/tests/fixtures/escape_local_borrow.axi
   axionc/tests/fixtures/case_extract_escape.axi
   axionc/tests/fixtures/land_cond_owned_temp.axi

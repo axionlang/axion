@@ -1597,7 +1597,38 @@ fn tuple_cond_return_reuse_runs_on_all_backends() {
             "tuple_cond_return_reuse should run ({backend:?}): {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "pqpq\n", "{backend:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "pqpq\n",
+            "{backend:?}"
+        );
+    }
+}
+
+#[test]
+fn nested_tuple_extract_escape_runs_on_all_backends() {
+    // SOUNDNESS lock: a heap field of a NESTED-tuple scrutinee that escapes into the arm's heap
+    // result (`useNT t = case t of (a,b) -> case a of (x,y) -> x`) previously lowered the outer
+    // `drop t` as a full deep drop that freed the inner tuple `a`, then the nested `case a` read
+    // freed `a` → a verifier-blind UAF (every native backend aborted). The unsegmentable
+    // nested-tuple key now triggers a shell-free of the outer cell, so the escaping field survives.
+    // All three backends agree "p" with no double-free (a conservative sibling leak remains — see
+    // the fixture header — so this is NOT in the LEAKFREE sanitize set, only ASan-gated).
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("nested_tuple_extract_escape.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "nested_tuple_extract_escape should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "p\n", "{backend:?}");
     }
 }
 
