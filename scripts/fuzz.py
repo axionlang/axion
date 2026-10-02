@@ -277,6 +277,53 @@ def gen_deep(rng):
     expr = f"sum (map sum (map mkRow (range 1 {n})))"
     return pre + "main :: IO ()\nmain = putStrLn (show (" + expr + "))\n"
 
+def gen_borrow_alias(rng):
+    """The conditional-owned-TEMP + borrowed-element reclamation family this arc closed. Two
+    classes `gen_cond_return` does NOT cover:
+      · MIXED `let x = if c then <fresh heap> else <borrowed param> in <consume x>` — `x` is owned
+        on one branch, a borrowed alias on the other (`normalize_mixed_cond_lets` copies the
+        non-owned arm so the temp reclaims; a regression leaks it → verify/ASan here). Over String
+        and Integer, both `let`-bound and the `f (if …)` consumed-sub-expression form.
+      · `baseName`/path-join over a BORROWED list element with NO '/' — `baseName` returns the whole
+        name, which must be an OWNED copy (prelude `baseAfter`), else the dropped result aliases the
+        borrowed element and double-frees against the list's deep-drop (the fff bulk-rename class).
+    Both branches of every conditional are exercised across seeds; all must be interp≡native and
+    ASan/LSan-clean."""
+    t = rng.randint(0, 4)
+    c = rng.randint(0, 1)               # drive the conditional down each arm
+    k = rng.randint(1, 9)
+    if t == 0:                          # mixed `let x = if` over String
+        return (f'pick :: Int -> String -> String\n'
+                f'pick c s = let x = if c > 0 then strAppend "a" "b" else s in strAppend x "!"\n'
+                f'main :: IO ()\nmain = putStrLn (pick {c} "s{k}")\n')
+    if t == 1:                          # mixed `let x = if` over Integer
+        return (f'pick :: Int -> Integer -> Integer\n'
+                f'pick c n = let x = if c > 0 then fromInt 10 + fromInt 20 else n in x + fromInt 1\n'
+                f'main :: IO ()\nmain = putStrLn (showInteger (pick {c} (fromInt {k})))\n')
+    if t == 2:                          # the consumed-sub-expression form `f (if … mixed …)`
+        return (f'pick :: Int -> String -> String\n'
+                f'pick c s = strAppend (if c > 0 then strAppend "x" "y" else s) "?"\n'
+                f'main :: IO ()\nmain = putStrLn (pick {c} "s{k}")\n')
+    if t == 3:                          # baseName over a borrowed list of no-'/' names (bnGo)
+        names = " ".join(f'"n{j}"' for j in range(rng.randint(1, 4)))
+        lst = "Nil"
+        for nm in reversed(names.split()):
+            lst = f"Cons {nm} ({lst})"
+        return (f'bnGo :: List String -> String\n'
+                f'bnGo xs = case xs of\n'
+                f'  Nil -> ""\n'
+                f'  Cons y ys -> strAppend (baseName y) (strAppend "\\n" (bnGo ys))\n'
+                f'sample :: List String\nsample = {lst}\n'
+                f'main :: IO ()\nmain = putStr (bnGo sample)\n')
+    # t == 4: baseName over names WITH a '/' (returns a fresh substr) — the other baseAfter arm
+    return (f'bnGo :: List String -> String\n'
+            f'bnGo xs = case xs of\n'
+            f'  Nil -> ""\n'
+            f'  Cons y ys -> strAppend (baseName y) (strAppend "\\n" (bnGo ys))\n'
+            f'sample :: List String\n'
+            f'sample = Cons (strAppend "d{k}/" "f{k}") (Cons "p/q" Nil)\n'
+            f'main :: IO ()\nmain = putStr (bnGo sample)\n')
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
@@ -285,11 +332,13 @@ def gen(rng):
         return gen_session(rng)         # full differential (interp supports sessions)
     if r < 0.38:
         return gen_array(rng)           # native-only
-    if r < 0.50:
+    if r < 0.46:
         return gen_cond_return(rng)     # call-site-ownership shapes (full differential)
-    if r < 0.62:
+    if r < 0.58:
+        return gen_borrow_alias(rng)    # conditional-owned-temp + baseName/borrowed-element shapes
+    if r < 0.68:
         return gen_bignum(rng)          # bignum reclamation (full differential + ASan/LSan)
-    if r < 0.70:
+    if r < 0.74:
         return gen_deep(rng)            # nested-container deep-drop (full differential)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
