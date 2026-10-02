@@ -1,11 +1,33 @@
 # Design plan — call-site ownership & reuse analysis (region-lite)
 
-**Status:** DESIGN (not yet implemented). This plan supersedes the piecemeal
-copy-normalization patched in during the pass(1) work (see
-[`../axionc/src/core.rs`](../axionc/src/core.rs) `normalize_alias_returns`) and the
-`putStrLn`-borrow / `runCapture`-stdin fixes — all four were the *same* question answered
-locally. Ground truth at design time (commit `a930c43`): `cargo test` verify 14 / run 223,
-oracle 298, sanitize 130/118, fuzzer 1/7/42 clean.
+**Status:** LARGELY IMPLEMENTED. R-1 (`ret_alias_summary`), R-2 (reuse-gated String
+call-site copy), R-3 (Integer copy via `axion_bignum_copy`), and R-5 (the per-type
+`axion_copy_<key>` deep-copier for concrete-mono-key `data` containers) all landed; the copy
+fires only on genuine reuse (`ret_alias ∩ reused`), so accumulators keep their zero-cost move.
+This plan superseded the piecemeal copy-normalization patched in during the pass(1) work (see
+[`../axionc/src/core.rs`](../axionc/src/core.rs) `normalize_alias_returns`). Ground truth at
+design time (commit `a930c43`): `cargo test` verify 14 / run 223, oracle 298, sanitize 130/118.
+
+**Addendum — grab-via-case (commit `6fcd93b`).** A sibling of the whole-value `ret_alias`
+relation: a record-field GETTER that extracts a heap field via `case` and returns it BARE
+(`getName r = case r of R a b -> a`) is a pure interior alias of its borrowed argument — the
+CASE twin of the Field-op `grab w = inner w`. The verifier's pure-alias summary ran with
+field-tracking OFF and so classified the bare-field return as fresh-owned → Auto-Drop dropped
+each call result → a verifier-BLIND double-free when a caller read it twice over the same
+record. Fixed in `verify::compute_summaries` by promoting a bare case-extracted-field return of
+a BORROWED scrutinee (`ret_is_bare_var` guard vs an EMBED `Cons y ys`) into the PURE summary, so
+the regions pass nulls the call's ownership. Zero copy, zero regressions. Fixture
+`grab_case_field.axi`.
+
+**Known residual — owned-alias-consumed-twice (P3).** `go t = strAppend (useT (pickT 0 t))
+(useT t)` where `pickT` returns `t` whole (a tuple `ret_alias`) and `go` then consumes BOTH the
+returned alias and `t` itself. `t` is a `Many` param `go` actually consumes — neither a
+`borrowed_param` (so the DropOfAlias net misses it) nor owned-and-killable in the verifier's
+state — so the double-free is verifier-blind. The reuse-copy WANTS to fire but the type is a
+tuple (no `CopyKind` → R-5 tuple copier not yet generated), so `normalize_alias_returns`
+silently fails-closed. This needs the deeper call-site ownership model (track that a consumed
+alias frees the shared storage of a `Many`-param source); a local patch does not catch it
+soundly. Deferred.
 
 ## 1. The one question we keep answering
 
