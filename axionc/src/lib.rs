@@ -764,6 +764,45 @@ pub fn run_cli() -> ExitCode {
             }
             return ExitCode::FAILURE;
         }
+        // Tag-checker gate (docs/safety-model-spike.md, Step 3): the ExtractOp ownership tags,
+        // now ENFORCED alongside AX0910. From the TYPE-based tags it catches a double-free the
+        // drop_slots-gated verifier is BLIND to — the same container field extracted and freed
+        // 2+ times (the Integer grab-via-case reuse). 0-false-positive over the whole ASan-clean
+        // corpus (tests/tag_check.rs::tag_checker_zero_false_positives_over_corpus), so it only
+        // ever rejects a genuine double-free. `--no-verify` bypasses, like the other gates.
+        let tag_facts = core::classify_extractions(
+            &lowered.fns,
+            &module,
+            &lowered.recinfo,
+            &lowered.borrow_args,
+            &lowered.param_keys,
+        );
+        let tag_viol = core::tag_check(&lowered.fns, &tag_facts);
+        if !tag_viol.is_empty() {
+            for v in &tag_viol {
+                let d = Diagnostic::error(
+                    "AX0913",
+                    format!(
+                        "unsound reclamation: `{}` frees `{}`'s field (via `{}`) {} times",
+                        v.func, v.scrut, v.callee, v.count
+                    ),
+                )
+                .label(
+                    v.span.0,
+                    v.span.1,
+                    "the same heap field is extracted and freed more than once here",
+                )
+                .with_help(
+                    "the ownership-tag checker proved a heap field is extracted from the same \
+                     container and freed more than once — a double-free the drop-balance verifier \
+                     misses over Integer fields (it classifies such a getter's result as owned). \
+                     Fix: extract the field ONCE and reuse the binding (`let x = getF r in … x … x`), \
+                     or copy it explicitly. Pass --no-verify to emit anyway.",
+                );
+                eprint!("{}", d.render(&path, &src, &lines));
+            }
+            return ExitCode::FAILURE;
+        }
         // Leak gate (second hard guarantee): a heap resource Auto-Drop never frees. Gated
         // unless `--allow-leaks` (keeps corruption checking) or `--no-verify` (bypasses all).
         // Whitelisted synthetic sites (session/parmap `*$step`, polymorphic elements) are

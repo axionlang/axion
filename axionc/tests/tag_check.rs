@@ -6,7 +6,8 @@
 //!   · FAITHFUL — zero violations over the whole ASan-clean corpus (no false positives).
 //!   · STRICTLY STRONGER — it flags the Integer grab-via-case REUSE double-free that `--emit verify`
 //!     (AX0910) reports clean, while leaving the sound single-use / String / map-getter shapes alone.
-//! Non-gating; Step 3 flips it to the sole authority.
+//! Step 3 (first increment) ENFORCES it alongside AX0910: a tag-detected double-free aborts with
+//! AX0913 (see `gate_rejects_integer_grab_reuse`). The eventual flip makes it the sole authority.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::process::Command;
@@ -48,6 +49,32 @@ fn tag_checker_flags_integer_grab_reuse() {
         violations(src, "int_reuse") >= 1,
         "tag-checker must flag the Integer grab-via-case reuse double-free (AX0910 is blind to it)"
     );
+}
+
+/// GATE (Step 3): the tag-checker is ENFORCED on native builds — the Integer grab-via-case reuse
+/// is REJECTED with `AX0913` instead of silently miscompiling into a double-free. `--no-verify`
+/// bypasses (proving the gate is what protects). The sound twins still compile.
+#[test]
+fn gate_rejects_integer_grab_reuse() {
+    let src = "data R = R Integer Integer\n\
+               getF :: R -> Integer\n\
+               getF r = case r of\n  R a b -> a\n\
+               useBoth :: R -> Integer\n\
+               useBoth r = getF r + getF r\n\
+               main :: IO ()\n\
+               main = putStrLn (showInteger (useBoth (R (fromInt 3) (fromInt 4))))\n";
+    let path = std::env::temp_dir().join("axion_tagcheck_gate.axi");
+    std::fs::write(&path, src).unwrap();
+    let out = axionc()
+        .args(["--backend", "cranelift", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "the AX0913 gate must reject the Integer grab-via-case reuse"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("AX0913"), "rejection must carry AX0913: {err}");
 }
 
 /// SOUND SHAPES stay clean — the single-use and String-grab twins are ASan-clean, so the checker

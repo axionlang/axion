@@ -7684,6 +7684,8 @@ pub struct TagViolation {
     pub scrut: String,
     pub callee: String,
     pub count: usize,
+    /// the span of one of the offending drops, for the diagnostic anchor.
+    pub span: Span,
 }
 
 /// `f -> {param indices whose field f bare-returns as a BorrowRef}`, from the ExtractOp tags.
@@ -7727,15 +7729,16 @@ pub fn tag_check(fns: &[CoreFn], facts: &[ExtractFact]) -> Vec<TagViolation> {
         }
         // var → (scrutinee it borrows, callee); then tally DROPS per (scrutinee, callee).
         let mut borrows: HashMap<String, (String, String)> = HashMap::new();
-        let mut dropped: HashMap<(String, String), usize> = HashMap::new();
+        let mut dropped: HashMap<(String, String), (usize, Span)> = HashMap::new();
         tag_walk(&f.body, &borrow_ret, &mut borrows, &mut dropped);
-        for ((scrut, callee), count) in dropped {
+        for ((scrut, callee), (count, span)) in dropped {
             if count >= 2 {
                 out.push(TagViolation {
                     func: f.name.clone(),
                     scrut,
                     callee,
                     count,
+                    span,
                 });
             }
         }
@@ -7747,7 +7750,7 @@ fn tag_walk(
     t: &Term,
     borrow_ret: &HashMap<String, HashSet<usize>>,
     borrows: &mut HashMap<String, (String, String)>,
-    dropped: &mut HashMap<(String, String), usize>,
+    dropped: &mut HashMap<(String, String), (usize, Span)>,
 ) {
     match t {
         Term::Let(x, rhs, _, body) => {
@@ -7773,9 +7776,11 @@ fn tag_walk(
             }
             tag_walk(body, borrow_ret, borrows, dropped);
         }
-        Term::Drop(x, _, _, _, body) => {
+        Term::Drop(x, _, _, sp, body) => {
             if let Some(key) = borrows.get(x).cloned() {
-                *dropped.entry(key).or_default() += 1;
+                let e = dropped.entry(key).or_insert((0, *sp));
+                e.0 += 1;
+                e.1 = *sp;
             }
             tag_walk(body, borrow_ret, borrows, dropped);
         }

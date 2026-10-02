@@ -231,6 +231,16 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
    `--emit verify` reports clean** (strictly stronger — the drop_slots gate hid the Integer field;
    the type-based tags do not). Still non-gating. Remaining before the flip: realize the tags in
    lowering (so the checker can gate as the sole authority, Step 3).
+   **GATE LIVE (Step 3, first increment):** the tag-checker is now ENFORCED on native builds
+   alongside `AX0910` — a tag-detected double-free aborts with **`AX0913`** ("`useBoth` frees `r`'s
+   field (via `getF`) 2 times") instead of silently miscompiling. `--no-verify` bypasses. Safe
+   because it is 0-false-positive corpus-wide, so it rejects ONLY genuine double-frees: the Integer
+   grab-via-case reuse (the fuzzer-found verifier-blind bug) now fails to compile; every committed
+   fixture/example/run test still compiles and runs (full gauntlet green with the gate on). This is
+   reject-over-miscompile — the sound floor — WITHOUT yet retiring the re-derivation or changing
+   lowering. REMAINING Step-3 work (follow-on commits): realize the tags in lowering so a reused
+   grab is auto-copied (compiles soundly rather than merely rejected); the interprocedural liveness
+   summary for the 29%; retire the `case_arms` decision branches; then the whole-corpus bridge.
 3. **Interprocedural liveness summaries** — add the per-function "consumes vs borrows its container
    arg" summary so the taxed cases (P3, grab-reuse) get `MoveOut`/`ExplicitCopy` across call
    boundaries. Retire the `case_arms` *decision* branches as each is subsumed (keep the emit
