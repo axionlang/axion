@@ -324,6 +324,63 @@ def gen_borrow_alias(rng):
             f'sample = Cons (strAppend "d{k}/" "f{k}") (Cons "p/q" Nil)\n'
             f'main :: IO ()\nmain = putStr (bnGo sample)\n')
 
+def gen_tuple_reclaim(rng):
+    """The tuple / record-field reclamation family closed this arc (grab-via-case getters, tuple
+    `ret_alias` reuse, nested-tuple case-extraction escape). Each shape was a verifier-BLIND
+    double-free / UAF before its fix; all are now interp≡native and ASan/LSan-clean, so the
+    differential gate stays green while the RANDOMIZED variation (element type String/Integer,
+    which field, nesting) probes neighbouring untested shapes for the next hole."""
+    t = rng.randint(0, 3)
+    fi = rng.randint(0, 1)              # which field / tuple slot the getter returns
+    k = rng.randint(1, 9)
+    # NOTE: the grab-getter is STRING-only by design. The Integer twin (`data R = R Integer
+    # Integer; getF r = case r of R a b -> a; useBoth r = getF r + getF r`) is a KNOWN
+    # verifier-blind double-free (this fuzzer found it): Integer fields are excluded from
+    # `con_drop_slots` — reverted historically to dodge the `map getV` element-alias double-free —
+    # so they are not destructor-tracked, the grab-via-case promotion cannot fire for them, and the
+    # reused field is dropped twice. Closing it is the deferred Integer-in-data arc (re-adding
+    # Integer to drop_slots reopens `map getV`), so it is NOT emitted here — the generator stays
+    # SOUND so the CI gate remains a green regression gate. See axion-drop-verifier memory.
+    if t == 0:                          # grab-via-case GETTER returned bare, reused twice
+        return (f'data R = R String String\n'
+                f'getF :: R -> String\n'
+                f'getF r = case r of\n'
+                f'  R a b -> {"a" if fi == 0 else "b"}\n'
+                f'useBoth :: R -> String\n'
+                f'useBoth r = strAppend (getF r) (getF r)\n'
+                f'sample :: R\n'
+                f'sample = R (strAppend "f" "{k}") (strAppend "g" "{k}")\n'
+                f'main :: IO ()\nmain = putStrLn (useBoth sample)\n')
+    if t == 1:                          # tuple `ret_alias` reuse (pickT returns `t`; go reuses it)
+        c = rng.randint(0, 1)
+        return (f'useT :: (String, String) -> String\n'
+                f'useT t = case t of\n'
+                f'  (a, b) -> strAppend a b\n'
+                f'pickT :: Int -> (String, String) -> (String, String)\n'
+                f'pickT c t = if c > 0 then (strAppend "x" "y", strAppend "z" "w") else t\n'
+                f'go :: (String, String) -> String\n'
+                f'go t = strAppend (useT (pickT {c} t)) (useT t)\n'
+                f'main :: IO ()\n'
+                f'main = putStrLn (go (strAppend "p" "{k}", strAppend "q" "{k}"))\n')
+    if t == 2:                          # NESTED-tuple extraction escape (return a deep field)
+        return (f'useNT :: ((String, String), (String, String)) -> String\n'
+                f'useNT t = case t of\n'
+                f'  (a, b) -> case {"a" if fi == 0 else "b"} of\n'
+                f'    (x, y) -> x\n'
+                f'main :: IO ()\n'
+                f'main = putStrLn (useNT ((strAppend "p" "{k}", "q"), (strAppend "r" "{k}", "s")))\n')
+    # t == 3: nested-tuple RETURN WHOLE inner, then consumed at the top level
+    return (f'useB :: ((String, String), (String, String)) -> (String, String)\n'
+            f'useB t = case t of\n'
+            f'  (a, b) -> {"a" if fi == 0 else "b"}\n'
+            f'showInner :: (String, String) -> String\n'
+            f'showInner p = case p of\n'
+            f'  (x, y) -> strAppend x y\n'
+            f'main :: IO ()\n'
+            f'main = putStrLn (showInner (useB '
+            f'((strAppend "p" "{k}", "q"), ("r", strAppend "s" "{k}"))))\n')
+
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
@@ -334,11 +391,13 @@ def gen(rng):
         return gen_array(rng)           # native-only
     if r < 0.46:
         return gen_cond_return(rng)     # call-site-ownership shapes (full differential)
-    if r < 0.58:
+    if r < 0.54:
         return gen_borrow_alias(rng)    # conditional-owned-temp + baseName/borrowed-element shapes
-    if r < 0.68:
+    if r < 0.62:
+        return gen_tuple_reclaim(rng)   # grab-via-case + tuple ret_alias reuse + nested extraction
+    if r < 0.70:
         return gen_bignum(rng)          # bignum reclamation (full differential + ASan/LSan)
-    if r < 0.74:
+    if r < 0.75:
         return gen_deep(rng)            # nested-container deep-drop (full differential)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
