@@ -584,7 +584,7 @@ pub fn run_cli() -> ExitCode {
             &lowered.borrow_args,
             &lowered.param_keys,
         );
-        let (mut mv, mut br, mut cp, mut ip) = (0usize, 0usize, 0usize, 0usize);
+        let (mut mv, mut br, mut cp, mut ip, mut rz) = (0usize, 0usize, 0usize, 0usize, 0usize);
         for ff in &facts {
             match ff.tag {
                 core::ExtractOp::MoveOut => mv += 1,
@@ -593,6 +593,9 @@ pub fn run_cli() -> ExitCode {
             }
             if ff.interproc {
                 ip += 1;
+                if ff.ba_resolvable {
+                    rz += 1;
+                }
             }
             println!(
                 "{}: {} {}.{} (slot {}){}",
@@ -602,7 +605,11 @@ pub fn run_cli() -> ExitCode {
                 ff.field,
                 ff.slot,
                 if ff.interproc {
-                    "  [needs-interproc]"
+                    if ff.ba_resolvable {
+                        "  [needs-interproc: resolvable by borrow-args]"
+                    } else {
+                        "  [needs-interproc: closure/builtin]"
+                    }
                 } else {
                     ""
                 }
@@ -610,8 +617,10 @@ pub fn run_cli() -> ExitCode {
         }
         println!(
             "extract-tags: {} extraction(s) — MoveOut {mv}, BorrowRef {br}, ExplicitCopy {cp}; \
-             {ip} hinge on a callee (need the interprocedural summary)",
-            facts.len()
+             {ip} hinge on a callee — of those {rz} are already resolvable by the existing \
+             borrow-args summary (deep lever = wiring), {} genuinely need more (closure/builtin)",
+            facts.len(),
+            ip - rz
         );
         return ExitCode::SUCCESS;
     }

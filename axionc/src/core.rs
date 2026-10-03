@@ -7398,6 +7398,11 @@ pub struct ExtractFact {
     /// the field IS the whole result of its function on this path (a grab) — so a `BorrowRef`
     /// here means the function returns a borrow of the scrutinee (the tag-based borrow-return).
     pub bare: bool,
+    /// (meaningful when `interproc`) every call the field escapes into is a `CallDirect` to a known
+    /// user function, so the existing `BorrowArgs` already decides borrow-vs-consume — the deep
+    /// lever can resolve this site by WIRING an existing fact, no new analysis. `false` ⇒ it escapes
+    /// into a closure/builtin and genuinely needs more.
+    pub ba_resolvable: bool,
 }
 
 /// Classify every `Con` heap-field extraction in the lowered module by the intra-procedural
@@ -7425,6 +7430,9 @@ pub fn classify_extractions(
             })
         })
         .collect();
+    // user function names, for the deep-lever interprocedural-resolvability measurement: a
+    // CallDirect to one of these has a `ba` borrow/consume verdict; a builtin/closure does not.
+    let fn_names: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
     let mut out = Vec::new();
     for f in fns {
         // generated destructors/copiers manage memory by hand — not Auto-Drop extractions.
@@ -7448,7 +7456,7 @@ pub fn classify_extractions(
             })
             .unwrap_or_default();
         extract_walk(
-            &f.body, &f.name, &field_tys, &pkey, recinfo, ba, &owned, &mut out,
+            &f.body, &f.name, &field_tys, &pkey, &fn_names, recinfo, ba, &owned, &mut out,
         );
     }
     out
@@ -7476,6 +7484,7 @@ fn extract_walk(
     func: &str,
     field_tys: &HashMap<String, Vec<Type>>,
     pkey: &HashMap<String, String>,
+    fn_names: &HashSet<String>,
     recinfo: &RecordInfo,
     ba: &BorrowArgs,
     owned: &HashSet<String>,
@@ -7483,13 +7492,19 @@ fn extract_walk(
 ) {
     match t {
         Term::Let(_, rhs, _, body) => {
-            extract_rhs(rhs, func, field_tys, pkey, recinfo, ba, owned, out);
-            extract_walk(body, func, field_tys, pkey, recinfo, ba, owned, out);
+            extract_rhs(
+                rhs, func, field_tys, pkey, fn_names, recinfo, ba, owned, out,
+            );
+            extract_walk(
+                body, func, field_tys, pkey, fn_names, recinfo, ba, owned, out,
+            );
         }
-        Term::Drop(_, _, _, _, body) => {
-            extract_walk(body, func, field_tys, pkey, recinfo, ba, owned, out)
-        }
-        Term::Ret(rhs, _) => extract_rhs(rhs, func, field_tys, pkey, recinfo, ba, owned, out),
+        Term::Drop(_, _, _, _, body) => extract_walk(
+            body, func, field_tys, pkey, fn_names, recinfo, ba, owned, out,
+        ),
+        Term::Ret(rhs, _) => extract_rhs(
+            rhs, func, field_tys, pkey, fn_names, recinfo, ba, owned, out,
+        ),
     }
 }
 
@@ -7505,6 +7520,7 @@ fn push_extract_fact(
     slot: usize,
     owned_scrut: bool,
     body: &Term,
+    fn_names: &HashSet<String>,
     ba: &BorrowArgs,
     out: &mut Vec<ExtractFact>,
 ) {
@@ -7526,6 +7542,7 @@ fn push_extract_fact(
         ExtractOp::ExplicitCopy // escapes a surviving container
     };
     let interproc = escapes && mentioned_in_call_arg(n, body);
+    let ba_resolvable = interproc && call_escape_ba_resolvable(n, body, fn_names);
     out.push(ExtractFact {
         func: func.to_string(),
         con: con.to_string(),
@@ -7535,6 +7552,7 @@ fn push_extract_fact(
         tag,
         interproc,
         bare,
+        ba_resolvable,
     });
 }
 
@@ -7544,6 +7562,7 @@ fn extract_rhs(
     func: &str,
     field_tys: &HashMap<String, Vec<Type>>,
     pkey: &HashMap<String, String>,
+    fn_names: &HashSet<String>,
     recinfo: &RecordInfo,
     ba: &BorrowArgs,
     owned: &HashSet<String>,
@@ -7552,8 +7571,8 @@ fn extract_rhs(
     match rhs {
         Rhs::Op(_) => {}
         Rhs::If(_, a, b) => {
-            extract_walk(a, func, field_tys, pkey, recinfo, ba, owned, out);
-            extract_walk(b, func, field_tys, pkey, recinfo, ba, owned, out);
+            extract_walk(a, func, field_tys, pkey, fn_names, recinfo, ba, owned, out);
+            extract_walk(b, func, field_tys, pkey, fn_names, recinfo, ba, owned, out);
         }
         Rhs::Case(scrut, arms) => {
             if let Atom::Var(s) = scrut {
@@ -7576,6 +7595,7 @@ fn extract_rhs(
                                             i,
                                             owned_scrut,
                                             body,
+                                            fn_names,
                                             ba,
                                             out,
                                         );
@@ -7610,6 +7630,7 @@ fn extract_rhs(
                                             i,
                                             owned_scrut,
                                             body,
+                                            fn_names,
                                             ba,
                                             out,
                                         );
@@ -7620,7 +7641,9 @@ fn extract_rhs(
                         _ => {}
                     }
                     // nested extractions inside the arm
-                    extract_walk(body, func, field_tys, pkey, recinfo, ba, owned, out);
+                    extract_walk(
+                        body, func, field_tys, pkey, fn_names, recinfo, ba, owned, out,
+                    );
                 }
             }
         }
@@ -7822,6 +7845,57 @@ fn mentioned_in_call_arg(v: &str, t: &Term) -> bool {
         Term::Drop(_, _, _, _, body) => mentioned_in_call_arg(v, body),
         Term::Ret(rhs, _) => rhs_has(v, rhs),
     }
+}
+
+/// Deep-lever measurement (docs/safety-model-spike.md, Step 3): is every call `v` escapes into a
+/// `CallDirect` to a KNOWN user function? Then the existing `BorrowArgs` (`ba`) already decides,
+/// per call, whether the callee BORROWS the arg (→ the field stays a borrow) or CONSUMES it (→ a
+/// genuine move/copy) — so the extraction's move-vs-copy fate is interprocedurally RESOLVED without
+/// a new analysis. `false` if `v` flows into a `CallClosure` (opaque) or a non-user callee (a
+/// builtin whose effect is in `op_delta_effect`, not `ba`) — those stay genuinely uncertain.
+fn call_escape_ba_resolvable(v: &str, t: &Term, fn_names: &HashSet<String>) -> bool {
+    // (any = v occurs in some call arg; ok = every such call is a known-user CallDirect)
+    fn op(v: &str, o: &Op, fns: &HashSet<String>, any: &mut bool, ok: &mut bool) {
+        let hit = |args: &[Atom]| args.iter().any(|a| matches!(a, Atom::Var(x) if x == v));
+        match o {
+            Op::CallDirect(g, args, _) if hit(args) => {
+                *any = true;
+                if !fns.contains(g) {
+                    *ok = false; // builtin / unknown callee — ba has no verdict
+                }
+            }
+            Op::CallClosure(_, args) if hit(args) => {
+                *any = true;
+                *ok = false; // opaque closure target
+            }
+            _ => {}
+        }
+    }
+    fn walk(v: &str, t: &Term, fns: &HashSet<String>, any: &mut bool, ok: &mut bool) {
+        let rhs = |r: &Rhs, any: &mut bool, ok: &mut bool| match r {
+            Rhs::Op(o) => op(v, o, fns, any, ok),
+            Rhs::If(_, a, b) => {
+                walk(v, a, fns, any, ok);
+                walk(v, b, fns, any, ok);
+            }
+            Rhs::Case(_, arms) => {
+                for (_, arm) in arms {
+                    walk(v, arm, fns, any, ok);
+                }
+            }
+        };
+        match t {
+            Term::Let(_, r, _, body) => {
+                rhs(r, any, ok);
+                walk(v, body, fns, any, ok);
+            }
+            Term::Drop(_, _, _, _, body) => walk(v, body, fns, any, ok),
+            Term::Ret(r, _) => rhs(r, any, ok),
+        }
+    }
+    let (mut any, mut ok) = (false, true);
+    walk(v, t, fn_names, &mut any, &mut ok);
+    any && ok
 }
 
 /// Reclaims a conditionally-escaping OWNED heap parameter in a tail-position

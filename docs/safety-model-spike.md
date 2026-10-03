@@ -275,6 +275,17 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
    arg" summary so the taxed cases (P3, grab-reuse) get `MoveOut`/`ExplicitCopy` across call
    boundaries. Retire the `case_arms` *decision* branches as each is subsumed (keep the emit
    mechanics). This is the bulk of the work and the real "deep lever."
+   **RIGHT-SIZED (read-only audit, `--emit extract-tags` + `ba_resolvable`):** the per-function
+   "consumes-vs-borrows-its-container-arg" summary this needs ALREADY EXISTS — it is `BorrowArgs`
+   (`compute_borrow_args`): a param index in the set = borrowed, absent = consumed. Measured over
+   the corpus: of the **262** sites that hinge on a callee, **225 (86%) are resolvable by that
+   existing `ba`** (the field escapes only into `CallDirect`s to known user fns); only **37 (14%)**
+   genuinely need more (a `CallClosure` target or a builtin, whose effect is in `op_delta_effect`
+   not `ba`). Combined with the 627 intra-confident sites, **852 of 889 (96%) of all extraction
+   sites are decidable from facts the compiler ALREADY computes** — so the deep lever is ~96%
+   *wiring* `ba` into the extraction tag + ~4% new closure/builtin-effect work, not a from-scratch
+   interprocedural analysis. Entry point for the implementation: consult `ba[callee][pos]` at an
+   escape-into-call site to fix the tag (callee borrows → `BorrowRef`; consumes → `MoveOut`/copy).
 4. **Whole-corpus faithfulness bridge in CI (§5)** — verdict-equivalence over fixtures + examples +
    fuzz, so the arc ends in a guarantee, not another round of whack-a-mole.
 
