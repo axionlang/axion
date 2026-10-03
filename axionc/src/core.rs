@@ -7532,17 +7532,25 @@ fn push_extract_fact(
     // consuming call. A grab out of a borrowed container is a borrow-return, not a copy.
     let bare = returns_var_bare(n, body);
     let embedded = embedded_in_builder(n, body);
+    // Deep lever (Step 3): consult the existing BorrowArgs for calls the field escapes into.
+    let call = escape_call_verdict(n, body, fn_names, ba);
     let tag = if !escapes {
         ExtractOp::BorrowRef
     } else if owned_scrut {
         ExtractOp::MoveOut // field moves out of the dying container
     } else if bare && !embedded {
         ExtractOp::BorrowRef // grab: caller's live container still owns it
+    } else if !embedded && call == EscapeCall::AllBorrow {
+        // escapes a LIVE (borrowed) container ONLY into callees that borrow it → still a borrow,
+        // the scrutinee's owner frees it once. (ba-wired, replacing the old blanket ExplicitCopy.)
+        ExtractOp::BorrowRef
     } else {
-        ExtractOp::ExplicitCopy // escapes a surviving container
+        ExtractOp::ExplicitCopy // escapes a surviving container (consumed / embedded / unresolvable)
     };
-    let interproc = escapes && mentioned_in_call_arg(n, body);
-    let ba_resolvable = interproc && call_escape_ba_resolvable(n, body, fn_names);
+    // "hinges on a callee" = escapes into some call; `ba_resolvable` = that hinge is decided by the
+    // existing BorrowArgs (AllBorrow/HasConsume), vs a closure/builtin that genuinely needs more.
+    let interproc = escapes && call != EscapeCall::None;
+    let ba_resolvable = matches!(call, EscapeCall::AllBorrow | EscapeCall::HasConsume);
     out.push(ExtractFact {
         func: func.to_string(),
         con: con.to_string(),
@@ -7822,80 +7830,102 @@ fn tag_walk(
     }
 }
 
-/// `true` if `v` appears as an argument of a direct/closure call anywhere in `t` — the escape whose
-/// move-vs-borrow nature depends on the callee (so an intra-procedural tag over it is a guess).
-fn mentioned_in_call_arg(v: &str, t: &Term) -> bool {
-    fn op_has(v: &str, op: &Op) -> bool {
-        let hit = |a: &Atom| matches!(a, Atom::Var(x) if x == v);
-        match op {
-            Op::CallDirect(_, args, _) => args.iter().any(hit),
-            Op::CallClosure(_, args) => args.iter().any(hit),
-            _ => false,
-        }
-    }
-    fn rhs_has(v: &str, rhs: &Rhs) -> bool {
-        match rhs {
-            Rhs::Op(op) => op_has(v, op),
-            Rhs::If(_, a, b) => mentioned_in_call_arg(v, a) || mentioned_in_call_arg(v, b),
-            Rhs::Case(_, arms) => arms.iter().any(|(_, a)| mentioned_in_call_arg(v, a)),
-        }
-    }
-    match t {
-        Term::Let(_, rhs, _, body) => rhs_has(v, rhs) || mentioned_in_call_arg(v, body),
-        Term::Drop(_, _, _, _, body) => mentioned_in_call_arg(v, body),
-        Term::Ret(rhs, _) => rhs_has(v, rhs),
-    }
+/// How a field `v` that escapes into CALLS is treated by those callees, via the existing
+/// `BorrowArgs` (docs/safety-model-spike.md, Step 3 — the deep lever is ~96% wiring THIS in):
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeCall {
+    /// `v` never appears in a call arg (it escapes, if at all, via return/embed only).
+    None,
+    /// every call `v` flows into is a `CallDirect` to a known user fn that BORROWS that position —
+    /// so the callee only reads `v`; it stays a borrow of the scrutinee.
+    AllBorrow,
+    /// resolvable, but at least one callee CONSUMES `v` at its position — a genuine move/copy.
+    HasConsume,
+    /// `v` flows into a `CallClosure` (opaque) or a builtin (effect in `op_delta_effect`, not `ba`)
+    /// — genuinely beyond what `ba` decides.
+    Unresolvable,
 }
 
-/// Deep-lever measurement (docs/safety-model-spike.md, Step 3): is every call `v` escapes into a
-/// `CallDirect` to a KNOWN user function? Then the existing `BorrowArgs` (`ba`) already decides,
-/// per call, whether the callee BORROWS the arg (→ the field stays a borrow) or CONSUMES it (→ a
-/// genuine move/copy) — so the extraction's move-vs-copy fate is interprocedurally RESOLVED without
-/// a new analysis. `false` if `v` flows into a `CallClosure` (opaque) or a non-user callee (a
-/// builtin whose effect is in `op_delta_effect`, not `ba`) — those stay genuinely uncertain.
-fn call_escape_ba_resolvable(v: &str, t: &Term, fn_names: &HashSet<String>) -> bool {
-    // (any = v occurs in some call arg; ok = every such call is a known-user CallDirect)
-    fn op(v: &str, o: &Op, fns: &HashSet<String>, any: &mut bool, ok: &mut bool) {
-        let hit = |args: &[Atom]| args.iter().any(|a| matches!(a, Atom::Var(x) if x == v));
+/// Classify how the callees `v` escapes into treat it, consulting `ba`.
+fn escape_call_verdict(
+    v: &str,
+    t: &Term,
+    fn_names: &HashSet<String>,
+    ba: &BorrowArgs,
+) -> EscapeCall {
+    // (any call escape seen, any unresolvable target, any consuming position)
+    let (mut any, mut unres, mut consume) = (false, false, false);
+    fn op(
+        v: &str,
+        o: &Op,
+        fns: &HashSet<String>,
+        ba: &BorrowArgs,
+        any: &mut bool,
+        unres: &mut bool,
+        consume: &mut bool,
+    ) {
         match o {
-            Op::CallDirect(g, args, _) if hit(args) => {
-                *any = true;
-                if !fns.contains(g) {
-                    *ok = false; // builtin / unknown callee — ba has no verdict
+            Op::CallDirect(g, args, _) => {
+                for (pos, a) in args.iter().enumerate() {
+                    if matches!(a, Atom::Var(x) if x == v) {
+                        *any = true;
+                        if !fns.contains(g) {
+                            *unres = true; // builtin / unknown callee — ba has no verdict
+                        } else if !ba.get(g).is_some_and(|s| s.contains(&pos)) {
+                            *consume = true; // known user fn that does NOT borrow this position
+                        }
+                    }
                 }
             }
-            Op::CallClosure(_, args) if hit(args) => {
-                *any = true;
-                *ok = false; // opaque closure target
+            Op::CallClosure(_, args) => {
+                if args.iter().any(|a| matches!(a, Atom::Var(x) if x == v)) {
+                    *any = true;
+                    *unres = true; // opaque closure target
+                }
             }
             _ => {}
         }
     }
-    fn walk(v: &str, t: &Term, fns: &HashSet<String>, any: &mut bool, ok: &mut bool) {
-        let rhs = |r: &Rhs, any: &mut bool, ok: &mut bool| match r {
-            Rhs::Op(o) => op(v, o, fns, any, ok),
+    fn walk(
+        v: &str,
+        t: &Term,
+        fns: &HashSet<String>,
+        ba: &BorrowArgs,
+        any: &mut bool,
+        unres: &mut bool,
+        consume: &mut bool,
+    ) {
+        let rhs = |r: &Rhs, any: &mut bool, unres: &mut bool, consume: &mut bool| match r {
+            Rhs::Op(o) => op(v, o, fns, ba, any, unres, consume),
             Rhs::If(_, a, b) => {
-                walk(v, a, fns, any, ok);
-                walk(v, b, fns, any, ok);
+                walk(v, a, fns, ba, any, unres, consume);
+                walk(v, b, fns, ba, any, unres, consume);
             }
             Rhs::Case(_, arms) => {
                 for (_, arm) in arms {
-                    walk(v, arm, fns, any, ok);
+                    walk(v, arm, fns, ba, any, unres, consume);
                 }
             }
         };
         match t {
             Term::Let(_, r, _, body) => {
-                rhs(r, any, ok);
-                walk(v, body, fns, any, ok);
+                rhs(r, any, unres, consume);
+                walk(v, body, fns, ba, any, unres, consume);
             }
-            Term::Drop(_, _, _, _, body) => walk(v, body, fns, any, ok),
-            Term::Ret(r, _) => rhs(r, any, ok),
+            Term::Drop(_, _, _, _, body) => walk(v, body, fns, ba, any, unres, consume),
+            Term::Ret(r, _) => rhs(r, any, unres, consume),
         }
     }
-    let (mut any, mut ok) = (false, true);
-    walk(v, t, fn_names, &mut any, &mut ok);
-    any && ok
+    walk(v, t, fn_names, ba, &mut any, &mut unres, &mut consume);
+    if !any {
+        EscapeCall::None
+    } else if unres {
+        EscapeCall::Unresolvable
+    } else if consume {
+        EscapeCall::HasConsume
+    } else {
+        EscapeCall::AllBorrow
+    }
 }
 
 /// Reclaims a conditionally-escaping OWNED heap parameter in a tail-position
