@@ -420,3 +420,21 @@ function; `Op::ty` = the `produces` of a let; the destructor keys are the
 the *control* heuristics (liveness/borrow/transfer/alias) with a judgment —
 the two halves of Auto-Drop become one proof, closing the plan's "High"
 completion item (§7 of memory-model-options.md).
+
+## 11. ExtractOp tags — the explicit-ownership-IR direction (docs/safety-model-spike.md)
+
+The reclamation DECISION for a heap-field `case`-extraction is being made explicit as a tag
+`ExtractOp ∈ {MoveOut, BorrowRef, ExplicitCopy}` (`core::classify_extractions`), so the verifier can
+eventually CHECK the tag rather than re-derive ownership (Step 3 of the spike; the decoupling that
+removes verifier blind spots). The tag is chosen by a container-liveness rule, and for the
+interprocedural case it consults the EXISTING `compute_borrow_args` (`BorrowArgs`) rather than a new
+analysis: `core::escape_call_verdict` classifies the callees a field escapes into as
+AllBorrow / HasConsume / Unresolvable (closure/builtin). As of commit 12b0989, **a non-bare field
+escape into callees that ALL borrow their position emits `BorrowRef`** (the scrutinee's owner frees
+it once) — replacing the previous blanket `ExplicitCopy` for that case. This is the first wired step;
+it is reporting/tag-only (consumed today by the `AX0913` tag-checker, which keys on BARE returns, so
+this non-bare refinement does not change `AX0913`). Audit: 852/889 (96%) of extraction sites are
+decidable from facts the compiler already computes (627 intra + 225 of the 262 callee-hinging via
+`ba`); only ~4% (closure/builtin) need new effect work. The behavior-changing move-vs-copy LOWERING
+that consumes these tags, and the flip of `AX0910` onto them, are the remaining Step-3 work (see the
+Phase A/B/C checklist in `safety-model-spike.md`).

@@ -286,8 +286,32 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
    *wiring* `ba` into the extraction tag + ~4% new closure/builtin-effect work, not a from-scratch
    interprocedural analysis. Entry point for the implementation: consult `ba[callee][pos]` at an
    escape-into-call site to fix the tag (callee borrows → `BorrowRef`; consumes → `MoveOut`/copy).
+   **DONE (12b0989):** `escape_call_verdict` wires `ba` in; a non-bare escape into all-borrowing
+   callees now emits `BorrowRef` (was blanket `ExplicitCopy`). Tag-only, `AX0913` unchanged.
+
+   **Pre-lever checklist — the behavior-changing lowering, when resumed (fresh session):**
+   - **Phase A — tag-driven lowering (parallel, assert-gated).** Make codegen/`insert_drops`
+     consume the `ExtractOp` tags (`MoveOut` → skip-destructor on the moved slot; `BorrowRef` →
+     null the drop; `ExplicitCopy` → the copier) WHILE keeping the six `case_arms` heuristics
+     running, and ASSERT the tag-driven decision equals the heuristic decision on every corpus
+     site (the "build in parallel, prove equal, then flip" migration, like the CST flip). Any
+     divergence is a finding to resolve before proceeding.
+   - **Phase B — retire the heuristics.** Once tag-driven lowering matches-or-improves the six
+     `case_arms` decision branches across the gauntlet, delete those *decision* branches (keep the
+     emit mechanics — skip-destructors, shell-free ordering, tuple-key arity), leaving the uniform
+     ba-driven rule as the sole decider.
+   - **Phase C — flip `AX0910` onto the tags.** Re-point the drop-balance verifier to CHECK the
+     `ExtractOp` tags' scope-validity exclusively (no re-derivation), achieving the decoupled
+     authority. The faithfulness bridge (§5, now whole-corpus) catches any model↔verifier
+     divergence this introduces — co-extend the Lean model (`AxionExtract.lean` is groundwork) so
+     the bridge stays faithful to the new tag judgment.
+   NOTE (the audit's honest reframing): Phases A–C deliver the soundness GUARANTEE + architectural
+   consolidation (one rule, verifier as sole authority, no blind spots) — NOT new expressiveness.
+   The 86% already compile; the 4% Integer-in-data can't be made sound (the con_drop_slots tension).
+   Decide that payoff is worth the churn before starting Phase A.
 4. **Whole-corpus faithfulness bridge in CI (§5)** — verdict-equivalence over fixtures + examples +
-   fuzz, so the arc ends in a guarantee, not another round of whack-a-mole.
+   fuzz, so the arc ends in a guarantee, not another round of whack-a-mole. **DONE (bcd5fb8)** —
+   widened to fixtures + examples + pass, 1279 functions model≡verifier, gated in CI.
 
 **Do not land further per-case fixes** meanwhile. The Integer-grab-reuse residual and the
 nested-`case` verifier-net gap are *symptoms*; fixing them one-by-one is Option C. They are subsumed
