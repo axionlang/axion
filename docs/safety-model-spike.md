@@ -296,6 +296,23 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
      running, and ASSERT the tag-driven decision equals the heuristic decision on every corpus
      site (the "build in parallel, prove equal, then flip" migration, like the CST flip). Any
      divergence is a finding to resolve before proceeding.
+     **STARTED — the assert-gate FOUND the tags are not yet decision-faithful (crucial result).**
+     `core::tag_lowering_check` + `--emit tag-lower-check` (read-only) check the first invariant: a
+     `BorrowRef` field must NOT be independently dropped by the lowering (the owner frees it).
+     Corpus result: **97 divergences** (285 files; heaviest in `lambda` 24, `typecheck` 19, plus the
+     HOF/element-extraction cases). ALL are tag-over-`BorrowRef`: the files are ASan+LSan-clean, so
+     the lowering is correct and the TAG is wrong — it labels an OWNED element (extracted from a
+     consumed container, merely *borrowed* by a callee, then correctly dropped) as a borrow. ROOT
+     CAUSE: the tags' owned-vs-borrowed determination (`classify_extractions`' `owned` set =
+     owned_params ∪ droppable_vars, plus the "callee borrows it ⇒ BorrowRef" refinement) diverges
+     from the ownership the lowering actually computes — a callee borrowing a value does NOT make
+     that value a borrow if its container is consumed. IMPLICATION: the earlier "deep lever is 96%
+     wiring" figure measured interprocedural *resolvability* (does `ba` decide borrow/consume), NOT
+     decision-*faithfulness*; the real Phase-A work is making the tag's ownership model match the
+     lowering (≈ re-deriving `case_arms`' ownership) BEFORE any tag can drive a drop. Do NOT flip
+     until `tag-lower-check` is 0 corpus-wide. The 12b0989 `ba`→`BorrowRef` refinement is inert
+     today (tag-only; `AX0913` keys on bare returns) and directionally right, but it is premature
+     until the owned-ness gate is faithful — it contributed some of the 97.
    - **Phase B — retire the heuristics.** Once tag-driven lowering matches-or-improves the six
      `case_arms` decision branches across the gauntlet, delete those *decision* branches (keep the
      emit mechanics — skip-destructors, shell-free ordering, tuple-key arity), leaving the uniform

@@ -7830,6 +7830,64 @@ fn tag_walk(
     }
 }
 
+// --- Phase A: tag-vs-lowering consistency (docs/safety-model-spike.md) -----------------------
+//
+// Before lowering is rewired to CONSUME the ExtractOp tags, prove the tags are FAITHFUL to what the
+// `case_arms` heuristics ALREADY emit — the "build in parallel, prove equal, then flip" migration.
+// Read-only, non-gating. First and cleanest invariant: a `BorrowRef` field is an alias of its
+// (live) container, so the owner frees it — the lowering must NOT drop the field independently. A
+// divergence means either the tag is wrong or the lowering double-frees; both are findings to
+// resolve before the flip. (MoveOut/ExplicitCopy consistency are later increments.)
+
+/// A tag the emitted reclamation does not match.
+#[derive(Debug, Clone)]
+pub struct TagLowerDivergence {
+    pub func: String,
+    pub field: String,
+    pub tag: ExtractOp,
+    pub reason: &'static str,
+}
+
+/// `true` if `t` contains a `Drop(v, …)` of `v`.
+fn body_drops_var(v: &str, t: &Term) -> bool {
+    match t {
+        Term::Drop(x, _, _, _, body) => x == v || body_drops_var(v, body),
+        Term::Let(_, rhs, _, body) => rhs_drops_var(v, rhs) || body_drops_var(v, body),
+        Term::Ret(rhs, _) => rhs_drops_var(v, rhs),
+    }
+}
+fn rhs_drops_var(v: &str, rhs: &Rhs) -> bool {
+    match rhs {
+        Rhs::Op(_) => false,
+        Rhs::If(_, a, b) => body_drops_var(v, a) || body_drops_var(v, b),
+        Rhs::Case(_, arms) => arms.iter().any(|(_, a)| body_drops_var(v, a)),
+    }
+}
+
+/// Phase A consistency check: every `BorrowRef`-tagged extraction's field must NOT be independently
+/// dropped in the emitted Core (the container's owner frees it). Empty ⇒ the `BorrowRef` tags agree
+/// with the current lowering — the green light to let the tag DRIVE this decision.
+pub fn tag_lowering_check(fns: &[CoreFn], facts: &[ExtractFact]) -> Vec<TagLowerDivergence> {
+    let by_name: HashMap<&str, &CoreFn> = fns.iter().map(|f| (f.name.as_str(), f)).collect();
+    let mut out = Vec::new();
+    for ff in facts {
+        if ff.tag != ExtractOp::BorrowRef {
+            continue;
+        }
+        if let Some(f) = by_name.get(ff.func.as_str()) {
+            if body_drops_var(&ff.field, &f.body) {
+                out.push(TagLowerDivergence {
+                    func: ff.func.clone(),
+                    field: ff.field.clone(),
+                    tag: ff.tag,
+                    reason: "BorrowRef field is independently dropped by the lowering",
+                });
+            }
+        }
+    }
+    out
+}
+
 /// How a field `v` that escapes into CALLS is treated by those callees, via the existing
 /// `BorrowArgs` (docs/safety-model-spike.md, Step 3 — the deep lever is ~96% wiring THIS in):
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -107,6 +107,7 @@ enum Emit {
     RetAlias,
     ExtractTags,
     TagCheck,
+    TagLowerCheck,
     Clif,
     Llvm,
 }
@@ -203,6 +204,7 @@ pub fn run_cli() -> ExitCode {
                     Some("ret-alias") => emit = Emit::RetAlias,
                     Some("extract-tags") => emit = Emit::ExtractTags,
                     Some("tag-check") => emit = Emit::TagCheck,
+                    Some("tag-lower-check") => emit = Emit::TagLowerCheck,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
@@ -655,6 +657,41 @@ pub fn run_cli() -> ExitCode {
             );
         }
         println!("tag-check: {} violation(s)", viol.len());
+        return ExitCode::SUCCESS;
+    }
+
+    if emit == Emit::TagLowerCheck {
+        // docs/safety-model-spike.md Phase A: prove the ExtractOp tags are FAITHFUL to what the
+        // `case_arms` lowering already emits, before letting the tags DRIVE lowering. Read-only.
+        // First invariant: a BorrowRef field is not independently dropped (the owner frees it).
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            fuse,
+        );
+        let facts = core::classify_extractions(
+            &lowered.fns,
+            &module,
+            &lowered.recinfo,
+            &lowered.borrow_args,
+            &lowered.param_keys,
+        );
+        let div = core::tag_lowering_check(&lowered.fns, &facts);
+        for d in &div {
+            println!(
+                "tag-lower divergence: {} `{}` tagged {} but {}",
+                d.func,
+                d.field,
+                d.tag.as_str(),
+                d.reason
+            );
+        }
+        println!("tag-lower-check: {} divergence(s)", div.len());
         return ExitCode::SUCCESS;
     }
 
