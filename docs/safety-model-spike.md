@@ -329,3 +329,37 @@ mitigation is at least §4 + §5 so the treadmill cannot ship a double-free.
 - Not a full Rust borrow checker — immutability means no mutation/aliasing-XOR reasoning; the only
   question is frees, which is why a *lighter* discipline can still be complete.
 - Not a rewrite of the backends or runtime — this is front-of-`core` ownership + the verifier.
+
+## 9. Related work — theoretical grounding
+
+Axión's model is not novel in kind; it sits on a published line, which is reassuring (we are
+wiring known theory, not inventing a calculus). Citations verified Oct 2026; use these names/venues.
+
+- **Uniqueness + linearity (the reason there need not be a blanket copy-tax).** Marshall, Vollmer,
+  Orchard, *Linearity and Uniqueness: An Entente Cordiale*, ESOP 2022
+  (`10.1007/978-3-030-99336-8_13`). And, closest to Option B's actual target — a unified
+  linearity/uniqueness/grading/ownership/**borrowing** framework — Orchard et al., *Functional
+  Ownership through Fractional Uniqueness* (arXiv 2310.18166). These frame Axión precisely:
+  **uniqueness + local borrowing gives zero-copy field access on immutable data** without a full
+  borrow checker — so the Integer-in-data "copy tax" is a *missing per-site owner*, not a law.
+- **Functional translation = our faithfulness bridge.** Ho & Protzenko, *Aeneas: Rust Verification
+  by Functional Translation*, ICFP 2022 (arXiv 2206.07185; recent work targets Lean). Translating
+  ownership/borrow state into a pure functional model makes memory reasoning structural — exactly
+  what `--emit model-trace → AxionDrop.acceptsL` does, which is why the whole-corpus bridge (§5) is
+  the right way to keep the real verifier honest.
+- **Pure, non-local borrowing in a functional language (the modern analog).** Matsushita & Ishii,
+  *Pure Borrow: Linear Haskell Meets Rust-Style Borrowing*, PLDI 2026 (`10.1145/3808259`). Its
+  history-based borrowing model + leak-freedom/confluence metatheory is the closest published
+  treatment of borrows that split/drop without signalling ownership back — relevant to the
+  interprocedural summary Step 3 needs. (It targets affine *mutable* refs in pure code, so the
+  borrowing metatheory transfers more than the exact use case.)
+- **Decoupling inference from verification (the echo-chamber fix).** Typed Assembly Language
+  (Morrisett, Walker, Crary, Glew) and Proof-Carrying Code (Necula & Lee): the compiler emits an
+  explicitly annotated IR and a *lightweight* downstream pass validates it against scope rules
+  without re-running the upstream inference. This is the pedigree for the `ExtractOp`-tags + `AX0910`
+  -checks-the-tags design (Phase C) — the verifier should check a proof, not re-derive ownership.
+
+Net framing for the docs and future readers: **Axión is uniqueness + local borrowing, lowered via a
+proof-carrying ownership IR (`ExtractOp`) and certified by a functional-model faithfulness bridge** —
+not a pure-affine system (which would force the copy tax) and not a Rust-style
+mutation/aliasing-XOR borrow checker.
