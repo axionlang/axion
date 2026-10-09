@@ -2227,29 +2227,32 @@ impl<'a> Infer<'a> {
         );
         // linear dense Array (§A): all ops on raw i64 Array pointers.
         let arra_ty = || Ty::Con("Array".into(), vec![Ty::Var(0)]);
-        // newArray :: Int -> Int -> Array a
+        // newArray :: Int -> a -> Array a  (element is `a`: Int or Float — flat scalars share the
+        // uniform i64 ABI, Float as its f64 bit pattern. A HEAP element would alias on `getArray`;
+        // that is the existing element-alias floor's concern, not a new hole — see the Array String
+        // guard fixture.)
         env.insert(
             "newArray".into(),
             Scheme {
                 vars: vec![0],
                 ty: Ty::Fun(
                     Box::new(int()),
-                    Box::new(Ty::Fun(Box::new(int()), Box::new(arra_ty()))),
+                    Box::new(Ty::Fun(Box::new(Ty::Var(0)), Box::new(arra_ty()))),
                 ),
             },
         );
-        // getArray :: Array a -> Int -> Int
+        // getArray :: Array a -> Int -> a
         env.insert(
             "getArray".into(),
             Scheme {
                 vars: vec![0],
                 ty: Ty::Fun(
                     Box::new(arra_ty()),
-                    Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(Ty::Var(0)))),
                 ),
             },
         );
-        // setArray :: Array a -> Int -> Int -> Array a
+        // setArray :: Array a -> Int -> a -> Array a
         env.insert(
             "setArray".into(),
             Scheme {
@@ -2258,7 +2261,7 @@ impl<'a> Infer<'a> {
                     Box::new(arra_ty()),
                     Box::new(Ty::Fun(
                         Box::new(int()),
-                        Box::new(Ty::Fun(Box::new(int()), Box::new(arra_ty()))),
+                        Box::new(Ty::Fun(Box::new(Ty::Var(0)), Box::new(arra_ty()))),
                     )),
                 ),
             },

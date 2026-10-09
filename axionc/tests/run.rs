@@ -3633,6 +3633,32 @@ fn array_threaded_through_helpers_reclaims_once() {
 }
 
 #[test]
+fn float_array_runs_natively() {
+    // Array Float (dense f64 through the uniform i64 array ABI): element-polymorphic
+    // newArray/getArray/setArray carry the f64 bit pattern. fillF owns+returns, dotF borrows;
+    // dot([1,2,3,4],[1,2,3,4]) = 30. Native-only (arrays are not in the interpreter). ASan/LSan
+    // gated separately in scripts/sanitize.sh.
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("float_array_dot.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "float_array_dot {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "30\n",
+            "float_array_dot {args:?}"
+        );
+    }
+}
+
+#[test]
 fn linear_buffer_inplace_runs_natively() {
     // %1 Buffer + in-place XOR (§5): the linear thread runs; encrypt consumes+returns.
     let out = axionc()

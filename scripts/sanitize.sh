@@ -111,6 +111,7 @@ NATIVE=(
   axionc/tests/fixtures/i8array_matvec.axi
   axionc/tests/fixtures/i8array_run.axi
   axionc/tests/fixtures/array_reduce.axi
+  axionc/tests/fixtures/float_array_dot.axi
   axionc/tests/fixtures/i8_reduce.axi
   axionc/tests/fixtures/i8_dot_i8.axi
   axionc/tests/fixtures/i32array_run.axi
@@ -199,7 +200,7 @@ LEAKFREE=(
   closure_foldl closure_record_elem closure_nested_list closure_alias_combiner closure_discard_combiner closure_heaplist_combiner
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_linear inplace_update native_case native_fib
-  nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec
+  nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec float_array_dot
   poly_payload_drop poly_payload_tco poly_payload_borrow_alias
   poly_payload_generic_drop poly_payload_generic_nested poly_payload_generic_compose poly_payload_gap
   land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned tuple_discard_owned tuple_elem_discard list_elem_borrow_reclaim list_integer_discard list_foldl_accum embed_param_consume filter_discard_reclaim tuple_field_borrow_reclaim tuple_nested_elem_reclaim stdlib_batch stdlib_batch2 stdlib_sortby stdlib_batch3 stdlib_unzip either_discard land_tuple_upd land_owned_poly land_cond_owned_temp basename_borrowed_elem grab_case_field tuple_cond_return_reuse nested_tuple_extract_escape
