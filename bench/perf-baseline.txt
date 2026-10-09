@@ -11,3 +11,4 @@ dot_i8 95
 ternmv 180
 i8mv 92
 i32mv 113
+gauss 984

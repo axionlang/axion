@@ -3,7 +3,9 @@
 # (Cranelift, no opt) and --release (LLVM -O2 -flto) — against C and Rust at -O0/-O2.
 # Kernels: fib (recursion/branches), loop (200M arithmetic iterations), alloc (40M
 # allocations — arena in Axion, malloc/Box in C/Rust), simd (vectorizable reduction;
-# Axion N/A — §4 to be built). Uses the SAME clang (LLVM) for C and for
+# Axion N/A — §4 to be built), gauss (dense f64 Gaussian elimination — Array Float throughput:
+# Axion's bounds-checked getArray/setArray rtcalls vs C/Rust raw indexing). Uses the SAME clang
+# (LLVM) for C and for
 # Axion --release, so the tier is comparable. Needs clang (AXION_CLANG
 # or on PATH; e.g. `nix shell nixpkgs#llvmPackages_18.clang`).
 #
@@ -91,7 +93,7 @@ bench_rust() {
   rustc -C opt-level=2 "bench/$k.rs" -o "$tmp/${k}_r2" 2>/dev/null && run "$k:r2" "$tmp/${k}_r2" || run "$k:r2" SKIP
 }
 
-KERNELS="fib loop alloc simd dispatch sumtype tritvec dot_i8 ternmv i8mv i32mv"
+KERNELS="fib loop alloc simd dispatch sumtype tritvec dot_i8 ternmv i8mv i32mv gauss"
 for k in $KERNELS; do bench_kernel "$k"; bench_c "$k"; bench_rust "$k"; done
 
 echo
