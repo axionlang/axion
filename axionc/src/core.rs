@@ -7542,24 +7542,25 @@ fn push_extract_fact(
     let embedded = embedded_in_builder(n, body);
     // Deep lever (Step 3): consult the existing BorrowArgs for calls the field escapes into.
     let call = escape_call_verdict(n, body, fn_names, ba);
-    // Container-liveness rule (Option B). OWNED scrutinee FIRST: a consumed container dies here, so
-    // a USED heap field MOVED OUT of it is now owned by this fn (`MoveOut`) — whether it then escapes
-    // or is merely borrowed-by-a-callee-and-dropped locally is the field's OWN lifetime, not the
-    // extraction. Checking `owned_scrut` before `!escapes` is the fix the tag-lower-check surfaced:
-    // `map$$getV`'s `y` is borrowed by `getV` then dropped (so `body_moves_var` is false), yet it is
-    // owned (the list was shell-freed), so it must be `MoveOut`, not `BorrowRef`.
-    let tag = if owned_scrut {
+    // Container-liveness rule (Option B). OWNED scrutinee FIRST, but only when the field is genuinely
+    // MOVED OUT: a consumed container dies here, so a field that escapes (`body_moves_var`) OR is
+    // reclaimed locally by its OWN drop (`body_drops_var` — e.g. `map$$getV`'s `y`, borrowed by `getV`
+    // then `drop y`, so `escapes` is false yet it is owned since the list was shell-freed) is now this
+    // fn's to own → `MoveOut`, and the container's drop skips its slot. A field of an owned container
+    // that is merely READ (`useTuple`'s `a`/`b` via the `v` getter) is NOT moved out — the container's
+    // deep drop frees it — so it falls through to `BorrowRef`. Both halves are what the MoveOut and
+    // BorrowRef tag-lower-checks verify against the lowering's skip-set.
+    // A field of a LIVE (borrowed) container stays a `BorrowRef` — the caller's container still owns
+    // it, its owner frees it once — in three shapes: (a) `!escapes`, a read-only alias; (b) a bare
+    // non-embedded grab, the caller's container owns the grabbed field; (c) it escapes ONLY into
+    // callees that borrow its position (`ba`-wired, replacing the old blanket `ExplicitCopy`).
+    // Otherwise it escapes a SURVIVING container (consumed / embedded / unresolvable) → `ExplicitCopy`.
+    let tag = if owned_scrut && (escapes || body_drops_var(n, body)) {
         ExtractOp::MoveOut
-    } else if !escapes {
-        ExtractOp::BorrowRef // read-only alias of a LIVE (borrowed) container
-    } else if bare && !embedded {
-        ExtractOp::BorrowRef // grab: caller's live container still owns it
-    } else if !embedded && call == EscapeCall::AllBorrow {
-        // escapes a LIVE (borrowed) container ONLY into callees that borrow it → still a borrow,
-        // the scrutinee's owner frees it once. (ba-wired, replacing the old blanket ExplicitCopy.)
+    } else if !escapes || (!embedded && (bare || call == EscapeCall::AllBorrow)) {
         ExtractOp::BorrowRef
     } else {
-        ExtractOp::ExplicitCopy // escapes a surviving container (consumed / embedded / unresolvable)
+        ExtractOp::ExplicitCopy
     };
     // "hinges on a callee" = escapes into some call; `ba_resolvable` = that hinge is decided by the
     // existing BorrowArgs (AllBorrow/HasConsume), vs a closure/builtin that genuinely needs more.
@@ -7605,9 +7606,23 @@ fn extract_rhs(
                             let tys = field_tys.get(con);
                             for (i, sub) in subs.iter().enumerate() {
                                 if let CPat::Var(n) = sub {
-                                    let is_heap = tys
-                                        .and_then(|t| t.get(i))
-                                        .is_some_and(|ty| field_ty_heap(ty, recinfo));
+                                    let is_heap = tys.and_then(|t| t.get(i)).is_some_and(|ty| {
+                                        // A POLYMORPHIC field (`Cons`'s `a`) is heap-or-not only
+                                        // once instantiated: resolve it through the scrutinee's mono
+                                        // key (`List$Int` → `Int`, scalar → not heap; `List$Integer`
+                                        // → `Integer`, heap). Unkeyed scrutinee ⇒ stay conservative
+                                        // (`Var → true`); a concrete field type ⇒ decide directly.
+                                        if matches!(ty, Type::Var(_)) {
+                                            match pkey.get(s) {
+                                                Some(k) => {
+                                                    recinfo.poly_field_elem_key(con, i, k).is_some()
+                                                }
+                                                None => true,
+                                            }
+                                        } else {
+                                            field_ty_heap(ty, recinfo)
+                                        }
+                                    });
                                     if is_heap {
                                         push_extract_fact(
                                             func,
@@ -7908,25 +7923,114 @@ fn rhs_drops_var(v: &str, rhs: &Rhs) -> bool {
     }
 }
 
-/// Phase A consistency check: every `BorrowRef`-tagged extraction's field must NOT be independently
-/// dropped in the emitted Core (the container's owner frees it). Empty ⇒ the `BorrowRef` tags agree
-/// with the current lowering — the green light to let the tag DRIVE this decision.
+/// `true` if the `con`-arm that binds `field` at `slot` (scrutinee `s`) deep-drops `s` without
+/// skipping `slot` — the MoveOut violation, scoped to the extraction's OWN arm. The scrutinee is a
+/// live binder in every sibling arm and is reclaimed DIFFERENTLY in each (shell where fields moved
+/// out, deep where none did), so a whole-body scan would false-positive on a sibling's deep drop
+/// (e.g. `Nil -> drop xs : List$Int`); only the arm that actually extracts the field is relevant.
+fn moveout_violation(s: &str, con: &str, field: &str, slot: usize, t: &Term) -> bool {
+    match t {
+        Term::Drop(_, _, _, _, body) => moveout_violation(s, con, field, slot, body),
+        Term::Let(_, rhs, _, body) => {
+            moveout_violation_rhs(s, con, field, slot, rhs)
+                || moveout_violation(s, con, field, slot, body)
+        }
+        Term::Ret(rhs, _) => moveout_violation_rhs(s, con, field, slot, rhs),
+    }
+}
+fn moveout_violation_rhs(s: &str, con: &str, field: &str, slot: usize, rhs: &Rhs) -> bool {
+    match rhs {
+        Rhs::Op(_) => false,
+        Rhs::If(_, a, b) => {
+            moveout_violation(s, con, field, slot, a) || moveout_violation(s, con, field, slot, b)
+        }
+        Rhs::Case(scrut, arms) => arms.iter().any(|(pat, body)| {
+            // The arm that binds `field` at `slot` of `con` on THIS scrutinee: check only its body.
+            let binds_field = match pat {
+                CPat::Con(c, subs) => {
+                    c == con && matches!(subs.get(slot), Some(CPat::Var(n)) if n == field)
+                }
+                CPat::Tuple(subs) => {
+                    con.starts_with("tuple")
+                        && matches!(subs.get(slot), Some(CPat::Var(n)) if n == field)
+                }
+                _ => false,
+            };
+            let is_extract_arm = matches!(scrut, Atom::Var(v) if v == s) && binds_field;
+            if is_extract_arm {
+                scrut_deep_drops_unskipped(s, slot, body)
+            } else {
+                moveout_violation(s, con, field, slot, body)
+            }
+        }),
+    }
+}
+
+/// `true` if `t` contains a DEEP `Drop(s, Some(_), skip)` of scrutinee `s` whose destructor does NOT
+/// skip `slot` — i.e. the container's drop FREES that field. Contradicts a `MoveOut` tag (the field
+/// was supposed to have left the container). A shell free (`key = None`) frees no slots, and a deep
+/// drop with `slot ∈ skip` spares it — both consistent, so neither is a violation.
+fn scrut_deep_drops_unskipped(s: &str, slot: usize, t: &Term) -> bool {
+    match t {
+        Term::Drop(x, key, skip, _, body) => {
+            (x == s && key.is_some() && !skip.contains(&slot))
+                || scrut_deep_drops_unskipped(s, slot, body)
+        }
+        Term::Let(_, rhs, _, body) => {
+            scrut_deep_drops_unskipped_rhs(s, slot, rhs)
+                || scrut_deep_drops_unskipped(s, slot, body)
+        }
+        Term::Ret(rhs, _) => scrut_deep_drops_unskipped_rhs(s, slot, rhs),
+    }
+}
+fn scrut_deep_drops_unskipped_rhs(s: &str, slot: usize, rhs: &Rhs) -> bool {
+    match rhs {
+        Rhs::Op(_) => false,
+        Rhs::If(_, a, b) => {
+            scrut_deep_drops_unskipped(s, slot, a) || scrut_deep_drops_unskipped(s, slot, b)
+        }
+        Rhs::Case(_, arms) => arms
+            .iter()
+            .any(|(_, a)| scrut_deep_drops_unskipped(s, slot, a)),
+    }
+}
+
+/// Phase A consistency check: the ExtractOp tags must agree with what the `case_arms` lowering
+/// already emits, per invariant. Empty ⇒ the checked tags are faithful — the green light to let the
+/// tag DRIVE this decision.
+///   · `BorrowRef`: the field must NOT be independently dropped (the container's owner frees it).
+///   · `MoveOut`: the container's drop must SHELL-free or SKIP the field's slot (the field left it);
+///     a deep drop that frees the slot contradicts the move-out.
+/// (`ExplicitCopy` consistency — a copy op is present — is the next increment.)
 pub fn tag_lowering_check(fns: &[CoreFn], facts: &[ExtractFact]) -> Vec<TagLowerDivergence> {
     let by_name: HashMap<&str, &CoreFn> = fns.iter().map(|f| (f.name.as_str(), f)).collect();
     let mut out = Vec::new();
     for ff in facts {
-        if ff.tag != ExtractOp::BorrowRef {
+        let Some(f) = by_name.get(ff.func.as_str()) else {
             continue;
-        }
-        if let Some(f) = by_name.get(ff.func.as_str()) {
-            if body_drops_var(&ff.field, &f.body) {
-                out.push(TagLowerDivergence {
-                    func: ff.func.clone(),
-                    field: ff.field.clone(),
-                    tag: ff.tag,
-                    reason: "BorrowRef field is independently dropped by the lowering",
-                });
+        };
+        match ff.tag {
+            ExtractOp::BorrowRef => {
+                if body_drops_var(&ff.field, &f.body) {
+                    out.push(TagLowerDivergence {
+                        func: ff.func.clone(),
+                        field: ff.field.clone(),
+                        tag: ff.tag,
+                        reason: "BorrowRef field is independently dropped by the lowering",
+                    });
+                }
             }
+            ExtractOp::MoveOut => {
+                if moveout_violation(&ff.scrut, &ff.con, &ff.field, ff.slot, &f.body) {
+                    out.push(TagLowerDivergence {
+                        func: ff.func.clone(),
+                        field: ff.field.clone(),
+                        tag: ff.tag,
+                        reason: "MoveOut field's slot is freed by the container's deep drop (not skipped)",
+                    });
+                }
+            }
+            ExtractOp::ExplicitCopy => {}
         }
     }
     out
@@ -7979,11 +8083,11 @@ fn escape_call_verdict(
                     }
                 }
             }
-            Op::CallClosure(_, args) => {
-                if args.iter().any(|a| matches!(a, Atom::Var(x) if x == v)) {
-                    *any = true;
-                    *unres = true; // opaque closure target
-                }
+            Op::CallClosure(_, args)
+                if args.iter().any(|a| matches!(a, Atom::Var(x) if x == v)) =>
+            {
+                *any = true;
+                *unres = true; // opaque closure target
             }
             _ => {}
         }

@@ -320,9 +320,22 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
      `owned_scrut → MoveOut` FIRST (before `!escapes`), because a USED field of a CONSUMED container
      moved out of it and is owned locally even when it is only borrowed-by-a-callee-then-dropped
      (`body_moves_var` false). Result: 97 → 0 BorrowRef divergences (285 files), `AX0913` unchanged
-     (still rejects the Integer grab-reuse), full gauntlet green. NOTE: `tag-lower-check` currently
-     verifies only the BorrowRef invariant; the MoveOut (container skips the slot) and ExplicitCopy
-     (a copy is present) consistency checks are the next increments before the flip to Phase B.
+     (still rejects the Integer grab-reuse), full gauntlet green.
+     **FIXED (2026-10-09) — the MoveOut invariant is now verified too, 0 corpus-wide (322 files).**
+     `tag_lowering_check` gained a MoveOut arm: a `MoveOut`-tagged field's scrutinee drop, IN THE ARM
+     THAT BINDS IT, must shell-free (`key = None`) or carry the field's slot in `skip{…}` — a deep
+     drop that frees the slot contradicts the move-out. Scoping to the extraction's own arm is
+     essential: the scrutinee is live in every sibling arm and is reclaimed differently per arm
+     (shell where fields moved out, deep where none did), so a whole-body scan false-positives on a
+     sibling's `Nil -> drop xs : List$T`. Surfaced two classifier corrections: (1) a POLYMORPHIC
+     `Con` field (`Cons`'s `a`) is heap-or-not only once instantiated — resolve it through the
+     scrutinee's mono key (`List$Int` → `Int`, scalar → not heap; `List$Integer` → `Integer`, heap),
+     mirroring the tuple branch, so `map$Int`'s `Int` element is no longer spuriously tagged; (2) the
+     `owned_scrut` arm now tags `MoveOut` ONLY when the field actually escapes (`body_moves_var`) or
+     is reclaimed locally by its own drop (`body_drops_var`) — a merely-READ field of an owned
+     container (`useTuple`'s `a`/`b` via a getter, freed by the container's deep drop) is `BorrowRef`,
+     not `MoveOut`. Both the BorrowRef and MoveOut invariants hold at 0/322; `AX0913` and the oracle
+     unchanged. NEXT before the flip: the ExplicitCopy (a copy op is present) consistency check.
    - **Phase B — retire the heuristics.** Once tag-driven lowering matches-or-improves the six
      `case_arms` decision branches across the gauntlet, delete those *decision* branches (keep the
      emit mechanics — skip-destructors, shell-free ordering, tuple-key arity), leaving the uniform
