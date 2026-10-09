@@ -3633,6 +3633,30 @@ fn array_threaded_through_helpers_reclaims_once() {
 }
 
 #[test]
+fn gauss_solver_runs_natively() {
+    // The numeric flagship: Gaussian elimination with partial pivoting over Array Float, solving
+    // a 3×3 system whose answer is (2, 3, -1). Prints the solution (honest f64 — the slight
+    // deviations are real elimination rounding, bit-identical across both native backends) then a
+    // residual self-check verdict `ok`. Native-only (arrays are not in the interpreter); ASan/LSan
+    // gated in scripts/sanitize.sh. Both backends must agree exactly.
+    let want = "2\n3.0000000000000004\n-0.9999999999999999\nok\n";
+    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
+        let out = axionc()
+            .args(&args)
+            .arg(example("gauss.axi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "gauss {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want, "gauss {args:?}");
+    }
+}
+
+#[test]
 fn float_array_runs_natively() {
     // Array Float (dense f64 through the uniform i64 array ABI): element-polymorphic
     // newArray/getArray/setArray carry the f64 bit pattern. fillF owns+returns, dotF borrows;
