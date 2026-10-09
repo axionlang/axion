@@ -335,7 +335,29 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
      is reclaimed locally by its own drop (`body_drops_var`) — a merely-READ field of an owned
      container (`useTuple`'s `a`/`b` via a getter, freed by the container's deep drop) is `BorrowRef`,
      not `MoveOut`. Both the BorrowRef and MoveOut invariants hold at 0/322; `AX0913` and the oracle
-     unchanged. NEXT before the flip: the ExplicitCopy (a copy op is present) consistency check.
+     unchanged.
+     **PHASE-A FAITHFULNESS COMPLETE (2026-10-09) — ExplicitCopy is discharged by the rejection
+     floors, NOT a copy-presence gate.** A measurement pass (copy-op present for each `ExplicitCopy`
+     field) found 19 "divergences" (BorrowRef + MoveOut still 0), all in generic stdlib list fns
+     (`filter`/`zipWith`/`findIndex`/`deleteBy`/`splitAt`/`tail`/`dropWhile`/`grabHead` …), every one
+     a list element (`Cons.y : a`) or tail (`Cons.ys : List a`) with no emitted copy. Investigating
+     them showed copy-presence is the WRONG invariant for `ExplicitCopy`: the tag means "a copy is
+     REQUIRED," and the lowering has TWO sound responses — emit the copy, OR **reject** the unsound
+     reuse (`AX0912` element-alias / `AX0913` tag double-free). Auto-copy is deliberately not the
+     default (Integer auto-copy proven unsound; the floor is rejection). `grabHead` is the proof: a
+     deliberate element-aliasing UAF whose `y` is correctly `ExplicitCopy` yet emits no copy because
+     it is `AX0912`-rejected at native — relabeling it `BorrowRef` to pass a copy-presence gate would
+     HIDE a real double-free. The remainder are polymorphic templates whose copy/move is deferred to
+     monomorphization (same honest under-coverage as unkeyed tuples). So a copy-presence → 0 gate is
+     satisfiable only by unsound auto-copy or cosmetic relabeling; neither is acceptable, and the
+     measurement code was reverted (tree stays at the clean MoveOut commit). The MEANINGFUL
+     `ExplicitCopy` invariant — every such field is copied, poly-deferred, or its reuse is caught by
+     `AX0912`/`AX0913`, never SILENTLY aliased into an uncaught double-free — is already discharged by
+     the existing `AX0912` floor + `AX0913` gate + the ASan/LSan corpus + the differential fuzzer.
+     Conclusion: Phase-A faithfulness is DONE. The two no-copy claims (BorrowRef, MoveOut) are
+     drop-structure-checkable and 0/322; the copy-required claim (ExplicitCopy) is carried by the
+     rejection floors. The next real decision is the **Phase B/C go/no-go** below (the §3 identity
+     call), not a third converge-to-0 check.
    - **Phase B — retire the heuristics.** Once tag-driven lowering matches-or-improves the six
      `case_arms` decision branches across the gauntlet, delete those *decision* branches (keep the
      emit mechanics — skip-destructors, shell-free ordering, tuple-key arity), leaving the uniform
