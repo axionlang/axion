@@ -7439,10 +7439,18 @@ pub fn classify_extractions(
         if f.name.starts_with("axion_") {
             continue;
         }
-        // a scrutinee is OWNED by this fn iff this fn reclaims it (a `%1` param or a droppable
-        // local producer); a borrowed param is not droppable → not owned.
+        // a scrutinee is OWNED by this fn iff this fn reclaims it (a `%1` param, a droppable local
+        // producer, OR — the fix the Phase-A tag-lower-check surfaced — a param DROPPED anywhere in
+        // the body). Mirrors `verify.rs::run_fn`'s owned set: dropping proves ownership. Without the
+        // dropped-param clause a specialized/lifted consumer (`map$$getV xs = case xs of Cons y ys
+        // -> drop xs; …`) whose list param is not in `owned_params` looked BORROWED, so its moved-out
+        // element `y` was mis-tagged `BorrowRef` while the lowering (correctly) owns-and-drops it.
         let mut owned: HashSet<String> = f.owned_params.iter().cloned().collect();
         owned.extend(droppable_vars(f, ba));
+        // "dropping proves ownership" for ANY var, not just params — a case-binder that is dropped
+        // (`case res of (st,i) -> … drop st; case st of St store sub …`) is owned, so the fields it
+        // yields moved out of it. (Params-only missed nested extractions like typecheck's `typeOf`.)
+        collect_dropped_vars(&f.body, &mut owned);
         // param name → its mono reclaim key (tuple scrutinee element types are recovered from this
         // via `tuple_elem_drops` — available now that tuple keys encode arity).
         let pkey: HashMap<String, String> = param_keys
@@ -7534,10 +7542,16 @@ fn push_extract_fact(
     let embedded = embedded_in_builder(n, body);
     // Deep lever (Step 3): consult the existing BorrowArgs for calls the field escapes into.
     let call = escape_call_verdict(n, body, fn_names, ba);
-    let tag = if !escapes {
-        ExtractOp::BorrowRef
-    } else if owned_scrut {
-        ExtractOp::MoveOut // field moves out of the dying container
+    // Container-liveness rule (Option B). OWNED scrutinee FIRST: a consumed container dies here, so
+    // a USED heap field MOVED OUT of it is now owned by this fn (`MoveOut`) — whether it then escapes
+    // or is merely borrowed-by-a-callee-and-dropped locally is the field's OWN lifetime, not the
+    // extraction. Checking `owned_scrut` before `!escapes` is the fix the tag-lower-check surfaced:
+    // `map$$getV`'s `y` is borrowed by `getV` then dropped (so `body_moves_var` is false), yet it is
+    // owned (the list was shell-freed), so it must be `MoveOut`, not `BorrowRef`.
+    let tag = if owned_scrut {
+        ExtractOp::MoveOut
+    } else if !escapes {
+        ExtractOp::BorrowRef // read-only alias of a LIVE (borrowed) container
     } else if bare && !embedded {
         ExtractOp::BorrowRef // grab: caller's live container still owns it
     } else if !embedded && call == EscapeCall::AllBorrow {
@@ -7846,6 +7860,36 @@ pub struct TagLowerDivergence {
     pub field: String,
     pub tag: ExtractOp,
     pub reason: &'static str,
+}
+
+/// Collect every var `Drop`ped anywhere in `t` — "dropping proves ownership" (mirrors
+/// `verify.rs::run_fn`'s owned set, generalized from params to all binders).
+fn collect_dropped_vars(t: &Term, out: &mut HashSet<String>) {
+    match t {
+        Term::Drop(x, _, _, _, body) => {
+            out.insert(x.clone());
+            collect_dropped_vars(body, out);
+        }
+        Term::Let(_, rhs, _, body) => {
+            collect_dropped_vars_rhs(rhs, out);
+            collect_dropped_vars(body, out);
+        }
+        Term::Ret(rhs, _) => collect_dropped_vars_rhs(rhs, out),
+    }
+}
+fn collect_dropped_vars_rhs(rhs: &Rhs, out: &mut HashSet<String>) {
+    match rhs {
+        Rhs::Op(_) => {}
+        Rhs::If(_, a, b) => {
+            collect_dropped_vars(a, out);
+            collect_dropped_vars(b, out);
+        }
+        Rhs::Case(_, arms) => {
+            for (_, a) in arms {
+                collect_dropped_vars(a, out);
+            }
+        }
+    }
 }
 
 /// `true` if `t` contains a `Drop(v, …)` of `v`.

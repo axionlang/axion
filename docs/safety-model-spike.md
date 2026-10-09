@@ -313,6 +313,16 @@ Sequencing, corrected for the §3 honesty points (note §4 is folded into Step 1
      until `tag-lower-check` is 0 corpus-wide. The 12b0989 `ba`→`BorrowRef` refinement is inert
      today (tag-only; `AX0913` keys on bare returns) and directionally right, but it is premature
      until the owned-ness gate is faithful — it contributed some of the 97.
+     **FIXED — `tag-lower-check` now 0 corpus-wide (BorrowRef invariant).** Two parts: (1) the
+     `owned` set now includes EVERY var dropped in the body (`collect_dropped_vars`), not just
+     params — "dropping proves ownership," mirroring `verify.rs::run_fn`, so a nested case-binder
+     (`case res of (st,i) -> drop st; case st of …`) is correctly owned; (2) the tag rule checks
+     `owned_scrut → MoveOut` FIRST (before `!escapes`), because a USED field of a CONSUMED container
+     moved out of it and is owned locally even when it is only borrowed-by-a-callee-then-dropped
+     (`body_moves_var` false). Result: 97 → 0 BorrowRef divergences (285 files), `AX0913` unchanged
+     (still rejects the Integer grab-reuse), full gauntlet green. NOTE: `tag-lower-check` currently
+     verifies only the BorrowRef invariant; the MoveOut (container skips the slot) and ExplicitCopy
+     (a copy is present) consistency checks are the next increments before the flip to Phase B.
    - **Phase B — retire the heuristics.** Once tag-driven lowering matches-or-improves the six
      `case_arms` decision branches across the gauntlet, delete those *decision* branches (keep the
      emit mechanics — skip-destructors, shell-free ordering, tuple-key arity), leaving the uniform
