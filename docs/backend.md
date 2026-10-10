@@ -276,6 +276,18 @@ passes), and reclaiming them would be unsafe or would require a design decision:
    case. Reclaiming requires an escape analysis over the closure (like the borrowed
    arguments one, `BorrowArgs`).
 
+3. **`Integer` (bignum) fields of `data`/record types:** `con_drop_slots` excludes
+   `Integer` (it includes `String` and nested `data`), so a type's destructor does
+   **not** free a boxed `Integer` field. If a container is dropped without that field
+   being extracted, the bignum leaks, and `AX0911` does not report it. This is a
+   deliberate conservative choice: reclaiming it would double-free the field in the
+   common *extract-and-escape* shape (`getV r = rv r`; `map getV`) — the
+   partial-consumer-over-a-heap-element class. The sound fix is a per-field move-out
+   (which would also let `String` fields be consumed-and-returned, a limitation they
+   share today); that is the interprocedural partial-consumer work. Adding `Integer`
+   to the slots instead turns the extract-and-escape shape into a sound AX0910
+   *rejection* — consistent with `String`, but an expressiveness regression (not shipped).
+
 Minor (rare): a heap object bound to the result of an `if`/`case` (rather than a
 direct `Make*`/call) gets a flat `free` — if nested, it leaks the inner one; and
 **tuples** that own heap don't have a destructor yet (deep-drop covers `data`

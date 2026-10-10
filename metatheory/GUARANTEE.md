@@ -134,6 +134,19 @@ and well-mitigated this list is.
 - **Conservative leaks** (`verify::leak_gates` whitelist): session/parmap `*$step` and some polymorphic
   elements are known-conservative leaks Auto-Drop does not reclaim. These are the "except" in clause (4);
   they are safe (no corruption) and characterized, not unbounded.
+- **`Integer` (bignum) fields of `data`/record types** (`con_drop_slots`, `core.rs`): a boxed `Integer`
+  stored in a record/constructor field is **not** freed by that type's destructor, so if the container is
+  dropped *without* the field being extracted, the bignum leaks — and the verifier does **not** report it
+  (`AX0911` is blind to this class). `String` fields, by contrast, **are** reclaimed. The asymmetry is a
+  deliberate conservative choice: reclaiming the `Integer` field would make `drop`-and-the-destructor
+  double-free it in the common *extract-and-escape* shape (`getV r = rv r`; `map getV`), the
+  partial-consumer-over-a-heap-element class ([[axion-partial-consumer-uaf]]). The sound fix (a per-field
+  move-out that lets the destructor skip an extracted field — which would also lift the same limitation on
+  `String` fields) is the interprocedural partial-consumer work (roadmap §6); until then this is a
+  **characterized, corruption-free leak**, not a hole in the hard (no-corruption) guarantee. Investigated
+  2026-10-10: the naive reclaim (add `Integer` to `con_drop_slots`) fixes the leak but turns the
+  extract-and-escape shape into a sound **AX0910 rejection** (consistent with how `String` already behaves)
+  — an expressiveness regression, not shipped.
 - **Concurrency T1/T3/T5 value-level** (separation logic / Iris-Actris): the deadlock/fidelity/cancellation
   results are proven at the **graph/type** level (`AxionSession`, `AxionFidelity`); the value-level
   subject-reduction and memory-orphan claims are **deferred** (stated in `docs/phase-3-calculus.md` §6,
