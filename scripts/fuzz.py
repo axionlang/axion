@@ -176,16 +176,39 @@ def gen_session_offer(rng):
     return data + worker + client
 
 def gen_array(rng):
-    # functional Array combinators (native heap resource): each term reduces to Int, so a
-    # sum of them prints and exercises Array allocation + reclamation (axion_array_free).
-    terms = []
-    for _ in range(rng.randint(1, 4)):
-        k = rng.randint(1, 12)
-        terms.append(rng.choice([
-            f"arraySum (arrayIota {k})",
-            f"arrayDot (arrayIota {k}) (arrayIota {k})",
-        ]))
-    return PREAMBLE + "\nmain :: Int\nmain = " + " + ".join(terms) + "\n"
+    # Dense Array reclamation (§A) — now FULL differential (the interpreter has arrays). Shapes:
+    #   (bulk)     arraySum/arrayDot over arrayIota: one native pass, owned result reclaimed once.
+    #   (threaded) newArray -> fillA (setArray consumes+returns; `let a = setArray a …` SHADOWING,
+    #              exercising the non-recursive-`let` path) -> sumA (borrowing getArray loop).
+    #   (grab)     fillA, then read one element back with getArray.
+    # Every shape reduces to Int -> prints, and must be interp == native + ASan/LSan-clean. The
+    # threaded/grab shapes stress newArray/setArray/getArray + reclaim-once (one alloc, one free).
+    shape = rng.randint(0, 2)
+    if shape == 0:
+        terms = []
+        for _ in range(rng.randint(1, 4)):
+            k = rng.randint(1, 12)
+            terms.append(rng.choice([
+                f"arraySum (arrayIota {k})",
+                f"arrayDot (arrayIota {k}) (arrayIota {k})",
+            ]))
+        return PREAMBLE + "\nmain :: Int\nmain = " + " + ".join(terms) + "\n"
+    n = rng.randint(1, 20)
+    fillexpr = rng.choice(["i", "i + 1", "i * 2", "7", "n - i"])
+    helpers = (
+        "fillA :: Array Int -> Int -> Int -> Array Int\n"
+        f"fillA a i n = if i == n then a else let a = setArray a i ({fillexpr}) in fillA a (i + 1) n\n"
+        "sumA :: Array Int -> Int -> Int -> Int -> Int\n"
+        "sumA a i n acc = if i == n then acc else sumA a (i + 1) n (acc + getArray a i)\n"
+    )
+    if shape == 1:                                  # threaded fill + borrowing sum
+        main = (f"main :: Int\nmain = let a = newArray {n} 0 in "
+                f"let a = fillA a 0 {n} in sumA a 0 {n} 0\n")
+    else:                                           # fill then grab one element
+        idx = rng.randint(0, n - 1)
+        main = (f"main :: Int\nmain = let a = newArray {n} 0 in "
+                f"let a = fillA a 0 {n} in getArray a {idx}\n")
+    return PREAMBLE + "\n" + helpers + main
 
 def gen_cond_return(rng):
     """The conditional-param-return / dead-binding / multi-param-sum / caller-reuse family —
@@ -388,7 +411,7 @@ def gen(rng):
     if r < 0.26:
         return gen_session(rng)         # full differential (interp supports sessions)
     if r < 0.38:
-        return gen_array(rng)           # native-only
+        return gen_array(rng)           # full differential (interp now has arrays)
     if r < 0.46:
         return gen_cond_return(rng)     # call-site-ownership shapes (full differential)
     if r < 0.54:
@@ -442,7 +465,7 @@ CLANG_OK = run([CLANG, "--version"])[0] == 0
 
 def asan_run(src, work, oracle_out):
     """Compile --release + ASan/LSan and run. `oracle_out` is the interpreter's stdout to
-    compare against, or None for a native-only program (arrays: no interp oracle → skip the
+    compare against, or None for a native-only program (e.g. arenas: no interp oracle → skip the
     divergence check, only hunt corruption/leak)."""
     if not CLANG_OK:
         return ("ok", None)             # no clang → skip ASan (differential still ran)
@@ -469,8 +492,10 @@ def check(prog, work):
     src = work / "p.axi"
     src.write_text(prog)
     ri, oi, ei = run([AXIONC, str(src)])
-    # arrays are native-only (interp lacks arraySum/arrayIota → runtime "name not found");
-    # there is no interp oracle, so ASan-check the native build for corruption/leak only.
+    # genuinely native-only programs (e.g. arenas: interp lacks `withArena` → runtime "name not
+    # found") have no interp oracle, so ASan-check the native build for corruption/leak only. Array
+    # programs no longer land here — the interpreter runs them, so they take the full-differential
+    # path below.
     if "name not found at runtime" in (oi + ei):
         rc, oc, ec = run([AXIONC, "--backend", "cranelift", str(src)])
         if rc != 0:
