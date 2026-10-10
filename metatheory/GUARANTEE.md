@@ -126,11 +126,26 @@ and well-mitigated this list is.
   configuration is machine-enforceable rather than merely documented.
 - **`--allow-leaks`**: permits AX0911 leaks but **keeps** AX0910 corruption checking. Leaks are safe (no
   corruption), so this weakens only clause (4) of the claim. **`--certified` refuses it too** (M5).
-- **AX0912 native floor** (`lib.rs:468-503`, `heap_alias_violations`): an element-aliasing borrower
-  (`filter`/`take`/`head`/`last`) instantiated at a **heap** element type, and a nested-tuple poly-payload
-  the monomorphizer cannot lower, are **rejected for native emit**. This is **sound-by-construction** — a
-  clean rejection instead of a silent UAF, not a hole in the guarantee. The interpreter still runs them.
+- **AX0912 native floor** (`lib.rs`, `heap_alias_violations`): an element-aliasing borrower
+  (`filter`/`take`/`head`/`last`) instantiated at a **heap** element type, and any element-extracting
+  list consumer over a **tuple** element type (the nested-tuple poly-payload the monomorphizer cannot
+  lower), are **rejected for native emit**. This is **sound-by-construction** — a clean rejection
+  instead of a silent UAF/miscompile, not a hole in the guarantee. The interpreter still runs them.
   It is an *expressiveness* limit, not a safety one.
+  - *Precise boundary (validated 2026-10-10, `--no-verify` + ASan over a function×shape matrix; see
+    the `heap_alias_violations` comment).* The floor is load-bearing, not merely conservative:
+    forcing it off, `filter` over a tuple element genuinely **double-frees** (ASan-confirmed) and
+    `take`/`drop` hit a genuine monomorphizer hole (they **drop the caller**). But it also
+    **over-rejects**: full-consume rebuilders — `reverse`/`map`/`length` over a tuple element —
+    lower correctly and are ASan-clean, yet are refused (their elements escape via the result, so the
+    coarse `escaping` classifier flags them). A safe narrowing needs a view-vs-rebuild predicate that
+    also holds for user functions (the clean signature split fails — `reverse`/`take`/`drop` are all
+    `List a -> List a`, all `%1`), so a naive relaxation would ship a miscompile; the floor is kept
+    intact. The sound workaround is a **named `data` record element** instead of a bare `(K, V)`
+    tuple (e.g. `examples/json.axi`'s `data Member = Member String Json`); the real fix is to close
+    the monomorphizer residual (deep monomorphizer work, not a guard tweak). So: some *currently
+    rejected programs are in fact safe* (the rebuilders) — an honest expressiveness cost beyond the
+    strict minimum, bounded and worked-around, never a safety compromise.
 - **Conservative leaks** (`verify::leak_gates` whitelist): session/parmap `*$step` and some polymorphic
   elements are known-conservative leaks Auto-Drop does not reclaim. These are the "except" in clause (4);
   they are safe (no corruption) and characterized, not unbounded.
