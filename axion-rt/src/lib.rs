@@ -233,6 +233,13 @@ pub unsafe extern "C" fn axion_array_set(arr: i64, idx: i64, val: i64) -> i64 {
 pub unsafe extern "C" fn axion_array_len(arr: i64) -> i64 {
     blen(arr)
 }
+/// Out-of-bounds abort for the INLINED `getArray`/`setArray` codegen (the `--release` backend lowers
+/// the hot path to a bounds-checked `load`/`store` and calls this only on the cold failure branch,
+/// so the abort message stays identical to `axion_array_get`/`set`). Never returns.
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_oob(idx: i64, n: i64) -> ! {
+    bounds_abort("array", idx, n)
+}
 #[no_mangle]
 pub unsafe extern "C" fn axion_array_free(arr: i64) {
     libc::free(arr as *mut libc::c_void);

@@ -90,6 +90,7 @@ declare i64 @axion_array_get(i64, i64)
 declare i64 @axion_array_set(i64, i64, i64)
 declare i64 @axion_array_len(i64)
 declare void @axion_array_free(i64)
+declare void @axion_array_oob(i64, i64)
 declare i64 @axion_tritvec_new(i64, i64)
 declare i64 @axion_tritvec_get(i64, i64)
 declare i64 @axion_tritvec_set(i64, i64, i64)
@@ -609,6 +610,49 @@ impl Emit<'_> {
         self.ins(&format!("{g} = getelementptr i8, ptr {p}, i64 {off}"));
         self.ins(&format!("store i64 {val}, ptr {g}"));
     }
+    /// INLINE `getArray`/`setArray` (bench/perf: §array-unbox). The dense Array is `[i64 len][elems…]`
+    /// (axion_array_new), so an access is a bounds-checked `load`/`store` at `arr + 8 + idx*8` — the
+    /// SAME check and abort message as the runtime `axion_array_get`/`set`, but inline so LLVM can
+    /// CSE/hoist/register-cache/vectorize the hot numeric loops instead of seeing opaque `@PLT` calls.
+    /// `len` is clamped `>=0` at `new`, so `idx<0 || idx>=len` folds to one unsigned `icmp uge`. The
+    /// cold OOB branch calls `axion_array_oob` and is `unreachable` (noreturn), keeping the hot path
+    /// a straight load/store. Returns the loaded value (get). The element GEP is TYPED (`getelementptr
+    /// i64`) so the stride is explicit to the optimizer.
+    fn array_bounds_check(&mut self, arr: &str, idx: &str) {
+        let n = self.load(arr, 0); // length at offset 0
+        let oob = self.val();
+        self.ins(&format!("{oob} = icmp uge i64 {idx}, {n}"));
+        let lf = self.label("aoob");
+        let lo = self.label("aok");
+        self.ins(&format!("br i1 {oob}, label %{lf}, label %{lo}"));
+        self.block(&lf);
+        self.ins(&format!("call void @axion_array_oob(i64 {idx}, i64 {n})"));
+        self.ins("unreachable");
+        self.block(&lo);
+    }
+    /// element pointer `arr + 8 + idx*8`, as a typed `ptr` (stride 8 made explicit via `gep i64`).
+    fn array_elem_ptr(&mut self, arr: &str, idx: &str) -> String {
+        let ap = self.val();
+        self.ins(&format!("{ap} = inttoptr i64 {arr} to ptr"));
+        let dp = self.val();
+        self.ins(&format!("{dp} = getelementptr i8, ptr {ap}, i64 8"));
+        let ep = self.val();
+        self.ins(&format!("{ep} = getelementptr i64, ptr {dp}, i64 {idx}"));
+        ep
+    }
+    fn array_get_inline(&mut self, arr: &str, idx: &str) -> String {
+        self.array_bounds_check(arr, idx);
+        let ep = self.array_elem_ptr(arr, idx);
+        let v = self.val();
+        self.ins(&format!("{v} = load i64, ptr {ep}"));
+        v
+    }
+    fn array_set_inline(&mut self, arr: &str, idx: &str, val: &str) {
+        self.array_bounds_check(arr, idx);
+        let ep = self.array_elem_ptr(arr, idx);
+        self.ins(&format!("store i64 {val}, ptr {ep}"));
+    }
+
     /// Call to a runtime function (`ret` indicates whether it returns a value).
     fn rt(&mut self, name: &str, ret: bool, args: &[String]) -> String {
         let a = args
@@ -1192,6 +1236,17 @@ impl Emit<'_> {
                 let mv = self.atom(m)?;
                 self.rt("axion_arena_release", false, &[mv]);
                 Ok("0".into())
+            }
+            // Array element access: inline the bounds-checked load/store instead of an opaque
+            // runtime call, so LLVM can optimize the numeric loops (see `array_get_inline`).
+            Op::RtCall { func, args, .. } if func == "axion_array_get" => {
+                let vs = self.atoms(args)?;
+                Ok(self.array_get_inline(&vs[0], &vs[1]))
+            }
+            Op::RtCall { func, args, .. } if func == "axion_array_set" => {
+                let vs = self.atoms(args)?;
+                self.array_set_inline(&vs[0], &vs[1], &vs[2]);
+                Ok(vs[0].clone()) // setArray returns the (same) array handle
             }
             Op::RtCall {
                 func,
