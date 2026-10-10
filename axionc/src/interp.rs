@@ -72,6 +72,13 @@ enum Value {
         arity: usize,
         args: Vec<Value>,
     },
+    /// A dense linear `Array` (§A). `Rc<RefCell<…>>` models the native in-place semantics:
+    /// `setArray` mutates and returns the SAME handle, so threading the array linearly sees the
+    /// updates (O(1) per set, like the native backend — not an O(n) copy). Elements are `Value`s
+    /// (so `Array Float` holds `Value::Float`, `Array Int` holds `Value::Int`), unlike the native
+    /// i64-bit-pattern representation. The linear type system forbids aliasing, so the shared `Rc`
+    /// is never observed as a stale copy by a valid program.
+    Array(Rc<RefCell<Vec<Value>>>),
     /// A session endpoint (§6): the id of its buffer in the scheduler (§11).
     Endpoint(usize),
     /// An unresolved typeclass method: on receiving the 1st argument, it dispatches
@@ -256,6 +263,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Io(_) => "IO",
         Value::Tuple(_) => "tuple",
         Value::Record { .. } => "record",
+        Value::Array(_) => "Array",
         Value::Endpoint(_) => "endpoint",
         Value::Closure { .. }
         | Value::Builtin { .. }
@@ -281,9 +289,10 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "substr" => 3,
+        "substr" | "setArray" => 3,
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
-        | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" => 2,
+        | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
+        | "getArray" | "arrayDot" => 2,
         _ => 1,
     }
 }
@@ -517,16 +526,30 @@ fn eval(prog: &Program, env: &Env, e: &Expr) -> Result<Value, RunError> {
         }
         Expr::Let(binds, body, _) => {
             let child = child_env(env);
-            bind_funcs(binds, &child);
-            // Axión is STRICT (matching the native backends): force every 0-arg (CAF) binding
-            // eagerly, in source order, so an UNUSED effectful binding (`let _ = writeFile …`)
-            // still runs — the interpreter's laziness otherwise silently skips it, a real
-            // backend divergence (native evaluates every `let`). Any stdout it emits is
-            // written to the sink during the force (in order), so no explicit sequencing of
-            // an `Io` value is needed. Function bindings (arity > 0) are inert closures.
+            // Function bindings (arity > 0) are recursive closures capturing `child`, so they can
+            // self- and mutually-recurse (and later bindings / the body can call them).
+            for b in binds {
+                if b.clauses.first().is_some_and(|c| !c.pats.is_empty()) {
+                    child.vars.borrow_mut().insert(
+                        b.name.clone(),
+                        Value::Closure {
+                            def: Rc::new(b.clone()),
+                            env: child.clone(),
+                            args: Vec::new(),
+                        },
+                    );
+                }
+            }
+            // Value bindings (arity 0) are NON-recursive — ANF semantics, matching the native
+            // `uniquify` pass ("the rhs is evaluated BEFORE `x` is bound"). Evaluate each RHS, in
+            // source order, BEFORE inserting its name, so a SHADOWING `let x = f x` resolves the `x`
+            // in its RHS to the OUTER binding, not itself — binding first (the old letrec behaviour)
+            // infinite-loops on the common `let a = step a …` threading idiom. Axión is STRICT, so
+            // forcing eagerly here also runs an unused effectful `let _ = writeFile …`, in order.
             for b in binds {
                 if b.clauses.first().is_some_and(|c| c.pats.is_empty()) {
-                    resolve_var(prog, &child, &b.name)?;
+                    let v = eval_body(prog, &child, &b.clauses[0].body)?;
+                    child.vars.borrow_mut().insert(b.name.clone(), v);
                 }
             }
             eval(prog, &child, body)
@@ -811,6 +834,40 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "split" => Ok(Value::Builtin {
             name: "split",
+            args: Vec::new(),
+        }),
+        // the imperative block (§5) is identity: `imperative e` = e.
+        "imperative" => Ok(Value::Builtin {
+            name: "imperative",
+            args: Vec::new(),
+        }),
+        // dense linear Array (§A): native-parity get/set/new + iota/sum/dot. Elements are `Value`s.
+        "newArray" => Ok(Value::Builtin {
+            name: "newArray",
+            args: Vec::new(),
+        }),
+        "getArray" => Ok(Value::Builtin {
+            name: "getArray",
+            args: Vec::new(),
+        }),
+        "setArray" => Ok(Value::Builtin {
+            name: "setArray",
+            args: Vec::new(),
+        }),
+        "lenArray" => Ok(Value::Builtin {
+            name: "lenArray",
+            args: Vec::new(),
+        }),
+        "arrayIota" => Ok(Value::Builtin {
+            name: "arrayIota",
+            args: Vec::new(),
+        }),
+        "arraySum" => Ok(Value::Builtin {
+            name: "arraySum",
+            args: Vec::new(),
+        }),
+        "arrayDot" => Ok(Value::Builtin {
+            name: "arrayDot",
             args: Vec::new(),
         }),
         "join" => Ok(Value::Builtin {
@@ -1578,6 +1635,62 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("sqrt", [Value::Float(f)]) => Ok(Value::Float(f.sqrt())),
         ("floor", [Value::Float(f)]) => Ok(Value::Float(f.floor())),
         ("abs", [Value::Float(f)]) => Ok(Value::Float(f.abs())),
+        // dense linear Array (§A). In-place via Rc<RefCell>: setArray mutates + returns the same
+        // handle. Bounds-checked like the native backend (OOB → the same message, as a runtime error
+        // — bounded-safe, no UB). `n < 0` clamps to 0 (matches axion_array_new).
+        ("newArray", [Value::Int(n), init]) => {
+            let len = (*n).max(0) as usize;
+            Ok(Value::Array(Rc::new(RefCell::new(vec![init.clone(); len]))))
+        }
+        ("getArray", [Value::Array(a), Value::Int(i)]) => {
+            let v = a.borrow();
+            match usize::try_from(*i).ok().and_then(|i| v.get(i)) {
+                Some(x) => Ok(x.clone()),
+                None => Err(format!(
+                    "axion: array bounds — index {i} out of range [0, {})",
+                    v.len()
+                )),
+            }
+        }
+        ("setArray", [Value::Array(a), Value::Int(i), val]) => {
+            let n = a.borrow().len();
+            match usize::try_from(*i).ok().filter(|&i| i < n) {
+                Some(i) => {
+                    a.borrow_mut()[i] = val.clone();
+                    Ok(Value::Array(a.clone())) // same handle (linear in-place update)
+                }
+                None => Err(format!(
+                    "axion: array bounds — index {i} out of range [0, {n})"
+                )),
+            }
+        }
+        ("imperative", [v]) => Ok(v.clone()),
+        ("lenArray", [Value::Array(a)]) => Ok(Value::Int(a.borrow().len() as i64)),
+        ("arrayIota", [Value::Int(n)]) => {
+            let len = (*n).max(0);
+            Ok(Value::Array(Rc::new(RefCell::new(
+                (0..len).map(Value::Int).collect(),
+            ))))
+        }
+        ("arraySum", [Value::Array(a)]) => {
+            let mut s = 0i64;
+            for e in a.borrow().iter() {
+                if let Value::Int(x) = e {
+                    s += x;
+                }
+            }
+            Ok(Value::Int(s))
+        }
+        ("arrayDot", [Value::Array(a), Value::Array(b)]) => {
+            let (a, b) = (a.borrow(), b.borrow());
+            let mut s = 0i64;
+            for (x, y) in a.iter().zip(b.iter()) {
+                if let (Value::Int(x), Value::Int(y)) = (x, y) {
+                    s += x * y;
+                }
+            }
+            Ok(Value::Int(s))
+        }
         (name, _) => Err(format!("builtin '{name}' received invalid arguments")),
     }
 }
@@ -1614,7 +1727,7 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
         Value::Str(_) => RtType::Str,
         Value::Unit => RtType::Unit,
         Value::Io(_) => RtType::Io,
-        Value::Record { .. } | Value::Tuple(_) => RtType::Record,
+        Value::Record { .. } | Value::Tuple(_) | Value::Array(_) => RtType::Record,
         Value::Closure { .. }
         | Value::Builtin { .. }
         | Value::Ctor { .. }

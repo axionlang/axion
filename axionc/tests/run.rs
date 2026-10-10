@@ -3612,10 +3612,10 @@ fn array_threaded_through_helpers_reclaims_once() {
     // BORROWS it (recursive read-only getArray loop). The fixpoint borrow analysis
     // + uniquify (let-shadowing) + single-var-case collapse (imperative-do) make it
     // reclaim exactly once — no double-free, no leak (ASan/LSan-gated separately).
-    // Both the `let`-shadowing and `imperative do` forms must give 4950 on both
-    // native backends.
+    // Both the `let`-shadowing and `imperative do` forms must give 4950 on all
+    // three backends (interp included, now that it has arrays + non-recursive `let`).
     for fx in ["array_thread_let.axi", "array_thread_do.axi"] {
-        for backend in [["--backend", "cranelift"], ["--release", ""]] {
+        for backend in [["", ""], ["--backend", "cranelift"], ["--release", ""]] {
             let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
             let out = axionc().args(&args).arg(fixture(fx)).output().unwrap();
             assert!(
@@ -3636,11 +3636,11 @@ fn array_threaded_through_helpers_reclaims_once() {
 fn gauss_solver_runs_natively() {
     // The numeric flagship: Gaussian elimination with partial pivoting over Array Float, solving
     // a 3×3 system whose answer is (2, 3, -1). Prints the solution (honest f64 — the slight
-    // deviations are real elimination rounding, bit-identical across both native backends) then a
-    // residual self-check verdict `ok`. Native-only (arrays are not in the interpreter); ASan/LSan
-    // gated in scripts/sanitize.sh. Both backends must agree exactly.
+    // deviations are real elimination rounding, bit-identical across all three backends) then a
+    // residual self-check verdict `ok`. Runs on ALL THREE backends (arrays are now in the
+    // interpreter too); ASan/LSan gated in scripts/sanitize.sh. All three must agree exactly.
     let want = "2\n3.0000000000000004\n-0.9999999999999999\nok\n";
-    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+    for backend in [["", ""], ["--backend", "cranelift"], ["--release", ""]] {
         let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
         let out = axionc()
             .args(&args)
@@ -3660,9 +3660,9 @@ fn gauss_solver_runs_natively() {
 fn float_array_runs_natively() {
     // Array Float (dense f64 through the uniform i64 array ABI): element-polymorphic
     // newArray/getArray/setArray carry the f64 bit pattern. fillF owns+returns, dotF borrows;
-    // dot([1,2,3,4],[1,2,3,4]) = 30. Native-only (arrays are not in the interpreter). ASan/LSan
+    // dot([1,2,3,4],[1,2,3,4]) = 30. All three backends (interp included) must agree; ASan/LSan
     // gated separately in scripts/sanitize.sh.
-    for backend in [["--backend", "cranelift"], ["--release", ""]] {
+    for backend in [["", ""], ["--backend", "cranelift"], ["--release", ""]] {
         let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
         let out = axionc()
             .args(&args)
