@@ -266,17 +266,13 @@ destructor vs. flat `free` via `needs_deep_drop`.
 Two categories leak **by conservative choice** — they are not corruption (ASan
 passes), and reclaiming them would be unsafe or would require a design decision:
 
-1. **Runtime C-strings** (`show`, `putStrLn`): the result of `show` is a
-   runtime-allocated string, but string literals are static. At the drop point
-   there is no way to tell them apart, so freeing uniformly would blow up on
-   literals. Reclaiming requires a `String` that marks heap vs. static.
-2. **Closures returned by a function:** the return may be a fresh closure
+1. **Closures returned by a function:** the return may be a fresh closure
    (`\k -> …`) **or** a borrowed closure parameter (`pick b f g = if b then f else
    g`). Treating the result as owned by the caller would double-free in the second
    case. Reclaiming requires an escape analysis over the closure (like the borrowed
    arguments one, `BorrowArgs`).
 
-3. **`Integer` (bignum) fields of `data`/record types:** `con_drop_slots` excludes
+2. **`Integer` (bignum) fields of `data`/record types:** `con_drop_slots` excludes
    `Integer` (it includes `String` and nested `data`), so a type's destructor does
    **not** free a boxed `Integer` field. If a container is dropped without that field
    being extracted, the bignum leaks, and `AX0911` does not report it. This is a
@@ -293,6 +289,13 @@ direct `Make*`/call) gets a flat `free` — if nested, it leaks the inner one; a
 **tuples** that own heap don't have a destructor yet (deep-drop covers `data`
 types).
 
-Already **reclaimed** (they were leaks, now closed): nested objects (deep-drop);
-positional sum-type constructions (`is_heap_alloc` now includes `MakeCon`); the
-closure passed to `withArena`; and the base of a by-copy `update`.
+Already **reclaimed** (they were leaks, now closed): **runtime C-strings** (`show`,
+`showInt`, `strAppend`, …) — a heap `String` carries a nonzero size header at offset
+−8 (`axion_alloc`) while a `.rodata` literal reads a zero header there (unaligned), so
+`axion_str_drop` frees heap strings and skips literals uniformly; the Auto-Drop pass
+reclaims `show`/`strcat` results like any other heap value (verified leak-free under
+LSan: direct, unused, conditional-fresh-or-literal, and list-of-results-then-dropped —
+the "String that marks heap vs. static" the old note called for is this header). Also:
+nested objects (deep-drop); positional sum-type constructions (`is_heap_alloc` now
+includes `MakeCon`); the closure passed to `withArena`; and the base of a by-copy
+`update`.
