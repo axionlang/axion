@@ -3001,6 +3001,17 @@ fn extracted_element_is_tuple(ty: &ast::Type) -> bool {
 ///     functions of the same shape — `escaping`) at a TUPLE element — the nested-tuple
 ///     poly-payload residual the monomorphizer cannot lower (it silently drops the caller).
 /// Returns `(function, call span)` for each. Empty ⇒ nothing to reject.
+///
+/// BOUNDARY (validated 2026-10-10, --no-verify + ASan over a function×shape matrix): the `escaping`
+/// arm OVER-rejects — full-consume rebuilders (`reverse`/`map`/`length` over a tuple element) lower
+/// CORRECTLY and are ASan-clean, yet are caught because `consumed_params` flags any fn whose element
+/// escapes via the result. They are rejected only conservatively; the sound workaround is a named
+/// `data` record element (e.g. `data Member = Member K V`) instead of a bare `(K, V)` tuple. The
+/// guard is NOT merely stale, though: `take`/`drop` genuinely hit the monomorphizer hole (drop the
+/// caller) and `filter` genuinely DOUBLE-FREES (ASan-confirmed) over a tuple element — so a naive
+/// relaxation would ship a miscompile. A safe narrowing needs a view-vs-rebuild predicate that also
+/// holds for USER functions (the risky part); the real fix is to close the monomorphizer residual.
+/// Kept intact deliberately. See docs/backend.md + the flagship finding in examples/json.axi.
 fn heap_alias_violations(
     module: &ast::Module,
     makecon_tys: &std::collections::HashMap<ast::Span, ast::Type>,
