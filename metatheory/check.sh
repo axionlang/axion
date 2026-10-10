@@ -7,13 +7,15 @@ cd "$(dirname "$0")"
 
 LEAN=(nix shell nixpkgs#lean4 --command lean)
 for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionExtract.lean AxionSession.lean AxionFidelity.lean; do
-  OUT="$("${LEAN[@]}" "$f" 2>&1)"
-  status=$?
-  echo "$OUT"
-  if [ $status -ne 0 ]; then
-    echo "FAIL: lean reported errors in $f" >&2
+  # `if ! OUT=…` so `set -e` does NOT abort the script on a lean/nix failure BEFORE we print the
+  # captured output — otherwise the real error (e.g. a nix fetch/eval failure) is swallowed and CI
+  # shows only a bare exit 1.
+  if ! OUT="$("${LEAN[@]}" "$f" 2>&1)"; then
+    echo "$OUT"
+    echo "FAIL: lean/nix errored on $f" >&2
     exit 1
   fi
+  echo "$OUT"
   if echo "$OUT" | grep -qi "sorryAx\|declaration uses 'sorry'"; then
     echo "FAIL: a proof in $f depends on sorry" >&2
     exit 1

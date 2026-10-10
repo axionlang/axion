@@ -18,9 +18,9 @@ jobs:
   prototype:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: cachix/install-nix-action@v27
+      - uses: cachix/install-nix-action@v30
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -47,7 +47,7 @@ jobs:
       run:
         working-directory: axionc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Pinned (not @stable): @stable silently drifts to the newest release, and on
       # 2026-08-30 it jumped to 1.98.0 whose new deny-by-default
       # `invalid_runtime_symbol_definitions` lint turned pre-existing code into a hard
@@ -73,8 +73,8 @@ jobs:
   differential:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v27
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v30
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -95,7 +95,7 @@ jobs:
   delta:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Snapshot oracle (132 fixtures, --emit core)
@@ -127,7 +127,7 @@ jobs:
   sanitize:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.98.0
       - name: Install clang
         run: sudo apt-get update && sudo apt-get install -y clang
@@ -151,7 +151,7 @@ jobs:
   behavioral:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.98.0
       # clang: the --release/LLVM backend + linking. gnupg: the throwaway keyring (ed25519,
       # %no-protection). qrencode: exercises `show -q`/`generate -q`'s REAL QR render path.
@@ -186,8 +186,8 @@ jobs:
   metatheory:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v27
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v30
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
