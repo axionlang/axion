@@ -5,7 +5,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-LEAN=(nix shell nixpkgs#lean4 --command lean)
+# PINNED lean4 (nixos-25.11 → Lean 4.25.0). The proofs are NOT forward-compatible across Lean minors
+# — Lean 4.34 changed `ite`/`Decidable` elaboration and deprecated `if_true`/`if_false`, which turns
+# `chk_correct` into a `sorryAx` and errors the build. Floating `nixpkgs#lean4` silently drifted CI to
+# a breaking Lean (the metatheory job failed while local was still on 4.29.1). Pinning keeps the gate
+# reproducible; bump the rev deliberately (and update the proofs) when moving Lean. Same pin in
+# exhaustive.sh and model-trace.sh.
+LEAN=(nix shell github:NixOS/nixpkgs/b6018f87da91d19d0ab4cf979885689b469cdd41#lean4 --command lean)
 for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionExtract.lean AxionSession.lean AxionFidelity.lean; do
   # `if ! OUT=…` so `set -e` does NOT abort the script on a lean/nix failure BEFORE we print the
   # captured output — otherwise the real error (e.g. a nix fetch/eval failure) is swallowed and CI

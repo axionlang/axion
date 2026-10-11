@@ -28,7 +28,7 @@ if [ ! -x "$AX" ]; then
   (cd "$repo/axionc" && cargo build)
   AX="$repo/axionc/target/debug/axionc"
 fi
-LEAN=(nix shell nixpkgs#lean4 --command lean)
+LEAN=(nix shell github:NixOS/nixpkgs/b6018f87da91d19d0ab4cf979885689b469cdd41#lean4 --command lean)
 
 work="$(mktemp -d)"
 gen="$work/gen.lean"

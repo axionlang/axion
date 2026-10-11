@@ -16,7 +16,7 @@ repo="$(cd "$here/.." && pwd)"
 
 AX="$repo/axionc/target/debug/axionc"
 [ -x "$AX" ] || (cd "$repo/axionc" && cargo build)
-LEAN=(nix shell nixpkgs#lean4 --command lean)
+LEAN=(nix shell github:NixOS/nixpkgs/b6018f87da91d19d0ab4cf979885689b469cdd41#lean4 --command lean)
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
