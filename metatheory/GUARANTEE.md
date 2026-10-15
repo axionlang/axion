@@ -162,6 +162,21 @@ and well-mitigated this list is.
   2026-10-10: the naive reclaim (add `Integer` to `con_drop_slots`) fixes the leak but turns the
   extract-and-escape shape into a sound **AX0910 rejection** (consistent with how `String` already behaves)
   — an expressiveness regression, not shipped.
+- **Owned `String` parameters reclaimed only in a tail-recursive accumulator** (`AXION_STRING_RECLAIM`,
+  default **off**, `core.rs` seeding of `reclaim_cond_escape`): an owned `String` *parameter* that is
+  rebuilt each step of a tail recursion — `go acc n = … go (strAppend acc …) …`, the shape behind a
+  `cmdLine`/search key accumulator — leaks its superseded intermediates, and the verifier does **not**
+  report it (`AX0911` blind, same class as the `Integer` field above). Enabling the reclaim fixes the
+  accumulator leak **but** makes a function that receives a **borrowed container element** as a `String`
+  param (`work` borrows a `List String`, passes each element to a `consume`; the `axpass show` fzf path)
+  free that borrowed element → a double-free the verifier then correctly **AX0910-rejects**
+  (`axionc/tests/fixtures/borrowed_list_elem_consume.axi` is the regression guard; the reclaim was reverted
+  in 16ceefb for exactly this). So this is the *same* deliberate leak-rather-than-reject tradeoff as the
+  `Integer` field: the sound fix is the interprocedural owned-vs-borrowed-element precision (roadmap §6,
+  [[axion-partial-consumer-uaf]]) that would let a genuinely-owned accumulator reclaim without rejecting
+  the borrowed-element consumer. A **characterized, corruption-free, bounded** leak (bytes × query length),
+  surfaced 2026-10-12 by driving the interactive `examples/fff.axi` under ASan (`scripts/sanitize.sh` now
+  exercises its operational paths rather than only startup).
 - **Concurrency T1/T3/T5 value-level** (separation logic / Iris-Actris): the deadlock/fidelity/cancellation
   results are proven at the **graph/type** level (`AxionSession`, `AxionFidelity`); the value-level
   subject-reduction and memory-orphan claims are **deferred** (stated in `docs/phase-3-calculus.md` §6,

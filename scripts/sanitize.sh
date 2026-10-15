@@ -82,6 +82,7 @@ NATIVE=(
   axionc/tests/fixtures/capability_sanitize.axi
   axionc/tests/fixtures/readline_sanitize.axi
   axionc/tests/fixtures/readkey_sanitize.axi
+  axionc/tests/fixtures/readkeytimeout_sanitize.axi
   axionc/tests/fixtures/chr_sanitize.axi
   axionc/tests/fixtures/cond_temp_reclaim.axi
   examples/fff.axi
@@ -210,7 +211,7 @@ LEAKFREE=(
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field peel_heap_reclaim
   structural_borrowers_reclaim take_heap_reclaim do_monad_bind either_map_reclaim mixed_param_return_reclaim mixed_param_return_integer container_copy_reclaim borrowed_list_elem_consume dead_binding_reclaim sort_heap_reclaim
-  string_compare capability_sanitize readline_sanitize readkey_sanitize chr_sanitize cond_temp_reclaim fff lambda typecheck gauss json hello_cli cond_escape_let
+  string_compare capability_sanitize readline_sanitize readkey_sanitize readkeytimeout_sanitize chr_sanitize cond_temp_reclaim lambda typecheck gauss json hello_cli cond_escape_let
   record_update_reclaim record_update_multi record_update_chain
   record_update_escape record_update_escape_read integer_reclaim integer_accumulator
   field_alias_return integer_divmod rsa_modexp escape_local_borrow
@@ -224,6 +225,23 @@ compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if nativ
   "$CLANG" -fsanitize=address,leak -pthread -O1 -w "$WORK/ir.ll" "$RT_A" -ldl -lm -o "$2" 2>/dev/null
 }
 
+# fff is an INTERACTIVE TUI: run bare, it reads EOF and quits immediately, so the gate would only
+# ever test startup. Drive it with a key stream over a seeded, sandboxed HOME so the ASan corruption
+# gate actually exercises the operational paths (nav, scroll, search, mkdir/mkfile/rename/chmod, go-
+# dir, mark+paste, attributes). Exact outcomes don't matter here — we only assert NO corruption; a
+# failed op's modal just eats the next key / EOF. (fff is NOT leak-gated: a known compiler-level
+# string-accumulator leak affects cmdLine/search; see the flagship memory. Corruption is the gate.)
+FFF_DRIVE='jkgG.oJK/note\n;,nMADE\nfTOUCHED\nrRENAMED\nX:sub\nypxgdpyu'
+run_corruption() { # <name> <exe> → run under ASan (leaks off); stderr→$WORK/e; return exit code
+  if [ "$1" = fff ]; then
+    local H="$WORK/fffhome"; rm -rf "$H"; mkdir -p "$H/sub"
+    : >"$H/a.txt"; : >"$H/b.txt"; printf 'line1\nline2\nline3\n' >"$H/note.txt"
+    printf '%b' "$FFF_DRIVE" | HOME="$H" ASAN_OPTIONS=detect_leaks=0 "$2" "$H" >/dev/null 2>"$WORK/e"
+  else
+    ASAN_OPTIONS=detect_leaks=0 "$2" >/dev/null 2>"$WORK/e"
+  fi
+}
+
 fail=0; corr=0; leak=0
 for f in "${NATIVE[@]}"; do
   [ -f "$f" ] || continue
@@ -233,8 +251,8 @@ for f in "${NATIVE[@]}"; do
     echo "· $name: not in the native subset (skipped)"
     continue
   fi
-  # corruption gate (leaks off)
-  if ! ASAN_OPTIONS=detect_leaks=0 "$exe" >/dev/null 2>"$WORK/e"; then
+  # corruption gate (leaks off) — fff is driven with a key stream (see run_corruption)
+  if ! run_corruption "$name" "$exe"; then
     echo "✗ $name: memory CORRUPTION under ASan"; grep -E 'ERROR|SUMMARY' "$WORK/e" | head -2; fail=1; continue
   fi
   corr=$((corr + 1))
