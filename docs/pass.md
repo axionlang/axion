@@ -34,8 +34,8 @@ a `List String` — the latter would trip a native heap-element aliasing issue.
 | Command | Behavior |
 |---|---|
 | `pass` / `pass ls` | `ls` renders the store as a tree; bare `pass` picks an entry with fzf |
-| `pass show [-c[n]\|-q[n]\|-s] <name>` | clip the login line (2) by default; `-c[n]` clips line n (1 = password); `-q[n]` shows line n as a QR (via `qrencode`, secret on stdin); `-s` prints the whole entry |
-| `pass <name>` | bare-name shorthand: clip the password (line 1) |
+| `pass show [-c[n]\|-q[n]\|-s] <name>` | by default copy the **login** (line 2, with any `key:` prefix stripped), then swap the clipboard to the **password** (line 1) once it is pasted (Wayland via `wl-copy --foreground --paste-once`; X11/xsel has no reliable one-paste primitive, so it copies the password directly and prints a note). `-c[n]` copies line n raw (1 = password); `-q[n]` shows line n as a QR (via `qrencode`, secret on stdin); `-s` prints the whole entry |
+| `pass <name>` | bare-name shorthand: same login-then-password-on-paste default as `show <name>` |
 | `pass find <term>` (alias `search`) | list entries whose path matches `<term>` (case-insensitive) |
 | `pass grep <search>` | decrypt every entry, print those whose content matches, with the matching lines |
 

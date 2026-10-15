@@ -88,26 +88,49 @@ check "pass show -s email/personal" $'hunter2\nuser: me@example.com' -- show -s 
 check "pass find git"               "$EXPECT_FIND"                  -- find git
 check "pass grep acct"              "$EXPECT_GREP"                  -- grep workacct
 
-# CLIPBOARD behaviour (the redesigned default). Mock wl-copy/wl-paste with a file, run ONE
-# backend (the effect isn't on stdout), and assert what landed on the "clipboard": `show` clips
-# the LOGIN line (2) by default; bare `pass <name>` and `show -c` clip the PASSWORD (line 1). A
-# mock fzf (first on PATH) selects the first candidate (entries sort email/personal first).
-mkdir -p "$WORK/bin"; CLIP="$WORK/clip"
-printf '#!/bin/sh\ncat > "%s"\n' "$CLIP" > "$WORK/bin/wl-copy"
-printf '#!/bin/sh\ncat "%s" 2>/dev/null\n' "$CLIP" > "$WORK/bin/wl-paste"
+# CLIPBOARD behaviour (the login-swap default). The default `show`/bare `pass <name>` is Wayland's
+# login-then-password swap: copy the LOGIN (line 2, "key:" prefix stripped), then — once pasted —
+# swap the clipboard to the PASSWORD (line 1). `show -c` still copies a raw line (default 1 = pw).
+# The swap's two writes come from a BACKGROUNDED subshell (wl-copy --foreground --paste-once holds
+# the login until a paste; the mock can't block, so it records both writes in order), so we poll
+# for them. Each run gets its OWN log/cur files (via env) so a lingering 45s-restore subshell from
+# an earlier run can't corrupt a later assertion. A mock fzf selects the first candidate.
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/wl-copy" <<'EOF'
+#!/bin/sh
+d=$(cat)
+printf '%s\n' "$d" >> "$CLIPLOG"
+printf '%s' "$d" > "$CLIPCUR"
+EOF
+cat > "$WORK/bin/wl-paste" <<'EOF'
+#!/bin/sh
+cat "$CLIPCUR" 2>/dev/null
+EOF
 printf '#!/bin/sh\nhead -n1\n' > "$WORK/bin/fzf"
 chmod +x "$WORK/bin/wl-copy" "$WORK/bin/wl-paste" "$WORK/bin/fzf"
 
-clip_run() { rm -f "$CLIP"; PATH="$WORK/bin:$PATH" "$AXIONC" run --backend interp "$PASS" -- "$@" >/dev/null 2>&1; }
-assert_clip() { # label expected
-  local got; got="$(cat "$CLIP" 2>/dev/null)"
-  if [ "$got" = "$2" ]; then echo "✓ $1: clipboard == expected"
-  else echo "✗ $1: clip=$(printf '%q' "$got") expected=$(printf '%q' "$2")"; fail=1; fi
+clip_n=0
+clip_run() { # args...
+  clip_n=$((clip_n + 1))
+  export CLIPLOG="$WORK/log.$clip_n" CLIPCUR="$WORK/cur.$clip_n"
+  rm -f "$CLIPLOG" "$CLIPCUR"
+  PATH="$WORK/bin:$PATH" "$AXIONC" run --backend interp "$PASS" -- "$@" >/dev/null 2>&1
 }
-clip_run show email/personal;    assert_clip "show default clips login line" 'user: me@example.com'
-clip_run email/personal;         assert_clip "bare name clips password"      'hunter2'
-clip_run show -c email/personal; assert_clip "show -c clips password"        'hunter2'
-clip_run show;                   assert_clip "show fzf-pick clips login"     'user: me@example.com'
+wait_writes() { # n — poll for the backgrounded swap to record n clipboard writes
+  i=0
+  while [ "$([ -f "$CLIPLOG" ] && wc -l < "$CLIPLOG" || echo 0)" -lt "$1" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05; i=$((i + 1))
+  done
+}
+assert_log() { # label expected (newline-separated writes, in order)
+  local got; got="$(cat "$CLIPLOG" 2>/dev/null)"
+  if [ "$got" = "$2" ]; then echo "✓ $1"
+  else echo "✗ $1: log=$(printf '%q' "$got") expected=$(printf '%q' "$2")"; fail=1; fi
+}
+clip_run show email/personal;    wait_writes 2; assert_log "show default: login (stripped) then password" $'me@example.com\nhunter2'
+clip_run email/personal;         wait_writes 2; assert_log "bare name: login (stripped) then password"     $'me@example.com\nhunter2'
+clip_run show -c email/personal;                assert_log "show -c: password only (raw line 1)"           'hunter2'
+clip_run show;                   wait_writes 2; assert_log "show fzf-pick: login (stripped) then password"  $'me@example.com\nhunter2'
 
 # `-q` renders the selected line as a QR code. With qrencode present the ANSI QR art is non-empty
 # on stdout; without it the command fails GRACEFULLY. The secret never touches argv either way.

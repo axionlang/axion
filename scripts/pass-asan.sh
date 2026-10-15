@@ -51,7 +51,7 @@ run find red
 run grep foo
 run edit web/reddit
 run git status
-run                  # bare (no args) = show: fzf-pick → clip the login line
+run                  # bare (no args) = show: fzf-pick → login-swap default (clipLogin path)
 # newer commands: flag parsing (getopt), init, recursive rm -r, directory mv/cp, help/version.
 run version
 run help
@@ -63,7 +63,7 @@ run rm -rf ghost     # bundled flags + force on a missing entry (no error)
 run show -c2 github  # -c<n> line-select parse + clipCopy/nthLine path
 run show -s github   # -s show-all path (print, no clipboard)
 run show -q github   # -q QR path (qrShow: decrypt + nthLine + qrencode-or-graceful-error)
-run github           # bare shorthand → clipboard the password (line 1)
+run github           # bare shorthand → login-swap default (clipLogin path; -c for the raw password)
 run -s github        # bare `-s <name>` → print all (name at argv[1])
 run generate -i github  # in-place generate parse path
 

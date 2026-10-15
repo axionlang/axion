@@ -5,13 +5,15 @@
 -- stays in files — only plaintext crosses into Axión) and to `find` for listing.
 -- Dispatch mirrors upstream pass:
 --   pass init <gpg-id>      → create the store, write its .gpg-id recipient, and `git init`
---   pass                    → `show` with no name: fzf-pick an entry, then clip its login line
+--   pass                    → `show` with no name: fzf-pick an entry, then the login-swap default
 --   pass ls  [subdir]       → tree of the store (or of <subdir>)
---   pass show [<name>]      → copy the LOGIN line (line 2, the email) to the clipboard (default);
---                             `-c[n]` copies line n instead (default 1 = the password); `-s` prints
---                             the whole entry to stdout; no <name> + fzf → pick interactively
---   pass <name>             → bare shorthand: copy the PASSWORD (line 1) to the clipboard
---                             (`pass -s <name>` prints the whole entry instead)
+--   pass show [<name>]      → DEFAULT: copy the LOGIN (line 2, "key:" prefix stripped), then swap
+--                             the clipboard to the PASSWORD (line 1) once it is pasted (Wayland;
+--                             X11 copies the login only). `-c[n]` copies line n raw (default 1 =
+--                             the password); `-s` prints the whole entry to stdout; no <name> +
+--                             fzf → pick interactively
+--   pass <name>             → bare shorthand: same login-swap default as `show <name>`
+--                             (`pass -s <name>` prints the whole entry; `pass show -c` copies pw)
 --   pass find <term>        → list entries whose path matches <term>
 --   pass grep <search>      → search decrypted contents
 --   pass rm [-r] [-f] <name>→ delete an entry, or a whole subtree with `-r`
@@ -129,6 +131,24 @@ skipLines s i n k =
 nthLine :: Int -> String -> String
 nthLine ln s = firstLineGo s (skipLines s 0 (strLen s) (ln - 1)) (strLen s)
 
+-- Strip a leading "key:" prefix from a login line: drop everything up to and including the
+-- first ':' (byte 58) plus any spaces (byte 32) that follow it. A line with no colon is
+-- returned verbatim ("login: me@x" → "me@x", "alice@x" → "alice@x"). Every branch returns a
+-- FRESH `substr` (never the borrowed param) so the mixed bare-param/fresh-String
+-- conditional-return aliasing class never arises — the drop-verifier stays happy.
+stripKey :: String -> String
+stripKey s = stripKeyGo s 0 (strLen s)
+stripKeyGo :: String -> Int -> Int -> String
+stripKeyGo s i n =
+  if i >= n then substr 0 n s
+  else if charAt i s == 58 then stripKeySpaces s (i + 1) n
+  else stripKeyGo s (i + 1) n
+stripKeySpaces :: String -> Int -> Int -> String
+stripKeySpaces s i n =
+  if i >= n then ""
+  else if charAt i s == 32 then stripKeySpaces s (i + 1) n
+  else substr i (n - i) s
+
 -- Is command `c` on PATH? (0 = yes.) A shell probe with no user input — injection-safe.
 hasCmd :: String -> Int
 hasCmd c = runStatus (("command -v " ++ shQuote c) ++ " >/dev/null 2>&1")
@@ -171,11 +191,31 @@ clipWithRestore =
   ++ " 2>/dev/null | base64 | tr -d '\\n'); if [ \"$cur\" = \"$(printf '%s' \"$pw\" | base64 | tr -d '\\n')\" ]; then printf '%s' \"$save\" | base64 -d | "
   ++ clipCopyCmd ++ " >/dev/null 2>&1; fi ) &"
 
--- Copy the FIRST LINE of <plaintext> to the clipboard (saving/restoring the prior contents after
+-- The LOGIN-then-PASSWORD clipboard pipeline (Wayland only — see `clipLogin`), as ONE `sh -c`
+-- line. STDIN carries TWO values: the stripped login on the first line, the password after it.
+-- The outer shell consumes STDIN in the FOREGROUND (`read`/`pw=$(cat)` — stdin must be drained
+-- before axpass exits), then BACKGROUNDS the whole serve→swap→restore block so axpass returns
+-- at once instead of hanging until the paste. Inside the subshell: (1) save the prior clipboard,
+-- (2) serve the login via `wl-copy --foreground --paste-once` — it holds the login on the
+-- clipboard and BLOCKS until exactly one paste, then exits, (3) put the password on the clipboard,
+-- (4) a 45s timer restores the saved content IFF the clipboard is still the password. Neither
+-- secret ever reaches argv (STDIN + shell vars only). `</dev/null` keeps the orphaned subshell
+-- from dying on the controlling terminal's close before it can serve the paste.
+clipLoginSwap :: String
+clipLoginSwap =
+  "IFS= read -r login; pw=$(cat); ( exec </dev/null; save=$(wl-paste --no-newline 2>/dev/null | base64 | tr -d '\\n'); "
+  ++ "printf '%s' \"$login\" | wl-copy --foreground --paste-once >/dev/null 2>&1; "
+  ++ "printf '%s' \"$pw\" | wl-copy >/dev/null 2>&1; sleep 45; "
+  ++ "cur=$(wl-paste --no-newline 2>/dev/null | base64 | tr -d '\\n'); "
+  ++ "if [ \"$cur\" = \"$(printf '%s' \"$pw\" | base64 | tr -d '\\n')\" ]; then printf '%s' \"$save\" | base64 -d | wl-copy >/dev/null 2>&1; fi ) &"
+
+-- Copy LINE <ln> of <plaintext> to the clipboard (saving/restoring the prior contents after
 -- 45s), then report (to stderr, so a piped stdout stays clean). Aborts if no clipboard tool exists.
--- The secret is fed on the pipeline's STDIN via `execStatus … (firstLine plaintext)`.
+-- The secret is fed on the pipeline's STDIN via `execStatus … (nthLine ln plaintext)`. `ln == 0`
+-- is the DEFAULT login-swap sentinel → `clipLogin`; all `-c[n]` callers pass `ln >= 1`.
 clipCopy :: Int -> String -> String -> IO ()
 clipCopy ln plaintext name
+  | ln == 0               = clipLogin plaintext name
   | strLen plaintext == 0 = die (strAppend "Error: could not decrypt " name)
   | strLen clipTool == 0  = die "Error: no clipboard tool found (install wl-clipboard, xclip, or xsel)"
   | strLen (nthLine ln plaintext) == 0 =
@@ -184,13 +224,32 @@ clipCopy ln plaintext name
       execStatus (strAppend "sh\n-c\n" clipWithRestore) (nthLine ln plaintext)
       ePutStrLn (((("Copied " ++ name) ++ " (line ") ++ showInt ln) ++ ") to clipboard. Will clear in 45 seconds.")
 
--- `pass show`: by DEFAULT copy the LOGIN line (line 2 — the email/username) to the clipboard;
--- `-c[n]` copies line n instead (default 1 = the password); `-s` prints the WHOLE entry to stdout
--- with no clipboard. gpg runs shell-free via execCapture (explicit argv). With no <name>, fall back
--- to an fzf picker (if installed). The name is only ever BORROWED here (never returned from a
--- helper), so the fresh fzf pick and the borrowed argv name both flow into `showFound` without a
--- conditional alias/fresh return (which would desync the interprocedural alias summary → a UAF).
--- `showAll` = the `-s` mode (print everything); otherwise clip line `ln`.
+-- The DEFAULT clipboard action: copy the LOGIN (line 2, with any "key:" prefix stripped), then —
+-- once it is pasted — swap the clipboard to the PASSWORD (line 1). An entry with no line 2 is a
+-- bare password, so we fall back to copying it. The paste-triggered swap needs Wayland's
+-- `wl-copy --foreground --paste-once` (see `clipLoginSwap`); on X11/xsel there is no reliable
+-- one-paste primitive, so we DEGRADE — copy the PASSWORD (line 1) with the normal 45s restore and
+-- tell the user the login-first swap needs Wayland. Both secrets stay off argv (fed on STDIN).
+clipLogin :: String -> String -> IO ()
+clipLogin plaintext name
+  | strLen plaintext == 0              = die (strAppend "Error: could not decrypt " name)
+  | strLen clipTool == 0               = die "Error: no clipboard tool found (install wl-clipboard, xclip, or xsel)"
+  | strLen (nthLine 2 plaintext) == 0  = clipCopy 1 plaintext name
+  | hasCmd "wl-copy" == 0              = do
+      execStatus (strAppend "sh\n-c\n" clipLoginSwap) ((stripKey (nthLine 2 plaintext) ++ "\n") ++ firstLine plaintext)
+      ePutStrLn (("Copied the login for " ++ name) ++ " to the clipboard. Paste it and the password is copied automatically (clears 45s after).")
+  | otherwise                          = do
+      execStatus (strAppend "sh\n-c\n" clipWithRestore) (firstLine plaintext)
+      ePutStrLn (("Copied the password for " ++ name) ++ " to the clipboard (clears in 45s). The login-first on-paste swap needs Wayland (wl-copy).")
+
+-- `pass show`: by DEFAULT (`ln == 0`) copy the LOGIN (line 2, with any "key:" prefix stripped),
+-- then swap to the PASSWORD once it is pasted (see `clipLogin`); `-c[n]` copies line n raw
+-- (default 1 = the password); `-s` prints the WHOLE entry to stdout with no clipboard. gpg runs
+-- shell-free via execCapture (explicit argv). With no <name>, fall back to an fzf picker (if
+-- installed). The name is only ever BORROWED here (never returned from a helper), so the fresh
+-- fzf pick and the borrowed argv name both flow into `showFound` without a conditional alias/fresh
+-- return (which would desync the interprocedural alias summary → a UAF). `showAll` = the `-s` mode
+-- (print everything); otherwise clip line `ln` (`0` = the login-swap default).
 showEntry :: Bool -> Int -> String -> IO ()
 showEntry showAll ln name
   | strLen name > 0   = showFound showAll ln name
@@ -231,13 +290,14 @@ qrEntry ln name
   | otherwise         = die "Usage: axpass show -q[n] <name>"
 
 -- Flag dispatch for `show`: `-q[n]` → QR of line n (default 1); `-s` → print all; `-c[n]` → clip
--- line n (default 1 = password); none → clip line 2 (the login email — the default).
+-- line n raw (default 1 = password); none → the login-swap default (ln 0: copy the stripped login,
+-- then the password on paste).
 doShow :: IO ()
 doShow
   | hasFlag "q" = qrEntry (optNum "q" 1) (posArg 0)
   | hasFlag "s" = showEntry True 0 (posArg 0)
   | hasFlag "c" = showEntry False (optNum "c" 1) (posArg 0)
-  | otherwise   = showEntry False 2 (posArg 0)
+  | otherwise   = showEntry False 0 (posArg 0)
 
 -- `pass ls [subdir]` / bare `pass`: draw the store as an indented TREE (upstream shells
 -- out to tree(1); we render it natively). Each directory level lists its entries sorted,
@@ -749,7 +809,7 @@ usageText =
   "Usage:\n" ++
   "  axpass init <gpg-id>            initialize the store for a GPG key id\n" ++
   "  axpass [ls] [subdir]            list entries as a tree\n" ++
-  "  axpass show [-c[n]|-q[n]|-s] [name]  clip login line (2) by default; -c[n] clips line n (1=pw); -q[n] QR; -s prints all\n" ++
+  "  axpass show [-c[n]|-q[n]|-s] [name]  copy login then password-on-paste by default; -c[n] copies line n (1=pw); -q[n] QR; -s prints all\n" ++
   "  axpass find <term>              list entry names matching term\n" ++
   "  axpass grep <text>              search decrypted contents\n" ++
   "  axpass insert [-e|-m] [-f] name add an entry (-e echo, -m multiline, -f force)\n" ++
@@ -793,12 +853,12 @@ dispatch cmd = case cmd of
   -- bare `axpass -s <name>` == `axpass show -s <name>` (print the whole entry). The flag is
   -- argv[0] here (no subcommand), so the name is argv[1].
   "-s"        -> showEntry True 0 (getArg 1)
-  -- bare `axpass` (no args) == `axpass show` (no name): fzf-pick an entry, then clip its login
-  -- line. `axpass ls` still draws the tree.
+  -- bare `axpass` (no args) == `axpass show` (no name): fzf-pick an entry, then the login-swap
+  -- default (copy the login, then the password on paste). `axpass ls` still draws the tree.
   ""          -> doShow
-  -- bare `axpass <name>` == `axpass show -c <name>`: copy the PASSWORD (line 1) to the clipboard.
-  -- (`show` WITHOUT the bare shorthand defaults to the login line instead — see doShow.)
-  other       -> showEntry False 1 other
+  -- bare `axpass <name>` == `axpass show <name>`: the login-swap default (ln 0 — copy the stripped
+  -- login, then the password once pasted). Use `show -c <name>` to copy the password directly.
+  other       -> showEntry False 0 other
 
 main :: IO ()
 main = dispatch (getArg 0)
