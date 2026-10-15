@@ -381,6 +381,56 @@ pub fn read_key() -> String {
     }
 }
 
+/// Mirror of the native `read_key_timeout_impl`: one raw keypress, or `""` if none arrives within
+/// `ms` milliseconds (also `""` at EOF). Rather than `libc::poll` (axionc has no libc dep), the
+/// interpreter uses `stty -icanon min 0 time <deciseconds>` so a single `read` returns 0 bytes on
+/// timeout; `stty sane` restores the tty. `time` is deciseconds (100 ms granularity) — `ms` rounds
+/// UP so a nonzero timeout never truncates to 0. A negative `ms` blocks (defers to `read_key`). On
+/// a pipe `stty` is a no-op, so the read returns available bytes or `""` at EOF, matching native.
+pub fn read_key_timeout(ms: i64) -> String {
+    use std::io::Read;
+    if ms < 0 {
+        return read_key();
+    }
+    // VTIME is a u8 (deciseconds); round ms up so e.g. 25 ms → 1 ds, and clamp to [0, 255].
+    let decis = if ms == 0 { 0 } else { ((ms + 99) / 100).clamp(1, 255) };
+    struct RawGuard(bool);
+    impl RawGuard {
+        fn on(time: i64) -> RawGuard {
+            let ok = std::process::Command::new("stty")
+                .args([
+                    "-icanon",
+                    "-echo",
+                    "min",
+                    "0",
+                    "time",
+                    &time.to_string(),
+                ])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            RawGuard(ok)
+        }
+    }
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = std::process::Command::new("stty")
+                    .arg("sane")
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+    }
+    let _guard = RawGuard::on(decis);
+    let mut b = [0u8; 1];
+    match std::io::stdin().lock().read(&mut b) {
+        Ok(1) => String::from_utf8_lossy(&b).into_owned(),
+        _ => String::new(), // timeout or EOF
+    }
+}
+
 /// Run a program with an explicit argv (`joined`, elements separated by '\n', argv[0]
 /// first) and `input` fed on its stdin — NO shell, so nothing is word-split or
 /// injection-prone and a secret can reach the child over the pipe. Returns the child's
@@ -790,6 +840,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "readKey" => Ok(Value::Builtin {
             name: "readKey",
+            args: Vec::new(),
+        }),
+        "readKeyTimeout" => Ok(Value::Builtin {
+            name: "readKeyTimeout",
             args: Vec::new(),
         }),
         "chr" => Ok(Value::Builtin {
@@ -1575,6 +1629,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("readLine", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(false))),
         ("readSecret", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(true))),
         ("readKey", [Value::Int(_)]) => Ok(Value::Str(read_key())),
+        ("readKeyTimeout", [Value::Int(ms)]) => Ok(Value::Str(read_key_timeout(*ms))),
         // `chr n`: the byte n as a 1-char String (inverse of charAt). Intended for 0-127 (ASCII +
         // control, incl. ESC=27 for ANSI), where this matches the native raw-byte alloc exactly.
         ("chr", [Value::Int(n)]) => Ok(Value::Str(((*n as u8) as char).to_string())),

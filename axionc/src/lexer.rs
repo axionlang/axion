@@ -153,6 +153,10 @@ pub enum Tok {
     // digits (`Big`) so the parser can desugar it to an arbitrary-precision `Integer`.
     #[regex(r"[0-9]+", |lex| Some(lex.slice().parse::<i64>().map_or_else(|_| IntLit::Big(lex.slice().to_string()), IntLit::Small)))]
     #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(lex.slice().strip_prefix("0x").unwrap_or(""), 16).ok().map(IntLit::Small))]
+    // a char literal is just its code point as an `Int` (byte-oriented string model, matches `chr`):
+    // `'A'` == 65, `'\n'` == 10, `'\e'` == 27. No conflict with identifier apostrophes (`buf'`) — a
+    // `'`-leading position can only be a char literal; a trailing `'` is consumed inside the ident.
+    #[regex(r"'([^'\\]|\\.)'", |lex| char_lit(lex.slice()))]
     Int(IntLit),
     #[regex(r#""([^"\\]|\\.)*""#, |lex| unquote(lex.slice()))]
     Str(String),
@@ -164,8 +168,34 @@ pub enum Tok {
     ConId(String),
 }
 
+/// Resolve one backslash escape, consuming any trailing bytes it needs from `chars`:
+/// `\n \r \t \\ \" \' \e`(ESC) `\0`(NUL) and `\xNN` (two hex digits). An unknown escape
+/// yields the escaped char itself (`\q` → `q`). Shared by string and char literals.
+fn resolve_escape(chars: &mut std::str::Chars) -> Option<char> {
+    Some(match chars.next()? {
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        '\\' => '\\',
+        '"' => '"',
+        '\'' => '\'',
+        'e' => '\u{1b}',
+        '0' => '\0',
+        'x' => {
+            // two hex digits → a byte; malformed falls back to a literal 'x'
+            let hi = chars.next();
+            let lo = chars.next();
+            match (hi.and_then(|c| c.to_digit(16)), lo.and_then(|c| c.to_digit(16))) {
+                (Some(h), Some(l)) => char::from((h * 16 + l) as u8),
+                _ => 'x',
+            }
+        }
+        other => other,
+    })
+}
+
 fn unquote(s: &str) -> String {
-    // strip quotes and resolve simple escapes
+    // strip quotes and resolve escapes
     let inner = s
         .strip_prefix('"')
         .and_then(|t| t.strip_suffix('"'))
@@ -174,20 +204,25 @@ fn unquote(s: &str) -> String {
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('\\') => out.push('\\'),
-                Some('"') => out.push('"'),
-                Some(other) => out.push(other),
-                None => {}
+            if let Some(r) = resolve_escape(&mut chars) {
+                out.push(r);
             }
         } else {
             out.push(c);
         }
     }
     out
+}
+
+/// A char literal (`'A'`, `'\n'`, `'\e'`) → its code point as an `IntLit::Small`.
+fn char_lit(s: &str) -> Option<IntLit> {
+    let inner = s.strip_prefix('\'')?.strip_suffix('\'')?;
+    let mut chars = inner.chars();
+    let c = match chars.next()? {
+        '\\' => resolve_escape(&mut chars)?,
+        other => other,
+    };
+    Some(IntLit::Small(c as i64))
 }
 
 /// A token with its byte range in the source.

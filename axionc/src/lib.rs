@@ -4322,6 +4322,19 @@ hasSuffix :: String -> String -> Bool
 hasSuffix q s = if strLen q > strLen s then False else substr (strLen s - strLen q) (strLen q) s == q
 lastIndex :: Int -> String -> Int -> Int -> Int
 lastIndex c s i best = if i >= strLen s then best else (if charAt i s == c then lastIndex c s (i + 1) i else lastIndex c s (i + 1) best)
+-- ASCII case folding (byte-oriented, like `chr`/`charAt`): toLower/toUpper map A-Z <-> a-z.
+lowerChar :: Int -> Int
+lowerChar c = if c >= 'A' then (if c <= 'Z' then c + 32 else c) else c
+upperChar :: Int -> Int
+upperChar c = if c >= 'a' then (if c <= 'z' then c - 32 else c) else c
+toLower :: String -> String
+toLower s = toLowerGo s 0 (strLen s)
+toLowerGo :: String -> Int -> Int -> String
+toLowerGo s i n = if i >= n then \"\" else strAppend (chr (lowerChar (charAt i s))) (toLowerGo s (i + 1) n)
+toUpper :: String -> String
+toUpper s = toUpperGo s 0 (strLen s)
+toUpperGo :: String -> Int -> Int -> String
+toUpperGo s i n = if i >= n then \"\" else strAppend (chr (upperChar (charAt i s))) (toUpperGo s (i + 1) n)
 dirName :: String -> String
 dirName s = dirBefore s (lastIndex 47 s 0 (0 - 1))
 dirBefore :: String -> Int -> String

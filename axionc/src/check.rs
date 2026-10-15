@@ -133,6 +133,7 @@ pub fn is_effectful(name: &str) -> bool {
             | "readLine"
             | "readSecret"
             | "readKey"
+            | "readKeyTimeout"
             | "exitWith"
             | "putStr"
             | "putStrLn"
@@ -1358,6 +1359,7 @@ pub fn builtins() -> HashSet<String> {
         "readLine",
         "readSecret",
         "readKey",
+        "readKeyTimeout",
         "chr",
         "randHex",
         "exitWith",

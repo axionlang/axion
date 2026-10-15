@@ -1768,6 +1768,10 @@ impl<'a> Infer<'a> {
             mono(Ty::Fun(Box::new(int()), Box::new(string()))), // dummy Int → one raw keypress ("" at EOF)
         );
         env.insert(
+            "readKeyTimeout".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(string()))), // timeout ms → one keypress ("" on timeout/EOF)
+        );
+        env.insert(
             "chr".into(),
             mono(Ty::Fun(Box::new(int()), Box::new(string()))), // byte → 1-char String (inverse of charAt)
         );

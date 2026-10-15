@@ -1904,6 +1904,56 @@ pub unsafe extern "C" fn axion_read_key(_unused: i64) -> i64 {
     read_key_impl()
 }
 
+/// Like `read_key_impl`, but wait at most `ms` milliseconds for a byte, else return `""`. A negative
+/// `ms` blocks indefinitely (defers to `read_key_impl`). The timeout is `VMIN=0/VTIME=<deciseconds>`
+/// so the `read` syscall itself times out — NOT `poll`: both this and `read_key_impl` read through
+/// the SAME buffered `std::io::stdin`, and `poll` sees only the kernel fd, so a burst (e.g. an arrow
+/// `ESC [ A` all arriving together, or a scripted `xy`) read by a prior `readKey` lands in the
+/// userspace buffer where `poll` can't see it — the buffered byte must still be returned here. With
+/// `VMIN=0` a buffered byte returns at once (no syscall) and the timer only fires when the kernel is
+/// genuinely empty (a lone `Esc`). `VTIME` is deciseconds (100 ms granularity); `ms` rounds UP so a
+/// nonzero timeout never truncates to 0. On a pipe (`tcgetattr` fails) it degrades to a plain read
+/// (bytes already available / EOF), matching `read_key_impl`. `""` on timeout is deliberately
+/// indistinguishable from EOF — both mean "no key available".
+unsafe fn read_key_timeout_impl(ms: i64) -> i64 {
+    use std::io::Read;
+    if ms < 0 {
+        return read_key_impl();
+    }
+    // VTIME is a u8 (deciseconds); round ms up so e.g. 25 ms → 1 ds, and clamp to [0, 255].
+    let decis = if ms == 0 { 0 } else { ((ms + 99) / 100).clamp(1, 255) } as libc::cc_t;
+    let mut saved: libc::termios = std::mem::zeroed();
+    let is_tty = libc::tcgetattr(0, &mut saved) == 0;
+    if is_tty {
+        let mut raw = saved;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        raw.c_cc[libc::VMIN] = 0;
+        raw.c_cc[libc::VTIME] = decis;
+        libc::tcsetattr(0, libc::TCSAFLUSH, &raw);
+    }
+    let mut b = [0u8; 1];
+    let n = {
+        let mut h = std::io::stdin().lock();
+        h.read(&mut b).unwrap_or(0)
+    };
+    if is_tty {
+        libc::tcsetattr(0, libc::TCSAFLUSH, &saved);
+    }
+    if n == 1 {
+        alloc_str(&b)
+    } else {
+        alloc_str(b"") // timeout or EOF
+    }
+}
+
+/// `readKeyTimeout ms` — one raw keypress as a 1-char String, or `""` if none arrives within `ms`
+/// milliseconds (also `""` at EOF). Unlike `readKey`'s ignored placeholder, `ms` is a real value —
+/// it lets a TUI disambiguate a lone `Esc` from an arrow sequence without blocking.
+#[no_mangle]
+pub unsafe extern "C" fn axion_read_key_timeout(ms: i64) -> i64 {
+    read_key_timeout_impl(ms)
+}
+
 /// `chr n` — the byte `n` as a 1-char String (the inverse of `charAt`). Pure. Intended for the
 /// ASCII/control range (0-127) — e.g. `chr 27` is ESC, so ANSI escape sequences can be built
 /// in-language (`chr 27 ++ "[2J"`) despite the lexer having no `\e`/`\xNN` escape.
@@ -2250,5 +2300,6 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("ax_net_send", ax_net_send as *const u8),
         ("ax_net_set_nonblocking", ax_net_set_nonblocking as *const u8),
         ("ax_net_wouldblock", ax_net_wouldblock as *const u8),
+        ("axion_read_key_timeout", axion_read_key_timeout as *const u8),
     ]
 }

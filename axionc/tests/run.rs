@@ -5425,6 +5425,38 @@ fn readkey_reads_raw_bytes_on_all_backends() {
 }
 
 #[test]
+fn readkeytimeout_reads_raw_bytes_on_all_backends() {
+    // readKeyTimeout reads ONE raw byte per call, waiting up to N ms. On a pipe the bytes are
+    // already available so a 1000 ms timeout returns at once; feeding "xy" yields two keypresses →
+    // readkeytimeout_sanitize.axi echoes both → "xy". Identical on interp, cranelift, and llvm.
+    use std::io::Write;
+    use std::process::Stdio;
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("readkeytimeout_sanitize.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let mut child = axionc()
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"xy").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "readKeyTimeout should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "xy", "{backend:?}");
+    }
+}
+
+#[test]
 fn chr_builds_bytes_on_all_backends() {
     // chr n = the byte n as a 1-char String (inverse of charAt), for building ANSI in-language.
     // chr_sanitize.axi prints "A" (65) then ESC (27) + "[2J"; assert the exact bytes on every backend.
