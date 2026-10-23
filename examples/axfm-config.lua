@@ -1,0 +1,99 @@
+-- axfm keybinding config — copy to ~/.config/axfm/config.lua and edit.
+--
+-- Each row binds a PHYSICAL key to an ACTION. axfm does not run a Lua interpreter; it reads this
+-- table's { key = "..", action = ".." } rows at startup. A binding is ADDITIVE — the action's
+-- default key keeps working unless you rebind it too. Only the top-level single-key dispatch is
+-- remapped: digits (count prefixes), the command line, and incremental search stay literal, so a
+-- remapped letter is still typeable in a filename or query.
+
+local keys = {
+  -- { key = "z", action = "doDiskUsage" },   -- example: z also shows the recursive size
+  -- { key = "w", action = "doTabClose"  },   -- example: w also closes the current tab
+
+  -- Multiple keys for ONE action: just add a row per key — they all resolve to the same action.
+  -- { key = "z", action = "doDiskUsage" },
+  -- { key = "I", action = "doDiskUsage" },   -- now z AND I (and the default i) all show the size
+}
+-- SHELL COMMANDS: an action beginning with "!" runs the rest as a shell command (in the current
+-- directory), instead of a built-in action. `%s` is replaced by the SELECTED entry's path, safely
+-- quoted (handles spaces) — so no quoting is needed in the value.
+--   { key = "G", action = "!git status"        },   -- G -> run git status in the current dir
+--   { key = "O", action = "!xdg-open %s"        },   -- O -> open the selected entry
+--   { key = "Z", action = "!zip -r %s.zip %s"   },   -- %s may appear more than once
+-- The command runs SILENTLY (output suppressed so it cannot corrupt the display), then the listing is
+-- refreshed (so a command that creates/renames/deletes files shows its effect). A bare `!` value is NOT
+-- a command — it is the built-in interactive shell (action = "doShell").
+--
+-- INTERACTIVE commands — prefix with "!!" (double-bang): the command runs on the REAL terminal (axfm
+-- leaves its screen first, then redraws), so anything that PROMPTS works — a `sudo` password, a
+-- `zfs`/`zpool` encryption passphrase, `ssh`, an editor/pager. Use "!!" (not "!") whenever the command
+-- needs to read from you or show output; a silent "!" command that prompts will HANG (nowhere to type).
+--   { key = "z", action = "!!sudo zpool import -lf -R /run/media/sorath Legion" },   -- unlock a pool
+--   { key = "O", action = "!!less %s"                                           },   -- page the file
+--
+-- MULTIPLE ACTIONS on one key: give `action` a LIST of items — each item is a built-in action name, a
+-- "!"/"!!" shell command, or a `cd <path>` jump — run in order on one keypress. A built-in that needs
+-- input (e.g. doJumpMark, doMkdir) prompts as usual, then the rest continue.
+--   { key = "G", action = { "!git add %s", "!git commit -m wip" } },   -- inline list (two shell steps)
+--   { key = "D", action = { "down", "doDiskUsage" } },                 -- built-in then built-in
+-- NAVIGATE TO A PATH: an item (or a whole binding) "cd <path>" jumps axfm into that directory if it
+-- exists (~ and relative paths are resolved; nothing happens if the path isn't a dir). Combine with an
+-- interactive "!!" step to run then jump — e.g. unlock an encrypted pool and open its mountpoint:
+--   { key = "z", action = { "!!sudo zpool import -lf -R /run/media/sorath Legion",
+--                           "cd /run/media/sorath/Legion" } },         -- (keep it on ONE line)
+--   { key = "m", action = "cd ~/Music" },                             -- a single-key jump
+-- NAMED FUNCTIONS: define a reusable sequence once with `local Name = { … }`, then reference it by name:
+--   local Stage = { "!git add %s", "down" }
+--   { key = "s", action = "Stage" },
+-- Each definition and each inline list must be on a SINGLE line. A bare `action = "x"` is still a single
+-- built-in / "!"command (or a function name if one is defined). See `actionKey` for built-in names.
+--
+-- MULTI-KEY SEQUENCES: a key value longer than one character is a key SEQUENCE (ranger/vim-style).
+-- The first character becomes a LEADER: press it, then the rest, to run the action.
+--   { key = "gh", action = "home"       },   -- g then h  -> go home
+--   { key = "gg", action = "top"        },   -- g then g  -> top
+--   { key = "gt", action = "doTabNext"  },   -- g then t  -> next tab
+-- While a leader is pending, axfm waits for the next key. A chord that matches no binding is a
+-- harmless no-op. NOTE: making a key a leader SHADOWS its own single-key default (with the rows
+-- above, a bare `g` no longer jumps to the top — add `gg` as shown if you still want that).
+--
+-- Notes: a binding OVERRIDES that key's own default (e.g. binding "u" steals it from undo-trash);
+-- the action's default key keeps working unless you rebind it too; if the same key appears twice,
+-- the first row wins.
+
+-- Available action names (→ their default keys):
+--   down "j"          up "k"            top "g"           bottom "G"
+--   open "l"          parent "h"        toggleHidden "."  refresh "e"
+--   home "~"          prev "-"          doGoDir ":"       doSearch "/"
+--   searchNext ";"    searchPrev ","    doMkdir "n"       doMkfile "f"
+--   doRename "r"      doAttr "x"        doChmod "X"       doBulk "R"
+--   markCopy "y"      markMove "m"      markLink "s"      markTrash "d"
+--   markAllCopy "Y"   markAllMove "M"   markAllLink "S"   markAllTrash "D"
+--   clearMarks "c"    doPaste "p"       doShell "!"       doSort "o"
+--   doFilter "F"      doRestore "u"     doCopyPath "P"    doDiskUsage "i"
+--   doSetMark "b"     doJumpMark "B"    doTabNew "t"      doTabClose "T"
+--   doTabNext "]"     doTabPrev "["     doHelp "?"        quit "q"
+--   scrollDown "J"    scrollUp "K"
+
+-- ─── COLORS ──────────────────────────────────────────────────────────────────────────────────────
+-- Colour directories, executables, symlinks, and files-by-extension. Each row is
+-- { match = <what>, color = <colour> }:
+--   match = "di" directories · "ex" executables · "ln" symlinks · "or" broken symlinks
+--         = "*.png" / "*.rs" / … any extension glob (a single file type)
+--         = "image/*" / "video/*" / "audio/*" / "archive/*" / "doc/*" / "code/*" — a whole CATEGORY
+--           (colours every extension in that built-in bucket at once). Precedence: an exact "*.ext"
+--           rule wins over its category rule, which wins over the built-in palette.
+--   color = "#RRGGBB"  a hex colour (needs a truecolor terminal — foot has it), OR
+--           a raw ANSI SGR string ("0;33", "01;34", "38;5;208" for 256-colour, "01;38;2;R;G;B" bold+rgb)
+-- These OVERRIDE your shell's $LS_COLORS for the same key; $LS_COLORS still fills in anything omitted.
+-- Uncomment / edit:
+local colors = {
+  -- { match = "di",    color = "#5FA8FF" },   -- directories
+  -- { match = "ex",    color = "#55FF55" },   -- executables
+  -- { match = "ln",    color = "#00FFFF" },   -- symlinks
+  -- { match = "or",    color = "#FF5555" },   -- broken symlinks
+  -- { match = "image/*", color = "#CB6FCB" }, -- ALL image extensions at once (category)
+  -- { match = "*.rs",  color = "#F54927" },   -- .rs files
+  -- { match = "*.png", color = "#4FC3F7" },   -- a *.ext rule overrides its category rule
+  -- { match = "*.log", color = "0;33"    },   -- raw SGR is still accepted
+}

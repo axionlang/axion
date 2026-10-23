@@ -226,9 +226,11 @@ fn verifier_catches_container_param_return_alias_without_the_copy() {
 /// 16ceefb): a `String` element extracted from a BORROWED `List String` and passed to a callee that
 /// FREES it, while the owner deep-drops the list, is double-freed. The element's heap-ness is
 /// poly-erased inside the generic consumer, so the verifier resolves it from the callee genuinely
-/// dropping a value there (`frees_heap`). Normal build verifies clean (no String reclaim → the
-/// callee borrows); with AXION_STRING_RECLAIM=1 (the reverted unsound reclaim, hook-gated) the
-/// callee frees the element and the verifier must catch it — at compile time (AX0910).
+/// dropping a value there (`frees_heap`). Owned-String reclaim is now default-on, but the precise
+/// `bep` (borrowed-elem-param) exclusion keeps `work`'s borrowed element a borrow, so the normal
+/// build verifies clean; AXION_STRING_RECLAIM=1 BYPASSES that exclusion (forcing the reverted-16ceefb
+/// unsound blanket reclaim), the callee then frees the element, and the verifier must catch the
+/// double-free at compile time (AX0910) — this proves the verifier is the backstop behind `bep`.
 #[test]
 fn verifier_catches_borrowed_list_element_double_free() {
     let path = format!(

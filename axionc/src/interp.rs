@@ -818,6 +818,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "readDir",
             args: Vec::new(),
         }),
+        "readDirTyped" => Ok(Value::Builtin {
+            name: "readDirTyped",
+            args: Vec::new(),
+        }),
         "randHex" => Ok(Value::Builtin {
             name: "randHex",
             args: Vec::new(),
@@ -1606,6 +1610,39 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
                 .join("\n"),
+            Err(_) => String::new(),
+        })),
+        // Mirrors axion_readdir_typed EXACTLY (oracle agreement): `<code><name>` per entry sorted by
+        // NAME, code = d/l/b/x/f via file_type + a metadata read; symlinks classified before dir/exec.
+        ("readDirTyped", [Value::Str(path)]) => Ok(Value::Str(match std::fs::read_dir(path) {
+            Ok(rd) => {
+                let mut ents: Vec<(String, char)> = rd
+                    .filter_map(|e| e.ok())
+                    .map(|e| {
+                        use std::os::unix::fs::PermissionsExt;
+                        let code = match e.file_type() {
+                            Ok(ft) if ft.is_symlink() => {
+                                if std::fs::metadata(e.path()).is_ok() {
+                                    'l'
+                                } else {
+                                    'b'
+                                }
+                            }
+                            Ok(ft) if ft.is_dir() => 'd',
+                            _ => match e.metadata() {
+                                Ok(m) if m.permissions().mode() & 0o111 != 0 => 'x',
+                                _ => 'f',
+                            },
+                        };
+                        (e.file_name().to_string_lossy().into_owned(), code)
+                    })
+                    .collect();
+                ents.sort_by(|a, b| a.0.cmp(&b.0));
+                ents.iter()
+                    .map(|(n, c)| format!("{c}{n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
             Err(_) => String::new(),
         })),
         ("randHex", [Value::Int(n)]) => {

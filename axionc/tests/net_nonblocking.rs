@@ -16,6 +16,20 @@
 
 use std::ffi::CString;
 
+/// Build a faithful Axión String *literal* for feeding the runtime's string-consuming primitives:
+/// an 8-byte ZERO size-header (exactly what both codegen backends emit for a `.rodata` literal),
+/// then the NUL-terminated bytes, with the returned pointer pointing PAST the header. This is what
+/// the compiler actually hands the runtime — a bare `CString` has arbitrary bytes at −8, which
+/// `str_bytes` (now O(1) via the header) would misread as the length. Keep the Vec alive while the
+/// pointer is in use.
+unsafe fn axi_str(s: &str) -> (Vec<u8>, i64) {
+    let mut buf = vec![0u8; 8]; // zero size-header → str_bytes takes the literal (strlen) path
+    buf.extend_from_slice(s.as_bytes());
+    buf.push(0); // NUL terminator
+    let ptr = buf.as_ptr().add(8) as i64;
+    (buf, ptr)
+}
+
 /// Read an Axión String (pointer to UTF-8 bytes; length in an 8-byte header) into a Rust String,
 /// then free it via the runtime's own deallocator — so the test itself is leak-clean.
 unsafe fn take_str(ptr: i64) -> String {
@@ -85,14 +99,14 @@ fn nonblocking_loopback_echo_round_trips_and_surfaces_the_wouldblock_sentinel() 
         );
 
         // client → server: "ping"
-        let ping = CString::new("ping").unwrap();
-        assert_eq!(axion_rt::ax_net_send(client_fd, ping.as_ptr() as i64), 4);
+        let (_ping, ping) = axi_str("ping");
+        assert_eq!(axion_rt::ax_net_send(client_fd, ping), 4);
         let (msg_ptr, _) = spin(|| axion_rt::ax_net_recv(server_fd));
         assert_eq!(take_str(msg_ptr), "ping");
 
         // server → client: "pong"
-        let pong = CString::new("pong").unwrap();
-        assert_eq!(axion_rt::ax_net_send(server_fd, pong.as_ptr() as i64), 4);
+        let (_pong, pong) = axi_str("pong");
+        assert_eq!(axion_rt::ax_net_send(server_fd, pong), 4);
         let (reply_ptr, _) = spin(|| axion_rt::ax_net_recv(client_fd));
         assert_eq!(take_str(reply_ptr), "pong");
 

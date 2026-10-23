@@ -179,6 +179,7 @@ impl Cg {
             ("axion_unlink", 1, true),
             ("axion_rename", 2, true),
             ("axion_readdir", 1, true),
+            ("axion_readdir_typed", 1, true),
             ("axion_exec_capture", 2, true),
             ("axion_exec_status", 2, true),
             ("axion_read_line", 1, true),

@@ -5479,6 +5479,103 @@ fn chr_builds_bytes_on_all_backends() {
 }
 
 #[test]
+fn char_hex_escape_lexes_on_all_backends() {
+    // Regression: `'\xNN'` char literals. The lexer's char regex once rejected the 4-char `\xNN` escape,
+    // so `'\x1b'` matched no token and the stray quotes sent the CST parser's lambda recovery into an
+    // infinite loop (compiler hung). '\x1b'==27, '\x41'==65, '\x61'==97 — identical to the string `"\xNN"`.
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("char_hex_escape.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "char_hex_escape should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, b"27 65 97", "{backend:?}");
+    }
+}
+
+#[test]
+fn malformed_lambda_errors_without_hanging() {
+    // Regression: `(\x)` — a lambda with a parameter but no `->` — used to spin the CST recovery loop
+    // forever (the real root of the `'\xZZ'`/`'\x1b'` hang). It must now FAIL to compile, promptly.
+    let dir = std::env::temp_dir().join(format!("axfm_lamhang_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("lam.axi");
+    std::fs::write(&f, "main :: IO ()\nmain = putStr (\\x)\n").unwrap();
+    let out = axionc().arg(&f).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "malformed lambda `(\\x)` must be a clean error, not hang"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn readdir_typed_classifies_on_all_backends() {
+    // `readDirTyped path` → `<code><name>` per entry, code d(ir)/l(ive link)/b(roken link)/x(ec)/f(ile),
+    // computed natively (readdir d_type + one metadata read, no `ls`/`stat` fork). Must be identical on
+    // interp/cranelift/llvm (the oracle). Builds a known tree in a temp dir and asserts the sorted output.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("axfm_rdt_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // The entries live in `w/`; the `.axi` source lives in `dir` (NOT inside `w`), so reading `w`
+    // sees exactly the five entries and not the source file itself.
+    let w = dir.join("w");
+    std::fs::create_dir_all(w.join("adir")).unwrap();
+    std::fs::write(w.join("bfile.txt"), "").unwrap();
+    let exe = w.join("cexec");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("bfile.txt", w.join("dlink")).unwrap();
+    std::os::unix::fs::symlink("nonexistent", w.join("ebroken")).unwrap();
+    let src = dir.join("rdt.axi");
+    std::fs::write(
+        &src,
+        format!(
+            "main :: IO ()\nmain = putStr (readDirTyped \"{}\")\n",
+            w.display()
+        ),
+    )
+    .unwrap();
+    let fx = src.to_string_lossy().into_owned();
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "readDirTyped should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Output is NAME-sorted by the primitive: adir, bfile.txt, cexec, dlink, ebroken.
+        let lines: Vec<&[u8]> = out.stdout.split(|&b| b == b'\n').collect();
+        assert_eq!(
+            lines,
+            vec![
+                &b"dadir"[..],
+                &b"fbfile.txt"[..],
+                &b"xcexec"[..],
+                &b"ldlink"[..],
+                &b"bebroken"[..],
+            ],
+            "{backend:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cond_temp_reclaim_runs_on_all_backends() {
     // Regression for the conditional-owned-temp reclaimer fix: `strAppend "x" (if c then up s else
     // dn s)` — an all-heap-arm `if` TEMP consumed downstream — is reclaimed (was a leak → the fff

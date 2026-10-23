@@ -1749,6 +1749,7 @@ impl<'a> Infer<'a> {
         env.insert("execCapture".into(), ss_to_s()); // argv(\n-joined) + stdin → stdout
         env.insert("execStatus".into(), ss_to_i()); // argv(\n-joined) + stdin → status
         env.insert("readFile".into(), s_to_s()); // path → contents
+        env.insert("readDirTyped".into(), s_to_s()); // path → `<code><name>` lines (native typed listing)
         env.insert("writeFile".into(), ss_to_i()); // path, content → 0/-1
         env.insert("fileExists".into(), s_to_i()); // path → 1/0
         env.insert("makeDir".into(), s_to_i()); // mkdir -p → 0/-1

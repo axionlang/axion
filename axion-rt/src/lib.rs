@@ -1539,17 +1539,34 @@ pub unsafe extern "C" fn axion_arena_promote(target: i64, cell: i64, size: i64) 
 // old C `fflush`), so there is no C/Rust buffer interleaving.
 
 /// The bytes of a runtime `String` (excluding the NUL). SAFETY: `s` is a live NUL-terminated String.
+///
+/// O(1): a heap String carries the `axion_alloc` total-size header at −8, and `alloc_str` stores
+/// exactly `len+1` bytes (payload = NUL-truncated content + the NUL), so `len = total − 9` — read
+/// directly instead of an O(n) `strlen` scan on every access (which made string loops quadratic).
+/// Literals (`.rodata`) have a zero header (and are short) and fall back to `strlen`, matching the
+/// `axion_str_drop` heap-vs-literal discriminator exactly.
 #[inline]
 unsafe fn str_bytes<'a>(s: i64) -> &'a [u8] {
-    std::ffi::CStr::from_ptr(s as *const std::os::raw::c_char).to_bytes()
+    let h = ((s - 8) as *const i64).read_unaligned();
+    if h != 0 {
+        std::slice::from_raw_parts(s as *const u8, (h - 9) as usize)
+    } else {
+        std::ffi::CStr::from_ptr(s as *const std::os::raw::c_char).to_bytes()
+    }
 }
 
 /// Copy `bytes` into a fresh header-carrying (reclaimable) heap String (NUL-terminated).
+///
+/// The String model is NUL-terminated — embedded NULs truncate the text — so we truncate HERE, at
+/// construction, rather than on every read. This keeps a heap String's STORED length equal to its
+/// logical length (`capacity − 1`), which is what lets `str_bytes` read the length from the header
+/// in O(1). Observationally identical to the old read-time `strlen` truncation.
 unsafe fn alloc_str(bytes: &[u8]) -> i64 {
-    let p = axion_alloc(bytes.len() as i64 + 1);
+    let n = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let p = axion_alloc(n as i64 + 1);
     let dst = p as *mut u8;
-    std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
-    *dst.add(bytes.len()) = 0;
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, n);
+    *dst.add(n) = 0;
     p
 }
 
@@ -1803,6 +1820,54 @@ pub unsafe extern "C" fn axion_readdir(path: i64) -> i64 {
             buf.push(b'\n');
         }
         buf.extend_from_slice(ent.file_name().as_bytes());
+    }
+    alloc_str(&buf)
+}
+
+/// `readDirTyped path` — like `readDir`, but each entry is `<code><name>` where `code` is the entry's
+/// TYPE: `d`(ir) `l`(ive symlink) `b`(roken symlink) `x`(executable regular) `f`(other regular/special).
+/// Types come from readdir's `d_type` (`file_type`, no stat for dir/symlink) plus one native metadata
+/// read for the exec bit / broken-link check — NO `ls`/`stat` subprocess. Entries are SORTED BY NAME
+/// (bytes), so the caller only needs a cheap dirs-first partition; `.`/`..` are already excluded. "" if
+/// the dir can't be opened.
+/// Symlinks are classified as `l`/`b` BEFORE dir/exec (mirrors axfm's `[ -L ]`-first shell classifier),
+/// so a symlink-to-a-directory is `l`, not `d`.
+#[no_mangle]
+pub unsafe extern "C" fn axion_readdir_typed(path: i64) -> i64 {
+    use std::os::unix::fs::PermissionsExt;
+    let rd = match std::fs::read_dir(os(path)) {
+        Ok(rd) => rd,
+        Err(_) => return alloc_str(b""),
+    };
+    // Collect (code, name) then sort by NAME (bytes). Sorting here (native, fast) lets the caller do
+    // only a cheap dirs-first partition — no in-language merge sort over linear strings.
+    let mut ents: Vec<(u8, Vec<u8>)> = Vec::new();
+    for ent in rd.flatten() {
+        let code: u8 = match ent.file_type() {
+            Ok(ft) if ft.is_symlink() => {
+                // follow once: resolvable → live `l`, else broken `b`
+                if std::fs::metadata(ent.path()).is_ok() {
+                    b'l'
+                } else {
+                    b'b'
+                }
+            }
+            Ok(ft) if ft.is_dir() => b'd',
+            _ => match ent.metadata() {
+                Ok(m) if m.permissions().mode() & 0o111 != 0 => b'x',
+                _ => b'f',
+            },
+        };
+        ents.push((code, ent.file_name().as_bytes().to_vec()));
+    }
+    ents.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut buf: Vec<u8> = Vec::new();
+    for (code, name) in &ents {
+        if !buf.is_empty() {
+            buf.push(b'\n');
+        }
+        buf.push(*code);
+        buf.extend_from_slice(name);
     }
     alloc_str(&buf)
 }
@@ -2258,6 +2323,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_puts", axion_puts as *const u8),
         ("axion_rand_hex", axion_rand_hex as *const u8),
         ("axion_readdir", axion_readdir as *const u8),
+        ("axion_readdir_typed", axion_readdir_typed as *const u8),
         ("axion_read_file", axion_read_file as *const u8),
         ("axion_read_line", axion_read_line as *const u8),
         ("axion_read_secret", axion_read_secret as *const u8),

@@ -85,7 +85,7 @@ NATIVE=(
   axionc/tests/fixtures/readkeytimeout_sanitize.axi
   axionc/tests/fixtures/chr_sanitize.axi
   axionc/tests/fixtures/cond_temp_reclaim.axi
-  examples/fff.axi
+  examples/axfm.axi
   examples/lambda.axi
   examples/typecheck.axi
   examples/gauss.axi
@@ -231,14 +231,14 @@ compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if nativ
 # dir, mark+paste, attributes). Exact outcomes don't matter here — we only assert NO corruption; a
 # failed op's modal just eats the next key / EOF. (fff is NOT leak-gated: a known compiler-level
 # string-accumulator leak affects cmdLine/search; see the flagship memory. Corruption is the gate.)
-FFF_DRIVE='jkgG.oJK/note\n;,nMADE\nfTOUCHED\nrRENAMED\nX:sub\nypxgdpyu'
+FFF_DRIVE='jkgG.oJK/note\n;,nMADE\nfTOUCHED\nrRENAMED\nX:sub\nypxgdpyui.bbt][T3jBb'
 run_corruption() { # <name> <exe> → run under ASan (leaks off); stderr→$WORK/e; return exit code
-  if [ "$1" = fff ]; then
+  if [ "$1" = axfm ]; then
     local H="$WORK/fffhome"; rm -rf "$H"; mkdir -p "$H/sub"
     : >"$H/a.txt"; : >"$H/b.txt"; printf 'line1\nline2\nline3\n' >"$H/note.txt"
     printf '%b' "$FFF_DRIVE" | HOME="$H" ASAN_OPTIONS=detect_leaks=0 "$2" "$H" >/dev/null 2>"$WORK/e"
   else
-    ASAN_OPTIONS=detect_leaks=0 "$2" >/dev/null 2>"$WORK/e"
+    ASAN_OPTIONS=detect_leaks=0 "$2" </dev/null >/dev/null 2>"$WORK/e"
   fi
 }
 
@@ -258,7 +258,7 @@ for f in "${NATIVE[@]}"; do
   corr=$((corr + 1))
   # leak gate (only on the proven subset)
   if is_leakfree "$name"; then
-    if ASAN_OPTIONS=detect_leaks=1 "$exe" >/dev/null 2>"$WORK/e"; then
+    if ASAN_OPTIONS=detect_leaks=1 "$exe" </dev/null >/dev/null 2>"$WORK/e"; then
       echo "✓ $name: ASan + LSan clean"; leak=$((leak + 1))
     else
       echo "✗ $name: LEAK under LSan (should be leak-free)"; grep -E 'SUMMARY' "$WORK/e" | head -1; fail=1

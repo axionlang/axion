@@ -19,12 +19,18 @@ cd "$(dirname "$0")/.."
 # the comparison is by content, not by the compiler's exit status.
 set +o pipefail
 
-AXIONC="${AXIONC:-axionc/target/debug/axionc}"
+AXIONC_DEFAULT="axionc/target/debug/axionc"
+AXIONC="${AXIONC:-$AXIONC_DEFAULT}"
 SNAP="axionc/tests/coresnap"
-if [ ! -x "$AXIONC" ]; then
+# ALWAYS (re)build the default debug axionc — never reuse whatever happens to be on disk. `cargo build`
+# is incremental (a no-op when sources are unchanged), so this is cheap, and it closes a real trap: a
+# STALE binary silently ran once and infinite-looped on a source the current compiler handles fine. A
+# caller that pins AXIONC to a specific binary (e.g. the release build) is trusted and not rebuilt.
+if [ "$AXIONC" = "$AXIONC_DEFAULT" ]; then
   echo "building axionc…"
   (cd axionc && cargo build -q) || { echo "build failed"; exit 2; }
 fi
+[ -x "$AXIONC" ] || { echo "axionc not found at $AXIONC"; exit 2; }
 mkdir -p "$SNAP"
 
 inputs() { ls axionc/tests/fixtures/*.axi examples/*.axi 2>/dev/null; }

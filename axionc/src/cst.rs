@@ -1131,7 +1131,11 @@ impl ExprParser<'_> {
     fn lam_expr(&mut self) {
         self.b.start_node(LAMBDA_EXPR.into());
         self.bump(); // '\'
-        while !matches!(self.cur(), Some(Tok::Arrow) | None) {
+        // Consume parameter patterns while one actually STARTS here — not "until `->`/EOF". The old
+        // condition spun forever on a malformed lambda like `(\x)`: at `)` neither `->`/EOF held, but
+        // `apat()` could not consume `)` either, so the loop never advanced. `starts_apat` stops at the
+        // first non-pattern token (e.g. `)`), and `expect(&Arrow)` then reports a clean syntax error.
+        while self.starts_apat() {
             self.apat();
         }
         self.expect(&Tok::Arrow);

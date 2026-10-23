@@ -374,6 +374,9 @@
       drop m
       drop msg : String
       drop msg : String
+      drop nm : String
+      drop nm : String
+      drop nm : String
       drop rhs : Expr
       drop tb : Expr
       drop ts
@@ -736,6 +739,9 @@
     drop c : Expr
     drop c : Expr
     drop e : Expr
+    drop nm : String
+    drop nm : String
+    drop nm : String
     drop rhs : Expr
     drop s : String
     drop s : String

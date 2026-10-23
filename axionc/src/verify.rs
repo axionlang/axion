@@ -251,9 +251,52 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
                 poly_elem: false,
             },
             Some(&mut out),
+            None,
         );
     }
     out
+}
+
+/// The DUAL of the `consume` finding, as a reusable analysis over ANY Core (pre- or post-drop — the
+/// interior-alias tracking is drop-independent): for each function, the param indices that RECEIVE a
+/// borrowed container element at some call site anywhere in the module. `reclaim_cond_escape`'s
+/// seeding consults this to never reclaim such a param (whose free would double-free the owner's
+/// structure — the `axpass show` / `borrowed_list_elem_consume` class), while still reclaiming every
+/// genuinely-owned `String` param (accumulators). Runs the same CHECK-mode pass `verify` uses, in a
+/// collection sink; `frees_heap` is empty (the collection records every borrowed interior, not only
+/// freed ones, so it does not depend on inserted drops).
+pub fn borrowed_elem_params(
+    fns: &[CoreFn],
+    ba: &BorrowArgs,
+    recinfo: &RecordInfo,
+) -> HashMap<String, HashSet<usize>> {
+    let (summaries, elem_aliases) = compute_summaries(fns, ba, recinfo);
+    let ret_alias = ret_alias_summary(fns);
+    let no_fh: HashMap<String, HashSet<usize>> = HashMap::new();
+    let no_pk: HashMap<String, Vec<Option<String>>> = HashMap::new();
+    let mut sink: HashMap<String, HashSet<usize>> = HashMap::new();
+    for f in fns {
+        if is_generated(&f.name) {
+            continue;
+        }
+        run_fn(
+            f,
+            ba,
+            recinfo,
+            &summaries,
+            &elem_aliases,
+            &ret_alias,
+            &no_fh,
+            &no_pk,
+            PassMode {
+                track_fields: true,
+                poly_elem: false,
+            },
+            None,
+            Some(&mut sink),
+        );
+    }
+    sink
 }
 
 /// The interprocedural alias summary as a REUSABLE analysis over ANY Core (pre- or
@@ -453,7 +496,7 @@ fn compute_summaries(
                 poly_elem: false,
             };
             let rv = run_fn(
-                f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, pure_mode, None,
+                f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, pure_mode, None, None,
             );
             let pure_borrowed = params_borrowed(&rv, f);
             let orig_pure = if rv.owned {
@@ -471,7 +514,7 @@ fn compute_summaries(
                 poly_elem: true,
             };
             let rve = run_fn(
-                f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, elem_mode, None,
+                f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, elem_mode, None, None,
             );
             let elem_full = params_borrowed(&rve, f);
             // GRAB-VIA-CASE promotion: the track_fields-OFF pure pass cannot see a case-extracted
@@ -533,6 +576,7 @@ fn run_fn(
     param_keys: &HashMap<String, Vec<Option<String>>>,
     mode: PassMode,
     out: Option<&mut Vec<Finding>>,
+    elem_sink: Option<&mut HashMap<String, HashSet<usize>>>,
 ) -> Val {
     let mut st = State::new();
     let mut owned: HashSet<&String> = f.owned_params.iter().collect();
@@ -605,6 +649,7 @@ fn run_fn(
         ret_alias,
         frees_heap,
         poly_borrowed: HashSet::new(),
+        elem_sink,
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -693,6 +738,12 @@ struct Verifier<'a> {
     /// the callee actually freeing a heap value there (`frees_heap`), so a poly element that
     /// instantiates to a scalar (`List Int`) is never falsely flagged. Populated by `bind_pattern`.
     poly_borrowed: HashSet<String>,
+    /// Collection sink for `borrowed_elem_params` (None in the normal CHECK/summary passes): at each
+    /// `CallDirect(g, args)`, every arg that is a BORROWED interior (an element of a borrowed
+    /// container) records `(g, arg-index)` — i.e. the callee params that would double-free if a
+    /// drop-pass made them reclaim. `reclaim_cond_escape`'s seeding reads this to SKIP reclaiming
+    /// such a param — the precise opposite of `consume`'s flag, from the same detection (one authority).
+    elem_sink: Option<&'a mut HashMap<String, HashSet<usize>>>,
 }
 
 impl Verifier<'_> {
@@ -808,6 +859,13 @@ impl Verifier<'_> {
                     });
                     if !borrowed_interior {
                         continue;
+                    }
+                    // Record (callee, param-index) for `borrowed_elem_params`: this position receives
+                    // a borrowed container element, so a reclaim pass must NOT make the callee free it.
+                    // Collected for EVERY borrowed interior (independent of `frees` below) — the point
+                    // is to PREVENT introducing the free, not to confirm an existing one.
+                    if let Some(sink) = self.elem_sink.as_deref_mut() {
+                        sink.entry(g.clone()).or_default().insert(i);
                     }
                     // The callee FREES this arg here (→ double-free of the owner's structure) iff it
                     // genuinely drops a value at this position (`frees_heap`), OR — for a CONCRETE

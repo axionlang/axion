@@ -159,7 +159,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang gnupg qrencode
       - name: pass(1) clone behavioral test (gpg keyring, all backends)
         run: PASS_TEST_REQUIRE=1 ./scripts/pass-test.sh
-      # The `fff` file-manager rewrite (examples/fff.axi) driven headlessly — a scripted key stream
+      # The `fff` file-manager rewrite (examples/axfm.axi) driven headlessly — a scripted key stream
       # at a throwaway tree (HOME sandboxed), asserting navigation frames + mkdir/mkfile/rename/
       # trash/copy/bulk-rename effects on every backend. Keeps the flagship + readKey/chr honest.
       - name: fff file-manager behavioral test (all backends)

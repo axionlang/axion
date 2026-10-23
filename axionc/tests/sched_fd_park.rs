@@ -23,6 +23,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // sentinel (parked), then again after `poll` resumes it (data ready) — proof it genuinely parked.
 static ENTRIES: AtomicUsize = AtomicUsize::new(0);
 
+/// Build a faithful Axión String *literal* (8-byte ZERO size-header, then NUL-terminated bytes,
+/// pointer past the header) — what codegen hands the runtime. A bare `CString` has arbitrary bytes
+/// at −8, which the now-O(1) header-based `str_bytes` would misread as the length. Keep the Vec
+/// alive while the pointer is in use.
+unsafe fn axi_str(s: &str) -> (Vec<u8>, i64) {
+    let mut buf = vec![0u8; 8];
+    buf.extend_from_slice(s.as_bytes());
+    buf.push(0);
+    let ptr = buf.as_ptr().add(8) as i64;
+    (buf, ptr)
+}
+
 // State block: [0] = result flag, [16] = the socket fd. (8 is the conventional resume slot, unused.)
 extern "C" fn reader_step(sched_p: i64, state: i64) -> i64 {
     ENTRIES.fetch_add(1, Ordering::SeqCst);
@@ -74,8 +86,8 @@ fn scheduler_parks_a_worker_on_a_socket_fd_and_poll_wakes_it() {
         // Background sender: wait long enough that the reader's FIRST recv must park, then send.
         let sender = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(60));
-            let msg = CString::new("hello").unwrap();
-            axion_rt::ax_net_send(client_fd, msg.as_ptr() as i64);
+            let (_msg, msg) = axi_str("hello");
+            axion_rt::ax_net_send(client_fd, msg);
         });
 
         ENTRIES.store(0, Ordering::SeqCst);

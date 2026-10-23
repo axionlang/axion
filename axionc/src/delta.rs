@@ -227,6 +227,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_exec_capture"
                 || func == "axion_read_file"
                 || func == "axion_readdir"
+                || func == "axion_readdir_typed"
                 || func == "axion_read_line"
                 || func == "axion_read_secret"
                 || func == "axion_read_key"

@@ -1356,6 +1356,7 @@ pub fn builtins() -> HashSet<String> {
         "removeFile",
         "renameFile",
         "readDir",
+        "readDirTyped",
         "readLine",
         "readSecret",
         "readKey",

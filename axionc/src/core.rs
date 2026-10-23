@@ -416,6 +416,7 @@ pub fn is_string_producer(func: &str) -> bool {
             | "axion_exec_capture"
             | "axion_read_file"
             | "axion_readdir"
+            | "axion_readdir_typed"
             | "axion_read_line"
             | "axion_read_secret"
             | "axion_read_key"
@@ -527,6 +528,7 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "removeFile" => ("axion_unlink", 1),
         "renameFile" => ("axion_rename", 2),
         "readDir" => ("axion_readdir", 1),
+        "readDirTyped" => ("axion_readdir_typed", 1),
         "readLine" => ("axion_read_line", 1),
         "readSecret" => ("axion_read_secret", 1),
         "readKey" => ("axion_read_key", 1),
@@ -1877,6 +1879,9 @@ impl Lower<'_> {
         if name == "readDir" && args.len() == 1 {
             return self.rtcall("axion_readdir", &args, true, buf);
         }
+        if name == "readDirTyped" && args.len() == 1 {
+            return self.rtcall("axion_readdir_typed", &args, true, buf);
+        }
         if name == "readLine" && args.len() == 1 {
             return self.rtcall("axion_read_line", &args, true, buf);
         }
@@ -2847,7 +2852,11 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
     for b in ["strAppend", "divInteger", "modInteger"] {
         arity.entry(b.into()).or_insert(2);
     }
-    let mut e = Eta { arity, counter: 0 };
+    let mut e = Eta {
+        arity,
+        counter: 0,
+        bound: std::collections::HashSet::new(),
+    };
     let funcs = funcs0.iter().map(|f| e.func(f)).collect();
     ast::Module {
         name: module.name.clone(),
@@ -2864,6 +2873,26 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
 struct Eta {
     arity: HashMap<String, usize>,
     counter: usize,
+    /// Names bound in the current lexical scope (function/lambda parameters, `let`
+    /// bindings, `case` pattern binders). A bound name SHADOWS the global `arity`
+    /// map, so a local variable whose name collides with a top-level/prelude
+    /// function (e.g. a parameter `count` vs the prelude's `count`) is NOT mistaken
+    /// for that function and eta-expanded into a closure (which silently turned the
+    /// value into an arity-N thunk — a miscompile that only bit when the shadowed
+    /// name was used as a plain value / argument).
+    bound: std::collections::HashSet<String>,
+}
+
+/// Collect the variable binders a pattern introduces (recursing into con/tuple
+/// sub-patterns). Constructor and literal heads bind nothing.
+fn eta_pat_vars(p: &Pat, out: &mut Vec<String>) {
+    match p {
+        Pat::Var(n, _) => out.push(n.clone()),
+        Pat::Con(_, subs, _) | Pat::Tuple(subs, _) => {
+            subs.iter().for_each(|s| eta_pat_vars(s, out));
+        }
+        Pat::Wild(_) | Pat::Int(_, _) | Pat::Str(_, _) => {}
+    }
 }
 
 impl Eta {
@@ -2878,18 +2907,32 @@ impl Eta {
         let clauses = f
             .clauses
             .iter()
-            .map(|c| ast::Clause {
-                pats: c.pats.clone(),
-                body: match &c.body {
+            .map(|c| {
+                // This clause's parameter binders + its `where` function names are in
+                // scope for the body and the where-clauses (which may be mutually
+                // recursive) — bind them so none is mistaken for a global callable.
+                let mut names = Vec::new();
+                for p in &c.pats {
+                    eta_pat_vars(p, &mut names);
+                }
+                names.extend(c.wher.iter().map(|w| w.name.clone()));
+                let added = self.push_scope(names);
+                let body = match &c.body {
                     Body::Plain(e) => Body::Plain(self.expr(e)),
                     Body::Guarded(arms) => Body::Guarded(
                         arms.iter()
                             .map(|(g, r)| (self.expr(g), self.expr(r)))
                             .collect(),
                     ),
-                },
-                wher: c.wher.iter().map(|w| self.func(w)).collect(),
-                span: c.span,
+                };
+                let wher = c.wher.iter().map(|w| self.func(w)).collect();
+                self.pop_scope(added);
+                ast::Clause {
+                    pats: c.pats.clone(),
+                    body,
+                    wher,
+                    span: c.span,
+                }
             })
             .collect();
         ast::Func {
@@ -2914,8 +2957,26 @@ impl Eta {
 
     fn name_arity(&self, e: &Expr) -> Option<usize> {
         match e {
+            // A locally-bound variable shadows any same-named global callable, so it
+            // is a plain value here — never eta-expand it.
+            Expr::Var(n, _) if self.bound.contains(n) => None,
             Expr::Var(n, _) | Expr::Con(n, _) => self.arity.get(n).copied(),
             _ => None,
+        }
+    }
+
+    /// Enter a scope binding `names`: insert those not already bound, returning the
+    /// ones actually added (to `pop_scope` afterwards). Handles shadowing correctly
+    /// — a name already bound by an outer scope is left in place.
+    fn push_scope(&mut self, names: Vec<String>) -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|n| self.bound.insert(n.clone()))
+            .collect()
+    }
+    fn pop_scope(&mut self, added: Vec<String>) {
+        for n in added {
+            self.bound.remove(&n);
         }
     }
 
@@ -2975,18 +3036,30 @@ impl Eta {
                 Box::new(self.expr(el)),
                 *sp,
             ),
-            Expr::Let(binds, body, sp) => Expr::Let(
-                binds.iter().map(|f| self.func(f)).collect(),
-                Box::new(self.expr(body)),
-                *sp,
-            ),
-            Expr::Case(s, arms, sp) => Expr::Case(
-                Box::new(self.expr(s)),
-                arms.iter()
-                    .map(|(p, b)| (p.clone(), self.expr(b)))
-                    .collect(),
-                *sp,
-            ),
+            Expr::Let(binds, body, sp) => {
+                // let-bound names are in scope for every binding (recursive lets) and
+                // the body — bind them so a let name can't be read as a global callable.
+                let added = self.push_scope(binds.iter().map(|f| f.name.clone()).collect());
+                let nb = binds.iter().map(|f| self.func(f)).collect();
+                let body = self.expr(body);
+                self.pop_scope(added);
+                Expr::Let(nb, Box::new(body), *sp)
+            }
+            Expr::Case(s, arms, sp) => {
+                let scrut = self.expr(s);
+                let arms = arms
+                    .iter()
+                    .map(|(p, b)| {
+                        let mut names = Vec::new();
+                        eta_pat_vars(p, &mut names);
+                        let added = self.push_scope(names);
+                        let b = self.expr(b);
+                        self.pop_scope(added);
+                        (p.clone(), b)
+                    })
+                    .collect();
+                Expr::Case(Box::new(scrut), arms, *sp)
+            }
             Expr::Tuple(es, sp) => Expr::Tuple(es.iter().map(|x| self.expr(x)).collect(), *sp),
             Expr::RecordCon(c, fs, sp) => Expr::RecordCon(
                 c.clone(),
@@ -2998,7 +3071,16 @@ impl Eta {
                 fs.iter().map(|(n, x)| (n.clone(), self.expr(x))).collect(),
                 *sp,
             ),
-            Expr::Lam(ps, body, sp) => Expr::Lam(ps.clone(), Box::new(self.expr(body)), *sp),
+            Expr::Lam(ps, body, sp) => {
+                let mut names = Vec::new();
+                for p in ps {
+                    eta_pat_vars(p, &mut names);
+                }
+                let added = self.push_scope(names);
+                let body = self.expr(body);
+                self.pop_scope(added);
+                Expr::Lam(ps.clone(), Box::new(body), *sp)
+            }
         }
     }
 }
@@ -5043,6 +5125,16 @@ pub fn lower_with(
     let mut tuple_skip_seeds: Vec<(String, usize, Vec<usize>)> = Vec::new();
     // stream-fusion pass: fuse producer→consumer chains on List operations
     fuse_list_ops(&mut out);
+    // Params that receive a BORROWED container element at some call site (the `consume e` /
+    // `axpass show` class): reclaiming such a String param would free the owner's element → a
+    // double-free the verifier would reject. Excluded from String reclaim below so owned-String
+    // reclamation (accumulators) is enabled safely. Drop-independent → computed on the pre-drop Core.
+    let bep = crate::verify::borrowed_elem_params(&out, &borrow_args, &recinfo);
+    // ESCAPE HATCH (tests only): AXION_STRING_RECLAIM=1 BYPASSES the `bep` exclusion, forcing the
+    // unsound blanket owned-String reclaim (the reverted 16ceefb behaviour). Used by
+    // `verifier_catches_borrowed_list_element_double_free` to prove the verifier is the backstop —
+    // with the exclusion off, `work` frees a borrowed list element and the verifier must AX0910 it.
+    let force_unsafe_string_reclaim = std::env::var_os("AXION_STRING_RECLAIM").is_some();
     for f in out {
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
         let (mut f, seeds, tuple_seeds_skip) = insert_drops(f, &borrow_args, dty, &recinfo);
@@ -5070,14 +5162,12 @@ pub fn lower_with(
                     // destructor, or a boxed `Integer`) — NOT a pure enum, whose values
                     // are unboxed immediate tags with no destructor (freeing one corrupts).
                     let is_enum = ty.head_con().is_some_and(|h| recinfo.is_enum_type(h));
-                    // AXION_STRING_RECLAIM (test hook, DEFAULT OFF): reclaim owned String params
-                    // here too. This is the UNSOUND change reverted in 16ceefb — it double-frees a
-                    // String that is a case-extracted BORROWED element of a container the caller
-                    // deep-drops (the fzf-path `axpass show` bug). Kept behind a flag purely to
-                    // regenerate that unsafe Core so the drop-verifier's element-consume check can
-                    // be proven to CATCH it (never set in production).
-                    let string_reclaim = std::env::var_os("AXION_STRING_RECLAIM").is_some()
-                        && ty.head_con() == Some("String");
+                    // Owned `String` params ARE reclaimed now (the accumulator-leak fix) — SOUNDLY,
+                    // because a param that receives a borrowed container element (`bep`, the fzf-path
+                    // `axpass show` / `borrowed_list_elem_consume` class) is excluded below, so its
+                    // free is never introduced. The blanket reclaim was reverted in 16ceefb; `bep` is
+                    // the precise exclusion that makes it safe (the verifier remains the backstop).
+                    let string_reclaim = ty.head_con() == Some("String");
                     let reclaimable =
                         (heap_ty(ty, &data_types) && mono_key(ty).is_some() && !is_enum)
                             || ty.head_con() == Some("Integer")
@@ -5085,6 +5175,8 @@ pub fn lower_with(
                     reclaimable
                         && !ba_set.is_some_and(|s| s.contains(i))
                         && !drp.contains(name.as_str())
+                        && (force_unsafe_string_reclaim
+                            || !bep.get(&f.name).is_some_and(|s| s.contains(i)))
                 })
                 .map(|(_, (name, ty))| {
                     let key = match ty.head_con() {

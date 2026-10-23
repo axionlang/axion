@@ -161,22 +161,27 @@ and well-mitigated this list is.
   **characterized, corruption-free leak**, not a hole in the hard (no-corruption) guarantee. Investigated
   2026-10-10: the naive reclaim (add `Integer` to `con_drop_slots`) fixes the leak but turns the
   extract-and-escape shape into a sound **AX0910 rejection** (consistent with how `String` already behaves)
-  — an expressiveness regression, not shipped.
-- **Owned `String` parameters reclaimed only in a tail-recursive accumulator** (`AXION_STRING_RECLAIM`,
-  default **off**, `core.rs` seeding of `reclaim_cond_escape`): an owned `String` *parameter* that is
-  rebuilt each step of a tail recursion — `go acc n = … go (strAppend acc …) …`, the shape behind a
-  `cmdLine`/search key accumulator — leaks its superseded intermediates, and the verifier does **not**
-  report it (`AX0911` blind, same class as the `Integer` field above). Enabling the reclaim fixes the
-  accumulator leak **but** makes a function that receives a **borrowed container element** as a `String`
-  param (`work` borrows a `List String`, passes each element to a `consume`; the `axpass show` fzf path)
-  free that borrowed element → a double-free the verifier then correctly **AX0910-rejects**
-  (`axionc/tests/fixtures/borrowed_list_elem_consume.axi` is the regression guard; the reclaim was reverted
-  in 16ceefb for exactly this). So this is the *same* deliberate leak-rather-than-reject tradeoff as the
-  `Integer` field: the sound fix is the interprocedural owned-vs-borrowed-element precision (roadmap §6,
-  [[axion-partial-consumer-uaf]]) that would let a genuinely-owned accumulator reclaim without rejecting
-  the borrowed-element consumer. A **characterized, corruption-free, bounded** leak (bytes × query length),
-  surfaced 2026-10-12 by driving the interactive `examples/fff.axi` under ASan (`scripts/sanitize.sh` now
-  exercises its operational paths rather than only startup).
+  — an expressiveness regression, not shipped. Re-confirmed 2026-10-16: the owned-`String`-*param* leak
+  below was closed by the `bep` borrowed-element precision, but `bep` is a **param-reclaim** exclusion and
+  does **not** control the destructor's field-drop — so adding `Integer` to `con_drop_slots` still turns the
+  extract-and-escape shape into the same AX0910 rejection (empirically re-verified on the `getV r = n r`;
+  `map getV` shape). The field case genuinely needs the per-field move-out, not `bep`; it remains deferred.
+- **Owned `String` parameters in a tail-recursive accumulator — NOW RECLAIMED, SOUNDLY** (`core.rs`
+  seeding of `reclaim_cond_escape`, default-**on**): an owned `String` *parameter* rebuilt each step of a
+  tail recursion — `go acc n = … go (strAppend acc …) …`, the shape behind a `cmdLine`/search key
+  accumulator — is now reclaimed each step (previously a characterized leak). Closed by the interprocedural
+  **borrowed-element precision** (`verify::borrowed_elem_params`, "`bep`"): an owned `String` param is
+  reclaimed iff no call site anywhere passes it a borrowed container element. This keeps the genuinely-owned
+  accumulator reclaiming while still **not** reclaiming a `String` param that receives a borrowed element
+  (`work` borrows a `List String`, passes each element to a `consume`; the `axpass show` fzf path) — the
+  double-free a blanket reclaim would create, and which the verifier correctly **AX0910-rejects**.
+  `axionc/tests/fixtures/borrowed_list_elem_consume.axi` remains the regression guard (must verify + ASan
+  clean, **not** be rejected); the escape hatch `AXION_STRING_RECLAIM=1` bypasses the `bep` exclusion to
+  force the unsound blanket reclaim and prove the verifier is the backstop
+  (`verifier_catches_borrowed_list_element_double_free`). This is the owned-vs-borrowed-element precision
+  (roadmap §6, [[axion-partial-consumer-uaf]]) applied to `String` *params*; the analogous **destructor
+  field-drop** case (the `Integer`/`String` *field* extract-and-escape above) still needs the per-field
+  move-out and remains a characterized leak.
 - **Concurrency T1/T3/T5 value-level** (separation logic / Iris-Actris): the deadlock/fidelity/cancellation
   results are proven at the **graph/type** level (`AxionSession`, `AxionFidelity`); the value-level
   subject-reduction and memory-orphan claims are **deferred** (stated in `docs/phase-3-calculus.md` §6,

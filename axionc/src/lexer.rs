@@ -154,9 +154,12 @@ pub enum Tok {
     #[regex(r"[0-9]+", |lex| Some(lex.slice().parse::<i64>().map_or_else(|_| IntLit::Big(lex.slice().to_string()), IntLit::Small)))]
     #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(lex.slice().strip_prefix("0x").unwrap_or(""), 16).ok().map(IntLit::Small))]
     // a char literal is just its code point as an `Int` (byte-oriented string model, matches `chr`):
-    // `'A'` == 65, `'\n'` == 10, `'\e'` == 27. No conflict with identifier apostrophes (`buf'`) — a
-    // `'`-leading position can only be a char literal; a trailing `'` is consumed inside the ident.
-    #[regex(r"'([^'\\]|\\.)'", |lex| char_lit(lex.slice()))]
+    // `'A'` == 65, `'\n'` == 10, `'\e'` == 27, `'\x1b'` == 27. The `\xNN` alternative is listed FIRST so
+    // the inner escape can be the 4-char `\xHH` (two hex digits) — matching the `\xNN` the string literal
+    // and `resolve_escape` already accept; without it `'\xNN'` matched no token, the stray quote fed the
+    // CST recovery an infinite loop. No conflict with identifier apostrophes (`buf'`) — a `'`-leading
+    // position can only be a char literal; a trailing `'` is consumed inside the ident.
+    #[regex(r"'(\\x[0-9a-fA-F][0-9a-fA-F]|\\.|[^'\\])'", |lex| char_lit(lex.slice()))]
     Int(IntLit),
     #[regex(r#""([^"\\]|\\.)*""#, |lex| unquote(lex.slice()))]
     Str(String),
