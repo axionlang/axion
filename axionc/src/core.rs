@@ -1110,18 +1110,40 @@ fn owning_generic_var(f: &ast::Func) -> Option<String> {
 /// for the transitive native candidacy — those that are top-level functions must be
 /// themselves compilable.
 fn body_refs(f: &ast::Func, out: &mut HashSet<String>) {
+    body_refs_bound(f, &HashSet::new(), out);
+}
+
+/// The top-level/`where` function names a clause body REFERENCES — used for native
+/// candidacy (a reference to a non-native function disqualifies the referrer). The clause's
+/// own parameters and its `where`-local names MUST be treated as bound, or a param whose
+/// name collides with a prelude/top-level function (e.g. a param literally named `take`,
+/// `drop`, `lookup`) is miscounted as a reference to that function: the referrer — and
+/// transitively `main` — is then wrongly pruned from native lowering (codegen can no longer
+/// find `main`). Same scope-unaware class as the `eta_expand`/capture bugs. `outer` carries
+/// the enclosing clause's binders into `where`-locals so a `where`-body reference to a parent
+/// param is likewise not miscounted.
+fn body_refs_bound(f: &ast::Func, outer: &HashSet<String>, out: &mut HashSet<String>) {
     for c in &f.clauses {
+        let mut bound = outer.clone();
+        for p in &c.pats {
+            let mut v = Vec::new();
+            pat_vars(p, &mut v);
+            bound.extend(v);
+        }
+        for w in &c.wher {
+            bound.insert(w.name.clone());
+        }
         match &c.body {
-            Body::Plain(e) => free_vars(e, &HashSet::new(), out),
+            Body::Plain(e) => free_vars(e, &bound, out),
             Body::Guarded(arms) => {
                 for (g, r) in arms {
-                    free_vars(g, &HashSet::new(), out);
-                    free_vars(r, &HashSet::new(), out);
+                    free_vars(g, &bound, out);
+                    free_vars(r, &bound, out);
                 }
             }
         }
         for w in &c.wher {
-            body_refs(w, out);
+            body_refs_bound(w, &bound, out);
         }
     }
 }
@@ -1132,7 +1154,11 @@ fn body_refs(f: &ast::Func, out: &mut HashSet<String>) {
 /// bodies reference that are neither its own parameters (nor a nested `where`'s
 /// name) nor module globals. Used to lambda-lift the local for the native
 /// backends (the interpreter captures the parent env directly).
-fn where_free_vars(w: &ast::Func, globals: &HashSet<String>) -> HashSet<String> {
+fn where_free_vars(
+    w: &ast::Func,
+    globals: &HashSet<String>,
+    shadow: &HashSet<String>,
+) -> HashSet<String> {
     let mut out = HashSet::new();
     for c in &w.clauses {
         let mut bound: HashSet<String> = HashSet::new();
@@ -1154,7 +1180,7 @@ fn where_free_vars(w: &ast::Func, globals: &HashSet<String>) -> HashSet<String> 
             }
         }
         for iw in &c.wher {
-            for n in where_free_vars(iw, globals) {
+            for n in where_free_vars(iw, globals, shadow) {
                 if !bound.contains(&n) {
                     out.insert(n);
                 }
@@ -1166,7 +1192,13 @@ fn where_free_vars(w: &ast::Func, globals: &HashSet<String>) -> HashSet<String> 
     // unbound `getEnv` in the native IR (`where s = getEnv "HOME"`). Excluded here in
     // addition to module globals. (Kept narrow — NOT the whole builtin set, whose session
     // ops resolve through a different path and must stay out of the global name resolver.)
-    out.retain(|n| !globals.contains(n) && sess_builtin_rt(n).is_none());
+    //
+    // EXCEPT a name in `shadow` (an enclosing-function param/`let`/`case` binder): it must
+    // stay a capture even when it collides with a module global, since the `where`-local's
+    // reference is to that lexical local, not the global — dropping it resolved the global
+    // instead (a silent miscompile, `where h = g + 1` capturing a param `g` that shadows a
+    // global CAF `g`). Same shadow rule as `atom`/`call_named`/the lambda-lift captures.
+    out.retain(|n| (!globals.contains(n) || shadow.contains(n)) && sess_builtin_rt(n).is_none());
     out
 }
 
@@ -2164,7 +2196,15 @@ impl Lower<'_> {
         // backends mishandle (cranelift errors, LLVM emits garbage). `f` may be a
         // top-level function (looked up by name) or a `where`-local (resolved through
         // the mangling map to its `parent$w` key).
-        if !self.foreigns.contains(name) {
+        //
+        // `local_names` MUST shadow the global arity table here, exactly as the CAF
+        // check in `atom` does (and for the same reason as the scope-aware `eta_expand`
+        // fix): a function-typed LOCAL (param/`let`/`case` binder) whose name collides
+        // with a top-level function would otherwise be split using the GLOBAL's arity —
+        // `call_named` would then call the wrong (global) function and apply the real
+        // local's extra args to its result (a silent miscompile). A bare local is never
+        // over-applied against the global; it stays a single `call_named` (closure call).
+        if !self.foreigns.contains(name) && !self.local_names.contains(name) {
             let key = self.locals.get(name).map_or(name.as_str(), String::as_str);
             if let Some(&arity) = self.fn_arity.get(key) {
                 if vals.len() > arity {
@@ -2219,8 +2259,15 @@ impl Lower<'_> {
                 name: name.to_string(),
                 args: vals,
             }
-        } else if self.globals.contains(name) {
-            // top-level function / `where` local (resolves the mangling)
+        } else if self.globals.contains(name) && !self.local_names.contains(name) {
+            // top-level function / `where` local (resolves the mangling). `local_names`
+            // shadows the global table (same rule as `atom`'s bare-`Var` CAF check and
+            // the over-application split): a function-typed LOCAL (param/`let`/`case`
+            // binder) that collides with a top-level function name is an indirect
+            // closure call, NOT a direct call to the global — otherwise it would call
+            // the wrong function (and at the global's arity). `where`-locals are resolved
+            // through the `locals` mangling map and are NOT in `local_names` (which only
+            // holds clause params + `let`/lambda/`case` binders), so they stay here.
             let target = self
                 .locals
                 .get(name)
@@ -2610,6 +2657,7 @@ fn lifted_lambda_owned(
 fn lower_func(
     f: &ast::Func,
     arity: usize,
+    extra_locals: &HashSet<String>,
     locals: &HashMap<String, String>,
     globals: &HashSet<String>,
     fields: &HashSet<String>,
@@ -2652,7 +2700,16 @@ fn lower_func(
         parmap_workers,
         fn_arity,
         where_captures,
-        local_names: func_bound_names(f),
+        // A lifted `where`-local receives its captured enclosing variables as leading
+        // params; they must count as locals in its body too, or a capture whose name
+        // collides with a module global would resolve the global (silent miscompile —
+        // the body half of the `where h = g + 1` shadow bug; the lambda path does the
+        // same via its explicit `local_names.extend(captures)`).
+        local_names: {
+            let mut ln = func_bound_names(f);
+            ln.extend(extra_locals.iter().cloned());
+            ln
+        },
         integer_pats,
     };
     // A single clause with an IRREFUTABLE head (every param is a `Var`/`Wild`, or a
@@ -4716,9 +4773,12 @@ pub fn lower_with(
         if wheres.is_empty() {
             continue;
         }
+        // the parent's own binders (params/`let`/`case`) shadow same-named globals, so a
+        // `where`-local that references one must capture it rather than resolve the global.
+        let shadow = func_bound_names(f);
         let mut union: HashSet<String> = HashSet::new();
         for w in &wheres {
-            union.extend(where_free_vars(w, &globals));
+            union.extend(where_free_vars(w, &globals, &shadow));
         }
         if union.is_empty() {
             continue;
@@ -4768,12 +4828,23 @@ pub fn lower_with(
                 }
             }
         }
+        // A free var that is a LOCAL of the enclosing function (param / `let` / `case`
+        // binder) must be captured even when its name collides with a module global:
+        // the lambda's reference is to the local (lexical shadowing), so resolving it as
+        // the global would be a silent miscompile (`\y -> g + y` capturing a param `g`
+        // that shadows a global CAF `g` once read the global). Mirrors the shadow rule in
+        // `atom`/`call_named`. Conservative (flat over-approximation of f's binders): a
+        // pathological same-name binder in a sibling scope at worst over-captures into a
+        // loud unbound-variable error, never a silent wrong-value.
+        let shadow = func_bound_names(f);
         for lam in nodes {
             let Expr::Lam(_, _, span) = lam else { continue };
             let mut fv = HashSet::new();
             free_vars(lam, &HashSet::new(), &mut fv);
-            let mut captures: Vec<String> =
-                fv.into_iter().filter(|n| !globals.contains(n)).collect();
+            let mut captures: Vec<String> = fv
+                .into_iter()
+                .filter(|n| !globals.contains(n) || shadow.contains(n))
+                .collect();
             captures.sort();
             let name = format!("lam${lam_ctr}");
             lam_ctr += 1;
@@ -4799,6 +4870,7 @@ pub fn lower_with(
         let (params, body, owned, owned_drop_ty, seeds) = lower_func(
             f,
             arity,
+            &HashSet::new(), // top-level func: no lifted captures
             &locals,
             &globals,
             &fields,
@@ -4830,9 +4902,16 @@ pub fn lower_with(
 
         for w in &wheres {
             let warity = w.clauses.first().map(|c| c.pats.len()).unwrap_or(0);
+            // the lifted captures become leading params — count them as locals in the body
+            // too (so a capture named like a global resolves the capture, not the global).
+            let wcaps: HashSet<String> = where_captures
+                .get(&locals[&w.name])
+                .map(|v| v.iter().cloned().collect())
+                .unwrap_or_default();
             let (wp, wb, wo, wot, wseeds) = lower_func(
                 w,
                 warity,
+                &wcaps,
                 &locals,
                 &globals,
                 &fields,

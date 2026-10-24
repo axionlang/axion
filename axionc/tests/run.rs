@@ -5576,6 +5576,138 @@ fn readdir_typed_classifies_on_all_backends() {
 }
 
 #[test]
+fn local_shadowing_global_is_not_miscompiled() {
+    // Regression (scope-unaware-lowering class, cf. the `eta_expand` name-collision bug): a
+    // function-typed LOCAL parameter `f` shadows a top-level `f` of DIFFERENT arity and is
+    // over-applied relative to the global's arity. The over-application split and `call_named`
+    // must treat `f` as the local closure (indirect call), not the global `f` — otherwise native
+    // calls the wrong function at the wrong arity (cranelift errored, llvm emitted garbage) while
+    // the interpreter was correct, so only a 3-backend cross-check catches it. Must print 30 on all.
+    let dir = std::env::temp_dir().join(format!("axfm_shadow_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("shadow.axi");
+    std::fs::write(
+        &f,
+        "f :: Int -> Int\n\
+         f x = x + 100\n\
+         use :: (Int -> Int -> Int) -> Int\n\
+         use f = f 10 20\n\
+         add :: Int -> Int -> Int\n\
+         add a b = a + b\n\
+         main :: IO ()\n\
+         main = putStr (showInt (use add))\n",
+    )
+    .unwrap();
+    let fx = f.to_string_lossy().into_owned();
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "local-shadowing program should run ({backend:?}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, b"30", "{backend:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn local_shadowing_global_in_captures_is_not_miscompiled() {
+    // Regression (scope-unaware capture-filtering, same class as above): a lambda / a `where`-local
+    // CAPTURES an enclosing param `g` that shadows a top-level CAF `g = 99`. The capture filter must
+    // keep `g` (it is a lexical local), and the lifted body must treat `g` as a param — not resolve
+    // the global 99. Both `outer 5` must be 6, not 100. Native (cranelift + llvm) once gave 100 while
+    // the interpreter gave 6, so only the 3-backend oracle cross-check catches it.
+    let dir = std::env::temp_dir().join(format!("axfm_shadcap_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (label, src) in [
+        // lambda captures the shadowing param
+        (
+            "lam",
+            "g :: Int\n\
+             g = 99\n\
+             outer :: Int -> Int\n\
+             outer g = (\\y -> g + y) 1\n\
+             main :: IO ()\n\
+             main = putStr (showInt (outer 5))\n",
+        ),
+        // `where`-local captures the shadowing param
+        (
+            "where",
+            "g :: Int\n\
+             g = 99\n\
+             outer :: Int -> Int\n\
+             outer g = h\n  where h = g + 1\n\
+             main :: IO ()\n\
+             main = putStr (showInt (outer 5))\n",
+        ),
+    ] {
+        let f = dir.join(format!("{label}.axi"));
+        std::fs::write(&f, src).unwrap();
+        let fx = f.to_string_lossy().into_owned();
+        for backend in [
+            vec!["--backend", "interp"],
+            vec!["--backend", "cranelift"],
+            vec!["--release"],
+        ] {
+            let mut args = backend.clone();
+            args.push(&fx);
+            let out = axionc().args(&args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{label} shadow-capture should run ({backend:?}): {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(out.stdout, b"6", "{label} {backend:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn prelude_view_name_as_param_stays_native() {
+    // Regression (scope-unaware native-candidacy, found by the fuzzer's shadow generator): a
+    // parameter named after a prelude VIEW function (`take`/`drop`/`lookup`) was counted by
+    // `body_refs` as a reference to that non-native prelude function, so the enclosing fn — and
+    // transitively `main` — was pruned from native lowering (codegen then failed: "'main' must be
+    // a native function … with no parameters"). The param shadows the prelude name; all three
+    // backends must run and agree (`fn0 take = take + 7; fn0 3` == 10).
+    let dir = std::env::temp_dir().join(format!("axfm_viewparam_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for nm in ["take", "drop", "lookup"] {
+        let f = dir.join(format!("{nm}.axi"));
+        std::fs::write(
+            &f,
+            format!("fn0 :: Int -> Int\nfn0 {nm} = {nm} + 7\nmain :: IO ()\nmain = putStr (show (fn0 3))\n"),
+        )
+        .unwrap();
+        let fx = f.to_string_lossy().into_owned();
+        for backend in [
+            vec!["--backend", "interp"],
+            vec!["--backend", "cranelift"],
+            vec!["--release"],
+        ] {
+            let mut args = backend.clone();
+            args.push(&fx);
+            let out = axionc().args(&args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "param named `{nm}` should stay native ({backend:?}): {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(out.stdout, b"10", "{nm} {backend:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cond_temp_reclaim_runs_on_all_backends() {
     // Regression for the conditional-owned-temp reclaimer fix: `strAppend "x" (if c then up s else
     // dn s)` — an all-heap-arm `if` TEMP consumed downstream — is reclaimed (was a leak → the fff

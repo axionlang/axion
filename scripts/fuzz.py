@@ -13,7 +13,16 @@ and flags, as HARD failures:
   * CORRUPTION  — native use-after-free / double-free under ASan (the worst class),
   * DIVERGENCE  — interp and native disagree on the printed result,
   * VERDICT     — interp accepts a program the native backend rejects for a reason
-                  OTHER than the documented AX0912 heap-alias guard (or vice-versa).
+                  OTHER than the documented AX0912 heap-alias guard (or vice-versa),
+  * HANG        — any compile/run step exceeds the timeout (an infinite loop or a
+                  super-linear blow-up, e.g. the scope-unaware eta_expand miscompile that
+                  froze axfm) — never swallowed as a slow pass or a "consistent reject".
+
+Two generator families target the bug classes a recent session exposed: `gen_shadow` builds
+programs where a local binder (param / `let` / lambda param / `where`-local) collides with a
+prelude or top-level name (the scope-unaware-lowering class — eta_expand / call_named / capture
+filtering), caught by the interp-vs-native differential; `gen_large` builds big pipelines / many
+colliding helpers / deep nesting so an O(N^2) blow-up trips the HANG timeout.
 
 Native LEAKS while interp is clean are REPORTED (info) but not failed — many are known
 conservative leaks. AX0912 rejections are EXPECTED (the interim alias guard), counted
@@ -404,6 +413,92 @@ def gen_tuple_reclaim(rng):
             f'((strAppend "p" "{k}", "q"), ("r", strAppend "s" "{k}"))))\n')
 
 
+# names of prelude / built-in functions a local binder can collide with. A param, `let`,
+# lambda param or `case` binder sharing one of these once mis-resolved to the prelude
+# function (the `windowLines … count` eta_expand miscompile that froze axfm) — the lowering
+# must treat the local as a local, shadowing the prelude arity. Kept to names that EXIST so
+# the collision is real (a non-existent name can't be mis-resolved).
+PRELUDE_NAMES = ["count", "sum", "length", "reverse", "product", "and", "or", "map",
+                 "filter", "take", "drop", "lookup", "span", "concat", "elem"]
+
+def gen_shadow(rng):
+    """Local binders whose names collide with prelude / top-level functions — the
+    scope-unaware-lowering class (eta_expand / call_named / capture-filter). The interpreter
+    (proper lexical scopes) is the oracle; a native backend that resolves the local as the
+    global DIVERGES (or errors), so the differential catches a regression of any shadow fix.
+    Five shapes: a prelude-name scalar param; an over-applied function-typed param shadowing a
+    top-level fn; a lambda / a `where`-local capturing a param that shadows a global CAF; and a
+    `let` binder shadowing a prelude name."""
+    t = rng.randint(0, 4)
+    a, b = rng.randint(1, 50), rng.randint(1, 50)
+    if t == 0:                          # prelude-name used as a plain scalar PARAM (the `count` bug)
+        nm = rng.choice(PRELUDE_NAMES)
+        return (f"shadowP :: Int -> Int -> Int\n"
+                f"shadowP start {nm} = start + {nm} + {nm}\n"
+                f"main :: IO ()\nmain = putStr (show (shadowP {a} {b}))\n")  # a + 2b
+    if t == 1:                          # function-typed param shadowing a top-level fn, OVER-applied
+        g = rng.choice(["f", "sum", "count", "add"])
+        return (f"{g} :: Int -> Int\n{g} x = x + 100\n"
+                f"use :: (Int -> Int -> Int) -> Int\n"
+                f"use {g} = {g} {a} {b}\n"                 # local {g} is arity-2; global arity-1
+                f"addI2 :: Int -> Int -> Int\naddI2 p q = p + q\n"
+                f"main :: IO ()\nmain = putStr (show (use addI2))\n")          # a + b
+    if t == 2:                          # lambda captures a param shadowing a global CAF
+        nm = rng.choice(["g", "sum", "count"])
+        return (f"{nm} :: Int\n{nm} = 99\n"
+                f"outer :: Int -> Int\nouter {nm} = (\\y -> {nm} + y) {b}\n"
+                f"main :: IO ()\nmain = putStr (show (outer {a}))\n")          # a + b
+    if t == 3:                          # where-local captures a param shadowing a global CAF
+        nm = rng.choice(["g", "sum", "count"])
+        return (f"{nm} :: Int\n{nm} = 99\n"
+                f"outer :: Int -> Int\nouter {nm} = h\n  where h = {nm} + {b}\n"
+                f"main :: IO ()\nmain = putStr (show (outer {a}))\n")          # a + b
+    # t == 4: a `let` binder shadowing a prelude name, used as a scalar
+    nm = rng.choice(PRELUDE_NAMES)
+    return (f"useLet :: Int -> Int\n"
+            f"useLet x = let {nm} = x + {a} in {nm} + {nm}\n"
+            f"main :: IO ()\nmain = putStr (show (useLet {b}))\n")             # 2*(a+b)
+
+def gen_large(rng):
+    """Large inputs — guard against O(N^2) blow-ups (compile- OR run-time) like the one the
+    scope-unaware eta_expand bug caused (an Int counter became a heap pointer → the window
+    never terminated → O(N^2) per frame). A blow-up now trips the per-invocation timeout and is
+    reported as a HARD `hang`. Shapes: a long HOF pipeline over a big `range`; many colliding
+    top-level helpers (stressing the name/arity table); a deeply-nested arithmetic expression."""
+    t = rng.randint(0, 2)
+    if t == 0:                          # a multi-stage list pipeline (correctness exerciser)
+        # N and stage-count are kept SMALL: the tree-walking INTERPRETER (the differential
+        # oracle) is ~O(N^2) in time/memory on multi-pass list pipelines — on the unoptimised
+        # DEBUG build even N≈450 blows past the hang timeout — and that is an interpreter
+        # characteristic, NOT compiler soundness. Runtime O(N^2) at the NATIVE backend needs N
+        # far larger than the oracle can match, so the compile-time blow-up this family really
+        # targets (the eta_expand window bug) is covered by the deep-nesting / many-decls shapes
+        # below (fast at runtime, hard on the compiler). This shape just adds pipeline variety.
+        n = rng.randint(20, 120)
+        expr = f"range 1 {n}"
+        for _ in range(rng.randint(2, 4)):
+            expr = rng.choice([f"map dbl ({expr})", f"filter gt2i ({expr})",
+                               f"reverse ({expr})", f"map (\\x -> x + 1) ({expr})"])
+        return PREAMBLE + f"\nmain :: IO ()\nmain = putStr (show (sum ({expr})))\n"
+    if t == 1:                          # many top-level helpers, some names colliding with prelude
+        k = rng.randint(30, 120)
+        defs, calls = [], []
+        for j in range(k):
+            nm = rng.choice(PRELUDE_NAMES) if rng.random() < 0.3 else f"h{j}"
+            # a fresh unique fn name, but with a PARAM named like a prelude fn (collision in-scope)
+            fn = f"fn{j}"
+            defs.append(f"{fn} :: Int -> Int\n{fn} {nm} = {nm} + {j}\n")
+            calls.append(f"{fn} {rng.randint(0, 9)}")
+        return "".join(defs) + "main :: IO ()\nmain = putStr (show (" + " + ".join(calls) + "))\n"
+    # t == 2: a deeply nested arithmetic expression (parser/lowering recursion depth) — bounded
+    # so it probes depth handling without tripping the plain recursion-stack limit (a separate
+    # concern from the scope/hang classes this fuzzer targets).
+    depth = rng.randint(40, 250)
+    expr = "1"
+    for _ in range(depth):
+        expr = f"({expr} + {rng.randint(1, 3)})"
+    return f"main :: IO ()\nmain = putStr (show ({expr}))\n"
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
@@ -418,10 +513,14 @@ def gen(rng):
         return gen_borrow_alias(rng)    # conditional-owned-temp + baseName/borrowed-element shapes
     if r < 0.62:
         return gen_tuple_reclaim(rng)   # grab-via-case + tuple ret_alias reuse + nested extraction
-    if r < 0.70:
+    if r < 0.68:
         return gen_bignum(rng)          # bignum reclamation (full differential + ASan/LSan)
-    if r < 0.75:
+    if r < 0.73:
         return gen_deep(rng)            # nested-container deep-drop (full differential)
+    if r < 0.81:
+        return gen_shadow(rng)          # local-shadows-global scope class (full differential)
+    if r < 0.86:
+        return gen_large(rng)           # large inputs → O(N^2)/hang guard (timeout-detected)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:
@@ -452,12 +551,20 @@ def gen(rng):
         prog_expr = f"showInteger ({red % expr})"
     return PREAMBLE + "\nmain :: IO ()\nmain = putStrLn (" + prog_expr + ")\n"
 
-def run(args, want_bin=None):
+# A small generated program compiles+runs in well under a second on every backend; anything
+# that blows past this is a genuine hang / super-linear blow-up (the class the scope-unaware
+# eta_expand bug caused), reported as a HARD `hang` finding — NOT swallowed as a slow pass or a
+# "consistent reject". The window is still generous so a legitimately large `gen_large` input
+# (a few-thousand-element pipeline on the interpreter) never false-positives.
+HANG_SECS = 30
+HANG_RC = 124           # subprocess timeout → this return code (checked by `check`/`asan_run`)
+
+def run(args, want_bin=None, timeout=HANG_SECS):
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
-        return 124, "", "timeout"
+        return HANG_RC, "", "timeout"
     except (FileNotFoundError, OSError) as e:
         return 127, "", str(e)          # executable missing (e.g. no clang) — caller skips
 
@@ -470,6 +577,8 @@ def asan_run(src, work, oracle_out):
     if not CLANG_OK:
         return ("ok", None)             # no clang → skip ASan (differential still ran)
     rl, ol, el = run([AXIONC, "--emit", "llvm", str(src)])
+    if rl == HANG_RC:
+        return ("hang", f"--emit llvm exceeded {HANG_SECS}s")
     if rl != 0:
         return ("ok", None)
     (work / "ir.ll").write_text(ol)
@@ -480,6 +589,8 @@ def asan_run(src, work, oracle_out):
         # real regression (e.g. a moved C→Rust function not linked), NOT something to silently pass.
         return ("verdict", f"native link failed:\n{ecc[-400:]}")
     rr, orr, err = run([str(work / "p")])
+    if rr == HANG_RC:
+        return ("hang", f"native binary exceeded {HANG_SECS}s at runtime")
     if "use-after-free" in err or "double-free" in err or "invalid pointer" in err:
         return ("corruption", err[-600:])
     if "detected memory leaks" in err:
@@ -492,16 +603,24 @@ def check(prog, work):
     src = work / "p.axi"
     src.write_text(prog)
     ri, oi, ei = run([AXIONC, str(src)])
+    # A hang on ANY invocation is the worst-masked class: two hanging runs would otherwise look
+    # like a "consistent reject". Flag it the moment it happens, with the program for a repro.
+    if ri == HANG_RC:
+        return ("hang", f"interp/compile exceeded {HANG_SECS}s:\n{prog[:500]}")
     # genuinely native-only programs (e.g. arenas: interp lacks `withArena` → runtime "name not
     # found") have no interp oracle, so ASan-check the native build for corruption/leak only. Array
     # programs no longer land here — the interpreter runs them, so they take the full-differential
     # path below.
     if "name not found at runtime" in (oi + ei):
         rc, oc, ec = run([AXIONC, "--backend", "cranelift", str(src)])
+        if rc == HANG_RC:
+            return ("hang", f"cranelift exceeded {HANG_SECS}s:\n{prog[:500]}")
         if rc != 0:
             return ("ax0912", None) if "AX0912" in ec else ("verdict", f"native-only prog rejected:\n{ec[-400:]}")
         return asan_run(src, work, None)
     rc, oc, ec = run([AXIONC, "--backend", "cranelift", str(src)])
+    if rc == HANG_RC:
+        return ("hang", f"cranelift exceeded {HANG_SECS}s:\n{prog[:500]}")
     # verdict divergence
     if ri == 0 and rc != 0:
         if "AX0912" in ec:
@@ -535,7 +654,7 @@ def main():
             prog = gen(rng)
             verdict, detail = check(prog, work)
             tally[verdict] = tally.get(verdict, 0) + 1
-            if verdict in ("corruption", "divergence", "verdict"):
+            if verdict in ("corruption", "divergence", "verdict", "hang"):
                 hard += 1
                 FAILDIR.mkdir(exist_ok=True)
                 f = FAILDIR / f"seed{a.seed}_i{i}_{verdict}.axi"
