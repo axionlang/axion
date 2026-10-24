@@ -3152,8 +3152,16 @@ impl<'a> Infer<'a> {
                     break;
                 };
                 match self.resolve(&sub) {
-                    Ty::Con(..) => {
-                        if let Some(ast) = ty_to_ast(&self.resolve(&sub)) {
+                    // A concrete nominal type (`List$Integer`, `String`, user `data`) OR a TUPLE
+                    // element (`(String, Int)`): both monomorphize. Tuples were previously dropped
+                    // (the old `_` arm bailed), so a `%1` generic-owning consumer (`take`/`drop`/…)
+                    // over `List (K, V)` never materialized its clone → stayed a non-native template
+                    // → `main` was pruned ("must be a native function"). `ty_to_ast` builds the tuple
+                    // AST; `mono_key` (core.rs) encodes its arity (`tuple2$K$V`) so the specialized
+                    // destructor reclaims the element payloads. `ty_to_ast` still returns `None` on a
+                    // residual var/function anywhere inside (e.g. `(a, Int)`) → not fully concrete.
+                    resolved @ (Ty::Con(..) | Ty::Tuple(_)) => {
+                        if let Some(ast) = ty_to_ast(&resolved) {
                             mangle_parts.push(ty_mangle(&ast));
                             repls.push(ast);
                         } else {
@@ -3161,11 +3169,7 @@ impl<'a> Infer<'a> {
                             break;
                         }
                     }
-                    Ty::Var(_) => {
-                        concrete = false;
-                        break;
-                    }
-                    _ => {
+                    Ty::Var(_) | Ty::Fun(..) => {
                         concrete = false;
                         break;
                     }

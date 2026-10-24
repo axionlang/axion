@@ -2945,9 +2945,13 @@ fn alias_borrowers(
         let Some(sig) = &f.sig else { continue };
         let mults = sig.param_mults();
         // a param whose extracted ELEMENT escapes via the RESULT. If it is NOT `%1` the input is
-        // borrowed and its elements aliased into the output (the double-free class, `borrowers`);
-        // either way the function EXTRACTS an element (`escaping`), which the native backend
-        // cannot lower over a TUPLE element type (the nested-tuple poly-payload residual).
+        // borrowed and its elements aliased into the output (the double-free class — `filter`/…,
+        // `borrowers`). Either way the function EXTRACTS an element (`escaping`) — most such shapes
+        // now lower soundly over a tuple element (the monomorphizer materializes their clone), but
+        // the `uncons` PEEL returning a NESTED tuple `(E, List E)` with E itself a tuple still
+        // mis-reclaims (the clone's inner peel tuple is built untyped — the materialize_specs
+        // re-spanning gap — so `main`'s deep-drop double-frees); `peel_result_over_tuple` re-gates
+        // exactly that residual shape.
         for i in consumed_params(f, &con_field_elem_heap) {
             escaping.insert(f.name.clone());
             if mults.get(i) != Some(&ast::Mult::One) {
@@ -2956,6 +2960,25 @@ fn alias_borrowers(
         }
     }
     (borrowers, escaping)
+}
+
+/// `true` if `ty` is the `uncons`-style PEEL result `Maybe (E, List E)` whose extracted element
+/// `E` is itself a TUPLE — the nested-tuple-in-tuple residual the monomorphizer cannot lower
+/// soundly (the clone builds the inner `(E, tail)` peel tuple untyped, so a deep-drop of the
+/// result double-frees). Narrow by design: a plain tuple element (`take`/`head`/`reverse`/… →
+/// `List (K,V)` / `Maybe (K,V)`) lowers correctly and is NOT matched here. Scalar-only peel
+/// tuples and non-peel shapes are likewise excluded.
+fn peel_result_over_tuple(ty: &ast::Type) -> bool {
+    let ast::Type::App(_, inner) = ty else {
+        return false;
+    };
+    let ast::Type::Tuple(cs) = inner.as_ref() else {
+        return false;
+    };
+    // the peel shape `(E, List E)`: two components, the second a `List`, the first a tuple.
+    cs.len() == 2
+        && matches!(&cs[1], ast::Type::App(f, _) if f.head_con() == Some("List"))
+        && matches!(cs[0], ast::Type::Tuple(_))
 }
 
 /// `true` if `ty` is a container (`List a`, …) whose ELEMENT type is heap — Integer /
@@ -2970,28 +2993,6 @@ fn container_elem_is_heap(ty: &ast::Type) -> bool {
         ast::Type::Con(h) => !matches!(h.as_str(), "Int" | "Float" | "Bool" | "Char"),
         _ => false,
     }
-}
-
-/// `true` if the EXTRACTED element of an element-extracting list consumer's result type is a
-/// TUPLE — the nested-tuple poly-payload residual the monomorphizer cannot lower. The extracted
-/// element is the `App` argument of the result container (`take`/`drop` → `List a`, `head`/`last`
-/// → `Maybe a`, so the element is `a`), EXCEPT the `uncons` PEEL shape `Maybe (a, List a)`, whose
-/// element is the tuple's FIRST component `a` (the `(a, List a)` peel tuple itself is structural,
-/// not a tuple element). So `uncons` over `List String` (element `String`) is allowed, while over
-/// `List (x,y)` (element `(x,y)`) is rejected — as are `take`/`head`/… over `List (x,y)`.
-fn extracted_element_is_tuple(ty: &ast::Type) -> bool {
-    let ast::Type::App(_, inner) = ty else {
-        return false;
-    };
-    let ast::Type::Tuple(cs) = inner.as_ref() else {
-        return false;
-    };
-    // peel shape `(a, List a)`: the element is `cs[0]`, the `List` sibling is structural.
-    if cs.len() == 2 && matches!(&cs[1], ast::Type::App(f, _) if f.head_con() == Some("List")) {
-        return matches!(cs[0], ast::Type::Tuple(_));
-    }
-    // a plain tuple element (`take`/`head`/… over `List (x,y)` → `List (x,y)` / `Maybe (x,y)`).
-    true
 }
 
 /// Every call the native backend cannot compile soundly over its instantiated heap element type:
@@ -3031,10 +3032,16 @@ fn heap_alias_violations(
         if let ast::Expr::App(_, _, span) = e {
             if let ast::Expr::Var(g, _) = core::spine(e).0 {
                 if let Some(ty) = mk.get(span) {
-                    // aliasing borrower over any heap element → double-free; OR an extracting
-                    // consumer over a TUPLE element → the poly-payload monomorphization hole.
+                    // (1) an element-ALIASING borrower (`filter`/… — a non-`%1` param whose borrowed
+                    //     element is embedded in the output) over any heap element → the native
+                    //     double-free (the drop-verifier's AX0910 independently catches it too).
+                    // (2) an element-EXTRACTING consumer whose result is the `uncons` PEEL over a
+                    //     TUPLE element (`Maybe ((K,V), List (K,V))`) → the nested-tuple-in-tuple
+                    //     materialization residual (double-free the verifier MISSES — must stay
+                    //     gated). All OTHER extracting consumers over a tuple element (`take`/`drop`/
+                    //     `head`/`last`/`reverse`/`map`/…) now lower soundly and are NOT gated.
                     if (borrowers.contains(g) && container_elem_is_heap(ty))
-                        || (escaping.contains(g) && extracted_element_is_tuple(ty))
+                        || (escaping.contains(g) && peel_result_over_tuple(ty))
                     {
                         out.push((g.clone(), *span));
                     }

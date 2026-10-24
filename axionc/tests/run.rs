@@ -96,7 +96,7 @@ fn certified_build_mode_enforces_verification() {
             "--certified",
             "--backend",
             "cranelift",
-            &fixture("tuple_element_extract_reject.axi"),
+            &fixture("uncons_peel_tuple_reject.axi"),
         ])
         .output()
         .unwrap();
@@ -1072,14 +1072,41 @@ fn structural_borrowers_over_heap_reclaim_on_all_backends() {
 }
 
 #[test]
-fn tuple_element_extraction_is_rejected_ax0912() {
-    // The nested-tuple poly-payload residual (differential-fuzzer regression): an element-
-    // EXTRACTING list consumer (`take`/`drop`/`head`/`last`/`uncons`) over a TUPLE element type
-    // extracts a tuple payload the monomorphizer cannot lower — native compilation used to
-    // silently drop `main`. AX0912 now rejects it fail-closed on both native backends; interp
-    // reclaims via Rust Drop and runs it. (Over a non-tuple heap element the same functions
-    // compile + run — see `structural_borrowers_over_heap_reclaim_on_all_backends`.)
-    let fx = fixture("tuple_element_extract_reject.axi");
+fn tuple_element_extraction_reclaims_on_all_backends() {
+    // The nested-tuple poly-payload residual is CLOSED: a `%1` element-extracting consumer
+    // (`take`/`drop`/`head`/`last`/`reverse`) over a TUPLE element type once dropped `main`
+    // natively (the monomorphizer bailed on a `Ty::Tuple` in `discharge_owning`); it now
+    // materializes the concrete clone (`take$(Integer,Integer)`, key `tuple2$Integer$Integer`)
+    // and reclaims the payloads. The fixture (`take 2` over `List (Integer,Integer)`) must now
+    // COMPILE + RUN identically on all three backends. (ASan/LSan cleanliness is gated by
+    // sanitize.sh; the still-gated `uncons` peel residual is `uncons_peel_over_tuple_is_rejected`.)
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("tuple_element_extract_reclaim.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{backend:?}: tuple-element extraction should now compile+run: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, b"3\n", "{backend:?}");
+    }
+}
+
+#[test]
+fn uncons_peel_over_tuple_is_rejected() {
+    // The one remaining AX0912 floor for tuple elements: the `uncons` PEEL returns
+    // `Maybe ((K,V), List (K,V))` — a nested tuple-in-tuple whose inner peel tuple the specialized
+    // clone builds untyped (the materialize_specs re-spanning gap), so a deep-drop double-frees
+    // and the drop-verifier MISSES it. AX0912 keeps it fail-closed on both native backends; interp
+    // reclaims via Rust Drop and runs it (= 5). This is the precise, narrow residual — every other
+    // tuple-element consumer now lowers soundly (`tuple_element_extraction_reclaims_on_all_backends`).
+    let fx = fixture("uncons_peel_tuple_reject.axi");
     for backend in [
         vec!["--release".into(), fx.clone()],
         vec!["--backend".into(), "cranelift".into(), fx.clone()],
@@ -1087,7 +1114,7 @@ fn tuple_element_extraction_is_rejected_ax0912() {
         let out = axionc().args(&backend).output().unwrap();
         assert!(
             !out.status.success(),
-            "{backend:?}: tuple-element extraction must be rejected, not miscompiled"
+            "{backend:?}: uncons-peel over a tuple element must be rejected, not miscompiled"
         );
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("AX0912"),
@@ -1096,7 +1123,7 @@ fn tuple_element_extraction_is_rejected_ax0912() {
         );
     }
     let out = axionc().arg(&fx).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "5");
 }
 
 #[test]
