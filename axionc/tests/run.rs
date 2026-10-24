@@ -88,9 +88,9 @@ fn certified_build_mode_enforces_verification() {
         "--certified interp must be refused"
     );
 
-    // 4. A program the verifier REJECTS cannot be certified: the build fails (AX0912
-    //    here) and is NOT stamped. The whole point — a certified artifact provably went
-    //    through the gate.
+    // 4. A program the verifier REJECTS cannot be certified: the build fails (AX0910 — the
+    //    drop-balance verifier catches consuming a borrowed interior tuple field) and is NOT
+    //    stamped. The whole point — a certified artifact provably went through the gate.
     let bad = axionc()
         .args([
             "--certified",
@@ -106,7 +106,7 @@ fn certified_build_mode_enforces_verification() {
     );
     let bad_err = String::from_utf8_lossy(&bad.stderr);
     assert!(
-        bad_err.contains("AX0912"),
+        bad_err.contains("AX0910"),
         "expected the rejection diagnostic: {bad_err}"
     );
     assert!(
@@ -1099,13 +1099,13 @@ fn tuple_element_extraction_reclaims_on_all_backends() {
 }
 
 #[test]
-fn uncons_peel_over_tuple_is_rejected() {
-    // The one remaining AX0912 floor for tuple elements: the `uncons` PEEL returns
-    // `Maybe ((K,V), List (K,V))` — a nested tuple-in-tuple whose inner peel tuple the specialized
-    // clone builds untyped (the materialize_specs re-spanning gap), so a deep-drop double-frees
-    // and the drop-verifier MISSES it. AX0912 keeps it fail-closed on both native backends; interp
-    // reclaims via Rust Drop and runs it (= 5). This is the precise, narrow residual — every other
-    // tuple-element consumer now lowers soundly (`tuple_element_extraction_reclaims_on_all_backends`).
+fn uncons_peel_over_tuple_consume_is_rejected_by_verifier() {
+    // `uncons` over a tuple element returns `Maybe ((K,V), List (K,V))`; CONSUMING the peeled head
+    // `h` (a borrowed interior) double-frees. This was the special case behind the retired
+    // `peel_result_over_tuple` AX0912 guard; the drop-balance verifier now catches the consume-of-
+    // borrowed-tuple-field DIRECTLY (AX0910), so native rejects it and interp still runs (= 5). The
+    // verifier — not a type-shaped pre-rejection — is now the single net, so a SAFE `uncons`-of-tuple
+    // read (which the old guard over-rejected) compiles; see `uncons_safe_tuple_read_compiles`.
     let fx = fixture("uncons_peel_tuple_reject.axi");
     for backend in [
         vec!["--release".into(), fx.clone()],
@@ -1114,16 +1114,41 @@ fn uncons_peel_over_tuple_is_rejected() {
         let out = axionc().args(&backend).output().unwrap();
         assert!(
             !out.status.success(),
-            "{backend:?}: uncons-peel over a tuple element must be rejected, not miscompiled"
+            "{backend:?}: consuming the borrowed peel head must be rejected, not miscompiled"
         );
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains("AX0912"),
-            "{backend:?}: expected AX0912, got {}",
+            String::from_utf8_lossy(&out.stderr).contains("AX0910"),
+            "{backend:?}: expected AX0910, got {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
     let out = axionc().arg(&fx).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "5");
+}
+
+#[test]
+fn uncons_safe_tuple_read_compiles() {
+    // Retiring the `peel_result_over_tuple` AX0912 guard removes its OVER-rejection: `uncons` over a
+    // tuple element whose consumer only READS the tail (`length rest`) and merely DISCARDS the
+    // borrowed head is SOUND — the old guard blanket-rejected it on the result type, the verifier
+    // correctly accepts it. Must compile + run identically on all three backends (= 1); ASan/LSan
+    // cleanliness is gated by sanitize.sh (`uncons_safe_tuple_read.axi`).
+    for backend in [
+        vec!["--backend", "interp"],
+        vec!["--backend", "cranelift"],
+        vec!["--release"],
+    ] {
+        let fx = fixture("uncons_safe_tuple_read.axi");
+        let mut args = backend.clone();
+        args.push(&fx);
+        let out = axionc().args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{backend:?}: safe uncons-of-tuple read must compile (guard retired): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, b"1", "{backend:?}");
+    }
 }
 
 #[test]

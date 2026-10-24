@@ -1291,6 +1291,17 @@ impl Verifier<'_> {
         // the scrutinee's own reclaim key (known only when it was locally PRODUCED — a param has
         // no key here), so a poly field can resolve to its tagged reclaimer for the drop-key check.
         let scrut_key = st.get(scrut).and_then(|v| v.key.clone());
+        // The scrutinee's OWN borrow set, so an interior field inherits it transitively: a field `h`
+        // of a borrowed tuple `p` that is itself an interior of a borrowed param `m` must carry `m`
+        // in its borrows, or `consume`'s `borrowed_params` membership test (which only knows the
+        // real borrow param `m`, not the intermediate `p`) would miss the double-free. Also closes
+        // the same latent limitation for `Con` fields nested under another borrowed extraction.
+        let scrut_borrows = st.get(scrut).map(|v| v.borrows.clone()).unwrap_or_default();
+        let interior_borrows = || {
+            let mut b = scrut_borrows.clone();
+            b.insert(scrut.to_string());
+            b
+        };
         if let CPat::Con(con, subs) = pat {
             for (i, sp) in subs.iter().enumerate() {
                 if let CPat::Var(n) = sp {
@@ -1321,7 +1332,7 @@ impl Verifier<'_> {
                                 n.clone(),
                                 Val {
                                     owned: false,
-                                    borrows: HashSet::from([scrut.to_string()]),
+                                    borrows: interior_borrows(),
                                     key: fkey.clone(),
                                     ..Default::default()
                                 },
@@ -1359,6 +1370,60 @@ impl Verifier<'_> {
                     // leak reporting (see `leak_exempt`); it stays owned for double-free.
                     if self.recinfo.field_drop_slot(con, i).is_none() {
                         self.leak_exempt.insert(n.clone());
+                    }
+                }
+            }
+        } else if let CPat::Tuple(subs) = pat {
+            // Anonymous tuples get the Con arm's BORROWED-scrutinee treatment: a heap field of a
+            // borrowed tuple is an INTERIOR ALIAS of it, so `consume` flags moving one into a callee
+            // that frees it (the consume-of-borrowed-tuple-field double-free the verifier used to
+            // miss — a tuple has no `CPat::Con` so it previously bound NOTHING). Per-field heap-ness
+            // and reclaim key come from segmenting the scrutinee's tuple mono-key (`tuple2$String$Int`
+            // → ["String","Int"]) rather than a constructor's drop slots. Only the BORROWED case is
+            // tracked: an OWNED tuple's fields already reclaim soundly via the Core skip-destructors
+            // (the tuple_owned / nested_tuple_extract_escape / tuple_elem_discard fixtures are
+            // LEAKFREE), and tracking them here would risk a scalar-field leak false-positive.
+            if !scrut_owned && self.mode.track_fields {
+                // segment the tuple key into per-field keys; `None` ⇒ unknown (no scrut key / arity
+                // mismatch) ⇒ fields are tracked CONSERVATIVELY (see `track` below).
+                let field_keys = scrut_key
+                    .as_deref()
+                    .and_then(|k| self.recinfo.split_tuple_key(k, subs.len()));
+                for (i, sp) in subs.iter().enumerate() {
+                    if let CPat::Var(n) = sp {
+                        // `classify_tuple_elem`: None ⇒ scalar/non-heap; Some(_) ⇒ heap (inner is the
+                        // Option reclaimer key). When the key segmented, track ONLY heap fields; when
+                        // it did NOT segment, track every field — soundly, because an unresolved field
+                        // is marked `poly_borrowed`, so `consume` only fires for it via `frees_heap`
+                        // (a heap-param position), which a scalar field can never occupy in well-typed
+                        // Core, so no scalar false-positive arises.
+                        let cls = field_keys
+                            .as_ref()
+                            .and_then(|ks| ks.get(i))
+                            .and_then(|el| self.recinfo.classify_tuple_elem(el));
+                        let track = if field_keys.is_some() {
+                            cls.is_some() // segmented → heap iff classified as droppable
+                        } else {
+                            true // unsegmented → conservative (poly_borrowed-gated below)
+                        };
+                        if !track {
+                            continue;
+                        }
+                        // the tagged reclaimer key, matching the Con arm's `field_tagged_key`
+                        // semantics (only `Integer`/`String` drive the drop-key cross-check).
+                        let fkey = cls.flatten().filter(|k| k == "Integer" || k == "String");
+                        st.insert(
+                            n.clone(),
+                            Val {
+                                owned: false,
+                                borrows: interior_borrows(),
+                                key: fkey.clone(),
+                                ..Default::default()
+                            },
+                        );
+                        if fkey.is_none() && !self.mode.poly_elem {
+                            self.poly_borrowed.insert(n.clone());
+                        }
                     }
                 }
             }

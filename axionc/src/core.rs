@@ -750,7 +750,7 @@ impl RecordInfo {
     /// unambiguously (`tuple2$tuple2$String$String$tuple2$String$String` → two `tuple2$String$String`
     /// elements), closing the former nested-tuple-in-tuple residual. `None` if the head is not a
     /// `tupleN` of the expected arity, or the stream can't be segmented into exactly `arity` elements.
-    fn split_tuple_key(&self, key: &str, arity: usize) -> Option<Vec<String>> {
+    pub fn split_tuple_key(&self, key: &str, arity: usize) -> Option<Vec<String>> {
         let mut it = key.split('$');
         let head = it.next()?;
         let enc = head
@@ -800,7 +800,7 @@ impl RecordInfo {
     /// may be MULTI-TOKEN — a nested container instantiation (`List$Integer`) routes to its own
     /// mono destructor (`axion_drop_List$Integer`, seeded alongside the tuple), which frees the
     /// element's payloads too, not just the spine.
-    fn classify_tuple_elem(&self, el: &str) -> Option<Option<String>> {
+    pub fn classify_tuple_elem(&self, el: &str) -> Option<Option<String>> {
         match el {
             "Integer" => Some(Some("Integer".into())), // bignum → axion_bignum_free
             "String" => Some(Some("String".into())),   // heap string → axion_str_drop

@@ -25,9 +25,14 @@ filtering), caught by the interp-vs-native differential; `gen_large` builds big 
 colliding helpers / deep nesting so an O(N^2) blow-up trips the HANG timeout.
 
 Native LEAKS while interp is clean are REPORTED (info) but not failed — many are known
-conservative leaks. AX0912 rejections are EXPECTED (the interim alias guard), counted
-separately. Failing programs are saved to fuzz-fail/ for a deterministic repro (the seed
-+ index reproduce any run).
+conservative leaks. AX0912 (heap-alias guard) and AX0910 (drop-verifier) rejections are
+EXPECTED and counted separately — native soundly refusing a value it cannot reclaim is
+correct-by-design; a verifier FALSE POSITIVE (rejecting safe code) is caught by the dedicated
+0-FP corpus sweep in tests/verify.rs, not here. The `gen_tuple_consume` generator stresses the
+consume-of-borrowed-interior-tuple-field class: OWNED variants must RUN + agree + be ASan-clean,
+while BORROWED variants must be AX0910-rejected — and any variant the verifier MISSES compiles
+and double-frees, which the ASan leg catches as corruption. Failing programs are saved to
+fuzz-fail/ for a deterministic repro (the seed + index reproduce any run).
 
 Run:  AXION_CLANG=clang ./scripts/fuzz.py [--count N] [--seed S] [--keep-going]
 """
@@ -499,6 +504,69 @@ def gen_large(rng):
         expr = f"({expr} + {rng.randint(1, 3)})"
     return f"main :: IO ()\nmain = putStr (show ({expr}))\n"
 
+def gen_tuple_consume(rng):
+    """Consume-of-borrowed-interior-tuple-field — the class the drop-verifier now catches (the
+    `CPat::Tuple` arm in `bind_pattern`). `sndof` destructures a `(heap, Int)` tuple and discards the
+    heap field, so it CONSUMES its tuple. Four modes, each a distinct net:
+      · OWNED — `sndof` on an owned tuple (sound → RUNS, ASan-clean; guards against the fix breaking
+        owned-tuple handling).
+      · BUILD-borrowed — `pick` extracts an interior tuple from a freshly-BUILT `Maybe` and consumes
+        the head (unsound → verifier must AX0910-reject; a MISSED variant compiles + double-frees →
+        ASan catches it).
+      · UNCONS-consume — same hazard but the `Maybe ((K,V), List (K,V))` comes from `uncons` (the peel
+        shape the retired `peel_result_over_tuple` AX0912 guard used to blanket-reject). Unsound →
+        AX0910.
+      · UNCONS-safe — `uncons`-of-tuple but the consumer only READS the tail `rest` (`length rest`) and
+        merely DISCARDS the borrowed head (no consume) → SOUND. Must RUN + agree + ASan-clean. This is
+        the case the old guard OVER-rejected; it validates that retiring the guard is safe, not just
+        that the verifier catches the unsafe ones."""
+    if rng.random() < 0.5:
+        ty, hv = "String", '"k"'
+    else:
+        ty, hv = "Integer", "fromInt n"
+    pre = (
+        f"mkp :: Int -> ({ty}, Int)\n"
+        f"mkp n = ({hv}, n)\n"
+        f"sndof :: ({ty}, Int) -> Int\n"
+        f"sndof t = case t of\n  (a, b) -> b\n"       # discards the heap field `a` → consumes `t`
+    )
+    k = rng.randint(1, 9)
+    mode = rng.randint(0, 3)
+    if mode == 0:                                      # OWNED: consumed exactly once → sound, runs
+        return pre + (
+            f"useOwned :: ({ty}, Int) -> Int\n"
+            f"useOwned t = sndof t\n"
+            f"main :: IO ()\nmain = putStr (show (useOwned (mkp {k})))\n"
+        )
+    sig = f"Maybe (({ty}, Int), List ({ty}, Int))"
+    if mode == 3:                                      # UNCONS-safe: read the tail, DISCARD the head
+        return pre + (
+            f"pick :: {sig} -> Int\n"
+            f"pick m = case m of\n"
+            f"  Just p -> case p of\n    (h, rest) -> length rest\n"
+            f"  Nothing -> 0\n"
+            f"main :: IO ()\n"
+            f"main = putStr (show (pick (uncons (Cons (mkp {k}) (Cons (mkp ({k} + 1)) Nil)))))\n"
+        )
+    # mode 1/2: BORROWED interior, head CONSUMED → unsound, verifier must AX0910-reject.
+    producer = (
+        f"build :: Int -> {sig}\nbuild n = Just (mkp n, Cons (mkp (n + 1)) Nil)\n"
+        if mode == 1
+        else ""
+    )
+    src = (
+        f"build {k}"
+        if mode == 1
+        else f"uncons (Cons (mkp {k}) (Cons (mkp ({k} + 1)) Nil))"
+    )
+    return pre + producer + (
+        f"pick :: {sig} -> Int\n"
+        f"pick m = case m of\n"
+        f"  Just p -> case p of\n    (h, rest) -> sndof h\n"
+        f"  Nothing -> 0\n"
+        f"main :: IO ()\nmain = putStr (show (pick ({src})))\n"
+    )
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
@@ -519,8 +587,10 @@ def gen(rng):
         return gen_deep(rng)            # nested-container deep-drop (full differential)
     if r < 0.81:
         return gen_shadow(rng)          # local-shadows-global scope class (full differential)
-    if r < 0.86:
+    if r < 0.84:
         return gen_large(rng)           # large inputs → O(N^2)/hang guard (timeout-detected)
+    if r < 0.90:
+        return gen_tuple_consume(rng)   # consume-of-borrowed-interior-tuple-field (verifier net)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:
@@ -625,6 +695,13 @@ def check(prog, work):
     if ri == 0 and rc != 0:
         if "AX0912" in ec:
             return ("ax0912", None)            # expected: the heap-alias guard
+        if "AX0910" in ec:
+            # the drop-balance verifier SOUNDLY rejected an unsound-to-compile shape (e.g. consuming
+            # a borrowed interior tuple field — the interpreter is memory-safe via Rust Drop, so it
+            # still runs). Not a divergence: native refusing a value it cannot reclaim soundly is
+            # correct-by-design, exactly like AX0912. A verifier FALSE POSITIVE (rejecting SAFE code)
+            # is caught by the dedicated 0-FP corpus sweep (tests/verify.rs), not here.
+            return ("ax0910", None)
         return ("verdict", f"interp ran but cranelift rejected:\n{ec[-400:]}")
     if ri != 0 and rc == 0:
         return ("verdict", f"cranelift ran but interp rejected:\n{ei[-400:]}")

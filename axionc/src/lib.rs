@@ -2914,12 +2914,7 @@ fn carries_heap_payload(
 /// `append`) are `%1` and reclaim soundly. Until arrow-ownership makes these consume their
 /// input, `heap_alias_violations` REJECTS such a call at a heap element type (native only).
 #[allow(clippy::type_complexity)]
-fn alias_borrowers(
-    module: &ast::Module,
-) -> (
-    std::collections::HashSet<String>,
-    std::collections::HashSet<String>,
-) {
+fn alias_borrowers(module: &ast::Module) -> std::collections::HashSet<String> {
     use std::collections::{HashMap, HashSet};
     let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
     // Only NON-RECURSIVE heap fields (the ELEMENT, `a` in `Cons a (List a)`) count — a
@@ -2940,45 +2935,23 @@ fn alias_borrowers(
         }
     }
     let mut borrowers = HashSet::new();
-    let mut escaping = HashSet::new();
     for f in &module.funcs {
         let Some(sig) = &f.sig else { continue };
         let mults = sig.param_mults();
-        // a param whose extracted ELEMENT escapes via the RESULT. If it is NOT `%1` the input is
-        // borrowed and its elements aliased into the output (the double-free class — `filter`/…,
-        // `borrowers`). Either way the function EXTRACTS an element (`escaping`) — most such shapes
-        // now lower soundly over a tuple element (the monomorphizer materializes their clone), but
-        // the `uncons` PEEL returning a NESTED tuple `(E, List E)` with E itself a tuple still
-        // mis-reclaims (the clone's inner peel tuple is built untyped — the materialize_specs
-        // re-spanning gap — so `main`'s deep-drop double-frees); `peel_result_over_tuple` re-gates
-        // exactly that residual shape.
+        // a NON-`%1` param whose extracted ELEMENT escapes via the RESULT: the input is borrowed and
+        // its elements are aliased into the output (the `filter`-shape double-free). The former
+        // `escaping` set (every element-EXTRACTING consumer, gating the `uncons`-peel-over-tuple
+        // shape) is RETIRED — the drop-balance verifier now catches consuming a borrowed interior
+        // tuple field directly (AX0910, `bind_pattern`'s `CPat::Tuple` arm), which subsumes the peel
+        // residual; a `%1` extracting consumer over a tuple element lowers soundly and is no longer
+        // pre-rejected (the guard used to OVER-reject safe `uncons`-of-tuple reads).
         for i in consumed_params(f, &con_field_elem_heap) {
-            escaping.insert(f.name.clone());
             if mults.get(i) != Some(&ast::Mult::One) {
                 borrowers.insert(f.name.clone());
             }
         }
     }
-    (borrowers, escaping)
-}
-
-/// `true` if `ty` is the `uncons`-style PEEL result `Maybe (E, List E)` whose extracted element
-/// `E` is itself a TUPLE — the nested-tuple-in-tuple residual the monomorphizer cannot lower
-/// soundly (the clone builds the inner `(E, tail)` peel tuple untyped, so a deep-drop of the
-/// result double-frees). Narrow by design: a plain tuple element (`take`/`head`/`reverse`/… →
-/// `List (K,V)` / `Maybe (K,V)`) lowers correctly and is NOT matched here. Scalar-only peel
-/// tuples and non-peel shapes are likewise excluded.
-fn peel_result_over_tuple(ty: &ast::Type) -> bool {
-    let ast::Type::App(_, inner) = ty else {
-        return false;
-    };
-    let ast::Type::Tuple(cs) = inner.as_ref() else {
-        return false;
-    };
-    // the peel shape `(E, List E)`: two components, the second a `List`, the first a tuple.
-    cs.len() == 2
-        && matches!(&cs[1], ast::Type::App(f, _) if f.head_con() == Some("List"))
-        && matches!(cs[0], ast::Type::Tuple(_))
+    borrowers
 }
 
 /// `true` if `ty` is a container (`List a`, …) whose ELEMENT type is heap — Integer /
@@ -3017,47 +2990,43 @@ fn heap_alias_violations(
     module: &ast::Module,
     makecon_tys: &std::collections::HashMap<ast::Span, ast::Type>,
 ) -> Vec<(String, ast::Span)> {
-    let (borrowers, escaping) = alias_borrowers(module);
+    let borrowers = alias_borrowers(module);
     let mut out = Vec::new();
-    if borrowers.is_empty() && escaping.is_empty() {
+    if borrowers.is_empty() {
         return out;
     }
     fn visit(
         e: &ast::Expr,
         borrowers: &std::collections::HashSet<String>,
-        escaping: &std::collections::HashSet<String>,
         mk: &std::collections::HashMap<ast::Span, ast::Type>,
         out: &mut Vec<(String, ast::Span)>,
     ) {
         if let ast::Expr::App(_, _, span) = e {
             if let ast::Expr::Var(g, _) = core::spine(e).0 {
                 if let Some(ty) = mk.get(span) {
-                    // (1) an element-ALIASING borrower (`filter`/… — a non-`%1` param whose borrowed
-                    //     element is embedded in the output) over any heap element → the native
-                    //     double-free (the drop-verifier's AX0910 independently catches it too).
-                    // (2) an element-EXTRACTING consumer whose result is the `uncons` PEEL over a
-                    //     TUPLE element (`Maybe ((K,V), List (K,V))`) → the nested-tuple-in-tuple
-                    //     materialization residual (double-free the verifier MISSES — must stay
-                    //     gated). All OTHER extracting consumers over a tuple element (`take`/`drop`/
-                    //     `head`/`last`/`reverse`/`map`/…) now lower soundly and are NOT gated.
-                    if (borrowers.contains(g) && container_elem_is_heap(ty))
-                        || (escaping.contains(g) && peel_result_over_tuple(ty))
-                    {
+                    // an element-ALIASING borrower (`filter`/… — a non-`%1` param whose borrowed
+                    // element is embedded in the output) over any heap element → a native double-free
+                    // (the drop-verifier's AX0910 independently catches it too). The former
+                    // `uncons`-peel-over-tuple arm is RETIRED: the drop-verifier now catches consuming
+                    // a borrowed interior tuple field directly (`bind_pattern`'s `CPat::Tuple` arm),
+                    // which subsumes that residual, while the guard used to OVER-reject safe
+                    // `uncons`-of-tuple reads.
+                    if borrowers.contains(g) && container_elem_is_heap(ty) {
                         out.push((g.clone(), *span));
                     }
                 }
             }
         }
-        for_each_subexpr(e, &mut |sub| visit(sub, borrowers, escaping, mk, out));
+        for_each_subexpr(e, &mut |sub| visit(sub, borrowers, mk, out));
     }
     for f in &module.funcs {
         for c in &f.clauses {
             match &c.body {
-                ast::Body::Plain(e) => visit(e, &borrowers, &escaping, makecon_tys, &mut out),
+                ast::Body::Plain(e) => visit(e, &borrowers, makecon_tys, &mut out),
                 ast::Body::Guarded(arms) => {
                     for (g, r) in arms {
-                        visit(g, &borrowers, &escaping, makecon_tys, &mut out);
-                        visit(r, &borrowers, &escaping, makecon_tys, &mut out);
+                        visit(g, &borrowers, makecon_tys, &mut out);
+                        visit(r, &borrowers, makecon_tys, &mut out);
                     }
                 }
             }

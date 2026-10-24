@@ -1,12 +1,11 @@
--- The residual nested-tuple-in-tuple monomorphization hole (the last AX0912 floor for tuple
--- elements). The `uncons` PEEL returns `Maybe ((K,V), List (K,V))` — a tuple whose FIRST
--- component is itself the extracted tuple element and whose second is the tail list. Over a
--- TUPLE element the specialized `uncons$(K,V)` clone builds that inner peel tuple UNTYPED (the
--- materialize_specs re-spanning gap), so a deep-drop of the result double-frees — and the
--- drop-verifier does NOT catch it. AX0912 keeps it fail-closed on both native backends; the
--- interpreter reclaims via Rust Drop and runs it → 5. Every OTHER tuple-element consumer
--- (`take`/`drop`/`head`/`last`/`reverse`/`map`/`length`) now lowers soundly — see
--- `tuple_element_extract_reclaim.axi`.
+-- `uncons` over a TUPLE element returns `Maybe ((K,V), List (K,V))`; `pick` BORROWS that result,
+-- peels the interior tuple head `h`, and CONSUMES it via `sndof` (which frees the tuple) while the
+-- owner still deep-drops the `Maybe` → double-free. The real cause is the general consume-of-a-
+-- borrowed-interior-tuple-field class (NOT a monomorphizer/lowering bug — `uncons$(K,V)` itself
+-- lowers fine; a safe read of the tail is clean, see `uncons_safe_tuple_read.axi`). The drop-
+-- balance verifier now catches it DIRECTLY (AX0910, `bind_pattern`'s `CPat::Tuple` arm), so the
+-- former `peel_result_over_tuple` AX0912 guard is RETIRED. Native rejects (AX0910); the interpreter
+-- reclaims via Rust Drop and runs it → 5.
 mkp :: Int -> (String, Int)
 mkp n = ("k", n)
 sndof :: (String, Int) -> Int

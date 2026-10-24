@@ -48,6 +48,18 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             if path.file_name().unwrap() == "user_alias_borrow.axi" {
                 continue;
             }
+            // GENUINELY UNSAFE, drop-verifier-caught: consuming a BORROWED INTERIOR TUPLE field
+            // (`pick` passes a borrowed interior tuple `h` to the consuming `sndof`). The verifier
+            // now tracks borrowed tuple-scrutinee fields (the `CPat::Tuple` arm in `bind_pattern`),
+            // so it reports `DropOfAlias` here — the soundness win (this double-free was previously
+            // unguarded + verifier-blind). `uncons_peel_tuple_reject.axi` is the `uncons`-vehicle
+            // special case of the same class. Both are EXPECTED to flag; asserted in dedicated tests.
+            if matches!(
+                path.file_name().unwrap().to_str(),
+                Some("borrowed_tuple_field_consume.axi" | "uncons_peel_tuple_reject.axi")
+            ) {
+                continue;
+            }
             let out = axionc()
                 .args(["--emit", "verify", path.to_str().unwrap()])
                 .output()
@@ -133,6 +145,24 @@ fn element_alias_double_free_is_caught_by_verifier() {
         vstdout.contains("FAIL:") && vstdout.contains("Free"),
         "the verifier must catch the element-alias double-free (the AX0912 class), got:\n{vstdout}"
     );
+}
+
+/// The consume-of-borrowed-interior-TUPLE-field class (previously unguarded + verifier-blind): a
+/// borrowed interior tuple `h` passed to a CONSUMING callee (`sndof`, which frees its tuple) is
+/// double-freed against the owner's deep-drop. The verifier now tracks borrowed tuple-scrutinee
+/// fields (`bind_pattern`'s `CPat::Tuple` arm + transitive borrows), so it must report
+/// `DropOfAlias`. Reproducible in plain user code (no `uncons`); the interpreter still runs it.
+#[test]
+fn borrowed_tuple_field_consume_is_caught_by_verifier() {
+    for fx in ["borrowed_tuple_field_consume.axi", "uncons_peel_tuple_reject.axi"] {
+        let path = format!("{}/tests/fixtures/{fx}", env!("CARGO_MANIFEST_DIR"));
+        let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
+        let vstdout = String::from_utf8_lossy(&verify.stdout);
+        assert!(
+            vstdout.contains("FAIL:") && vstdout.contains("DropOfAlias"),
+            "the verifier must catch the borrowed-tuple-field consume in {fx}, got:\n{vstdout}"
+        );
+    }
 }
 
 /// R-1 (docs/call-site-ownership.md): the `ret_alias` whole-value param-return relation.
