@@ -97,3 +97,22 @@ local colors = {
   -- { match = "*.png", color = "#4FC3F7" },   -- a *.ext rule overrides its category rule
   -- { match = "*.log", color = "0;33"    },   -- raw SGR is still accepted
 }
+
+-- ─── FILE-TYPE ICONS ──────────────────────────────────────────────────────────────────────────
+-- axfm shows a small glyph before each entry (a folder on directories, a photo on images, …), like
+-- yazi. Icons are ON BY DEFAULT and need a NERD FONT (the glyphs are private-use codepoints; without
+-- one they render as boxes). To turn them OFF, uncomment:
+-- icons = false
+--
+-- The built-in set covers dirs/symlinks/exec + the image/video/audio/archive/doc/code buckets + a
+-- default file glyph. Override any of them with { match = <what>, icon = "<glyph>" } rows (same
+-- `match` keys and precedence as colours: exact "*.ext" → category "cat/*" → built-in). The icon
+-- value is used verbatim — paste a SINGLE-WIDTH glyph (a 2-column/zero-width glyph will misalign the
+-- separator). Uncomment / edit:
+local icons = {
+  -- { match = "di",      icon = "" },   -- directories
+  -- { match = "ln",      icon = "" },   -- symlinks
+  -- { match = "image/*", icon = "" },   -- ALL image extensions at once (category)
+  -- { match = "*.rs",    icon = "" },   -- a *.ext rule overrides its category rule
+  -- { match = "*.pdf",   icon = "" },
+}

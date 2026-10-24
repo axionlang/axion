@@ -214,14 +214,14 @@ viewStart sel total mx =
 -- `win` is ALREADY the visible window (lines [start, start+mx) from `windowLines`), aligned with `tys`;
 -- `row` is the entry index of win's head (= start), used only for the cursor-highlight (`row == sel`).
 -- No skip-walk over the whole list — O(window). `lsc` = $LS_COLORS, read once per frame and threaded in.
-drawRows :: String -> List String -> List String -> Int -> Int -> String -> String -> Int -> Bool -> String
-drawRows lsc win tys row sel marked cwd listW prev = case win of
+drawRows :: String -> String -> List String -> List String -> Int -> Int -> String -> String -> Int -> Bool -> String
+drawRows lsc icfg win tys row sel marked cwd listW prev = case win of
   Nil -> ""
   Cons y ys -> case tys of
-    Nil -> strAppend (rowFor lsc y (fallbackTy y) row sel marked cwd listW prev)
-                      (drawRows lsc ys Nil (row + 1) sel marked cwd listW prev)
-    Cons ty tyss -> strAppend (rowFor lsc y ty row sel marked cwd listW prev)
-                      (drawRows lsc ys tyss (row + 1) sel marked cwd listW prev)
+    Nil -> strAppend (rowFor lsc icfg y (fallbackTy y) row sel marked cwd listW prev)
+                      (drawRows lsc icfg ys Nil (row + 1) sel marked cwd listW prev)
+    Cons ty tyss -> strAppend (rowFor lsc icfg y ty row sel marked cwd listW prev)
+                      (drawRows lsc icfg ys tyss (row + 1) sel marked cwd listW prev)
 -- When the background type classifier hasn't landed yet (no cached types), colour by what the listing
 -- already tells us for free: a trailing `/` (from `ls -p`) ⇒ a directory, everything else a plain file.
 fallbackTy :: String -> String
@@ -384,11 +384,72 @@ codeExts = ["c", "h", "cpp", "hpp", "cc", "rs", "py", "js", "ts", "jsx", "tsx", 
             "yml", "json", "html", "css", "scss", "xml", "tf", "hcl", "ini", "cfg", "conf", "diff",
             "patch", "nix", "axi"]
 
+------------------------------------------------------------------- type / extension icons
+-- Nerd-font GLYPH for an entry (a folder on dirs, a photo on images, …), the icon twin of `entryColor`
+-- (same inputs: the type char + the extension). Resolution mirrors the colour pipeline: a config
+-- override from config.lua's `icons` table — keyed `di`/`ln`/`or`/`ex`, `*.<ext>`, or a category `image/*`
+-- — wins over the built-in set (`iconForExt`). `icfg` is the icons-config string (`buildIcons` cache);
+-- `rowCell` only calls this when icons are ON (`icfg` non-empty), so — like `entryColor` — there is no
+-- emptiness branch here. Each glyph is ONE display column but a multi-byte UTF-8 literal (like the `│`
+-- separator); `rowCell` keeps it OUT of the byte-based width math. `dup`/literal keep each lookup borrow-only.
+-- Glyphs are Nerd Font codepoints written as explicit UTF-8 BYTE escapes (`\xNN\xNN\xNN`) — robust and
+-- self-documenting, no reliance on source-file glyph encoding. Each is 3 bytes / 1 display column (private-
+-- use area); `rowCell` reserves exactly 1 column for it, keeping it out of the byte-based width math.
+entryIcon :: String -> String -> String -> String
+entryIcon icfg ty raw =
+  if ty == "d" then dirIcon icfg
+  else if ty == "l" then lnIcon icfg
+  else if ty == "b" then orIcon icfg
+  else if ty == "x" then exIcon icfg
+  else fileIcon icfg (extOf raw)
+dirIcon :: String -> String                                  -- U+F07B folder
+dirIcon icfg = let c = lscVal icfg "di" in if strLen c > 0 then dup c else ""
+lnIcon :: String -> String                                   -- U+F0C1 link
+lnIcon icfg = let c = lscVal icfg "ln" in if strLen c > 0 then dup c else ""
+orIcon :: String -> String                                   -- U+F127 broken chain
+orIcon icfg = let c = lscVal icfg "or" in if strLen c > 0 then dup c else ""
+exIcon :: String -> String                                   -- U+F489 terminal
+exIcon icfg = let c = lscVal icfg "ex" in if strLen c > 0 then dup c else ""
+-- Glyph for a plain file by extension, most-specific first (mirrors `fileColor`): exact `*.ext` override
+-- → category override `<cat>/*` → the built-in per-bucket glyph.
+fileIcon :: String -> String -> String
+fileIcon icfg ext =
+  let c = lscVal icfg (strAppend "*." ext) in
+  if strLen c > 0 then dup c else catOrBuiltinIcon icfg ext
+catOrBuiltinIcon :: String -> String -> String
+catOrBuiltinIcon icfg ext =
+  let cc = lscVal icfg (strAppend (catOf ext) "/*") in
+  if strLen cc > 0 then dup cc else iconForExt ext
+-- The built-in default glyphs, keyed by the SAME buckets as `colorForExt`/`catOf`. Edit here to change the
+-- defaults (or override per-entry in config.lua). Nerd Font codepoints (require a Nerd Font, as yazi does).
+iconForExt :: String -> String
+iconForExt e =
+  if elemBy e imageExts then ""          -- U+F1C5 image
+  else if elemBy e videoExts then ""     -- U+F1C8 video
+  else if elemBy e audioExts then ""     -- U+F1C7 audio
+  else if elemBy e archiveExts then ""   -- U+F1C6 archive
+  else if elemBy e docExts then ""       -- U+F0F6 file-text
+  else if elemBy e codeExts then ""      -- U+F1C9 file-code
+  else ""                                -- U+F15B file
+
+-- The sized cell for a row, with an optional leading file-type ICON. Layout is `[mark][…][name]`: the
+-- mark column (`*`/space), then either a space (icons OFF) or `glyph + space` (icons ON) right before the
+-- name, so the glyph sits snug against it. Icons OFF (`icfg` empty) → today's exact behavior
+-- (`sizedCell (mark " " name) listW`). Icons ON → `mark ++ glyph ++ " " ++ name` with the name sized to
+-- `listW - 3` (mark + glyph + space = the 3 reserved columns), so the row is still exactly `listW` VISIBLE
+-- columns and the absolutely-positioned `│` separator stays aligned. The glyph (1 display column but a
+-- multi-byte literal) NEVER enters `sizedCell`/`clip` (byte-based), so it can't be sliced mid-codepoint.
+-- The conditional is in TAIL position (a helper, never a `let x = if… heap`) — the #1 axfm reclamation gotcha.
+rowCell :: String -> String -> String -> String -> String -> Int -> Bool -> String
+rowCell icfg ty raw mark name listW prev =
+  if strLen icfg == 0 then sizedCell (mark ++ " " ++ name) listW prev
+  else mark ++ entryIcon icfg ty raw ++ " " ++ sizedCell name (listW - 3) prev
+
 -- A list row is just its colored fixed-width cell + newline. The pane separator is NOT appended per
 -- row (that left gaps on rows with no entry) — it is drawn as one continuous line by `drawSep`.
-rowFor :: String -> String -> String -> Int -> Int -> String -> String -> Int -> Bool -> String
-rowFor lsc raw ty i sel marked cwd listW prev =
-  colorCell (sizedCell (markChar marked (cwd </> stripSlash raw) ++ " " ++ dup raw) listW prev)
+rowFor :: String -> String -> String -> String -> Int -> Int -> String -> String -> Int -> Bool -> String
+rowFor lsc icfg raw ty i sel marked cwd listW prev =
+  colorCell (rowCell icfg ty raw (markChar marked (cwd </> stripSlash raw)) (dup raw) listW prev)
             i sel (entryColor lsc ty raw)
   ++ "\n"
 
@@ -778,7 +839,7 @@ render cwd sel marked prog rows raw cols info poff =
   let lw = listWidth cols in
   let prev = previewOn cols && total > 0 in
   imgClearSeq ++ homeClear
-    ++ drawRows (lsColors 0) (windowLines raw start mx) tys start sel marked cwd lw prev
+    ++ drawRows (lsColors 0) (iconsOf 0) (windowLines raw start mx) tys start sel marked cwd lw prev
     ++ sepSeg lw mx prev
     ++ previewSeg cwd sel raw cols mx prev (infoMime info) poff
     ++ statusLine cwd total sel marked prog rows info
@@ -797,7 +858,7 @@ listFrame cwd sel marked prog rows raw cols poff =
   let lw = listWidth cols in
   let prev = previewOn cols && total > 0 in
   imgClearSeq ++ homeClear
-    ++ drawRows (lsColors 0) (windowLines raw start mx) tys start sel marked cwd lw prev
+    ++ drawRows (lsColors 0) (iconsOf 0) (windowLines raw start mx) tys start sel marked cwd lw prev
     ++ sepSeg lw mx prev
     ++ listStatus cwd total sel marked prog rows
 -- Minimal status: (pos/total) [marks] cwd — the segments that need no `selInfo` fork.
@@ -1073,6 +1134,13 @@ buildKeymapCmd =
 
 colorsFile :: Int -> String
 colorsFile d = strAppend (envOr "HOME" ".") "/.cache/axfm/colors"
+iconsFile :: Int -> String
+iconsFile d = strAppend (envOr "HOME" ".") "/.cache/axfm/icons"
+-- The icons-config string (`buildIcons` cache), read fork-free per frame and threaded as `icfg`. Unlike
+-- `lsColors` there is no env to merge (LS_COLORS has no icons). EMPTY ⇒ icons OFF; a non-empty cache (a
+-- leading ":" marker + any `{match,icon}` overrides) ⇒ icons ON, with built-in glyphs for the rest.
+iconsOf :: Int -> String
+iconsOf d = readFile (iconsFile 0)
 -- Parse config.lua's `colors` table → ~/.cache/axfm/colors as an LS_COLORS fragment (`key=sgr:…`), at
 -- startup. A `{ match = "K", color = "V" }` row: K is an LS_COLORS key (a type `di`/`ex`/`ln`/`or` or an
 -- extension glob `*.ext`); V is a `#RRGGBB` hex colour (→ the truecolor SGR `38;2;R;G;B`, which foot and
@@ -1089,12 +1157,22 @@ buildColorsCmd =
 -- statement). Same two cache files as before, one fork instead of two. CACHED: a leading freshness guard
 -- `exit 0`s when both caches already exist and are newer than config.lua (or there is no config.lua) — so
 -- an unchanged config is NOT re-parsed on every launch; editing config.lua makes it newer → re-parse.
+-- Parse config.lua's `icons` table → ~/.cache/axfm/icons (`match=glyph:…`), the icon twin of
+-- `buildColorsCmd`. A `{ match = "K", icon = "V" }` row: K is a `di`/`ln`/`or`/`ex` type key, an `*.ext`
+-- glob, or a category `image/*`; V is the glyph (passed through raw — no hex conversion). Icons are ON by
+-- DEFAULT: the cache is seeded with a single ":" (non-empty ⇒ `iconsOf` enables icons; the ":" also makes
+-- the first real entry sit at a `:`-boundary for `lscVal`), and built-in glyphs fill anything unconfigured.
+-- A top-level `icons = false` line DISABLES: the cache is left EMPTY ⇒ `rowCell` emits no glyph. Atomic.
+buildIconsCmd :: String
+buildIconsCmd =
+  "cfg=" ++ shQuote (configFile 0) ++ "; icf=" ++ shQuote (iconsFile 0)
+  ++ "; tmp=\"$icf.$$\"; mkdir -p \"${icf%/*}\"; : > \"$tmp\"; if [ -r \"$cfg\" ] && sed '/^[[:space:]]*--/d' \"$cfg\" | grep -qE 'icons[[:space:]]*=[[:space:]]*false'; then :; else printf ':' > \"$tmp\"; [ -r \"$cfg\" ] && sed '/^[[:space:]]*--/d' \"$cfg\" | while IFS= read -r line; do case \"$line\" in *icon*=*) m=$(printf '%s\\n' \"$line\" | sed -n 's/.*match[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); v=$(printf '%s\\n' \"$line\" | sed -n 's/.*icon[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); [ -n \"$m\" ] || continue; printf '%s=%s:' \"$m\" \"$v\" >> \"$tmp\" ;; esac; done; fi; mv \"$tmp\" \"$icf\"; true"
 buildConfig :: Int -> Int
-buildConfig d = runStatus (strAppend buildConfigGuard (strAppend buildColorsCmd (strAppend "; " buildKeymapCmd)))
+buildConfig d = runStatus (strAppend buildConfigGuard (strAppend buildColorsCmd (strAppend "; " (strAppend buildIconsCmd (strAppend "; " buildKeymapCmd)))))
 buildConfigGuard :: String
 buildConfigGuard =
-  "km=" ++ shQuote (keymapFile 0) ++ "; cf=" ++ shQuote (colorsFile 0) ++ "; cg=" ++ shQuote (configFile 0)
-  ++ "; [ -f \"$km\" ] && [ -f \"$cf\" ] && { [ ! -f \"$cg\" ] || { [ \"$km\" -nt \"$cg\" ] && [ \"$cf\" -nt \"$cg\" ]; }; } && exit 0; "
+  "km=" ++ shQuote (keymapFile 0) ++ "; cf=" ++ shQuote (colorsFile 0) ++ "; ic=" ++ shQuote (iconsFile 0) ++ "; cg=" ++ shQuote (configFile 0)
+  ++ "; [ -f \"$km\" ] && [ -f \"$cf\" ] && [ -f \"$ic\" ] && { [ ! -f \"$cg\" ] || { [ \"$km\" -nt \"$cg\" ] && [ \"$cf\" -nt \"$cg\" ] && [ \"$ic\" -nt \"$cg\" ]; }; } && exit 0; "
 
 -- The CANONICAL (default) key for an action name — the single source of truth for action→key, used
 -- both to resolve a remap and (implicitly) documenting every bindable action. "" = unknown action.

@@ -402,6 +402,18 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
                                                                                                 ret call countLoop cwd sel marked prog hidden rows cols raw key  ; Δ{}
                                                                                                 ret call favOrIgnore cwd sel marked prog hidden rows key  ; Δ{}
                                                                                               else
@@ -971,6 +983,8 @@
               ret ""  ; Δ{}
               ret ""  ; Δ{}
               ret "1;32"  ; Δ{}
+              ret "\u{f15b}"  ; Δ{}
+              ret "\u{f1c9}"  ; Δ{}
               ret "code"  ; Δ{}
               ret "h"  ; Δ{}
               ret 1  ; Δ{}
@@ -1002,6 +1016,7 @@
             _ ->
             drop _t10 : List$String
             drop _t10 : List$String
+            drop _t10 : List$String
             drop _t12 : String
             drop _t13 : String
             drop _t14 : String
@@ -1022,14 +1037,17 @@
             else
             else
             else
+            else
             let _d1000000 = call favOrIgnore cwd sel marked prog hidden rows _t20  ; Δ{_t20}
             let _d1000000 = rtcall axion_rename o _t3  ; Δ{_t3}
             let _d1000001 = call drawLines _t16 1 px pw ph  ; Δ{_t16} · makes String
             let _d1000002 = call gotoDir cwd _t22 sel marked prog hidden rows  ; Δ{_t22}
             let _t10 = call codeExts  ; Δ{} · makes List$String
             let _t10 = call codeExts  ; Δ{} · makes List$String
+            let _t10 = call codeExts  ; Δ{} · makes List$String
             let _t10 = rtcall axion_str_cmp a "parent"  ; Δ{}
             let _t11 = == _t10 0  ; Δ{}
+            let _t11 = call elemBy$String e _t10  ; Δ{_t10}
             let _t11 = call elemBy$String e _t10  ; Δ{_t10}
             let _t11 = call elemBy$String e _t10  ; Δ{_t10}
             let _t12 = call archiveList path  ; Δ{} · makes String
@@ -1057,6 +1075,7 @@
             let _t3 = call </> cwd n  ; Δ{} · makes String
             let _t5 = call hasInfix "bzip" m  ; Δ{}
             ret "0;33"  ; Δ{}
+            ret "\u{f0f6}"  ; Δ{}
             ret "doc"  ; Δ{}
             ret "l"  ; Δ{}
             ret 0  ; Δ{}
@@ -1072,6 +1091,7 @@
             ret call cmdGo prompt rows cwd _t17  ; Δ{_t17} · moves{_t17} · makes String
             ret call cmdGo prompt rows cwd _t18  ; Δ{_t18} · moves{_t18} · makes String
             ret call open cwd sel marked prog hidden rows raw  ; Δ{}
+            ret if _t11 then
             ret if _t11 then
             ret if _t11 then
             ret if _t11 then
@@ -1102,6 +1122,8 @@
           drop _t7 : String
           drop _t8 : List$String
           drop _t8 : List$String
+          drop _t8 : List$String
+          drop _t8 : String
           drop _t8 : String
           drop _t8 : String
           drop _t8 : String
@@ -1120,7 +1142,9 @@
           else
           else
           else
+          else
           let _d1000000 = call fileColor lsc _t8  ; Δ{_t8} · makes String
+          let _d1000000 = call fileIcon icfg _t8  ; Δ{_t8} · makes String
           let _d1000000 = call searchKey cwd sel marked prog hidden rows cols raw osel acc _t7  ; Δ{_t7}
           let _d1000000 = call searchLoop cwd sel marked prog hidden rows cols raw osel _t16  ; Δ{_t16}
           let _d1000000 = putStr _t4  ; Δ{_t4}
@@ -1131,7 +1155,7 @@
           let _d1000002 = call dup a  ; Δ{a} · makes String
           let _t0 = call </> cwd n  ; Δ{} · makes String
           let _t0 = call fallbackTy y  ; Δ{} · makes String
-          let _t1 = call rowFor lsc y _t0 row sel marked cwd listW prev  ; Δ{_t0} · makes String
+          let _t1 = call rowFor lsc icfg y _t0 row sel marked cwd listW prev  ; Δ{_t0} · makes String
           let _t1 = rtcall axion_str_cmp o _t0  ; Δ{_t0}
           let _t10 = call clampSel sel _t9  ; Δ{}
           let _t10 = rtcall axion_str_at 0 k  ; Δ{}
@@ -1163,7 +1187,7 @@
           let _t2 = con Nil  ; Δ{_t1} · makes List$String
           let _t3 = + row 1  ; Δ{_t1 _t2}
           let _t4 = call buildConfig 0  ; Δ{}
-          let _t4 = call drawRows lsc ys _t2 _t3 sel marked cwd listW prev  ; Δ{_t1 _t2} · makes String
+          let _t4 = call drawRows lsc icfg ys _t2 _t3 sel marked cwd listW prev  ; Δ{_t1 _t2} · makes String
           let _t4 = call editorCmd 0  ; Δ{} · makes String
           let _t4 = call hasInfix "gzip" m  ; Δ{}
           let _t4 = call resetSeq  ; Δ{} · makes String
@@ -1171,7 +1195,7 @@
           let _t4 = if _t2 then
           let _t5 = == _t4 0  ; Δ{}
           let _t5 = call readMainKey 0  ; Δ{} · makes String
-          let _t5 = call rowFor lsc y ty row sel marked cwd listW prev  ; Δ{} · makes String
+          let _t5 = call rowFor lsc icfg y ty row sel marked cwd listW prev  ; Δ{} · makes String
           let _t5 = call shQuote tmp  ; Δ{_t4} · makes String
           let _t5 = putStr _t4  ; Δ{_t4}
           let _t6 = + row 1  ; Δ{_t5}
@@ -1180,7 +1204,7 @@
           let _t6 = rtcall axion_strcat " " _t5  ; Δ{_t4 _t5} · makes String
           let _t7 = call actionKey a  ; Δ{a} · makes String
           let _t7 = call bulkApply os ns cwd  ; Δ{}
-          let _t7 = call drawRows lsc ys tyss _t6 sel marked cwd listW prev  ; Δ{_t5} · makes String
+          let _t7 = call drawRows lsc icfg ys tyss _t6 sel marked cwd listW prev  ; Δ{_t5} · makes String
           let _t7 = call nEntries cwd hidden  ; Δ{}
           let _t7 = putStr "\n[any key]"  ; Δ{}
           let _t7 = rtcall axion_read_key 0  ; Δ{} · makes String
@@ -1188,6 +1212,8 @@
           let _t7 = rtcall axion_strcat _t4 _t6  ; Δ{_t4 _t6} · makes String
           let _t8 = call docExts  ; Δ{} · makes List$String
           let _t8 = call docExts  ; Δ{} · makes List$String
+          let _t8 = call docExts  ; Δ{} · makes List$String
+          let _t8 = call extOf raw  ; Δ{} · makes String
           let _t8 = call extOf raw  ; Δ{} · makes String
           let _t8 = call markCount marked  ; Δ{}
           let _t8 = call setupSeq  ; Δ{} · makes String
@@ -1198,11 +1224,13 @@
           let _t9 = == _t8 0  ; Δ{}
           let _t9 = call elemBy$String e _t8  ; Δ{_t8}
           let _t9 = call elemBy$String e _t8  ; Δ{_t8}
+          let _t9 = call elemBy$String e _t8  ; Δ{_t8}
           let _t9 = putStr _t8  ; Δ{_t8}
           let _t9 = putStr _t8  ; Δ{_t8}
           ret ""  ; Δ{}
           ret "1;31"  ; Δ{}
           ret "G"  ; Δ{}
+          ret "\u{f1c6}"  ; Δ{}
           ret "archive"  ; Δ{}
           ret "copying"  ; Δ{}
           ret "h"  ; Δ{}
@@ -1224,6 +1252,7 @@
           ret == _t7 33  ; Δ{}
           ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
           ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
           ret _d1000000  ; Δ{}
           ret _d1000000  ; Δ{}
           ret _d1000000  ; Δ{}
@@ -1234,6 +1263,7 @@
           ret call actionPick s _t7  ; Δ{_t7} · moves{_t7} · makes String
           ret call cmdGo prompt rows cwd _t12  ; Δ{_t12} · moves{_t12} · makes String
           ret call exColor lsc  ; Δ{} · makes String
+          ret call exIcon icfg  ; Δ{} · makes String
           ret call loop cwd _t15 marked prog hidden rows cols raw  ; Δ{}
           ret call loop cwd _t17 marked prog hidden rows cols raw  ; Δ{}
           ret call pixHeader "[pdf] " path mime px pw ph  ; Δ{} · makes String
@@ -1253,6 +1283,7 @@
           ret if _t19 then
           ret if _t19 then
           ret if _t4 then
+          ret if _t9 then
           ret if _t9 then
           ret if _t9 then
           ret if _t9 then
@@ -1295,6 +1326,7 @@
         drop _t5 : String
         drop _t6 : List$String
         drop _t6 : List$String
+        drop _t6 : List$String
         drop _t6 : String
         drop _t6 : String
         drop _t7 : String
@@ -1312,6 +1344,8 @@
         drop y : String
         drop y : String
         drop y : String
+        else
+        else
         else
         else
         else
@@ -1396,11 +1430,13 @@
         let _t6 = == _t5 33  ; Δ{}
         let _t6 = call archiveExts  ; Δ{} · makes List$String
         let _t6 = call archiveExts  ; Δ{} · makes List$String
+        let _t6 = call archiveExts  ; Δ{} · makes List$String
         let _t6 = call hasPrefix "cd " a  ; Δ{a}
         let _t6 = con Cons y fs  ; Δ{y ys} · moves{y} · makes List$String
         let _t6 = rtcall axion_str_cmp a "bottom"  ; Δ{}
         let _t6 = rtcall axion_str_cmp b "D"  ; Δ{}
         let _t6 = rtcall axion_str_cmp prog "cp -R"  ; Δ{}
+        let _t6 = rtcall axion_str_cmp ty "x"  ; Δ{}
         let _t6 = rtcall axion_str_cmp ty "x"  ; Δ{}
         let _t6 = rtcall axion_strcat _t2 _t5  ; Δ{_t2 _t5} · makes String
         let _t6 = rtcall axion_strcat _t2 _t5  ; Δ{_t2 _t5} · makes String
@@ -1408,8 +1444,10 @@
         let _t7 = == _t6 0  ; Δ{}
         let _t7 = == _t6 0  ; Δ{}
         let _t7 = == _t6 0  ; Δ{}
+        let _t7 = == _t6 0  ; Δ{}
         let _t7 = call csi _t6  ; Δ{_t6} · makes String
         let _t7 = call csi _t6  ; Δ{_t6} · makes String
+        let _t7 = call elemBy$String e _t6  ; Δ{_t6}
         let _t7 = call elemBy$String e _t6  ; Δ{_t6}
         let _t7 = call elemBy$String e _t6  ; Δ{_t6}
         let _t7 = rtcall axion_str_len fav  ; Δ{fav}
@@ -1429,6 +1467,7 @@
         ret ""  ; Δ{}
         ret "0;36"  ; Δ{}
         ret "\u{1b}"  ; Δ{}
+        ret "\u{f1c7}"  ; Δ{}
         ret "audio"  ; Δ{}
         ret "g"  ; Δ{}
         ret "l"  ; Δ{}
@@ -1483,6 +1522,7 @@
         ret call matchFrom ys q _t3 lo  ; Δ{}
         ret call matchIndex ys q _t1 dflt  ; Δ{}
         ret call orColor lsc  ; Δ{} · makes String
+        ret call orIcon icfg  ; Δ{} · makes String
         ret call pick _t1 ys  ; Δ{} · makes String
         ret call pixHeader "[video] " path mime px pw ph  ; Δ{} · makes String
         ret call rdtKeep hidden fq ys  ; Δ{ys} · moves{ys} · makes List$String
@@ -1508,6 +1548,8 @@
         ret if _t3 then
         ret if _t6 then
         ret if _t6 then
+        ret if _t7 then
+        ret if _t7 then
         ret if _t7 then
         ret if _t7 then
         ret if _t7 then
@@ -1558,6 +1600,7 @@
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
+      drop _t4 : List$String
       drop _t4 : List$String
       drop _t4 : List$String
       drop _t4 : String
@@ -1625,6 +1668,8 @@
       drop xs
       drop y : String
       drop y : String
+      else
+      else
       else
       else
       else
@@ -1821,6 +1866,7 @@
       let _t4 = > _t3 2  ; Δ{}
       let _t4 = call audioExts  ; Δ{} · makes List$String
       let _t4 = call audioExts  ; Δ{} · makes List$String
+      let _t4 = call audioExts  ; Δ{} · makes List$String
       let _t4 = call hasPrefix "application/pdf" mime  ; Δ{}
       let _t4 = call infoMime _t1  ; Δ{_t1} · makes String
       let _t4 = call prefetch cwd sel rows raw cols  ; Δ{}
@@ -1837,6 +1883,7 @@
       let _t4 = rtcall axion_str_cmp b "C"  ; Δ{}
       let _t4 = rtcall axion_str_cmp prog "ln -s"  ; Δ{}
       let _t4 = rtcall axion_str_cmp ty "b"  ; Δ{}
+      let _t4 = rtcall axion_str_cmp ty "b"  ; Δ{}
       let _t4 = rtcall axion_str_len b1  ; Δ{b1 k}
       let _t4 = rtcall axion_strcat " && " _t3  ; Δ{_t2 _t3} · makes String
       let _t4 = rtcall axion_strcat "stat -- " _t3  ; Δ{_t3} · makes String
@@ -1851,6 +1898,8 @@
       let _t5 = == _t4 0  ; Δ{}
       let _t5 = == _t4 0  ; Δ{}
       let _t5 = == _t4 0  ; Δ{}
+      let _t5 = == _t4 0  ; Δ{}
+      let _t5 = call elemBy$String e _t4  ; Δ{_t4}
       let _t5 = call elemBy$String e _t4  ; Δ{_t4}
       let _t5 = call elemBy$String e _t4  ; Δ{_t4}
       let _t5 = call hasPrefix "!" a  ; Δ{a}
@@ -1944,6 +1993,7 @@
       ret "-S"  ; Δ{}
       ret "1;35"  ; Δ{}
       ret "\u{1b}"  ; Δ{}
+      ret "\u{f1c8}"  ; Δ{}
       ret "j"  ; Δ{}
       ret "k"  ; Δ{}
       ret "moving"  ; Δ{}
@@ -2040,6 +2090,7 @@
       ret call lastIndex c s _t4 i  ; Δ{}
       ret call lastIndex c s _t5 best  ; Δ{}
       ret call lnColor lsc  ; Δ{} · makes String
+      ret call lnIcon icfg  ; Δ{} · makes String
       ret call loop cwd _t5 marked prog hidden rows cols raw  ; Δ{}
       ret call loop cwd _t9 marked prog hidden rows cols raw  ; Δ{}
       ret call loop cwd msel marked prog hidden rows cols raw  ; Δ{}
@@ -2131,6 +2182,8 @@
       ret if _t3 then
       ret if _t4 then
       ret if _t4 then
+      ret if _t5 then
+      ret if _t5 then
       ret if _t5 then
       ret if _t5 then
       ret if _t5 then
@@ -2289,6 +2342,8 @@
     drop _t2 : List$String
     drop _t2 : List$String
     drop _t2 : List$String
+    drop _t2 : List$String
+    drop _t2 : String
     drop _t2 : String
     drop _t2 : String
     drop _t2 : String
@@ -2323,6 +2378,8 @@
     drop _t3 : String
     drop _t3 : String
     drop _t3 : String
+    drop _t3 : String
+    drop _t4 : String
     drop _t4 : String
     drop _t4 : String
     drop _t4 : String
@@ -2343,6 +2400,7 @@
     drop _t5 : String
     drop _t5 : String
     drop _t5 : String
+    drop _t6 : String
     drop _t6 : String
     drop _t6 : String
     drop _t6 : String
@@ -2351,11 +2409,13 @@
     drop _t6 : String
     drop _t7 : List$String
     drop _t7 : List$String
+    drop _t7 : String
     drop _t7 : String
     drop _t7 : String
     drop _t7 : String
     drop _t7 : String
     drop _t8 : List$String
+    drop _t8 : String
     drop _t8 : String
     drop _t8 : String
     drop _t8 : String
@@ -2379,6 +2439,18 @@
     drop c : String
     drop c : String
     drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop c : String
+    drop cc : String
+    drop cc : String
     drop cc : String
     drop cc : String
     drop comp : String
@@ -2462,6 +2534,8 @@
     else
     else
     else
+    else
+    else
     let _d1000000 = call confirm _t3 rows  ; Δ{_t3}
     let _d1000000 = call countLoop cwd sel marked prog hidden rows cols raw _t1  ; Δ{_t1}
     let _d1000000 = call doUserCmdTty cwd sel marked prog hidden rows raw _t3  ; Δ{_t3}
@@ -2474,6 +2548,12 @@
     let _d1000000 = call dup c  ; Δ{c} · makes String
     let _d1000000 = call dup c  ; Δ{c} · makes String
     let _d1000000 = call dup c  ; Δ{c} · makes String
+    let _d1000000 = call dup c  ; Δ{c} · makes String
+    let _d1000000 = call dup c  ; Δ{c} · makes String
+    let _d1000000 = call dup c  ; Δ{c} · makes String
+    let _d1000000 = call dup c  ; Δ{c} · makes String
+    let _d1000000 = call dup c  ; Δ{c} · makes String
+    let _d1000000 = call dup cc  ; Δ{cc} · makes String
     let _d1000000 = call dup cc  ; Δ{cc} · makes String
     let _d1000000 = call flashFail _t3 rows  ; Δ{_t3}
     let _d1000000 = call gotoTo cwd sel marked prog hidden rows _t3  ; Δ{_t3}
@@ -2484,6 +2564,7 @@
     let _d1000000 = call runItem cwd sel marked prog hidden rows cols raw _t4  ; Δ{_t4}
     let _d1000000 = call seqNext km acc _t1  ; Δ{_t1} · makes String
     let _d1000000 = call seqResolve km _t3  ; Δ{_t3 km} · makes String
+    let _d1000000 = call sizedCell _t3 listW prev  ; Δ{_t3} · makes String
     let _d1000000 = call stepCanon cwd sel marked prog hidden rows cols raw poff _t2  ; Δ{_t2}
     let _d1000000 = call toLower _t6  ; Δ{_t6} · makes String
     let _d1000000 = call trim _t9  ; Δ{_t9} · makes String
@@ -2508,6 +2589,7 @@
     let _d1000001 = call drawLines _t18 1 px pw ph  ; Δ{_t18} · makes String
     let _d1000001 = call warmLoop _t5 _t8  ; Δ{_t5 _t8} · makes String
     let _d1000001 = rtcall axion_strcat m _t3  ; Δ{_t3} · makes String
+    let _d1000001 = rtcall axion_strcat mark _t8  ; Δ{_t8} · makes String
     let _d1000001 = rtcall axion_system _t18  ; Δ{_t18}
     let _d1000001 = rtcall axion_system _t4  ; Δ{_t4}
     let _d1000002 = call elemBy$String e _t3  ; Δ{_t3 e}
@@ -2623,6 +2705,7 @@
     let _t2 = call trashDir 0  ; Δ{} · makes String
     let _t2 = call videoExts  ; Δ{} · makes List$String
     let _t2 = call videoExts  ; Δ{} · makes List$String
+    let _t2 = call videoExts  ; Δ{} · makes List$String
     let _t2 = rtcall axion_str_at 0 k  ; Δ{k}
     let _t2 = rtcall axion_str_at 0 k  ; Δ{k}
     let _t2 = rtcall axion_str_at 0 k  ; Δ{}
@@ -2642,6 +2725,7 @@
     let _t2 = rtcall axion_str_cmp prog "mv"  ; Δ{}
     let _t2 = rtcall axion_str_cmp s "-t"  ; Δ{}
     let _t2 = rtcall axion_str_cmp ty "l"  ; Δ{}
+    let _t2 = rtcall axion_str_cmp ty "l"  ; Δ{}
     let _t2 = rtcall axion_str_len e  ; Δ{e v}
     let _t2 = rtcall axion_str_len line  ; Δ{}
     let _t2 = rtcall axion_str_len s  ; Δ{}
@@ -2649,6 +2733,7 @@
     let _t2 = rtcall axion_str_len s  ; Δ{}
     let _t2 = rtcall axion_str_len s  ; Δ{}
     let _t2 = rtcall axion_str_len s  ; Δ{}
+    let _t2 = rtcall axion_strcat " " name  ; Δ{} · makes String
     let _t2 = rtcall axion_strcat ": " _t1  ; Δ{_t1} · makes String
     let _t2 = rtcall axion_strcat "\n" old  ; Δ{} · makes String
     let _t2 = rtcall axion_strcat _t1 " ) &"  ; Δ{_t1} · makes String
@@ -2662,6 +2747,7 @@
     let _t3 = - _t2 i  ; Δ{}
     let _t3 = - _t2 i  ; Δ{}
     let _t3 = - _t2 k  ; Δ{}
+    let _t3 = == _t2 0  ; Δ{}
     let _t3 = == _t2 0  ; Δ{}
     let _t3 = == _t2 0  ; Δ{}
     let _t3 = == _t2 0  ; Δ{}
@@ -2684,6 +2770,7 @@
     let _t3 = call bookmarkFile 0  ; Δ{_t2} · makes String
     let _t3 = call codeExts  ; Δ{e} · makes List$String
     let _t3 = call countLines raw  ; Δ{}
+    let _t3 = call elemBy$String e _t2  ; Δ{_t2}
     let _t3 = call elemBy$String e _t2  ; Δ{_t2}
     let _t3 = call elemBy$String e _t2  ; Δ{_t2}
     let _t3 = call findChar 10 s i _t2  ; Δ{}
@@ -2715,6 +2802,7 @@
     let _t3 = rtcall axion_strcat "( " _t2  ; Δ{_t2} · makes String
     let _t3 = rtcall axion_strcat _t2 "H"  ; Δ{_t1 _t2} · makes String
     let _t3 = rtcall axion_strcat label _t2  ; Δ{_t2} · makes String
+    let _t3 = rtcall axion_strcat mark _t2  ; Δ{_t2} · makes String
     let _t3 = rtcall axion_strcat p "\n"  ; Δ{} · makes String
     let _t3 = rtcall axion_substr 2 _t2 item  ; Δ{} · makes String
     let _t3 = rtcall axion_substr i _t2 s  ; Δ{} · makes String
@@ -2734,6 +2822,7 @@
     let _t4 = call classifyBody cwd hidden  ; Δ{} · makes String
     let _t4 = call countLines raw  ; Δ{}
     let _t4 = call dropFirstLine c  ; Δ{c} · makes String
+    let _t4 = call entryIcon icfg ty raw  ; Δ{} · makes String
     let _t4 = call hasInfix "\t" a  ; Δ{a}
     let _t4 = call hasPrefix "!" item  ; Δ{}
     let _t4 = call matchBefore _t2 q 0 from _t3  ; Δ{_t2}
@@ -2758,6 +2847,7 @@
     let _t5 = - _t3 _t4  ; Δ{}
     let _t5 = - _t4 1  ; Δ{}
     let _t5 = - left 1  ; Δ{_t3}
+    let _t5 = - listW 3  ; Δ{_t4}
     let _t5 = == _t4 0  ; Δ{k}
     let _t5 = == _t4 13  ; Δ{}
     let _t5 = call clampSel sel _t4  ; Δ{}
@@ -2781,6 +2871,7 @@
     let _t6 = == _t5 0  ; Δ{}
     let _t6 = call csi _t5  ; Δ{_t5} · makes String
     let _t6 = call paneW cols  ; Δ{_t5}
+    let _t6 = call sizedCell name _t5 prev  ; Δ{_t4} · makes String
     let _t6 = call termRows 0  ; Δ{}
     let _t6 = call wlGo s _t4 n _t5  ; Δ{_t3} · makes List$String
     let _t6 = con Nil  ; Δ{_t5} · makes List$String
@@ -2797,6 +2888,7 @@
     let _t7 = call paneX cols  ; Δ{}
     let _t7 = con Cons "(install kitty or img2sixel for a pixel preview)" _t6  ; Δ{_t5 _t6} · moves{_t6} · makes List$String
     let _t7 = if _t5 then
+    let _t7 = rtcall axion_strcat " " _t6  ; Δ{_t4 _t6} · makes String
     let _t7 = rtcall axion_strcat _t2 _t6  ; Δ{_t2 _t6} · makes String
     let _t7 = rtcall axion_strcat _t4 _t6  ; Δ{_t3 _t4 _t6} · makes String
     let _t7 = rtcall axion_substr _t5 _t6 s  ; Δ{} · makes String
@@ -2810,6 +2902,7 @@
     let _t8 = rtcall axion_str_cmp _t7 q  ; Δ{_t7}
     let _t8 = rtcall axion_strcat "; L=\"$HOME/.cache/axfm/trashlog\"; mkdir -p \"$d\" \"${L%/*}\" && for src in " _t7  ; Δ{_t3 _t7} · makes String
     let _t8 = rtcall axion_strcat "L=" _t7  ; Δ{_t7} · makes String
+    let _t8 = rtcall axion_strcat _t4 _t7  ; Δ{_t4 _t7} · makes String
     let _t9 = call maxItems rows  ; Δ{}
     let _t9 = call sepGo col _t8 mx  ; Δ{_t6 _t7} · makes String
     let _t9 = rtcall axion_run _t8  ; Δ{_t8} · makes String
@@ -2856,6 +2949,11 @@
     ret "1;34"  ; Δ{}
     ret "1;35"  ; Δ{}
     ret "1;36"  ; Δ{}
+    ret "\u{f07b}"  ; Δ{}
+    ret "\u{f0c1}"  ; Δ{}
+    ret "\u{f127}"  ; Δ{}
+    ret "\u{f1c5}"  ; Δ{}
+    ret "\u{f489}"  ; Δ{}
     ret "chmod +x -- "  ; Δ{}
     ret "chmod -x -- "  ; Δ{}
     ret "d"  ; Δ{}
@@ -2953,6 +3051,13 @@
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+    ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{}
     ret _d1000000  ; Δ{}
     ret _d1000000  ; Δ{}
@@ -2971,6 +3076,7 @@
     ret _d1000000  ; Δ{}
     ret _d1000000  ; Δ{}
     ret _d1000000  ; Δ{}
+    ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
     ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
     ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
     ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
@@ -2993,11 +3099,13 @@
     ret call bottomMatch raw q from  ; Δ{}
     ret call bulkRun cwd marked _t2  ; Δ{_t2} · moves{_t2}
     ret call catOrBuiltin lsc ext  ; Δ{} · makes String
+    ret call catOrBuiltinIcon icfg ext  ; Δ{} · makes String
     ret call clip plain listW  ; Δ{} · makes String
     ret call colorForExt ext  ; Δ{} · makes String
     ret call consLine s i n _t1  ; Δ{} · makes List$String
     ret call consWord s i n _t3  ; Δ{} · makes List$String
     ret call dirColor lsc  ; Δ{} · makes String
+    ret call dirIcon icfg  ; Δ{} · makes String
     ret call doPasteRun cwd sel marked prog hidden rows  ; Δ{}
     ret call doPasteRun cwd sel marked prog hidden rows  ; Δ{}
     ret call drawSep _t0 mx  ; Δ{} · makes String
@@ -3020,6 +3128,7 @@
     ret call grow _t2 need  ; Δ{_t2} · moves{_t2} · makes String
     ret call hasPrefix "~/" nm  ; Δ{}
     ret call hasPrefix acc b  ; Δ{}
+    ret call iconForExt ext  ; Δ{} · makes String
     ret call kittenRenderSrc _t3 _t4 _t6 0  ; Δ{} · makes String
     ret call loGo s _t2 _t4 n  ; Δ{}
     ret call loop cwd _t4 marked prog hidden rows cols raw  ; Δ{}
@@ -3122,6 +3231,8 @@
     ret if _t3 then
     ret if _t3 then
     ret if _t3 then
+    ret if _t3 then
+    ret if _t3 then
     ret if _t4 then
     ret if _t4 then
     ret if _t4 then
@@ -3175,6 +3286,12 @@
   ; Δ{a}
   ; Δ{a}
   ; Δ{cc}
+  ; Δ{cc}
+  ; Δ{c}
+  ; Δ{c}
+  ; Δ{c}
+  ; Δ{c}
+  ; Δ{c}
   ; Δ{c}
   ; Δ{c}
   ; Δ{c}
@@ -3658,6 +3775,17 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   drop _t0
   drop _t0 : List$String
   drop _t0 : List$String
@@ -3679,6 +3807,12 @@
   drop _t0 : List$String
   drop _t0 : List$String
   drop _t0 : List$String
+  drop _t0 : List$String
+  drop _t0 : String
+  drop _t0 : String
+  drop _t0 : String
+  drop _t0 : String
+  drop _t0 : String
   drop _t0 : String
   drop _t0 : String
   drop _t0 : String
@@ -3913,6 +4047,8 @@
   drop _t1 : String
   drop _t1 : String
   drop _t1 : String
+  drop _t1 : String
+  drop _t1 : String
   drop _t10 : String
   drop _t10 : String
   drop _t10 : String
@@ -3932,6 +4068,9 @@
   drop _t11 : String
   drop _t11 : String
   drop _t11 : String
+  drop _t11 : String
+  drop _t11 : String
+  drop _t12 : String
   drop _t12 : String
   drop _t12 : String
   drop _t12 : String
@@ -3943,6 +4082,9 @@
   drop _t13 : String
   drop _t13 : String
   drop _t13 : String
+  drop _t13 : String
+  drop _t14 : String
+  drop _t14 : String
   drop _t14 : String
   drop _t14 : String
   drop _t15 : String
@@ -3953,6 +4095,7 @@
   drop _t19 : String
   drop _t2 : List$String
   drop _t2 : List$String
+  drop _t2 : String
   drop _t2 : String
   drop _t2 : String
   drop _t2 : String
@@ -4097,8 +4240,7 @@
   drop _t3 : String
   drop _t3 : String
   drop _t3 : String
-  drop _t4 : List$String
-  drop _t4 : List$String
+  drop _t3 : String
   drop _t4 : String
   drop _t4 : String
   drop _t4 : String
@@ -4146,6 +4288,11 @@
   drop _t4 : String
   drop _t4 : String
   drop _t4 : String
+  drop _t4 : String
+  drop _t4 : String
+  drop _t4 : String
+  drop _t5 : List$String
+  drop _t5 : List$String
   drop _t5 : String
   drop _t5 : String
   drop _t5 : String
@@ -4182,7 +4329,8 @@
   drop _t5 : String
   drop _t5 : String
   drop _t5 : String
-  drop _t5 : String
+  drop _t6 : String
+  drop _t6 : String
   drop _t6 : String
   drop _t6 : String
   drop _t6 : String
@@ -4458,6 +4606,15 @@
   else
   else
   else
+  else
+  else
+  else
+  else
+  else
+  else
+  else
+  else
+  else
   let _d1000000 = call </> cwd _t0  ; Δ{_t0} · makes String
   let _d1000000 = call </> cwd _t1  ; Δ{_t1} · makes String
   let _d1000000 = call absPath _t0  ; Δ{_t0} · makes String
@@ -4499,6 +4656,7 @@
   let _d1000000 = call trim _t3  ; Δ{_t3} · makes String
   let _d1000000 = call trim _t5  ; Δ{_t5} · makes String
   let _d1000000 = call unlines _t1  ; Δ{_t1} · makes String
+  let _d1000000 = rtcall axion_read_file _t0  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_run _t4  ; Δ{_t4} · makes String
   let _d1000000 = rtcall axion_strcat "  " _t3  ; Δ{_t3} · makes String
   let _d1000000 = rtcall axion_strcat "  axfm — key bindings\n\n" _t13  ; Δ{_t13} · makes String
@@ -4515,6 +4673,7 @@
   let _d1000000 = rtcall axion_strcat "cd " _t7  ; Δ{_t7} · makes String
   let _d1000000 = rtcall axion_strcat "cd " _t8  ; Δ{_t8} · makes String
   let _d1000000 = rtcall axion_strcat "cfg=" _t6  ; Δ{_t6} · makes String
+  let _d1000000 = rtcall axion_strcat "cfg=" _t6  ; Δ{_t6} · makes String
   let _d1000000 = rtcall axion_strcat "cfg=" _t8  ; Δ{_t8} · makes String
   let _d1000000 = rtcall axion_strcat "cw=7; ch=14; [ -r \"$HOME/.cache/axfm/cell\" ] && read cw ch < \"$HOME/.cache/axfm/cell\"; W=$(( " _t4  ; Δ{_t4} · makes String
   let _d1000000 = rtcall axion_strcat "d=" _t11  ; Δ{_t11} · makes String
@@ -4522,7 +4681,7 @@
   let _d1000000 = rtcall axion_strcat "f=" _t9  ; Δ{_t9} · makes String
   let _d1000000 = rtcall axion_strcat "for src in " _t2  ; Δ{_t2} · makes String
   let _d1000000 = rtcall axion_strcat "kitten icat --clear --stdin=no --scale-up --place=" _t10  ; Δ{_t10} · makes String
-  let _d1000000 = rtcall axion_strcat "km=" _t10  ; Δ{_t10} · makes String
+  let _d1000000 = rtcall axion_strcat "km=" _t14  ; Δ{_t14} · makes String
   let _d1000000 = rtcall axion_strcat "l=\"$HOME/.cache/axfm/trashlog\"; [ -s \"$l\" ] || exit 0; last=$(tail -n1 \"$l\"); t=$(printf '\\t'); dest=${last%%$t*}; orig=${last#*$t}; rc=0; if [ -e \"$dest\" ]; then mkdir -p \"${orig%/*}\" && mv -- \"$dest\" \"$orig\" || rc=1; fi; sed -i '$ d' \"$l\"; exit $rc" _t0  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_strcat "m=$(file -bL --mime-type \"$src\" 2>/dev/null); case \"$m\" in video/*) " _t13  ; Δ{_t13} · makes String
   let _d1000000 = rtcall axion_strcat "m=$(file -bL --mime-type \"$src\" 2>/dev/null); case \"$m\" in video/*) " _t4  ; Δ{_t4} · makes String
@@ -4541,6 +4700,7 @@
   let _d1000000 = rtcall axion_strcat _t0 "/.cache/axfm/colors"  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_strcat _t0 "/.cache/axfm/err"  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_strcat _t0 "/.cache/axfm/filter"  ; Δ{_t0} · makes String
+  let _d1000000 = rtcall axion_strcat _t0 "/.cache/axfm/icons"  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_strcat _t0 "/.cache/axfm/keymap"  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_strcat _t0 "/.cache/axfm/lastq"  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_strcat _t0 "/.cache/axfm/pending"  ; Δ{_t0} · makes String
@@ -4556,8 +4716,8 @@
   let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
   let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
   let _d1000000 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
-  let _d1000000 = rtcall axion_strcat _t1 _t10  ; Δ{_t1 _t10} · makes String
-  let _d1000000 = rtcall axion_strcat _t1 _t13  ; Δ{_t1 _t13} · makes String
+  let _d1000000 = rtcall axion_strcat _t1 _t11  ; Δ{_t1 _t11} · makes String
+  let _d1000000 = rtcall axion_strcat _t1 _t14  ; Δ{_t1 _t14} · makes String
   let _d1000000 = rtcall axion_strcat _t1 _t3  ; Δ{_t1 _t3} · makes String
   let _d1000000 = rtcall axion_strcat _t1 _t3  ; Δ{_t1 _t3} · makes String
   let _d1000000 = rtcall axion_strcat _t2 _t10  ; Δ{_t10 _t2} · makes String
@@ -4565,13 +4725,13 @@
   let _d1000000 = rtcall axion_strcat _t2 _t7  ; Δ{_t2 _t7} · makes String
   let _d1000000 = rtcall axion_strcat _t3 _t15  ; Δ{_t15 _t3} · makes String
   let _d1000000 = rtcall axion_strcat _t3 _t9  ; Δ{_t3 _t9} · makes String
-  let _d1000000 = rtcall axion_strcat _t8 "\n"  ; Δ{_t8} · makes String
+  let _d1000000 = rtcall axion_strcat _t6 "\n"  ; Δ{_t6} · makes String
   let _d1000000 = rtcall axion_strcat c _t2  ; Δ{_t2 c} · makes String
   let _d1000000 = rtcall axion_strcat cwd _t3  ; Δ{_t3} · makes String
   let _d1000000 = rtcall axion_system _t0  ; Δ{_t0}
   let _d1000000 = rtcall axion_system _t0  ; Δ{_t0}
   let _d1000000 = rtcall axion_system _t2  ; Δ{_t2}
-  let _d1000000 = rtcall axion_system _t5  ; Δ{_t5}
+  let _d1000000 = rtcall axion_system _t8  ; Δ{_t8}
   let _dd0 = band _p 1  ; Δ{}
   let _dd1 = if _dd0 then
   let _dd4 = band _p 1  ; Δ{}
@@ -4640,6 +4800,7 @@
   let _t0 = call capsFile 0  ; Δ{} · makes String
   let _t0 = call capsFile 0  ; Δ{} · makes String
   let _t0 = call catOf ext  ; Δ{} · makes String
+  let _t0 = call catOf ext  ; Δ{} · makes String
   let _t0 = call cdFile 0  ; Δ{} · makes String
   let _t0 = call classifyNow cwd hidden  ; Δ{}
   let _t0 = call classifyNow cwd hidden  ; Δ{}
@@ -4648,6 +4809,7 @@
   let _t0 = call cmdLine "mkdir: " rows cwd  ; Δ{} · makes String
   let _t0 = call cmdLine "mkfile: " rows cwd  ; Δ{} · makes String
   let _t0 = call colorsFile 0  ; Δ{} · makes String
+  let _t0 = call configFile 0  ; Δ{} · makes String
   let _t0 = call configFile 0  ; Δ{} · makes String
   let _t0 = call configFile 0  ; Δ{} · makes String
   let _t0 = call confirmKey "jump to mark: " rows  ; Δ{} · makes String
@@ -4679,6 +4841,7 @@
   let _t0 = call envOr "HOME" "."  ; Δ{} · makes String
   let _t0 = call envOr "HOME" "."  ; Δ{} · makes String
   let _t0 = call envOr "HOME" "."  ; Δ{} · makes String
+  let _t0 = call envOr "HOME" "."  ; Δ{} · makes String
   let _t0 = call envOr "OLDPWD" "."  ; Δ{} · makes String
   let _t0 = call errFile 0  ; Δ{} · makes String
   let _t0 = call errRedir  ; Δ{} · makes String
@@ -4691,6 +4854,8 @@
   let _t0 = call hasPrefix "inode/directory" mime  ; Δ{}
   let _t0 = call hasSuffix "/" s  ; Δ{}
   let _t0 = call hasSuffix "/" y  ; Δ{}
+  let _t0 = call iconsFile 0  ; Δ{} · makes String
+  let _t0 = call imageExts  ; Δ{} · makes List$String
   let _t0 = call imageExts  ; Δ{} · makes List$String
   let _t0 = call imageExts  ; Δ{} · makes List$String
   let _t0 = call imgClearSeq  ; Δ{} · makes String
@@ -4843,6 +5008,7 @@
   let _t0 = rtcall axion_str_cmp prog "trash"  ; Δ{}
   let _t0 = rtcall axion_str_cmp s "-S"  ; Δ{}
   let _t0 = rtcall axion_str_cmp ty "d"  ; Δ{}
+  let _t0 = rtcall axion_str_cmp ty "d"  ; Δ{}
   let _t0 = rtcall axion_str_cmp x y  ; Δ{}
   let _t0 = rtcall axion_str_len a  ; Δ{a}
   let _t0 = rtcall axion_str_len a  ; Δ{}
@@ -4853,10 +5019,15 @@
   let _t0 = rtcall axion_str_len c  ; Δ{c}
   let _t0 = rtcall axion_str_len c  ; Δ{c}
   let _t0 = rtcall axion_str_len c  ; Δ{c}
+  let _t0 = rtcall axion_str_len c  ; Δ{c}
+  let _t0 = rtcall axion_str_len c  ; Δ{c}
+  let _t0 = rtcall axion_str_len c  ; Δ{c}
+  let _t0 = rtcall axion_str_len c  ; Δ{c}
   let _t0 = rtcall axion_str_len cc  ; Δ{cc}
   let _t0 = rtcall axion_str_len cmd  ; Δ{}
   let _t0 = rtcall axion_str_len comp  ; Δ{}
   let _t0 = rtcall axion_str_len d  ; Δ{}
+  let _t0 = rtcall axion_str_len icfg  ; Δ{}
   let _t0 = rtcall axion_str_len k  ; Δ{k}
   let _t0 = rtcall axion_str_len k  ; Δ{k}
   let _t0 = rtcall axion_str_len k  ; Δ{}
@@ -4905,6 +5076,7 @@
   let _t0 = rtcall axion_str_len v  ; Δ{v}
   let _t0 = rtcall axion_str_len v  ; Δ{v}
   let _t0 = rtcall axion_strcat "  keys are remappable in ~/.config/axfm/config.lua\n\n" "  press any key to close"  ; Δ{} · makes String
+  let _t0 = rtcall axion_strcat "*." ext  ; Δ{} · makes String
   let _t0 = rtcall axion_strcat "*." ext  ; Δ{} · makes String
   let _t0 = rtcall axion_strcat "FFF_FAV" key  ; Δ{} · makes String
   let _t0 = rtcall axion_strcat "[ -n \"${1:-}\" ] && [ -n \"${2:-}\" ] || exit 0; sz=$(stty size <&3 2>/dev/null); rr=${sz%% *}; cc=${sz##* }; " "[ \"${rr:-0}\" -gt 0 ] && [ \"${cc:-0}\" -gt 0 ] || exit 0; cw=$(( $2 / cc )); ch=$(( $1 / rr )); [ \"$cw\" -gt 0 ] && [ \"$ch\" -gt 0 ] || exit 0; printf '%s %s' \"$cw\" \"$ch\" > \"$HOME/.cache/axfm/cell\""  ; Δ{} · makes String
@@ -4968,8 +5140,14 @@
   let _t1 = == _t0 0  ; Δ{}
   let _t1 = == _t0 0  ; Δ{}
   let _t1 = == _t0 0  ; Δ{}
+  let _t1 = == _t0 0  ; Δ{}
+  let _t1 = == _t0 0  ; Δ{}
   let _t1 = == _t0 cols  ; Δ{}
   let _t1 = > _t0 0  ; Δ{cc}
+  let _t1 = > _t0 0  ; Δ{c}
+  let _t1 = > _t0 0  ; Δ{c}
+  let _t1 = > _t0 0  ; Δ{c}
+  let _t1 = > _t0 0  ; Δ{c}
   let _t1 = > _t0 0  ; Δ{c}
   let _t1 = > _t0 0  ; Δ{c}
   let _t1 = > _t0 0  ; Δ{c}
@@ -5005,6 +5183,7 @@
   let _t1 = call csi "H"  ; Δ{_t0} · makes String
   let _t1 = call csi _t0  ; Δ{_t0} · makes String
   let _t1 = call duOf _t0  ; Δ{_t0} · makes String
+  let _t1 = call elemBy$String e _t0  ; Δ{_t0}
   let _t1 = call elemBy$String e _t0  ; Δ{_t0}
   let _t1 = call elemBy$String e _t0  ; Δ{_t0}
   let _t1 = call esc  ; Δ{_t0} · makes String
@@ -5059,6 +5238,7 @@
   let _t1 = call shQuote _t0  ; Δ{_t0} · makes String
   let _t1 = call shQuote _t0  ; Δ{_t0} · makes String
   let _t1 = call shQuote _t0  ; Δ{_t0} · makes String
+  let _t1 = call shQuote _t0  ; Δ{_t0} · makes String
   let _t1 = call shQuote cwd  ; Δ{_t0} · makes String
   let _t1 = call shQuote d  ; Δ{_t0} · makes String
   let _t1 = call shQuote path  ; Δ{_t0} · makes String
@@ -5105,6 +5285,7 @@
   let _t1 = rtcall axion_str_len _t0  ; Δ{_t0}
   let _t1 = rtcall axion_str_len acc  ; Δ{}
   let _t1 = rtcall axion_str_len c  ; Δ{c}
+  let _t1 = rtcall axion_str_len c  ; Δ{c}
   let _t1 = rtcall axion_str_len cmd  ; Δ{}
   let _t1 = rtcall axion_str_len e  ; Δ{e}
   let _t1 = rtcall axion_str_len key  ; Δ{fav}
@@ -5128,6 +5309,7 @@
   let _t1 = rtcall axion_strcat _t0 " 2>/dev/null"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 " item(s)? [y/N] "  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 " to: "  ; Δ{_t0} · makes String
+  let _t1 = rtcall axion_strcat _t0 "/*"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "/*"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "/.cache/axfm"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "; printf %s \"$p\" | { wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || xsel -b 2>/dev/null; }"  ; Δ{_t0} · makes String
@@ -5155,6 +5337,7 @@
   let _t1 = showInt _t0  ; Δ{} · makes String
   let _t1 = showInt ph  ; Δ{_t0} · makes String
   let _t1 = showInt phc  ; Δ{_t0} · makes String
+  let _t10 = call statusLine cwd total sel marked prog rows info  ; Δ{_t1 _t2 _t6 _t7 _t9} · makes String
   let _t10 = con Cons "xml" _t9  ; Δ{_t9} · moves{_t9} · makes List$String
   let _t10 = putStr _t9  ; Δ{_t9}
   let _t10 = putStr _t9  ; Δ{_t9}
@@ -5164,35 +5347,40 @@
   let _t10 = rtcall axion_strcat "; t=" _t9  ; Δ{_t0 _t9} · makes String
   let _t10 = rtcall axion_strcat _t0 _t9  ; Δ{_t0 _t9} · makes String
   let _t10 = rtcall axion_strcat _t0 _t9  ; Δ{_t0 _t9} · makes String
-  let _t10 = rtcall axion_strcat _t1 _t9  ; Δ{_t1 _t9} · makes String
   let _t10 = rtcall axion_strcat _t2 _t9  ; Δ{_t0 _t2 _t9} · makes String
-  let _t10 = rtcall axion_strcat _t2 _t9  ; Δ{_t1 _t2 _t9} · makes String
   let _t10 = rtcall axion_strcat _t3 _t9  ; Δ{_t2 _t3 _t9} · makes String
-  let _t10 = rtcall axion_strcat _t8 _t9  ; Δ{_t1 _t2 _t5 _t6 _t8 _t9} · makes String
+  let _t10 = rtcall axion_strcat _t5 _t9  ; Δ{_t1 _t3 _t5 _t9} · makes String
+  let _t10 = rtcall axion_strcat _t6 _t9  ; Δ{_t1 _t2 _t6 _t9} · makes String
   let _t10 = rtcall axion_strcat _t8 _t9  ; Δ{_t3 _t4 _t5 _t6 _t7 _t8 _t9} · makes String
   let _t11 = call shQuote path  ; Δ{rng sed} · makes String
   let _t11 = con Cons "scss" _t10  ; Δ{_t10} · moves{_t10} · makes List$String
   let _t11 = rtcall axion_strcat "  J / K             scroll preview      .       toggle hidden\n" _t10  ; Δ{_t10} · makes String
   let _t11 = rtcall axion_strcat "; f=" _t10  ; Δ{_t0 _t10} · makes String
+  let _t11 = rtcall axion_strcat "; ic=" _t10  ; Δ{_t1 _t10 _t3} · makes String
   let _t11 = rtcall axion_strcat _t0 _t10  ; Δ{_t0 _t10} · makes String
   let _t11 = rtcall axion_strcat _t1 _t10  ; Δ{_t0 _t1 _t10} · makes String
-  let _t11 = rtcall axion_strcat _t6 _t10  ; Δ{_t1 _t10 _t2 _t5 _t6} · makes String
+  let _t11 = rtcall axion_strcat _t2 _t10  ; Δ{_t1 _t10 _t2} · makes String
   let _t11 = rtcall axion_strcat _t7 _t10  ; Δ{_t10 _t3 _t4 _t5 _t6 _t7} · makes String
+  let _t11 = rtcall axion_strcat _t9 _t10  ; Δ{_t1 _t10 _t2 _t6 _t7 _t9} · makes String
   let _t12 = call shQuote sed  ; Δ{_t11 rng sed} · makes String
   let _t12 = con Cons "css" _t11  ; Δ{_t11} · moves{_t11} · makes List$String
   let _t12 = rtcall axion_strcat "  l  Enter  (or ->) open               h  (or <-)  parent dir\n" _t11  ; Δ{_t11} · makes String
   let _t12 = rtcall axion_strcat "src=\"$th\"; " _t11  ; Δ{_t0 _t11} · makes String
   let _t12 = rtcall axion_strcat _t0 _t11  ; Δ{_t0 _t11} · makes String
-  let _t12 = rtcall axion_strcat _t5 _t11  ; Δ{_t1 _t11 _t2 _t5} · makes String
+  let _t12 = rtcall axion_strcat _t3 _t11  ; Δ{_t1 _t11 _t3} · makes String
   let _t12 = rtcall axion_strcat _t6 _t11  ; Δ{_t11 _t3 _t4 _t5 _t6} · makes String
+  let _t12 = rtcall axion_strcat _t7 _t11  ; Δ{_t1 _t11 _t2 _t6 _t7} · makes String
   let _t13 = call shQuote path  ; Δ{_t11 _t12 rng} · makes String
   let _t13 = con Cons "html" _t12  ; Δ{_t12} · moves{_t12} · makes List$String
   let _t13 = rtcall axion_strcat "  j k  (or arrows)  move cursor        g / G   top / bottom\n" _t12  ; Δ{_t12} · makes String
+  let _t13 = rtcall axion_strcat "; cf=" _t12  ; Δ{_t1 _t12} · makes String
   let _t13 = rtcall axion_strcat _t0 _t12  ; Δ{_t0 _t12} · makes String
-  let _t13 = rtcall axion_strcat _t2 _t12  ; Δ{_t1 _t12 _t2} · makes String
   let _t13 = rtcall axion_strcat _t5 _t12  ; Δ{_t12 _t3 _t4 _t5} · makes String
+  let _t13 = rtcall axion_strcat _t6 _t12  ; Δ{_t1 _t12 _t2 _t6} · makes String
   let _t14 = con Cons "json" _t13  ; Δ{_t13} · moves{_t13} · makes List$String
+  let _t14 = rtcall axion_strcat _t1 _t13  ; Δ{_t1 _t13} · makes String
   let _t14 = rtcall axion_strcat _t13 " 2>/dev/null"  ; Δ{_t11 _t12 _t13 rng} · makes String
+  let _t14 = rtcall axion_strcat _t2 _t13  ; Δ{_t1 _t13 _t2} · makes String
   let _t14 = rtcall axion_strcat _t4 _t13  ; Δ{_t13 _t3 _t4} · makes String
   let _t15 = call paint "7" _t14  ; Δ{_t14 _t3} · makes String
   let _t15 = con Cons "yml" _t14  ; Δ{_t14} · moves{_t14} · makes List$String
@@ -5222,11 +5410,12 @@
   let _t2 = > _t1 0  ; Δ{_t0}
   let _t2 = > _t1 0  ; Δ{_t0}
   let _t2 = > _t1 0  ; Δ{c}
+  let _t2 = > _t1 0  ; Δ{c}
   let _t2 = > _t1 0  ; Δ{fav}
   let _t2 = > _t1 0  ; Δ{}
   let _t2 = call absPath _t1  ; Δ{_t1} · makes String
   let _t2 = call bookmarkFile 0  ; Δ{_t0 _t1} · makes String
-  let _t2 = call buildKeymapCmd  ; Δ{_t0 _t1} · makes String
+  let _t2 = call buildIconsCmd  ; Δ{_t0 _t1} · makes String
   let _t2 = call colorsFile 0  ; Δ{_t1} · makes String
   let _t2 = call colorsFile 0  ; Δ{_t1} · makes String
   let _t2 = call csi "2J"  ; Δ{_t0 _t1} · makes String
@@ -5246,6 +5435,7 @@
   let _t2 = call helpText  ; Δ{_t0 _t1} · makes String
   let _t2 = call homeClear  ; Δ{_t1 tys} · makes String
   let _t2 = call homeClear  ; Δ{_t1 tys} · makes String
+  let _t2 = call iconsFile 0  ; Δ{_t1} · makes String
   let _t2 = call keymapFile 0  ; Δ{_t1} · makes String
   let _t2 = call lines _t1  ; Δ{_t1} · makes List$String
   let _t2 = call lines _t1  ; Δ{_t1} · makes List$String
@@ -5295,6 +5485,7 @@
   let _t2 = rtcall axion_mkdir_p _t1  ; Δ{_t1}
   let _t2 = rtcall axion_str_cmp _t1 cwd  ; Δ{_t1 c}
   let _t2 = rtcall axion_str_len _t1  ; Δ{_t1}
+  let _t2 = rtcall axion_str_len cc  ; Δ{cc}
   let _t2 = rtcall axion_strcat "  " _t1  ; Δ{_t0 _t1} · makes String
   let _t2 = rtcall axion_strcat "  Y M S D  mark ALL for the same        p  paste    u  undo trash\n" _t1  ; Δ{_t1} · makes String
   let _t2 = rtcall axion_strcat " 2>/dev/null && pwd || printf %s " _t1  ; Δ{_t0 _t1} · makes String
@@ -5340,9 +5531,11 @@
   let _t28 = con Cons "clj" _t27  ; Δ{_t27} · moves{_t27} · makes List$String
   let _t29 = con Cons "scala" _t28  ; Δ{_t28} · moves{_t28} · makes List$String
   let _t3 = == _t2 0  ; Δ{c}
+  let _t3 = > _t2 0  ; Δ{cc}
   let _t3 = > _t2 0  ; Δ{}
   let _t3 = call absPath _t2  ; Δ{_t2} · makes String
   let _t3 = call absPath _t2  ; Δ{_t2} · makes String
+  let _t3 = call buildKeymapCmd  ; Δ{_t0 _t1 _t2} · makes String
   let _t3 = call clampSel _t2 n  ; Δ{}
   let _t3 = call cmdLine _t2 rows cwd  ; Δ{_t2} · makes String
   let _t3 = call csi "?25h"  ; Δ{_t2} · makes String
@@ -5365,6 +5558,7 @@
   let _t3 = call render cwd msel marked prog rows raw cols _t2 0  ; Δ{_t2} · makes String
   let _t3 = call selPath cwd hidden sel  ; Δ{} · makes String
   let _t3 = call shQuote _t2  ; Δ{_t0 _t1 _t2} · makes String
+  let _t3 = call shQuote _t2  ; Δ{_t1 _t2} · makes String
   let _t3 = call shQuote _t2  ; Δ{_t1 _t2} · makes String
   let _t3 = call shQuote _t2  ; Δ{_t1 _t2} · makes String
   let _t3 = call shQuote _t2  ; Δ{_t1 _t2} · makes String
@@ -5400,7 +5594,6 @@
   let _t3 = rtcall axion_strcat " * ${cw:-7} )); H=$(( " _t2  ; Δ{_t0 _t2} · makes String
   let _t3 = rtcall axion_strcat " | head -n " _t2  ; Δ{_t1 _t2} · makes String
   let _t3 = rtcall axion_strcat ":" _t2  ; Δ{_t1 _t2} · makes String
-  let _t3 = rtcall axion_strcat "; " _t2  ; Δ{_t0 _t1 _t2} · makes String
   let _t3 = rtcall axion_strcat "; for src in " _t2  ; Δ{_t0 _t2} · makes String
   let _t3 = rtcall axion_strcat "H'; " _t2  ; Δ{_t0 _t2} · makes String
   let _t3 = rtcall axion_strcat "\n" _t2  ; Δ{_t2} · makes String
@@ -5440,7 +5633,6 @@
   let _t38 = con Cons "fish" _t37  ; Δ{_t37} · moves{_t37} · makes List$String
   let _t39 = con Cons "zsh" _t38  ; Δ{_t38} · moves{_t38} · makes List$String
   let _t4 = - _t2 _t3  ; Δ{}
-  let _t4 = call configFile 0  ; Δ{_t1 _t3} · makes String
   let _t4 = call csi "K"  ; Δ{_t2 _t3} · makes String
   let _t4 = call csi "K"  ; Δ{_t2 _t3} · makes String
   let _t4 = call csi "K"  ; Δ{_t2 _t3} · makes String
@@ -5449,20 +5641,22 @@
   let _t4 = call csi "K"  ; Δ{_t2 _t3} · makes String
   let _t4 = call enqueueItems _t1 _t3  ; Δ{_t0 _t1 _t3} · makes String
   let _t4 = call firstLine q  ; Δ{q} · makes String
+  let _t4 = call iconsFile 0  ; Δ{_t1 _t3} · makes String
+  let _t4 = call iconsOf 0  ; Δ{_t1 _t2 _t3 tys} · makes String
+  let _t4 = call iconsOf 0  ; Δ{_t1 _t2 _t3 tys} · makes String
   let _t4 = call lsCmd cwd hidden  ; Δ{_t0 _t2 _t3} · makes String
   let _t4 = call okOr _t3 "bulk-rename: some renames failed" rows  ; Δ{}
   let _t4 = call posStr sel total  ; Δ{_t3} · makes String
   let _t4 = call posStr sel total  ; Δ{_t3} · makes String
   let _t4 = call progVerb prog  ; Δ{_t2 _t3} · makes String
   let _t4 = call renameMaybe cwd hidden sel _t3 rows  ; Δ{_t3}
+  let _t4 = call rowCell icfg ty raw _t2 _t3 listW prev  ; Δ{_t2 _t3} · makes String
   let _t4 = call shQuote _t3  ; Δ{_t0 _t2 _t3} · makes String
   let _t4 = call shQuote _t3  ; Δ{_t0 _t2 _t3} · makes String
   let _t4 = call shQuote _t3  ; Δ{_t3} · makes String
   let _t4 = call sixelDecode pwc phc  ; Δ{_t0 _t1 _t2 _t3} · makes String
   let _t4 = call trim _t3  ; Δ{_t0 _t1 _t3} · makes String
   let _t4 = call trim _t3  ; Δ{_t0 _t1 _t3} · makes String
-  let _t4 = call windowLines raw start mx  ; Δ{_t1 _t2 _t3 tys} · makes List$String
-  let _t4 = call windowLines raw start mx  ; Δ{_t1 _t2 _t3 tys} · makes List$String
   let _t4 = con Cons "7z" _t3  ; Δ{_t3} · moves{_t3} · makes List$String
   let _t4 = con Cons "diff" _t3  ; Δ{_t3} · moves{_t3} · makes List$String
   let _t4 = con Cons "doc" _t3  ; Δ{_t3} · moves{_t3} · makes List$String
@@ -5476,10 +5670,10 @@
   let _t4 = if _t2 then
   let _t4 = putStr _t3  ; Δ{_t3}
   let _t4 = rtcall axion_strcat "  <N> j/k/G  repeat / go to line N (count prefix)\n" _t3  ; Δ{_t3} · makes String
-  let _t4 = rtcall axion_strcat " " _t3  ; Δ{_t2 _t3} · makes String
   let _t4 = rtcall axion_strcat " || unzip -l " _t3  ; Δ{_t0 _t1 _t3} · makes String
   let _t4 = rtcall axion_strcat "/" _t3  ; Δ{_t1 _t3} · makes String
   let _t4 = rtcall axion_strcat ":" _t3  ; Δ{_t1 _t3} · makes String
+  let _t4 = rtcall axion_strcat "; " _t3  ; Δ{_t0 _t1 _t2 _t3} · makes String
   let _t4 = rtcall axion_strcat "; " _t3  ; Δ{_t0 _t2 _t3} · makes String
   let _t4 = rtcall axion_strcat "; if [ -s \"$tf\" ]; then n=$(grep -c '' \"$tf\"); if [ \"$n\" -gt 1 ]; then ai=0; [ -r \"$ti\" ] && read ai < \"$ti\"; [ -z \"$ai\" ] && ai=0; k=0; " "while IFS= read -r d; do b=${d##*/}; [ -z \"$b\" ] && b=/; if [ \"$k\" = \"$ai\" ]; then tb=\"$tb [$((k+1)):$b]\"; else tb=\"$tb $((k+1)):$b\"; fi; k=$((k+1)); done < \"$tf\"; fi; fi; printf '%s\\n' \"$tb\""  ; Δ{_t1 _t3} · makes String
   let _t4 = rtcall axion_strcat "cd -- " _t3  ; Δ{_t3} · makes String
@@ -5494,7 +5688,6 @@
   let _t4 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
   let _t4 = rtcall axion_strcat _t1 _t3  ; Δ{_t0 _t1 _t3} · makes String
   let _t4 = rtcall axion_strcat _t1 _t3  ; Δ{_t0 _t1 _t3} · makes String
-  let _t4 = rtcall axion_strcat _t1 _t3  ; Δ{_t0 _t1 _t3} · makes String
   let _t4 = rtcall axion_strcat _t1 _t3  ; Δ{_t1 _t3} · makes String
   let _t4 = rtcall axion_strcat _t1 _t3  ; Δ{_t1 _t3} · makes String
   let _t4 = rtcall axion_strcat _t1 _t3  ; Δ{_t3} · makes String
@@ -5502,6 +5695,7 @@
   let _t4 = rtcall axion_strcat _t3 " ; } >/dev/null 2>&1"  ; Δ{_t0 _t2 _t3} · makes String
   let _t4 = rtcall axion_strcat _t3 "; mkdir -p \"${f%/*}\"; t=$(printf '\\t'); tmp=\"$f.$$\"; : > \"$tmp\"; [ -f \"$f\" ] && while IFS=\"$t\" read -r k v; do [ \"$k\" = \"$L\" ] || printf '%s\\t%s\\n' \"$k\" \"$v\"; done < \"$f\" >> \"$tmp\"; printf '%s\\t%s\\n' \"$L\" \"$P\" >> \"$tmp\" && mv \"$tmp\" \"$f\""  ; Δ{_t0 _t1 _t3} · makes String
   let _t4 = rtcall axion_strcat _t3 "; tmp=\"$cf.$$\"; mkdir -p \"${cf%/*}\"; : > \"$tmp\"; [ -r \"$cfg\" ] && sed '/^[[:space:]]*--/d' \"$cfg\" | while IFS= read -r line; do case \"$line\" in *color*=*) m=$(printf '%s\\n' \"$line\" | sed -n 's/.*match[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); v=$(printf '%s\\n' \"$line\" | sed -n 's/.*color[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); [ -n \"$m\" ] || continue; case \"$v\" in \\#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) r=$((0x$(printf %s \"$v\"|cut -c2-3))); g=$((0x$(printf %s \"$v\"|cut -c4-5))); b=$((0x$(printf %s \"$v\"|cut -c6-7))); v=\"38;2;$r;$g;$b\" ;; esac; printf '%s=%s:' \"$m\" \"$v\" >> \"$tmp\" ;; esac; done; mv \"$tmp\" \"$cf\"; true"  ; Δ{_t1 _t3} · makes String
+  let _t4 = rtcall axion_strcat _t3 "; tmp=\"$icf.$$\"; mkdir -p \"${icf%/*}\"; : > \"$tmp\"; if [ -r \"$cfg\" ] && sed '/^[[:space:]]*--/d' \"$cfg\" | grep -qE 'icons[[:space:]]*=[[:space:]]*false'; then :; else printf ':' > \"$tmp\"; [ -r \"$cfg\" ] && sed '/^[[:space:]]*--/d' \"$cfg\" | while IFS= read -r line; do case \"$line\" in *icon*=*) m=$(printf '%s\\n' \"$line\" | sed -n 's/.*match[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); v=$(printf '%s\\n' \"$line\" | sed -n 's/.*icon[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); [ -n \"$m\" ] || continue; printf '%s=%s:' \"$m\" \"$v\" >> \"$tmp\" ;; esac; done; fi; mv \"$tmp\" \"$icf\"; true"  ; Δ{_t1 _t3} · makes String
   let _t4 = rtcall axion_strcat _t3 "\n"  ; Δ{_t0 _t3} · makes String
   let _t4 = rtcall axion_strcat delta " + n) % n )); printf '%s' \"$ni\" > \"$i\"; sed -n \"$((ni+1))p\" \"$f\""  ; Δ{_t1 _t3} · makes String
   let _t4 = rtcall axion_system _t3  ; Δ{_t3}
@@ -5516,8 +5710,7 @@
   let _t48 = con Cons "py" _t47  ; Δ{_t47} · moves{_t47} · makes List$String
   let _t49 = con Cons "rs" _t48  ; Δ{_t48} · moves{_t48} · makes List$String
   let _t5 = + poff 1  ; Δ{rng}
-  let _t5 = call drawRows _t3 _t4 tys start sel marked cwd lw prev  ; Δ{_t1 _t2 _t3 _t4 tys} · makes String
-  let _t5 = call drawRows _t3 _t4 tys start sel marked cwd lw prev  ; Δ{_t1 _t2 _t3 _t4 tys} · makes String
+  let _t5 = call entryColor lsc ty raw  ; Δ{_t4} · makes String
   let _t5 = call errRedir  ; Δ{_t4} · makes String
   let _t5 = call markSeg marked prog  ; Δ{_t3 _t4} · makes String
   let _t5 = call okOr _t4 "mkdir failed" rows  ; Δ{}
@@ -5529,6 +5722,8 @@
   let _t5 = call rdtTypes cwd _t0 hidden _t4  ; Δ{_t0 _t1 _t4} · makes String
   let _t5 = call shQuote _t4  ; Δ{_t1 _t3 _t4} · makes String
   let _t5 = call tabSeg info  ; Δ{_t3 _t4} · makes String
+  let _t5 = call windowLines raw start mx  ; Δ{_t1 _t2 _t3 _t4 tys} · makes List$String
+  let _t5 = call windowLines raw start mx  ; Δ{_t1 _t2 _t3 _t4 tys} · makes List$String
   let _t5 = con Cons "bz2" _t4  ; Δ{_t4} · moves{_t4} · makes List$String
   let _t5 = con Cons "conf" _t4  ; Δ{_t4} · moves{_t4} · makes List$String
   let _t5 = con Cons "djvu" _t4  ; Δ{_t4} · moves{_t4} · makes List$String
@@ -5544,6 +5739,7 @@
   let _t5 = rtcall axion_strcat "; cf=" _t4  ; Δ{_t1 _t4} · makes String
   let _t5 = rtcall axion_strcat "; defs=\"$km.defs\"; src=\"$km.src\"; T=$(printf '\\t'); mkdir -p \"${km%/*}\"; : > \"$km\"; : > \"$defs\"; [ -r \"$cfg\" ] || { rm -f \"$defs\"; exit 0; }; sed '/^[[:space:]]*--/d' \"$cfg\" > \"$src\"; " _t4  ; Δ{_t1 _t3 _t4} · makes String
   let _t5 = rtcall axion_strcat "; f=" _t4  ; Δ{_t0 _t1 _t4} · makes String
+  let _t5 = rtcall axion_strcat "; icf=" _t4  ; Δ{_t1 _t4} · makes String
   let _t5 = rtcall axion_strcat "; mkdir -p \"${f%/*}\"; [ -s \"$f\" ] || printf '%s\\n' \"$P\" > \"$f\"; " "printf '%s\\n' \"$P\" >> \"$f\"; n=$(grep -c '' \"$f\"); printf '%s' \"$((n-1))\" > \"$i\""  ; Δ{_t0 _t2 _t4} · makes String
   let _t5 = rtcall axion_strcat "; { " _t4  ; Δ{_t0 _t2 _t4} · makes String
   let _t5 = rtcall axion_strcat "ai=0; [ -r \"$i\" ] && read ai < \"$i\"; [ -z \"$ai\" ] && ai=0; " _t4  ; Δ{_t1 _t3 _t4} · makes String
@@ -5552,11 +5748,10 @@
   let _t5 = rtcall axion_strcat "ni=$(( (ai + " _t4  ; Δ{_t1 _t3 _t4} · makes String
   let _t5 = rtcall axion_strcat "tmp=\"$f.$$\"; n=0; while IFS= read -r d; do if [ \"$n\" = \"$ai\" ]; then printf '%s\\n' \"$P\"; else printf '%s\\n' \"$d\"; fi; n=$((n+1)); done < \"$f\" > \"$tmp\"; " "mv \"$tmp\" \"$f\"; fi"  ; Δ{_t0 _t2 _t4} · makes String
   let _t5 = rtcall axion_strcat "x" _t4  ; Δ{_t0 _t1 _t2 _t4} · makes String
-  let _t5 = rtcall axion_strcat _t0 _t4  ; Δ{_t0 _t4} · makes String
   let _t5 = rtcall axion_strcat _t1 _t4  ; Δ{_t0 _t1 _t4} · makes String
   let _t5 = rtcall axion_strcat _t1 _t4  ; Δ{_t1 _t4} · makes String
+  let _t5 = rtcall axion_strcat _t2 _t4  ; Δ{_t0 _t1 _t2 _t4} · makes String
   let _t5 = rtcall axion_strcat _t2 _t4  ; Δ{_t0 _t2 _t4} · makes String
-  let _t5 = rtcall axion_strcat _t2 _t4  ; Δ{_t2 _t4} · makes String
   let _t5 = rtcall axion_strcat _t3 _t4  ; Δ{_t1 _t3 _t4} · makes String
   let _t5 = rtcall axion_strcat _t4 " ;; esac"  ; Δ{_t0 _t1 _t2 _t3 _t4} · makes String
   let _t5 = rtcall axion_strcat _t4 ") | while IFS= read -r n; do p=\"$d/${n%/}\"; if [ -L \"$p\" ]; then { [ -e \"$p\" ] && printf 'l\\n' || printf 'b\\n'; }; elif [ -d \"$p\" ]; then printf 'd\\n'; elif [ -x \"$p\" ]; then printf 'x\\n'; else printf 'f\\n'; fi; done; } > \"$tmp\" 2>/dev/null; mv \"$tmp\" \"$t\""  ; Δ{_t0 _t2 _t3 _t4} · makes String
@@ -5569,10 +5764,11 @@
   let _t51 = con Cons "hpp" _t50  ; Δ{_t50} · moves{_t50} · makes List$String
   let _t52 = con Cons "cpp" _t51  ; Δ{_t51} · moves{_t51} · makes List$String
   let _t53 = con Cons "h" _t52  ; Δ{_t52} · moves{_t52} · makes List$String
+  let _t6 = call colorCell _t4 i sel _t5  ; Δ{_t4 _t5} · makes String
+  let _t6 = call configFile 0  ; Δ{_t1 _t3 _t5} · makes String
+  let _t6 = call drawRows _t3 _t4 _t5 tys start sel marked cwd lw prev  ; Δ{_t1 _t2 _t3 _t4 _t5 tys} · makes String
+  let _t6 = call drawRows _t3 _t4 _t5 tys start sel marked cwd lw prev  ; Δ{_t1 _t2 _t3 _t4 _t5 tys} · makes String
   let _t6 = call markSeg marked prog  ; Δ{_t3 _t4 _t5} · makes String
-  let _t6 = call sepSeg lw mx prev  ; Δ{_t1 _t2 _t5} · makes String
-  let _t6 = call sepSeg lw mx prev  ; Δ{_t1 _t2 _t5} · makes String
-  let _t6 = call sizedCell _t5 listW prev  ; Δ{_t5} · makes String
   let _t6 = con Cons "avi" _t5  ; Δ{_t5} · moves{_t5} · makes List$String
   let _t6 = con Cons "bmp" _t5  ; Δ{_t5} · moves{_t5} · makes List$String
   let _t6 = con Cons "cfg" _t5  ; Δ{_t5} · moves{_t5} · makes List$String
@@ -5584,6 +5780,7 @@
   let _t6 = rtcall axion_strcat " && f=" _t5  ; Δ{_t0 _t5} · makes String
   let _t6 = rtcall axion_strcat " ;; *) " _t5  ; Δ{_t0 _t1 _t2 _t3 _t5} · makes String
   let _t6 = rtcall axion_strcat " || tar -tf " _t5  ; Δ{_t0 _t5} · makes String
+  let _t6 = rtcall axion_strcat "; " _t5  ; Δ{_t0 _t1 _t5} · makes String
   let _t6 = rtcall axion_strcat "; (" _t5  ; Δ{_t0 _t2 _t3 _t5} · makes String
   let _t6 = rtcall axion_strcat "; [ -s \"$f\" ] || exit 0; n=$(grep -c '' \"$f\"); [ \"$n\" -le 1 ] && exit 0; " _t5  ; Δ{_t1 _t3 _t5} · makes String
   let _t6 = rtcall axion_strcat "; [ -s \"$f\" ] || exit 0; n=$(grep -c '' \"$f\"); ai=0; [ -r \"$i\" ] && read ai < \"$i\"; [ -z \"$ai\" ] && ai=0; " _t5  ; Δ{_t1 _t3 _t5} · makes String
@@ -5592,6 +5789,7 @@
   let _t6 = rtcall axion_strcat _t0 _t5  ; Δ{_t0 _t5} · makes String
   let _t6 = rtcall axion_strcat _t0 _t5  ; Δ{_t0 _t5} · makes String
   let _t6 = rtcall axion_strcat _t1 _t5  ; Δ{_t0 _t1 _t5} · makes String
+  let _t6 = rtcall axion_strcat _t1 _t5  ; Δ{_t1 _t5} · makes String
   let _t6 = rtcall axion_strcat _t1 _t5  ; Δ{_t1 _t5} · makes String
   let _t6 = rtcall axion_strcat _t2 _t5  ; Δ{_t0 _t1 _t2 _t5} · makes String
   let _t6 = rtcall axion_strcat _t2 _t5  ; Δ{_t0 _t2 _t5} · makes String
@@ -5605,16 +5803,15 @@
   let _t6 = rtcall axion_strcat _t5 "  —  any key"  ; Δ{_t2 _t3 _t4 _t5} · makes String
   let _t6 = rtcall axion_strcat _t5 "  —  any key"  ; Δ{_t2 _t3 _t4 _t5} · makes String
   let _t6 = rtcall axion_strcat _t5 " item(s)…"  ; Δ{_t2 _t3 _t4 _t5} · makes String
-  let _t6 = rtcall axion_strcat _t5 "; [ -f \"$km\" ] && [ -f \"$cf\" ] && { [ ! -f \"$cg\" ] || { [ \"$km\" -nt \"$cg\" ] && [ \"$cf\" -nt \"$cg\" ]; }; } && exit 0; "  ; Δ{_t1 _t3 _t5} · makes String
   let _t6 = rtcall axion_system _t5  ; Δ{_t5}
   let _t6 = rtcall axion_write_file _t1 _t5  ; Δ{_t0 _t1 _t5}
   let _t6 = rtcall axion_write_file _t1 _t5  ; Δ{_t0 _t1 _t5}
   let _t6 = showInt _t5  ; Δ{rng} · makes String
   let _t7 = + poff ph  ; Δ{_t6 rng}
-  let _t7 = call entryColor lsc ty raw  ; Δ{_t6} · makes String
-  let _t7 = call infoMime info  ; Δ{_t1 _t2 _t5 _t6} · makes String
-  let _t7 = call listStatus cwd total sel marked prog rows  ; Δ{_t1 _t2 _t5 _t6} · makes String
   let _t7 = call metaSeg info  ; Δ{_t3 _t4 _t5 _t6} · makes String
+  let _t7 = call sepSeg lw mx prev  ; Δ{_t1 _t2 _t6} · makes String
+  let _t7 = call sepSeg lw mx prev  ; Δ{_t1 _t2 _t6} · makes String
+  let _t7 = call shQuote _t6  ; Δ{_t1 _t3 _t5 _t6} · makes String
   let _t7 = con Cons "gif" _t6  ; Δ{_t6} · moves{_t6} · makes List$String
   let _t7 = con Cons "gz" _t6  ; Δ{_t6} · moves{_t6} · makes List$String
   let _t7 = con Cons "ini" _t6  ; Δ{_t6} · moves{_t6} · makes List$String
@@ -5623,13 +5820,13 @@
   let _t7 = rtcall axion_strcat " " _t6  ; Δ{_t2 _t3 _t4 _t6} · makes String
   let _t7 = rtcall axion_strcat " && f=" _t6  ; Δ{_t0 _t6} · makes String
   let _t7 = rtcall axion_strcat "; P=" _t6  ; Δ{_t0 _t6} · makes String
-  let _t7 = rtcall axion_strcat "; cg=" _t6  ; Δ{_t1 _t3 _t6} · makes String
   let _t7 = rtcall axion_strcat "; i=" _t6  ; Δ{_t0 _t2 _t6} · makes String
   let _t7 = rtcall axion_strcat "; km=" _t6  ; Δ{_t1 _t6} · makes String
   let _t7 = rtcall axion_strcat "; mkdir -p \"${f%/*}\"; ai=0; [ -r \"$i\" ] && read ai < \"$i\" 2>/dev/null; [ -z \"$ai\" ] && ai=0; " _t6  ; Δ{_t0 _t2 _t4 _t6} · makes String
   let _t7 = rtcall axion_strcat "@" _t6  ; Δ{_t0 _t1 _t6} · makes String
   let _t7 = rtcall axion_strcat _t0 _t6  ; Δ{_t0 _t6} · makes String
   let _t7 = rtcall axion_strcat _t0 _t6  ; Δ{_t0 _t6} · makes String
+  let _t7 = rtcall axion_strcat _t1 _t6  ; Δ{_t0 _t1 _t6} · makes String
   let _t7 = rtcall axion_strcat _t1 _t6  ; Δ{_t1 _t6} · makes String
   let _t7 = rtcall axion_strcat _t2 _t6  ; Δ{_t2 _t6} · makes String
   let _t7 = rtcall axion_strcat _t2 _t6  ; Δ{_t6} · makes String
@@ -5643,9 +5840,9 @@
   let _t7 = rtcall axion_strcat _t4 _t6  ; Δ{_t2 _t3 _t4 _t6} · makes String
   let _t7 = rtcall axion_strcat _t4 _t6  ; Δ{_t2 _t3 _t4 _t6} · makes String
   let _t7 = rtcall axion_strcat _t5 _t6  ; Δ{_t3 _t4 _t5 _t6} · makes String
-  let _t8 = call colorCell _t6 i sel _t7  ; Δ{_t6 _t7} · makes String
+  let _t8 = call infoMime info  ; Δ{_t1 _t2 _t6 _t7} · makes String
   let _t8 = call linkSeg info  ; Δ{_t3 _t4 _t5 _t6 _t7} · makes String
-  let _t8 = call previewSeg cwd sel raw cols mx prev _t7 poff  ; Δ{_t1 _t2 _t5 _t6 _t7} · makes String
+  let _t8 = call listStatus cwd total sel marked prog rows  ; Δ{_t1 _t2 _t6 _t7} · makes String
   let _t8 = con Cons "hcl" _t7  ; Δ{_t7} · moves{_t7} · makes List$String
   let _t8 = con Cons "png" _t7  ; Δ{_t7} · moves{_t7} · makes List$String
   let _t8 = con Cons "tar" _t7  ; Δ{_t7} · moves{_t7} · makes List$String
@@ -5659,30 +5856,30 @@
   let _t8 = rtcall axion_strcat "src=\"$th\"; " _t7  ; Δ{_t0 _t1 _t2 _t7} · makes String
   let _t8 = rtcall axion_strcat _t0 _t7  ; Δ{_t0 _t7} · makes String
   let _t8 = rtcall axion_strcat _t0 _t7  ; Δ{_t0 _t7} · makes String
+  let _t8 = rtcall axion_strcat _t0 _t7  ; Δ{_t0 _t7} · makes String
   let _t8 = rtcall axion_strcat _t1 _t7  ; Δ{_t0 _t1 _t7} · makes String
   let _t8 = rtcall axion_strcat _t1 _t7  ; Δ{_t1 _t7} · makes String
   let _t8 = rtcall axion_strcat _t2 _t7  ; Δ{_t0 _t2 _t7} · makes String
   let _t8 = rtcall axion_strcat _t2 _t7  ; Δ{_t2 _t7} · makes String
-  let _t8 = rtcall axion_strcat _t3 _t7  ; Δ{_t1 _t3 _t7} · makes String
   let _t8 = rtcall axion_strcat _t3 _t7  ; Δ{_t2 _t3 _t7} · makes String
   let _t8 = rtcall axion_strcat _t3 _t7  ; Δ{_t2 _t3 _t7} · makes String
   let _t8 = rtcall axion_strcat _t4 _t7  ; Δ{_t0 _t2 _t4 _t7} · makes String
   let _t8 = rtcall axion_strcat _t4 _t7  ; Δ{_t2 _t3 _t4 _t7} · makes String
   let _t8 = rtcall axion_strcat _t4 _t7  ; Δ{_t3 _t4 _t7} · makes String
-  let _t8 = rtcall axion_strcat _t6 _t7  ; Δ{_t1 _t2 _t5 _t6 _t7} · makes String
+  let _t8 = rtcall axion_strcat _t7 "; [ -f \"$km\" ] && [ -f \"$cf\" ] && [ -f \"$ic\" ] && { [ ! -f \"$cg\" ] || { [ \"$km\" -nt \"$cg\" ] && [ \"$cf\" -nt \"$cg\" ] && [ \"$ic\" -nt \"$cg\" ]; }; } && exit 0; "  ; Δ{_t1 _t3 _t5 _t7} · makes String
   let _t8 = rtcall axion_system _t7  ; Δ{_t7}
   let _t8 = showInt _t7  ; Δ{_t6 rng} · makes String
   let _t9 = call okOrErr _t8 "chmod failed" rows  ; Δ{}
   let _t9 = call paint "1;33" _t8  ; Δ{_t2 _t3 _t8} · makes String
   let _t9 = call paint "7" _t8  ; Δ{_t3 _t8} · makes String
-  let _t9 = call statusLine cwd total sel marked prog rows info  ; Δ{_t1 _t2 _t5 _t6 _t8} · makes String
+  let _t9 = call previewSeg cwd sel raw cols mx prev _t8 poff  ; Δ{_t1 _t2 _t6 _t7 _t8} · makes String
   let _t9 = con Cons "jpeg" _t8  ; Δ{_t8} · moves{_t8} · makes List$String
   let _t9 = con Cons "mkv" _t8  ; Δ{_t8} · moves{_t8} · makes List$String
   let _t9 = con Cons "tf" _t8  ; Δ{_t8} · moves{_t8} · makes List$String
   let _t9 = putStr _t8  ; Δ{_t8}
   let _t9 = rtcall axion_strcat "  F  filter          :  go to dir       ~ home    -  previous dir\n" _t8  ; Δ{_t8} · makes String
   let _t9 = rtcall axion_strcat " " cwd  ; Δ{_t3 _t4 _t5 _t6 _t7 _t8} · makes String
-  let _t9 = rtcall axion_strcat "; cf=" _t8  ; Δ{_t1 _t8} · makes String
+  let _t9 = rtcall axion_strcat "; cg=" _t8  ; Δ{_t1 _t3 _t5 _t8} · makes String
   let _t9 = rtcall axion_strcat "; f=" _t8  ; Δ{_t0 _t8} · makes String
   let _t9 = rtcall axion_strcat "; i=" _t8  ; Δ{_t0 _t2 _t8} · makes String
   let _t9 = rtcall axion_strcat "x" _t8  ; Δ{_t0 _t8} · makes String
@@ -5692,10 +5889,15 @@
   let _t9 = rtcall axion_strcat _t2 _t8  ; Δ{_t0 _t2 _t8} · makes String
   let _t9 = rtcall axion_strcat _t2 _t8  ; Δ{_t2 _t8} · makes String
   let _t9 = rtcall axion_strcat _t2 _t8  ; Δ{_t2 _t8} · makes String
-  let _t9 = rtcall axion_strcat _t5 _t8  ; Δ{_t1 _t2 _t5 _t8} · makes String
+  let _t9 = rtcall axion_strcat _t7 _t8  ; Δ{_t1 _t2 _t6 _t7 _t8} · makes String
   let _t9 = rtcall axion_strcat _t8 "p"  ; Δ{_t6 _t8 rng} · makes String
   let a = call lookupAction km s  ; Δ{} · makes String
   let c = call clip s w  ; Δ{} · makes String
+  let c = call lscVal icfg "di"  ; Δ{} · makes String
+  let c = call lscVal icfg "ex"  ; Δ{} · makes String
+  let c = call lscVal icfg "ln"  ; Δ{} · makes String
+  let c = call lscVal icfg "or"  ; Δ{} · makes String
+  let c = call lscVal icfg _t0  ; Δ{_t0} · makes String
   let c = call lscVal lsc "di"  ; Δ{} · makes String
   let c = call lscVal lsc "ex"  ; Δ{} · makes String
   let c = call lscVal lsc "ln"  ; Δ{} · makes String
@@ -5703,6 +5905,7 @@
   let c = call lscVal lsc _t0  ; Δ{_t0} · makes String
   let c = rtcall axion_read_file _t0  ; Δ{_t0} · makes String
   let cc = call catColor lsc ext  ; Δ{} · makes String
+  let cc = call lscVal icfg _t1  ; Δ{_t1} · makes String
   let e = call extOf _t0  ; Δ{_t0} · makes String
   let fav = rtcall axion_getenv _t0  ; Δ{_t0} · makes String
   let h = call maxItems rows  ; Δ{}
@@ -5763,6 +5966,9 @@
   ret > _t0 4  ; Δ{}
   ret > _t1 0  ; Δ{}
   ret > _t2 0  ; Δ{}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -6112,6 +6318,13 @@
   ret if _t1 then
   ret if _t1 then
   ret if _t1 then
+  ret if _t1 then
+  ret if _t1 then
+  ret if _t1 then
+  ret if _t1 then
+  ret if _t1 then
+  ret if _t1 then
+  ret if _t1 then
   ret if _t2 then
   ret if _t2 then
   ret if _t2 then
@@ -6123,6 +6336,8 @@
   ret if _t2 then
   ret if _t2 then
   ret if _t2 then
+  ret if _t2 then
+  ret if _t3 then
   ret if _t3 then
   ret if _t3 then
   ret if _t3 then
@@ -6171,6 +6386,7 @@ bottomMatch raw q from  =
 buildColorsCmd  =
 buildConfig d  =
 buildConfigGuard  =
+buildIconsCmd  =
 buildKeymapCmd  =
 bulkApply olds news cwd  =
 bulkRun cwd marked tmp  =
@@ -6180,6 +6396,7 @@ capsFile d  =
 catColor lsc ext  =
 catOf e  =
 catOrBuiltin lsc ext  =
+catOrBuiltinIcon icfg ext  =
 cdFile d  =
 clGo s i n  =
 clampNeg a from  =
@@ -6214,6 +6431,7 @@ csi s  =
 digitStart k  =
 dirBefore s k  =
 dirColor lsc  =
+dirIcon icfg  =
 dirName s  =
 dispatchWait cwd sel marked prog hidden rows cols raw poff key  =
 doAttr cwd sel marked prog hidden rows  =
@@ -6246,7 +6464,7 @@ docExts  =
 drawLines xs r px pw maxRow  =
 drawLinesAnsi xs r px pw maxRow  =
 drawPreview path px pw ph mime poff  =
-drawRows lsc win tys row sel marked cwd listW prev  =
+drawRows lsc icfg win tys row sel marked cwd listW prev  =
 drawSep col mx  =
 dropFirstLine s  =
 dropLast s  =
@@ -6259,6 +6477,7 @@ endSearch cwd marked prog hidden rows cols raw acc msel  =
 enqueueItems new old  =
 entriesRaw cwd hidden  =
 entryColor lsc ty raw  =
+entryIcon icfg ty raw  =
 envOr name dflt  =
 eq$String x y  =
 errDetail d  =
@@ -6268,11 +6487,13 @@ esc  =
 escEnd s i n  =
 escFinal s i n  =
 exColor lsc  =
+exIcon icfg  =
 expandDir cwd nm  =
 extOf s  =
 fallbackTy y  =
 favOrIgnore cwd sel marked prog hidden rows key  =
 fileColor lsc ext  =
+fileIcon icfg ext  =
 filter$$neStr _cap0 xs  =
 filter$$nonEmpty xs  =
 filterFile d  =
@@ -6300,6 +6521,9 @@ hasSuffix q s  =
 helpText  =
 homeClear  =
 icatCmd path cols rows  =
+iconForExt e  =
+iconsFile d  =
+iconsOf d  =
 imageDelayMs  =
 imageExts  =
 imgClearSeq  =
@@ -6340,6 +6564,7 @@ listFrame cwd sel marked prog rows raw cols poff  =
 listStatus cwd total sel marked prog rows  =
 listWidth cols  =
 lnColor lsc  =
+lnIcon icfg  =
 loGo s idx i n  =
 lookupAction content k  =
 loop cwd sel marked prog hidden rows cols raw  =
@@ -6388,6 +6613,7 @@ openFile cwd sel marked prog hidden rows  =
 openOther cwd sel marked prog hidden rows  =
 openText cwd sel marked prog hidden rows  =
 orColor lsc  =
+orIcon icfg  =
 paint c s  =
 paneW cols  =
 paneX cols  =
@@ -6452,7 +6678,8 @@ resizeCheck cwd sel marked prog hidden rows cols raw poff  =
 resolveSeq km acc  =
 restoreCmd d  =
 rootIfEmpty d  =
-rowFor lsc raw ty i sel marked cwd listW prev  =
+rowCell icfg ty raw mark name listW prev  =
+rowFor lsc icfg raw ty i sel marked cwd listW prev  =
 runBuiltin cwd sel marked prog hidden rows cols raw k  =
 runItem cwd sel marked prog hidden rows cols raw item  =
 runPaste cwd marked prog  =
