@@ -880,8 +880,14 @@ pub fn run_cli() -> ExitCode {
                 )
                 .with_help(
                     "the drop-balance verifier proved the emitted native code leaks this \
-                     allocation (an Auto-Drop gap). Pass --allow-leaks to emit anyway (still \
-                     checks for corruption), or --no-verify to bypass the verifier entirely.",
+                     allocation. A common cause is a heap-producing conditional whose result is \
+                     not reclaimed on every path — e.g. a nested `if`/`case` whose arms build \
+                     fresh heap values but whose tail does not return a simple value (so the \
+                     copy-reclaim can't place the drop). Try lifting the heap-producing \
+                     `if`/`case` to a TAIL position (`let x = if … then … else … in <use x>`, \
+                     or a named helper that returns it directly) so Auto-Drop can reclaim it. \
+                     Otherwise pass --allow-leaks to emit anyway (still checks for corruption), \
+                     or --no-verify to bypass the verifier entirely.",
                 );
                 eprint!("{}", d.render(&path, &src, &lines));
             }

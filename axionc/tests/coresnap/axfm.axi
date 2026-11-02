@@ -2590,6 +2590,8 @@
     drop kc : String
     drop key : String
     drop key : String
+    drop key : String
+    drop key : String
     drop km : String
     drop km : String
     drop l : String
@@ -2752,6 +2754,8 @@
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+    let _rcl2000000 = call dup key  ; Δ{} · makes String
+    let _rcl2000001 = call step cwd sel marked prog hidden rows cols raw key  ; Δ{}
     let _t0 = + lw 1  ; Δ{}
     let _t0 = call selPathOf cwd raw sel  ; Δ{} · makes String
     let _t0 = rtcall axion_strcat "/" b  ; Δ{} · makes String
@@ -3300,6 +3304,8 @@
     ret _d1000001  ; Δ{}
     ret _d1000001  ; Δ{}
     ret _d1000002  ; Δ{}
+    ret _rcl2000000  ; Δ{_rcl2000000} · moves{_rcl2000000}
+    ret _rcl2000001  ; Δ{}
     ret _t1  ; Δ{_t1} · moves{_t1}
     ret a  ; Δ{}
     ret a  ; Δ{}
@@ -3333,7 +3339,6 @@
     ret call dup d  ; Δ{} · makes String
     ret call dup dflt  ; Δ{} · makes String
     ret call dup dflt  ; Δ{} · makes String
-    ret call dup key  ; Δ{} · makes String
     ret call dup line  ; Δ{} · makes String
     ret call dup old  ; Δ{} · makes String
     ret call dup s  ; Δ{} · makes String
@@ -3384,7 +3389,6 @@
     ret call settledFull cwd sel marked prog hidden rows cols raw poff  ; Δ{}
     ret call sixelRenderSrc _t7 _t8 _t9  ; Δ{} · makes String
     ret call step cwd sel marked prog hidden rows cols raw k  ; Δ{}
-    ret call step cwd sel marked prog hidden rows cols raw key  ; Δ{}
     ret call stepAt cwd sel marked prog hidden rows cols raw poff key  ; Δ{}
     ret call stepAt cwd sel marked prog hidden rows cols raw poff key  ; Δ{}
     ret call tildeExpand nm  ; Δ{} · makes String

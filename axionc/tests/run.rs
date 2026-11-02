@@ -4824,6 +4824,25 @@ fn negative_literal_fold_is_non_breaking() {
 }
 
 #[test]
+fn conditional_owned_temp_is_reclaimed_in_any_position() {
+    // The #1 flagship gotcha: a heap-producing `if`/`case` NOT in tail position (consumed by a
+    // print, a user fn, or producing a container) used to leak its owned temp (AX0911). Now
+    // reclaimed on all three backends — verified leak-free by the sanitize LSan gate too.
+    agree_across_backends("cond_owned_temp.axi", "ab\n2\n1\n");
+}
+
+#[test]
+fn prelude_either_and_combinator_batch() {
+    // Tier 1.2 prelude growth: Either utilities (fromLeft/fromRight delegate through
+    // `either`, sound over heap payloads; lefts/rights/partitionEithers/mapLeft/mapRight),
+    // `compare`, `swap`, list `isPrefixOf`/`isSuffixOf`. All three backends agree.
+    agree_across_backends(
+        "prelude_either_batch.axi",
+        "7\n8\n99\nhi\n[1, 3]\n[2, 4]\n([1, 3], [2, 4])\nLeft 107\nRight 108\nLeft 7\nLT\nGT\n(2, 1)\ntrue\ntrue\n",
+    );
+}
+
+#[test]
 fn dropped_effect_where_warns() {
     // AX0920: an effectful value bound in `where` but never used drops its effect
     // silently. The compiler must warn (but still compile — it is a warning, not an

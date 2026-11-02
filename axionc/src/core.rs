@@ -452,6 +452,11 @@ fn fresh_let_producer_key(op: &Op) -> Option<String> {
 fn op_is_fresh_wrt_args(op: &Op) -> bool {
     match op {
         Op::Prim(..) | Op::PrimF(..) => true,
+        // `putStr`/`putStrLn` BORROW their String arg (print it) and return IO unit — the
+        // result cannot alias the arg, so an owned operand stays reclaimable across them. This
+        // lets an all-heap conditional temp consumed by a print (`putStrLn (if c then a else b)`,
+        // the #1 flagship gotcha) be dropped after the print instead of leaking.
+        Op::PutStr(..) | Op::PutStrLn(..) => true,
         // Reads its (heap) operands and returns a fresh value that cannot alias them:
         // bignum arith → a fresh `Integer`; a String producer → a fresh copy; a scalar
         // reader (strLen/strCmp/…, §pass capability Int-returners) → a fresh Int.
@@ -8732,6 +8737,10 @@ fn op_owned_key(op: &Op, br: &HashMap<String, HashSet<usize>>) -> Option<String>
         Op::CallDirect(g, _, Some(k)) if !br.contains_key(g) => Some(k.clone()),
         Op::ShowInt(_) => Some("String".into()),
         Op::RtCall { .. } => fresh_let_producer_key(op),
+        // a constructor builds a FRESH owned value; its deep-drop key (set at lowering) lets a
+        // conditional whose arms are `con …` be recognized as an owned temp (so a `let x = if …`
+        // producing a `List`/`data`/… is reclaimed instead of leaking the spine).
+        Op::MakeCon { ty: Some(k), .. } => Some(k.clone()),
         _ => None,
     }
 }
@@ -9098,7 +9107,13 @@ fn reclaim_cond_escape(
             for (v, key) in owned {
                 if !op_mentions_any(&op, &HashSet::from([v.clone()])) {
                     before.push((v, key));
-                } else if fresh && !moved.contains(&v) {
+                } else if (fresh
+                    || matches!(&op, Op::CallDirect(g, _, _) if !br.contains_key(g)))
+                    && !moved.contains(&v)
+                {
+                    // the op BORROWS v and its result does not alias v (a fresh producer, or a
+                    // direct call that returns no param interior — absent from `br`) → v is dead
+                    // AFTER the op → reclaim it post-`ret`. Mirrors the let-binding filter above.
                     after.push((v, key));
                 }
                 // else: escapes (moved) or alias-risk (non-fresh op) → keep, conservative.
