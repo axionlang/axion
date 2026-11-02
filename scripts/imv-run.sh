@@ -27,6 +27,14 @@ fi
 
 export LD_LIBRARY_PATH="${IMV_SDL_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# IMV_BUILD=1: build a standalone `-o imv` binary first. The linker resolves the `libSDL2.so`
+# sonames via LIBRARY_PATH (clang `-l:`), mirroring the LD_LIBRARY_PATH used at runtime.
+if [ "${IMV_BUILD:-}" = 1 ]; then
+	: "${IMV_BIN:=./imv}"
+	LIBRARY_PATH="${IMV_SDL_LIBS}${LIBRARY_PATH:+:$LIBRARY_PATH}" \
+		"$AXIONC" -o "$IMV_BIN" examples/imv.axi
+fi
+
 if [ -n "$IMV_BIN" ]; then
 	exec "$IMV_BIN" -- "$@"
 else

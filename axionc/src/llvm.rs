@@ -376,15 +376,21 @@ pub fn build_and_run(
         .arg("-lm")
         .arg("-o")
         .arg(&exe);
-    // FFI (§18): links the user's libraries (direct path) and records their
-    // directory in rpath, so the dynamic loader finds them at runtime.
+    // FFI (§18): link the user's libraries. A lib given by PATH is linked directly and its
+    // directory recorded in rpath (the loader finds it at runtime). A lib given by bare SONAME
+    // (`libSDL2.so`, no directory) is linked with `-l:<soname>` so the linker searches
+    // LIBRARY_PATH / -L for that exact file — a bare filename passed positionally would be read as
+    // a literal path and fail. (Runtime resolution of a soname is via LD_LIBRARY_PATH, as for the
+    // cranelift/dlopen path.)
     for lib in module.foreign_libs() {
         let path = std::path::Path::new(&lib);
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
             cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+            cmd.arg(&lib);
+        } else {
+            cmd.arg(format!("-l:{lib}"));
         }
-        cmd.arg(&lib);
     }
     let status = cmd
         .status()
