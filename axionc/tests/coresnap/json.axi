@@ -35,11 +35,13 @@
 
 
 
-                                drop acc : List$Member
+
+
+                                drop acc : List$tuple2$String$Json
                                 drop key : String
-                                let _t18 = con Member key val  ; Δ{kp vp} · makes Member
-                                let _t19 = con Cons _t18 acc  ; Δ{_t18 kp vp} · moves{_t18} · makes List$Member
-                                let _t20 = call reverse$Member _t19  ; Δ{_t19 kp vp} · moves{_t19} · makes List$Member
+                                let _t18 = tuple key val  ; Δ{kp vp} · makes heap
+                                let _t19 = con Cons _t18 acc  ; Δ{_t18 kp vp} · moves{_t18} · makes List$tuple2$String$Json
+                                let _t20 = call reverse _t19  ; Δ{_t19 kp vp} · moves{_t19} · makes List$tuple2$String$Json
                                 let _t21 = con JObj _t20  ; Δ{_t20 kp vp} · moves{_t20} · makes Json
                                 let _t22 = + m 1  ; Δ{_t21 kp vp}
                                 let _t23 = tuple _t21 _t22  ; Δ{_t21 kp vp} · moves{_t21} · makes heap
@@ -47,8 +49,8 @@
                                 ret con Right _t23  ; Δ{_t23 kp vp} · moves{_t23} · makes Either$String$tuple2$Json$Int
                               else
                               let _t14 = + m 1  ; Δ{kp vp}
-                              let _t15 = con Member key val  ; Δ{kp vp} · makes Member
-                              let _t16 = con Cons _t15 acc  ; Δ{_t15 kp vp} · moves{_t15} · makes List$Member
+                              let _t15 = tuple key val  ; Δ{kp vp} · makes heap
+                              let _t16 = con Cons _t15 acc  ; Δ{_t15 kp vp} · moves{_t15} · makes List$tuple2$String$Json
                               let _t17 = == c 125  ; Δ{kp vp}
                               ret call parseObj s _t14 _t16  ; Δ{_t16 kp vp} · moves{_t16} · makes Either$String$tuple2$Json$Int
                               ret if _t17 then
@@ -61,26 +63,26 @@
                           (val, k2) ->
                         drop _t12
                         drop _t12
-                        drop acc : List$Member
+                        drop acc : List$tuple2$String$Json
                         drop key : String
                         ret case vp of
                         ret con Left e  ; Δ{e kp} · moves{e} · makes Either$String$tuple2$Json$Int
                       Left e ->
                       Right vp ->
-                    drop acc : List$Member
+                    drop acc : List$tuple2$String$Json
                     drop key : String
                     let _t11 = + c1 1  ; Δ{kp}
                     let _t12 = call parseVal s _t11  ; Δ{kp} · makes Either$String$tuple2$Json$Int
                     ret case _t12 of
                     ret con Left "expected : in object"  ; Δ{kp} · makes Either$String$tuple2$Json$Int
                   drop _t26 : String
-                  drop acc : List$Member
+                  drop acc : List$tuple2$String$Json
                   drop kv
                   drop kv
                   else
                   let _t10 = == _t9 58  ; Δ{kp}
                   let _t24 = + i 1  ; Δ{}
-                  let _t25 = con Nil  ; Δ{} · makes List$Member
+                  let _t25 = con Nil  ; Δ{} · makes List$tuple2$String$Json
                   let _t26 = showInt i  ; Δ{} · makes String
                   let _t27 = rtcall axion_strcat "unexpected char at index " _t26  ; Δ{_t26} · makes String
                   let _t9 = rtcall axion_str_at c1 s  ; Δ{kp}
@@ -145,7 +147,7 @@
           drop _t2 : String
           drop _t8
           drop _t8
-          drop acc : List$Member
+          drop acc : List$tuple2$String$Json
           drop pr : tuple2$Json$Int skip{0}
           else
           let _d1000000 = rtcall axion_strcat _t0 _t2  ; Δ{_t0 _t2} · makes String
@@ -167,10 +169,10 @@
           ret con Right _t16  ; Δ{_t16} · moves{_t16} · makes Either$String$tuple2$Json$Int
           ret con Right v  ; Δ{pr} · makes Either$String$Json
           ret if _t18 then
+        (k, val) ->
         (v, _) ->
         Cons z zs ->
         Left e ->
-        Member k val ->
         Nil ->
         Right kp ->
         drop _t6
@@ -205,7 +207,7 @@
       drop _t2 : String
       drop _t3 : String
       drop _t4 : String
-      drop acc : List$Member
+      drop acc : List$tuple2$String$Json
       drop e : String
       drop v : Json
       drop xs
@@ -214,8 +216,12 @@
       drop xs
       drop xs
       drop xs
+      drop xs
+      drop xs
+      drop xs
+      drop xs
       drop xs : List$Json
-      drop xs : List$Member
+      drop xs : List$tuple2$String$Json
       else
       else
       else
@@ -231,26 +237,30 @@
       let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Json _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$Member _dd0  ; Δ{}
-      let _dd1 = call axion_drop_List$Member _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$String$Json _dd0  ; Δ{}
+      let _dd1 = call axion_drop_List$tuple2$String$Json _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_Json _dd2  ; Δ{}
-      let _dd3 = call axion_drop_Member _dd2  ; Δ{}
+      let _dd3 = call axion_drop_tuple2$String$Json _dd2  ; Δ{}
       let _dd4 = loadraw _p+8  ; Δ{}
       let _dd5 = call axion_drop_List$Json _dd4  ; Δ{}
       let _dd8 = loadraw _p+8  ; Δ{}
       let _dd9 = rtcall axion_str_drop _dd8  ; Δ{}
+      let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
+      let _t0 = call append$(String,Json) zs ys  ; Δ{z zs} · moves{zs} · makes List$tuple2$String$Json
       let _t0 = call append$Json zs ys  ; Δ{z zs} · moves{zs} · makes List$Json
-      let _t0 = call append$Member zs ys  ; Δ{z zs} · moves{zs} · makes List$Member
+      let _t0 = call reverse ys  ; Δ{y ys} · moves{ys} · makes List
+      let _t0 = call reverse$(String,Json) ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Json
       let _t0 = call reverse$Json ys  ; Δ{y ys} · moves{ys} · makes List$Json
-      let _t0 = call reverse$Member ys  ; Δ{y ys} · moves{ys} · makes List$Member
       let _t0 = rtcall axion_strcat s "\""  ; Δ{} · makes String
       let _t1 = call showArr xs  ; Δ{} · makes String
       let _t1 = con Nil  ; Δ{_t0 y}
       let _t1 = con Nil  ; Δ{_t0 y}
+      let _t1 = con Nil  ; Δ{_t0 y}
       let _t11 = == c 102  ; Δ{}
       let _t2 = == c 10  ; Δ{}
+      let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}
       let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}
       let _t2 = con Cons y _t1  ; Δ{_t0 y} · moves{y}
       let _t2 = con JNull  ; Δ{} · makes Json
@@ -286,8 +296,9 @@
       ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
       ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
       ret _d1000002  ; Δ{_d1000002} · moves{_d1000002}
+      ret call append _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List
+      ret call append$(String,Json) _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List$tuple2$String$Json
       ret call append$Json _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List$Json
-      ret call append$Member _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List$Member
       ret call litMatch s _t5 lit _t6  ; Δ{}
       ret call strEnd s _t5  ; Δ{}
       ret case _t8 of
@@ -296,9 +307,11 @@
       ret case ys of
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
+      ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
       ret con Left "bad literal"  ; Δ{} · makes Either$String$tuple2$Json$Int
       ret con Left "expected string key in object"  ; Δ{} · makes Either$String$tuple2$Json$Int
       ret con Left e  ; Δ{e} · moves{e} · makes Either$String$Json
+      ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Right _t4  ; Δ{_t4} · moves{_t4} · makes Either$String$tuple2$Json$Int
@@ -310,10 +323,13 @@
       ret rtcall axion_show_float n  ; Δ{} · makes String
       ret ys  ; Δ{}
       ret ys  ; Δ{}
+      ret ys  ; Δ{}
     Cons p rest ->
     Cons y ys ->
     Cons y ys ->
     Cons y ys ->
+    Cons y ys ->
+    Cons z zs ->
     Cons z zs ->
     Cons z zs ->
     JArr xs ->
@@ -324,6 +340,8 @@
     JStr s ->
     Left e ->
     Left e ->
+    Nil ->
+    Nil ->
     Nil ->
     Nil ->
     Nil ->
@@ -377,8 +395,8 @@
     let _t2 = + i 1  ; Δ{}
     let _t2 = + i 1  ; Δ{}
     let _t2 = + j 1  ; Δ{}
+    let _t2 = call reverse$(String,Json) acc  ; Δ{} · makes List$tuple2$String$Json
     let _t2 = call reverse$Json acc  ; Δ{} · makes List$Json
-    let _t2 = call reverse$Member acc  ; Δ{} · makes List$Member
     let _t2 = rtcall axion_str_at i s  ; Δ{}
     let _t2 = rtcall axion_str_at i s  ; Δ{}
     let _t3 = *. acc 10f  ; Δ{}
@@ -485,6 +503,8 @@
   ; Δ{pr}
   ; Δ{pr}
   ; Δ{pr}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -676,6 +696,8 @@
   ret case xs of
   ret case xs of
   ret case xs of
+  ret case xs of
+  ret case xs of
   ret con Right _t6  ; Δ{_t6} · moves{_t6} · makes Either$String$tuple2$Json$Int
   ret if _t0 then
   ret if _t0 then
@@ -693,8 +715,9 @@
   ret rtcall axion_array_free _p  ; Δ{}
 <=$Int x y  =
 >=$Int x y  =
+append xs ys  =
+append$(String,Json) xs ys  =
 append$Json xs ys  =
-append$Member xs ys  =
 axion_drop_Array _p  =
 axion_drop_Either$String _p  =
 axion_drop_Either$String$Json _p  =
@@ -702,9 +725,9 @@ axion_drop_Either$String$tuple2$Json$Int _p  =
 axion_drop_Json _p  =
 axion_drop_List _p  =
 axion_drop_List$Json _p  =
-axion_drop_List$Member _p  =
-axion_drop_Member _p  =
+axion_drop_List$tuple2$String$Json _p  =
 axion_drop_tuple2$Json$Int _p  =
+axion_drop_tuple2$String$Json _p  =
 isDigitCh c  =
 isWsCh c  =
 le$Int x y  =
@@ -719,8 +742,9 @@ parseVal s i0  =
 pfFrac s i acc place  =
 pfIntEnd s i  =
 pfIntGo s i acc  =
+reverse xs  =
+reverse$(String,Json) xs  =
 reverse$Json xs  =
-reverse$Member xs  =
 roundtrip src  =
 showArr xs  =
 showJson v  =

@@ -8,13 +8,12 @@ data Json
   | JNum Float
   | JStr String
   | JArr (List Json)
-  | JObj (List Member)
+  | JObj (List (String, Json))
 
--- Object members are a NAMED data record, NOT a bare `(String, Json)` tuple: a bare tuple as a
--- polymorphic list-element type is rejected on the native backends (AX0912, the nested-tuple
--- poly-payload the monomorphizer cannot lower — it runs only on the interpreter). A `data` record
--- element lowers cleanly on all three. (Flagship finding #2.)
-data Member = Member String Json
+-- Object members are a bare `(String, Json)` tuple used as a polymorphic list element. This
+-- shape once needed a named `data Member` workaround (the nested-tuple poly-payload the
+-- monomorphizer could not lower, AX0912 — native-rejected, interp-only); that floor is now
+-- closed, so the natural tuple lowers + reclaims cleanly on all three backends.
 
 -- serialize a Json value to its text form (recursive; string-building via strAppend).
 showJson :: Json -> String
@@ -35,11 +34,11 @@ showArr xs = case xs of
     Cons z zs -> strAppend (showJson y) (strAppend "," (showArr ys))
 
 -- comma-separated "key":value members
-showObj :: List Member -> String
+showObj :: List (String, Json) -> String
 showObj ms = case ms of
   Nil -> ""
   Cons p rest -> case p of
-    Member k val -> case rest of
+    (k, val) -> case rest of
       Nil -> showMember k val
       Cons q qs -> strAppend (showMember k val) (strAppend "," (showObj rest))
 
@@ -129,7 +128,7 @@ parseArr s i acc =
         else Left "expected , or ] in array"
 
 -- object: (key,value) members accumulated reversed, then reversed at the close.
-parseObj :: String -> Int -> List Member -> Either String (Json, Int)
+parseObj :: String -> Int -> List (String, Json) -> Either String (Json, Int)
 parseObj s i acc =
   let j = skipWs s i in
   if charAt j s == 125 then Right (JObj (reverse acc), j + 1)
@@ -147,8 +146,8 @@ parseObj s i acc =
                   (val, k2) ->
                     let m = skipWs s k2 in
                     let c = charAt m s in
-                    if c == 44 then parseObj s (m + 1) (Cons (Member key val) acc)
-                    else if c == 125 then Right (JObj (reverse (Cons (Member key val) acc)), m + 1)
+                    if c == 44 then parseObj s (m + 1) (Cons (key, val) acc)
+                    else if c == 125 then Right (JObj (reverse (Cons (key, val) acc)), m + 1)
                     else Left "expected , or } in object"
             else Left "expected : in object"
           other -> Left "object key must be a string"
