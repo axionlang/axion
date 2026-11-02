@@ -1728,6 +1728,17 @@ impl<'a> Infer<'a> {
                 Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
             )),
         );
+        // pokeU32 :: String -> Int -> Int -> Int  (buffer, byte offset, value → 0)
+        env.insert(
+            "pokeU32".into(),
+            mono(Ty::Fun(
+                Box::new(string()),
+                Box::new(Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                )),
+            )),
+        );
         // strCmp :: String -> String -> Int (byte-lexicographic compare, -1/0/1);
         // backs the Eq/Ord instances for String.
         env.insert(

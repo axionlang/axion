@@ -1346,6 +1346,7 @@ pub fn builtins() -> HashSet<String> {
         "strAppend",
         "strLen",
         "charAt",
+        "pokeU32",
         "strCmp",
         "substr",
         // OS capability layer (§pass)

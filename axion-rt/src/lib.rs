@@ -1659,6 +1659,22 @@ pub unsafe extern "C" fn axion_str_len(s: i64) -> i64 {
     str_bytes(s).len() as i64
 }
 
+/// `pokeU32 buf off val` — write `val` as a little-endian u32 into the 4 bytes at byte offset
+/// `off` of the buffer `buf` (IN PLACE), returning 0. For building little C structs (SDL_Rect) in
+/// an FFI scratch buffer that `strAppend` cannot, since it truncates at NUL bytes. UNSAFE: no bounds
+/// check — the caller sizes the buffer (e.g. `fillBuf 16`). An FFI-island tool, outside the
+/// safety model.
+#[no_mangle]
+pub unsafe extern "C" fn axion_poke_u32(buf: i64, off: i64, val: i64) -> i64 {
+    let p = (buf as *mut u8).add(off as usize);
+    let v = val as u32;
+    p.write(v as u8);
+    p.add(1).write((v >> 8) as u8);
+    p.add(2).write((v >> 16) as u8);
+    p.add(3).write((v >> 24) as u8);
+    0
+}
+
 /// `charAt i s` — the byte at index `i`, or −1 out of bounds.
 #[no_mangle]
 pub unsafe extern "C" fn axion_str_at(i: i64, s: i64) -> i64 {
@@ -2497,6 +2513,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_sess_spawn", axion_sess_spawn as *const u8),
         ("axion_show_float", axion_show_float as *const u8),
         ("axion_show_int", axion_show_int as *const u8),
+        ("axion_poke_u32", axion_poke_u32 as *const u8),
         ("axion_str_at", axion_str_at as *const u8),
         ("axion_strcat", axion_strcat as *const u8),
         ("axion_str_cmp", axion_str_cmp as *const u8),

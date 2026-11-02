@@ -323,6 +323,8 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 // char-level string reads: BORROW the string, return a scalar Int.
                 || func == "axion_str_len"
                 || func == "axion_str_at"
+                // pokeU32: BORROWS the buffer (writes 4 bytes in place), returns a scalar Int.
+                || func == "axion_poke_u32"
                 || func == "axion_str_cmp"
                 // OS capability layer (§pass): effectful primitives that READ their
                 // String args (no free) and return a scalar Int.

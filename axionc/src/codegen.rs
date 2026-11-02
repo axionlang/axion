@@ -166,6 +166,7 @@ impl Cg {
             // char-level string primitives (§text)
             ("axion_str_len", 1, true),
             ("axion_str_at", 2, true),
+            ("axion_poke_u32", 3, true),
             ("axion_str_cmp", 2, true),
             ("axion_substr", 3, true),
             // OS capability layer (§pass)

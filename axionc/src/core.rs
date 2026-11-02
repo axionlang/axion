@@ -476,6 +476,7 @@ pub fn is_scalar_reader(func: &str) -> bool {
         func,
         "axion_str_len"
             | "axion_str_at"
+            | "axion_poke_u32"
             | "axion_str_cmp"
             | "axion_system"
             | "axion_exec_status"
@@ -520,6 +521,7 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "strAppend" => ("axion_strcat", 2),
         "strLen" => ("axion_str_len", 1),
         "charAt" => ("axion_str_at", 2),
+        "pokeU32" => ("axion_poke_u32", 3),
         "strCmp" => ("axion_str_cmp", 2),
         "substr" => ("axion_substr", 3),
         "getEnv" => ("axion_getenv", 1),
@@ -1553,6 +1555,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "bignumFromStr",
         "strLen",
         "charAt",
+        "pokeU32",
         "substr",
     ] {
         g.insert(b.to_string());
@@ -1876,6 +1879,9 @@ impl Lower<'_> {
         }
         if name == "charAt" && args.len() == 2 {
             return self.rtcall("axion_str_at", &args, true, buf);
+        }
+        if name == "pokeU32" && args.len() == 3 {
+            return self.rtcall("axion_poke_u32", &args, true, buf);
         }
         if name == "strCmp" && args.len() == 2 {
             return self.rtcall("axion_str_cmp", &args, true, buf);

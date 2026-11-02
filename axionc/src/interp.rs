@@ -289,7 +289,7 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "substr" | "setArray" | "readDirListing" => 3,
+        "substr" | "setArray" | "readDirListing" | "pokeU32" => 3,
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
         | "getArray" | "arrayDot" => 2,
@@ -772,6 +772,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "charAt" => Ok(Value::Builtin {
             name: "charAt",
+            args: Vec::new(),
+        }),
+        "pokeU32" => Ok(Value::Builtin {
+            name: "pokeU32",
             args: Vec::new(),
         }),
         "strCmp" => Ok(Value::Builtin {
@@ -1768,6 +1772,9 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
                 std::cmp::Ordering::Greater => 1,
             }))
         }
+        // pokeU32 can't mutate the interpreter's immutable String in place (native backends do);
+        // the FFI viewer runs native, so here it is a no-op returning 0.
+        ("pokeU32", [Value::Str(_), Value::Int(_), Value::Int(_)]) => Ok(Value::Int(0)),
         ("charAt", [Value::Int(i), Value::Str(s)]) => {
             let b = s.as_bytes();
             Ok(Value::Int(if *i < 0 || *i as usize >= b.len() {
