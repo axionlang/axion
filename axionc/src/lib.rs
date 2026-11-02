@@ -4510,6 +4510,59 @@ isRight e = case e of
   Left _ -> False
   Right _ -> True
 
+-- Delegated through `either` (like `fromMaybe` through `maybe`): returning the
+-- extracted payload via a function, not BARE, keeps the result from being classified
+-- as an interior alias of the consumed Either (which would UAF once the caller frees it).
+fromLeft :: a -> Either a b -> a
+fromLeft d e = either (\\x -> x) (\\_ -> d) e
+
+fromRight :: b -> Either a b -> b
+fromRight d e = either (\\_ -> d) (\\y -> y) e
+
+lefts :: List (Either a b) -> List a
+lefts xs = case xs of
+  Nil -> Nil
+  Cons e es -> case e of
+      Left x -> Cons x (lefts es)
+      Right _ -> lefts es
+
+rights :: List (Either a b) -> List b
+rights xs = case xs of
+  Nil -> Nil
+  Cons e es -> case e of
+      Left _ -> rights es
+      Right y -> Cons y (rights es)
+
+consEither :: Either a b -> (List a, List b) -> (List a, List b)
+consEither e p = case p of
+  (ls, rs) -> case e of
+      Left x -> (Cons x ls, rs)
+      Right y -> (ls, Cons y rs)
+
+partitionEithers :: List (Either a b) -> (List a, List b)
+partitionEithers xs = case xs of
+  Nil -> (Nil, Nil)
+  Cons e es -> consEither e (partitionEithers es)
+
+mapLeft :: (a -> c) -> Either a b -> Either c b
+mapLeft f e = case e of
+  Left x -> Left (f x)
+  Right y -> Right y
+
+mapRight :: (b -> c) -> Either a b -> Either a c
+mapRight f e = case e of
+  Left x -> Left x
+  Right y -> Right (f y)
+
+-- Ordering + tuple ---------------------------------------------------------
+
+compare :: Ord a => a -> a -> Ordering
+compare x y = if le x y then (if le y x then EQ else LT) else GT
+
+swap :: (a, b) -> (b, a)
+swap p = case p of
+  (a, b) -> (b, a)
+
 -- List extensions ----------------------------------------------------------
 
 elemBy :: Eq a => a -> List a -> Bool
@@ -4531,6 +4584,16 @@ find :: (a -> Bool) -> List a -> Maybe a
 find p xs = case xs of
   Nil -> Nothing
   Cons y ys -> if p y then Just y else find p ys
+
+isPrefixOf :: Eq a => List a -> List a -> Bool
+isPrefixOf xs ys = case xs of
+  Nil -> True
+  Cons x xt -> case ys of
+      Nil -> False
+      Cons y yt -> if eq x y then isPrefixOf xt yt else False
+
+isSuffixOf :: Eq a => List a -> List a -> Bool
+isSuffixOf xs ys = isPrefixOf (reverse xs) (reverse ys)
 
 partition :: (a -> Bool) -> List a -> (List a, List a)
 partition p xs = case xs of
