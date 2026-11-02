@@ -890,6 +890,19 @@ impl<'a> Parser<'a> {
     // --- patterns ---
     fn parse_apat(&mut self) -> PResult<Pat> {
         let (s, e) = self.span_here();
+        // a negative integer pattern (`case n of -1 -> …`): fold `-` + `Int` like the
+        // expression prefix-minus. A big negative can't fit `Int`, same as the positive
+        // case below; there is no `Pat::Float`, so negative-float patterns are not offered
+        // (exact float-equality matching is not idiomatic).
+        if matches!(self.cur(), Some(LTok::Tok(Tok::Minus))) {
+            if let Some(lit) = self.toks.get(self.pos + 1) {
+                if let LTok::Tok(Tok::Int(crate::lexer::IntLit::Small(n))) = lit.tok {
+                    let e = lit.end;
+                    self.pos += 2;
+                    return Ok(Pat::Int(-n, (s, e)));
+                }
+            }
+        }
         match self.cur() {
             Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Small(n)))) => {
                 let n = *n;
@@ -1102,8 +1115,50 @@ impl<'a> Parser<'a> {
     /// `:` and compose `.` desugar exactly as before; `++`/arithmetic/comparison stay
     /// `BinOp`. Application is the tightest primary; `$` is handled above (in
     /// `parse_dollar`) so its right-hand side can be a full expression.
+    /// Fold a prefix `-` directly before a numeric literal into a negative literal
+    /// (`-3`, `-3.0`, `-<big>`). Called at the `lhs` (prefix/nud) position of `parse_ops`,
+    /// where there is no left operand — so binary subtraction (`a - 3`) is unaffected, and
+    /// `f -3` still parses as `f - 3` (`Minus` is not in `starts_atom`). A negative ARGUMENT
+    /// is written `f (-3)`, which folds inside the parens. Purely syntactic constant folding:
+    /// no unary operator is introduced, so typing/lowering are untouched.
+    fn try_neg_literal(&mut self) -> Option<Expr> {
+        if !matches!(self.cur(), Some(LTok::Tok(Tok::Minus))) {
+            return None;
+        }
+        let s = self.span_here().0;
+        let lit = self.toks.get(self.pos + 1)?;
+        let e = lit.end;
+        match &lit.tok {
+            LTok::Tok(Tok::Int(crate::lexer::IntLit::Small(n))) => {
+                let n = *n;
+                self.pos += 2;
+                Some(Expr::Int(-n, (s, e)))
+            }
+            // a negative literal exceeding i64 → a negative-digit arbitrary-precision
+            // Integer, reusing the `Big` desugar (`bignumFromStr "-digits"`).
+            LTok::Tok(Tok::Int(crate::lexer::IntLit::Big(digits))) => {
+                let digits = format!("-{digits}");
+                self.pos += 2;
+                Some(Expr::App(
+                    Box::new(Expr::Var("bignumFromStr".into(), (s, e))),
+                    Box::new(Expr::Str(digits, (s, e))),
+                    (s, e),
+                ))
+            }
+            LTok::Tok(Tok::Float(f)) => {
+                let f = *f;
+                self.pos += 2;
+                Some(Expr::Float(-f, (s, e)))
+            }
+            _ => None,
+        }
+    }
+
     fn parse_ops(&mut self, min_prec: u8) -> PResult<Expr> {
-        let mut lhs = self.parse_app()?;
+        let mut lhs = match self.try_neg_literal() {
+            Some(e) => e,
+            None => self.parse_app()?,
+        };
         while let Some((op, width)) = self.peek_infix_op() {
             let (prec, assoc) = op_fixity(&op, &self.fixities);
             if prec < min_prec {

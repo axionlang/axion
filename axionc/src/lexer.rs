@@ -148,6 +148,15 @@ pub enum Tok {
     // match, so `0x5A` matches the hex, not `0`). A `Float` needs a fractional
     // part (`3.14`) so it wins over `Int` `.` `Int`.
     #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().ok())]
+    // scientific notation (`1e9`, `2.0E10`, `1.5e-3`) — the fractional part is
+    // optional and the `[-+]` is the EXPONENT sign, consumed inside the token, so it
+    // never conflicts with the binary `-`. Longest-match keeps `3.0e5` one token.
+    #[regex(r"[0-9]+(\.[0-9]+)?[eE][-+]?[0-9]+", |lex| lex.slice().parse::<f64>().ok())]
+    // leading-dot (`.5`, `.5e3`). `.` alone stays the compose operator (`Dot`); logos
+    // picks `.5` (longer) only when a digit follows, so `f.g` compose is untouched. We
+    // deliberately do NOT lex a bare trailing-dot `3.` — it would swallow the `.` in
+    // `3.foo` and collide with compose; `3.0` is the canonical form.
+    #[regex(r"\.[0-9]+([eE][-+]?[0-9]+)?", |lex| lex.slice().parse::<f64>().ok())]
     Float(f64),
     // an integer literal that fits i64 is `Small`; one that overflows keeps its
     // digits (`Big`) so the parser can desugar it to an arbitrary-precision `Integer`.

@@ -170,6 +170,10 @@ NATIVE=(
   axionc/tests/fixtures/borrowed_list_elem_consume.axi
   axionc/tests/fixtures/dead_binding_reclaim.axi
   axionc/tests/fixtures/sort_heap_reclaim.axi
+  axionc/tests/fixtures/where_local_unlines.axi
+  axionc/tests/fixtures/neg_literals.axi
+  axionc/tests/fixtures/neg_nonbreaking.axi
+  axionc/tests/fixtures/float_forms.axi
   axionc/tests/fixtures/land_tuple_upd.axi
   axionc/tests/fixtures/land_owned_poly.axi
   axionc/tests/fixtures/session_run_pingpong.axi
@@ -212,7 +216,7 @@ LEAKFREE=(
   session_run_pingpong session_run_offer session_run_cancel
   session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server
   poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field peel_heap_reclaim
-  structural_borrowers_reclaim take_heap_reclaim tuple_element_extract_reclaim uncons_safe_tuple_read do_monad_bind either_map_reclaim mixed_param_return_reclaim mixed_param_return_integer container_copy_reclaim borrowed_list_elem_consume dead_binding_reclaim sort_heap_reclaim
+  structural_borrowers_reclaim take_heap_reclaim tuple_element_extract_reclaim uncons_safe_tuple_read do_monad_bind either_map_reclaim mixed_param_return_reclaim mixed_param_return_integer container_copy_reclaim borrowed_list_elem_consume dead_binding_reclaim sort_heap_reclaim where_local_unlines neg_literals neg_nonbreaking float_forms
   string_compare capability_sanitize readline_sanitize readkey_sanitize readkeytimeout_sanitize chr_sanitize cond_temp_reclaim lambda typecheck gauss json hello_cli cond_escape_let
   record_update_reclaim record_update_multi record_update_chain
   record_update_escape record_update_escape_read integer_reclaim integer_accumulator

@@ -899,9 +899,28 @@ impl ExprParser<'_> {
     /// `dollar`. Built-in operators keep the historical ladder; user operators use the
     /// module's `infix*` declarations. Left/right associativity falls out of the
     /// checkpoint-at-start plus `next_min` recursion.
+    /// A prefix `-` directly before a numeric literal → a negative `LITERAL_EXPR`
+    /// (`-3`, `-3.0`, `-<big>`), mirroring `parser::try_neg_literal`. Prefix/nud position
+    /// only (start of `ops`), so binary `a - 3` and `f -3` are unaffected (`Minus` is not in
+    /// `starts_atom`). The two tokens are grouped in one node; `lower_expr` negates it.
+    fn neg_literal(&mut self) -> bool {
+        if !matches!(self.cur(), Some(Tok::Minus))
+            || !matches!(self.peek_tok(1), Some(Tok::Int(_) | Tok::Float(_)))
+        {
+            return false;
+        }
+        self.b.start_node(LITERAL_EXPR.into());
+        self.bump(); // '-'
+        self.bump(); // the numeric literal
+        self.b.finish_node();
+        true
+    }
+
     fn ops(&mut self, min_prec: u8) {
         let cp = self.b.checkpoint();
-        self.app();
+        if !self.neg_literal() {
+            self.app();
+        }
         while let Some((name, width)) = self.peek_infix_op() {
             let (prec, assoc) = crate::parser::op_fixity(&name, &self.fixities);
             if prec < min_prec {
@@ -1173,6 +1192,17 @@ impl ExprParser<'_> {
     }
 
     fn apat(&mut self) {
+        // a negative integer pattern (`-1`): group `-` + `Int` in one LIT_PAT, mirroring
+        // `parser::parse_apat`. No `Pat::Float`, so negative-float patterns are not offered.
+        if matches!(self.cur(), Some(Tok::Minus))
+            && matches!(self.peek_tok(1), Some(Tok::Int(IntLit::Small(_))))
+        {
+            self.b.start_node(LIT_PAT.into());
+            self.bump(); // '-'
+            self.bump(); // the integer
+            self.b.finish_node();
+            return;
+        }
         match self.cur() {
             Some(Tok::Int(IntLit::Small(_)) | Tok::Str(_)) => {
                 self.b.start_node(LIT_PAT.into());
@@ -1756,15 +1786,24 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
     };
     match node.kind() {
         LITERAL_EXPR => {
-            let text = head_token(node)?.text().to_string();
+            // A negative literal built by `neg_literal` groups two tokens (`-` then the
+            // number); a plain literal is one. Negate when the leading token is `-`.
+            let toks: Vec<_> = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .filter(|t| !is_trivia(t.kind()))
+                .collect();
+            let neg = toks.first().is_some_and(|t| t.text() == "-");
+            let lit = if neg { toks.get(1)? } else { toks.first()? };
+            let text = lit.text().to_string();
             match lex(&text).ok()?.first()?.tok.clone() {
-                Tok::Int(IntLit::Small(n)) => Some(Expr::Int(n, sp)),
+                Tok::Int(IntLit::Small(n)) => Some(Expr::Int(if neg { -n } else { n }, sp)),
                 Tok::Int(IntLit::Big(d)) => Some(Expr::App(
                     Box::new(Expr::Var("bignumFromStr".into(), sp)),
-                    Box::new(Expr::Str(d, sp)),
+                    Box::new(Expr::Str(if neg { format!("-{d}") } else { d }, sp)),
                     sp,
                 )),
-                Tok::Float(f) => Some(Expr::Float(f, sp)),
+                Tok::Float(f) => Some(Expr::Float(if neg { -f } else { f }, sp)),
                 Tok::Str(s) => Some(Expr::Str(s, sp)),
                 _ => None,
             }
@@ -1974,9 +2013,17 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
         WILD_PAT => Some(Pat::Wild(sp)),
         VAR_PAT => Some(Pat::Var(head_token(node)?.text().to_string(), sp)),
         LIT_PAT => {
-            let tok = head_token(node)?;
+            // a negative integer pattern groups two tokens (`-` then the integer); negate
+            // when the leading token is `-` (mirrors the LITERAL_EXPR lowering).
+            let toks: Vec<_> = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .filter(|t| !is_trivia(t.kind()))
+                .collect();
+            let neg = toks.first().is_some_and(|t| t.text() == "-");
+            let tok = if neg { toks.get(1)? } else { toks.first()? };
             match lex(tok.text()).ok()?.first()?.tok.clone() {
-                Tok::Int(IntLit::Small(n)) => Some(Pat::Int(n, sp)),
+                Tok::Int(IntLit::Small(n)) => Some(Pat::Int(if neg { -n } else { n }, sp)),
                 Tok::Str(s) => Some(Pat::Str(s, sp)),
                 _ => None,
             }

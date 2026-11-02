@@ -4797,6 +4797,33 @@ fn where_local_captures_enclosing_parameter() {
 }
 
 #[test]
+fn negative_numeric_literals_fold_across_backends() {
+    // Prefix `-` before a numeric literal folds to a negative literal (`-7`, `-3.0`,
+    // `-99999999999999999999`); a negative-INT pattern matches. Int/Float/big-Integer all.
+    agree_across_backends(
+        "neg_literals.axi",
+        "-7\n10\n20\n30\n7\n-3\n-99999999999999999999\n",
+    );
+}
+
+#[test]
+fn scientific_and_leading_dot_float_literals() {
+    // `1e9`, `2.0E10`, `1.5e-3`, `.5`, and `.5 +. .25` lex as floats; the exponent sign is
+    // internal to the token, so it never collides with binary `-`.
+    agree_across_backends(
+        "float_forms.axi",
+        "1000000000\n20000000000\n0.0015\n0.5\n0.75\n",
+    );
+}
+
+#[test]
+fn negative_literal_fold_is_non_breaking() {
+    // The fold fires only in PREFIX position: `a - 3` stays subtraction (not `a (-3)`),
+    // `f . g` stays compose, `[-1,-2,-3]` reads as negative elements.
+    agree_across_backends("neg_nonbreaking.axi", "7\n11\n-6\n");
+}
+
+#[test]
 fn dropped_effect_where_warns() {
     // AX0920: an effectful value bound in `where` but never used drops its effect
     // silently. The compiler must warn (but still compile — it is a warning, not an

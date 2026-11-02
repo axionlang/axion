@@ -103,16 +103,16 @@ build n =
   let m = newArray (n * (n + 1)) 0.0 in
   let m = put m n 0 0 2.0 in
   let m = put m n 0 1 1.0 in
-  let m = put m n 0 2 (0.0 -. 1.0) in
+  let m = put m n 0 2 (-1.0) in
   let m = put m n 0 3 8.0 in
-  let m = put m n 1 0 (0.0 -. 3.0) in
-  let m = put m n 1 1 (0.0 -. 1.0) in
+  let m = put m n 1 0 (-3.0) in
+  let m = put m n 1 1 (-1.0) in
   let m = put m n 1 2 2.0 in
-  let m = put m n 1 3 (0.0 -. 11.0) in
-  let m = put m n 2 0 (0.0 -. 2.0) in
+  let m = put m n 1 3 (-11.0) in
+  let m = put m n 2 0 (-2.0) in
   let m = put m n 2 1 1.0 in
   let m = put m n 2 2 2.0 in
-  put m n 2 3 (0.0 -. 3.0)
+  put m n 2 3 (-3.0)
 
 -- print the solution vector, one component per line (borrows x)
 printSol :: Array Float -> Int -> Int -> IO ()

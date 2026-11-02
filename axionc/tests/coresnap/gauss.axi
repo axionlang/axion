@@ -188,33 +188,27 @@
   let _t1 = * n _t0  ; Δ{}
   let _t1 = newArray n 0f  ; Δ{m} · makes Array
   let _t2 = - n 1  ; Δ{_t1 m}
-  let _t2 = -. 0f 1f  ; Δ{m$2}
-  let _t3 = -. 0f 3f  ; Δ{m$4}
   let _t3 = call build n  ; Δ{x} · makes Array
-  let _t4 = -. 0f 1f  ; Δ{m$5}
-  let _t5 = -. 0f 11f  ; Δ{m$7}
-  let _t6 = -. 0f 2f  ; Δ{m$8}
-  let _t7 = -. 0f 3f  ; Δ{m$11}
   let m = call forward _t0 n 0  ; Δ{_t0} · moves{_t0} · makes Array
   let m = newArray _t1 0f  ; Δ{} · makes Array
   let m$1 = call put m n 0 0 2f  ; Δ{m} · moves{m} · makes Array
   let m$10 = call put m$9 n 2 1 1f  ; Δ{m$9} · moves{m$9} · makes Array
   let m$11 = call put m$10 n 2 2 2f  ; Δ{m$10} · moves{m$10} · makes Array
   let m$2 = call put m$1 n 0 1 1f  ; Δ{m$1} · moves{m$1} · makes Array
-  let m$3 = call put m$2 n 0 2 _t2  ; Δ{m$2} · moves{m$2} · makes Array
+  let m$3 = call put m$2 n 0 2 -1f  ; Δ{m$2} · moves{m$2} · makes Array
   let m$4 = call put m$3 n 0 3 8f  ; Δ{m$3} · moves{m$3} · makes Array
-  let m$5 = call put m$4 n 1 0 _t3  ; Δ{m$4} · moves{m$4} · makes Array
-  let m$6 = call put m$5 n 1 1 _t4  ; Δ{m$5} · moves{m$5} · makes Array
+  let m$5 = call put m$4 n 1 0 -3f  ; Δ{m$4} · moves{m$4} · makes Array
+  let m$6 = call put m$5 n 1 1 -1f  ; Δ{m$5} · moves{m$5} · makes Array
   let m$7 = call put m$6 n 1 2 2f  ; Δ{m$6} · moves{m$6} · makes Array
-  let m$8 = call put m$7 n 1 3 _t5  ; Δ{m$7} · moves{m$7} · makes Array
-  let m$9 = call put m$8 n 2 0 _t6  ; Δ{m$8} · moves{m$8} · makes Array
+  let m$8 = call put m$7 n 1 3 -11f  ; Δ{m$7} · moves{m$7} · makes Array
+  let m$9 = call put m$8 n 2 0 -2f  ; Δ{m$8} · moves{m$8} · makes Array
   let n = 3  ; Δ{}
   let x = call backsub m _t1 n _t2  ; Δ{_t1 m} · moves{_t1} · makes Array
   ret + _t1 j  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
   ret call le$Int y x  ; Δ{}
-  ret call put m$11 n 2 3 _t7  ; Δ{m$11} · moves{m$11} · makes Array
+  ret call put m$11 n 2 3 -3f  ; Δ{m$11} · moves{m$11} · makes Array
   ret case _t0 of
   ret if _t0 then
   ret if _t0 then
