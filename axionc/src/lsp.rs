@@ -1629,6 +1629,12 @@ pub async fn run() {
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(Backend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
+    // `serve` returns once the client's `exit` notification (or stdin EOF) ends the message loop.
+    // Returning normally here can still hang on shutdown: `tokio::io::stdin()` runs its read on a
+    // blocking pool thread parked in an uninterruptible `read()` syscall, and the runtime's drop
+    // waits on that thread — so the client sees "timed out waiting for the language server to shut
+    // down" (e.g. Helix's ~48s kill timeout). Nothing is left to flush after `exit`, so terminate now.
+    std::process::exit(0);
 }
 
 #[cfg(test)]

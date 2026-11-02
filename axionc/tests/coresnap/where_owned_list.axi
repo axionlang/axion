@@ -7,6 +7,9 @@
 
 
 
+      drop e : Expr
+      drop ys
+      drop ys : List$Expr
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
@@ -14,8 +17,8 @@
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_Expr _dd2  ; Δ{}
       let _t0 = call eval a  ; Δ{}
-      let _t0 = call eval e  ; Δ{}
-      let _t1 = + acc _t0  ; Δ{}
+      let _t0 = call eval e  ; Δ{e rest}
+      let _t1 = + acc _t0  ; Δ{rest}
       let _t1 = call eval b  ; Δ{}
       ret + _t0 _t1  ; Δ{}
       ret + acc base  ; Δ{}
@@ -23,7 +26,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret call sumEval$go base rest _t1  ; Δ{}
+      ret call sumEval$go base rest _t1  ; Δ{rest} · moves{rest}
       ret n  ; Δ{}
     Add a b ->
     Cons e rest ->
@@ -64,12 +67,10 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop xs : List$Expr
   else
   else
   else
   else
-  let _d1000000 = call sumEval$go base xs 0  ; Δ{}
   let _dd4 = == _tag 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -83,8 +84,8 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret _d1000000  ; Δ{}
   ret call sumEval 100 _t0  ; Δ{_t0} · moves{_t0}
+  ret call sumEval$go base xs 0  ; Δ{}
   ret case e of
   ret case ys of
   ret if _t0 then

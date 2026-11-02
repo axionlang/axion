@@ -228,6 +228,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 || func == "axion_read_file"
                 || func == "axion_readdir"
                 || func == "axion_readdir_typed"
+                || func == "axion_readdir_listing"
                 || func == "axion_read_line"
                 || func == "axion_read_secret"
                 || func == "axion_read_key"
@@ -1640,6 +1641,7 @@ mod tests {
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             false,
         );
         let con_rec = crate::core::con_recursive_fields(&module.datas);
@@ -1666,6 +1668,7 @@ mod tests {
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             false,
         )
     }
@@ -1684,6 +1687,7 @@ mod tests {
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             false,
         );
         check_drop_coherence(&l.fns, &l.borrow_args, &l.recinfo, &analysis.drops)
@@ -1703,6 +1707,7 @@ mod tests {
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             false,
         );
         let mut fns = l.fns.clone();
@@ -2059,6 +2064,7 @@ mod tests {
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             false,
         );
         let lines = crate::lexer::LineMap::new(src);
@@ -2144,6 +2150,7 @@ mod tests {
             &std::collections::HashSet::new(),
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             false,
         );
         let mut fns = l.fns.clone();

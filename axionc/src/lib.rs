@@ -349,6 +349,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let errs = delta::check_drop_coherence(
@@ -389,6 +390,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         print!(
@@ -410,6 +412,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let findings = verify::verify(&lowered);
@@ -446,6 +449,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         print!("{}", model_trace::emit_model_trace(&lowered));
@@ -464,6 +468,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
         ) {
             Ok(ir) => ir,
             Err(e) => {
@@ -481,6 +486,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         print!("{}", codegen_tv::report(&lowered, &ir));
@@ -503,6 +509,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let (clif, fn_names, reclaim) =
@@ -536,6 +543,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let summary = verify::ret_alias_summary(&lowered.fns);
@@ -577,6 +585,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let facts = core::classify_extractions(
@@ -640,6 +649,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let facts = core::classify_extractions(
@@ -672,6 +682,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let facts = core::classify_extractions(
@@ -709,6 +720,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         print!(
@@ -783,6 +795,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             fuse,
         );
         let all = verify::verify(&lowered);
@@ -898,6 +911,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
         ) {
             Ok(ir) => {
                 print!("{ir}");
@@ -919,6 +933,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
         ) {
             Ok(ir) => {
                 print!("{ir}");
@@ -940,6 +955,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
         ) {
             Ok(Some(n)) => {
                 println!("{n}");
@@ -962,6 +978,7 @@ pub fn run_cli() -> ExitCode {
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
+            &analysis.where_param_tys,
             out_path.as_deref().map(std::path::Path::new),
         ) {
             Ok(()) => {
@@ -1168,6 +1185,7 @@ pub fn analyze_module(
     analysis.array_tys = mono.array_tys;
     analysis.integer_lits = mono.integer_lits;
     analysis.where_ret_tys = mono.where_ret_tys;
+    analysis.where_param_tys = mono.where_param_tys;
     // Dead-code elimination: drop prelude / generated functions the program never
     // reaches. Runs LAST, so the graph is final (methods resolved, specs + synth
     // materialized, `deriving` lowered). Keeps the emitted Core — and the oracle /

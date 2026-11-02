@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-workload ASan gate for the `pass` clone (examples/pass/pass.axi). Both double-frees that
+# Real-workload ASan gate for the `axpass` clone (examples/axpass/axpass.axi). Both double-frees that
 # shipped to `axpass` (the `</>` and `relJoin` borrowed-list-element aliases) only manifested when
 # `show` recursed over a store WITH SUBDIRECTORIES via the fzf picker — a path the fixture corpus
 # never exercised. This runs every command over a throwaway NESTED store under AddressSanitizer, so
@@ -28,7 +28,7 @@ mkdir -p "$W/bin"; printf '#!/bin/sh\nhead -n1\n' > "$W/bin/fzf"; chmod +x "$W/b
 # Build + link the Rust runtime staticlib (axion-rt: strings/IO + OS-capability, which pass leans on
 # heavily) alongside the C runtime. See docs/rust-runtime-port.md.
 cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "FAIL: axion-rt build"; exit 1; }
-"$AXIONC" --emit llvm examples/pass/pass.axi > "$W/ir.ll" 2>/dev/null || { echo "FAIL: pass.axi did not lower"; exit 1; }
+"$AXIONC" --emit llvm examples/axpass/axpass.axi > "$W/ir.ll" 2>/dev/null || { echo "FAIL: axpass.axi did not lower"; exit 1; }
 "$CLANG" -fsanitize=address -pthread -O1 -w "$W/ir.ll" \
   axion-rt/target/release/libaxion_rt.a -ldl -lm -o "$W/axpass" 2>/dev/null \
   || { echo "FAIL: ASan build failed"; exit 1; }

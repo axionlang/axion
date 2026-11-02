@@ -71,6 +71,22 @@ for be in "${backends[@]}"; do
   seed "$S"; run "$be" "$S" 'rrenamed\nq'
   ok "$be" "$([ -e "$S/renamed" ] && [ ! -e "$S/sub" ] && echo Y)" "Y" "rename (r)"
 
+  # REGRESSION (sort/open consistency): a FILE opens the entry shown UNDER the cursor, and the list
+  # is sorted case-insensitively (like yazi). Uses mixed-case names where a raw-byte sort (old display:
+  # uppercase first → Zebra, apple) differs from the case-insensitive order (new display / `ls` →
+  # apple, Zebra). The old `openFile` re-ran `ls` while the display byte-sorted, so it opened a
+  # DIFFERENT file than the cursor showed. A recording $EDITOR captures the opened file; assert it ==
+  # the frame's FIRST-listed entry, and that that entry is the case-insensitively-first one.
+  REC="$WORK/opened.$be"; rm -f "$REC"
+  EDR="$WORK/edrec.$be.sh"; printf '#!/bin/sh\nbasename "$1" > "%s"\n' "$REC" > "$EDR"; chmod +x "$EDR"
+  D2="$WORK/${be}_ord"; rm -rf "$D2"; mkdir -p "$D2"; : >"$D2/Zebra.txt"; : >"$D2/apple.txt"
+  oflag=$([ "$be" = llvm ] && echo --release || echo --backend "$be")
+  frame="$(printf 'q' | HOME="$D2" VISUAL= EDITOR="$EDR" "$AXIONC" $oflag "$FFF" -- "$D2" 2>/dev/null)"
+  first="$(printf '%s' "$frame" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b_G[^\\]*\\//g' | grep -aoE 'Zebra\.txt|apple\.txt' | head -1)"
+  printf 'l\nq' | HOME="$D2" VISUAL= EDITOR="$EDR" "$AXIONC" $oflag "$FFF" -- "$D2" >/dev/null 2>&1
+  ok "$be" "$first" "apple.txt" "list is case-insensitive (apple before Zebra, like yazi)"
+  ok "$be" "$(cat "$REC" 2>/dev/null)" "$first" "file open targets the displayed cursor entry"
+
   # d + p + y: mark sel 0 (sub) for trash, paste, CONFIRM the y/N prompt → moved to sandboxed trash
   seed "$S"; run "$be" "$S" 'dpyq'
   ok "$be" "$([ ! -e "$S/sub" ] && [ -e "$S/.local/share/axfm/trash/sub" ] && echo Y)" "Y" "trash (d, p, y)"
@@ -189,9 +205,10 @@ for be in "${backends[@]}"; do
   seed "$S"; diout="$(printf 'iq' | HOME="$S" "$AXIONC" $beflag "$FFF" -- "$S" 2>/dev/null)"
   ok "$be" "$(printf '%s' "$diout" | grep -qaF 'sub: ' && echo Y)" "Y" "disk usage flash (i)"
 
-  # count-prefixed motion: 2j from sel 0 lands on sel 2 (of 3 entries) → the status shows (3/3).
-  seed "$S"; cnout="$(printf '2jq' | HOME="$S" "$AXIONC" $beflag "$FFF" -- "$S" 2>/dev/null)"
-  ok "$be" "$(printf '%s' "$cnout" | grep -qaF '(3/3)' && echo Y)" "Y" "count-prefixed motion (2j)"
+  # digit tab-select (yazi-style): t (2 tabs, active=tab2), l (tab2 → sub), 1 (jump straight to tab1 =
+  # root) → final cwd is root, proving a bare digit selects that tab (replaces the old count-prefix motion).
+  seed "$S"; run "$be" "$S" 'tl1q'
+  ok "$be" "$([ "$(cat "$S/.cache/axfm/axfm.d" 2>/dev/null)" = "$S" ] && echo Y)" "Y" "digit selects tab (1)"
 
   # paste "working…" flash: copy a.txt into sub (j y k l p) → the yellow banner is emitted, copy lands.
   seed "$S"; wkout="$(printf 'jyklpq' | HOME="$S" "$AXIONC" $beflag "$FFF" -- "$S" 2>/dev/null)"

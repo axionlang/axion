@@ -449,7 +449,7 @@ rowCell icfg ty raw mark name listW prev =
 -- row (that left gaps on rows with no entry) — it is drawn as one continuous line by `drawSep`.
 rowFor :: String -> String -> String -> String -> Int -> Int -> String -> String -> Int -> Bool -> String
 rowFor lsc icfg raw ty i sel marked cwd listW prev =
-  colorCell (rowCell icfg ty raw (markChar marked (cwd </> stripSlash raw)) (dup raw) listW prev)
+  colorCell (rowCell icfg ty raw (markChar marked (cwd </> stripSlash raw)) (stripSlash raw) listW prev)
             i sel (entryColor lsc ty raw)
   ++ "\n"
 
@@ -463,38 +463,88 @@ sepGo col r mx =
   if r > mx then ""
   else csi (showInt r ++ ";" ++ showInt col ++ "H") ++ paint "90" "│" ++ sepGo col (r + 1) mx
 
--- Bottom status line: (pos/total), [n] selected (program), cwd — in reverse video, pinned to row.
+-- Bottom status bar: (pos/total), permissions, size+mtime, [n] selected, symlink, tabs, cwd — pinned to
+-- the row above the prompt. Coloured with a Tokyo Night palette matching the user's yazi [status] theme
+-- (truecolor SGR: fg `38;2;R;G;B`, bg `48;2;R;G;B`, leading `1;` = bold; a non-truecolor terminal ignores
+-- them gracefully). Each segment is its own borrow-only helper so no let-bound heap is conditionally dropped.
 posStr :: Int -> Int -> String
 posStr sel total = strAppend "(" (strAppend (showInt (sel + 1)) (strAppend "/" (strAppend (showInt total) ")")))
 markInfo :: String -> String -> String
 markInfo marked prog =
   strAppend " [" (strAppend (showInt (markCount marked)) (strAppend "] (" (strAppend prog ")")))
--- the marked-count segment, or "" — a tail `if` in its own helper (not a consumed inline conditional).
-markSeg :: String -> String -> String
-markSeg marked prog = if markCount marked > 0 then markInfo marked prog else ""
--- The selected entry's size + mtime, or "" when unknown — a tail `if` in its own helper (mirrors
--- markSeg: no let-bound heap conditionally dropped).
-metaSeg :: String -> String
-metaSeg info = if strLen (infoSize info) > 0 then metaShow info else ""
 metaShow :: String -> String
 metaShow info = strAppend "  " (strAppend (infoSize info) (strAppend "  " (infoMtime info)))
--- The selected symlink's "-> target [(broken)]" segment, or "" — shown textually (the status bar is
--- reverse-video, so a nested color would need a reverse-restoring reset; the text is the signal).
-linkSeg :: String -> String
-linkSeg info = let l = infoLink info in if strLen l == 0 then "" else strAppend "  " l
--- The tab-bar segment, or "" at a single tab — a tail `if` in its own helper (mirrors linkSeg).
-tabSeg :: String -> String
-tabSeg info = let tb = infoTabs info in if strLen tb == 0 then "" else strAppend "  " tb
+
+-- Palette (yazi [status]): progress_normal #7aa2f7 on #292e42, progress_error #f7768e, separator #414868,
+-- perm_type #9ece6a, perm_read #e0af68, perm_write #f7768e, perm_exec #bb9af7, perm_sep #7aa2f7.
+stPosSgr :: String                                 -- position chip: blue on dark panel, bold (progress)
+stPosSgr = "1;38;2;122;162;247;48;2;41;46;66"
+stMarkSgr :: String                                -- marked-count: red (progress_error)
+stMarkSgr = "1;38;2;247;118;142"
+stMetaSgr :: String                                -- size / mtime: muted comment grey
+stMetaSgr = "38;2;86;95;137"
+stLinkSgr :: String                                -- symlink target: cyan
+stLinkSgr = "38;2;125;207;255"
+stTabSgr :: String                                 -- tab bar: blue
+stTabSgr = "38;2;122;162;247"
+stCwdSgr :: String                                 -- cwd: blue, bold
+stCwdSgr = "1;38;2;122;162;247"
+stPermType :: String                               -- type char (d/-/l): green
+stPermType = "38;2;158;206;106"
+stPermRead :: String                               -- r: yellow
+stPermRead = "38;2;224;175;104"
+stPermWrite :: String                              -- w: red
+stPermWrite = "38;2;247;118;142"
+stPermExec :: String                               -- x/s/t: purple
+stPermExec = "38;2;187;154;247"
+stPermSep :: String                                -- '-' and others: blue
+stPermSep = "38;2;122;162;247"
+
+-- The position "(sel/total)" as a coloured progress chip (a space each side so the panel bg shows).
+stPos :: Int -> Int -> String
+stPos sel total = paint stPosSgr (strAppend " " (strAppend (posStr sel total) " "))
+-- Marked-count segment, or "" — red when any files are marked.
+stMarksC :: String -> String -> String
+stMarksC marked prog = if markCount marked > 0 then paint stMarkSgr (markInfo marked prog) else ""
+-- Size + mtime, or "" when unknown — muted grey.
+stMetaC :: String -> String
+stMetaC info = if strLen (infoSize info) > 0 then paint stMetaSgr (metaShow info) else ""
+-- Symlink "-> target [(broken)]" segment, or "" — cyan.
+stLinkC :: String -> String
+stLinkC info = let l = infoLink info in if strLen l == 0 then "" else paint stLinkSgr (strAppend "  " l)
+-- Tab-bar segment, or "" at a single tab — blue.
+stTabsC :: String -> String
+stTabsC info = let tb = infoTabs info in if strLen tb == 0 then "" else paint stTabSgr (strAppend "  " tb)
+-- The cwd segment — blue, bold.
+stCwdC :: String -> String
+stCwdC cwd = paint stCwdSgr (strAppend " " cwd)
+-- The permission string, each field coloured (yazi perm_*), or "" when unknown.
+stPermsC :: String -> String
+stPermsC info = let p = infoPerms info in if strLen p == 0 then "" else strAppend " " (permGo p 0)
+-- Colour each char of `p`: index 0 = type (green), r = read (yellow), w = write (red), x/s/t = exec
+-- (purple), everything else ('-', SELinux '.'/'+') = sep (blue). `p` is borrowed, then moved into the tail.
+permGo :: String -> Int -> String
+permGo p i =
+  if i >= strLen p then ""
+  else strAppend (paint (permSgr i (charAt i p)) (substr i 1 p)) (permGo p (i + 1))
+permSgr :: Int -> Int -> String
+permSgr i c =
+  if i == 0 then stPermType
+  else if c == 'r' then stPermRead
+  else if c == 'w' then stPermWrite
+  else if (c == 'x') || (c == 's') || (c == 't') || (c == 'S') || (c == 'T') then stPermExec
+  else stPermSep
+
 statusLine :: String -> Int -> Int -> String -> String -> Int -> String -> String
 statusLine cwd total sel marked prog rows info =
   strAppend (csi (strAppend (showInt (rows - 1)) ";1H"))
-    (paint "7"
-      (strAppend (posStr sel total)
-        (strAppend (tabSeg info)
-          (strAppend (markSeg marked prog)
-            (strAppend (metaSeg info)
-              (strAppend (linkSeg info)
-                (strAppend " " cwd)))))))
+    (strAppend (stPos sel total)
+      (strAppend (stPermsC info)
+        (strAppend (stMetaC info)
+          (strAppend (stMarksC marked prog)
+            (strAppend (stLinkC info)
+              (strAppend (stTabsC info)
+                (stCwdC cwd)))))))
 
 ------------------------------------------------------------------- preview pane (pure content)
 
@@ -518,20 +568,18 @@ selMime cwd hidden sel = selMimeOf (selPath cwd hidden sel)
 -- RECURSES a directory's whole tree (seconds on a big dir → laggy previews on every cursor move);
 -- `stat -c %s` is the entry's own size, instant. The byte count is humanised with `numfmt` when
 -- present (raw bytes otherwise). Folding size/mtime into the mime fork keeps it at one spawn/frame.
+-- Now ONLY the entry's mime (one `file` fork) — it drives the preview branch + image overlay. The bar's
+-- perms/size/mtime/link/tabs no longer come from here: they are read fork-free from the per-dir metadata
+-- cache (`frameInfo`), so the bar renders identically on the fast and settled frames (no pop/jump).
 selInfo :: String -> String
-selInfo path =
-  runCapture (strAppend "f=" (strAppend (shQuote path)
-    (strAppend "; file -bL --mime-type -- \"$f\" 2>/dev/null; o=$(stat -c '%s|%y' -- \"$f\" 2>/dev/null); s=${o%%|*}; t=${o#*|}; t=${t%%.*}; h=$(printf %s \"$s\" | numfmt --to=iec 2>/dev/null); if [ -L \"$f\" ]; then r=$(readlink \"$f\"); if [ -e \"$f\" ]; then l=\"-> $r\"; else l=\"-> $r (broken)\"; fi; else l=\"\"; fi; printf '%s\\n%s\\n%s\\n' \"${h:-$s}\" \"$t\" \"$l\"; " tabBarCmd)))
--- The tab-bar line appended to selInfo's fork (so it costs no extra per-frame subprocess): " 1:foo
--- [2:bar] 3:baz" with the active tab bracketed, or "" at a single tab (then the status bar is clean).
-tabBarCmd :: String
-tabBarCmd =
-  "tb=''; tf=" ++ shQuote (tabsFile 0) ++ "; ti=" ++ shQuote (tabiFile 0)
-  ++ "; if [ -s \"$tf\" ]; then n=$(grep -c '' \"$tf\"); if [ \"$n\" -gt 1 ]; then ai=0; [ -r \"$ti\" ] && read ai < \"$ti\"; [ -z \"$ai\" ] && ai=0; k=0; "
-  ++ "while IFS= read -r d; do b=${d##*/}; [ -z \"$b\" ] && b=/; if [ \"$k\" = \"$ai\" ]; then tb=\"$tb [$((k+1)):$b]\"; else tb=\"$tb $((k+1)):$b\"; fi; k=$((k+1)); done < \"$tf\"; fi; fi; printf '%s\\n' \"$tb\""
--- The tab-bar segment of the status line, or "" (single tab / absent). pick 4 = selInfo's 5th line.
+selInfo path = selMimeOf path
+-- The `info`-format field pickers. `frameInfo` lays the bar's fields out in this same order (pick 0..5 =
+-- mime,size,mtime,link,perms,tabs); `selInfo` supplies only pick 0 (the mime) for the preview.
 infoTabs :: String -> String
-infoTabs info = trim (pick 4 (lines info))
+infoTabs info = trim (pick 5 (lines info))
+-- The selected entry's permission string (`drwxr-xr-x`, from `stat %A`) — pick 4.
+infoPerms :: String -> String
+infoPerms info = trim (pick 4 (lines info))
 infoMime :: String -> String
 infoMime info = trim (pick 0 (lines info))
 infoSize :: String -> String
@@ -541,6 +589,112 @@ infoMtime info = trim (pick 2 (lines info))
 -- The selected entry's symlink target as "-> target" (or "-> target (broken)"), "" if not a symlink.
 infoLink :: String -> String
 infoLink info = trim (pick 3 (lines info))
+
+-- ─── per-directory metadata cache (smooth status bar) ─────────────────────────────────────────────
+-- The bar's perms/size/mtime/link used to come from a per-SETTLE `stat` fork (`selInfo`), so on the
+-- fast fork-free frame they were ABSENT — they popped in (and the cwd jumped) on every cursor move.
+-- Instead, stat the WHOLE directory ONCE on entry into `metaFile` (exactly like colours/types cache in
+-- `typesFile`), then read the hovered entry's metadata FORK-FREE on every frame, so the full bar is
+-- byte-identical fast↔settled → smooth. Written by `captureMeta` at each dir change; read by `frameInfo`.
+metaFile :: Int -> String
+metaFile d = strAppend (envOr "HOME" ".") "/.cache/axfm/meta"
+-- Stat ONLY the visible window `winNames` (its order, slash-stripped) into `metaFile`: line 0 = a `cwd`
+-- stamp, line 1 = the window `start` index, then FOUR lines per entry — perms (`%A`), human size
+-- (`numfmt`), mtime (`%y`, fractional stripped), symlink target — the SAME formatting `selInfo` produced.
+-- A frame reads entry `sel`'s block at line `2 + (sel - start)*4`. Bounding this to one screen (not the
+-- whole directory) is what keeps a 100k-entry dir like /nix/store from freezing (no `shQuote` of a
+-- multi-MB listing, no per-entry `stat` storm). Atomic temp → `mv`.
+captureMetaCmd :: String -> Int -> String -> String
+captureMetaCmd cwd start winNames =
+  "d=" ++ shQuote cwd ++ "; m=" ++ shQuote (metaFile 0) ++ "; tmp=\"$m.$$\"; { printf '%s\\n%s\\n' "
+  ++ shQuote cwd ++ " " ++ shQuote (showInt start) ++ "; printf '%s' " ++ shQuote winNames
+  ++ " | while IFS= read -r n; do [ -z \"$n\" ] && continue; f=\"$d/${n%/}\"; o=$(stat -c '%s|%y|%A' -- \"$f\" 2>/dev/null); "
+  ++ "s=${o%%|*}; t=${o#*|}; t=${t%%.*}; p=${o##*|}; h=$(printf %s \"$s\" | numfmt --to=iec 2>/dev/null); "
+  ++ "if [ -L \"$f\" ]; then r=$(readlink \"$f\"); if [ -e \"$f\" ]; then l=\"-> $r\"; else l=\"-> $r (broken)\"; fi; else l=\"\"; fi; "
+  ++ "printf '%s\\n%s\\n%s\\n%s\\n' \"$p\" \"${h:-$s}\" \"$t\" \"$l\"; done; } > \"$tmp\" 2>/dev/null; mv \"$tmp\" \"$m\""
+-- True when `metaFile` already caches THIS window (`cwd` + `start`), so moving within a page re-stats
+-- nothing — only a page-shift (or dir change) restats.
+metaStampOk :: String -> Int -> Bool
+metaStampOk cwd start =
+  let mc = readFile (metaFile 0) in
+  (strCmp (firstLine mc) cwd == 0) && (fromMaybe (0 - 1) (readInt (trim (pick 1 (lines mc)))) == start)
+-- Refresh the window cache if stale, SYNCHRONOUSLY (the window is ~one screen, so it is cheap and the
+-- cache is ready for the very next `render`). Skipped entirely when the page is already cached. Int.
+captureMeta :: String -> Int -> String -> Int
+captureMeta cwd start winNames =
+  if metaStampOk cwd start then 0 else runStatus (captureMetaCmd cwd start winNames)
+-- Stat the VISIBLE window around `sel` (the entries the frame draws) — called on settle, before `render`.
+settleMeta :: String -> Int -> Int -> String -> Int
+settleMeta cwd sel rows raw =
+  let mx = maxItems rows in
+  let start = viewStart sel (countLines raw) mx in
+  captureMeta cwd start (unlines (windowLines raw start mx))
+
+-- The hovered entry's metadata as an `info`-format string (same line layout `infoSize`/`infoMtime`/
+-- `infoLink`/`infoPerms`/`infoTabs` expect: pick 0..5 = mime,size,mtime,link,perms,tabs) assembled
+-- FORK-FREE from `metaFile` + the live tab bar — so `statusLine` renders it unchanged on BOTH frames.
+-- The cache holds only the current window `[start, start+mx)`: if `sel` is outside it (a fresh page jump
+-- before settle), the metadata is blank (just the tab bar + fork-free pos/marks/cwd) and fills in a beat
+-- later on settle, exactly how colours/types already do.
+frameInfo :: String -> Int -> String
+frameInfo cwd sel =
+  let mc = readFile (metaFile 0) in
+  if strCmp (firstLine mc) cwd == 0
+  then frameInfoWin (lines mc) (sel - fromMaybe 0 (readInt (trim (pick 1 (lines mc))))) (tabBarNow 0)
+  else buildInfo "" "" "" "" (tabBarNow 0)
+-- `rel` = sel's offset within the cached window; blank when below it. Entry blocks start at line 2
+-- (after the cwd + start stamp): perms (b), size (b+1), mtime (b+2), link (b+3). A `rel` past the end
+-- reads empty `pick`s → blank, which is the desired "not cached yet" fallback.
+frameInfoWin :: List String -> Int -> String -> String
+frameInfoWin ls rel tabs =
+  if rel < 0 then buildInfo "" "" "" "" tabs else frameInfoAt ls (2 + rel * 4) tabs
+frameInfoAt :: List String -> Int -> String -> String
+frameInfoAt ls b tabs =
+  buildInfo (trim (pick (b + 1) ls)) (trim (pick (b + 2) ls)) (trim (pick (b + 3) ls)) (trim (pick b ls)) tabs
+-- Lay the fields out as `<mime=""> \n size \n mtime \n link \n perms \n tabs` so the `infoX` pickers read them.
+buildInfo :: String -> String -> String -> String -> String -> String
+buildInfo size mtime link perms tabs =
+  strAppend "\n" (strAppend size (strAppend "\n" (strAppend mtime
+    (strAppend "\n" (strAppend link (strAppend "\n" (strAppend perms (strAppend "\n" tabs))))))))
+
+-- The tab bar built FORK-FREE from the tab files (the shell `tabBarCmd` that lived in `selInfo` is retired):
+-- "" at a single tab, else " 1:foo [2:bar] 3:baz" with the active tab bracketed, its LABEL green (brackets
+-- keep the bar's blue, as before). Reading two tiny files per frame is far cheaper than a subprocess.
+tabBarNow :: Int -> String
+tabBarNow d = tabBarPick (keepNonEmpty (lines (readFile (tabsFile 0)))) (tabActive 0)
+tabActive :: Int -> Int
+tabActive d = fromMaybe 0 (readInt (trim (readFile (tabiFile 0))))
+keepNonEmpty :: List String -> List String
+keepNonEmpty xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if strLen y == 0 then keepNonEmpty ys else Cons y (keepNonEmpty ys)
+-- 0 or 1 tab → no bar (the lone entry is dropped); ≥2 → render all (rebuild the destructured list).
+tabBarPick :: List String -> Int -> String
+tabBarPick ps ai = case ps of
+  Nil -> ""
+  Cons p rest -> case rest of
+    Nil -> ""
+    Cons q qs -> tabBarGo (Cons p (Cons q qs)) ai 0
+tabBarGo :: List String -> Int -> Int -> String
+tabBarGo xs ai k = case xs of
+  Nil -> ""
+  Cons p ps -> strAppend (tabSegOne (k == ai) (k + 1) (pathBase p)) (tabBarGo ps ai (k + 1))
+tabSegOne :: Bool -> Int -> String -> String
+tabSegOne active num base =
+  let label = strAppend (showInt num) (strAppend ":" base) in
+  if active
+  then strAppend " [" (strAppend (csi (strAppend stPermType "m"))
+         (strAppend label (strAppend (csi (strAppend stTabSgr "m")) "]")))
+  else strAppend " " label
+-- The last path component (basename), or "/" for a root/empty path — the `${d##*/}` of the shell tab bar.
+pathBase :: String -> String
+pathBase p =
+  let i = lastSlash p (strLen p - 1) in
+  if i < 0 then onEmpty (dup p) "/" else onEmpty (substr (i + 1) (strLen p - i - 1) p) "/"
+lastSlash :: String -> Int -> Int
+lastSlash p i = if i < 0 then 0 - 1 else if charAt i p == '/' then i else lastSlash p (i - 1)
+onEmpty :: String -> String -> String
+onEmpty s dflt = if strLen s == 0 then dup dflt else s
 
 -- Image/video pane text: NOTHING when a graphics tool will paint pixels over it (the header would
 -- just peek around the image) — only a `<label> name  mime` header + install hint when pixels can't
@@ -593,15 +747,42 @@ archiveList path =
 scrollPipe :: Int -> Int -> String
 scrollPipe poff ph =
   strAppend " | tail -n +" (strAppend (showInt (poff + 1)) (strAppend " | head -n " (showInt ph)))
+-- Directory preview: the folder's entries rendered like the MAIN list — coloured per type/extension and
+-- (when icons are on) glyphed — via the same `readDirTyped`/`rdtEntries` pipeline, positioned absolutely
+-- down the pane at column `px`, rows [1..ph]. `poff` scrolls (skips leading entries). The config is read
+-- once here (not per cell), mirroring the main render's `lsColors`/`iconsOf`.
+dirPreview :: String -> Int -> Int -> Int -> Int -> Int -> String
+dirPreview path px pw ph poff hidden =
+  dirPrevGo (lsColors 0) (iconsOf 0) (rdtEntries (readDirTyped path) hidden "") 1 px pw poff ph
+-- `xs` = `<code><name>` entries (dirs-first, name-sorted). `skip` consumes `poff` leading rows; then up to
+-- `maxRow` rows are drawn. `lsc`/`icfg` are borrowed each step; a `csi "m"` reset follows every row.
+dirPrevGo :: String -> String -> List String -> Int -> Int -> Int -> Int -> Int -> String
+dirPrevGo lsc icfg xs r px pw skip maxRow = case xs of
+  Nil -> ""
+  Cons ln lns ->
+    if skip > 0 then dirPrevGo lsc icfg lns r px pw (skip - 1) maxRow
+    else if r > maxRow then ""
+    else strAppend (csi (strAppend (showInt r) (strAppend ";" (strAppend (showInt px) "H"))))
+           (strAppend (dirPrevRow lsc icfg pw ln)
+             (strAppend (csi "m") (dirPrevGo lsc icfg lns (r + 1) px pw 0 maxRow)))
+-- One preview row: the name coloured by type/extension (`entryColor`), prefixed with the type glyph when
+-- icons are on (`entryIcon`) — the glyph kept OUT of the byte-based `clip` (1 display column, like
+-- `rowCell`), so the name is sized to `pw - 2` to leave room for `[glyph][space]`.
+dirPrevRow :: String -> String -> Int -> String -> String
+dirPrevRow lsc icfg pw ln =
+  let ty = rdtCode ln in
+  let nm = rdtName ln in
+  if strLen icfg == 0
+  then paint (entryColor lsc ty nm) (clip nm pw)
+  else strAppend (entryIcon icfg ty nm) (strAppend " " (paint (entryColor lsc ty nm) (clip nm (pw - 2))))
 -- Draw the preview for `path` into columns [px..], rows [1..ph]: directory → ls, text → head,
 -- image/video/pdf → a header (pixels are an IO overlay in previewImage/previewPix), archive →
 -- member listing, else a `file` description. `poff` scrolls the TEXTUAL previews (J/K): text reads
 -- from line poff+1 via `tail`, the others append scrollPipe. Image/video/pdf headers ignore poff.
-drawPreview :: String -> Int -> Int -> Int -> String -> Int -> String
-drawPreview path px pw ph mime poff =
+drawPreview :: String -> Int -> Int -> Int -> String -> Int -> Int -> String
+drawPreview path px pw ph mime poff hidden =
   if hasPrefix "inode/directory" mime
-  then drawLines (lines (runCapture (strAppend "ls -Up -- "
-         (strAppend (shQuote path) (strAppend " 2>/dev/null" (scrollPipe poff ph)))))) 1 px pw ph
+  then dirPreview path px pw ph poff hidden
   else if hasPrefix "image/" mime
   then pixHeader "[image] " path mime px pw ph
   else if hasPrefix "video/" mime
@@ -643,10 +824,10 @@ codePreviewCmd path poff ph =
 
 -- The preview segment, or "" when the pane is off — a tail `if` in its own helper (not a consumed
 -- inline heap/"" conditional).
-previewSeg :: String -> Int -> String -> Int -> Int -> Bool -> String -> Int -> String
-previewSeg cwd sel raw cols mx prev mime poff =
+previewSeg :: String -> Int -> String -> Int -> Int -> Bool -> String -> Int -> Int -> String
+previewSeg cwd sel raw cols mx prev mime poff hidden =
   if prev
-  then drawPreview (selPathOf cwd raw sel) (paneX cols) (paneW cols) mx mime poff
+  then drawPreview (selPathOf cwd raw sel) (paneX cols) (paneW cols) mx mime poff hidden
   else ""
 
 ------------------------------------------------------------------- image overlay (terminal graphics)
@@ -830,8 +1011,8 @@ imgClearSeq = strAppend esc (strAppend "_Ga=d,d=A" (strAppend esc "\\"))
 -- `raw` = the frame's ONE captured `ls` output, `cols` = the frame's ONE `stty` width. Everything
 -- derives from them with pure `lines`/parsing — no per-helper subprocess re-spawn (the old hot path
 -- re-ran `ls` ~70× and `stty` ~36× per frame; cf. the per-frame dedup in `loop`).
-render :: String -> Int -> String -> String -> Int -> String -> Int -> String -> Int -> String
-render cwd sel marked prog rows raw cols info poff =
+render :: String -> Int -> String -> String -> Int -> String -> Int -> String -> Int -> Int -> String
+render cwd sel marked prog rows raw cols info poff hidden =
   let total = countLines raw in
   let mx = maxItems rows in
   let start = viewStart sel total mx in
@@ -841,8 +1022,8 @@ render cwd sel marked prog rows raw cols info poff =
   imgClearSeq ++ homeClear
     ++ drawRows (lsColors 0) (iconsOf 0) (windowLines raw start mx) tys start sel marked cwd lw prev
     ++ sepSeg lw mx prev
-    ++ previewSeg cwd sel raw cols mx prev (infoMime info) poff
-    ++ statusLine cwd total sel marked prog rows info
+    ++ previewSeg cwd sel raw cols mx prev (infoMime info) poff hidden
+    ++ statusLine cwd total sel marked prog rows (frameInfo cwd sel)
 
 -- The FORK-FREE fast frame for cursor movement: list + cursor + separator + a MINIMAL status line
 -- (position, marks, cwd), all from the cached `raw` with no subprocess. Per-entry colours (incl.
@@ -860,12 +1041,7 @@ listFrame cwd sel marked prog rows raw cols poff =
   imgClearSeq ++ homeClear
     ++ drawRows (lsColors 0) (iconsOf 0) (windowLines raw start mx) tys start sel marked cwd lw prev
     ++ sepSeg lw mx prev
-    ++ listStatus cwd total sel marked prog rows
--- Minimal status: (pos/total) [marks] cwd — the segments that need no `selInfo` fork.
-listStatus :: String -> Int -> Int -> String -> String -> Int -> String
-listStatus cwd total sel marked prog rows =
-  strAppend (csi (strAppend (showInt (rows - 1)) ";1H"))
-    (paint "7" (strAppend (posStr sel total) (strAppend (markSeg marked prog) (strAppend " " cwd))))
+    ++ statusLine cwd total sel marked prog rows (frameInfo cwd sel)
 
 -- Type chars (d/l/b/x/f) for JUST the VISIBLE window [start, start+mx), classified in ONE shell
 -- Per-entry type chars (d/l/b/x/f) for the WHOLE directory, computed ONCE per directory change (in
@@ -947,15 +1123,23 @@ rdtPartGo xs ds fs = case xs of
 -- the ordered (filtered + dirs-first) `<code><name>` lines of `cwd`
 rdtEntries :: String -> Int -> String -> List String
 rdtEntries rdt hidden fq = rdtPartGo (rdtKeep hidden fq (lines rdt)) Nil Nil
-rdtRawName :: String -> String
-rdtRawName ln = if rdtIsDir ln then strAppend (rdtName ln) "/" else rdtName ln
 rdtCode :: String -> String
 rdtCode ln = substr 0 1 ln
--- `raw` (names, dirs with trailing `/`) and the cwd-stamped `types`, from the SAME re-derived entries.
-rdtRaw :: String -> Int -> String -> String
-rdtRaw rdt hidden fq = unlines (map rdtRawName (rdtEntries rdt hidden fq))
-rdtTypes :: String -> String -> Int -> String -> String
-rdtTypes cwd rdt hidden fq = strAppend cwd (strAppend "\n" (unlines (map rdtCode (rdtEntries rdt hidden fq))))
+-- The frame listing + types are now built NATIVELY in O(n) by `readDirListing` (NOT an in-language
+-- `unlines` rebuild, which is O(n²) and froze /nix/store). It returns "<raw>\n\n<codes>" — the dirs-first,
+-- filtered `raw` names (trailing `/` on dirs) and the matching type codes — which these split in O(n) with
+-- two substrings (the blank line is the only "\n\n", as no entry is empty). Leak-free by construction.
+listSep :: String -> Int
+listSep s = dblNl s 0 (strLen s)
+dblNl :: String -> Int -> Int -> Int
+dblNl s i n =
+  if i + 1 >= n then n
+  else if (charAt i s == 10) && (charAt (i + 1) s == 10) then i
+  else dblNl s (i + 1) n
+listRaw :: String -> String
+listRaw s = substr 0 (listSep s) s
+listCodes :: String -> String
+listCodes s = let i = listSep s in if i >= strLen s then "" else substr (i + 2) (strLen s - i - 2) s
 
 -- The divider, or "" when the pane is off — a tail `if` in its own helper (not a consumed heap/"").
 sepSeg :: Int -> Int -> Bool -> String
@@ -1294,13 +1478,15 @@ reloopDispatch cwd sel marked prog hidden rows sortf =
                        else reloopShell cwd sel marked prog hidden rows
 reloopNative :: String -> Int -> String -> String -> Int -> Int -> IO ()
 reloopNative cwd sel marked prog hidden rows = do
-  rdt <- readDirTyped cwd
-  writeFile (typesFile 0) (rdtTypes cwd rdt hidden (trim (readFile (filterFile 0))))
-  loop cwd sel marked prog hidden rows (termCols 0) (rdtRaw rdt hidden (trim (readFile (filterFile 0))))
+  lst <- readDirListing cwd hidden (trim (readFile (filterFile 0)))
+  writeFile (typesFile 0) (strAppend cwd (strAppend "\n" (listCodes lst)))
+  loop cwd sel marked prog hidden rows (termCols 0) (listRaw lst)
 reloopShell :: String -> Int -> String -> String -> Int -> Int -> IO ()
 reloopShell cwd sel marked prog hidden rows = do
   classifyNow cwd hidden
   loop cwd sel marked prog hidden rows (termCols 0) (runCapture (lsCmd cwd hidden))
+-- Entry metadata (perms/size/mtime for the status bar) is NOT stat'd here — that would scan the whole
+-- directory (fatal in /nix/store). It is captured per-SETTLE for just the visible window (`settleMeta`).
 -- Like `reloop`, but after listing `cwd` it places the cursor on the entry named `child`
 -- (slash-stripped exact match) instead of the top — so going UP to a parent re-selects the
 -- directory you just came out of (`ranger`/`yazi`-style), not entry 0. Falls back to 0 if the
@@ -1315,9 +1501,9 @@ reloopIntoDispatch cwd child marked prog hidden rows sortf =
                        else reloopIntoShell cwd child marked prog hidden rows
 reloopIntoNative :: String -> String -> String -> String -> Int -> Int -> IO ()
 reloopIntoNative cwd child marked prog hidden rows = do
-  rdt <- readDirTyped cwd
-  writeFile (typesFile 0) (rdtTypes cwd rdt hidden (trim (readFile (filterFile 0))))
-  loopSel cwd child marked prog hidden rows (rdtRaw rdt hidden (trim (readFile (filterFile 0))))
+  lst <- readDirListing cwd hidden (trim (readFile (filterFile 0)))
+  writeFile (typesFile 0) (strAppend cwd (strAppend "\n" (listCodes lst)))
+  loopSel cwd child marked prog hidden rows (listRaw lst)
 reloopIntoShell :: String -> String -> String -> String -> Int -> Int -> IO ()
 reloopIntoShell cwd child marked prog hidden rows = do
   classifyNow cwd hidden
@@ -1376,16 +1562,18 @@ settleKey cwd sel marked prog hidden rows cols raw poff key =
 -- Settled (on a tty): the full frame + pixel overlay + background prefetch, then the resize poll.
 settledFull :: String -> Int -> String -> String -> Int -> Int -> Int -> String -> Int -> IO ()
 settledFull cwd sel marked prog hidden rows cols raw poff = do
+  settleMeta cwd sel rows raw
   info <- selInfo (selPathOf cwd raw sel)
-  putStr (render cwd sel marked prog rows raw cols info poff)
+  putStr (render cwd sel marked prog rows raw cols info poff hidden)
   previewImage cwd sel rows raw cols (infoMime info)
   prefetch cwd sel rows raw cols
   pollKey cwd sel marked prog hidden rows cols raw poff
 -- Off a tty (headless gates): the full frame (no image — gated off), then the blocking read so EOF quits.
 fullWait :: String -> Int -> String -> String -> Int -> Int -> Int -> String -> Int -> IO ()
 fullWait cwd sel marked prog hidden rows cols raw poff = do
+  settleMeta cwd sel rows raw
   info <- selInfo (selPathOf cwd raw sel)
-  putStr (render cwd sel marked prog rows raw cols info poff)
+  putStr (render cwd sel marked prog rows raw cols info poff hidden)
   prefetch cwd sel rows raw cols
   stepAt cwd sel marked prog hidden rows cols raw poff (readMainKey 0)
 -- TTY poll: a real key dispatches at once; a timeout tick ("") falls to the resize check. Recurses
@@ -1398,10 +1586,13 @@ dispatchWait cwd sel marked prog hidden rows cols raw poff key =
   if strLen key == 0
   then resizeCheck cwd sel marked prog hidden rows cols raw poff
   else stepAt cwd sel marked prog hidden rows cols raw poff key
--- Terminal size unchanged → keep polling; changed → re-list + redraw at the new size (same as `e`).
+-- Woken with no key: a SIGWINCH (terminal resize) sets the `resized` flag — then re-list + redraw at the
+-- new size (same as `e`); otherwise it was a plain poll timeout, so keep waiting. Because the resize
+-- RAISES SIGWINCH (which interrupts the key-wait immediately, see axion-rt `install_winch`), the redraw is
+-- INSTANT — and idle ticks cost nothing (just the cheap flag read, no `stty` probe unless actually resized).
 resizeCheck :: String -> Int -> String -> String -> Int -> Int -> Int -> String -> Int -> IO ()
 resizeCheck cwd sel marked prog hidden rows cols raw poff =
-  if (termCols 0 == cols) && (termRows 0 == rows)
+  if resized 0 == 0
   then pollKey cwd sel marked prog hidden rows cols raw poff
   else reloop cwd (clampSel sel (countLines raw)) marked prog hidden (termRows 0)
 
@@ -1439,7 +1630,7 @@ step cwd sel marked prog hidden rows cols raw key = case key of
   "G" -> loop cwd (clampSel (countLines raw - 1) (countLines raw)) marked prog hidden rows cols raw
   "l" -> open cwd sel marked prog hidden rows raw
   "h" -> reloopInto (parentDir cwd) (baseName cwd) marked prog hidden rows
-  "." -> reloop cwd 0 marked prog (if hidden == 1 then 0 else 1) rows
+  "." -> reloopInto cwd (stripSlash (lineAt raw sel)) marked prog (if hidden == 1 then 0 else 1) rows
   "e" -> reloop cwd (clampSel sel (countLines raw)) marked prog hidden (termRows 0)
   "~" -> goHome marked prog hidden rows
   "-" -> goPrev marked prog hidden rows
@@ -1447,9 +1638,9 @@ step cwd sel marked prog hidden rows cols raw key = case key of
   "/" -> doSearch cwd sel marked prog hidden rows cols raw
   "n" -> doMkdir cwd sel marked prog hidden rows
   "f" -> doMkfile cwd sel marked prog hidden rows
-  "r" -> doRename cwd sel marked prog hidden rows
-  "x" -> doAttr cwd sel marked prog hidden rows
-  "X" -> doChmod cwd sel marked prog hidden rows
+  "r" -> doRename cwd sel marked prog hidden rows raw
+  "x" -> doAttr cwd sel marked prog hidden rows raw
+  "X" -> doChmod cwd sel marked prog hidden rows raw
   "y" -> loop cwd sel (markToggle marked (selPathOf cwd raw sel)) "cp -R" hidden rows cols raw
   "m" -> loop cwd sel (markToggle marked (selPathOf cwd raw sel)) "mv" hidden rows cols raw
   "s" -> loop cwd sel (markToggle marked (selPathOf cwd raw sel)) "ln -s" hidden rows cols raw
@@ -1480,7 +1671,7 @@ step cwd sel marked prog hidden rows cols raw key = case key of
   "\x1b" -> quit cwd
   ""  -> quit cwd
   other -> if digitStart key
-           then countLoop cwd sel marked prog hidden rows cols raw key
+           then doTabGo cwd sel marked prog hidden rows key
            else favOrIgnore cwd sel marked prog hidden rows key
 
 -- `i` disk usage: flash the recursive size of the SELECTED entry (one du fork), then redraw. On the
@@ -1490,38 +1681,10 @@ doDiskUsage cwd sel marked prog hidden rows cols raw = do
   flashInfo (duOf (selPathOf cwd raw sel)) rows
   loop cwd sel marked prog hidden rows cols raw
 
--- Numeric count prefix (vim-style): a digit 1-9 starts a count shown on the bottom row, more digits
--- extend it, then a motion (j/k down/up, g/G to line N) repeats/addresses by it. Enter applies the
--- count as a favourite (so a bare favourite still works as `<n>` Enter); Esc cancels; any other key
--- is dispatched normally with the count discarded. Mirrors the cmdLine / search accumulator loops.
+-- A bare digit 1-9 selects a tab (yazi-style): `digitStart` gates the top-level dispatch onto `doTabGo`,
+-- which jumps straight to that tab when it is open (and is a harmless no-op otherwise).
 digitStart :: String -> Bool
 digitStart k = (strLen k > 0) && (charAt 0 k >= '1') && (charAt 0 k <= '9')
-isDigitK :: String -> Bool
-isDigitK k = (strLen k > 0) && (charAt 0 k >= '0') && (charAt 0 k <= '9')
-countPrompt :: Int -> String -> String
-countPrompt rows acc =
-  strAppend (csi (strAppend (showInt rows) ";1H"))
-    (strAppend (csi "?25h") (strAppend (csi "K") (strAppend "count: " acc)))
-countLoop :: String -> Int -> String -> String -> Int -> Int -> Int -> String -> String -> IO ()
-countLoop cwd sel marked prog hidden rows cols raw acc = do
-  putStr (countPrompt rows acc)
-  countKey cwd sel marked prog hidden rows cols raw acc (readKey 0)
-countKey :: String -> Int -> String -> String -> Int -> Int -> Int -> String -> String -> String -> IO ()
-countKey cwd sel marked prog hidden rows cols raw acc k =
-  if isDigitK k then countLoop cwd sel marked prog hidden rows cols raw (strAppend acc k)
-  else applyCount cwd sel marked prog hidden rows cols raw k (fromMaybe 1 (readInt acc))
--- `k` = the terminating key, `n` = the parsed count (acc already consumed by readInt — only `n` and
--- the key reach here, so no owned-String is used twice). Every branch is a tail call.
-applyCount :: String -> Int -> String -> String -> Int -> Int -> Int -> String -> String -> Int -> IO ()
-applyCount cwd sel marked prog hidden rows cols raw k n =
-  let total = countLines raw in
-  if k == "" then loop cwd sel marked prog hidden rows cols raw
-  else if k == "j" then loop cwd (wrapSel (sel + n) total) marked prog hidden rows cols raw
-  else if k == "k" then loop cwd (wrapSel (sel - n) total) marked prog hidden rows cols raw
-  else if (k == "G") || (k == "g") then loop cwd (clampSel (n - 1) total) marked prog hidden rows cols raw
-  else if (charAt 0 k == '\r') || (charAt 0 k == '\n') then favOrIgnore cwd sel marked prog hidden rows (showInt n)
-  else if charAt 0 k == 27 then loop cwd sel marked prog hidden rows cols raw
-  else step cwd sel marked prog hidden rows cols raw k
 
 -- Preview scroll (J/K): half a pane per press. Clamped at the top (0); NO bottom clamp — scrolling
 -- past EOF shows blank rows and K scrolls back, which avoids a per-scroll `wc -l` fork on huge files.
@@ -1543,7 +1706,7 @@ open :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
 open cwd sel marked prog hidden rows raw =
   if isDirPath (selPathOf cwd raw sel)
   then reloop (selPathOf cwd raw sel) 0 marked prog hidden rows
-  else openFile cwd sel marked prog hidden rows
+  else openFile cwd sel marked prog hidden rows raw
 
 isDirPath :: String -> Bool
 isDirPath p = runStatus (strAppend "test -d " (shQuote p)) == 0
@@ -1562,22 +1725,25 @@ isTextPath :: String -> Bool
 isTextPath p = runStatus (strAppend "file -bL --mime-type " (strAppend (shQuote p)
                  " 2>/dev/null | grep -q '^text/\\|^inode/x-empty'")) == 0
 
-openFile :: String -> Int -> String -> String -> Int -> Int -> IO ()
-openFile cwd sel marked prog hidden rows =
-  if isTextPath (selPath cwd hidden sel)
-  then openText cwd sel marked prog hidden rows
-  else openOther cwd sel marked prog hidden rows
+-- The selected path/type come from the DISPLAYED `raw` (`selPathOf`), NOT a fresh `ls` — the display
+-- (readDirTyped: dirs-first, case-insensitive) and `ls` can order differently, so re-listing here would
+-- open the WRONG entry (the row under the cursor ≠ the same index in an `ls` listing).
+openFile :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+openFile cwd sel marked prog hidden rows raw =
+  if isTextPath (selPathOf cwd raw sel)
+  then openText cwd sel marked prog hidden rows raw
+  else openOther cwd sel marked prog hidden rows raw
 
-openText :: String -> Int -> String -> String -> Int -> Int -> IO ()
-openText cwd sel marked prog hidden rows = do
+openText :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+openText cwd sel marked prog hidden rows raw = do
   putStr resetSeq
-  runStatus (strAppend (editorCmd 0) (strAppend " " (shQuote (selPath cwd hidden sel))))
+  runStatus (strAppend (editorCmd 0) (strAppend " " (shQuote (selPathOf cwd raw sel))))
   putStr setupSeq
   reloop cwd sel marked prog hidden rows
 
-openOther :: String -> Int -> String -> String -> Int -> Int -> IO ()
-openOther cwd sel marked prog hidden rows = do
-  runStatus (strAppend "nohup xdg-open " (strAppend (shQuote (selPath cwd hidden sel)) " >/dev/null 2>&1 &"))
+openOther :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+openOther cwd sel marked prog hidden rows raw = do
+  runStatus (strAppend "nohup xdg-open " (strAppend (shQuote (selPathOf cwd raw sel)) " >/dev/null 2>&1 &"))
   reloop cwd sel marked prog hidden rows
 
 -- $VISUAL or $EDITOR or vi.
@@ -1634,19 +1800,19 @@ doMkfile cwd sel marked prog hidden rows = do
   okOr code "mkfile failed" rows
   reloop cwd (clampSel sel (nEntries cwd hidden + 1)) marked prog hidden rows
 
-doRename :: String -> Int -> String -> String -> Int -> Int -> IO ()
-doRename cwd sel marked prog hidden rows = do
-  nm <- cmdLine (strAppend "rename " (strAppend (selName cwd hidden sel) " to: ")) rows cwd
-  code <- renameMaybe cwd hidden sel nm rows
+doRename :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+doRename cwd sel marked prog hidden rows raw = do
+  nm <- cmdLine (strAppend "rename " (strAppend (stripSlash (lineAt raw sel)) " to: ")) rows cwd
+  code <- renameMaybe cwd raw sel nm rows
   okOr code "rename failed" rows
   reloop cwd sel marked prog hidden rows
 -- Rename unless the name is empty or the target exists and the user declines to overwrite it.
 -- Returns the renameFile exit (0 when skipped/declined) for doRename's failure flash.
-renameMaybe :: String -> Int -> Int -> String -> Int -> Int
-renameMaybe cwd hidden sel nm rows =
+renameMaybe :: String -> String -> Int -> String -> Int -> Int
+renameMaybe cwd raw sel nm rows =
   if strLen nm == 0 then 0
-  else if okToClobber (cwd </> nm) (selPath cwd hidden sel) rows
-       then renameFile (selPath cwd hidden sel) (cwd </> nm)
+  else if okToClobber (cwd </> nm) (selPathOf cwd raw sel) rows
+       then renameFile (selPathOf cwd raw sel) (cwd </> nm)
        else 0
 
 doGoDir :: String -> Int -> String -> String -> Int -> Int -> IO ()
@@ -1693,7 +1859,7 @@ searchLoop :: String -> Int -> String -> String -> Int -> Int -> Int -> String -
 searchLoop cwd sel marked prog hidden rows cols raw osel acc =
   let msel = searchSel (lines raw) acc osel in do
     info <- selInfo (selPathOf cwd raw msel)
-    putStr (render cwd msel marked prog rows raw cols info 0)
+    putStr (render cwd msel marked prog rows raw cols info 0 hidden)
     putStr (searchPrompt rows acc)
     searchKey cwd sel marked prog hidden rows cols raw osel acc (readKey 0)
 -- First entry containing `acc`, or `dflt` when the query is empty / nothing matches.
@@ -1842,6 +2008,26 @@ doTabNext cwd sel marked prog hidden rows = tabSwitch cwd sel marked prog hidden
 doTabPrev :: String -> Int -> String -> String -> Int -> Int -> IO ()
 doTabPrev cwd sel marked prog hidden rows = tabSwitch cwd sel marked prog hidden rows "-1"
 
+-- A bare digit `N` jumps straight to tab N (1-based, yazi-style) when that tab is open. tabGoAbsCmd sets
+-- the active index to N-1 and PRINTS that tab's cwd; it prints NOTHING when the tab doesn't exist (or the
+-- index is out of range), so doTabGo treats an empty result as a no-op redraw.
+tabGoAbsCmd :: Int -> String
+tabGoAbsCmd idx =
+  "f=" ++ shQuote (tabsFile 0) ++ "; i=" ++ shQuote (tabiFile 0)
+  ++ "; [ -s \"$f\" ] || exit 0; n=$(grep -c '' \"$f\"); ni=" ++ showInt idx
+  ++ "; [ \"$ni\" -lt 0 ] && exit 0; [ \"$ni\" -ge \"$n\" ] && exit 0; "
+  ++ "printf '%s' \"$ni\" > \"$i\"; sed -n \"$((ni+1))p\" \"$f\""
+doTabGo :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+doTabGo cwd sel marked prog hidden rows key = do
+  dest <- runCapture (tabGoAbsCmd (fromMaybe 1 (readInt key) - 1))
+  tabGoResult cwd sel marked prog hidden rows (trim dest)
+-- A non-empty dest = the target tab's cwd (switch to it); empty = no such tab (redraw unchanged).
+tabGoResult :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+tabGoResult cwd sel marked prog hidden rows dest =
+  if strLen dest == 0
+  then reloop cwd sel marked prog hidden rows
+  else gotoTo cwd sel marked prog hidden rows (absPath dest)
+
 -- `o` cycles the ls sort flag name → size → mtime → name, re-lists via reloop.
 nextSort :: String -> String
 nextSort s = if s == "-S" then "-t" else if s == "-t" then "" else "-S"
@@ -1898,20 +2084,20 @@ infixGo q s i lim =
   else infixGo q s (i + 1) lim
 
 -- `x` attributes: run stat, show it, wait for a key, redraw.
-doAttr :: String -> Int -> String -> String -> Int -> Int -> IO ()
-doAttr cwd sel marked prog hidden rows = do
+doAttr :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+doAttr cwd sel marked prog hidden rows raw = do
   putStr resetSeq
-  putStr (runCapture (strAppend "stat -- " (shQuote (selPath cwd hidden sel))))
+  putStr (runCapture (strAppend "stat -- " (shQuote (selPathOf cwd raw sel))))
   putStr "\n[any key]"
   readKey 0
   putStr setupSeq
   reloop cwd sel marked prog hidden rows
 
 -- `X` toggle the executable bit.
-doChmod :: String -> Int -> String -> String -> Int -> Int -> IO ()
-doChmod cwd sel marked prog hidden rows = do
-  code <- runStatus (strAppend (if isExecPath (selPath cwd hidden sel) then "chmod -x -- " else "chmod +x -- ")
-              (strAppend (shQuote (selPath cwd hidden sel)) errRedir))
+doChmod :: String -> Int -> String -> String -> Int -> Int -> String -> IO ()
+doChmod cwd sel marked prog hidden rows raw = do
+  code <- runStatus (strAppend (if isExecPath (selPathOf cwd raw sel) then "chmod -x -- " else "chmod +x -- ")
+              (strAppend (shQuote (selPathOf cwd raw sel)) errRedir))
   okOrErr code "chmod failed" rows
   reloop cwd sel marked prog hidden rows
 isExecPath :: String -> Bool

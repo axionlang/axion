@@ -183,6 +183,12 @@ pub struct Mono {
     /// merged into the lowering's `fn_ret_ty` so a call to a heap-returning `where`-local
     /// carries a produce key (Auto-Drop reclaims it; the verifier sees the ownership).
     pub where_ret_tys: HashMap<String, Type>,
+    /// `where`-local PARAM types (mangled `parent$local` → per-position `Some(concrete AST Type)`,
+    /// `None` where the param is non-ground/unrepresentable). A `where`-local has no written
+    /// signature, so the lowering uses THIS (instead of `f.sig`) to decide which of its heap params
+    /// it OWNS and must reclaim — without it a move-consumer `where`-local leaks its heap params and
+    /// the drop-verifier, seeing no ownership, misses it (an AX0911 false-negative).
+    pub where_param_tys: HashMap<String, Vec<Option<Type>>>,
 }
 
 /// Instruction to clone `src` into a monomorphic function `name`, substituting
@@ -727,16 +733,20 @@ impl Infer<'_> {
         // ground result types survive `ty_to_ast` (a polymorphic local returning a bare
         // type var has no concrete drop key anyway — it stays unkeyed, as before).
         let where_tys = std::mem::take(&mut inf.where_ret_tys);
-        mono.where_ret_tys = where_tys
-            .into_iter()
-            .filter_map(|(name, ty)| {
-                let mut resolved = inf.apply(&ty);
-                while let Ty::Fun(_, r) = resolved {
-                    resolved = inf.apply(&r);
-                }
-                ty_to_ast(&resolved).map(|ast| (name, ast))
-            })
-            .collect();
+        for (name, ty) in where_tys {
+            // Walk the inferred arrow once: collect each PARAM type (position-indexed, `None` when
+            // non-ground/unrepresentable → the lowering treats it as not-owned), then the RESULT.
+            let mut resolved = inf.apply(&ty);
+            let mut params: Vec<Option<Type>> = Vec::new();
+            while let Ty::Fun(p, r) = resolved {
+                params.push(ty_to_ast(&inf.apply(&p)));
+                resolved = inf.apply(&r);
+            }
+            if let Some(ast) = ty_to_ast(&resolved) {
+                mono.where_ret_tys.insert(name.clone(), ast);
+            }
+            mono.where_param_tys.insert(name, params);
+        }
         // Phase 4: merge call-site result types into `makecon_tys` (a shared span→Type
         // map, already threaded to every backend). Call spans are disjoint from
         // constructor spans, and the `MakeCon` lowering only looks up constructor spans,
@@ -1750,6 +1760,16 @@ impl<'a> Infer<'a> {
         env.insert("execStatus".into(), ss_to_i()); // argv(\n-joined) + stdin → status
         env.insert("readFile".into(), s_to_s()); // path → contents
         env.insert("readDirTyped".into(), s_to_s()); // path → `<code><name>` lines (native typed listing)
+        env.insert(
+            "readDirListing".into(),
+            mono(Ty::Fun(
+                Box::new(string()),
+                Box::new(Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(Box::new(string()), Box::new(string()))),
+                )),
+            )),
+        ); // cwd, hidden, filter → "<raw>\n\n<codes>" (native dirs-first listing, O(n))
         env.insert("writeFile".into(), ss_to_i()); // path, content → 0/-1
         env.insert("fileExists".into(), s_to_i()); // path → 1/0
         env.insert("makeDir".into(), s_to_i()); // mkdir -p → 0/-1
@@ -1771,6 +1791,10 @@ impl<'a> Infer<'a> {
         env.insert(
             "readKeyTimeout".into(),
             mono(Ty::Fun(Box::new(int()), Box::new(string()))), // timeout ms → one keypress ("" on timeout/EOF)
+        );
+        env.insert(
+            "resized".into(),
+            mono(Ty::Fun(Box::new(int()), Box::new(int()))), // dummy Int → 1 if a SIGWINCH arrived since last call, else 0
         );
         env.insert(
             "chr".into(),
@@ -3112,6 +3136,7 @@ impl<'a> Infer<'a> {
             integer_lits: std::collections::HashSet::new(),
             synth_shows: synth_show_funcs(&show_needs, &decls),
             where_ret_tys: HashMap::new(),
+            where_param_tys: HashMap::new(),
         }
     }
 
@@ -3253,6 +3278,7 @@ impl<'a> Infer<'a> {
             integer_lits: std::collections::HashSet::new(),
             synth_shows: Vec::new(),
             where_ret_tys: HashMap::new(),
+            where_param_tys: HashMap::new(),
         }
     }
 

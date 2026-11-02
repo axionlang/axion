@@ -417,6 +417,7 @@ pub fn is_string_producer(func: &str) -> bool {
             | "axion_read_file"
             | "axion_readdir"
             | "axion_readdir_typed"
+            | "axion_readdir_listing"
             | "axion_read_line"
             | "axion_read_secret"
             | "axion_read_key"
@@ -529,10 +530,12 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "renameFile" => ("axion_rename", 2),
         "readDir" => ("axion_readdir", 1),
         "readDirTyped" => ("axion_readdir_typed", 1),
+        "readDirListing" => ("axion_readdir_listing", 3),
         "readLine" => ("axion_read_line", 1),
         "readSecret" => ("axion_read_secret", 1),
         "readKey" => ("axion_read_key", 1),
         "readKeyTimeout" => ("axion_read_key_timeout", 1),
+        "resized" => ("axion_resized", 1),
         "chr" => ("axion_chr", 1),
         "randHex" => ("axion_rand_hex", 1),
         "exitWith" => ("axion_exit", 1),
@@ -1914,6 +1917,9 @@ impl Lower<'_> {
         if name == "readDirTyped" && args.len() == 1 {
             return self.rtcall("axion_readdir_typed", &args, true, buf);
         }
+        if name == "readDirListing" && args.len() == 3 {
+            return self.rtcall("axion_readdir_listing", &args, true, buf);
+        }
         if name == "readLine" && args.len() == 1 {
             return self.rtcall("axion_read_line", &args, true, buf);
         }
@@ -1925,6 +1931,9 @@ impl Lower<'_> {
         }
         if name == "readKeyTimeout" && args.len() == 1 {
             return self.rtcall("axion_read_key_timeout", &args, true, buf);
+        }
+        if name == "resized" && args.len() == 1 {
+            return self.rtcall("axion_resized", &args, true, buf);
         }
         if name == "chr" && args.len() == 1 {
             return self.rtcall("axion_chr", &args, true, buf);
@@ -2675,6 +2684,9 @@ fn lower_func(
     fn_arity: &HashMap<String, usize>,
     where_captures: &HashMap<String, Vec<String>>,
     integer_pats: &HashSet<Span>,
+    // For a `where`-local (no `f.sig`): its INFERRED param types (position-indexed, `None` when
+    // non-ground), so its owned heap params are reclaimed exactly like a signed top-level function.
+    inferred_param_tys: Option<&[Option<Type>]>,
 ) -> (
     Vec<String>,
     Term,
@@ -2794,7 +2806,48 @@ fn lower_func(
     // re-reading the signature (the last source-reconstruction in the path).
     let mut owned: Vec<String> = Vec::new();
     let mut owned_drop_ty: Vec<(String, Option<String>)> = Vec::new();
-    if let Some(sig) = &f.sig {
+    // The per-param "this is an owned heap param → reclaim it" step, shared by the signed path
+    // (below) and the `where`-local inferred path. `t` is the param's type, `p` its lowered name.
+    let push_owned = |p: &str, t: &Type, owned: &mut Vec<String>,
+                          owned_drop_ty: &mut Vec<(String, Option<String>)>,
+                          mono_seeds: &mut Vec<Type>| {
+        if !heap_ty(t, data_types) {
+            return;
+        }
+        owned.push(p.to_string());
+        let key = if matches!(t, Type::Tuple(_)) {
+            let k = mono_key(t);
+            if k.is_some() {
+                mono_seeds.push(t.clone());
+            }
+            k
+        } else {
+            t.head_con().and_then(|h| {
+                if parametric_data.contains(h) {
+                    mono_key(t).inspect(|_| mono_seeds.push(t.clone()))
+                } else {
+                    Some(h.to_string())
+                }
+            })
+        };
+        owned_drop_ty.push((p.to_string(), key));
+    };
+    if f.sig.is_none() {
+        // A `where`-local (no signature): `inferred_param_tys` is `Some` ONLY when the caller
+        // determined this local is a MOVE-CONSUMER (its result is heap, so it is NOT a borrower the
+        // parent reclaims) — then it owns + reclaims each of its concrete heap params, exactly like a
+        // signed top-level `%1` function. Borrowers (non-heap result) get `None` here → owned stays
+        // empty → the parent still deep-drops (unchanged). Lifted capture params precede the local's
+        // own params, so align `inferred_param_tys` to the tail.
+        if let Some(ptys) = inferred_param_tys {
+            let offset = params.len().saturating_sub(ptys.len());
+            for (i, pt) in ptys.iter().enumerate() {
+                if let Some(t) = pt {
+                    push_owned(&params[offset + i], t, &mut owned, &mut owned_drop_ty, &mut mono_seeds);
+                }
+            }
+        }
+    } else if let Some(sig) = &f.sig {
         let mults = sig.param_mults();
         let ptypes = sig.param_types();
         for (i, p) in params.iter().enumerate() {
@@ -4520,6 +4573,7 @@ pub fn lower_with(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
     where_ret_tys: &HashMap<String, Type>,
+    where_param_tys: &HashMap<String, Vec<Option<Type>>>,
     _fuse: bool, // kept for API compatibility, auto-fusion always runs now
 ) -> Lowered {
     // native session lowering runs on the ORIGINAL AST (before eta-expansion,
@@ -4888,6 +4942,7 @@ pub fn lower_with(
             &fn_arity,
             &where_captures,
             integer_pats,
+            None, // a signed top-level function → owned params come from `f.sig`
         );
         mono_seeds.extend(seeds);
         out.push(CoreFn {
@@ -4908,6 +4963,19 @@ pub fn lower_with(
                 .get(&locals[&w.name])
                 .map(|v| v.iter().cloned().collect())
                 .unwrap_or_default();
+            // A `where`-local reclaims its own heap params (Auto-Drop like a signed `%1` fn): pass its
+            // inferred param types so `push_owned` owns each genuinely-heap one (`List`/`data`/tuple;
+            // `String`/`Int`/`Float` are per-param non-owning, exactly as for a signed top-level fn).
+            // This is symmetric with top-level ownership and sound by the same argument: owning the
+            // container makes a destructure MOVE the element out, so even returning an interior element
+            // (`case ys of Cons a _ -> a` → `drop r; drop ys; ret a`) is leak-free, not a borrow; any
+            // genuinely unsound shape is caught by the drop-verifier (AX0910) or the partial-consumer
+            // floor (AX0912). (Was previously — wrongly — gated on the RESULT type being `heap_ty`,
+            // which misclassified a `String`-returning consumer like `ulBal` as a borrower → it leaked
+            // its `List` param while the verifier reported balanced: the leak false-negative.)
+            let wmangled = locals[&w.name].clone();
+            let wptys: Option<&[Option<Type>]> =
+                where_param_tys.get(&wmangled).map(|v| v.as_slice());
             let (wp, wb, wo, wot, wseeds) = lower_func(
                 w,
                 warity,
@@ -4929,6 +4997,7 @@ pub fn lower_with(
                 &fn_arity,
                 &where_captures,
                 integer_pats,
+                wptys,
             );
             mono_seeds.extend(wseeds);
             // A lifted `where`-local receives its captured enclosing variables as
@@ -5121,10 +5190,30 @@ pub fn lower_with(
         })
         .collect();
     for f in &out {
-        if where_names.contains(&f.name) && !returns_param_interior_alias(f, &recinfo) {
-            param_mults
-                .entry(f.name.clone())
-                .or_insert_with(|| vec![ast::Mult::Many; f.params.len()]);
+        if where_names.contains(&f.name) {
+            // A `where`-local now owns its heap params exactly like a signed top-level `%1` fn
+            // (`lower_func` computed `owned_params` from the inferred param types), so its
+            // call-sites must MOVE those params (`Once`), not borrow+drop them — otherwise a
+            // self-recursive call would be seen as borrowing its own owned arg and both the
+            // callee's drop and the caller's post-call drop fire → double-free. Params it only
+            // borrows stay `Many` (the fixpoint then lets the parent reclaim them after the
+            // call). Returning an interior element is NOT a borrow here: owning the container
+            // makes destructuring MOVE the element out (`drop r; drop ys; ret a`, leak-free —
+            // symmetric with the top-level case), and any genuinely unsound shape is caught by
+            // the drop-verifier (AX0910) or the partial-consumer floor (AX0912), never shipped.
+            let owned: HashSet<&String> = f.owned_params.iter().collect();
+            param_mults.entry(f.name.clone()).or_insert_with(|| {
+                f.params
+                    .iter()
+                    .map(|p| {
+                        if owned.contains(p) {
+                            ast::Mult::One
+                        } else {
+                            ast::Mult::Many
+                        }
+                    })
+                    .collect()
+            });
         }
     }
     // Uniformize MIXED conditional-owned temps (`let x = if c then <fresh heap> else s`) by
@@ -9487,106 +9576,6 @@ fn result_may_be_heap(t: &Term, recinfo: &RecordInfo) -> bool {
             result_may_be_heap(body, recinfo)
         }
     }
-}
-
-/// `true` if some tail return of `f` yields an INTERIOR HEAP ALIAS of a parameter — a
-/// `Field`-of-a-heap-field read rooted at a param (`grab w = inner w`), possibly through
-/// pure renames. This is the ONLY heap-result shape that is unsafe to borrow-analyze: the
-/// caller reclaiming such a result would double-free the parameter it aliases (the regions
-/// `borrow_return_summary` handles that class at call sites). A whole-parameter passthrough
-/// (`ret t`) or a fresh producer (`ret t+m`) is NOT an alias, so an accumulator-style
-/// `where`-local registers for borrow analysis and reclaims its threaded state like its
-/// leak-free top-level twin. Deliberately conservative: a missed alias is backstopped by the
-/// `null_borrow_result_keys` regions pass + the drop-balance verifier.
-fn returns_param_interior_alias(f: &CoreFn, recinfo: &RecordInfo) -> bool {
-    let params: HashSet<&str> = f.params.iter().map(String::as_str).collect();
-    fn atom_is_alias(a: &Atom, params: &HashSet<&str>, aliases: &HashSet<String>) -> bool {
-        matches!(a, Atom::Var(v) if params.contains(v.as_str()) || aliases.contains(v))
-    }
-    // The interior-alias binders a `case` arm introduces: matching `Con(con, subs)` against
-    // a param/alias scrutinee extracts each heap field `subs[i]` as an interior pointer INTO
-    // the scrutinee — so a `Cons b rest -> ret b` (return a case-extracted heap element) is
-    // just as much an interior alias as `grab w = inner w` (a `Field` read). Seed those
-    // binders so the tail-return check sees them.
-    fn arm_aliases(
-        scrut: &Atom,
-        pat: &CPat,
-        params: &HashSet<&str>,
-        aliases: &HashSet<String>,
-        recinfo: &RecordInfo,
-        out: &mut HashSet<String>,
-    ) {
-        if !atom_is_alias(scrut, params, aliases) {
-            return;
-        }
-        if let CPat::Con(con, subs) = pat {
-            for (i, sp) in subs.iter().enumerate() {
-                if let CPat::Var(v) = sp {
-                    if recinfo.field_transfers_heap(con, i) {
-                        out.insert(v.clone());
-                    }
-                }
-            }
-        }
-    }
-    // `true` if some tail return of `t` is a param interior alias; `aliases` carries the
-    // interior-alias vars in scope (cloned into branches — these functions are small).
-    fn walk(
-        t: &Term,
-        params: &HashSet<&str>,
-        mut aliases: HashSet<String>,
-        recinfo: &RecordInfo,
-    ) -> bool {
-        match t {
-            Term::Let(x, rhs, _, body) => {
-                match rhs {
-                    Rhs::Op(Op::Field { name, rec })
-                        if recinfo.named_field_is_heap(name)
-                            && atom_is_alias(rec, params, &aliases) =>
-                    {
-                        aliases.insert(x.clone());
-                    }
-                    Rhs::Op(Op::Atom(Atom::Var(v))) if aliases.contains(v) => {
-                        aliases.insert(x.clone());
-                    }
-                    Rhs::If(_, th, el)
-                        if walk(th, params, aliases.clone(), recinfo)
-                            || walk(el, params, aliases.clone(), recinfo) =>
-                    {
-                        aliases.insert(x.clone());
-                    }
-                    Rhs::Case(scrut, arms)
-                        if arms.iter().any(|(pat, b)| {
-                            let mut a = aliases.clone();
-                            arm_aliases(scrut, pat, params, &aliases, recinfo, &mut a);
-                            walk(b, params, a, recinfo)
-                        }) =>
-                    {
-                        aliases.insert(x.clone());
-                    }
-                    _ => {}
-                }
-                walk(body, params, aliases, recinfo)
-            }
-            Term::Drop(_, _, _, _, body) => walk(body, params, aliases, recinfo),
-            Term::Ret(rhs, _) => match rhs {
-                Rhs::Op(Op::Field { name, rec }) => {
-                    recinfo.named_field_is_heap(name) && atom_is_alias(rec, params, &aliases)
-                }
-                Rhs::Op(Op::Atom(Atom::Var(v))) => aliases.contains(v),
-                Rhs::Op(_) => false,
-                Rhs::If(_, th, el) => {
-                    walk(th, params, aliases.clone(), recinfo) || walk(el, params, aliases, recinfo)
-                }
-                Rhs::Case(scrut, arms) => arms.iter().any(|(pat, b)| {
-                    let mut a = aliases.clone();
-                    arm_aliases(scrut, pat, params, &aliases, recinfo, &mut a);
-                    walk(b, params, a, recinfo)
-                }),
-            },
-        }
-    }
-    walk(&f.body, &params, HashSet::new(), recinfo)
 }
 
 /// `true` if any variable in `set` appears as an operand of `op`. Exhaustive

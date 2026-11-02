@@ -94,6 +94,10 @@ pub struct Analysis {
     /// merged into the lowering's `fn_ret_ty` so a call to a heap-returning `where`-local
     /// carries a produce key (Auto-Drop reclaims it; the drop-verifier sees the ownership).
     pub where_ret_tys: HashMap<String, Type>,
+    /// `where`-local PARAM types (mangled `parent$local` → per-position `Some(concrete AST Type)`),
+    /// so the lowering can reclaim a move-consumer `where`-local's owned heap params (it has no
+    /// signature). Closes the AX0911 false-negative where such a local leaked silently.
+    pub where_param_tys: HashMap<String, Vec<Option<Type>>>,
 }
 
 /// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.
@@ -134,6 +138,7 @@ pub fn is_effectful(name: &str) -> bool {
             | "readSecret"
             | "readKey"
             | "readKeyTimeout"
+            | "resized"
             | "exitWith"
             | "putStr"
             | "putStrLn"
@@ -1357,10 +1362,12 @@ pub fn builtins() -> HashSet<String> {
         "renameFile",
         "readDir",
         "readDirTyped",
+        "readDirListing",
         "readLine",
         "readSecret",
         "readKey",
         "readKeyTimeout",
+        "resized",
         "chr",
         "randHex",
         "exitWith",

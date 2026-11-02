@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Behavioral test for the Axión `pass` rewrite (examples/pass/pass.axi), Phase B:
+# Behavioral test for the Axión `axpass` rewrite (examples/axpass/axpass.axi), Phase B:
 # `ls` and `show`. Stands up a THROWAWAY GnuPG keyring + password store (never
 # touches the user's real ~/.gnupg or ~/.password-store), encrypts a few entries to a
 # passphraseless test key, then checks the tool's output on every available backend.
 # Skips cleanly if gpg/find are missing (e.g. a minimal CI image).
 #
-#   ./scripts/pass-test.sh
+#   ./scripts/axpass-test.sh
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
-PASS="examples/pass/pass.axi"
+PASS="examples/axpass/axpass.axi"
 
 # By default this test SKIPS cleanly on a host without gpg/find (e.g. a minimal image). In CI we
 # WANT it to actually run — a silent skip there is false confidence (exactly how the behavioral
@@ -20,7 +20,7 @@ skip_or_fail() { # message
     echo "FATAL (PASS_TEST_REQUIRE): $1" >&2
     exit 1
   fi
-  echo "$1 — skipping pass-test"
+  echo "$1 — skipping axpass-test"
   exit 0
 }
 
@@ -106,7 +106,25 @@ cat > "$WORK/bin/wl-paste" <<'EOF'
 #!/bin/sh
 cat "$CLIPCUR" 2>/dev/null
 EOF
-printf '#!/bin/sh\nhead -n1\n' > "$WORK/bin/fzf"
+# A mock fzf. With NO --query it picks the first candidate (the bare `show` picker). With --query <q>
+# it substring-filters the candidate list and emulates fzf's `-1`/`-0`: exactly one match → that match;
+# none → empty + exit 1. This keeps the fuzzy-keyword tests hermetic (no real fzf needed in CI).
+cat > "$WORK/bin/fzf" <<'EOF'
+#!/bin/sh
+q=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --query) q=$2; shift 2 ;;
+    --query=*) q=${1#--query=}; shift ;;
+    -q) q=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$q" ]; then head -n1; exit 0; fi
+m=$(grep -iF -- "$q")
+[ -z "$m" ] && exit 1
+printf '%s\n' "$m" | head -n1
+EOF
 chmod +x "$WORK/bin/wl-copy" "$WORK/bin/wl-paste" "$WORK/bin/fzf"
 
 clip_n=0
@@ -131,6 +149,10 @@ clip_run show email/personal;    wait_writes 2; assert_log "show default: login 
 clip_run email/personal;         wait_writes 2; assert_log "bare name: login (stripped) then password"     $'me@example.com\nhunter2'
 clip_run show -c email/personal;                assert_log "show -c: password only (raw line 1)"           'hunter2'
 clip_run show;                   wait_writes 2; assert_log "show fzf-pick: login (stripped) then password"  $'me@example.com\nhunter2'
+# FUZZY KEYWORD: a bare `axpass <keyword>` that is NOT an exact entry resolves through fzf. `personal`
+# matches the single entry `email/personal`, which fzf (`-1`) auto-selects → the login-swap default runs
+# on it. (The mock fzf honours --query; the entry list is filtered to the one match.)
+clip_run personal;               wait_writes 2; assert_log "bare keyword (fuzzy, 1 match): login then password" $'me@example.com\nhunter2'
 
 # `-q` renders the selected line as a QR code. With qrencode present the ANSI QR art is non-empty
 # on stdout; without it the command fails GRACEFULLY. The secret never touches argv either way.
@@ -144,14 +166,22 @@ else
   else echo "✗ show -q wifi: expected a graceful 'qrencode not found' error"; fail=1; fi
 fi
 
-# `show <missing>` is an ERROR: the message goes to stderr and the exit code is non-zero
-# (stdout stays empty), so it can't use the stdout-agreement harness above.
+# `show <keyword>` (the collision-safe form): a non-exact name is a fuzzy keyword, so this is also how you
+# search a keyword that clashes with a command word — `axpass show <word>`. `personal` is not an exact
+# entry (email/personal is), so it resolves via fzf to the single match and prints it.
+out="$(PATH="$WORK/bin:$PATH" "$AXIONC" run --backend interp "$PASS" -- show -s personal 2>/dev/null)"
+if [ "$out" = $'hunter2\nuser: me@example.com' ]; then echo "✓ show -s <keyword>: fuzzy-resolved to the single match"
+else echo "✗ show -s <keyword>: got $(printf '%q' "$out")"; fail=1; fi
+
+# `show <missing>` is an ERROR: the message goes to stderr and the exit code is non-zero (stdout stays
+# empty), so it can't use the stdout-agreement harness above. With fzf present (the mock) a keyword with
+# NO match exits empty (`-0`) → the same "not in the password store" death as an exact miss.
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
-err="$("$AXIONC" run --backend interp "$PASS" -- show nope 2>&1 >/dev/null)"; code=$?
+err="$(PATH="$WORK/bin:$PATH" "$AXIONC" run --backend interp "$PASS" -- show zzznomatch 2>&1 >/dev/null)"; code=$?
 if [ "$code" -eq 0 ] || ! printf '%s' "$err" | grep -q "is not in the password store"; then
-  echo "✗ not found: expected a stderr error + non-zero exit (got code=$code err=$(printf '%q' "$err"))"; fail=1
+  echo "✗ fuzzy no-match: expected a stderr error + non-zero exit (got code=$code err=$(printf '%q' "$err"))"; fail=1
 else
-  echo "✓ not found: error on stderr, exit $code"
+  echo "✓ fuzzy no-match: error on stderr, exit $code"
 fi
 
 if [ "$fail" -eq 0 ]; then

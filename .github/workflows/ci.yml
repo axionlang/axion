@@ -136,7 +136,7 @@ jobs:
       # Real-workload gate: the `pass` clone's commands over a NESTED store (fzf picker path) under
       # ASan — the exact shape two shipped double-frees lived in, which the fixture corpus missed.
       - name: pass(1) clone under ASan
-        run: AXION_CLANG=clang ./scripts/pass-asan.sh
+        run: AXION_CLANG=clang ./scripts/axpass-asan.sh
       # §11: the M:N session scheduler runs on a thread pool → race-freedom must be
       # proven too. The concurrent session fixtures run under ThreadSanitizer.
       - name: Session scheduler under ThreadSanitizer
@@ -158,7 +158,7 @@ jobs:
       - name: Install clang, gnupg, qrencode
         run: sudo apt-get update && sudo apt-get install -y clang gnupg qrencode
       - name: pass(1) clone behavioral test (gpg keyring, all backends)
-        run: PASS_TEST_REQUIRE=1 ./scripts/pass-test.sh
+        run: PASS_TEST_REQUIRE=1 ./scripts/axpass-test.sh
       # The `fff` file-manager rewrite (examples/axfm.axi) driven headlessly — a scripted key stream
       # at a throwaway tree (HOME sandboxed), asserting navigation frames + mkdir/mkfile/rename/
       # trash/copy/bulk-rename effects on every backend. Keeps the flagship + readKey/chr honest.

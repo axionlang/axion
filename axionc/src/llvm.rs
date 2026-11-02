@@ -51,12 +51,14 @@ declare i64 @axion_unlink(i64)
 declare i64 @axion_rename(i64, i64)
 declare i64 @axion_readdir(i64)
 declare i64 @axion_readdir_typed(i64)
+declare i64 @axion_readdir_listing(i64, i64, i64)
 declare i64 @axion_exec_capture(i64, i64)
 declare i64 @axion_exec_status(i64, i64)
 declare i64 @axion_read_line(i64)
 declare i64 @axion_read_secret(i64)
 declare i64 @axion_read_key(i64)
 declare i64 @axion_read_key_timeout(i64)
+declare i64 @axion_resized(i64)
 declare i64 @axion_chr(i64)
 declare i64 @axion_rand_hex(i64)
 declare i64 @axion_exit(i64)
@@ -193,6 +195,7 @@ fn main_returns_bool(module: &ast::Module, entry: &str) -> bool {
 /// Emits the LLVM IR module (text) from the Core (`--emit llvm`). The
 /// stream-fusion pass runs inside `core::lower`; `build_and_run` passes its
 /// `--fuse` flag through, so the emitted IR matches what the JIT runs.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_ir(
     module: &ast::Module,
     inplace: &HashSet<Span>,
@@ -201,6 +204,7 @@ pub fn emit_ir(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
     where_ret_tys: &HashMap<String, ast::Type>,
+    where_param_tys: &HashMap<String, Vec<Option<ast::Type>>>,
 ) -> Result<String, String> {
     let fns = core::lower_with(
         module,
@@ -210,6 +214,7 @@ pub fn emit_ir(
         integer_pats,
         consume_exempt,
         where_ret_tys,
+        where_param_tys,
         fuse,
     )
     .fns;
@@ -316,6 +321,7 @@ pub fn build_and_run(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
     where_ret_tys: &HashMap<String, ast::Type>,
+    where_param_tys: &HashMap<String, Vec<Option<ast::Type>>>,
     out: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let fns = core::lower_with(
@@ -326,6 +332,7 @@ pub fn build_and_run(
         integer_pats,
         consume_exempt,
         where_ret_tys,
+        where_param_tys,
         fuse,
     )
     .fns;
@@ -342,6 +349,7 @@ pub fn build_and_run(
         integer_pats,
         consume_exempt,
         where_ret_tys,
+        where_param_tys,
     )?;
 
     let dir = std::env::temp_dir();

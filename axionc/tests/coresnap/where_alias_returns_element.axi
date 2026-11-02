@@ -5,6 +5,9 @@
 
 
       drop _t5
+      drop rest : List$Box
+      drop ys
+      drop ys
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
@@ -15,7 +18,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret b  ; Δ{}
+      ret b  ; Δ{b} · moves{b}
       ret con Box 0  ; Δ{} · makes Box
       ret n  ; Δ{}
     Box n ->

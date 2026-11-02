@@ -289,7 +289,7 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "substr" | "setArray" => 3,
+        "substr" | "setArray" | "readDirListing" => 3,
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
         | "getArray" | "arrayDot" => 2,
@@ -818,6 +818,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "readDir",
             args: Vec::new(),
         }),
+        "readDirListing" => Ok(Value::Builtin {
+            name: "readDirListing",
+            args: Vec::new(),
+        }),
         "readDirTyped" => Ok(Value::Builtin {
             name: "readDirTyped",
             args: Vec::new(),
@@ -848,6 +852,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "readKeyTimeout" => Ok(Value::Builtin {
             name: "readKeyTimeout",
+            args: Vec::new(),
+        }),
+        "resized" => Ok(Value::Builtin {
+            name: "resized",
             args: Vec::new(),
         }),
         "chr" => Ok(Value::Builtin {
@@ -1637,7 +1645,13 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
                         (e.file_name().to_string_lossy().into_owned(), code)
                     })
                     .collect();
-                ents.sort_by(|a, b| a.0.cmp(&b.0));
+                // Case-INSENSITIVE name order (ASCII fold) + raw tiebreak — matches
+                // `axion_readdir_typed` in axion-rt EXACTLY (oracle agreement) and yazi's default.
+                ents.sort_by(|a, b| {
+                    a.0.to_ascii_lowercase()
+                        .cmp(&b.0.to_ascii_lowercase())
+                        .then_with(|| a.0.cmp(&b.0))
+                });
                 ents.iter()
                     .map(|(n, c)| format!("{c}{n}"))
                     .collect::<Vec<_>>()
@@ -1645,6 +1659,61 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
             }
             Err(_) => String::new(),
         })),
+        // Mirrors axion_readdir_listing EXACTLY (oracle agreement): sorted case-insensitively, dirs-first
+        // stable partition, `hidden`/`fq` filter, then "<raw>\n\n<codes>" (raw names with `/` on dirs,
+        // then the matching type codes, same order). "\n\n" is the section separator (empty/error → it).
+        ("readDirListing", [Value::Str(cwd), Value::Int(hidden), Value::Str(fq)]) => {
+            Ok(Value::Str(match std::fs::read_dir(cwd) {
+                Ok(rd) => {
+                    let mut ents: Vec<(String, char)> = rd
+                        .filter_map(|e| e.ok())
+                        .map(|e| {
+                            use std::os::unix::fs::PermissionsExt;
+                            let code = match e.file_type() {
+                                Ok(ft) if ft.is_symlink() => {
+                                    if std::fs::metadata(e.path()).is_ok() {
+                                        'l'
+                                    } else {
+                                        'b'
+                                    }
+                                }
+                                Ok(ft) if ft.is_dir() => 'd',
+                                _ => match e.metadata() {
+                                    Ok(m) if m.permissions().mode() & 0o111 != 0 => 'x',
+                                    _ => 'f',
+                                },
+                            };
+                            (e.file_name().to_string_lossy().into_owned(), code)
+                        })
+                        .collect();
+                    ents.sort_by(|a, b| {
+                        a.0.to_ascii_lowercase()
+                            .cmp(&b.0.to_ascii_lowercase())
+                            .then_with(|| a.0.cmp(&b.0))
+                    });
+                    let fql = fq.to_ascii_lowercase();
+                    let kept = |n: &str| -> bool {
+                        if *hidden != 1 && n.starts_with('.') {
+                            return false;
+                        }
+                        fql.is_empty() || n.to_ascii_lowercase().contains(&fql)
+                    };
+                    let mut raw: Vec<String> = Vec::new();
+                    let mut codes: Vec<String> = Vec::new();
+                    for want_dir in [true, false] {
+                        for (n, c) in &ents {
+                            if ((*c == 'd') != want_dir) || !kept(n) {
+                                continue;
+                            }
+                            raw.push(if *c == 'd' { format!("{n}/") } else { n.clone() });
+                            codes.push(c.to_string());
+                        }
+                    }
+                    format!("{}\n\n{}", raw.join("\n"), codes.join("\n"))
+                }
+                Err(_) => "\n\n".to_string(),
+            }))
+        }
         ("randHex", [Value::Int(n)]) => {
             use std::io::Read;
             if *n <= 0 {
@@ -1667,6 +1736,10 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         ("readSecret", [Value::Int(_)]) => Ok(Value::Str(read_stdin_line(true))),
         ("readKey", [Value::Int(_)]) => Ok(Value::Str(read_key())),
         ("readKeyTimeout", [Value::Int(ms)]) => Ok(Value::Str(read_key_timeout(*ms))),
+        // `resized _`: the SIGWINCH flag. The interpreter (dev backend) has no signal handler — it
+        // always reports "no resize" (0); the SIGWINCH-driven instant resize is a native-runtime
+        // feature. Resize-poll is never exercised headlessly, so the backends still agree in tests.
+        ("resized", [Value::Int(_)]) => Ok(Value::Int(0)),
         // `chr n`: the byte n as a 1-char String (inverse of charAt). Intended for 0-127 (ASCII +
         // control, incl. ESC=27 for ANSI), where this matches the native raw-byte alloc exactly.
         ("chr", [Value::Int(n)]) => Ok(Value::Str(((*n as u8) as char).to_string())),

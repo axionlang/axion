@@ -250,11 +250,17 @@ clipLogin plaintext name
 -- fzf pick and the borrowed argv name both flow into `showFound` without a conditional alias/fresh
 -- return (which would desync the interprocedural alias summary → a UAF). `showAll` = the `-s` mode
 -- (print everything); otherwise clip line `ln` (`0` = the login-swap default).
+-- An EXACT entry name shows it directly (instant, no fzf — the fast path). A non-exact name is treated as a
+-- fuzzy KEYWORD: `fzfPickQuery` filters the store by it (auto-selecting a lone match), and the fresh pick
+-- flows into `showFound`. With no name at all, the full `fzfPick` picker. Each guard is its OWN call site to
+-- `showFound`, passing EITHER the borrowed argv `name` OR a fresh picker result — never a single conditional
+-- alias/fresh return (which would desync the interprocedural alias summary → a UAF).
 showEntry :: Bool -> Int -> String -> IO ()
 showEntry showAll ln name
-  | strLen name > 0   = showFound showAll ln name
-  | hasCmd "fzf" == 0 = showFound showAll ln fzfPick
-  | otherwise         = die "Usage: axpass show [-c[n]|-s] <name>"
+  | fileExists (entryPath name) == 1     = showFound showAll ln name
+  | strLen name > 0 && hasCmd "fzf" == 0 = showFound showAll ln (fzfPickQuery name)
+  | hasCmd "fzf" == 0                    = showFound showAll ln fzfPick
+  | otherwise                            = die "Usage: axpass show [-c[n]|-s] <name|keyword>  (install fzf to search)"
 
 showFound :: Bool -> Int -> String -> IO ()
 showFound showAll ln name
@@ -282,12 +288,14 @@ qrFound ln name
       die (strAppend "Error: " (strAppend name " is not in the password store."))
   | otherwise                        = qrShow ln (execCapture (decryptArgv (entryPath name)) "") name
 
--- `show -q` with no <name> falls back to the fzf picker, exactly like the clip/print modes.
+-- `show -q`: exact name → QR directly; a non-exact name is a fuzzy keyword (`fzfPickQuery`); no name → the
+-- full picker. Same borrowed-vs-fresh guard split as `showEntry` (distinct call sites, no conditional return).
 qrEntry :: Int -> String -> IO ()
 qrEntry ln name
-  | strLen name > 0   = qrFound ln name
-  | hasCmd "fzf" == 0 = qrFound ln fzfPick
-  | otherwise         = die "Usage: axpass show -q[n] <name>"
+  | fileExists (entryPath name) == 1     = qrFound ln name
+  | strLen name > 0 && hasCmd "fzf" == 0 = qrFound ln (fzfPickQuery name)
+  | hasCmd "fzf" == 0                    = qrFound ln fzfPick
+  | otherwise                            = die "Usage: axpass show -q[n] <name|keyword>  (install fzf to search)"
 
 -- Flag dispatch for `show`: `-q[n]` → QR of line n (default 1); `-s` → print all; `-c[n]` → clip
 -- line n raw (default 1 = password); none → the login-swap default (ln 0: copy the stripped login,
@@ -383,6 +391,16 @@ collectNode dir rel name =
 -- is ASan+LSan clean.
 fzfPick :: String
 fzfPick = chomp (runCapture (strAppend "printf '%s' " (strAppend (shQuote (allEntries storeDir "")) " | fzf --reverse --prompt='pass> '")))
+
+-- Like `fzfPick`, but SEED the filter with `kw` (`--query`) and make the common cases non-interactive.
+-- `--exact` makes `kw` a SUBSTRING match, not fzf's default subsequence fuzz: `acess` matches `acesso.gov.pt`
+-- and `centro-acesso.com` (both CONTAIN "acess") but NOT `particulares.santander.pt` (where a-c-e-s-s only
+-- appear scattered). `-1` (--select-1) auto-accepts when exactly ONE entry matches — the "if there is only
+-- one option, select it automatically" behaviour — and `-0` (--exit-0) exits empty when NONE match (→ the
+-- caller's `showFound`/`qrFound` then dies "not in the store"). Several matches → fzf opens pre-filtered on
+-- `kw`. `kw` is a user string, so it is `shQuote`d (like the entry list) before reaching the shell.
+fzfPickQuery :: String -> String
+fzfPickQuery kw = chomp (runCapture (strAppend "printf '%s' " (strAppend (shQuote (allEntries storeDir "")) (strAppend " | fzf --exact --reverse --prompt='pass> ' -1 -0 --query " (shQuote kw)))))
 
 -- `pass` / `pass ls [subdir]`: print the header then the tree (of the whole store, or of
 -- <subdir> under it). Mirrors upstream's "Password Store" root label.
@@ -809,6 +827,8 @@ usageText =
   "Usage:\n" ++
   "  axpass init <gpg-id>            initialize the store for a GPG key id\n" ++
   "  axpass [ls] [subdir]            list entries as a tree\n" ++
+  "  axpass <keyword>                fuzzy-find entries matching keyword (one match: auto-show); needs fzf\n" ++
+  "  axpass show <keyword>           same fuzzy search for a keyword that clashes with a command (e.g. `show show`)\n" ++
   "  axpass show [-c[n]|-q[n]|-s] [name]  copy login then password-on-paste by default; -c[n] copies line n (1=pw); -q[n] QR; -s prints all\n" ++
   "  axpass find <term>              list entry names matching term\n" ++
   "  axpass grep <text>              search decrypted contents\n" ++

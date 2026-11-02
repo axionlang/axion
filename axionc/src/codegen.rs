@@ -180,12 +180,14 @@ impl Cg {
             ("axion_rename", 2, true),
             ("axion_readdir", 1, true),
             ("axion_readdir_typed", 1, true),
+            ("axion_readdir_listing", 3, true),
             ("axion_exec_capture", 2, true),
             ("axion_exec_status", 2, true),
             ("axion_read_line", 1, true),
             ("axion_read_secret", 1, true),
             ("axion_read_key", 1, true),
             ("axion_read_key_timeout", 1, true),
+            ("axion_resized", 1, true),
             ("axion_chr", 1, true),
             ("axion_rand_hex", 1, true),
             ("axion_exit", 1, true),
@@ -1272,6 +1274,7 @@ pub fn run(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
     where_ret_tys: &HashMap<String, ast::Type>,
+    where_param_tys: &HashMap<String, Vec<Option<ast::Type>>>,
 ) -> Result<Option<i64>, String> {
     let fns = core::lower_with(
         module,
@@ -1281,6 +1284,7 @@ pub fn run(
         integer_pats,
         consume_exempt,
         where_ret_tys,
+        where_param_tys,
         fuse,
     )
     .fns;
@@ -1370,6 +1374,7 @@ pub fn run(
 /// Emits the Cranelift IR (text) of the Core functions, without JIT
 /// (`--emit clif`). The stream-fusion pass runs inside `core::lower`; the
 /// `--fuse` flag is threaded through so the dump matches the JIT's code.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_ir(
     module: &ast::Module,
     inplace: &HashSet<Span>,
@@ -1378,6 +1383,7 @@ pub fn emit_ir(
     integer_pats: &HashSet<Span>,
     consume_exempt: &HashSet<String>,
     where_ret_tys: &HashMap<String, ast::Type>,
+    where_param_tys: &HashMap<String, Vec<Option<ast::Type>>>,
 ) -> Result<String, String> {
     let fns = core::lower_with(
         module,
@@ -1387,6 +1393,7 @@ pub fn emit_ir(
         integer_pats,
         consume_exempt,
         where_ret_tys,
+        where_param_tys,
         fuse,
     )
     .fns;

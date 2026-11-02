@@ -182,6 +182,28 @@ and well-mitigated this list is.
   (roadmap §6, [[axion-partial-consumer-uaf]]) applied to `String` *params*; the analogous **destructor
   field-drop** case (the `Integer`/`String` *field* extract-and-escape above) still needs the per-field
   move-out and remains a characterized leak.
+- **Heap-consuming `where`-local functions — NOW RECLAIMED; a leak-check FALSE-NEGATIVE now CLOSED**
+  (`core.rs` `lower_func` + the `where`-local `param_mults` registration): a lambda-lifted `where`-local
+  has no written type signature, and both Auto-Drop's owned-param computation and the `%1` linearity check
+  were gated on `f.sig`. So a `where`-local that *consumed* a heap parameter (destructured a `List
+  String`/`data`, rebuilt a result) got **no** owned params → **no drops inserted → it leaked every heap
+  value it consumed**, while the drop-balance verifier — tracking only owned params — saw an empty `Δ`,
+  reported "balanced", and **certified the leak as leak-free** (a genuine false-negative in clause (4), not
+  a characterized conservative leak; LSan proved the leak the verifier missed, e.g. a balanced-`unlines`
+  helper). Closed by treating a `where`-local like a signed top-level `%1` function: its inferred param
+  types are exported from inference (`infer.rs` `where_param_tys`, mirroring `where_ret_tys`) and
+  `lower_func` owns each genuinely-heap one (`push_owned`, same `heap_ty`/`mono_key` path as the signed
+  branch), with the call-site borrow analysis registering those owned params as `Once` so a self-recursive
+  call **moves** (not borrow+drops) its own arg — the coordination without which the callee's drop and the
+  caller's post-call drop would double-free. Owning is sound by the same argument as top-level: destructuring
+  an owned container **moves** the element out, so even returning a case-extracted element
+  (`case ys of Cons a _ -> a` → `drop r; drop ys; ret a`) is leak-free, not a borrow; the drop-verifier
+  (AX0910) and the AX0912 floor remain the backstops for any genuinely unsound shape. The verifier now
+  tracks a non-empty `Δ` for these locals, so a *missing* drop is caught (AX0911) — the false-negative is
+  gone. Regression: `axionc/tests/fixtures/where_local_unlines.axi` (LSan-gated, must be leak-free, not
+  merely verify-clean); `where_alias_returns_element.axi`, which previously leaked conservatively, now
+  reclaims. (The earlier result-type `heap_ty` heuristic that misclassified a `String`-returning consumer
+  like `ulBal` as a borrower was the specific bug; the fix replaces it with per-param ownership.)
 - **Concurrency T1/T3/T5 value-level** (separation logic / Iris-Actris): the deadlock/fidelity/cancellation
   results are proven at the **graph/type** level (`AxionSession`, `AxionFidelity`); the value-level
   subject-reduction and memory-orphan claims are **deferred** (stated in `docs/phase-3-calculus.md` §6,

@@ -1834,18 +1834,31 @@ pub unsafe extern "C" fn axion_readdir(path: i64) -> i64 {
 /// so a symlink-to-a-directory is `l`, not `d`.
 #[no_mangle]
 pub unsafe extern "C" fn axion_readdir_typed(path: i64) -> i64 {
-    use std::os::unix::fs::PermissionsExt;
-    let rd = match std::fs::read_dir(os(path)) {
-        Ok(rd) => rd,
-        Err(_) => return alloc_str(b""),
+    let ents = match readdir_sorted(path) {
+        Some(e) => e,
+        None => return alloc_str(b""),
     };
-    // Collect (code, name) then sort by NAME (bytes). Sorting here (native, fast) lets the caller do
-    // only a cheap dirs-first partition — no in-language merge sort over linear strings.
+    let mut buf: Vec<u8> = Vec::new();
+    for (code, name) in &ents {
+        if !buf.is_empty() {
+            buf.push(b'\n');
+        }
+        buf.push(*code);
+        buf.extend_from_slice(name);
+    }
+    alloc_str(&buf)
+}
+
+/// readdir + per-entry TYPE classify (`d`ir `l`ive-symlink `b`roken-symlink e`x`ec other-`f`), sorted by
+/// name CASE-INSENSITIVELY (ASCII fold; raw-byte tiebreak) — the shared core of `readDirTyped`/
+/// `readDirListing`. `.`/`..` are excluded by `read_dir`. `None` if the dir can't be opened.
+unsafe fn readdir_sorted(path: i64) -> Option<Vec<(u8, Vec<u8>)>> {
+    use std::os::unix::fs::PermissionsExt;
+    let rd = std::fs::read_dir(os(path)).ok()?;
     let mut ents: Vec<(u8, Vec<u8>)> = Vec::new();
     for ent in rd.flatten() {
         let code: u8 = match ent.file_type() {
             Ok(ft) if ft.is_symlink() => {
-                // follow once: resolvable → live `l`, else broken `b`
                 if std::fs::metadata(ent.path()).is_ok() {
                     b'l'
                 } else {
@@ -1860,15 +1873,63 @@ pub unsafe extern "C" fn axion_readdir_typed(path: i64) -> i64 {
         };
         ents.push((code, ent.file_name().as_bytes().to_vec()));
     }
-    ents.sort_by(|a, b| a.1.cmp(&b.1));
-    let mut buf: Vec<u8> = Vec::new();
-    for (code, name) in &ents {
-        if !buf.is_empty() {
-            buf.push(b'\n');
-        }
-        buf.push(*code);
-        buf.extend_from_slice(name);
+    ents.sort_by(|a, b| {
+        a.1.to_ascii_lowercase()
+            .cmp(&b.1.to_ascii_lowercase())
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    Some(ents)
+}
+
+/// Keep rule for a directory entry, matching axfm's `rdtVisible`: `hidden != 1` drops dotfiles; a
+/// non-empty `fq` keeps only names CONTAINING it (case-insensitive substring).
+fn dir_kept(name: &[u8], hidden: i64, fq_lower: &[u8]) -> bool {
+    if hidden != 1 && name.first() == Some(&b'.') {
+        return false;
     }
+    if fq_lower.is_empty() {
+        return true;
+    }
+    let nl = name.to_ascii_lowercase();
+    nl.windows(fq_lower.len()).any(|w| w == fq_lower)
+}
+
+/// `readDirListing cwd hidden fq` — the WHOLE directory listing axfm's frame needs, built NATIVELY in
+/// O(n) (no in-language `unlines` rebuild, which is O(n²) and would freeze on /nix/store). Returns two
+/// newline-joined blocks separated by a BLANK line (`\n\n`, which cannot occur inside either block since
+/// no entry is empty): the `raw` names (dirs-first, filtered, trailing `/` on dirs — axfm's `rdtRaw`),
+/// then the matching 1-char type codes (same order — axfm's `rdtTypes` body). Leak-free by construction:
+/// ONE result allocation, reclaimed by the standard `str_drop`; no intermediate heap lists.
+#[no_mangle]
+pub unsafe extern "C" fn axion_readdir_listing(cwd: i64, hidden: i64, fq: i64) -> i64 {
+    let ents = match readdir_sorted(cwd) {
+        Some(e) => e,
+        None => return alloc_str(b"\n\n"), // empty raw, blank-line separator, empty codes
+    };
+    let fq_lower = str_bytes(fq).to_ascii_lowercase();
+    let mut raw: Vec<u8> = Vec::new();
+    let mut codes: Vec<u8> = Vec::new();
+    // Two stable passes over the sorted list: directories (`d`) first, then the rest — preserving the
+    // case-insensitive name order within each group (= axfm's `rdtPartGo`).
+    for want_dir in [true, false] {
+        for (code, name) in &ents {
+            if (*code == b'd') != want_dir || !dir_kept(name, hidden, &fq_lower) {
+                continue;
+            }
+            if !raw.is_empty() {
+                raw.push(b'\n');
+                codes.push(b'\n');
+            }
+            raw.extend_from_slice(name);
+            if *code == b'd' {
+                raw.push(b'/');
+            }
+            codes.push(*code);
+        }
+    }
+    let mut buf = raw;
+    buf.extend_from_slice(b"\n\n");
+    buf.extend_from_slice(&codes);
     alloc_str(&buf)
 }
 
@@ -1936,8 +1997,71 @@ pub unsafe extern "C" fn axion_read_secret(_unused: i64) -> i64 {
 /// EOF). On a tty, `ICANON|ECHO` are cleared (with `VMIN=1/VTIME=0`) for a blocking single-byte read
 /// and restored after; on a pipe (`tcgetattr` fails) it degrades to a plain 1-byte read, so a
 /// scripted key stream (`printf 'jkq' | …`) stays testable. Powers the TUI event loop (`readKey`).
+/// Set by the `SIGWINCH` handler; drained by `axion_resized`. A terminal resize raises `SIGWINCH`;
+/// with the handler installed WITHOUT `SA_RESTART`, it interrupts the blocking key-read (`EINTR` →
+/// `read` returns `""`), so a TUI's idle key-wait wakes IMMEDIATELY on resize instead of after its
+/// poll timeout — and `axion_resized` lets it distinguish a resize from a plain timeout (so it only
+/// probes the new size when actually resized, not every idle tick).
+static WINCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// Self-pipe write/read fds (-1 until `install_winch`). The handler may run on ANY thread (a resized
+// signal is delivered to an arbitrary thread, and axion-rt may have scheduler threads), so it can't
+// be relied on to interrupt the specific thread blocked in `poll`. Instead the handler WRITES a byte
+// to this pipe, and the key-wait `poll`s the read end alongside stdin — so the waiting thread wakes
+// no matter which thread took the signal (the classic self-pipe trick).
+static WINCH_WFD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+static WINCH_RFD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+extern "C" fn winch_handler(_sig: libc::c_int) {
+    // async-signal-safe: a relaxed atomic store + a single nonblocking 1-byte `write`.
+    WINCH.store(true, std::sync::atomic::Ordering::Relaxed);
+    let w = WINCH_WFD.load(std::sync::atomic::Ordering::Relaxed);
+    if w >= 0 {
+        let byte = [0u8; 1];
+        unsafe {
+            libc::write(w, byte.as_ptr() as *const libc::c_void, 1);
+        }
+    }
+}
+/// Install the `SIGWINCH` handler + its self-pipe ONCE. `sa_flags = 0` (no `SA_RESTART`); the wakeup
+/// does NOT depend on interrupting a specific thread — it comes through the pipe.
+unsafe fn install_winch() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let mut fds = [0i32; 2];
+        if libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) == 0 {
+            WINCH_RFD.store(fds[0], std::sync::atomic::Ordering::Relaxed);
+            WINCH_WFD.store(fds[1], std::sync::atomic::Ordering::Relaxed);
+        }
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = winch_handler as *const () as usize;
+        sa.sa_flags = 0;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+    });
+}
+
+/// `resized _` — 1 if a `SIGWINCH` (terminal resize) has arrived since the last call, else 0 (and
+/// clears the flag). A TUI calls it after its key-wait returns `""`: 1 → re-list at the new size,
+/// 0 → a plain timeout, keep waiting (no size probe). The flag is set by `winch_handler`.
+#[no_mangle]
+pub unsafe extern "C" fn axion_resized(_unused: i64) -> i64 {
+    if WINCH.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Was the last syscall interrupted by a signal (`EINTR`)? Used so a `SIGWINCH` (terminal resize)
+/// interrupts the key-read instead of being swallowed — `std`'s buffered `Stdin` hides `EINTR`, so the
+/// key reads go through raw `libc::read` on fd 0 (and thus keep NO userspace buffer: every byte comes
+/// straight from the kernel tty buffer, so blocking `readKey` and timed `readKeyTimeout` never disagree
+/// about a buffered byte — the hazard the old shared-`Stdin` path had to reason about).
+unsafe fn eintr() -> bool {
+    std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+}
+
 unsafe fn read_key_impl() -> i64 {
-    use std::io::Read;
+    install_winch();
     let mut saved: libc::termios = std::mem::zeroed();
     let is_tty = libc::tcgetattr(0, &mut saved) == 0;
     if is_tty {
@@ -1945,15 +2069,19 @@ unsafe fn read_key_impl() -> i64 {
         raw.c_lflag &= !(libc::ICANON | libc::ECHO);
         raw.c_cc[libc::VMIN] = 1;
         raw.c_cc[libc::VTIME] = 0;
-        libc::tcsetattr(0, libc::TCSAFLUSH, &raw);
+        libc::tcsetattr(0, libc::TCSANOW, &raw);
     }
+    // Blocking read (VMIN=1): a SIGWINCH interrupt (EINTR) is not a key — just retry the read.
     let mut b = [0u8; 1];
-    let n = {
-        let mut h = std::io::stdin().lock();
-        h.read(&mut b).unwrap_or(0)
+    let n = loop {
+        let r = libc::read(0, b.as_mut_ptr() as *mut libc::c_void, 1);
+        if r < 0 && eintr() {
+            continue;
+        }
+        break r;
     };
     if is_tty {
-        libc::tcsetattr(0, libc::TCSAFLUSH, &saved);
+        libc::tcsetattr(0, libc::TCSANOW, &saved);
     }
     if n == 1 {
         alloc_str(&b)
@@ -1970,44 +2098,68 @@ pub unsafe extern "C" fn axion_read_key(_unused: i64) -> i64 {
 }
 
 /// Like `read_key_impl`, but wait at most `ms` milliseconds for a byte, else return `""`. A negative
-/// `ms` blocks indefinitely (defers to `read_key_impl`). The timeout is `VMIN=0/VTIME=<deciseconds>`
-/// so the `read` syscall itself times out — NOT `poll`: both this and `read_key_impl` read through
-/// the SAME buffered `std::io::stdin`, and `poll` sees only the kernel fd, so a burst (e.g. an arrow
-/// `ESC [ A` all arriving together, or a scripted `xy`) read by a prior `readKey` lands in the
-/// userspace buffer where `poll` can't see it — the buffered byte must still be returned here. With
-/// `VMIN=0` a buffered byte returns at once (no syscall) and the timer only fires when the kernel is
-/// genuinely empty (a lone `Esc`). `VTIME` is deciseconds (100 ms granularity); `ms` rounds UP so a
-/// nonzero timeout never truncates to 0. On a pipe (`tcgetattr` fails) it degrades to a plain read
-/// (bytes already available / EOF), matching `read_key_impl`. `""` on timeout is deliberately
-/// indistinguishable from EOF — both mean "no key available".
+/// `ms` blocks indefinitely (defers to `read_key_impl`). The timeout is a termios `VMIN=0/VTIME=<ds>`
+/// timer on a RAW `libc::read` (not `poll`): a byte already in the kernel tty buffer (a burst — an arrow
+/// `ESC [ A`, a paste) returns at once, and the timer fires only when the kernel is genuinely empty (a
+/// lone `Esc`). No userspace buffer is kept (unlike `std::io::stdin`), so a burst is never hidden from a
+/// later read. `VTIME` is deciseconds (100 ms granularity); `ms` rounds UP so a nonzero timeout never
+/// truncates to 0. On a pipe (`tcgetattr` fails) it degrades to a plain read (bytes available / EOF).
+/// `""` on timeout/EOF/`EINTR` is deliberately "no key available" (the resize case checks `resized`).
 unsafe fn read_key_timeout_impl(ms: i64) -> i64 {
-    use std::io::Read;
+    install_winch();
     if ms < 0 {
         return read_key_impl();
     }
-    // VTIME is a u8 (deciseconds); round ms up so e.g. 25 ms → 1 ds, and clamp to [0, 255].
-    let decis = if ms == 0 { 0 } else { ((ms + 99) / 100).clamp(1, 255) } as libc::cc_t;
     let mut saved: libc::termios = std::mem::zeroed();
     let is_tty = libc::tcgetattr(0, &mut saved) == 0;
     if is_tty {
         let mut raw = saved;
         raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-        raw.c_cc[libc::VMIN] = 0;
-        raw.c_cc[libc::VTIME] = decis;
-        libc::tcsetattr(0, libc::TCSAFLUSH, &raw);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        libc::tcsetattr(0, libc::TCSANOW, &raw);
+    }
+    // Do the TIMING with `poll` (not a VTIME terminal timer): the kernel RESTARTS an interrupted terminal
+    // read even without SA_RESTART, but `poll` reliably fails with EINTR when a signal arrives — so a
+    // SIGWINCH (resize) returns "" at once and a TUI's idle key-wait wakes IMMEDIATELY (then checks
+    // `resized`), not after the timeout. `poll` sees the kernel fd directly, which is correct now that no
+    // userspace buffer is kept. On POLLIN, read the one ready byte; timeout/EINTR/EOF → "".
+    let to = if ms > i64::from(i32::MAX) { i32::MAX } else { ms as i32 };
+    let wfd = WINCH_RFD.load(std::sync::atomic::Ordering::Relaxed);
+    let mut pfds = [
+        libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wfd,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    // Poll stdin AND the SIGWINCH self-pipe (if open). A resize writes the pipe → `poll` wakes here
+    // (then the caller checks `resized`); a key makes stdin readable; neither → the timeout fires.
+    let n = if wfd >= 0 { 2 } else { 1 };
+    libc::poll(pfds.as_mut_ptr(), n, to);
+    // Drain any resize bytes so the next wait doesn't fire on a stale one (the `resized` flag carries it).
+    if wfd >= 0 && (pfds[1].revents & libc::POLLIN) != 0 {
+        let mut drain = [0u8; 64];
+        while libc::read(wfd, drain.as_mut_ptr() as *mut libc::c_void, drain.len()) > 0 {}
     }
     let mut b = [0u8; 1];
-    let n = {
-        let mut h = std::io::stdin().lock();
-        h.read(&mut b).unwrap_or(0)
+    let got = if (pfds[0].revents & libc::POLLIN) != 0 {
+        libc::read(0, b.as_mut_ptr() as *mut libc::c_void, 1)
+    } else {
+        0 // timeout, resize wake, EOF, or error — "no key"
     };
     if is_tty {
-        libc::tcsetattr(0, libc::TCSAFLUSH, &saved);
+        libc::tcsetattr(0, libc::TCSANOW, &saved);
     }
-    if n == 1 {
+    if got == 1 {
         alloc_str(&b)
     } else {
-        alloc_str(b"") // timeout or EOF
+        alloc_str(b"") // timeout, EOF, or resize wake
     }
 }
 
@@ -2324,10 +2476,12 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_rand_hex", axion_rand_hex as *const u8),
         ("axion_readdir", axion_readdir as *const u8),
         ("axion_readdir_typed", axion_readdir_typed as *const u8),
+        ("axion_readdir_listing", axion_readdir_listing as *const u8),
         ("axion_read_file", axion_read_file as *const u8),
         ("axion_read_line", axion_read_line as *const u8),
         ("axion_read_secret", axion_read_secret as *const u8),
         ("axion_read_key", axion_read_key as *const u8),
+        ("axion_resized", axion_resized as *const u8),
         ("axion_chr", axion_chr as *const u8),
         ("axion_rename", axion_rename as *const u8),
         ("axion_run", axion_run as *const u8),
