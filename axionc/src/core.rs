@@ -1572,8 +1572,9 @@ struct Lower<'a> {
     lam_meta: &'a LamMeta,
     /// spans of the `RecordUpd`s eligible for in-place mutation (Linear Elision, §2)
     inplace: &'a HashSet<Span>,
-    /// names of the FFI imports (§18) — called via `Op::Ffi`
-    foreigns: &'a HashSet<String>,
+    /// FFI imports (§18): Axión name → C `dlsym` symbol. Called via `Op::Ffi`, which
+    /// carries the C SYMBOL (so an aliased `sdlInit = "SDL_Init"` resolves `SDL_Init`).
+    foreigns: &'a HashMap<String, String>,
     /// Phase A′: constructor → `data`-type name of its value (None for unboxed
     /// enum constructors — immediate tags, never dropped). Attached to `Make*`.
     con_ty: &'a HashMap<String, Option<String>>,
@@ -1648,7 +1649,7 @@ impl Lower<'_> {
                 // captured arguments are applied, then bind the result.
                 let key = self.locals.get(n).map_or(n.as_str(), String::as_str);
                 if self.globals.contains(n)
-                    && !self.foreigns.contains(n)
+                    && !self.foreigns.contains_key(n)
                     && !self.local_names.contains(n)
                     && self.fn_arity.get(key) == Some(&0)
                 {
@@ -2218,7 +2219,7 @@ impl Lower<'_> {
         // `call_named` would then call the wrong (global) function and apply the real
         // local's extra args to its result (a silent miscompile). A bare local is never
         // over-applied against the global; it stays a single `call_named` (closure call).
-        if !self.foreigns.contains(name) && !self.local_names.contains(name) {
+        if !self.foreigns.contains_key(name) && !self.local_names.contains(name) {
             let key = self.locals.get(name).map_or(name.as_str(), String::as_str);
             if let Some(&arity) = self.fn_arity.get(key) {
                 if vals.len() > arity {
@@ -2267,10 +2268,11 @@ impl Lower<'_> {
     /// function type (indirect call). Shared between normal application and the
     /// operadores infixos de utilizador.
     fn call_named(&self, name: &str, vals: Vec<Atom>) -> Op {
-        if self.foreigns.contains(name) {
-            // FFI import (§18): C call with the Int ABI
+        if let Some(sym) = self.foreigns.get(name) {
+            // FFI import (§18): C call with the Int ABI. Emit the C SYMBOL (the `dlsym`
+            // target), not the Axión binding name, so an alias `sdlInit = "SDL_Init"` works.
             Op::Ffi {
-                name: name.to_string(),
+                name: sym.clone(),
                 args: vals,
             }
         } else if self.globals.contains(name) && !self.local_names.contains(name) {
@@ -2677,7 +2679,7 @@ fn lower_func(
     fields: &HashSet<String>,
     lam_meta: &LamMeta,
     inplace: &HashSet<Span>,
-    foreigns: &HashSet<String>,
+    foreigns: &HashMap<String, String>,
     data_types: &HashSet<String>,
     single_con: &HashSet<String>,
     con_ty: &HashMap<String, Option<String>>,
@@ -4613,7 +4615,11 @@ pub fn lower_with(
             }
         }
     }
-    let foreigns: HashSet<String> = module.foreigns.iter().map(|f| f.name.clone()).collect();
+    let foreigns: HashMap<String, String> = module
+        .foreigns
+        .iter()
+        .map(|f| (f.name.clone(), f.c_symbol()))
+        .collect();
     // Phase A′: constructor → `data`-type name of its value (None for unboxed enum
     // constructors — immediate tags, never dropped). Attached to `MakeCon`/`MakeRecord`
     // at lowering so the drop machinery reads the type off the node instead of

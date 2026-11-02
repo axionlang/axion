@@ -20,7 +20,7 @@ pub struct Program {
     funcs: HashMap<String, Rc<Func>>,
     cons: HashMap<String, Vec<String>>, // constructor → field names (in order)
     selectors: HashSet<String>,         // field names usable as selectors
-    foreigns: HashMap<String, usize>,   // FFI imports: C name → arity
+    foreigns: HashMap<String, (String, usize)>, // FFI: Axión name → (dlsym C symbol, arity)
     methods: HashSet<String>,           // typeclass method names (dynamic dispatch)
     con_type: HashMap<String, String>,  // constructor → data type name (for dispatch)
 }
@@ -153,7 +153,7 @@ fn build_program(module: &Module) -> Program {
     let foreigns = module
         .foreigns
         .iter()
-        .map(|f| (f.name.clone(), f.sig.param_mults().len()))
+        .map(|f| (f.name.clone(), (f.c_symbol(), f.sig.param_mults().len())))
         .collect();
     // method names of all classes (what triggers dynamic dispatch)
     let methods = module
@@ -709,10 +709,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: name.to_string(),
         });
     }
-    if let Some(&arity) = prog.foreigns.get(name) {
+    if let Some((sym, arity)) = prog.foreigns.get(name) {
         return Ok(Value::Foreign {
-            name: name.to_string(),
-            arity,
+            name: sym.clone(), // the C symbol dlsym resolves (an alias binds an uppercase C name)
+            arity: *arity,
             args: Vec::new(),
         });
     }

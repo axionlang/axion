@@ -460,11 +460,26 @@ impl<'a> Parser<'a> {
                 None
             };
             let (name, _) = self.var_name("name of the foreign import")?;
+            // optional C-symbol alias: `foreign "lib" sdlInit = "SDL_Init" :: …`
+            let symbol = if self.at(&Tok::Equals) {
+                self.bump(); // '='
+                match self.cur() {
+                    Some(LTok::Tok(Tok::Str(v))) => {
+                        let v = v.clone();
+                        self.bump();
+                        Some(v)
+                    }
+                    _ => return Err(self.syntax_err("a \"C symbol\" string after '=' in the foreign import")),
+                }
+            } else {
+                None
+            };
             self.expect(&Tok::ColonColon, "'::' in the foreign import")?;
             let sig = self.parse_type()?;
             let end = self.span_here().0;
             return Ok(TopItem::Foreign(Foreign {
                 name,
+                symbol,
                 sig,
                 lib,
                 span: (start, end),

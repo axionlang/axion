@@ -1579,6 +1579,15 @@ impl ExprParser<'_> {
             self.bump(); // library path
         }
         self.var_id(); // name
+        // optional C-symbol alias: `= "SDL_Init"`
+        if matches!(self.cur(), Some(Tok::Equals)) {
+            self.bump(); // '='
+            if matches!(self.cur(), Some(Tok::Str(_))) {
+                self.bump(); // the "C symbol"
+            } else {
+                self.ok = false;
+            }
+        }
         self.expect_tok(&Tok::ColonColon);
         self.type_();
         self.b.finish_node();
@@ -2504,16 +2513,31 @@ fn lower_instance(node: &SyntaxNode) -> Option<crate::ast::InstanceDecl> {
 }
 
 fn lower_foreign(node: &SyntaxNode) -> Option<crate::ast::Foreign> {
-    let lib = direct_tokens(node)
-        .find(|t| t.kind() == LITERAL)
-        .and_then(|t| match lex(t.text()).ok()?.first()?.tok.clone() {
-            Tok::Str(s) => Some(s),
-            _ => None,
-        });
+    // A string BEFORE the name is the library path; one AFTER it (past `=`) is the C-symbol
+    // alias. Walk the direct tokens in order, splitting the two literals by the name's position.
+    let str_of = |t: &rowan::SyntaxToken<AxionLang>| match lex(t.text()).ok()?.first()?.tok.clone() {
+        Tok::Str(s) => Some(s),
+        _ => None,
+    };
+    let mut lib = None;
+    let mut symbol = None;
+    let mut seen_name = false;
+    for t in direct_tokens(node) {
+        if t.kind() == IDENT {
+            seen_name = true;
+        } else if t.kind() == LITERAL {
+            if seen_name {
+                symbol = str_of(&t);
+            } else {
+                lib = str_of(&t);
+            }
+        }
+    }
     let name = first_kind_token(node, IDENT)?;
     let sig = lower_type(&node.children().find(|c| is_type_kind(c.kind()))?)?;
     Some(crate::ast::Foreign {
         name,
+        symbol,
         sig,
         lib,
         span: span_to_next_token(node),

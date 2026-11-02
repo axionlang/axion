@@ -337,15 +337,26 @@ impl Module {
     }
 }
 
-/// An FFI import: `foreign ["lib.so"] name :: Int -> … -> Int` calls the
-/// C function `name` (Int/i64 ABI), resolved by `dlsym` (§18). With the optional
-/// library path, that `.so` is loaded before resolving the symbols.
+/// An FFI import: `foreign ["lib.so"] name [= "C_symbol"] :: Int -> … -> Int`. The Axión
+/// binding is the lowercase `name`; the C function resolved by `dlsym` (§18) is `symbol`
+/// when given, else `name`. The alias lets a lowercase Axión name bind an uppercase/CamelCase
+/// C symbol (`sdlInit = "SDL_Init"`), which Axión identifiers cannot spell directly. With the
+/// optional library path, that `.so` is loaded before resolving the symbols. Int/i64 ABI.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
 #[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
 pub struct Foreign {
     pub name: String,
+    /// The C symbol to `dlsym`, if it differs from `name` (the `= "SDL_Init"` alias).
+    pub symbol: Option<String>,
     pub sig: Type,
     pub lib: Option<String>,
     pub span: Span,
+}
+
+impl Foreign {
+    /// The C symbol to resolve via `dlsym` — the explicit alias, else the Axión name.
+    pub fn c_symbol(&self) -> String {
+        self.symbol.clone().unwrap_or_else(|| self.name.clone())
+    }
 }

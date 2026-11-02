@@ -208,10 +208,17 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.borrows.push(target);
             e.borrows.push(cell);
         }
-        Op::RtCall { func, args, .. }
-        | Op::Ffi {
-            name: func, args, ..
-        } => {
+        // A USER FFI import (§18, Int ABI) BORROWS every arg: C does not own Axión's heap, so a
+        // passed `String`/buffer pointer stays owned by the caller (freed once by Auto-Drop) and
+        // remains readable after the call (`charAt` over a buffer the C side wrote into). The i64
+        // result is an opaque scalar/handle (e.g. an `SDL_Window*`), manually managed via another
+        // FFI call — never an auto-dropped owned heap value. This is the sound default for the
+        // unsafe FFI island; the runtime `RtCall`s below keep their precise per-func ownership.
+        Op::Ffi { args, .. } => {
+            e.borrows.extend(args.iter());
+            return e;
+        }
+        Op::RtCall { func, args, .. } => {
             // String builtins (§tc) READ their operands (no free) and return a
             // fresh heap String the caller reclaims via `axion_str_drop`. So they
             // BORROW their args (the caller still drops them) — unlike the general
