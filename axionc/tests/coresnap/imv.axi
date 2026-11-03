@@ -114,10 +114,10 @@
       let _t3 = == key 113  ; Δ{}
       let _t4 = + i 1  ; Δ{}
       let _t5 = + i 1  ; Δ{}
-      ret - z 25  ; Δ{}
+      ret - z 10  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret 25  ; Δ{}
+      ret 10  ; Δ{}
       ret call lastIndex c s _t4 i  ; Δ{}
       ret call lastIndex c s _t5 best  ; Δ{}
       ret call loop win ren n idx z px py  ; Δ{}
@@ -138,13 +138,13 @@
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _t1 = + k 1  ; Δ{}
     let _t1 = - 0 1  ; Δ{}
-    let _t1 = - z 25  ; Δ{}
+    let _t1 = - z 10  ; Δ{}
     let _t1 = ffi SDL_Quit 0  ; Δ{}
     let _t1 = rtcall axion_chr 1  ; Δ{} · makes String
     let _t10 = + _t9 py  ; Δ{}
     let _t2 = * i 0  ; Δ{}
     let _t2 = - n 1  ; Δ{_t1}
-    let _t2 = < _t1 25  ; Δ{}
+    let _t2 = < _t1 10  ; Δ{}
     let _t2 = == ty 768  ; Δ{}
     let _t2 = rtcall axion_str_at i s  ; Δ{}
     let _t2 = rtcall axion_str_len s  ; Δ{}
@@ -170,12 +170,12 @@
     let ren = ffi SDL_CreateRenderer win _t1 0  ; Δ{}
     let win = ffi SDL_CreateWindow "imv" 805240832 805240832 1000 700 36  ; Δ{}
     ret ""  ; Δ{}
-    ret + z 25  ; Δ{}
+    ret + z 10  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 1  ; Δ{}
     ret 100  ; Δ{}
-    ret 75  ; Δ{}
+    ret 90  ; Δ{}
     ret == x y  ; Δ{}
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
     ret _d1000000  ; Δ{}

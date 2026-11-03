@@ -111,11 +111,11 @@ loop win ren n idx z px py =
   let ty = u32 ev 0 + tok in
   dispatch win ren n idx z px py ty (u32 ev 20)
 
--- entering zoom from fit starts at 100%; otherwise step by 25%, floor 25%.
+-- entering zoom from fit starts at 100% (1:1 pixels); otherwise step by 10%, floor 10%.
 zoomIn :: Int -> Int
-zoomIn z = if z == 0 then 100 else z + 25
+zoomIn z = if z == 0 then 100 else z + 10
 zoomOut :: Int -> Int
-zoomOut z = if z == 0 then 75 else (if z - 25 < 25 then 25 else z - 25)
+zoomOut z = if z == 0 then 90 else (if z - 10 < 10 then 10 else z - 10)
 
 -- ty = SDL event type (0x100 QUIT, 0x300 KEYDOWN); key = SDL keycode (valid only for KEYDOWN).
 -- Changing image resets zoom/pan (a fresh image starts fit); +/-/0 keep the index; h/j/k/l pan.
