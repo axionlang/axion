@@ -19,10 +19,11 @@
 -- Run (NixOS has no ldconfig, so dlopen needs SDL2/SDL2_image on LD_LIBRARY_PATH): the
 -- scripts/imv-run.sh wrapper resolves the libs (via nix) and runs via the cranelift JIT —
 --   scripts/imv-run.sh *.png
--- For a standalone binary, clang must also find the sonames at LINK time (LIBRARY_PATH), which
--- `IMV_BUILD=1 scripts/imv-run.sh …` sets for you; by hand:
+-- For a standalone binary, set LIBRARY_PATH to the SDL lib dirs at BUILD time — axionc resolves the
+-- sonames and bakes their dirs into the binary's rpath, so it then runs with NO env vars.
+-- `IMV_BUILD=1 scripts/imv-run.sh …` does this for you; by hand:
 --   LIBRARY_PATH=<SDL2/lib>:<SDL2_image/lib> axionc -o imv examples/imv.axi
---   LD_LIBRARY_PATH=<SDL2/lib>:<SDL2_image/lib> ./imv -- *.png
+--   ./imv -- *.png          # self-contained — no LD_LIBRARY_PATH needed
 --
 -- Keys:  n/→/space next   p/← prev   g/Home first   End last   q/Esc quit
 --        +/= zoom in   - zoom out   0 fit   h/j/k/l pan (when zoomed)

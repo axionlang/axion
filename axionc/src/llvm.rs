@@ -309,6 +309,20 @@ pub fn emit_ir(
     Ok(out)
 }
 
+/// Resolve a bare FFI soname (`libSDL2.so`) to an absolute path by searching `LIBRARY_PATH`
+/// (and the common nix-wrapper `NIX_LDFLAGS` `-L` dirs), so the `-o` link can bake an rpath and
+/// the binary runs without `LD_LIBRARY_PATH`. `None` if not found (caller falls back to `-l:`).
+fn resolve_soname(soname: &str) -> Option<std::path::PathBuf> {
+    let lp = std::env::var("LIBRARY_PATH").unwrap_or_default();
+    let nix = std::env::var("NIX_LDFLAGS").unwrap_or_default();
+    let nix_dirs = nix.split_whitespace().filter_map(|t| t.strip_prefix("-L"));
+    lp.split(':')
+        .filter(|d| !d.is_empty())
+        .chain(nix_dirs)
+        .map(|d| std::path::Path::new(d).join(soname))
+        .find(|p| p.exists())
+}
+
 /// Compiles the Core with `clang -O2 -flto` (+ C runtime). With `out = None` the binary
 /// goes to a temp file and is run immediately (the default `--release` behaviour); with
 /// `out = Some(path)` it is written there as a standalone executable and NOT run.
@@ -388,7 +402,17 @@ pub fn build_and_run(
             let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
             cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
             cmd.arg(&lib);
+        } else if let Some(p) = resolve_soname(&lib) {
+            // bare soname found on LIBRARY_PATH: link the resolved file and bake its directory into
+            // the rpath, so the built binary runs WITHOUT LD_LIBRARY_PATH (self-contained).
+            if let Some(dir) = p.parent() {
+                let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+                cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+            }
+            cmd.arg(&p);
         } else {
+            // not on LIBRARY_PATH: let the linker's own search resolve `-l:<soname>` (runtime then
+            // needs LD_LIBRARY_PATH).
             cmd.arg(format!("-l:{lib}"));
         }
     }
