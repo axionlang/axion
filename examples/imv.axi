@@ -92,6 +92,9 @@ loop win ren n idx z px py =
   let gos = sdlGetOutputSize ren owb ohb in
   let ow = u32 owb 0 in
   let oh = u32 ohb 0 in
+  -- the % of actual size that FIT currently shows (min of the width/height scale), so the first
+  -- zoom step is continuous with the displayed image instead of snapping to a fixed 100%.
+  let fitPct = if tw > 0 then (if th > 0 then imin ((ow * 100) `div` tw) ((oh * 100) `div` th) else 100) else 100 in
   let a0 = sdlSetTitle win (titleFor path idx n z) in
   -- fit: logical size = image size (SDL letterboxes). zoom: disable logical size (window pixels).
   let aL = if z == 0 then sdlSetLogicalSize ren tw th else sdlSetLogicalSize ren 0 0 in
@@ -109,18 +112,18 @@ loop win ren n idx z px py =
   let we = sdlWaitEvent ev in
   let tok = (qt + gos + a0 + aL + a1 + a2 + a3 + a4 + a5 + a6 + we) * 0 in
   let ty = u32 ev 0 + tok in
-  dispatch win ren n idx z px py ty (u32 ev 20)
+  dispatch win ren n idx z px py fitPct ty (u32 ev 20)
 
--- entering zoom from fit starts at 100% (1:1 pixels); otherwise step by 10%, floor 10%.
-zoomIn :: Int -> Int
-zoomIn z = if z == 0 then 100 else z + 10
-zoomOut :: Int -> Int
-zoomOut z = if z == 0 then 90 else (if z - 10 < 10 then 10 else z - 10)
+imin :: Int -> Int -> Int
+imin a b = if a < b then a else b
 
 -- ty = SDL event type (0x100 QUIT, 0x300 KEYDOWN); key = SDL keycode (valid only for KEYDOWN).
 -- Changing image resets zoom/pan (a fresh image starts fit); +/-/0 keep the index; h/j/k/l pan.
-dispatch :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
-dispatch win ren n idx z px py ty key =
+-- `curPct` = the currently-displayed scale (fitPct in fit mode, else z), so +/- step by 10% from
+-- what's on screen — the first zoom no longer snaps from fit to 100%. Floor 10%.
+dispatch :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
+dispatch win ren n idx z px py fitPct ty key =
+  let curPct = if z == 0 then fitPct else z in
   if ty == 256 then quitWith (sdlQuit 0)
   else if ty == 768 then
     (if key == 113 then quitWith (sdlQuit 0)                                  -- q
@@ -133,9 +136,9 @@ dispatch win ren n idx z px py ty key =
      else if key == 103 then loop win ren n 0 0 0 0                           -- g (first)
      else if key == 1073741898 then loop win ren n 0 0 0 0                    -- Home
      else if key == 1073741901 then loop win ren n (n - 1) 0 0 0              -- End
-     else if key == 43 then loop win ren n idx (zoomIn z) px py              -- +
-     else if key == 61 then loop win ren n idx (zoomIn z) px py              -- =
-     else if key == 45 then loop win ren n idx (zoomOut z) px py             -- -
+     else if key == 43 then loop win ren n idx (curPct + 10) px py           -- +
+     else if key == 61 then loop win ren n idx (curPct + 10) px py           -- =
+     else if key == 45 then loop win ren n idx (if curPct - 10 < 10 then 10 else curPct - 10) px py -- -
      else if key == 48 then loop win ren n idx 0 0 0                          -- 0 (fit)
      else if key == 104 then loop win ren n idx z (px + 60) py                -- h
      else if key == 108 then loop win ren n idx z (px - 60) py                -- l
