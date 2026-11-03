@@ -77,42 +77,48 @@ titleFor path idx n z =
 -- Render image `idx` at zoom `z` (0 = aspect-fit via logical size; else `z`% of real size, panned
 -- by px/py), set the title, BLOCK for one event, dispatch. All render FFI results thread into `ty`
 -- (× 0) so strict `let` runs them in order before the event read.
+-- Render image `idx` at zoom `z` (zoomed path RenderCopy's to a pokeU32-built SDL_Rect).
+renderAt :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int
+renderAt ren tex z tw th ow oh px py =
+  if z == 0 then sdlRenderCopy ren tex 0 0
+  else let dw = (tw * z) `div` 100 in
+       let dh = (th * z) `div` 100 in
+       let dst = mkRect (((ow - dw) `div` 2) + px) (((oh - dh) `div` 2) + py) dw dh in
+       sdlRenderCopyD ren tex 0 dst
+
+-- A clean do-block: pure values are `let` bindings, SDL side effects are statements (each
+-- desugars to `case <call> of _ -> rest`, so it runs in order and is never elided). No token-
+-- threading, no reliance on there being no dead-binding pass — the sequencing is structural.
 loop :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
-loop win ren n idx z px py =
-  let path = getArg idx in
-  let surf = imgLoad path in
-  let tex  = sdlTexFromSurf ren surf in
-  let wbuf = fillBuf 4 in
-  let hbuf = fillBuf 4 in
-  let qt = sdlQueryTexture tex 0 0 wbuf hbuf in
-  let tw = u32 wbuf 0 in
-  let th = u32 hbuf 0 in
-  let owb = fillBuf 4 in
-  let ohb = fillBuf 4 in
-  let gos = sdlGetOutputSize ren owb ohb in
-  let ow = u32 owb 0 in
-  let oh = u32 ohb 0 in
+loop win ren n idx z px py = do
+  let path = getArg idx
+  let surf = imgLoad path
+  let tex  = sdlTexFromSurf ren surf
+  let wbuf = fillBuf 4
+  let hbuf = fillBuf 4
+  sdlQueryTexture tex 0 0 wbuf hbuf
+  let tw = u32 wbuf 0
+  let th = u32 hbuf 0
+  let owb = fillBuf 4
+  let ohb = fillBuf 4
+  sdlGetOutputSize ren owb ohb
+  let ow = u32 owb 0
+  let oh = u32 ohb 0
   -- the % of actual size that FIT currently shows (min of the width/height scale), so the first
   -- zoom step is continuous with the displayed image instead of snapping to a fixed 100%.
-  let fitPct = if tw > 0 then (if th > 0 then imin ((ow * 100) `div` tw) ((oh * 100) `div` th) else 100) else 100 in
-  let a0 = sdlSetTitle win (titleFor path idx n z) in
+  let fitPct = if tw > 0 then (if th > 0 then imin ((ow * 100) `div` tw) ((oh * 100) `div` th) else 100) else 100
+  sdlSetTitle win (titleFor path idx n z)
   -- fit: logical size = image size (SDL letterboxes). zoom: disable logical size (window pixels).
-  let aL = if z == 0 then sdlSetLogicalSize ren tw th else sdlSetLogicalSize ren 0 0 in
-  let a1 = sdlSetDrawColor ren 0 0 0 255 in
-  let a2 = sdlRenderClear ren in
-  let a3 = if z == 0 then sdlRenderCopy ren tex 0 0
-           else (let dw = (tw * z) `div` 100 in
-                 let dh = (th * z) `div` 100 in
-                 let dst = mkRect (((ow - dw) `div` 2) + px) (((oh - dh) `div` 2) + py) dw dh in
-                 sdlRenderCopyD ren tex 0 dst) in
-  let a4 = sdlRenderPresent ren in
-  let a5 = sdlDestroyTexture tex in
-  let a6 = sdlFreeSurface surf in
-  let ev = fillBuf 128 in
-  let we = sdlWaitEvent ev in
-  let tok = (qt + gos + a0 + aL + a1 + a2 + a3 + a4 + a5 + a6 + we) * 0 in
-  let ty = u32 ev 0 + tok in
-  dispatch win ren n idx z px py fitPct ty (u32 ev 20)
+  if z == 0 then sdlSetLogicalSize ren tw th else sdlSetLogicalSize ren 0 0
+  sdlSetDrawColor ren 0 0 0 255
+  sdlRenderClear ren
+  renderAt ren tex z tw th ow oh px py
+  sdlRenderPresent ren
+  sdlDestroyTexture tex
+  sdlFreeSurface surf
+  let ev = fillBuf 128
+  sdlWaitEvent ev
+  dispatch win ren n idx z px py fitPct (u32 ev 0) (u32 ev 20)
 
 imin :: Int -> Int -> Int
 imin a b = if a < b then a else b
