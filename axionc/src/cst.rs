@@ -57,6 +57,7 @@ pub enum SyntaxKind {
     DO_EXPR,
     BIND_STMT,
     EXPR_STMT,
+    LET_STMT,
     // pattern nodes
     WILD_PAT,
     VAR_PAT,
@@ -98,6 +99,7 @@ use SyntaxKind::{
     APP_EXPR, BIND_STMT, BINOP_EXPR, CASE_EXPR, CLASS_DECL, COMMENT, CONID, CONSTRAINT, CON_DECL,
     CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL, FOREIGN_DECL,
     FUN_CLAUSE, GUARD, IDENT, IF_EXPR, IMPORT_DECL, INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR,
+    LET_STMT,
     LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER,
     PAREN_EXPR, PUNCT, RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW,
     TYPE_CON, TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
@@ -146,6 +148,7 @@ impl Language for AxionLang {
             DO_EXPR,
             BIND_STMT,
             EXPR_STMT,
+            LET_STMT,
             WILD_PAT,
             VAR_PAT,
             LIT_PAT,
@@ -815,7 +818,13 @@ impl ExprParser<'_> {
     /// A `do` statement: `pat <- expr` (bind) or `expr`. `<-` is bind-only syntax, so
     /// a lookahead for it at statement depth 0 avoids the reference's backtracking.
     fn stmt(&mut self) {
-        if self.stmt_is_bind() {
+        if matches!(self.cur(), Some(Tok::Let)) && self.stmt_is_do_let() {
+            // do-`let`: `let <binds>` with no `in` — binds for the rest of the block.
+            self.b.start_node(LET_STMT.into());
+            self.bump(); // let
+            self.block(Self::top_decl);
+            self.b.finish_node();
+        } else if self.stmt_is_bind() {
             self.b.start_node(BIND_STMT.into());
             self.apat();
             // the bind arrow — `<-` (IO), `<-?` (Maybe), `<-!` (Either); stmt_is_bind
@@ -832,6 +841,29 @@ impl ExprParser<'_> {
             self.expr();
             self.b.finish_node();
         }
+    }
+
+    // `let` at the start of a do-statement: a do-`let` (binds the rest) iff no `in` follows the
+    // binding block at statement depth — else it is an ordinary `let … in …` expression statement.
+    fn stmt_is_do_let(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = self.pos + 1; // after `let`
+        while let Some(s) = self.toks.get(i) {
+            match &s.tok {
+                LTok::VLBrace => depth += 1,
+                LTok::VRBrace => {
+                    if depth == 0 {
+                        return true;
+                    }
+                    depth -= 1;
+                }
+                LTok::VSemi if depth == 0 => return true,
+                LTok::Tok(Tok::In) if depth == 0 => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        true
     }
 
     fn stmt_is_bind(&self) -> bool {
@@ -1757,6 +1789,7 @@ fn is_expr_kind(k: SyntaxKind) -> bool {
 enum DoStmt {
     Bind(BindKind, Pat, Expr),
     Expr(Expr),
+    Let(Vec<crate::ast::Func>),
 }
 
 /// `App(App(head, a), b)` — the shared desugaring shape (`:`, `.`, applied cons…).
@@ -1984,14 +2017,14 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             let mut it = stmts.into_iter().rev();
             let mut acc = match it.next()? {
                 DoStmt::Expr(e) => e,
-                DoStmt::Bind(..) => return None, // a `do` block can't end in `<-`
+                DoStmt::Bind(..) | DoStmt::Let(..) => return None, // can't end in `<-` or `let`
             };
             for stmt in it {
-                let (kind, pat, e) = match stmt {
-                    DoStmt::Bind(k, p, e) => (k, p, e),
-                    DoStmt::Expr(e) => (BindKind::Io, Pat::Wild(sp), e),
+                acc = match stmt {
+                    DoStmt::Let(binds) => Expr::Let(binds, Box::new(acc), sp),
+                    DoStmt::Bind(k, p, e) => desugar_bind(k, p, e, acc, sp),
+                    DoStmt::Expr(e) => desugar_bind(BindKind::Io, Pat::Wild(sp), e, acc, sp),
                 };
-                acc = desugar_bind(kind, pat, e, acc, sp);
             }
             Some(acc)
         }
@@ -2011,6 +2044,7 @@ fn lower_stmt(node: &SyntaxNode) -> Option<DoStmt> {
             ))
         }
         EXPR_STMT => Some(DoStmt::Expr(lower_expr(&node.children().next()?)?)),
+        LET_STMT => Some(DoStmt::Let(assemble_funcs(node.children())?)),
         _ => None,
     }
 }

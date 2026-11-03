@@ -4824,6 +4824,13 @@ fn negative_literal_fold_is_non_breaking() {
 }
 
 #[test]
+fn do_let_binds_pure_values_in_a_do_block() {
+    // `let x = e` as a do-statement (no `in`) binds for the rest of the block, interleaved with
+    // effectful statements — desugars to `let x = e in <rest>`. Both parsers agree (3 backends).
+    agree_across_backends("do_let.axi", "abab\nabab!\n97\n");
+}
+
+#[test]
 fn conditional_owned_temp_is_reclaimed_in_any_position() {
     // The #1 flagship gotcha: a heap-producing `if`/`case` NOT in tail position (consumed by a
     // print, a user fn, or producing a container) used to leak its owned temp (AX0911). Now

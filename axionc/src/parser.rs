@@ -275,6 +275,7 @@ fn context_constraints(t: &Type) -> Vec<(String, String)> {
 enum Stmt {
     Bind(BindKind, Pat, Expr), // `pat <- e` / `<-?` / `<-!` (var ou tuplo)
     Expr(Expr),                // `e`
+    Let(Vec<Func>),            // `let x = e` (no `in`) — binds for the rest of the do block
 }
 
 impl<'a> Parser<'a> {
@@ -1035,13 +1036,15 @@ impl<'a> Parser<'a> {
         {
             Stmt::Expr(e) => e,
             Stmt::Bind(..) => return Err(self.syntax_err("do block ending in <-")),
+            Stmt::Let(..) => return Err(self.syntax_err("do block ending in `let`")),
         };
         for stmt in iter {
-            let (kind, pat, e) = match stmt {
-                Stmt::Bind(kind, pat, e) => (kind, pat, e),
-                Stmt::Expr(e) => (BindKind::Io, Pat::Wild(sp), e),
+            acc = match stmt {
+                // `let x = e` scopes the rest of the block (a plain strict `let … in <rest>`).
+                Stmt::Let(binds) => Expr::Let(binds, Box::new(acc), sp),
+                Stmt::Bind(kind, pat, e) => desugar_bind(kind, pat, e, acc, sp),
+                Stmt::Expr(e) => desugar_bind(BindKind::Io, Pat::Wild(sp), e, acc, sp),
             };
-            acc = desugar_bind(kind, pat, e, acc, sp);
         }
         Ok(acc)
     }
@@ -1050,6 +1053,18 @@ impl<'a> Parser<'a> {
     /// `expr` (effect/value). Tries the pattern speculatively and backtracks if
     /// houver `<-`.
     fn parse_stmt(&mut self) -> PResult<Stmt> {
+        // do-`let`: `let <binds>` with NO `in` binds for the rest of the block. If an `in` follows
+        // the bindings it is an ordinary let-EXPRESSION statement (parse_expr handles it below).
+        if matches!(self.cur(), Some(LTok::Tok(Tok::Let))) {
+            let save = self.pos;
+            self.bump(); // let
+            let binds = self.block(Parser::top_item).map(merge_funcs)?;
+            if matches!(self.cur(), Some(LTok::Tok(Tok::In))) {
+                self.pos = save; // `let … in …` — an expression statement
+                return Ok(Stmt::Expr(self.parse_expr()?));
+            }
+            return Ok(Stmt::Let(binds));
+        }
         let save = self.pos;
         if let Ok(pat) = self.parse_apat() {
             if let Some(kind) = self.eat_bind_arrow() {
