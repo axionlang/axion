@@ -175,6 +175,8 @@ fn wrap(ty: GTy, e: Expr) -> Module {
         }],
         datas: vec![],
         foreigns: vec![],
+        foreign_structs: vec![],
+        foreign_enums: vec![],
         classes: vec![],
         instances: vec![],
         level_ceiling: None,

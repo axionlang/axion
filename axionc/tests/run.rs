@@ -246,6 +246,359 @@ fn multi_file_imports_resolve_and_handle_cycles() {
 }
 
 #[test]
+fn buffer_peek_poke_roundtrip_on_all_backends() {
+    // First-class Buffer (§4): newBuffer + the peek/poke family over every width + f64, LE. The
+    // buffer is linear (auto-freed via axion_buf_free when it dies); interp models it as a byte
+    // array, native as a libc buffer — all three must decode the same bytes.
+    let fx = fixture("buffer_roundtrip.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "200\n40000\n4000000000\n1234567890123\n2.5\n",
+            "{backend}: buffer peek/poke roundtrip"
+        );
+    }
+}
+
+#[test]
+fn ffi_linear_handle_lifecycle_enforced() {
+    // §18 linear handles: `Handle a` is must-use when threaded as a `%1` parameter. The correct
+    // threaded pattern compiles (ffi_handle.axi); forgetting to destroy is AX0002, double-destroy
+    // AX0001 — the handle-lifecycle guarantee. (Compile-checked; the C symbols aren't linked.)
+    let ok = axionc()
+        .args(["build", "--emit", "verify", &fixture("ffi_handle.axi")])
+        .output()
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "threaded handle must verify: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    let dir = std::env::temp_dir().join(format!("axion_handle_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let cases = [
+        // forget to destroy a %1 handle param → AX0002.
+        (
+            "data D = D\nforeign \"l\" del = \"d\" :: Own (Handle D) -> Int\nf :: Handle D %1 -> Int\nf h = 0\nmain :: Int\nmain = 0\n",
+            "AX0002",
+        ),
+        // destroy twice → AX0001.
+        (
+            "data D = D\nforeign \"l\" del = \"d\" :: Own (Handle D) -> Int\nf :: Handle D %1 -> Int\nf h = del h + del h\nmain :: Int\nmain = 0\n",
+            "AX0001",
+        ),
+    ];
+    for (i, (src, code)) in cases.iter().enumerate() {
+        let p = dir.join(format!("bad{i}.axi"));
+        std::fs::write(&p, src).unwrap();
+        let out = axionc()
+            .args(["build", "--emit", "llvm", p.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "case {i} must be rejected");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains(code), "case {i}: expected {code}, got: {text}");
+    }
+}
+
+#[test]
+fn foreign_enum_runs_on_all_backends() {
+    // §18 `foreign enum`: named C-integer constants used as values AND as `case` patterns (matched
+    // by equality), with C-style auto-increment (Red=0, Green=1, Blue=5, Alpha=6). All backends agree.
+    let fx = fixture("ffi_enum.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "quit\nkey\nother\n768\n1\n5\n6\n",
+            "{backend}: foreign enum values + case patterns + auto-increment"
+        );
+    }
+}
+
+#[test]
+fn foreign_struct_runs_on_all_backends() {
+    // §18 `foreign struct`: the compiler computes C-ABI field offsets (incl. padding) and the size;
+    // construction pokes, selectors peek. `Pad { a::I8, b::I32, c::I8 }` reads `b` back as 777 only
+    // if the alignment engine padded it to offset 4 (not 1). Runtime value is a Buffer (reclaimed).
+    let fx = fixture("ffi_struct.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "1150\n1\n777\n9\n",
+            "{backend}: foreign struct construction + selectors + padding"
+        );
+    }
+}
+
+#[test]
+fn buffer_borrow_scope_runs_on_all_backends() {
+    // §18 FFI: `borrow <buf> as <p> in <body>` leases the buffer's data pointer for the block,
+    // keeps the buffer live across it, then reclaims it (freed exactly once — LSan-clean). Body is
+    // pure (`p - p` = 0) so it is backend-stable; all three agree.
+    let fx = fixture("buffer_borrow.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "0\n",
+            "{backend}: borrow scope"
+        );
+    }
+}
+
+#[test]
+fn buffer_ptr_checked_aborts_when_undersized() {
+    // §18 FFI hardening: `bufPtrN buf minBytes` returns the data pointer only if the buffer holds
+    // >= minBytes, else aborts — converting a silent out-of-bounds C access into a clean failure.
+    // In-bounds: runs on all backends. Under-sized: fails with the "too small for FFI" message.
+    let fx = fixture("buffer_ptr_checked.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "11\n22\n",
+            "{backend}: in-bounds bufPtrN"
+        );
+    }
+
+    // under-sized → abort (newBuffer 4, asks for 128). Checked on each native backend + interp.
+    let dir = std::env::temp_dir().join(format!("axion_bufptrn_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let src = "main :: IO ()\nmain = putStrLn (showInt (bufPtrN (newBuffer 4) 128))\n";
+    let p = dir.join("undersized.axi");
+    std::fs::write(&p, src).unwrap();
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, p.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{backend}: an under-sized bufPtrN must abort"
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("too small for FFI"),
+            "{backend}: expected a too-small abort, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn division_operator_runs_on_all_backends() {
+    // §4 ergonomics: `/` is overloaded division — Int → truncated `div`, Float → `/.`, Integer →
+    // `div#I` — at `infixl 7` (same precedence/assoc as `*`). All three backends must agree.
+    let fx = fixture("division_operator.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "3\n5\n5\n10\n3.5\n0.75\n142857142857\n",
+            "{backend}: `/` over Int/Float/Integer"
+        );
+    }
+}
+
+#[test]
+fn ffi_ptr_opaque_handle_runs_on_all_backends() {
+    // §18 richer FFI: the type-safe opaque handle `Ptr a` + `intToPtr`/`ptrToInt`/`nullPtr`. No
+    // FFI call (so all backends run it); exercises the Ptr vocabulary and its i64-scalar lowering.
+    let fx = fixture("ffi_ptr.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "1000\n2000\nnull\nnonnull\n",
+            "{backend}: Ptr opaque-handle vocabulary"
+        );
+    }
+}
+
+#[test]
+fn ffi_float_args_and_results_run_natively() {
+    // §18 richer FFI: `Float` args/results cross the C ABI as `double` in FP registers (the i64
+    // bit-pattern is bitcast at the boundary). Into libm: cos 0 = 1, sqrt 4 = 2, pow 2 10 = 1024.
+    // Native only (FFI island); libm is always present on Linux.
+    let fx = fixture("ffi_float.axi");
+    for backend in ["cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{backend}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "1\n2\n1024\n",
+            "{backend}: FFI float ABI (cos/sqrt/pow)"
+        );
+    }
+}
+
+#[test]
+fn ffi_nonfaithful_signatures_refused_on_interp() {
+    // §18 #4 — no silent divergence: the interpreter REFUSES an FFI signature it cannot execute
+    // faithfully (float ABI, pointer args, arity > 3) with an explicit native-only error, instead
+    // of silently returning a wrong value. The faithful scalar subset (Int->Int) still runs — see
+    // `ffi_calls_libc_via_dlsym`. libm/libc are present, so the lib loads and the CALL hits the gate.
+    let dir = std::env::temp_dir().join(format!("axion_ffi_native_only_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+
+    // (a) float signature → refused on interp, runs natively.
+    let fx = fixture("ffi_float.axi");
+    let interp = axionc()
+        .args(["run", "--backend", "interp", &fx])
+        .output()
+        .unwrap();
+    assert!(
+        !interp.status.success(),
+        "interp must refuse a float FFI, not run it"
+    );
+    let msg = String::from_utf8_lossy(&interp.stderr);
+    assert!(
+        msg.contains("native-only"),
+        "expected a native-only refusal, got: {msg}"
+    );
+
+    // (b) pointer (String) argument → refused on interp. libc's puts is resolved via RTLD_DEFAULT.
+    let s = r#"foreign "libc.so.6" c_puts = "puts" :: String -> Int
+main :: IO ()
+main = putStrLn (showInt (c_puts "hi"))
+"#;
+    let p = dir.join("str_arg.axi");
+    std::fs::write(&p, s).unwrap();
+    let out = axionc()
+        .args(["run", "--backend", "interp", p.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "interp must refuse a String-pointer FFI arg"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("native-only"),
+        "expected a native-only refusal for a pointer arg"
+    );
+}
+
+#[test]
+fn ffi_own_arg_transfers_ownership() {
+    // §18 richer FFI: an `Own T` arg transfers ownership to C — the value is consumed, so reusing
+    // it after the call is a use-after-move (AX0910). The default (`Borrow`) keeps ownership, so
+    // reuse is fine. Both checked by compiling (no link needed — the verifier rejects the first).
+    let dir = std::env::temp_dir().join(format!("axion_ffi_own_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+
+    let own_reuse = r#"foreign "lib.so" sink = "c_take" :: Own String -> Int
+main :: IO ()
+main =
+  let s = strAppend "a" "b" in
+  let r = sink s in
+  putStrLn s
+"#;
+    let p = dir.join("own_reuse.axi");
+    std::fs::write(&p, own_reuse).unwrap();
+    let out = axionc()
+        .args(["build", "--emit", "llvm", p.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "reuse after Own must be rejected");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("AX0910"), "expected AX0910, got: {text}");
+
+    // the same shape with the DEFAULT (borrow) annotation compiles fine (s stays owned).
+    let borrow_reuse = r#"foreign "lib.so" peek = "c_read" :: String -> Int
+main :: IO ()
+main =
+  let s = strAppend "a" "b" in
+  let r = peek s in
+  putStrLn s
+"#;
+    let p2 = dir.join("borrow_reuse.axi");
+    std::fs::write(&p2, borrow_reuse).unwrap();
+    let out2 = axionc()
+        .args(["build", "--emit", "llvm", p2.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out2.status.success(),
+        "borrow reuse must compile: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+}
+
+#[test]
 fn unused_effectful_let_runs_on_all_backends() {
     // Effect consistency (§): an UNUSED effectful `let` binding still runs (Axión is strict)
     // and its output is sequenced before the body — the interpreter used to lazily skip it

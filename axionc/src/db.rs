@@ -467,6 +467,22 @@ fn strip_bodies_and_spans(m: &ast::Module) -> ast::Module {
                 ..fo.clone()
             })
             .collect(),
+        foreign_structs: m
+            .foreign_structs
+            .iter()
+            .map(|s| ast::ForeignStruct {
+                span: NO_SPAN,
+                ..s.clone()
+            })
+            .collect(),
+        foreign_enums: m
+            .foreign_enums
+            .iter()
+            .map(|e| ast::ForeignEnum {
+                span: NO_SPAN,
+                ..e.clone()
+            })
+            .collect(),
         classes: m
             .classes
             .iter()

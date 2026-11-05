@@ -196,6 +196,19 @@ pub unsafe extern "C" fn axion_buf_free(buf: i64) -> i64 {
     libc::free(buf as *mut libc::c_void);
     0
 }
+/// Deep-copy a Buffer (header + data) into a fresh libc allocation — the by-value duplication used
+/// when a `data` holding a `Buffer` field is shell-copied (record-update / escape).
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_copy(buf: i64) -> i64 {
+    let n = blen(buf);
+    let bytes = if n < 0 { 0 } else { n } as usize;
+    let dst = libc::malloc(8 + bytes) as *mut u8;
+    if dst.is_null() {
+        oom();
+    }
+    std::ptr::copy_nonoverlapping(buf as *const u8, dst, 8 + bytes);
+    dst as i64
+}
 
 // --- linear dense Array (i64): [len][elem…], libc-malloc/free ---
 #[no_mangle]
@@ -1659,20 +1672,110 @@ pub unsafe extern "C" fn axion_str_len(s: i64) -> i64 {
     str_bytes(s).len() as i64
 }
 
-/// `pokeU32 buf off val` — write `val` as a little-endian u32 into the 4 bytes at byte offset
-/// `off` of the buffer `buf` (IN PLACE), returning 0. For building little C structs (SDL_Rect) in
-/// an FFI scratch buffer that `strAppend` cannot, since it truncates at NUL bytes. UNSAFE: no bounds
-/// check — the caller sizes the buffer (e.g. `fillBuf 16`). An FFI-island tool, outside the
-/// safety model.
+// --- Buffer peek/poke: little-endian, bounds-checked access to a `Buffer` (the axion_buf_new
+// header-pointer layout: len at [0], `width` data bytes at [8+off..]). These are the first-class
+// replacement for the NUL-terminated-String-as-buffer hack; a `Buffer a` is reclaimed by
+// axion_buf_free, so these BORROW it. `off` is a byte offset into the data region. --------------
+
+#[inline]
+unsafe fn buf_data(buf: i64, off: i64, width: i64) -> *mut u8 {
+    let n = blen(buf);
+    if off < 0 || off + width > n {
+        bounds_abort("buffer", off, n);
+    }
+    (buf as *mut u8).add(8 + off as usize)
+}
+
+/// `bufPtr buf` — the address of the buffer's DATA region (`buf+8`), as an Int, for passing to C
+/// (SDL writes an event/size struct there; a rect we poke is read there).
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_ptr(buf: i64) -> i64 {
+    buf + 8
+}
+
+/// `bufPtrN buf minLen` — like `bufPtr`, but ABORTS first if the buffer holds fewer than `minLen`
+/// bytes. C writes/reads through the raw pointer unchecked, so when it expects a struct of a known
+/// size (an SDL event = 128 B, an SDL_Rect = 16 B), this converts an under-sized buffer from a
+/// silent out-of-bounds C access (heap corruption) into a clean, immediate abort. The floor is
+/// caller-asserted (you state the size C needs); a wrong floor is still wrong, but the common
+/// under-sizing mistake is caught.
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_ptr_n(buf: i64, min_len: i64) -> i64 {
+    let n = blen(buf);
+    if n < min_len {
+        eprintln!(
+            "axion: buffer too small for FFI — {n} bytes, need {min_len} (bufPtrN); \
+             size the buffer with `newBuffer {min_len}`"
+        );
+        std::process::abort();
+    }
+    buf + 8
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_peek_u8(buf: i64, off: i64) -> i64 {
+    i64::from(*buf_data(buf, off, 1))
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_peek_u16(buf: i64, off: i64) -> i64 {
+    let p = buf_data(buf, off, 2);
+    i64::from(u16::from_le_bytes([*p, *p.add(1)]))
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_peek_u32(buf: i64, off: i64) -> i64 {
+    let p = buf_data(buf, off, 4);
+    i64::from(u32::from_le_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]))
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_peek_u64(buf: i64, off: i64) -> i64 {
+    let p = buf_data(buf, off, 8);
+    let mut b = [0u8; 8];
+    for (i, slot) in b.iter_mut().enumerate() {
+        *slot = *p.add(i);
+    }
+    u64::from_le_bytes(b) as i64
+}
+/// read 8 bytes as an f64 and return its i64 bit-pattern (Axión `Float`).
+#[no_mangle]
+pub unsafe extern "C" fn axion_peek_f64(buf: i64, off: i64) -> i64 {
+    axion_peek_u64(buf, off)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_poke_u8(buf: i64, off: i64, val: i64) -> i64 {
+    *buf_data(buf, off, 1) = val as u8;
+    0
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_poke_u16(buf: i64, off: i64, val: i64) -> i64 {
+    let p = buf_data(buf, off, 2);
+    let b = (val as u16).to_le_bytes();
+    *p = b[0];
+    *p.add(1) = b[1];
+    0
+}
 #[no_mangle]
 pub unsafe extern "C" fn axion_poke_u32(buf: i64, off: i64, val: i64) -> i64 {
-    let p = (buf as *mut u8).add(off as usize);
-    let v = val as u32;
-    p.write(v as u8);
-    p.add(1).write((v >> 8) as u8);
-    p.add(2).write((v >> 16) as u8);
-    p.add(3).write((v >> 24) as u8);
+    let p = buf_data(buf, off, 4);
+    let b = (val as u32).to_le_bytes();
+    for (i, &byte) in b.iter().enumerate() {
+        *p.add(i) = byte;
+    }
     0
+}
+#[no_mangle]
+pub unsafe extern "C" fn axion_poke_u64(buf: i64, off: i64, val: i64) -> i64 {
+    let p = buf_data(buf, off, 8);
+    let b = (val as u64).to_le_bytes();
+    for (i, &byte) in b.iter().enumerate() {
+        *p.add(i) = byte;
+    }
+    0
+}
+/// write an Axión `Float` (i64 bit-pattern) as 8 raw bytes.
+#[no_mangle]
+pub unsafe extern "C" fn axion_poke_f64(buf: i64, off: i64, val: i64) -> i64 {
+    axion_poke_u64(buf, off, val)
 }
 
 /// `charAt i s` — the byte at index `i`, or −1 out of bounds.
@@ -2450,11 +2553,23 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_bignum_mul", axion_bignum_mul as *const u8),
         ("axion_bignum_sub", axion_bignum_sub as *const u8),
         ("axion_block_copy", axion_block_copy as *const u8),
+        ("axion_buf_copy", axion_buf_copy as *const u8),
         ("axion_buf_free", axion_buf_free as *const u8),
         ("axion_buf_iota", axion_buf_iota as *const u8),
         ("axion_buf_new", axion_buf_new as *const u8),
+        ("axion_buf_ptr", axion_buf_ptr as *const u8),
+        ("axion_buf_ptr_n", axion_buf_ptr_n as *const u8),
         ("axion_buf_sum", axion_buf_sum as *const u8),
         ("axion_buf_xor", axion_buf_xor as *const u8),
+        ("axion_peek_f64", axion_peek_f64 as *const u8),
+        ("axion_peek_u16", axion_peek_u16 as *const u8),
+        ("axion_peek_u32", axion_peek_u32 as *const u8),
+        ("axion_peek_u64", axion_peek_u64 as *const u8),
+        ("axion_peek_u8", axion_peek_u8 as *const u8),
+        ("axion_poke_f64", axion_poke_f64 as *const u8),
+        ("axion_poke_u16", axion_poke_u16 as *const u8),
+        ("axion_poke_u64", axion_poke_u64 as *const u8),
+        ("axion_poke_u8", axion_poke_u8 as *const u8),
         ("axion_eput", axion_eput as *const u8),
         ("axion_eputs", axion_eputs as *const u8),
         ("axion_exec_capture", axion_exec_capture as *const u8),

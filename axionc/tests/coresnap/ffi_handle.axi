@@ -1,0 +1,40 @@
+
+
+
+
+      let _dd0 = loadraw _p+16  ; Δ{}
+      let _dd1 = call axion_drop_List _dd0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+    else
+    let _ = ffi c_poll h  ; Δ{}
+    let _dd2 = == _tag 1  ; Δ{}
+    let _dd3 = if _dd2 then
+    let _dfree = rtcall axion_free _p  ; Δ{}
+    let _t1 = - n 1  ; Δ{}
+    let _tag = loadraw _p+0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret call run h _t1  ; Δ{}
+    ret ffi c_close h [o]  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  drop _t2 : String
+  else
+  else
+  let _d1000000 = putStrLn _t2  ; Δ{_t2}
+  let _dd4 = band _p 1  ; Δ{}
+  let _dd5 = if _dd4 then
+  let _t0 = == n 0  ; Δ{}
+  let _t0 = ffi c_open 7  ; Δ{}
+  let _t1 = call run _t0 3  ; Δ{}
+  let _t2 = showInt _t1  ; Δ{} · makes String
+  ret 0  ; Δ{}
+  ret _d1000000  ; Δ{}
+  ret if _t0 then
+  ret rtcall axion_array_free _p  ; Δ{}
+axion_drop_Array _p  =
+axion_drop_List _p  =
+main  =
+run h n  =

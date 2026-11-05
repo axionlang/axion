@@ -70,7 +70,10 @@ Not claims — **measurements**, under CI:
 | *Faithful linearity* | **differential against GHC** (Linear Haskell) — same verdict in every scenario |
 
 The exact trust boundary — what is machine-checked, validated per-compilation, tested, and
-trusted — is stated in [`metatheory/GUARANTEE.md`](metatheory/GUARANTEE.md).
+trusted — is stated in [`metatheory/GUARANTEE.md`](metatheory/GUARANTEE.md). The guarantee stops at
+the FFI: [`docs/ffi-trust-boundary.md`](docs/ffi-trust-boundary.md) states precisely what is still
+guaranteed on the Axión side of a `foreign` call and what becomes the programmer's responsibility
+once a value crosses into C.
 
 Benchmarks (ms, best of 3; same `clang` for C and Axion `--release` —
 [`docs/benchmarks.md`](docs/benchmarks.md)):

@@ -506,12 +506,20 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         inf.method_meta
             .insert(op.to_string(), ("Integral".to_string(), Some(0)));
     }
+    // `/` (division) over Int/Float/Integer — a single ergonomic operator that resolves to the
+    // per-type primitive: `Int`→`div` (truncated integer division), `Float`→`/.`, `Integer`→
+    // `div#I`. Its own class so it never collides with `Num`/`Integral`; unlike those it ALWAYS
+    // rewrites (there is no backend `/`). (§4 ergonomics.)
+    inf.method_meta
+        .insert("/".to_string(), ("Division".to_string(), Some(0)));
 
     // schemes of the top-level functions: from the signature, or a fresh monotype
     let mut placeholders: HashMap<String, Ty> = HashMap::new();
     // FFI imports (§18): typed by their declared signature
     for fo in &module.foreigns {
-        let scheme = inf.scheme_of_sig(&fo.sig);
+        // The FFI ownership wrappers (`Own`/`Borrow`) are erased for type-checking —
+        // `Own String -> Int` types as `String -> Int`.
+        let scheme = inf.scheme_of_sig(&fo.clean_sig());
         env.insert(fo.name.clone(), scheme);
     }
     for f in &module.funcs {
@@ -786,6 +794,23 @@ pub fn is_builtin_op_method(op: &str) -> bool {
 /// The built-in `Integral` operators (`div`/`mod`) — overloaded over Int/Integer.
 pub fn is_integral_method(op: &str) -> bool {
     matches!(op, "div" | "mod")
+}
+
+/// The built-in division operator `/` — overloaded over Int/Float/Integer. Unlike the `Num`
+/// operators it ALWAYS rewrites (there is no backend `/`): see [`division_resolve`].
+pub fn is_division_method(op: &str) -> bool {
+    op == "/"
+}
+
+/// The concrete primitive `/` resolves to over the operand type `ty` (`"Int"`/`"Float"`/
+/// `"Integer"`; an unconstrained use defaults to `Int`): truncated integer division, float
+/// division, or arbitrary-precision division. All three are already lowered by the backends.
+pub fn division_resolve(ty: &str) -> &'static str {
+    match ty {
+        "Float" => "/.",
+        "Integer" => "div#I",
+        _ => "div", // Int (and the Int default for an unconstrained use)
+    }
 }
 
 /// The dotted (`Float`) form of a built-in overloaded operator — the rewrite
@@ -1728,17 +1753,8 @@ impl<'a> Infer<'a> {
                 Box::new(Ty::Fun(Box::new(string()), Box::new(int()))),
             )),
         );
-        // pokeU32 :: String -> Int -> Int -> Int  (buffer, byte offset, value → 0)
-        env.insert(
-            "pokeU32".into(),
-            mono(Ty::Fun(
-                Box::new(string()),
-                Box::new(Ty::Fun(
-                    Box::new(int()),
-                    Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
-                )),
-            )),
-        );
+        // pokeU32 and the rest of the Buffer peek/poke family are registered near `newBuffer`
+        // (they need `Buffer a`, so they live with the other Buffer builtins below).
         // strCmp :: String -> String -> Int (byte-lexicographic compare, -1/0/1);
         // backs the Eq/Ord instances for String.
         env.insert(
@@ -1847,7 +1863,7 @@ impl<'a> Infer<'a> {
         env.insert("otherwise".into(), mono(bool()));
         // `+ - *` (Num) and `div`/`mod` (Integral) are built-in overloaded operators
         // (`a -> a -> a`), resolved per use over Int/Integer — see `discharge_obligations`.
-        for op in ["+", "-", "*", "div", "mod"] {
+        for op in ["+", "-", "*", "/", "div", "mod"] {
             env.insert(
                 op.into(),
                 Scheme {
@@ -2191,6 +2207,7 @@ impl<'a> Infer<'a> {
         // here it's just the HM types. `a`=var 0, `b`=var 1 (result of withBuffer).
         let bufa = || Ty::Con("Buffer".into(), vec![Ty::Var(0)]);
         let int = || Ty::Con("Int".into(), vec![]);
+        let flt = || Ty::Con("Float".into(), vec![]);
         let io_unit = || Ty::Con("IO".into(), vec![unit()]);
         // newBuffer :: forall a. Int -> Buffer a
         env.insert(
@@ -2198,6 +2215,52 @@ impl<'a> Infer<'a> {
             Scheme {
                 vars: vec![0],
                 ty: Ty::Fun(Box::new(int()), Box::new(bufa())),
+            },
+        );
+        // Buffer peek/poke family + the FFI data-pointer accessor, all `forall a`:
+        //   peekU8/16/32/64 :: Buffer a -> Int -> Int       (read a LE unsigned word)
+        //   pokeU8/16/32/64 :: Buffer a -> Int -> Int -> Int (write, return 0)
+        //   peekF64 :: Buffer a -> Int -> Float / pokeF64 :: Buffer a -> Int -> Float -> Int
+        //   bufPtr  :: Buffer a -> Int   (address of the data region, for passing to C)
+        let peek = |r: Ty| Scheme {
+            vars: vec![0],
+            ty: Ty::Fun(Box::new(bufa()), Box::new(Ty::Fun(Box::new(int()), Box::new(r)))),
+        };
+        let poke = |v: Ty| Scheme {
+            vars: vec![0],
+            ty: Ty::Fun(
+                Box::new(bufa()),
+                Box::new(Ty::Fun(
+                    Box::new(int()),
+                    Box::new(Ty::Fun(Box::new(v), Box::new(int()))),
+                )),
+            ),
+        };
+        for n in ["peekU8", "peekU16", "peekU32", "peekU64"] {
+            env.insert(n.into(), peek(int()));
+        }
+        env.insert("peekF64".into(), peek(flt()));
+        for n in ["pokeU8", "pokeU16", "pokeU32", "pokeU64"] {
+            env.insert(n.into(), poke(int()));
+        }
+        env.insert("pokeF64".into(), poke(flt()));
+        env.insert(
+            "bufPtr".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(bufa()), Box::new(int())),
+            },
+        );
+        // bufPtrN :: forall a. Buffer a -> Int -> Int  (bounds-checked data pointer: aborts if the
+        // buffer holds fewer than the given min bytes, else the data address — §18 FFI hardening)
+        env.insert(
+            "bufPtrN".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(bufa()),
+                    Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                ),
             },
         );
         // withBuffer :: forall a b. Int -> (Buffer a -> b) -> b
@@ -2552,6 +2615,31 @@ impl<'a> Infer<'a> {
                 ty: Ty::Fun(Box::new(Ty::Var(0)), Box::new(Ty::Var(0))),
             },
         );
+        // FFI pointer casts (§18): `Ptr a` is an opaque, type-safe handle (a reinterpreted i64).
+        //   intToPtr :: forall a. Int -> Ptr a   ptrToInt :: forall a. Ptr a -> Int
+        let ptr_a = || Ty::Con("Ptr".into(), vec![Ty::Var(0)]);
+        // nullPtr :: forall a. Ptr a — the null opaque handle (C NULL), a constant.
+        env.insert(
+            "nullPtr".into(),
+            Scheme {
+                vars: vec![0],
+                ty: ptr_a(),
+            },
+        );
+        env.insert(
+            "intToPtr".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(Ty::Con("Int".into(), vec![])), Box::new(ptr_a())),
+            },
+        );
+        env.insert(
+            "ptrToInt".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(ptr_a()), Box::new(Ty::Con("Int".into(), vec![]))),
+            },
+        );
         // fractional permissions (§2). split :: forall a. a -> (a, a);
         // join :: forall a. a -> a -> a. The multiplicities (%1/%0.5) are
         // tracked separately, by the analysis in check.rs.
@@ -2668,6 +2756,12 @@ impl<'a> Infer<'a> {
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
             match self.resolve(&o.ty) {
+                // `/` (division) → the per-type primitive (`Int`→`div`, `Float`→`/.`,
+                // `Integer`→`div#I`). Always rewrites; see `division_resolve`.
+                Ty::Con(name, _) if is_division_method(&o.method) => {
+                    resolutions
+                        .insert((o.func.clone(), o.span), division_resolve(&name).into());
+                }
                 // built-in Num/Ord operator over Float → rewrite to the dotted form
                 // the backends already lower.
                 Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Float" => {
@@ -2833,6 +2927,12 @@ impl<'a> Infer<'a> {
                 // the operator keeps its Int form.
                 Ty::Var(v) if is_builtin_op_method(&o.method) || is_integral_method(&o.method) => {
                     self.unify(&Ty::Var(v), &Ty::Con("Int".into(), vec![]), o.span);
+                }
+                // `/` over an unconstrained var defaults to Int → the `div` primitive (it must
+                // rewrite, since there is no backend `/`).
+                Ty::Var(v) if is_division_method(&o.method) => {
+                    self.unify(&Ty::Var(v), &Ty::Con("Int".into(), vec![]), o.span);
+                    resolutions.insert((o.func.clone(), o.span), division_resolve("Int").into());
                 }
                 Ty::Var(_) => {
                     self.diags.push(
@@ -3012,8 +3112,8 @@ impl<'a> Infer<'a> {
                     || cannot
                     || multi_bad_call
                     || poly_methods.get(f).into_iter().flatten().any(|(_, m, ci)| {
-                        // built-in Num operators are always available (Int/Float).
-                        if is_builtin_op_method(m) {
+                        // built-in Num operators and `/` are always available (Int/Float/Integer).
+                        if is_builtin_op_method(m) || is_division_method(m) {
                             return false;
                         }
                         let cty = types.get(*ci);
@@ -3092,6 +3192,9 @@ impl<'a> Infer<'a> {
                     if ti == "Float" {
                         rewrites.insert(*sp, builtin_op_float(m).into());
                     }
+                } else if is_division_method(m) {
+                    // `/` always rewrites to its per-type primitive.
+                    rewrites.insert(*sp, division_resolve(&ti).into());
                 } else {
                     rewrites.insert(*sp, crate::ast::method_impl_name(m, &ti));
                 }

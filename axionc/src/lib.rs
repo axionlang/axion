@@ -1355,6 +1355,11 @@ pub fn prepare_for_check_with(
 ) -> (ast::Module, std::collections::HashSet<String>) {
     resolve_imports_with(&mut module, path, diags, resolve);
     inject_prelude(&mut module);
+    // `foreign struct` → generated constructor + selector functions, and `S { f = e }` record
+    // construction → a positional call. Runs after the prelude (so `newBuffer`/`peek`/`poke` are
+    // present) and before everything that walks bodies.
+    expand_foreign_structs(&mut module, diags);
+    expand_foreign_enums(&mut module);
     derive_instances(&mut module, diags);
     lower_classes(&mut module);
     // Rewrite infix uses of USER-DEFINED operators (`a <= b`, `x <+> y`, backtick calls)
@@ -5339,6 +5344,332 @@ fn prelude_module() -> &'static ast::Module {
         let lt = layout::layout(&tokens, &lines);
         parser::parse_module(&lt).unwrap_or_else(|e| panic!("prelude: parse: {e:?}"))
     })
+}
+
+/// Render a (field) type back to source text, for the generated struct constructor/selector
+/// signatures. Covers the shapes a `foreign struct` field (and `Buffer a`) use.
+fn ty_to_src(t: &ast::Type) -> String {
+    match t {
+        ast::Type::Con(n) => n.clone(),
+        ast::Type::Var(n) => n.clone(),
+        ast::Type::Unit => "()".to_string(),
+        ast::Type::App(f, a) => format!("{} ({})", ty_to_src(f), ty_to_src(a)),
+        ast::Type::Tuple(ts) => {
+            let inner: Vec<String> = ts.iter().map(ty_to_src).collect();
+            format!("({})", inner.join(", "))
+        }
+        ast::Type::Arrow { from, to, .. } => format!("({} -> {})", ty_to_src(from), ty_to_src(to)),
+    }
+}
+
+/// The `poke`/`peek` builtins + any pointer/float wrapping for a struct field of type `ty` with the
+/// given byte `size`. Returns `(poke_store_expr_fn, peek_load_expr)` fragments as source text, given
+/// the buffer/record variable, field offset, and (for poke) the value expression.
+fn field_access_src(ty: &ast::Type, size: usize, buf: &str, off: usize, val: &str) -> (String, String) {
+    let width = match size {
+        1 => "U8",
+        2 => "U16",
+        4 => "U32",
+        _ => "U64",
+    };
+    match ty.head_con() {
+        Some("F64" | "Float") => (
+            format!("pokeF64 {buf} {off} {val}"),
+            format!("peekF64 {buf} {off}"),
+        ),
+        Some("Ptr") => (
+            format!("pokeU64 {buf} {off} (ptrToInt {val})"),
+            format!("intToPtr (peekU64 {buf} {off})"),
+        ),
+        _ => (
+            format!("poke{width} {buf} {off} {val}"),
+            format!("peek{width} {buf} {off}"),
+        ),
+    }
+}
+
+/// `foreign struct` (§18) front-end expansion: each declaration becomes an ordinary
+/// buffer-allocating constructor plus one `peek`-selector per field (offsets from the C-ABI
+/// `c_layout`), so no later stage needs a struct concept. The runtime value is a `Buffer` of the
+/// struct's size — reclaimed by the usual `DropWay::Buf`. Record construction `S { f = e, … }` is
+/// then rewritten to a positional call of the generated constructor.
+fn expand_foreign_structs(module: &mut ast::Module, diags: &mut Diagnostics) {
+    if module.foreign_structs.is_empty() {
+        return;
+    }
+    let structs = module.foreign_structs.clone();
+    // field order per struct, for the record→positional rewrite.
+    let mut field_order: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut src = String::new();
+    for fs in &structs {
+        let Some((offsets, size)) = fs.c_layout() else {
+            diags.push(
+                Diagnostic::error(
+                    "AX0110",
+                    format!("`foreign struct {}` has a field of an unsupported type", fs.name),
+                )
+                .label(fs.span.0, fs.span.1, "field types must be fixed-width ints, F64, or Ptr"),
+            );
+            continue;
+        };
+        field_order.insert(fs.name.clone(), fs.fields.iter().map(|f| f.name.clone()).collect());
+        let params: Vec<String> = fs.fields.iter().map(|f| f.name.clone()).collect();
+        let sig_args: Vec<String> = fs.fields.iter().map(|f| ty_to_src(&f.ty)).collect();
+        // constructor `mk__S` (a valid lowercase VarId — the struct's own ConId can't name a
+        // function; record construction is rewritten to call this). Its result is `Buffer a` (the
+        // struct's runtime rep), so it type-checks and reclaims via the usual Buffer machinery:
+        //   mk__S :: T0 -> … -> Buffer a ;  mk__S p0 … =
+        //     let b = newBuffer SZ in let t = <poke0> + … in if t < 1 then b else b
+        let ctor = format!("mk__{}", fs.name);
+        src.push_str(&format!(
+            "{} :: {} -> Buffer a\n",
+            ctor,
+            sig_args.join(" -> ")
+        ));
+        let pokes: Vec<String> = fs
+            .fields
+            .iter()
+            .zip(&offsets)
+            .map(|(f, &off)| {
+                let size = ast::ffi_type_size_align(&f.ty).map_or(8, |(s, _)| s);
+                field_access_src(&f.ty, size, "axsb", off, &f.name).0
+            })
+            .collect();
+        src.push_str(&format!(
+            "{} {} = let axsb = newBuffer {} in let axst = {} in if axst < 1 then axsb else axsb\n",
+            ctor,
+            params.join(" "),
+            size,
+            if pokes.is_empty() { "0".to_string() } else { pokes.join(" + ") },
+        ));
+        // one selector per field:  f :: Buffer a -> T ;  f axsr = <peek>
+        for (f, &off) in fs.fields.iter().zip(&offsets) {
+            let size = ast::ffi_type_size_align(&f.ty).map_or(8, |(s, _)| s);
+            let peek = field_access_src(&f.ty, size, "axsr", off, "").1;
+            src.push_str(&format!("{} :: Buffer a -> {}\n", f.name, ty_to_src(&f.ty)));
+            src.push_str(&format!("{} axsr = {}\n", f.name, peek));
+        }
+    }
+    if src.is_empty() {
+        return;
+    }
+    // parse the generated functions (same path as the prelude) and merge the ones the user did not
+    // define themselves (so a hand-written override wins, as for the prelude).
+    let lines = LineMap::new(&src);
+    let Ok(tokens) = lexer::lex(&src) else {
+        return;
+    };
+    let lt = layout::layout(&tokens, &lines);
+    let Ok(generated) = parser::parse_module(&lt) else {
+        return;
+    };
+    let has_func: std::collections::HashSet<String> =
+        module.funcs.iter().map(|f| f.name.clone()).collect();
+    for f in generated.funcs {
+        if !has_func.contains(&f.name) {
+            module.funcs.push(f);
+        }
+    }
+    rewrite_struct_record_cons(module, &field_order);
+}
+
+/// `foreign enum` (§18) front-end expansion: each member becomes a global `Int` constant. A member
+/// used as a VALUE (`Expr::Con "SDL_QUIT"`) is rewritten to its `Int` literal; used as a `case`
+/// PATTERN (`Pat::Con "SDL_QUIT"`) it becomes an `Int` pattern — so the existing integer-`case`
+/// machinery matches it by equality, turning `if ty == 256 …` chains into readable `case`s.
+fn expand_foreign_enums(module: &mut ast::Module) {
+    if module.foreign_enums.is_empty() {
+        return;
+    }
+    let vals: std::collections::HashMap<String, i64> = module
+        .foreign_enums
+        .iter()
+        .flat_map(|e| e.members.iter().cloned())
+        .collect();
+
+    fn rpat(p: &mut ast::Pat, v: &std::collections::HashMap<String, i64>) {
+        match p {
+            ast::Pat::Con(name, args, sp) if args.is_empty() && v.contains_key(name) => {
+                *p = ast::Pat::Int(v[name], *sp);
+            }
+            ast::Pat::Con(_, args, _) => args.iter_mut().for_each(|a| rpat(a, v)),
+            ast::Pat::Tuple(ps, _) => ps.iter_mut().for_each(|a| rpat(a, v)),
+            _ => {}
+        }
+    }
+    fn rexpr(e: &mut ast::Expr, v: &std::collections::HashMap<String, i64>) {
+        use ast::Expr::{
+            App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+        };
+        match e {
+            Con(name, sp) if v.contains_key(name) => *e = Int(v[name], *sp),
+            App(f, a, _) => {
+                rexpr(f, v);
+                rexpr(a, v);
+            }
+            BinOp(_, l, r, _) => {
+                rexpr(l, v);
+                rexpr(r, v);
+            }
+            If(c, t, el, _) => {
+                rexpr(c, v);
+                rexpr(t, v);
+                rexpr(el, v);
+            }
+            Let(binds, body, _) => {
+                for b in binds.iter_mut() {
+                    rfuncs_clauses(b, v);
+                }
+                rexpr(body, v);
+            }
+            Case(s, arms, _) => {
+                rexpr(s, v);
+                for (p, b) in arms.iter_mut() {
+                    rpat(p, v);
+                    rexpr(b, v);
+                }
+            }
+            Tuple(es, _) => {
+                for x in es {
+                    rexpr(x, v);
+                }
+            }
+            Lam(ps, b, _) => {
+                ps.iter_mut().for_each(|p| rpat(p, v));
+                rexpr(b, v);
+            }
+            RecordCon(_, assigns, _) => assigns.iter_mut().for_each(|(_, x)| rexpr(x, v)),
+            RecordUpd(base, assigns, _) => {
+                rexpr(base, v);
+                assigns.iter_mut().for_each(|(_, x)| rexpr(x, v));
+            }
+            Int(..) | Float(..) | Str(..) | Var(..) | Con(..) => {}
+        }
+    }
+    fn rfuncs_clauses(f: &mut ast::Func, v: &std::collections::HashMap<String, i64>) {
+        for c in &mut f.clauses {
+            for p in &mut c.pats {
+                rpat(p, v);
+            }
+            match &mut c.body {
+                ast::Body::Plain(x) => rexpr(x, v),
+                ast::Body::Guarded(arms) => {
+                    for (g, r) in arms.iter_mut() {
+                        rexpr(g, v);
+                        rexpr(r, v);
+                    }
+                }
+            }
+            for w in &mut c.wher {
+                rfuncs_clauses(w, v);
+            }
+        }
+    }
+    for f in &mut module.funcs {
+        rfuncs_clauses(f, &vals);
+    }
+}
+
+/// Rewrite `S { f = e, … }` record construction of a `foreign struct` into a positional call of the
+/// generated constructor `S e_f0 e_f1 …` (fields in declaration order). A missing field is an error.
+fn rewrite_struct_record_cons(
+    module: &mut ast::Module,
+    field_order: &std::collections::HashMap<String, Vec<String>>,
+) {
+    fn go(e: &mut ast::Expr, fo: &std::collections::HashMap<String, Vec<String>>) {
+        use ast::Expr::{
+            App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+        };
+        match e {
+            RecordCon(name, assigns, sp) if fo.contains_key(name) => {
+                let order = &fo[name];
+                let sp = *sp;
+                let name = name.clone();
+                // reorder the named assignments into declaration order (skip unknown/missing —
+                // a missing field just yields an arity-short call the type-checker then flags).
+                let mut args: Vec<ast::Expr> = Vec::new();
+                for fname in order {
+                    if let Some((_, v)) = assigns.iter().find(|(n, _)| n == fname) {
+                        let mut v = v.clone();
+                        go(&mut v, fo);
+                        args.push(v);
+                    }
+                }
+                let mut call = ast::Expr::Var(format!("mk__{name}"), sp);
+                for a in args {
+                    call = ast::Expr::App(Box::new(call), Box::new(a), sp);
+                }
+                *e = call;
+            }
+            App(f, a, _) => {
+                go(f, fo);
+                go(a, fo);
+            }
+            BinOp(_, l, r, _) => {
+                go(l, fo);
+                go(r, fo);
+            }
+            If(c, t, el, _) => {
+                go(c, fo);
+                go(t, fo);
+                go(el, fo);
+            }
+            Let(binds, body, _) => {
+                for b in binds.iter_mut() {
+                    for c in &mut b.clauses {
+                        match &mut c.body {
+                            ast::Body::Plain(x) => go(x, fo),
+                            ast::Body::Guarded(arms) => {
+                                for (g, r) in arms.iter_mut() {
+                                    go(g, fo);
+                                    go(r, fo);
+                                }
+                            }
+                        }
+                    }
+                }
+                go(body, fo);
+            }
+            Case(s, arms, _) => {
+                go(s, fo);
+                for (_, r) in arms.iter_mut() {
+                    go(r, fo);
+                }
+            }
+            Tuple(es, _) => {
+                for x in es {
+                    go(x, fo);
+                }
+            }
+            Lam(_, b, _) => go(b, fo),
+            RecordCon(_, assigns, _) => {
+                for (_, v) in assigns.iter_mut() {
+                    go(v, fo);
+                }
+            }
+            RecordUpd(base, assigns, _) => {
+                go(base, fo);
+                for (_, v) in assigns.iter_mut() {
+                    go(v, fo);
+                }
+            }
+            Int(..) | Float(..) | Str(..) | Var(..) | Con(..) => {}
+        }
+    }
+    for f in &mut module.funcs {
+        for c in &mut f.clauses {
+            match &mut c.body {
+                ast::Body::Plain(x) => go(x, field_order),
+                ast::Body::Guarded(arms) => {
+                    for (g, r) in arms.iter_mut() {
+                        go(g, field_order);
+                        go(r, field_order);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn inject_prelude(module: &mut ast::Module) {

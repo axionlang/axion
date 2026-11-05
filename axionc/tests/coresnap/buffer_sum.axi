@@ -17,10 +17,10 @@
   else
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let b = rtcall axion_buf_new 100  ; Δ{}
-  let b1 = rtcall axion_buf_iota b  ; Δ{}
-  let done = rtcall axion_buf_free b1  ; Δ{}
-  let s = rtcall axion_buf_sum b1  ; Δ{}
+  let b = rtcall axion_buf_new 100  ; Δ{} · makes Buffer
+  let b1 = rtcall axion_buf_iota b  ; Δ{b} · moves{b} · makes Buffer
+  let done = rtcall axion_buf_free b1  ; Δ{b1} · moves{b1}
+  let s = rtcall axion_buf_sum b1  ; Δ{b1}
   ret 0  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
   ret s  ; Δ{}

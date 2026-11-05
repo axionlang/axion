@@ -214,8 +214,20 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
         // result is an opaque scalar/handle (e.g. an `SDL_Window*`), manually managed via another
         // FFI call — never an auto-dropped owned heap value. This is the sound default for the
         // unsafe FFI island; the runtime `RtCall`s below keep their precise per-func ownership.
-        Op::Ffi { args, .. } => {
-            e.borrows.extend(args.iter());
+        Op::Ffi {
+            args, arg_kinds, ..
+        } => {
+            // Per-arg ownership (§18): an `Own T` arg transfers ownership to C — it is CONSUMED
+            // here (moved, and Axión never frees it), exactly like the runtime-owns rule below;
+            // every other arg is BORROWED (the caller keeps it and drops it once). The result is
+            // an opaque scalar/handle (or a float), never an auto-dropped owned heap value.
+            for (i, a) in args.iter().enumerate() {
+                if arg_kinds.get(i).is_some_and(|k| k.own) {
+                    e.moves.push(a);
+                } else {
+                    e.borrows.push(a);
+                }
+            }
             return e;
         }
         Op::RtCall { func, args, .. } => {
@@ -323,8 +335,24 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 // char-level string reads: BORROW the string, return a scalar Int.
                 || func == "axion_str_len"
                 || func == "axion_str_at"
-                // pokeU32: BORROWS the buffer (writes 4 bytes in place), returns a scalar Int.
+                // Buffer peek/poke + bufPtr: BORROW the buffer (read/write in place, or take its
+                // data address), return a scalar Int/Float — the buffer stays owned by the caller.
                 || func == "axion_poke_u32"
+                || func == "axion_poke_u8"
+                || func == "axion_poke_u16"
+                || func == "axion_poke_u64"
+                || func == "axion_poke_f64"
+                || func == "axion_peek_u8"
+                || func == "axion_peek_u16"
+                || func == "axion_peek_u32"
+                || func == "axion_peek_u64"
+                || func == "axion_peek_f64"
+                || func == "axion_buf_ptr"
+                || func == "axion_buf_ptr_n"
+                // sumBytes reads the whole buffer and returns the scalar sum (borrow); foldBytes
+                // folds a closure over the bytes and returns a scalar (reads the buffer only).
+                || func == "axion_buf_sum"
+                || func == "axion_fold_bytes"
                 || func == "axion_str_cmp"
                 // OS capability layer (§pass): effectful primitives that READ their
                 // String args (no free) and return a scalar Int.
@@ -391,6 +419,17 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 // vec is dropped exactly once at its final binding, like Array.
                 e.produces = Some(Res {
                     key: Some("TritVec".into()),
+                    parent: None,
+                    slot: None,
+                });
+            } else if func == "axion_buf_new" || func == "axion_buf_iota" || func == "axion_buf_xor"
+            {
+                // Buffer (§4): `newBuffer` allocates; `bufIota`/`xorInPlace` CONSUME the old
+                // buffer (arg 0, moved above) and return the same in-place handle — all produce a
+                // Buffer the caller reclaims via `axion_buf_free`, so a threaded buffer is dropped
+                // exactly once at its final binding. Matches the owned-key inference in core.rs.
+                e.produces = Some(Res {
+                    key: Some("Buffer".into()),
                     parent: None,
                     slot: None,
                 });

@@ -17,18 +17,20 @@
     ret 0  ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t0
   else
+  let _d1000000 = rtcall axion_fold_bytes _t0 0 buf  ; Δ{_t0}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let _t0 = call encrypt buf  ; Δ{}
+  let _t0 = call encrypt buf  ; Δ{} · makes Buffer
   let _t0 = closure lam$0  ; Δ{} · makes heap
   let sig = call checksum buf  ; Δ{}
   ret + _op0 _op1  ; Δ{}
   ret 0  ; Δ{}
+  ret _d1000000  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
-  ret rtcall axion_buf_xor buf 90  ; Δ{}
-  ret rtcall axion_fold_bytes _t0 0 buf  ; Δ{_t0} · moves{_t0}
-  ret tuple sig _t0  ; Δ{} · makes heap
+  ret rtcall axion_buf_xor buf 90  ; Δ{} · makes Buffer
+  ret tuple sig _t0  ; Δ{_t0} · moves{_t0} · makes heap
 axion_drop_Array _p  =
 axion_drop_List _p  =
 checksum buf  =

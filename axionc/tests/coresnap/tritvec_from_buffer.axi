@@ -28,10 +28,10 @@
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _t0 = == i n  ; Δ{}
-  let _t0 = rtcall axion_buf_new 5  ; Δ{}
-  let b = rtcall axion_buf_iota _t0  ; Δ{}
-  let done = rtcall axion_buf_free b  ; Δ{t}
-  let t = rtcall axion_tritvec_from_buffer b 25  ; Δ{} · makes TritVec
+  let _t0 = rtcall axion_buf_new 5  ; Δ{} · makes Buffer
+  let b = rtcall axion_buf_iota _t0  ; Δ{_t0} · moves{_t0} · makes Buffer
+  let done = rtcall axion_buf_free b  ; Δ{b t} · moves{b}
+  let t = rtcall axion_tritvec_from_buffer b 25  ; Δ{b} · makes TritVec
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
   ret if _t0 then

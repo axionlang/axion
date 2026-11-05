@@ -42,6 +42,10 @@ const MUST_USE_PRIMS: &[&str] = &[
     "Buffer",
     "Sock",
     "Listener",
+    // §18: a linear FFI resource handle (`Handle a`, e.g. an SDL Window*/Renderer*). Must-use so a
+    // handle can't be dropped (leaked), double-destroyed, or used after destroy — enforced when it
+    // is threaded as a `%1` parameter; consumed by an `Own`-annotated destroyer FFI.
+    "Handle",
 ];
 
 /// A `free` injected by Auto-Drop at the death point of a linear resource.
@@ -1405,8 +1409,22 @@ pub fn builtins() -> HashSet<String> {
         "xorInPlace",
         "sumBytes",
         "free",
+        "peekU8",
+        "peekU16",
+        "peekU32",
+        "peekU64",
+        "peekF64",
+        "pokeU8",
+        "pokeU16",
+        "pokeU64",
+        "pokeF64",
+        "bufPtr",
+        "bufPtrN",
         "foldBytes",
         "imperative",
+        "intToPtr",
+        "ptrToInt",
+        "nullPtr",
         // linear dense Array
         "newArray",
         "getArray",
@@ -2071,7 +2089,7 @@ fn resolve_expr(
             // always valid and skipped here. (`:`/`.`/`$` never reach `BinOp` — the
             // parser desugars them to `Cons`/`compose`/application.)
             const BUILTIN_OPS: &[&str] = &[
-                "+", "-", "*", "==", "<", ">", "++", "+.", "-.", "*.", "/.", "==.", "<.", ">.",
+                "+", "-", "*", "/", "==", "<", ">", "++", "+.", "-.", "*.", "/.", "==.", "<.", ">.",
             ];
             // Only SYMBOLIC operators (`<+>`) are resolved: an alphabetic backtick name
             // (`` `mod` ``, `` `div` ``) may be a builtin that lives outside `globals`, so
@@ -2248,6 +2266,16 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("sumBytes".to_string(), vec![Mult::Many]);
     consumers.insert("newBuffer".to_string(), vec![Mult::Many]);
     consumers.insert("withBuffer".to_string(), vec![Mult::Many, Mult::Many]);
+    // Buffer peek/poke + bufPtr all BORROW the buffer (read/write in place, no consume), so the
+    // same buffer stays usable across many ops — every arg is Mult::Many.
+    for n in [
+        "peekU8", "peekU16", "peekU32", "peekU64", "peekF64", "bufPtr", "bufPtrN",
+    ] {
+        consumers.insert(n.to_string(), vec![Mult::Many, Mult::Many]);
+    }
+    for n in ["pokeU8", "pokeU16", "pokeU32", "pokeU64", "pokeF64"] {
+        consumers.insert(n.to_string(), vec![Mult::Many, Mult::Many, Mult::Many]);
+    }
     // Array (§A Phase 2): setArray consumes the array (in-place), others borrow.
     consumers.insert("newArray".to_string(), vec![Mult::Many, Mult::Many]);
     consumers.insert("getArray".to_string(), vec![Mult::Many, Mult::Many]);
@@ -2341,10 +2369,16 @@ fn build_ctx(module: &Module) -> Ctx {
         "pipe3".to_string(),
         vec![Mult::Many, Mult::Many, Mult::Many],
     );
-    // FFI imports: the arguments (Int) are borrowed.
+    // FFI imports (§18): each arg is borrowed by default (Axión keeps + frees it once), except an
+    // `Own T` arg whose ownership transfers to C — that one is CONSUMED (Mult::One), so reusing it
+    // after the call is AX0001 and Axión does not also free it.
     for fo in &module.foreigns {
-        let arity = fo.sig.param_mults().len();
-        consumers.insert(fo.name.clone(), vec![Mult::Many; arity]);
+        let (kinds, _) = fo.ffi_kinds();
+        let mults = kinds
+            .iter()
+            .map(|&(own, _)| if own { Mult::One } else { Mult::Many })
+            .collect();
+        consumers.insert(fo.name.clone(), mults);
     }
     let data_names: HashSet<String> = module.datas.iter().map(|d| d.name.clone()).collect();
     // functions whose result type is a heap value (`data`/tuple) — a `let z = f a`

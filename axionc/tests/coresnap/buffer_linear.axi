@@ -18,14 +18,14 @@
   else
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let b0 = rtcall axion_buf_new 1000  ; Δ{}
-  let b1 = rtcall axion_buf_iota b0  ; Δ{}
-  let b2 = call encrypt b1  ; Δ{}
-  let done = rtcall axion_buf_free b2  ; Δ{}
-  let s = rtcall axion_buf_sum b2  ; Δ{}
+  let b0 = rtcall axion_buf_new 1000  ; Δ{} · makes Buffer
+  let b1 = rtcall axion_buf_iota b0  ; Δ{b0} · moves{b0} · makes Buffer
+  let b2 = call encrypt b1  ; Δ{b1} · moves{b1} · makes Buffer
+  let done = rtcall axion_buf_free b2  ; Δ{b2} · moves{b2}
+  let s = rtcall axion_buf_sum b2  ; Δ{b2}
   ret 0  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
-  ret rtcall axion_buf_xor buf 90  ; Δ{}
+  ret rtcall axion_buf_xor buf 90  ; Δ{} · makes Buffer
   ret s  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =

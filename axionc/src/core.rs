@@ -35,6 +35,24 @@ pub enum Atom {
     Var(String),
 }
 
+/// Per-argument descriptor for an FFI call (§18): `float` = passed/returned as an f64 in an FP
+/// register (an Axión `Float`, whose runtime i64 is its f64 bit-pattern); `own` = ownership
+/// transfers to C (the arg is consumed and Axión must not free it — the `Own T` annotation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfiArg {
+    pub float: bool,
+    pub own: bool,
+}
+
+/// What a `foreign` import resolves to at lowering: the `dlsym` C symbol plus the per-arg kinds
+/// and result-float flag derived from its (wrapper-stripped) signature.
+#[derive(Debug, Clone)]
+pub struct ForeignInfo {
+    pub symbol: String,
+    pub arg_kinds: Vec<FfiArg>,
+    pub ret_float: bool,
+}
+
 /// A leaf computation (right-hand side of a `let`, no control).
 #[derive(Debug, Clone)]
 pub enum Op {
@@ -135,11 +153,14 @@ pub enum Op {
         args: Vec<Atom>,
         returns: bool,
     },
-    /// FFI call (§18): the C function `name` with the Int ABI (i64), resolved by
-    /// `dlsym`. Returns i64.
+    /// FFI call (§18): the C function `name`, resolved by `dlsym`. Each arg passes as i64
+    /// (pointers/handles/Int) or f64 (`Float`, in an FP register) per `arg_kinds`; the result is
+    /// i64 unless `ret_float`. `arg_kinds[i].own` marks an arg whose ownership transfers to C.
     Ffi {
         name: String,
         args: Vec<Atom>,
+        arg_kinds: Vec<FfiArg>,
+        ret_float: bool,
     },
     /// AST shape outside the native subset — codegen rejects with this text
     Unsupported(String),
@@ -254,7 +275,13 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         Some(
             "Int" | "Integer" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark"
             | "Buffer" | "Array" | "TritVec" | "I8Array" | "I32Array" | "()" | "U8" | "U16" | "U32"
-            | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte",
+            | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte"
+            // `Ptr a` (§18): an opaque, type-safe C handle — a raw i64 pointer, never reclaimed
+            // (absent from the heap/drop lists), so functions over `Ptr` lower like any scalar.
+            | "Ptr"
+            // `Handle a` (§18): a linear FFI resource handle — a raw i64, destroyed via an FFI
+            // (never `axion_free`), so like `Ptr` it lowers as a scalar and is not auto-reclaimed.
+            | "Handle",
         ) => true,
         Some(h) => data_types.contains(h),
         None => false,
@@ -282,7 +309,9 @@ fn ret_ty_key(rt: &Type, boxed: &HashSet<String>) -> Option<String> {
     }
     let h = rt.head_con()?;
     match h {
-        "Array" | "TritVec" | "I8Array" | "I32Array" | "String" | "Integer" => Some(h.to_string()),
+        "Array" | "TritVec" | "I8Array" | "I32Array" | "String" | "Integer" | "Buffer" => {
+            Some(h.to_string())
+        }
         _ if boxed.contains(h) => Some(mono_key(rt).unwrap_or_else(|| h.to_string())),
         _ => None,
     }
@@ -477,6 +506,19 @@ pub fn is_scalar_reader(func: &str) -> bool {
         "axion_str_len"
             | "axion_str_at"
             | "axion_poke_u32"
+            | "axion_poke_u8"
+            | "axion_poke_u16"
+            | "axion_poke_u64"
+            | "axion_poke_f64"
+            | "axion_peek_u8"
+            | "axion_peek_u16"
+            | "axion_peek_u32"
+            | "axion_peek_u64"
+            | "axion_peek_f64"
+            | "axion_buf_ptr"
+            | "axion_buf_ptr_n"
+            | "axion_buf_sum"
+            | "axion_fold_bytes"
             | "axion_str_cmp"
             | "axion_system"
             | "axion_exec_status"
@@ -522,6 +564,17 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "strLen" => ("axion_str_len", 1),
         "charAt" => ("axion_str_at", 2),
         "pokeU32" => ("axion_poke_u32", 3),
+        "pokeU8" => ("axion_poke_u8", 3),
+        "pokeU16" => ("axion_poke_u16", 3),
+        "pokeU64" => ("axion_poke_u64", 3),
+        "pokeF64" => ("axion_poke_f64", 3),
+        "peekU8" => ("axion_peek_u8", 2),
+        "peekU16" => ("axion_peek_u16", 2),
+        "peekU32" => ("axion_peek_u32", 2),
+        "peekU64" => ("axion_peek_u64", 2),
+        "peekF64" => ("axion_peek_f64", 2),
+        "bufPtr" => ("axion_buf_ptr", 1),
+        "bufPtrN" => ("axion_buf_ptr_n", 2),
         "strCmp" => ("axion_str_cmp", 2),
         "substr" => ("axion_substr", 3),
         "getEnv" => ("axion_getenv", 1),
@@ -1504,6 +1557,8 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "promote",
         "arena_mark",
         "arena_release",
+        "intToPtr",
+        "ptrToInt",
         "newBuffer",
         "withBuffer",
         "bufIota",
@@ -1556,6 +1611,17 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "strLen",
         "charAt",
         "pokeU32",
+        "pokeU8",
+        "pokeU16",
+        "pokeU64",
+        "pokeF64",
+        "peekU8",
+        "peekU16",
+        "peekU32",
+        "peekU64",
+        "peekF64",
+        "bufPtr",
+        "bufPtrN",
         "substr",
     ] {
         g.insert(b.to_string());
@@ -1575,9 +1641,10 @@ struct Lower<'a> {
     lam_meta: &'a LamMeta,
     /// spans of the `RecordUpd`s eligible for in-place mutation (Linear Elision, §2)
     inplace: &'a HashSet<Span>,
-    /// FFI imports (§18): Axión name → C `dlsym` symbol. Called via `Op::Ffi`, which
-    /// carries the C SYMBOL (so an aliased `sdlInit = "SDL_Init"` resolves `SDL_Init`).
-    foreigns: &'a HashMap<String, String>,
+    /// FFI imports (§18): Axión name → resolved target (C `dlsym` symbol + per-arg kinds +
+    /// result-float flag). Called via `Op::Ffi`, which carries the C SYMBOL (so an aliased
+    /// `sdlInit = "SDL_Init"` resolves `SDL_Init`) and the arg kinds for the float/own ABI.
+    foreigns: &'a HashMap<String, ForeignInfo>,
     /// Phase A′: constructor → `data`-type name of its value (None for unboxed
     /// enum constructors — immediate tags, never dropped). Attached to `Make*`.
     con_ty: &'a HashMap<String, Option<String>>,
@@ -1646,6 +1713,11 @@ impl Lower<'_> {
             Expr::Float(f, _) => Atom::Float(*f),
             Expr::Str(s, _) => Atom::Str(s.clone()),
             Expr::Var(n, _) => {
+                // `nullPtr` (§18) is the null opaque handle — a compile-time constant 0 (the C
+                // NULL), not a CAF; lowering it to an immediate avoids a polymorphic nullary CAF.
+                if n == "nullPtr" {
+                    return Atom::Int(0);
+                }
                 // A bare reference to a nullary global — a top-level CAF (`x = 5`) or a
                 // captured `where`-local thunk — is a zero-arg call, not a local
                 // variable. Route it through call_named so the mangling and any
@@ -1883,6 +1955,36 @@ impl Lower<'_> {
         if name == "pokeU32" && args.len() == 3 {
             return self.rtcall("axion_poke_u32", &args, true, buf);
         }
+        // Buffer peek/poke family + the FFI data-pointer accessor (see sess_builtin_rt map).
+        if args.len() == 3 {
+            if let Some(f) = match name.as_str() {
+                "pokeU8" => Some("axion_poke_u8"),
+                "pokeU16" => Some("axion_poke_u16"),
+                "pokeU64" => Some("axion_poke_u64"),
+                "pokeF64" => Some("axion_poke_f64"),
+                _ => None,
+            } {
+                return self.rtcall(f, &args, true, buf);
+            }
+        }
+        if args.len() == 2 {
+            if let Some(f) = match name.as_str() {
+                "peekU8" => Some("axion_peek_u8"),
+                "peekU16" => Some("axion_peek_u16"),
+                "peekU32" => Some("axion_peek_u32"),
+                "peekU64" => Some("axion_peek_u64"),
+                "peekF64" => Some("axion_peek_f64"),
+                _ => None,
+            } {
+                return self.rtcall(f, &args, true, buf);
+            }
+        }
+        if name == "bufPtr" && args.len() == 1 {
+            return self.rtcall("axion_buf_ptr", &args, true, buf);
+        }
+        if name == "bufPtrN" && args.len() == 2 {
+            return self.rtcall("axion_buf_ptr_n", &args, true, buf);
+        }
         if name == "strCmp" && args.len() == 2 {
             return self.rtcall("axion_str_cmp", &args, true, buf);
         }
@@ -2073,6 +2175,8 @@ impl Lower<'_> {
             ("i32MatVecSum", 3) => return self.rtcall("axion_i32_matvec_sum", &args, true, buf),
             // `imperative e` = e (the imperative block is identity; §5)
             ("imperative", 1) => return self.op(args[0], buf),
+            // Ptr casts (§18): `Ptr a` is a reinterpreted i64, so intToPtr/ptrToInt are identity.
+            ("intToPtr", 1) | ("ptrToInt", 1) => return self.op(args[0], buf),
             // withBuffer n f = f (newBuffer n): allocates and passes to the closure (which consumes)
             ("withBuffer", 2) => {
                 let n = self.atom(args[0], buf);
@@ -2274,12 +2378,24 @@ impl Lower<'_> {
     /// function type (indirect call). Shared between normal application and the
     /// operadores infixos de utilizador.
     fn call_named(&self, name: &str, vals: Vec<Atom>) -> Op {
-        if let Some(sym) = self.foreigns.get(name) {
-            // FFI import (§18): C call with the Int ABI. Emit the C SYMBOL (the `dlsym`
-            // target), not the Axión binding name, so an alias `sdlInit = "SDL_Init"` works.
+        if let Some(info) = self.foreigns.get(name) {
+            // FFI import (§18): C call. Emit the C SYMBOL (the `dlsym` target), not the Axión
+            // binding name, so an alias `sdlInit = "SDL_Init"` works; carry the per-arg kinds
+            // (float/own) so the backends pick the right ABI and the verifier the right ownership.
+            // Pad/truncate the kinds to the actual arg count (exact-arity FFI calls align 1:1).
+            let mut arg_kinds = info.arg_kinds.clone();
+            arg_kinds.resize(
+                vals.len(),
+                FfiArg {
+                    float: false,
+                    own: false,
+                },
+            );
             Op::Ffi {
-                name: sym.clone(),
+                name: info.symbol.clone(),
                 args: vals,
+                arg_kinds,
+                ret_float: info.ret_float,
             }
         } else if self.globals.contains(name) && !self.local_names.contains(name) {
             // top-level function / `where` local (resolves the mangling). `local_names`
@@ -2685,7 +2801,7 @@ fn lower_func(
     fields: &HashSet<String>,
     lam_meta: &LamMeta,
     inplace: &HashSet<Span>,
-    foreigns: &HashMap<String, String>,
+    foreigns: &HashMap<String, ForeignInfo>,
     data_types: &HashSet<String>,
     single_con: &HashSet<String>,
     con_ty: &HashMap<String, Option<String>>,
@@ -2987,6 +3103,8 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         funcs,
         datas: module.datas.clone(),
         foreigns: module.foreigns.clone(),
+        foreign_structs: module.foreign_structs.clone(),
+        foreign_enums: module.foreign_enums.clone(),
         classes: module.classes.clone(),
         instances: module.instances.clone(),
         level_ceiling: module.level_ceiling,
@@ -4621,10 +4739,23 @@ pub fn lower_with(
             }
         }
     }
-    let foreigns: HashMap<String, String> = module
+    let foreigns: HashMap<String, ForeignInfo> = module
         .foreigns
         .iter()
-        .map(|f| (f.name.clone(), f.c_symbol()))
+        .map(|f| {
+            let (kinds, ret_float) = f.ffi_kinds();
+            (
+                f.name.clone(),
+                ForeignInfo {
+                    symbol: f.c_symbol(),
+                    arg_kinds: kinds
+                        .into_iter()
+                        .map(|(own, float)| FfiArg { float, own })
+                        .collect(),
+                    ret_float,
+                },
+            )
+        })
         .collect();
     // Phase A′: constructor → `data`-type name of its value (None for unboxed enum
     // constructors — immediate tags, never dropped). Attached to `MakeCon`/`MakeRecord`
@@ -5711,6 +5842,11 @@ fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term
                 args: vec![Atom::Var(fp.clone())],
                 returns: false,
             },
+            DropWay::Buf => Op::RtCall {
+                func: "axion_buf_free".into(),
+                args: vec![Atom::Var(fp.clone())],
+                returns: false,
+            },
             // non-heap fields are filtered out before this point; skip defensively
             // so a stray `None` never emits a wild `free`.
             DropWay::None => continue,
@@ -5970,6 +6106,11 @@ fn emit_field_copies(
                 args: vec![Atom::Var(child.clone())],
                 returns: true,
             },
+            DropWay::Buf => Op::RtCall {
+                func: "axion_buf_copy".into(),
+                args: vec![Atom::Var(child.clone())],
+                returns: true,
+            },
             DropWay::None => continue,
         };
         term = Term::Let(
@@ -6089,6 +6230,7 @@ enum DropWay {
     Deep(String), // needs the destructor `axion_drop_<key>`
     Str,          // a `String` field → `axion_str_drop` (frees a heap string, skips a literal)
     Bignum,       // an `Integer` field → `axion_bignum_free` (frees the boxed BigNum + limbs)
+    Buf,          // a `Buffer a` → `axion_buf_free` (frees the libc-malloc'd header pointer)
     None,         // not a heap object (Int/function/tuple) → nothing to do
 }
 
@@ -6128,8 +6270,13 @@ fn drop_way(
     if head == "Integer" {
         return DropWay::Bignum;
     }
+    // a `Buffer a` is a linear byte buffer (libc-malloc, header-pointer layout) → axion_buf_free.
+    // This makes `newBuffer` results (and `withBuffer`'s internal buffer) auto-reclaimed.
+    if head == "Buffer" {
+        return DropWay::Buf;
+    }
     if recinfo.type_cons(head).is_none() {
-        return DropWay::None; // not a `data` type (Int/Buffer/function/tuple)
+        return DropWay::None; // not a `data` type (Int/function/tuple)
     }
     // a PARAMETRIC data type instantiated with a concrete arg (List P) → the
     // specialized destructor (and it may reference further instantiations).
@@ -6452,6 +6599,11 @@ fn gen_tuple_destructors(
                         args: vec![Atom::Var(fp.clone())],
                         returns: false,
                     },
+                    DropWay::Buf => Op::RtCall {
+                        func: "axion_buf_free".into(),
+                        args: vec![Atom::Var(fp.clone())],
+                        returns: false,
+                    },
                     DropWay::None => continue,
                 };
                 body = Term::Let(
@@ -6688,6 +6840,17 @@ impl Op {
             // tritVecFromBuffer produces a fresh owned TritVec (borrows the buffer).
             Op::RtCall { func, .. } if func == "axion_tritvec_from_buffer" => {
                 Some("TritVec".into())
+            }
+            // Buffer (§4): `newBuffer` allocates a fresh owned byte buffer, reclaimed by
+            // `axion_buf_free` (see the `Some("Buffer")` arm in `emit_drop`). `bufIota`/
+            // `xorInPlace` thread the SAME buffer through (in-place), so the threaded result
+            // stays the one owned binding, like `axion_tritvec_set`.
+            Op::RtCall { func, .. }
+                if func == "axion_buf_new"
+                    || func == "axion_buf_iota"
+                    || func == "axion_buf_xor" =>
+            {
+                Some("Buffer".into())
             }
             // bulk builders: fresh owned resources reclaimed like their _new kin.
             Op::RtCall { func, .. } if func == "axion_tritvec_iota" => Some("TritVec".into()),
@@ -10747,7 +10910,31 @@ pub fn dump_op(op: &Op) -> String {
         Op::ArenaMark(a) => format!("arena_mark {}", atom(a)),
         Op::ArenaRelease(a) => format!("arena_release {}", atom(a)),
         Op::RtCall { func, args, .. } => format!("rtcall {func}{}", self::args(args)),
-        Op::Ffi { name, args } => format!("ffi {name}{}", self::args(args)),
+        Op::Ffi {
+            name,
+            args,
+            arg_kinds,
+            ret_float,
+        } => {
+            // Default (all-borrow, no float) renders exactly as before, so existing FFI snapshots
+            // don't churn; float/own args and a float result add a compact `[..]` suffix.
+            let suffix = if *ret_float || arg_kinds.iter().any(|k| k.float || k.own) {
+                let flags: String = arg_kinds
+                    .iter()
+                    .map(|k| match (k.float, k.own) {
+                        (true, true) => "fo",
+                        (true, false) => "f",
+                        (false, true) => "o",
+                        _ => "-",
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(" [{flags}{}]", if *ret_float { "->f" } else { "" })
+            } else {
+                String::new()
+            };
+            format!("ffi {name}{}{suffix}", self::args(args))
+        }
         Op::ArrayNew { len, init, .. } => {
             format!("newArray {} {}", atom(len), atom(init))
         }

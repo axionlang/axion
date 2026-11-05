@@ -125,6 +125,18 @@ impl Cg {
             ("axion_buf_xor", 2, true),
             ("axion_buf_sum", 1, true),
             ("axion_buf_free", 1, true),
+            ("axion_buf_copy", 1, true),
+            ("axion_buf_ptr", 1, true),
+            ("axion_buf_ptr_n", 2, true),
+            ("axion_peek_u8", 2, true),
+            ("axion_peek_u16", 2, true),
+            ("axion_peek_u32", 2, true),
+            ("axion_peek_u64", 2, true),
+            ("axion_peek_f64", 2, true),
+            ("axion_poke_u8", 3, true),
+            ("axion_poke_u16", 3, true),
+            ("axion_poke_u64", 3, true),
+            ("axion_poke_f64", 3, true),
             ("axion_fold_bytes", 3, true),
             ("axion_array_new", 2, true),
             ("axion_array_get", 2, true),
@@ -292,7 +304,7 @@ impl Cg {
             }
         }
         reclaim.insert(self.free_id.as_u32(), "axion_free".to_string());
-        for rt in ["axion_str_drop", "axion_bignum_free"] {
+        for rt in ["axion_str_drop", "axion_bignum_free", "axion_buf_free"] {
             if let Some((id, _)) = self.rt_fns.get(rt) {
                 reclaim.insert(id.as_u32(), rt.to_string());
             }
@@ -544,6 +556,15 @@ impl Fx<'_, '_> {
         // never the plain `axion_free`, which would leak the limb allocation.
         if ty == Some("Integer") {
             let (id, _) = self.rt_fns["axion_bignum_free"];
+            let callee = self.module.declare_func_in_func(id, self.builder.func);
+            self.builder.ins().call(callee, &[ptr]);
+            return Ok(());
+        }
+        // a Buffer is a libc-malloc'd header pointer → `axion_buf_free` (frees the header
+        // directly); never `axion_free`, which assumes an axion_alloc data pointer (header at
+        // -8) and would free the wrong address.
+        if ty == Some("Buffer") {
+            let (id, _) = self.rt_fns["axion_buf_free"];
             let callee = self.module.declare_func_in_func(id, self.builder.func);
             self.builder.ins().call(callee, &[ptr]);
             return Ok(());
@@ -981,22 +1002,50 @@ impl Fx<'_, '_> {
                     self.builder.ins().iconst(types::I64, 0)
                 }))
             }
-            Op::Ffi { name, args } => {
-                // FFI (§18): declares the C function (Int ABI) and calls it; the symbol
-                // resolved via dlsym (symbol_lookup_fn).
+            Op::Ffi {
+                name,
+                args,
+                arg_kinds,
+                ret_float,
+            } => {
+                // FFI (§18): declare the C function with the right ABI and call it (symbol
+                // resolved via dlsym). A `Float` arg/result is an F64 in an FP register; Axión's
+                // Float is the f64 bit-pattern in an i64, so bitcast at the boundary.
                 let mut sig = self.module.make_signature();
-                for _ in args {
-                    sig.params.push(AbiParam::new(types::I64));
+                for (i, _) in args.iter().enumerate() {
+                    let ty = if arg_kinds.get(i).is_some_and(|k| k.float) {
+                        types::F64
+                    } else {
+                        types::I64
+                    };
+                    sig.params.push(AbiParam::new(ty));
                 }
-                sig.returns.push(AbiParam::new(types::I64));
+                sig.returns
+                    .push(AbiParam::new(if *ret_float { types::F64 } else { types::I64 }));
                 let id = self
                     .module
                     .declare_function(name, Linkage::Import, &sig)
                     .map_err(|e| e.to_string())?;
                 let vals = self.atoms(args)?;
+                let vals: Vec<Value> = vals
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| {
+                        if arg_kinds.get(i).is_some_and(|k| k.float) {
+                            self.builder.ins().bitcast(types::F64, MemFlags::new(), v)
+                        } else {
+                            v
+                        }
+                    })
+                    .collect();
                 let callee = self.module.declare_func_in_func(id, self.builder.func);
                 let call = self.builder.ins().call(callee, &vals);
-                Ok(self.builder.inst_results(call)[0])
+                let r = self.builder.inst_results(call)[0];
+                Ok(if *ret_float {
+                    self.builder.ins().bitcast(types::I64, MemFlags::new(), r)
+                } else {
+                    r
+                })
             }
             Op::ArrayNew { len, init, .. } => {
                 let vals = self.atoms(&[len.clone(), init.clone()])?;

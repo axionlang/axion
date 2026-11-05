@@ -38,7 +38,7 @@ pub type FixityTable = HashMap<String, (u8, Assoc)>;
 pub fn op_fixity(op: &str, user: &FixityTable) -> (u8, Assoc) {
     match op {
         "." => (9, Assoc::Right),
-        "*" | "*." | "/." => (7, Assoc::Left),
+        "*" | "*." | "/" | "/." => (7, Assoc::Left),
         "+" | "-" | "+." | "-." => (6, Assoc::Left),
         ":" | "++" => (5, Assoc::Right),
         "==" | "<" | ">" | "<=" | ">=" | "==." | "<." | ">." => (4, Assoc::Left),
@@ -141,6 +141,8 @@ fn build_module(items: Vec<TopItem>) -> Module {
         funcs: asm.funcs,
         datas: asm.datas,
         foreigns: asm.foreigns,
+        foreign_structs: asm.foreign_structs,
+        foreign_enums: asm.foreign_enums,
         classes: asm.classes,
         instances: asm.instances,
         level_ceiling: None, // filled from the source pragma in main.rs
@@ -183,6 +185,8 @@ enum TopItem {
     Foreign(Foreign),
     Class(ClassDecl),
     Instance(InstanceDecl),
+    ForeignStruct(crate::ast::ForeignStruct),
+    ForeignEnum(crate::ast::ForeignEnum),
     /// A fixity declaration (`infixl 6 <+>`) — consumed so it isn't mis-parsed as a
     /// function; the actual table is built by the [`scan_fixities`] pre-scan.
     Fixity,
@@ -193,6 +197,8 @@ struct Assembled {
     funcs: Vec<Func>,
     datas: Vec<DataDecl>,
     foreigns: Vec<Foreign>,
+    foreign_structs: Vec<crate::ast::ForeignStruct>,
+    foreign_enums: Vec<crate::ast::ForeignEnum>,
     classes: Vec<ClassDecl>,
     instances: Vec<InstanceDecl>,
 }
@@ -206,6 +212,8 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
         match it {
             TopItem::ModuleName(_) | TopItem::Import(_) | TopItem::Fixity => {} // collected/ignored
             TopItem::Foreign(f) => asm.foreigns.push(f),
+            TopItem::ForeignStruct(s) => asm.foreign_structs.push(s),
+            TopItem::ForeignEnum(e) => asm.foreign_enums.push(e),
             TopItem::Data(d) => asm.datas.push(d),
             TopItem::Class(c) => asm.classes.push(c),
             TopItem::Instance(i) => asm.instances.push(i),
@@ -452,7 +460,15 @@ impl<'a> Parser<'a> {
         if self.at(&Tok::Foreign) {
             let start = self.span_here().0;
             self.bump(); // foreign
-                         // caminho de biblioteca opcional: `foreign "libfoo.so" nome :: …`
+            // `foreign struct Name { f: T, ... }` — a C-ABI struct declaration (§18).
+            if matches!(self.cur(), Some(LTok::Tok(Tok::VarId(k))) if k == "struct") {
+                return self.parse_foreign_struct(start);
+            }
+            // `foreign enum Name { M = v, ... }` — named C-integer constants (§18).
+            if matches!(self.cur(), Some(LTok::Tok(Tok::VarId(k))) if k == "enum") {
+                return self.parse_foreign_enum(start);
+            }
+            // caminho de biblioteca opcional: `foreign "libfoo.so" nome :: …`
             let lib = if let Some(LTok::Tok(Tok::Str(v))) = self.cur() {
                 let v = v.clone();
                 self.bump();
@@ -790,6 +806,64 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `foreign struct Name { f :: T, … }` (§18) — `foreign` already consumed, cursor at `struct`.
+    fn parse_foreign_struct(&mut self, start: usize) -> PResult<TopItem> {
+        self.bump(); // `struct` (a VarId)
+        let name = self.con_name("foreign struct name")?;
+        self.expect(&Tok::LBrace, "'{' in a foreign struct")?;
+        let mut fields = Vec::new();
+        if !self.at(&Tok::RBrace) {
+            fields.push(self.parse_field()?);
+            while self.eat(&Tok::Comma) {
+                fields.push(self.parse_field()?);
+            }
+        }
+        self.expect(&Tok::RBrace, "'}' in a foreign struct")?;
+        let end = self.span_here().0;
+        Ok(TopItem::ForeignStruct(crate::ast::ForeignStruct {
+            name,
+            fields,
+            span: (start, end),
+        }))
+    }
+
+    /// `foreign enum Name { M [= int], … }` (§18) — `foreign` already consumed, cursor at `enum`.
+    /// An omitted value auto-increments from the previous member (C semantics); the first is 0.
+    fn parse_foreign_enum(&mut self, start: usize) -> PResult<TopItem> {
+        self.bump(); // `enum` (a VarId)
+        let name = self.con_name("foreign enum name")?;
+        self.expect(&Tok::LBrace, "'{' in a foreign enum")?;
+        let mut members = Vec::new();
+        let mut next = 0i64;
+        while !self.at(&Tok::RBrace) {
+            let m = self.con_name("enum member name")?;
+            let val = if self.eat(&Tok::Equals) {
+                match self.cur() {
+                    Some(LTok::Tok(Tok::Int(crate::lexer::IntLit::Small(n)))) => {
+                        let n = *n;
+                        self.bump();
+                        n
+                    }
+                    _ => return Err(self.syntax_err("an integer after '=' in an enum member")),
+                }
+            } else {
+                next
+            };
+            members.push((m, val));
+            next = val + 1;
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RBrace, "'}' in a foreign enum")?;
+        let end = self.span_here().0;
+        Ok(TopItem::ForeignEnum(crate::ast::ForeignEnum {
+            name,
+            members,
+            span: (start, end),
+        }))
+    }
+
     fn parse_field(&mut self) -> PResult<Field> {
         let (name, _) = self.var_name("field name")?;
         self.expect(&Tok::ColonColon, "'::' in the field")?;
@@ -1000,8 +1074,24 @@ impl<'a> Parser<'a> {
             Some(LTok::Tok(Tok::Case)) => self.parse_case(),
             Some(LTok::Tok(Tok::Backslash)) => self.parse_lam(),
             Some(LTok::Tok(Tok::Do)) => self.parse_do(),
+            Some(LTok::Tok(Tok::Borrow)) => self.parse_borrow(),
             _ => self.parse_dollar(),
         }
+    }
+
+    /// `borrow <buf> as <p> in <body>` (§18 FFI): lease the buffer's data pointer as `p` for the
+    /// scope of `body`, keeping the buffer live across it, then reclaim it. Desugars (shared with
+    /// the CST parser, so both agree) via [`ast::desugar_borrow`].
+    fn parse_borrow(&mut self) -> PResult<Expr> {
+        let start = self.span_here().0;
+        self.bump(); // borrow
+        let buf = self.parse_dollar()?; // the buffer expression (stops at `as`)
+        self.expect(&Tok::As, "'as' in a borrow scope")?;
+        let (ptr, _) = self.var_name("the pointer name in a borrow scope")?;
+        self.expect(&Tok::In, "'in' in a borrow scope")?;
+        let body = self.parse_expr()?;
+        let end = self.span_here().0;
+        Ok(crate::ast::desugar_borrow(buf, ptr, body, (start, end)))
     }
 
     /// `f $ x` = `f x` — low-precedence application, right-associative.

@@ -20,7 +20,9 @@ pub struct Program {
     funcs: HashMap<String, Rc<Func>>,
     cons: HashMap<String, Vec<String>>, // constructor → field names (in order)
     selectors: HashSet<String>,         // field names usable as selectors
-    foreigns: HashMap<String, (String, usize)>, // FFI: Axión name → (dlsym C symbol, arity)
+    // FFI: Axión name → (dlsym C symbol, arity, interp-safe). `interp_safe` (§18 #4) is false for
+    // float/pointer/arity>3 signatures the interp cannot execute faithfully — those are native-only.
+    foreigns: HashMap<String, (String, usize, bool)>,
     methods: HashSet<String>,           // typeclass method names (dynamic dispatch)
     con_type: HashMap<String, String>,  // constructor → data type name (for dispatch)
 }
@@ -66,10 +68,13 @@ enum Value {
     Selector {
         field: String,
     },
-    /// An FFI import (§18) not yet applied (Int ABI; resolved by dlsym).
+    /// An FFI import (§18) not yet applied (Int ABI; resolved by dlsym). `interp_safe` is false for
+    /// signatures the interpreter cannot call faithfully (float/pointer args, arity > 3) — those
+    /// are native-only and refused explicitly at the call site (§18 #4).
     Foreign {
         name: String,
         arity: usize,
+        interp_safe: bool,
         args: Vec<Value>,
     },
     /// A dense linear `Array` (§A). `Rc<RefCell<…>>` models the native in-place semantics:
@@ -153,7 +158,12 @@ fn build_program(module: &Module) -> Program {
     let foreigns = module
         .foreigns
         .iter()
-        .map(|f| (f.name.clone(), (f.c_symbol(), f.sig.param_mults().len())))
+        .map(|f| {
+            (
+                f.name.clone(),
+                (f.c_symbol(), f.sig.param_mults().len(), f.interp_safe()),
+            )
+        })
         .collect();
     // method names of all classes (what triggers dynamic dispatch)
     let methods = module
@@ -203,7 +213,7 @@ pub fn run_capture(module: &Module) -> Result<String, RunError> {
     // FFI (§18): loads the user's libraries into the global symbol space, so
     // `call_foreign`'s `dlsym(RTLD_DEFAULT)` finds them. No FFI in a wasm build.
     #[cfg(feature = "native")]
-    crate::ffi::load_libs(&module.foreign_libs())?;
+    crate::ffi::load_libs(&module.foreign_libs_interp())?;
     let prog = build_program(module);
     let main = prog
         .funcs
@@ -240,7 +250,7 @@ fn render_main(v: Value) -> Result<String, RunError> {
 /// default `None` sink writes each `putStr` immediately), then prints a non-IO result.
 pub fn run(module: &Module) -> Result<(), RunError> {
     #[cfg(feature = "native")]
-    crate::ffi::load_libs(&module.foreign_libs())?;
+    crate::ffi::load_libs(&module.foreign_libs_interp())?;
     let prog = build_program(module);
     let main = prog
         .funcs
@@ -289,16 +299,62 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 
 fn builtin_arity(name: &str) -> usize {
     match name {
-        "substr" | "setArray" | "readDirListing" | "pokeU32" => 3,
+        "substr" | "setArray" | "readDirListing" | "pokeU32" | "pokeU8" | "pokeU16" | "pokeU64"
+        | "pokeF64" => 3,
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
-        | "getArray" | "arrayDot" => 2,
+        | "getArray" | "arrayDot" | "peekU8" | "peekU16" | "peekU32" | "peekU64" | "peekF64"
+        | "bufPtrN" => 2,
         _ => 1,
     }
 }
 
 fn clause_arity(def: &Func) -> usize {
     def.clauses.first().map(|c| c.pats.len()).unwrap_or(0)
+}
+
+/// Read a little-endian unsigned `width`-byte word from a Buffer (modelled as a `Value::Array`
+/// of per-byte `Int`s), bounds-checked. Returns the value as `Int` (a full u64 wraps to i64,
+/// matching the native `u64 as i64`).
+fn buf_peek(buf: &Value, off: &Value, width: usize) -> Result<Value, String> {
+    let (Value::Array(a), Value::Int(o)) = (buf, off) else {
+        return Err("buffer peek: expected a Buffer and an Int offset".into());
+    };
+    let v = a.borrow();
+    let o = usize::try_from(*o).map_err(|_| "axion: buffer bounds — negative offset".to_string())?;
+    if o + width > v.len() {
+        return Err(format!(
+            "axion: buffer bounds — index {o} out of range [0, {})",
+            v.len()
+        ));
+    }
+    let mut acc: u64 = 0;
+    for i in 0..width {
+        let byte = match v.get(o + i) {
+            Some(Value::Int(x)) => (*x as u8) as u64,
+            _ => 0,
+        };
+        acc |= byte << (8 * i);
+    }
+    Ok(Value::Int(acc as i64))
+}
+
+/// Write `val` as a little-endian `width`-byte word into a Buffer, bounds-checked; returns 0.
+fn buf_poke(buf: &Value, off: &Value, val: i64, width: usize) -> Result<Value, String> {
+    let (Value::Array(a), Value::Int(o)) = (buf, off) else {
+        return Err("buffer poke: expected a Buffer and an Int offset".into());
+    };
+    let n = a.borrow().len();
+    let o = usize::try_from(*o).map_err(|_| "axion: buffer bounds — negative offset".to_string())?;
+    if o + width > n {
+        return Err(format!("axion: buffer bounds — index {o} out of range [0, {n})"));
+    }
+    let uv = val as u64;
+    let mut m = a.borrow_mut();
+    for i in 0..width {
+        m[o + i] = Value::Int(((uv >> (8 * i)) & 0xFF) as i64);
+    }
+    Ok(Value::Int(0))
 }
 
 /// Read one line from stdin (trailing newline stripped, "" at EOF). When `hide` is set
@@ -709,10 +765,11 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: name.to_string(),
         });
     }
-    if let Some((sym, arity)) = prog.foreigns.get(name) {
+    if let Some((sym, arity, interp_safe)) = prog.foreigns.get(name) {
         return Ok(Value::Foreign {
             name: sym.clone(), // the C symbol dlsym resolves (an alias binds an uppercase C name)
             arity: *arity,
+            interp_safe: *interp_safe,
             args: Vec::new(),
         });
     }
@@ -776,6 +833,60 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         }),
         "pokeU32" => Ok(Value::Builtin {
             name: "pokeU32",
+            args: Vec::new(),
+        }),
+        "newBuffer" => Ok(Value::Builtin {
+            name: "newBuffer",
+            args: Vec::new(),
+        }),
+        "bufPtr" => Ok(Value::Builtin {
+            name: "bufPtr",
+            args: Vec::new(),
+        }),
+        // `free` consumes a Buffer; in the interp the byte-array model is Rc-reclaimed, so this is a
+        // no-op returning 0 (it exists so a `borrow` scope, which desugars through `free`, runs here).
+        "free" => Ok(Value::Builtin {
+            name: "free",
+            args: Vec::new(),
+        }),
+        "bufPtrN" => Ok(Value::Builtin {
+            name: "bufPtrN",
+            args: Vec::new(),
+        }),
+        "peekU8" => Ok(Value::Builtin {
+            name: "peekU8",
+            args: Vec::new(),
+        }),
+        "peekU16" => Ok(Value::Builtin {
+            name: "peekU16",
+            args: Vec::new(),
+        }),
+        "peekU32" => Ok(Value::Builtin {
+            name: "peekU32",
+            args: Vec::new(),
+        }),
+        "peekU64" => Ok(Value::Builtin {
+            name: "peekU64",
+            args: Vec::new(),
+        }),
+        "peekF64" => Ok(Value::Builtin {
+            name: "peekF64",
+            args: Vec::new(),
+        }),
+        "pokeU8" => Ok(Value::Builtin {
+            name: "pokeU8",
+            args: Vec::new(),
+        }),
+        "pokeU16" => Ok(Value::Builtin {
+            name: "pokeU16",
+            args: Vec::new(),
+        }),
+        "pokeU64" => Ok(Value::Builtin {
+            name: "pokeU64",
+            args: Vec::new(),
+        }),
+        "pokeF64" => Ok(Value::Builtin {
+            name: "pokeF64",
             args: Vec::new(),
         }),
         "strCmp" => Ok(Value::Builtin {
@@ -909,6 +1020,17 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
         // the imperative block (§5) is identity: `imperative e` = e.
         "imperative" => Ok(Value::Builtin {
             name: "imperative",
+            args: Vec::new(),
+        }),
+        // FFI Ptr casts (§18): identity on the underlying i64 handle.
+        // `nullPtr` is the null opaque handle (C NULL) — the constant 0, not a function.
+        "nullPtr" => Ok(Value::Int(0)),
+        "intToPtr" => Ok(Value::Builtin {
+            name: "intToPtr",
+            args: Vec::new(),
+        }),
+        "ptrToInt" => Ok(Value::Builtin {
+            name: "ptrToInt",
             args: Vec::new(),
         }),
         // dense linear Array (§A): native-parity get/set/new + iota/sum/dot. Elements are `Value`s.
@@ -1048,10 +1170,23 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         Value::Foreign {
             name,
             arity,
+            interp_safe,
             mut args,
         } => {
             args.push(arg);
             if args.len() >= arity {
+                // §18 #4 — no silent divergence: the interpreter executes ONLY the FFI subset it can
+                // call with full fidelity (all-scalar Int/Bool args + result, arity ≤ 3). A float or
+                // pointer signature, or arity > 3, is native-only — refuse explicitly instead of
+                // running a degraded approximation (lost buffer write-back, wrong float ABI).
+                if !interp_safe {
+                    return Err(format!(
+                        "FFI call to '{name}' is native-only: the interpreter cannot faithfully \
+                         execute float or pointer (String/Buffer/Ptr) arguments/results, or arity \
+                         beyond 3, without diverging from the compiled backends. Run it with \
+                         `--backend cranelift` or `--backend llvm` (`--release`)."
+                    ));
+                }
                 #[cfg(feature = "native")]
                 {
                     call_foreign(&name, &args)
@@ -1064,7 +1199,12 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
                     ))
                 }
             } else {
-                Ok(Value::Foreign { name, arity, args })
+                Ok(Value::Foreign {
+                    name,
+                    arity,
+                    interp_safe,
+                    args,
+                })
             }
         }
         // Typeclass method: dispatches by the 1st argument's type head to
@@ -1772,9 +1912,42 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
                 std::cmp::Ordering::Greater => 1,
             }))
         }
-        // pokeU32 can't mutate the interpreter's immutable String in place (native backends do);
-        // the FFI viewer runs native, so here it is a no-op returning 0.
-        ("pokeU32", [Value::Str(_), Value::Int(_), Value::Int(_)]) => Ok(Value::Int(0)),
+        // Buffer peek/poke (§4): a Buffer is modelled as a `Value::Array` of per-byte `Int`s
+        // (mirroring the native header+bytes layout), little-endian like the runtime. `bufPtr`
+        // has no meaning off-FFI (interp does no C write-back), so it returns 0.
+        ("newBuffer", [Value::Int(n)]) => {
+            let len = (*n).max(0) as usize;
+            Ok(Value::Array(Rc::new(RefCell::new(vec![Value::Int(0); len]))))
+        }
+        ("bufPtr", [Value::Array(_)]) => Ok(Value::Int(0)),
+        ("free", [Value::Array(_)]) => Ok(Value::Int(0)),
+        // bufPtrN mirrors the native bounds check (the buffer must hold >= minLen bytes); off-FFI
+        // the pointer itself is meaningless (0), but the check still catches an under-sized buffer.
+        ("bufPtrN", [Value::Array(a), Value::Int(min_len)]) => {
+            let n = a.borrow().len() as i64;
+            if n < *min_len {
+                return Err(format!(
+                    "axion: buffer too small for FFI — {n} bytes, need {min_len} (bufPtrN)"
+                ));
+            }
+            Ok(Value::Int(0))
+        }
+        ("peekU8", [b, o]) => buf_peek(b, o, 1),
+        ("peekU16", [b, o]) => buf_peek(b, o, 2),
+        ("peekU32", [b, o]) => buf_peek(b, o, 4),
+        ("peekU64", [b, o]) => buf_peek(b, o, 8),
+        ("peekF64", [b, o]) => {
+            let bits = match buf_peek(b, o, 8)? {
+                Value::Int(x) => x,
+                _ => 0,
+            };
+            Ok(Value::Float(f64::from_bits(bits as u64)))
+        }
+        ("pokeU8", [b, o, Value::Int(v)]) => buf_poke(b, o, *v, 1),
+        ("pokeU16", [b, o, Value::Int(v)]) => buf_poke(b, o, *v, 2),
+        ("pokeU32", [b, o, Value::Int(v)]) => buf_poke(b, o, *v, 4),
+        ("pokeU64", [b, o, Value::Int(v)]) => buf_poke(b, o, *v, 8),
+        ("pokeF64", [b, o, Value::Float(v)]) => buf_poke(b, o, v.to_bits() as i64, 8),
         ("charAt", [Value::Int(i), Value::Str(s)]) => {
             let b = s.as_bytes();
             Ok(Value::Int(if *i < 0 || *i as usize >= b.len() {
@@ -1837,6 +2010,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
             }
         }
         ("imperative", [v]) => Ok(v.clone()),
+        ("intToPtr", [v]) | ("ptrToInt", [v]) => Ok(v.clone()),
         ("lenArray", [Value::Array(a)]) => Ok(Value::Int(a.borrow().len() as i64)),
         ("arrayIota", [Value::Int(n)]) => {
             let len = (*n).max(0);

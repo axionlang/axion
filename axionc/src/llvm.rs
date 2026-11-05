@@ -39,6 +39,18 @@ declare i64 @axion_strcat(i64, i64)
 declare i64 @axion_str_len(i64)
 declare i64 @axion_str_at(i64, i64)
 declare i64 @axion_poke_u32(i64, i64, i64)
+declare i64 @axion_poke_u8(i64, i64, i64)
+declare i64 @axion_poke_u16(i64, i64, i64)
+declare i64 @axion_poke_u64(i64, i64, i64)
+declare i64 @axion_poke_f64(i64, i64, i64)
+declare i64 @axion_peek_u8(i64, i64)
+declare i64 @axion_peek_u16(i64, i64)
+declare i64 @axion_peek_u32(i64, i64)
+declare i64 @axion_peek_u64(i64, i64)
+declare i64 @axion_peek_f64(i64, i64)
+declare i64 @axion_buf_ptr(i64)
+declare i64 @axion_buf_ptr_n(i64, i64)
+declare i64 @axion_buf_copy(i64)
 declare i64 @axion_str_cmp(i64, i64)
 declare i64 @axion_substr(i64, i64, i64)
 declare i64 @axion_getenv(i64)
@@ -238,16 +250,22 @@ pub fn emit_ir(
 
     let mut out = String::from("; Axion --release (LLVM IR)\n");
     out.push_str(RT_DECLS);
-    // declarations of the FFI imports (§18): `declare i64 @name(i64, …)`
-    let mut ffi: HashMap<String, usize> = HashMap::new();
+    // declarations of the FFI imports (§18): `declare <ret> @name(<arg tys>)`, where a `Float`
+    // arg/result is `double` (FP register, SysV ABI) and everything else is `i64`.
+    let mut ffi: HashMap<String, (Vec<bool>, bool)> = HashMap::new();
     for f in &fns {
         collect_ffi(&f.body, &mut ffi);
     }
-    let mut ffi_sorted: Vec<(&String, &usize)> = ffi.iter().collect();
+    let mut ffi_sorted: Vec<(&String, &(Vec<bool>, bool))> = ffi.iter().collect();
     ffi_sorted.sort();
-    for (name, arity) in ffi_sorted {
-        let params = vec!["i64"; *arity].join(", ");
-        out.push_str(&format!("declare i64 @{name}({params})\n"));
+    for (name, (arg_floats, ret_float)) in ffi_sorted {
+        let params = arg_floats
+            .iter()
+            .map(|&f| if f { "double" } else { "i64" })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ret = if *ret_float { "double" } else { "i64" };
+        out.push_str(&format!("declare {ret} @{name}({params})\n"));
     }
     out.push_str("@.fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\"\n");
     if main_bool {
@@ -515,12 +533,22 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
     }
 }
 
-/// Collects the used FFI imports (name → arity), to declare them in the IR.
-fn collect_ffi(t: &Term, out: &mut HashMap<String, usize>) {
-    fn rhs(r: &Rhs, out: &mut HashMap<String, usize>) {
+/// Collects the used FFI imports (C symbol → (per-arg float flags, result-float flag)), to
+/// declare them in the IR with the correct mixed i64/double signature. Keyed by C symbol; an
+/// aliased symbol is expected to be used at one consistent C signature (last occurrence wins).
+fn collect_ffi(t: &Term, out: &mut HashMap<String, (Vec<bool>, bool)>) {
+    fn rhs(r: &Rhs, out: &mut HashMap<String, (Vec<bool>, bool)>) {
         match r {
-            Rhs::Op(Op::Ffi { name, args }) => {
-                out.insert(name.clone(), args.len());
+            Rhs::Op(Op::Ffi {
+                name,
+                arg_kinds,
+                ret_float,
+                ..
+            }) => {
+                out.insert(
+                    name.clone(),
+                    (arg_kinds.iter().map(|k| k.float).collect(), *ret_float),
+                );
             }
             Rhs::Op(_) => {}
             Rhs::If(_, t, e) => {
@@ -786,6 +814,12 @@ impl Emit<'_> {
                 // an Integer is a boxed BigNum → `axion_bignum_free` (struct + limbs).
                 if ty.as_deref() == Some("Integer") {
                     self.rt("axion_bignum_free", false, &[v]);
+                    return self.term(body);
+                }
+                // a Buffer is a libc-malloc'd header pointer → `axion_buf_free` (frees the
+                // header directly); never `axion_free` (which assumes an axion_alloc data ptr).
+                if ty.as_deref() == Some("Buffer") {
+                    self.rt("axion_buf_free", false, &[v]);
                     return self.term(body);
                 }
                 let key = ty.as_deref().map(|t| {
@@ -1297,16 +1331,40 @@ impl Emit<'_> {
                 let vs = self.atoms(args)?;
                 Ok(self.rt(func, *returns, &vs))
             }
-            Op::Ffi { name, args } => {
-                let a = self
-                    .atoms(args)?
+            Op::Ffi {
+                name,
+                args,
+                arg_kinds,
+                ret_float,
+            } => {
+                // Each arg is i64, except a `Float` arg which must go in an FP register: Axión's
+                // Float IS the f64 bit-pattern held in an i64, so `bitcast i64 -> double` recovers
+                // the double the C ABI wants. A float result is `bitcast double -> i64` back.
+                let vs = self.atoms(args)?;
+                let a = vs
                     .iter()
-                    .map(|v| format!("i64 {v}"))
+                    .enumerate()
+                    .map(|(i, v)| {
+                        if arg_kinds.get(i).is_some_and(|k| k.float) {
+                            let d = self.val();
+                            self.ins(&format!("{d} = bitcast i64 {v} to double"));
+                            format!("double {d}")
+                        } else {
+                            format!("i64 {v}")
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let r = self.val();
-                self.ins(&format!("{r} = call i64 @{name}({a})"));
-                Ok(r)
+                if *ret_float {
+                    self.ins(&format!("{r} = call double @{name}({a})"));
+                    let ri = self.val();
+                    self.ins(&format!("{ri} = bitcast double {r} to i64"));
+                    Ok(ri)
+                } else {
+                    self.ins(&format!("{r} = call i64 @{name}({a})"));
+                    Ok(r)
+                }
             }
             Op::ArrayNew { len, init, .. } => {
                 let l = self.atom(len)?;

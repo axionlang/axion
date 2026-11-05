@@ -208,6 +208,16 @@ and well-mitigated this list is.
   results are proven at the **graph/type** level (`AxionSession`, `AxionFidelity`); the value-level
   subject-reduction and memory-orphan claims are **deferred** (stated in `docs/phase-3-calculus.md` §6,
   noted in `README.md`). The concurrency clause of the top-level claim is scoped accordingly.
+- **The FFI boundary** (`Op::Ffi`, `foreign` imports): the verifier, linearity checker, and Lean model
+  **all stop at a foreign call** — a function containing one is out-of-fragment for the model-trace bridge
+  (`model_trace.rs` → `Err("ffi")`). The guarantee holds for the Axión code *up to* the call (buffers
+  reclaimed + bounds-checked, ownership accounting sound and verifier-enforced via `Own`/`Borrow`, handles
+  type-distinct, interpreter refuses non-faithful signatures), but the C callee and any raw pointer that
+  escapes to it (`bufPtr`/`bufPtrN`/`intToPtr`/`ptrToInt`, a returned handle, an `Own` ownership assertion)
+  are **trusted, not proven** — misuse is UB the compiler cannot catch. This is an honest limit of scope,
+  not a hole in the in-scope claim; the theorem never quantified over C behavior. Full treatment, the
+  safe-FFI contract, and the two deferred hardenings (linear handles; a scoped `withBufPtr` bracket) are in
+  **`docs/ffi-trust-boundary.md`**.
 
 ---
 

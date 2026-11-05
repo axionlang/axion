@@ -93,11 +93,18 @@ pub enum SyntaxKind {
     // a fixity declaration node (`infixl 6 <+>`) — structurally represented but dropped by
     // `lower_module` (fixities are pre-scanned into the fixity table). Appended last.
     FIXITY_DECL,
+    // a `borrow <buf> as <p> in <body>` FFI scope (§18) — lowered to `let`/`case` via
+    // `ast::desugar_borrow`. Appended last to keep the `repr(u16)` discriminants / `KINDS` stable.
+    BORROW_EXPR,
+    // a `foreign struct Name { f :: T, … }` declaration (§18). Appended last (stable discriminants).
+    FOREIGN_STRUCT,
+    // a `foreign enum Name { M = v, … }` declaration (§18). Appended last (stable discriminants).
+    FOREIGN_ENUM,
 }
 
 use SyntaxKind::{
-    APP_EXPR, BIND_STMT, BINOP_EXPR, CASE_EXPR, CLASS_DECL, COMMENT, CONID, CONSTRAINT, CON_DECL,
-    CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL, FOREIGN_DECL,
+    APP_EXPR, BIND_STMT, BINOP_EXPR, BORROW_EXPR, CASE_EXPR, CLASS_DECL, COMMENT, CONID, CONSTRAINT, CON_DECL,
+    CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL, FOREIGN_DECL, FOREIGN_ENUM, FOREIGN_STRUCT,
     FUN_CLAUSE, GUARD, IDENT, IF_EXPR, IMPORT_DECL, INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR,
     LET_STMT,
     LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER,
@@ -176,6 +183,9 @@ impl Language for AxionLang {
             MODULE_HEADER,
             OPER,
             FIXITY_DECL,
+            BORROW_EXPR,
+            FOREIGN_STRUCT,
+            FOREIGN_ENUM,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -232,7 +242,8 @@ fn token_kind(t: &Tok) -> SyntaxKind {
         | Tok::Module
         | Tok::Import
         | Tok::Qualified
-        | Tok::As => KEYWORD,
+        | Tok::As
+        | Tok::Borrow => KEYWORD,
         _ => PUNCT,
     }
 }
@@ -803,8 +814,26 @@ impl ExprParser<'_> {
             Some(Tok::Case) => self.case_expr(),
             Some(Tok::Let) => self.let_expr(),
             Some(Tok::Do) => self.do_expr(),
+            Some(Tok::Borrow) => self.borrow_expr(),
             _ => self.dollar(),
         }
+    }
+
+    /// `borrow <buf> as <p> in <body>` (§18 FFI scope). Children: the buffer expr, the `p` IDENT,
+    /// and the body expr; lowered to `let`/`case` via `ast::desugar_borrow`.
+    fn borrow_expr(&mut self) {
+        self.b.start_node(BORROW_EXPR.into());
+        self.bump(); // borrow
+        self.dollar(); // the buffer expression (stops at `as`)
+        self.expect(&Tok::As);
+        if matches!(self.cur(), Some(Tok::VarId(_))) {
+            self.bump(); // the pointer name (a bare IDENT token child)
+        } else {
+            self.ok = false;
+        }
+        self.expect(&Tok::In);
+        self.expr(); // body
+        self.b.finish_node();
     }
 
     /// `do { stmt ; … }` — statements desugared to nested `Case` in lowering.
@@ -1604,7 +1633,57 @@ impl ExprParser<'_> {
     }
 
     /// `foreign ["lib.so"] name :: type`.
+    /// `foreign struct Name { f :: T, … }` (§18) — `foreign` already consumed, cursor at `struct`.
+    fn foreign_struct_decl(&mut self) {
+        self.b.start_node(FOREIGN_STRUCT.into());
+        self.bump(); // `struct` (a VarId)
+        self.con_id(); // name
+        self.expect_tok(&Tok::LBrace);
+        if !matches!(self.cur(), Some(Tok::RBrace)) {
+            self.record_field();
+            while matches!(self.cur(), Some(Tok::Comma)) {
+                self.bump();
+                self.record_field();
+            }
+        }
+        self.expect_tok(&Tok::RBrace);
+        self.b.finish_node();
+    }
+
+    /// `foreign enum Name { M [= int], … }` (§18) — `foreign` already consumed, cursor at `enum`.
+    fn foreign_enum_decl(&mut self) {
+        self.b.start_node(FOREIGN_ENUM.into());
+        self.bump(); // `enum` (a VarId)
+        self.con_id(); // name
+        self.expect_tok(&Tok::LBrace);
+        while !matches!(self.cur(), Some(Tok::RBrace) | None) {
+            self.con_id(); // member name
+            if matches!(self.cur(), Some(Tok::Equals)) {
+                self.bump(); // '='
+                if matches!(self.cur(), Some(Tok::Int(_))) {
+                    self.bump(); // the value
+                } else {
+                    self.ok = false;
+                }
+            }
+            if !matches!(self.cur(), Some(Tok::Comma)) {
+                break;
+            }
+            self.bump(); // ','
+        }
+        self.expect_tok(&Tok::RBrace);
+        self.b.finish_node();
+    }
+
     fn foreign_decl(&mut self) {
+        if matches!(self.peek_tok(1), Some(Tok::VarId(k)) if k == "struct") {
+            self.bump(); // foreign
+            return self.foreign_struct_decl();
+        }
+        if matches!(self.peek_tok(1), Some(Tok::VarId(k)) if k == "enum") {
+            self.bump(); // foreign
+            return self.foreign_enum_decl();
+        }
         self.b.start_node(FOREIGN_DECL.into());
         self.bump(); // foreign
         if matches!(self.cur(), Some(Tok::Str(_))) {
@@ -1782,6 +1861,7 @@ fn is_expr_kind(k: SyntaxKind) -> bool {
             | LIST_EXPR
             | SECTION_EXPR
             | DO_EXPR
+            | BORROW_EXPR
     )
 }
 
@@ -1823,7 +1903,7 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
     // `(s, span_here().0)` for them); atoms and App/BinOp derive their span otherwise.
     let sp = match node.kind() {
         IF_EXPR | LAMBDA_EXPR | TUPLE_EXPR | RECORD_EXPR | CASE_EXPR | LET_EXPR | DO_EXPR
-        | LIST_EXPR | SECTION_EXPR => span_to_next_token(node),
+        | LIST_EXPR | SECTION_EXPR | BORROW_EXPR => span_to_next_token(node),
         _ => node_span(node),
     };
     match node.kind() {
@@ -2027,6 +2107,19 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
                 };
             }
             Some(acc)
+        }
+        BORROW_EXPR => {
+            // children: buffer expr, then body expr; the `p` name is the bare IDENT token.
+            let mut exprs = node.children().filter(|c| is_expr_kind(c.kind()));
+            let buf = lower_expr(&exprs.next()?)?;
+            let body = lower_expr(&exprs.next()?)?;
+            let ptr = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .find(|t| t.kind() == IDENT)?
+                .text()
+                .to_string();
+            Some(crate::ast::desugar_borrow(buf, ptr, body, sp))
         }
         _ => None,
     }
@@ -2428,6 +2521,8 @@ fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
         funcs,
         datas: Vec::new(),
         foreigns: Vec::new(),
+        foreign_structs: Vec::new(),
+        foreign_enums: Vec::new(),
         classes: Vec::new(),
         instances: Vec::new(),
         level_ceiling: None,
@@ -2438,6 +2533,8 @@ fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
             CLASS_DECL => m.classes.push(lower_class(&decl)?),
             INSTANCE_DECL => m.instances.push(lower_instance(&decl)?),
             FOREIGN_DECL => m.foreigns.push(lower_foreign(&decl)?),
+            FOREIGN_STRUCT => m.foreign_structs.push(lower_foreign_struct(&decl)?),
+            FOREIGN_ENUM => m.foreign_enums.push(lower_foreign_enum(&decl)?),
             IMPORT_DECL => m.imports.push(lower_import(&decl)),
             MODULE_HEADER => m.name = Some(lower_module_name(&decl)),
             _ => {}
@@ -2542,6 +2639,58 @@ fn lower_instance(node: &SyntaxNode) -> Option<crate::ast::InstanceDecl> {
         head_ty,
         constraints,
         methods,
+        span: span_to_next_token(node),
+    })
+}
+
+fn lower_foreign_enum(node: &SyntaxNode) -> Option<crate::ast::ForeignEnum> {
+    let toks: Vec<_> = direct_tokens(node).collect();
+    // first CONID is the enum name; each later CONID is a member, optionally `= <int>`.
+    let mut i = 0;
+    while i < toks.len() && toks[i].kind() != CONID {
+        i += 1;
+    }
+    let name = toks.get(i)?.text().to_string();
+    i += 1;
+    let mut members = Vec::new();
+    let mut next_val = 0i64;
+    while i < toks.len() {
+        if toks[i].kind() == CONID {
+            let mname = toks[i].text().to_string();
+            i += 1;
+            let val = if toks.get(i).is_some_and(|t| t.text() == "=") {
+                let lit = toks.get(i + 1)?;
+                i += 2;
+                match lex(lit.text()).ok()?.first()?.tok.clone() {
+                    Tok::Int(IntLit::Small(n)) => n,
+                    _ => return None,
+                }
+            } else {
+                next_val
+            };
+            next_val = val + 1;
+            members.push((mname, val));
+        } else {
+            i += 1;
+        }
+    }
+    Some(crate::ast::ForeignEnum {
+        name,
+        members,
+        span: span_to_next_token(node),
+    })
+}
+
+fn lower_foreign_struct(node: &SyntaxNode) -> Option<crate::ast::ForeignStruct> {
+    let name = first_kind_token(node, CONID)?;
+    let fields: Option<Vec<_>> = node
+        .children()
+        .filter(|c| c.kind() == FIELD)
+        .map(|c| lower_field(&c))
+        .collect();
+    Some(crate::ast::ForeignStruct {
+        name,
+        fields: fields?,
         span: span_to_next_token(node),
     })
 }
@@ -2658,6 +2807,8 @@ fn zero_module(m: &mut crate::ast::Module) {
     m.datas.iter_mut().for_each(|d| d.span = (0, 0));
     m.classes.iter_mut().for_each(|c| c.span = (0, 0));
     m.foreigns.iter_mut().for_each(|f| f.span = (0, 0));
+    m.foreign_structs.iter_mut().for_each(|s| s.span = (0, 0));
+    m.foreign_enums.iter_mut().for_each(|e| e.span = (0, 0));
     m.imports.iter_mut().for_each(|i| i.span = (0, 0));
     for inst in &mut m.instances {
         inst.span = (0, 0);

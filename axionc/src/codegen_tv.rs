@@ -40,7 +40,10 @@ fn op_free_token(op: &Op) -> Option<String> {
     match op {
         Op::CallDirect(name, _, _) if name.starts_with("axion_drop_") => Some(format!("ax_{name}")),
         Op::RtCall { func, .. }
-            if func == "axion_free" || func == "axion_str_drop" || func == "axion_bignum_free" =>
+            if func == "axion_free"
+                || func == "axion_str_drop"
+                || func == "axion_bignum_free"
+                || func == "axion_buf_free" =>
         {
             Some(func.clone())
         }
@@ -58,6 +61,7 @@ fn classify(
     match ty {
         Some("String") => "axion_str_drop".to_string(),
         Some("Integer") => "axion_bignum_free".to_string(),
+        Some("Buffer") => "axion_buf_free".to_string(),
         Some(t) => {
             let key = if skip.is_empty() {
                 t.to_string()
@@ -147,7 +151,12 @@ fn call_token(line: &str) -> Option<String> {
             return Some(format!("ax_axion_drop_{key}"));
         }
     }
-    for name in ["axion_str_drop", "axion_bignum_free", "axion_free"] {
+    for name in [
+        "axion_str_drop",
+        "axion_bignum_free",
+        "axion_buf_free",
+        "axion_free",
+    ] {
         if line.contains(&format!("@{name}(")) {
             return Some(name.to_string());
         }

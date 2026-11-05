@@ -58,6 +58,8 @@ pub enum Tok {
     Qualified,
     #[token("as")]
     As,
+    #[token("borrow")]
+    Borrow,
 
     // --- punctuation and symbols ---
     #[token("::")]
