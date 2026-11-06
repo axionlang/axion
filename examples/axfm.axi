@@ -107,7 +107,7 @@ splitMin :: Int
 splitMin = 60
 -- Left list column width: half the screen when wide enough, else the whole width (preview off).
 listWidth :: Int -> Int
-listWidth cols = if cols >= splitMin then cols `div` 2 else cols
+listWidth cols = if cols >= splitMin then cols / 2 else cols
 -- 1-based start column of the preview pane (just right of the "│" separator at listWidth + 1).
 paneX :: Int -> Int
 paneX cols = listWidth cols + 2
@@ -243,7 +243,7 @@ clipAnsi s w = clipGo s 0 (strLen s) 0 w
 clipGo :: String -> Int -> Int -> Int -> Int -> String
 clipGo s i n vis w =
   if i >= n then ""
-  else if charAt i s == 27
+  else if charAt i s == '\e'
   then let j = escEnd s (i + 1) n in strAppend (substr i (j - i) s) (clipGo s j n vis w)
   else if vis >= w then clipGo s (i + 1) n vis w
   else strAppend (substr i 1 s) (clipGo s (i + 1) n (vis + 1) w)
@@ -1091,7 +1091,7 @@ frameTys cwd start mx =
 -- a trailing `/` — the `ls -p` format every consumer expects) AND the stamped `types` from the SAME
 -- entries, re-derived per pass so their order can never diverge. Size/mtime sort keeps the shell path.
 rdtIsDir :: String -> Bool
-rdtIsDir ln = charAt 0 ln == 100                              -- 'd'
+rdtIsDir ln = charAt 0 ln == 'd'
 rdtName :: String -> String
 rdtName ln = substr 1 (strLen ln - 1) ln                     -- strip the leading type code
 -- keep an entry? hidden shows dotfiles; a non-empty filter keeps names containing it (case-insensitive)
@@ -1134,7 +1134,7 @@ listSep s = dblNl s 0 (strLen s)
 dblNl :: String -> Int -> Int -> Int
 dblNl s i n =
   if i + 1 >= n then n
-  else if (charAt i s == 10) && (charAt (i + 1) s == 10) then i
+  else if (charAt i s == '\n') && (charAt (i + 1) s == '\n') then i
   else dblNl s (i + 1) n
 listRaw :: String -> String
 listRaw s = substr 0 (listSep s) s
@@ -1169,8 +1169,8 @@ cmdKey :: String -> Int -> String -> String -> String -> String
 cmdKey prompt rows cwd acc k =
   if k == "" then acc
   else if (charAt 0 k == '\r') || (charAt 0 k == '\n') then acc
-  else if charAt 0 k == 27 then ""
-  else if (charAt 0 k == 127) || (charAt 0 k == 8) then cmdGo prompt rows cwd (dropLast acc)  -- DEL / BS
+  else if charAt 0 k == '\e' then ""
+  else if (charAt 0 k == '\x7f') || (charAt 0 k == '\x08') then cmdGo prompt rows cwd (dropLast acc)  -- DEL / BS
   else if charAt 0 k == '\t' then cmdGo prompt rows cwd (dupOrAcc (firstPrefix (entriesRaw cwd 1) acc) acc)
   else cmdGo prompt rows cwd (strAppend acc k)
 
@@ -1263,7 +1263,7 @@ readMainKey :: Int -> String
 readMainKey dummy =
   let k = readKey 0 in
   -- short-circuit: `charAt 0 k` runs only on a non-empty key (ESC starts an arrow sequence).
-  if strLen k > 0 && charAt 0 k == 27
+  if strLen k > 0 && charAt 0 k == '\e'
   then let b1 = readKeyTimeout 25 in
        if strLen b1 == 0 then "\x1b"                     -- lone Esc: no follow-on byte in the window
        else let b2 = readKeyTimeout 25 in arrowKey b2  -- ESC [ <final> → arrow
@@ -1274,7 +1274,7 @@ readMainKeyTO :: Int -> String
 readMainKeyTO ms =
   let k = readKeyTimeout ms in
   if strLen k == 0 then ""
-  else if charAt 0 k == 27
+  else if charAt 0 k == '\e'
   then let b1 = readKeyTimeout 25 in
        if strLen b1 == 0 then "\x1b"
        else let b2 = readKeyTimeout 25 in arrowKey b2
@@ -1391,7 +1391,7 @@ actionKey a =
 tabIdx :: String -> Int
 tabIdx s = tabScan s 0
 tabScan :: String -> Int -> Int
-tabScan s i = if i >= strLen s then (0 - 1) else if charAt i s == 9 then i else tabScan s (i + 1)
+tabScan s i = if i >= strLen s then (0 - 1) else if charAt i s == '\t' then i else tabScan s (i + 1)
 kmKey :: String -> String
 kmKey line = let i = tabIdx line in if i < 0 then dup line else substr 0 i line
 kmVal :: String -> String
@@ -1689,7 +1689,7 @@ digitStart k = (strLen k > 0) && (charAt 0 k >= '1') && (charAt 0 k <= '9')
 -- Preview scroll (J/K): half a pane per press. Clamped at the top (0); NO bottom clamp — scrolling
 -- past EOF shows blank rows and K scrolls back, which avoids a per-scroll `wc -l` fork on huge files.
 scrollStep :: Int -> Int
-scrollStep rows = let h = maxItems rows in if h > 2 then h `div` 2 else 1
+scrollStep rows = let h = maxItems rows in if h > 2 then h / 2 else 1
 scrollDown :: Int -> Int -> Int
 scrollDown poff rows = poff + scrollStep rows
 scrollUp :: Int -> Int -> Int
@@ -1874,8 +1874,8 @@ searchKey :: String -> Int -> String -> String -> Int -> Int -> Int -> String ->
 searchKey cwd sel marked prog hidden rows cols raw osel acc k =
   if k == "" then endSearch cwd marked prog hidden rows cols raw acc (searchSel (lines raw) acc osel)
   else if (charAt 0 k == '\r') || (charAt 0 k == '\n') then endSearch cwd marked prog hidden rows cols raw acc (searchSel (lines raw) acc osel)
-  else if charAt 0 k == 27 then loop cwd osel marked prog hidden rows cols raw            -- Esc: cancel to original
-  else if (charAt 0 k == 127) || (charAt 0 k == 8) then searchLoop cwd sel marked prog hidden rows cols raw osel (dropLast acc)
+  else if charAt 0 k == '\e' then loop cwd osel marked prog hidden rows cols raw            -- Esc: cancel to original
+  else if (charAt 0 k == '\x7f') || (charAt 0 k == '\x08') then searchLoop cwd sel marked prog hidden rows cols raw osel (dropLast acc)
   else searchLoop cwd sel marked prog hidden rows cols raw osel (strAppend acc k)
 -- Confirm: remember the query for `;`/`,`, resume the normal loop at the matched entry (cached raw).
 endSearch :: String -> String -> String -> Int -> Int -> Int -> String -> String -> Int -> IO ()
