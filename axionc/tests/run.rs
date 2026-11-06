@@ -5274,6 +5274,25 @@ fn do_let_binds_pure_values_in_a_do_block() {
 }
 
 #[test]
+fn parenthesized_blocks_close_at_the_bracket() {
+    // Bracket-aware layout: a `)`/`]`/`}` closes an implicit `case`/`do`/`let` block opened inside
+    // it, so a parenthesized block parses as a sub-expression (used to force a helper function).
+    // Both parsers share `layout::layout`, so the `cst.rs` agreement gate covers both.
+    agree_across_backends("layout_paren_case.axi", "4\n6\n10\n11\n12\n");
+    agree_across_backends("layout_paren_case_multiline.axi", "1\n2\n3\n");
+    agree_across_backends("layout_paren_let.axi", "11\n6\n");
+    agree_across_backends("layout_paren_do.axi", "a\nb\n");
+}
+
+#[test]
+fn explicit_semicolon_separates_block_items() {
+    // `;` is a single-line block-item separator (layout turns it into a virtual VSemi): case
+    // alternatives, do statements. (`;` directly after a do-`let` is the separate do-let gap.)
+    agree_across_backends("layout_semi_case.axi", "z\no\nm\n1\n2\n3\n");
+    agree_across_backends("layout_semi_do.axi", "a\nb\nc\nhello\n?\n");
+}
+
+#[test]
 fn conditional_owned_temp_is_reclaimed_in_any_position() {
     // The #1 flagship gotcha: a heap-producing `if`/`case` NOT in tail position (consumed by a
     // print, a user fn, or producing a container) used to leak its owned temp (AX0911). Now

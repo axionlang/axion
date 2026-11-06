@@ -50,6 +50,12 @@ NATIVE=(
   axionc/tests/fixtures/num_literal_overload.axi
   axionc/tests/fixtures/user_eq_ord.axi
   axionc/tests/fixtures/user_integral.axi
+  axionc/tests/fixtures/layout_paren_case.axi
+  axionc/tests/fixtures/layout_paren_case_multiline.axi
+  axionc/tests/fixtures/layout_paren_let.axi
+  axionc/tests/fixtures/layout_paren_do.axi
+  axionc/tests/fixtures/layout_semi_case.axi
+  axionc/tests/fixtures/layout_semi_do.axi
   examples/rational.axi
   axionc/tests/fixtures/stdlib_batch.axi
   axionc/tests/fixtures/stdlib_batch2.axi
@@ -225,6 +231,8 @@ LEAKFREE=(
   heap_loop linear_move borrow_reclaim update_borrow arena_run
   buffer_sum buffer_roundtrip ffi_ptr division_operator buffer_ptr_checked buffer_borrow ffi_struct ffi_enum buffer_linear inplace_update native_case native_fib
   num_user_instance num_constrained_poly num_literal_overload user_eq_ord user_integral rational
+  layout_paren_case layout_paren_case_multiline layout_paren_let layout_paren_do
+  layout_semi_case layout_semi_do
   nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec float_array_dot
   poly_payload_drop poly_payload_tco poly_payload_borrow_alias
   poly_payload_generic_drop poly_payload_generic_nested poly_payload_generic_compose poly_payload_gap

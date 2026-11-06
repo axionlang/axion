@@ -94,6 +94,10 @@ pub enum Tok {
     RBrace,
     #[token(",")]
     Comma,
+    // explicit block-item separator (`case x of a -> 1 ; b -> 2`); the layout pass turns it into a
+    // virtual `VSemi`, so both parsers treat it exactly like a column-inserted separator.
+    #[token(";")]
+    Semi,
     #[token("|")]
     Bar,
     #[token("\\")]
