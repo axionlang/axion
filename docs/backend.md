@@ -289,6 +289,49 @@ direct `Make*`/call) gets a flat `free` — if nested, it leaks the inner one; a
 **tuples** that own heap don't have a destructor yet (deep-drop covers `data`
 types).
 
+### Known conservative rejection: generic partial consumers over heap elements (`AX0912`)
+
+The predicate-filtered partial consumers — `filter`, `takeWhile`, `dropWhile`,
+`span`, `partition` — keep *some* input elements into a fresh output and discard the
+rest. Over a **heap** element type (`List Integer`, `List String`, `List Box`) a
+kept element must be a genuine move (not an alias), or the input's and the output's
+deep-drops both free it (a native double-free). This is reached soundly whenever the
+predicate is **statically known** — a named function or a literal lambda
+(`filter gt2 xs`, `filter (\n -> n > 2) xs`): default-on higher-order
+*specialization* rewrites the call to a `%1`-consuming clone (`filter$$gt2`), so the
+kept element moves and the discarded one is freed (`reclaim_cond_escape`). The
+element-aliasing — and thus `AX0912` — simply vanishes. The structural borrowers
+(`take`/`drop`/`head`/`last`) reach the same place the other way: a `%1` list
+parameter in the prelude.
+
+What remains rejected is the **generic / higher-order** case, where the predicate is
+*not* statically resolvable — a runtime closure parameter, or one pulled out of a
+data structure:
+
+```axion
+keepWith :: (Integer -> Bool) -> List Integer -> Integer
+keepWith p xs = foldr addI 0 (filter p xs)   -- AX0912: `filter` over a heap element
+```
+
+Here specialization cannot fire (the predicate `p` is unknown at the `filter` call),
+so the generic `filter` stays an alias-borrower. Marking its list parameter `%1`
+is not enough on its own: the element `y` is handed to the predicate as `p y` through
+the generic closure call (`callclo`), whose calling convention **moves** its
+argument — so after `p y` the element can no longer be safely kept or freed. Closing
+this needs a *generic* closure-call **borrow** convention for the retained element
+(sound because a `… -> Bool` predicate's result cannot carry the element out) — the
+closure-argument-linearity arc, verifier-backed (`AX0910`/`AX0911` remain the net for
+any misinference). It is **deferred**: the benefit (higher-order combinator code over
+heap lists) is narrow, and it is the most delicate slice of the reclamation work.
+
+Workarounds today, in order of preference: pass the predicate **literally** at the
+`filter` site so it specializes; wrap the element in a named `data` record instead of
+a bare heap element where the surrounding code allows it; or run the program on the
+**interpreter** (`axionc <file>`), which reclaims via Rust `Drop` and has no aliasing
+hazard. The same note covers heap **tuple** elements (`List (a, b)`) for the
+element-*extracting* consumers, which hit a separate monomorphizer residual with the
+same three workarounds.
+
 Already **reclaimed** (they were leaks, now closed): **runtime C-strings** (`show`,
 `showInt`, `strAppend`, …) — a heap `String` carries a nonzero size header at offset
 −8 (`axion_alloc`) while a `.rodata` literal reads a zero header there (unaligned), so
