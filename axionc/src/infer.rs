@@ -111,6 +111,11 @@ struct Infer<'a> {
     /// literal resolved to `Integer` by context is rewritten `fromInt n`, and an
     /// unconstrained one defaults to `Int`.
     int_lit_vars: Vec<(Span, Ty)>,
+    /// Spans of integer literals in PATTERN position (subset of `int_lit_vars` spans). A
+    /// user-numeric literal is overloadable only in EXPRESSION position (rewritten to a
+    /// `fromInteger` call); a pattern literal cannot be, so one resolving to a user type is an
+    /// error rather than a silent miscompile.
+    int_lit_pat_spans: std::collections::HashSet<Span>,
     /// `where`-local RETURN types, keyed by the lifted mangled name (`parent$local`).
     /// A `where`-local has no signature, so it was absent from `fn_ret_ty` at lowering —
     /// a call to one that returns an owned heap value (`where sd = getEnv …`) got no
@@ -172,6 +177,9 @@ pub struct Mono {
     pub array_tys: HashMap<Span, Type>,
     /// Phase 1b: integer-literal spans that resolved to `Integer` (rewritten `fromInt n`).
     pub integer_lits: std::collections::HashSet<Span>,
+    /// Phase 1b: integer-literal (EXPRESSION) spans that resolved to a USER numeric type with a
+    /// `Num` instance → rewritten `fromInteger$<T> n` (literal overloading). span → type head.
+    pub user_lits: std::collections::HashMap<Span, String>,
     /// Monomorphic `show`/`showArg` functions synthesized for shapes with no
     /// usable nominal instance: TUPLES (`show$(Int,Int)`) and MULTI-PARAM derived
     /// data (`show$Either$Int$Bool`). Injected after inference (see
@@ -391,6 +399,7 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         lam_param_tys: HashMap::new(),
         lam_full_tys: HashMap::new(),
         int_lit_vars: Vec::new(),
+        int_lit_pat_spans: std::collections::HashSet::new(),
         where_ret_tys: HashMap::new(),
     };
     let mut env: Env = inf.base_env();
@@ -486,32 +495,15 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
             inf.method_meta.insert(m.clone(), (class.name.clone(), idx));
         }
     }
-    // built-in classes, dispatching on the first operand (idx 0):
-    // `Num` (`+ - *`) and `Ord` (`== < >`). The class name `Ord` is distinct
-    // from a user's `Eq` (whose methods are identifiers like `eq`, not these
-    // operators), so there is no collision — the operator names never clash
-    // with user method names.
-    for op in ["+", "-", "*"] {
-        inf.method_meta
-            .insert(op.to_string(), ("Num".to_string(), Some(0)));
-    }
+    // Built-in SYNTHETIC class, dispatching on the first operand (idx 0). `Num` (`+ - *`),
+    // `Division` (`/`), and `Integral` (`div`/`mod`) are now REAL prelude classes — registered by
+    // the class loop above — so only the comparison operators (`Ord`: `== < >`) are seeded here.
+    // The synthetic `Ord` class name is distinct from a user's `Eq` (whose methods are
+    // identifiers like `eq`), so the operator names never clash with user method names.
     for op in ["==", "<", ">"] {
         inf.method_meta
             .insert(op.to_string(), ("Ord".to_string(), Some(0)));
     }
-    // `Integral` (`div`/`mod`) over Int or Integer — infix truncated division and
-    // remainder (§Listing 1.4). Kept separate from `Num` because `Float` has no
-    // instance (a `div`/`mod` over `Float` is correctly rejected AX0404).
-    for op in ["div", "mod"] {
-        inf.method_meta
-            .insert(op.to_string(), ("Integral".to_string(), Some(0)));
-    }
-    // `/` (division) over Int/Float/Integer — a single ergonomic operator that resolves to the
-    // per-type primitive: `Int`→`div` (truncated integer division), `Float`→`/.`, `Integer`→
-    // `div#I`. Its own class so it never collides with `Num`/`Integral`; unlike those it ALWAYS
-    // rewrites (there is no backend `/`). (§4 ergonomics.)
-    inf.method_meta
-        .insert("/".to_string(), ("Division".to_string(), Some(0)));
 
     // schemes of the top-level functions: from the signature, or a fresh monotype
     let mut placeholders: HashMap<String, Ty> = HashMap::new();
@@ -701,17 +693,37 @@ impl Infer<'_> {
         // defaults an unconstrained literal and re-raises the original error if a literal
         // was forced to a non-`Int` type (e.g. `Int` vs `Float`).
         let lit_vars = std::mem::take(&mut inf.int_lit_vars);
+        let pat_spans = std::mem::take(&mut inf.int_lit_pat_spans);
+        // user types with a `Num` instance → a literal over one is overloaded via `fromInteger`.
+        let num_insts: std::collections::HashSet<String> = module
+            .instances
+            .iter()
+            .filter(|i| i.class_name == "Num")
+            .map(|i| i.ty_head.clone())
+            .collect();
         let mut integer_lits: std::collections::HashSet<Span> = std::collections::HashSet::new();
+        let mut user_lits: std::collections::HashMap<Span, String> =
+            std::collections::HashMap::new();
         for (span, v) in lit_vars {
-            if matches!(inf.apply(&v), Ty::Con(ref n, _) if n == "Integer") {
-                integer_lits.insert(span);
-            } else {
-                inf.unify(&v, &Ty::Con("Int".into(), vec![]), span);
+            match inf.apply(&v) {
+                Ty::Con(ref n, _) if n == "Integer" => {
+                    integer_lits.insert(span);
+                }
+                // an EXPRESSION literal resolved to a user numeric type → `fromInteger$T n`.
+                // A PATTERN literal cannot be a call, so it is excluded and falls through to the
+                // `unify Int` below, which raises a clean type error at a user type.
+                Ty::Con(ref n, _) if num_insts.contains(n) && !pat_spans.contains(&span) => {
+                    user_lits.insert(span, n.clone());
+                }
+                _ => {
+                    inf.unify(&v, &Ty::Con("Int".into(), vec![]), span);
+                }
             }
         }
         inf.check_exhaustiveness();
         let mut mono = inf.discharge_obligations(module);
         mono.integer_lits = integer_lits;
+        mono.user_lits = user_lits;
         // Phase B (generic-owning corner): the owning-generic specializations
         // (`dropList$P`), merged with the typeclass ones.
         let owning = inf.discharge_owning();
@@ -800,6 +812,43 @@ pub fn is_integral_method(op: &str) -> bool {
 /// operators it ALWAYS rewrites (there is no backend `/`): see [`division_resolve`].
 pub fn is_division_method(op: &str) -> bool {
     op == "/"
+}
+
+/// The operand types that `Num`/`Division` resolve by the fast built-in rewrite (no dict):
+/// `Int`/`Float`/`Integer`. Any OTHER operand is a user type that dispatches through the
+/// instance it declares (`instance Num Complex` → `+$Complex`).
+pub fn is_primitive_num(ty: &str) -> bool {
+    matches!(ty, "Int" | "Float" | "Integer")
+}
+
+/// The dispatch target for a comparison operator (`== < >`) over a USER type `name`: `==` → the
+/// `Eq` method `eq$T`, `<`/`>` → the synthesized strict `Ord` helpers `lt$T`/`gt$T` (see
+/// `synth_ord_cmp_helpers`). `None` when the required `Eq`/`Ord` instance is absent — so the
+/// resolver falls through to the generic arm and a missing instance surfaces as AX0404.
+fn cmp_user_target(
+    method: &str,
+    name: &str,
+    instances: &std::collections::HashSet<(String, String)>,
+) -> Option<String> {
+    let has = |cls: &str| instances.contains(&(cls.to_string(), name.to_string()));
+    match method {
+        "==" if has("Eq") => Some(crate::ast::method_impl_name("eq", name)),
+        "<" if has("Ord") => Some(crate::ast::method_impl_name("lt", name)),
+        ">" if has("Ord") => Some(crate::ast::method_impl_name("gt", name)),
+        _ => None,
+    }
+}
+
+/// The mangled target of a built-in operator method (`+ - * == < >`) specialized over a USER type
+/// `ti`: the arithmetic ops take the same-named instance method (`+$T`), the comparison ops map to
+/// the `Eq`/`Ord` methods (`eq$T` / strict `lt$T`/`gt$T`, synthesized by `synth_ord_cmp_helpers`).
+fn builtin_op_user_target(m: &str, ti: &str) -> String {
+    match m {
+        "==" => crate::ast::method_impl_name("eq", ti),
+        "<" => crate::ast::method_impl_name("lt", ti),
+        ">" => crate::ast::method_impl_name("gt", ti),
+        _ => crate::ast::method_impl_name(m, ti),
+    }
 }
 
 /// The concrete primitive `/` resolves to over the operand type `ty` (`"Int"`/`"Float"`/
@@ -2756,9 +2805,10 @@ impl<'a> Infer<'a> {
         let obls = std::mem::take(&mut self.obligations);
         for o in obls {
             match self.resolve(&o.ty) {
-                // `/` (division) → the per-type primitive (`Int`→`div`, `Float`→`/.`,
-                // `Integer`→`div#I`). Always rewrites; see `division_resolve`.
-                Ty::Con(name, _) if is_division_method(&o.method) => {
+                // `/` (division) over a PRIMITIVE → the per-type primitive (`Int`→`div`,
+                // `Float`→`/.`, `Integer`→`div#I`); see `division_resolve`. A user type falls
+                // through to the generic instance arm below (`/$Complex`).
+                Ty::Con(name, _) if is_division_method(&o.method) && is_primitive_num(&name) => {
                     resolutions
                         .insert((o.func.clone(), o.span), division_resolve(&name).into());
                 }
@@ -2788,6 +2838,21 @@ impl<'a> Infer<'a> {
                 // built-in Num/Ord operator over Int → keep the operator (native
                 // iadd/imul; the interpreter's Int path).
                 Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Int" => {}
+                // Comparison operators (`== < >`) over a USER type → the Eq/Ord class methods
+                // (`eq$T` / strict `lt$T`/`gt$T`). Primitives were handled above; `<=`/`>=` are
+                // polymorphic prelude functions over `le`. A missing Eq/Ord instance yields `None`
+                // → falls through to the generic arm → AX0404.
+                Ty::Con(name, _)
+                    if o.class == "Ord"
+                        && is_builtin_op_method(&o.method)
+                        && name != "String"
+                        && cmp_user_target(&o.method, &name, &instances).is_some() =>
+                {
+                    // guard ensured `Some`; the `if let` keeps it panic-free (no `expect`).
+                    if let Some(target) = cmp_user_target(&o.method, &name, &instances) {
+                        resolutions.insert((o.func.clone(), o.span), target);
+                    }
+                }
                 // built-in Integral `div`/`mod` over Integer → the `#I` runtime op;
                 // over Int → keep (native sdiv/srem). (No Float instance → AX0404.)
                 Ty::Con(name, _) if is_integral_method(&o.method) && name == "Integer" => {
@@ -3112,9 +3177,15 @@ impl<'a> Infer<'a> {
                     || cannot
                     || multi_bad_call
                     || poly_methods.get(f).into_iter().flatten().any(|(_, m, ci)| {
-                        // built-in Num operators and `/` are always available (Int/Float/Integer).
+                        // built-in Num operators and `/` over a PRIMITIVE are always available
+                        // (Int/Float/Integer, resolved by the fast rewrite). Over a USER type
+                        // they dispatch through its instance method, so fall through to the
+                        // normal availability check (`+$Complex` must exist).
                         if is_builtin_op_method(m) || is_division_method(m) {
-                            return false;
+                            match types.get(*ci) {
+                                Some(Type::Con(n)) if !is_primitive_num(n) => {}
+                                _ => return false,
+                            }
                         }
                         let cty = types.get(*ci);
                         // parametric arg (`Option Int`): the method dispatches to the
@@ -3133,7 +3204,11 @@ impl<'a> Infer<'a> {
                             }
                         }
                         let ti = cty.map(ty_mangle).unwrap_or_else(|| t.clone());
-                        let impl_name = crate::ast::method_impl_name(m, &ti);
+                        let impl_name = if is_builtin_op_method(m) {
+                            builtin_op_user_target(m, &ti)
+                        } else {
+                            crate::ast::method_impl_name(m, &ti)
+                        };
                         !(func_names.contains(impl_name.as_str())
                             || synth_tuple_names.contains(&impl_name))
                     })
@@ -3187,14 +3262,21 @@ impl<'a> Infer<'a> {
                 // each use rewrites at ITS constraint var's concrete type.
                 let ti = types.get(*ci).map(ty_mangle).unwrap_or_else(|| t.clone());
                 if is_builtin_op_method(m) {
-                    // built-in Num: only Float needs a rewrite (`+` → `+.`); the
-                    // Int specialization keeps the operator the source already has.
+                    // built-in Num: only Float needs a rewrite (`+` → `+.`); the Int/Integer
+                    // specialization keeps the operator the source already has. A USER type
+                    // dispatches to its instance method (`+$Complex`).
                     if ti == "Float" {
                         rewrites.insert(*sp, builtin_op_float(m).into());
+                    } else if !is_primitive_num(&ti) {
+                        rewrites.insert(*sp, builtin_op_user_target(m, &ti));
                     }
                 } else if is_division_method(m) {
-                    // `/` always rewrites to its per-type primitive.
-                    rewrites.insert(*sp, division_resolve(&ti).into());
+                    // `/` over a primitive rewrites to its per-type op; a user type to `/$T`.
+                    if is_primitive_num(&ti) {
+                        rewrites.insert(*sp, division_resolve(&ti).into());
+                    } else {
+                        rewrites.insert(*sp, crate::ast::method_impl_name(m, &ti));
+                    }
                 } else {
                     rewrites.insert(*sp, crate::ast::method_impl_name(m, &ti));
                 }
@@ -3248,6 +3330,7 @@ impl<'a> Infer<'a> {
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
             integer_lits: std::collections::HashSet::new(),
+            user_lits: std::collections::HashMap::new(),
             synth_shows: synth_show_funcs(&show_needs, &decls),
             where_ret_tys: HashMap::new(),
             where_param_tys: HashMap::new(),
@@ -3390,6 +3473,7 @@ impl<'a> Infer<'a> {
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
             integer_lits: std::collections::HashSet::new(),
+            user_lits: std::collections::HashMap::new(),
             synth_shows: Vec::new(),
             where_ret_tys: HashMap::new(),
             where_param_tys: HashMap::new(),
@@ -3695,6 +3779,7 @@ impl<'a> Infer<'a> {
             Pat::Int(_, span) => {
                 let v = self.fresh();
                 self.int_lit_vars.push((*span, v.clone()));
+                self.int_lit_pat_spans.insert(*span);
                 v
             }
             // Normally desugared to an `if`-chain before inference; typed here for

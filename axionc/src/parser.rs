@@ -706,7 +706,11 @@ impl<'a> Parser<'a> {
         let (tyvar, _) = self.var_name("class type variable")?;
         self.expect(&Tok::Where, "'where' in the class")?;
         let methods = self.block(|p| {
-            let (m, _) = p.var_name("method name")?;
+            // method name: a bare identifier, or a parenthesized operator (`(+) :: …`)
+            let (m, _) = match p.paren_op_name() {
+                Some(x) => x,
+                None => p.var_name("method name")?,
+            };
             p.expect(&Tok::ColonColon, "'::' in the method signature")?;
             let ty = p.parse_type()?;
             Ok((m, ty))
@@ -1438,11 +1442,16 @@ impl<'a> Parser<'a> {
         if !self.at_v(&LTok::Tok(Tok::LParen)) {
             return None;
         }
-        // only USER operators name a definition (`(<+>) x y = …`); the built-in
-        // operators (`+`, `<`, …) are reserved, so they aren't accepted here (this
-        // mirrors the CST parser's `top_decl`, keeping the two parsers in lock-step).
+        // A user operator (`(<+>) x y = …`), or one of the arithmetic built-ins that are
+        // overloadable typeclass methods — `(+)`/`(-)`/`(*)` (`Num`) name a definition or a
+        // method signature (`(/)` lexes as `Op`, already covered). The other reserved operators
+        // (`<`, `==`, …) stay un-nameable. Mirrors the CST parser's `top_decl`/`method_sig`,
+        // keeping the two parsers in lock-step.
         let op = match self.toks.get(self.pos + 1).map(|t| &t.tok) {
             Some(LTok::Tok(Tok::Op(s))) => s.clone(),
+            Some(LTok::Tok(Tok::Plus)) => "+".to_string(),
+            Some(LTok::Tok(Tok::Minus)) => "-".to_string(),
+            Some(LTok::Tok(Tok::Star)) => "*".to_string(),
             _ => return None,
         };
         if matches!(

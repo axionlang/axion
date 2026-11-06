@@ -224,7 +224,10 @@ fn token_kind(t: &Tok) -> SyntaxKind {
     match t {
         Tok::VarId(_) => IDENT,
         Tok::ConId(_) => CONID,
-        Tok::Op(_) => OPER,
+        // Symbolic operators, plus the arithmetic built-ins that are overloadable method names
+        // (`(+)`/`(-)`/`(*)`; `/` is already an `Op`). OPER so the clause/sig name-finders pick a
+        // parenthesized operator as the declared name — e.g. `instance Num T where (+) a b = …`.
+        Tok::Op(_) | Tok::Plus | Tok::Minus | Tok::Star => OPER,
         Tok::Int(_) | Tok::Float(_) | Tok::Str(_) => LITERAL,
         Tok::Where
         | Tok::Let
@@ -1331,10 +1334,14 @@ impl ExprParser<'_> {
         if matches!(self.cur(), Some(Tok::VarId(_))) {
             self.bump(); // name
         } else if matches!(self.cur(), Some(Tok::LParen))
-            && matches!(self.peek_tok(1), Some(Tok::Op(_)))
+            && matches!(
+                self.peek_tok(1),
+                Some(Tok::Op(_) | Tok::Plus | Tok::Minus | Tok::Star)
+            )
             && matches!(self.peek_tok(2), Some(Tok::RParen))
         {
-            // a parenthesized operator names the function: `(<+>) x y = …`
+            // a parenthesized operator names the function: `(<+>) x y = …`, and the
+            // overloadable arithmetic built-ins `(+)`/`(-)`/`(*)` (`(/)` lexes as `Op`).
             self.bump(); // (
             self.bump(); // operator
             self.bump(); // )
@@ -1609,7 +1616,20 @@ impl ExprParser<'_> {
 
     fn method_sig(&mut self) {
         self.b.start_node(METHOD_SIG.into());
-        self.var_id(); // method name
+        // method name: a bare identifier, or a parenthesized operator (`(+) :: …`)
+        if matches!(self.cur(), Some(Tok::LParen))
+            && matches!(
+                self.peek_tok(1),
+                Some(Tok::Op(_) | Tok::Plus | Tok::Minus | Tok::Star)
+            )
+            && matches!(self.peek_tok(2), Some(Tok::RParen))
+        {
+            self.bump(); // (
+            self.bump(); // operator
+            self.bump(); // )
+        } else {
+            self.var_id(); // method name
+        }
         self.expect_tok(&Tok::ColonColon);
         self.type_();
         self.b.finish_node();

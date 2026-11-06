@@ -456,6 +456,96 @@ fn division_operator_runs_on_all_backends() {
 }
 
 #[test]
+fn num_division_user_instances_run_on_all_backends() {
+    // `Num` (`+ - *`) and `Division` (`/`) are user-extensible classes (no longer hardcoded): a
+    // user 2-vector gets arithmetic by declaring `instance Num`/`instance Division`, and the
+    // operator use dispatches to the instance method (`+$V2`), while the primitive types keep the
+    // fast built-in rewrite. All three backends agree.
+    agree_across_backends("num_user_instance.axi", "4 6\n7 5\n6 12\n4 3\n");
+}
+
+#[test]
+fn num_constrained_poly_specializes_at_primitive_and_user_type() {
+    // A `Num a =>`-constrained function used at BOTH `Int` (resolved to the built-in `+`) and a
+    // user type (`V2`, specialized to `+$V2`). Guards that the constrained-function specializer
+    // emits the fast primitive op at a primitive and the instance method at a user type — it must
+    // NOT call a non-existent `+$Int`.
+    agree_across_backends("num_constrained_poly.axi", "6\n6\n");
+}
+
+#[test]
+fn num_without_instance_is_rejected() {
+    // Coherence intact: `+` over a type with NO `Num` instance → AX0404 on every backend. Proves
+    // making `Num` a real class did not weaken instance checking.
+    let fx = fixture("num_no_instance_rejected.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{backend}: a missing `Num` instance must be rejected, not compiled"
+        );
+        let diag = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            diag.contains("AX0404"),
+            "{backend}: expected AX0404, got {diag}"
+        );
+    }
+}
+
+#[test]
+fn num_literal_overloading_runs_on_all_backends() {
+    // Integer literals over a user `Num` type via `fromInteger` (`3 + half` → `Rational 3 1 +
+    // half`). All three backends agree.
+    agree_across_backends("num_literal_overload.axi", "7/2\n3/2\n");
+}
+
+#[test]
+fn user_type_comparisons_run_on_all_backends() {
+    // `== < > <=` over user types — a `deriving (Eq, Ord)` type and a hand-written instance —
+    // dispatched to `eq$T` / synthesized strict `lt$T`/`gt$T` (over `le$T`).
+    agree_across_backends("user_eq_ord.axi", "T\nF\nT\nT\nT\nT\nT\n");
+}
+
+#[test]
+fn user_integral_div_mod_runs_on_all_backends() {
+    // `Integral` (`div`/`mod`) as a real class: backtick-infix over a user type dispatches to
+    // `div$T`/`mod$T`; the primitive Int path is unchanged.
+    agree_across_backends("user_integral.axi", "3\n2\n3\n2\n");
+}
+
+#[test]
+fn num_without_from_integer_is_rejected() {
+    // Coherence: `fromInteger` is a required `Num` method → an instance omitting it is AX0401.
+    let fx = fixture("num_no_fromInteger_rejected.axi");
+    for backend in ["interp", "cranelift", "llvm"] {
+        let out = axionc()
+            .args(["run", "--backend", backend, &fx])
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{backend}: an incomplete `Num` instance must be rejected"
+        );
+        let diag = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            diag.contains("AX0401"),
+            "{backend}: expected AX0401, got {diag}"
+        );
+    }
+}
+
+#[test]
 fn ffi_ptr_opaque_handle_runs_on_all_backends() {
     // §18 richer FFI: the type-safe opaque handle `Ptr a` + `intToPtr`/`ptrToInt`/`nullPtr`. No
     // FFI call (so all backends run it); exercises the Ptr vocabulary and its i64-scalar lowering.

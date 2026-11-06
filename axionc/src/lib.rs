@@ -1180,7 +1180,7 @@ pub fn analyze_module(
     // stops being a method (dynamic dispatch) and now compiles natively.
     let mono = infer::infer(&module, diags);
     resolve_methods(&mut module, &mono.resolutions);
-    rewrite_int_lits(&mut module, &mono.integer_lits);
+    rewrite_int_lits(&mut module, &mono.integer_lits, &mono.user_lits);
     materialize_specs(&mut module, &mono.specs);
     // Monomorphic `show`/`showArg` synthesized for tuples and multi-param derived
     // data (no usable nominal instance to specialize). Injected after
@@ -3705,36 +3705,48 @@ fn pat_binds(p: &ast::Pat, name: &str) -> bool {
 /// Phase 1b: wrap each integer literal that inference resolved to `Integer`
 /// (`fromInt n`), so the executor builds an arbitrary-precision value. Runs after
 /// type inference; only `Integer` literals are touched, so `Int` programs are inert.
-fn rewrite_int_lits(module: &mut ast::Module, lits: &std::collections::HashSet<(usize, usize)>) {
-    if lits.is_empty() {
+fn rewrite_int_lits(
+    module: &mut ast::Module,
+    lits: &std::collections::HashSet<(usize, usize)>,
+    user_lits: &std::collections::HashMap<(usize, usize), String>,
+) {
+    if lits.is_empty() && user_lits.is_empty() {
         return;
     }
     for f in &mut module.funcs {
-        rw_int_lits_func(f, lits);
+        rw_int_lits_func(f, lits, user_lits);
     }
 }
 
-fn rw_int_lits_func(f: &mut ast::Func, lits: &std::collections::HashSet<(usize, usize)>) {
+fn rw_int_lits_func(
+    f: &mut ast::Func,
+    lits: &std::collections::HashSet<(usize, usize)>,
+    user_lits: &std::collections::HashMap<(usize, usize), String>,
+) {
     for c in &mut f.clauses {
         match &mut c.body {
-            ast::Body::Plain(e) => rw_int_lits_expr(e, lits),
+            ast::Body::Plain(e) => rw_int_lits_expr(e, lits, user_lits),
             ast::Body::Guarded(arms) => {
                 for (g, r) in arms {
-                    rw_int_lits_expr(g, lits);
-                    rw_int_lits_expr(r, lits);
+                    rw_int_lits_expr(g, lits, user_lits);
+                    rw_int_lits_expr(r, lits, user_lits);
                 }
             }
         }
         for w in &mut c.wher {
-            rw_int_lits_func(w, lits);
+            rw_int_lits_func(w, lits, user_lits);
         }
     }
 }
 
-fn rw_int_lits_expr(e: &mut ast::Expr, lits: &std::collections::HashSet<(usize, usize)>) {
+fn rw_int_lits_expr(
+    e: &mut ast::Expr,
+    lits: &std::collections::HashSet<(usize, usize)>,
+    user_lits: &std::collections::HashMap<(usize, usize), String>,
+) {
     use ast::Expr::{App, BinOp, Case, If, Int, Lam, Let, RecordCon, RecordUpd, Tuple, Var};
-    // an Integer literal → `fromInt n`; return so the wrapped inner `Int` (same span)
-    // is not re-visited.
+    // an Integer literal → `fromInt n`, or a user-numeric literal → `fromInteger$<T> n`; return so
+    // the wrapped inner `Int` (same span) is not re-visited.
     if let Int(n, span) = e {
         if lits.contains(span) {
             let (sp, val) = (*span, *n);
@@ -3745,42 +3757,53 @@ fn rw_int_lits_expr(e: &mut ast::Expr, lits: &std::collections::HashSet<(usize, 
             );
             return;
         }
+        if let Some(ty) = user_lits.get(span) {
+            let (sp, val) = (*span, *n);
+            *e = App(
+                Box::new(Var(ast::method_impl_name("fromInteger", ty), sp)),
+                Box::new(Int(val, sp)),
+                sp,
+            );
+            return;
+        }
     }
     match e {
         App(a, b, _) | BinOp(_, a, b, _) => {
-            rw_int_lits_expr(a, lits);
-            rw_int_lits_expr(b, lits);
+            rw_int_lits_expr(a, lits, user_lits);
+            rw_int_lits_expr(b, lits, user_lits);
         }
         If(c, t, el, _) => {
-            rw_int_lits_expr(c, lits);
-            rw_int_lits_expr(t, lits);
-            rw_int_lits_expr(el, lits);
+            rw_int_lits_expr(c, lits, user_lits);
+            rw_int_lits_expr(t, lits, user_lits);
+            rw_int_lits_expr(el, lits, user_lits);
         }
         Let(binds, body, _) => {
             for b in binds {
-                rw_int_lits_func(b, lits);
+                rw_int_lits_func(b, lits, user_lits);
             }
-            rw_int_lits_expr(body, lits);
+            rw_int_lits_expr(body, lits, user_lits);
         }
         Case(scrut, arms, _) => {
-            rw_int_lits_expr(scrut, lits);
+            rw_int_lits_expr(scrut, lits, user_lits);
             for (_, body) in arms {
-                rw_int_lits_expr(body, lits);
+                rw_int_lits_expr(body, lits, user_lits);
             }
         }
-        Tuple(es, _) => es.iter_mut().for_each(|x| rw_int_lits_expr(x, lits)),
+        Tuple(es, _) => es
+            .iter_mut()
+            .for_each(|x| rw_int_lits_expr(x, lits, user_lits)),
         RecordCon(_, fs, _) => {
             for (_, x) in fs {
-                rw_int_lits_expr(x, lits);
+                rw_int_lits_expr(x, lits, user_lits);
             }
         }
         RecordUpd(base, fs, _) => {
-            rw_int_lits_expr(base, lits);
+            rw_int_lits_expr(base, lits, user_lits);
             for (_, x) in fs {
-                rw_int_lits_expr(x, lits);
+                rw_int_lits_expr(x, lits, user_lits);
             }
         }
-        Lam(_, body, _) => rw_int_lits_expr(body, lits),
+        Lam(_, body, _) => rw_int_lits_expr(body, lits, user_lits),
         _ => {}
     }
 }
@@ -4367,6 +4390,22 @@ class Eq a where
   eq :: a -> a -> Bool
 class Ord a where
   le :: a -> a -> Bool
+-- Arithmetic as ordinary classes. The primitive instances (Int/Float/Integer) are NOT
+-- declared here: a primitive operand is resolved to the backend op directly (`+`/`+.`/`+#I`,
+-- `div`/`/.`/`div#I`) by the fast rewrite in infer.rs — no dict, no overhead — exactly as
+-- String's Ord comparisons are built in. A USER type dispatches through the instance it
+-- declares (`instance Num Complex where …` → `+$Complex`). No literal overloading (no
+-- `fromInteger`): user numeric values are built with their constructors.
+class Num a where
+  (+) :: a -> a -> a
+  (-) :: a -> a -> a
+  (*) :: a -> a -> a
+  fromInteger :: Int -> a
+class Division a where
+  (/) :: a -> a -> a
+class Integral a where
+  div :: a -> a -> a
+  mod :: a -> a -> a
 class Show a where
   show :: a -> String
   showArg :: a -> String
@@ -4889,6 +4928,66 @@ fn lower_classes(module: &mut ast::Module) {
         }
     }
     module.funcs.extend(impls);
+    module.funcs.extend(synth_ord_cmp_helpers(&module.instances));
+}
+
+/// For each USER `Ord` instance, synthesize strict `lt$T`/`gt$T` from the instance's `le$T`
+/// (≤) and prelude `not`, using the total-order identities `a < b ⟺ ¬(b ≤ a)` and
+/// `a > b ⟺ ¬(a ≤ b)`. This lets the resolver map the comparison operators `<`/`>` over a user
+/// type to a plain function NAME (`lt$T`/`gt$T`) — the operand flip lives inside the helper, so
+/// no expression surgery is needed. (`==` maps directly to the `Eq` method `eq$T`.)
+fn synth_ord_cmp_helpers(instances: &[ast::InstanceDecl]) -> Vec<ast::Func> {
+    use ast::{Body, Clause, Expr, Func, Mult, Pat, Type};
+    const SP: ast::Span = (0, 0);
+    let var = |n: &str| Expr::Var(n.to_string(), SP);
+    // `f a b` as nested application.
+    let app2 = |f: Expr, a: Expr, b: Expr| {
+        Expr::App(Box::new(Expr::App(Box::new(f), Box::new(a), SP)), Box::new(b), SP)
+    };
+    let mut out = Vec::new();
+    for inst in instances {
+        if inst.class_name != "Ord" {
+            continue;
+        }
+        let t = &inst.ty_head;
+        // primitive Ord instances use native `< >`; no strict helper needed (would be dead code).
+        if infer::is_primitive_num(t) || matches!(t.as_str(), "String" | "Bool") {
+            continue;
+        }
+        let le = ast::method_impl_name("le", t);
+        // sig `T -> T -> Bool` (T = the instance head type).
+        let bool_t = Type::Con("Bool".to_string());
+        let arrow = |from: Type, to: Type| Type::Arrow {
+            mult: Mult::Many,
+            from: Box::new(from),
+            to: Box::new(to),
+        };
+        let sig = arrow(inst.head_ty.clone(), arrow(inst.head_ty.clone(), bool_t));
+        // lt x y = not (le y x) ; gt x y = not (le x y)
+        for (name, lhs, rhs) in [
+            (ast::method_impl_name("lt", t), "y", "x"),
+            (ast::method_impl_name("gt", t), "x", "y"),
+        ] {
+            let body = Expr::App(
+                Box::new(var("not")),
+                Box::new(app2(var(&le), var(lhs), var(rhs))),
+                SP,
+            );
+            out.push(Func {
+                name,
+                sig: Some(sig.clone()),
+                clauses: vec![Clause {
+                    pats: vec![Pat::Var("x".to_string(), SP), Pat::Var("y".to_string(), SP)],
+                    body: Body::Plain(body),
+                    wher: vec![],
+                    span: SP,
+                }],
+                span: SP,
+                constraints: inst.constraints.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// Marks the class variable in a type, replacing it with a unique sentinel
