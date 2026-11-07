@@ -76,7 +76,7 @@ raw pointer the verifier can no longer track.
     the buffer**, so if the buffer has no Axión use *after* the FFI call, Auto-Drop may free it
     *before* C reads through the pointer — a use-after-free the verifier cannot see (it is across the
     boundary). **Rule: a buffer passed to C by pointer must have a use after that call** (e.g. a
-    `peek` read back), which anchors the drop past the call. (This bit the imv zoom path: the rect
+    `peek` read back), which anchors the drop past the call. (This bit the aximv zoom path: the rect
     buffer was freed before `SDL_RenderCopy` read it → a black frame.)
 - **`intToPtr :: Int -> Ptr a`** / **`ptrToInt :: Ptr a -> Int`** / **`nullPtr :: Ptr a`** are the
   `Ptr` escape hatches. `intToPtr` fabricates a handle from an arbitrary integer; passing a bogus or
@@ -113,7 +113,7 @@ discharges. The checklist:
 5. **Run FFI programs natively.** The interpreter refuses non-scalar FFI by design; `--backend
    cranelift` / `--release` are the faithful executors.
 
-`examples/imv.axi` is the worked example: a real SDL2 viewer that follows this contract (sized
+`examples/aximv.axi` is the worked example: a real SDL2 viewer that follows this contract (sized
 `bufPtrN` at every call, a `peek` read-back that anchors each scratch buffer past its FFI call, and
 all-`Borrow` arguments since SDL takes ownership of none of them), and whose header states plainly
 that it is a *demo of reach*, not a safe-by-construction artifact. Its manually-paired
