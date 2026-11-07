@@ -106,18 +106,18 @@ shQuote s = "'" ++ shEsc s 0 (strLen s) ++ "'"
 shEsc :: String -> Int -> Int -> String
 shEsc s i n =
   if i >= n then ""
-  else (if charAt i s == 39
+  else (if charAt i s == '\''
         then "'\\''" ++ shEsc s (i + 1) n
         else substr i 1 s ++ shEsc s (i + 1) n)
 
 -- The first line of a decrypted entry (up to, not including, the first '\n') — the
--- password, for the `-c` clipboard path. Built char-by-char (byte 10 is '\n').
+-- password, for the `-c` clipboard path. Built char-by-char.
 firstLine :: String -> String
 firstLine s = firstLineGo s 0 (strLen s)
 firstLineGo :: String -> Int -> Int -> String
 firstLineGo s i n =
   if i >= n then ""
-  else (if charAt i s == 10 then "" else substr i 1 s ++ firstLineGo s (i + 1) n)
+  else (if charAt i s == '\n' then "" else substr i 1 s ++ firstLineGo s (i + 1) n)
 
 -- The n-th line (1-indexed) of a decrypted entry — the `pass show -c<n>` selector (upstream
 -- copies line <n>, default 1). `skipLines` advances past (n-1) newlines, then `firstLineGo`
@@ -126,13 +126,13 @@ skipLines :: String -> Int -> Int -> Int -> Int
 skipLines s i n k =
   if k <= 0 then i
   else if i >= n then i
-  else if charAt i s == 10 then skipLines s (i + 1) n (k - 1)
+  else if charAt i s == '\n' then skipLines s (i + 1) n (k - 1)
   else skipLines s (i + 1) n k
 nthLine :: Int -> String -> String
 nthLine ln s = firstLineGo s (skipLines s 0 (strLen s) (ln - 1)) (strLen s)
 
 -- Strip a leading "key:" prefix from a login line: drop everything up to and including the
--- first ':' (byte 58) plus any spaces (byte 32) that follow it. A line with no colon is
+-- first ':' plus any spaces that follow it. A line with no colon is
 -- returned verbatim ("login: me@x" → "me@x", "alice@x" → "alice@x"). Every branch returns a
 -- FRESH `substr` (never the borrowed param) so the mixed bare-param/fresh-String
 -- conditional-return aliasing class never arises — the drop-verifier stays happy.
@@ -141,12 +141,12 @@ stripKey s = stripKeyGo s 0 (strLen s)
 stripKeyGo :: String -> Int -> Int -> String
 stripKeyGo s i n =
   if i >= n then substr 0 n s
-  else if charAt i s == 58 then stripKeySpaces s (i + 1) n
+  else if charAt i s == ':' then stripKeySpaces s (i + 1) n
   else stripKeyGo s (i + 1) n
 stripKeySpaces :: String -> Int -> Int -> String
 stripKeySpaces s i n =
   if i >= n then ""
-  else if charAt i s == 32 then stripKeySpaces s (i + 1) n
+  else if charAt i s == ' ' then stripKeySpaces s (i + 1) n
   else substr i (n - i) s
 
 -- Is command `c` on PATH? (0 = yes.) A shell probe with no user input — injection-safe.
