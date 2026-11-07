@@ -74,6 +74,7 @@ pub mod db;
 /// The lossless rowan CST (§8), gated behind the `cst` feature.
 #[cfg(feature = "cst")]
 pub mod cst;
+pub mod format;
 
 /// The Language Server (`axion-lsp`), gated behind the `lsp` cargo feature so the
 /// default build stays free of the tokio/tower-lsp async dependency tree.
@@ -132,8 +133,72 @@ pub static PROG_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::ne
 
 /// Entry point for the `axionc` CLI: parses arguments, then compiles/checks/runs the
 /// given `.axi` file on the selected backend.
+/// `axionc fmt [--check] [--stdout] <file>…` — format Axión source over the lossless CST.
+/// Default: rewrite each file in place (only if it changed). `--check`: report files that would
+/// change and exit non-zero (CI gate). `--stdout`: print the formatted result instead of writing.
+/// A file that does not parse cleanly is SKIPPED (left untouched), not treated as a failure.
+fn run_fmt(args: &[String]) -> ExitCode {
+    let mut check = false;
+    let mut to_stdout = false;
+    let mut files: Vec<&str> = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "--check" => check = true,
+            "--stdout" => to_stdout = true,
+            f => files.push(f),
+        }
+    }
+    if files.is_empty() {
+        eprintln!("usage: axionc fmt [--check] [--stdout] <file.axi>…");
+        return ExitCode::from(2);
+    }
+    let mut would_change = 0u32;
+    let mut failed = false;
+    for f in files {
+        let src = match std::fs::read_to_string(f) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("fmt: {f}: {e}");
+                failed = true;
+                continue;
+            }
+        };
+        let Some(formatted) = format::format_src(&src) else {
+            if !to_stdout {
+                eprintln!("fmt: {f}: skipped (does not parse cleanly)");
+            }
+            continue;
+        };
+        if to_stdout {
+            print!("{formatted}");
+            continue;
+        }
+        if formatted != src {
+            would_change += 1;
+            if check {
+                eprintln!("fmt: {f}: would reformat");
+            } else if let Err(e) = std::fs::write(f, &formatted) {
+                eprintln!("fmt: {f}: {e}");
+                failed = true;
+            } else {
+                eprintln!("fmt: {f}: formatted");
+            }
+        }
+    }
+    if failed || (check && would_change > 0) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// The `axionc` command-line entry point: parse flags, run the requested backend/emit mode (or the
+/// `fmt` subcommand), and return the process exit code.
 pub fn run_cli() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|s| s.as_str()) == Some("fmt") {
+        return run_fmt(&args[1..]);
+    }
     let mut check_only = false;
     let mut check_coherence = false;
     let mut backend = Backend::Interp;

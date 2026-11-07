@@ -100,10 +100,14 @@ pub enum SyntaxKind {
     FOREIGN_STRUCT,
     // a `foreign enum Name { M = v, … }` declaration (§18). Appended last (stable discriminants).
     FOREIGN_ENUM,
+    // one alternative of a `case` block (`pat -> body`), wrapping its pattern + body so the formatter
+    // sees alternative boundaries (the layout tokens that delimited them are consumed during the
+    // parse). Lowered inside the `CASE_EXPR` arm, never on its own. Appended last (stable discriminants).
+    CASE_ALT,
 }
 
 use SyntaxKind::{
-    APP_EXPR, BIND_STMT, BINOP_EXPR, BORROW_EXPR, CASE_EXPR, CLASS_DECL, COMMENT, CONID, CONSTRAINT, CON_DECL,
+    APP_EXPR, BIND_STMT, BINOP_EXPR, BORROW_EXPR, CASE_ALT, CASE_EXPR, CLASS_DECL, COMMENT, CONID, CONSTRAINT, CON_DECL,
     CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL, FOREIGN_DECL, FOREIGN_ENUM, FOREIGN_STRUCT,
     FUN_CLAUSE, GUARD, IDENT, IF_EXPR, IMPORT_DECL, INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR,
     LET_STMT,
@@ -186,6 +190,7 @@ impl Language for AxionLang {
             BORROW_EXPR,
             FOREIGN_STRUCT,
             FOREIGN_ENUM,
+            CASE_ALT,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -927,9 +932,11 @@ impl ExprParser<'_> {
         self.expr(); // scrutinee
         self.expect(&Tok::Of);
         self.block(|p| {
+            p.b.start_node(CASE_ALT.into());
             p.pat();
             p.expect(&Tok::Arrow);
             p.expr();
+            p.b.finish_node();
         });
         self.b.finish_node();
     }
@@ -1806,6 +1813,39 @@ fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
     Some((SyntaxNode::new_root(p.b.finish()), full))
 }
 
+/// Parse a WHOLE MODULE token-driven into a lossless CST (every source byte is a token or trivia, so
+/// node offsets are real source offsets), or `None` if the file isn't fully covered by the
+/// token-driven subset (any REAL token left over, a recovery ERROR, or a lex failure). Unlike
+/// [`build_cst`] — which reconstructs an outline from the DESUGARED AST, flattening `do`/`case`/`let`
+/// into their lowered shapes — this preserves the real block structure (`DO_EXPR` with
+/// BIND/EXPR/LET_STMT items, `CASE_EXPR` with `CASE_ALT`s, `LET_EXPR` bindings), which is what a
+/// structural formatter needs to see block-item boundaries. Used only by `axionc fmt`.
+pub fn build_lossless_cst(src: &str) -> Option<SyntaxNode> {
+    let raw = lex(src).ok()?;
+    let lines = LineMap::new(src);
+    let toks = layout::layout(&raw, &lines);
+    let mut p = ExprParser {
+        src,
+        toks: &toks,
+        pos: 0,
+        cursor: 0,
+        b: GreenNodeBuilder::new(),
+        ok: true,
+        fixities: crate::parser::scan_fixities(&toks),
+    };
+    p.b.start_node(MODULE.into());
+    p.block(ExprParser::top_decl); // the module's top level is itself a layout block
+    let leftover_real = p.toks[p.pos..]
+        .iter()
+        .any(|s| matches!(s.tok, LTok::Tok(_)));
+    p.trivia(p.src.len());
+    p.b.finish_node();
+    if !p.ok || leftover_real {
+        return None;
+    }
+    Some(SyntaxNode::new_root(p.b.finish()))
+}
+
 /// The span of a node measured from its first to its last NON-trivia token — so
 /// leading/trailing whitespace woven into the node doesn't shift the offsets. This
 /// matches the recursive-descent parser, whose spans start/end on real tokens.
@@ -2095,8 +2135,11 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
             let mut kids = node.children();
             let scrut = lower_expr(&kids.next()?)?;
             let mut arms = Vec::new();
-            while let Some(pnode) = kids.next() {
-                let enode = kids.next()?;
+            // each remaining child is a CASE_ALT wrapping (pattern, body)
+            for alt in kids {
+                let mut ac = alt.children();
+                let pnode = ac.next()?;
+                let enode = ac.next()?;
                 arms.push((lower_pat(&pnode)?, lower_expr(&enode)?));
             }
             Some(Expr::Case(Box::new(scrut), arms, sp))
@@ -2196,7 +2239,7 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
             // clause/lambda parameter or a constructor argument (`parse_apat`) it is just
             // its token.
             let pattern_pos =
-                matches!(node.parent().map(|p| p.kind()), Some(CASE_EXPR | TUPLE_PAT));
+                matches!(node.parent().map(|p| p.kind()), Some(CASE_ALT | TUPLE_PAT));
             let sp = if args.is_empty() && !pattern_pos {
                 node_span(node)
             } else {
