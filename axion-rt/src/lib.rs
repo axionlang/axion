@@ -2538,6 +2538,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_array_iota", axion_array_iota as *const u8),
         ("axion_array_len", axion_array_len as *const u8),
         ("axion_array_new", axion_array_new as *const u8),
+        ("axion_array_oob", axion_array_oob as *const u8),
         ("axion_array_set", axion_array_set as *const u8),
         ("axion_array_sum", axion_array_sum as *const u8),
         ("axion_bignum_add", axion_bignum_add as *const u8),
