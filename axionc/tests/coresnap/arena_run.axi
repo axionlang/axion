@@ -12,13 +12,10 @@
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
     let _dfree = rtcall axion_free _p  ; Δ{}
-    let _t1 = - n 1  ; Δ{}
-    let _t2 = call allocN a _t1  ; Δ{}
+    let _t1 = - _p1 1  ; Δ{}
+    let _t2 = call allocN _p0 _t1  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
-    let a = _p0  ; Δ{}
-    let a = _p0  ; Δ{}
-    let c = allocateCell a  ; Δ{}
-    let n = _p1  ; Δ{}
+    let c = allocateCell _p0  ; Δ{}
     let u = call useCell c  ; Δ{}
     ret + 1 _t2  ; Δ{}
     ret 0  ; Δ{}

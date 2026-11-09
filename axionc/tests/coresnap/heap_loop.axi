@@ -14,11 +14,10 @@
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
     let _dfree = rtcall axion_free _p  ; Δ{}
-    let _t1 = call step n  ; Δ{}
-    let _t2 = - n 1  ; Δ{}
+    let _t1 = call step _p0  ; Δ{}
+    let _t2 = - _p0 1  ; Δ{}
     let _t3 = call sumTo _t2  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
-    let n = _p0  ; Δ{}
     ret + _t1 _t3  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}

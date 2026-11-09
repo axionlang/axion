@@ -11,17 +11,13 @@
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
     let _dfree = rtcall axion_free _p  ; Δ{}
-    let _t1 = - k 1  ; Δ{}
-    let _t2 = + a b  ; Δ{}
+    let _t1 = - _p0 1  ; Δ{}
+    let _t2 = + _p1 _p2  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
-    let a = _p1  ; Δ{}
-    let a = _p1  ; Δ{}
-    let b = _p2  ; Δ{}
-    let k = _p0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
-    ret a  ; Δ{}
-    ret call fibFast$go _t1 b _t2  ; Δ{}
+    ret _p1  ; Δ{}
+    ret call fibFast$go _t1 _p2 _t2  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

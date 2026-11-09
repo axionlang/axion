@@ -2,8 +2,8 @@
 # Micro-benchmark suite (§13): compares Axion's TWO backends — --dev
 # (Cranelift, no opt) and --release (LLVM -O2 -flto) — against C and Rust at -O0/-O2.
 # Kernels: fib (recursion/branches), loop (200M arithmetic iterations), alloc (40M
-# allocations — arena in Axion, malloc/Box in C/Rust), simd (vectorizable reduction;
-# Axion N/A — §4 to be built), gauss (dense f64 Gaussian elimination — Array Float throughput:
+# allocations — arena in Axion, malloc/Box in C/Rust), simd (vectorizable reduction),
+# gauss (dense f64 Gaussian elimination — Array Float throughput:
 # Axion's bounds-checked getArray/setArray rtcalls vs C/Rust raw indexing). Uses the SAME clang
 # (LLVM) for C and for
 # Axion --release, so the tier is comparable. Needs clang (AXION_CLANG

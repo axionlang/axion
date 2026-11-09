@@ -5375,6 +5375,21 @@ pub fn lower_with(
             Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
         );
         f.body = normalize_mixed_cond_lets(body);
+        // Clause-form functions bind patterns as `let buf = _p1`. Removing that alias BEFORE borrow
+        // analysis lets every pass see the parameter itself: otherwise it read as a move, so the
+        // caller gave up ownership while the callee never freed (a leak), and a later use by the
+        // caller was a false AX0910. Owned `%1` params keep their existing alias handling.
+        let borrowable: HashSet<String> = f
+            .params
+            .iter()
+            .filter(|p| !f.owned_params.contains(p))
+            .cloned()
+            .collect();
+        let body = std::mem::replace(
+            &mut f.body,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+        );
+        f.body = collapse_param_aliases(body, &borrowable);
     }
     let borrow_args = compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
 
@@ -7448,6 +7463,46 @@ fn single_var_arm(arms: Vec<(CPat, Term)>) -> (String, Term) {
     match arms.into_iter().next() {
         Some((CPat::Var(a), body)) => (a, body),
         _ => unreachable!("caller guards a single CPat::Var arm"),
+    }
+}
+
+/// Removes every `let x = p` where `p` is in `params`, renaming uses of `x` to `p`. Relies on the
+/// uniquify invariant (see [`renamed`]), so neither name is re-bound in the body.
+fn collapse_param_aliases(t: Term, params: &HashSet<String>) -> Term {
+    fn in_rhs(rhs: Rhs, params: &HashSet<String>) -> Rhs {
+        match rhs {
+            Rhs::If(c, a, b) => Rhs::If(
+                c,
+                Box::new(collapse_param_aliases(*a, params)),
+                Box::new(collapse_param_aliases(*b, params)),
+            ),
+            Rhs::Case(s, arms) => Rhs::Case(
+                s,
+                arms.into_iter()
+                    .map(|(p, b)| (p, collapse_param_aliases(b, params)))
+                    .collect(),
+            ),
+            op => op,
+        }
+    }
+    match t {
+        Term::Let(x, Rhs::Op(Op::Atom(Atom::Var(p))), _, body) if params.contains(&p) => {
+            collapse_param_aliases(renamed(*body, &x, &p), params)
+        }
+        Term::Let(x, rhs, sp, body) => Term::Let(
+            x,
+            in_rhs(rhs, params),
+            sp,
+            Box::new(collapse_param_aliases(*body, params)),
+        ),
+        Term::Drop(v, ty, skip, sp, body) => Term::Drop(
+            v,
+            ty,
+            skip,
+            sp,
+            Box::new(collapse_param_aliases(*body, params)),
+        ),
+        Term::Ret(rhs, sp) => Term::Ret(in_rhs(rhs, params), sp),
     }
 }
 

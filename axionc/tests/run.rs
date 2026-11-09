@@ -1485,6 +1485,32 @@ fn llvm_ir_separates_array_length_from_elements_in_tbaa() {
 }
 
 #[test]
+fn clause_form_param_alias_is_a_borrow_not_a_move() {
+    // `f 0 a = …` binds `let a = _p1`; that alias used to read as a move, so the caller gave up an
+    // array the callee never freed (a leak), and any later use by the caller was a false AX0910.
+    agree_across_backends("clause_param_borrow.axi", "21\n");
+}
+
+#[test]
+fn every_bench_kernel_passes_the_verifier() {
+    // bench/ is outside the oracle corpus and bench.sh only prints `-` for a kernel that fails to
+    // build, so `simd` once sat rejected by a false AX0910 without failing anything.
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../bench");
+    for k in [
+        "fib", "loop", "alloc", "simd", "dispatch", "sumtype", "tritvec", "dot_i8", "ternmv", "i8mv",
+        "i32mv", "gauss",
+    ] {
+        let path = format!("{dir}/{k}.axi");
+        let out = axionc().args(["--emit", "verify", &path]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "bench kernel {k} rejected: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+#[test]
 fn ax0912_borrowers_reach_soundness_by_two_routes() {
     // The two element-borrower classes over a HEAP element type both reach soundness — by
     // DIFFERENT mechanisms — and now compile natively (both were once AX0912-rejected):

@@ -49,11 +49,10 @@
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _t0 = call asWin 1000  ; Δ{}
-  let _t0 = p  ; Δ{}
   let _t1 = showInt _t0  ; Δ{} · makes String
   let _t2 = putStrLn _t1  ; Δ{_t1}
   ret 0  ; Δ{}
-  ret == _t0 0  ; Δ{}
+  ret == p 0  ; Δ{}
   ret case _t2 of
   ret n  ; Δ{}
   ret n  ; Δ{}
