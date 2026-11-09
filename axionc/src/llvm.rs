@@ -205,6 +205,19 @@ fn main_returns_bool(module: &ast::Module, entry: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// TBAA for the dense Array `[i64 len][elems…]`: the length slot and the element slots get disjoint
+/// types. An element store can never touch offset 0 (its index is bounds-checked, or proven in range),
+/// so this is a fact, not an assumption — and it lets LLVM keep `len` in a register across the element
+/// stores of a read-modify-write loop instead of reloading it every iteration. Accesses without a tag
+/// (the runtime's own writes) still conservatively alias both.
+const TBAA_ARRAY_LEN: &str = "!3";
+const TBAA_ARRAY_ELEM: &str = "!4";
+const TBAA_METADATA: &str = "\n!0 = !{!\"axion.array.tbaa\"}\n\
+    !1 = !{!\"array.len\", !0, i64 0}\n\
+    !2 = !{!\"array.elem\", !0, i64 0}\n\
+    !3 = !{!1, !1, i64 0}\n\
+    !4 = !{!2, !2, i64 0}\n";
+
 /// Emits the LLVM IR module (text) from the Core (`--emit llvm`). The
 /// stream-fusion pass runs inside `core::lower`; `build_and_run` passes its
 /// `--fuse` flag through, so the emitted IR matches what the JIT runs.
@@ -324,6 +337,7 @@ pub fn emit_ir(
         out.push_str("  call i32 (ptr, ...) @printf(ptr @.sfmt, ptr %s)\n");
     }
     out.push_str("  ret i32 0\n}\n");
+    out.push_str(TBAA_METADATA);
     Ok(out)
 }
 
@@ -688,7 +702,10 @@ impl Emit<'_> {
     /// a straight load/store. Returns the loaded value (get). The element GEP is TYPED (`getelementptr
     /// i64`) so the stride is explicit to the optimizer.
     fn array_bounds_check(&mut self, arr: &str, idx: &str) {
-        let n = self.load(arr, 0); // length at offset 0
+        let n = self.val(); // length at offset 0, TBAA-tagged apart from the elements
+        let ap = self.val();
+        self.ins(&format!("{ap} = inttoptr i64 {arr} to ptr"));
+        self.ins(&format!("{n} = load i64, ptr {ap}, !tbaa {TBAA_ARRAY_LEN}"));
         let oob = self.val();
         self.ins(&format!("{oob} = icmp uge i64 {idx}, {n}"));
         let lf = self.label("aoob");
@@ -717,7 +734,7 @@ impl Emit<'_> {
         }
         let ep = self.array_elem_ptr(arr, idx);
         let v = self.val();
-        self.ins(&format!("{v} = load i64, ptr {ep}"));
+        self.ins(&format!("{v} = load i64, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"));
         v
     }
     fn array_set_inline(&mut self, arr: &str, idx: &str, val: &str, checked: bool) {
@@ -725,7 +742,7 @@ impl Emit<'_> {
             self.array_bounds_check(arr, idx);
         }
         let ep = self.array_elem_ptr(arr, idx);
-        self.ins(&format!("store i64 {val}, ptr {ep}"));
+        self.ins(&format!("store i64 {val}, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"));
     }
 
     /// Call to a runtime function (`ret` indicates whether it returns a value).

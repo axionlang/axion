@@ -1447,6 +1447,44 @@ fn array_out_of_bounds_index_aborts_not_reads_garbage() {
 }
 
 #[test]
+fn array_write_loop_past_end_aborts_on_both_native_backends() {
+    // The TBAA split lets LLVM cache `len` across element stores (llvm.rs), and Cranelift inlines the
+    // same check: a write loop overrunning by one must abort at index 5 of [0, 5) on both, never store.
+    let fx = fixture("array_oob_after_stores.axi");
+    let tmp = std::env::temp_dir().join(format!("axion-oob-stores-{}", std::process::id()));
+    let bin = tmp.to_str().unwrap();
+    let built = axionc()
+        .args(["--release", "-o", bin, &fx])
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "--release build failed: {built:?}");
+    let release = std::process::Command::new(bin).output().unwrap();
+    let _ = std::fs::remove_file(&tmp);
+    let dev = axionc()
+        .args(["--backend", "cranelift", &fx])
+        .output()
+        .unwrap();
+    for out in [release, dev] {
+        assert!(!out.status.success(), "must abort, got {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("index 5 out of range [0, 5)"), "stderr: {err}");
+    }
+}
+
+#[test]
+fn llvm_ir_separates_array_length_from_elements_in_tbaa() {
+    // The gauss speedup rests on these tags; a refactor that drops them regresses silently otherwise.
+    let out = axionc()
+        .args(["--emit", "llvm", &fixture("array_thread_let.axi")])
+        .output()
+        .unwrap();
+    let ir = String::from_utf8_lossy(&out.stdout);
+    assert!(ir.contains("load i64, ptr %") && ir.contains("!tbaa !3"), "length load untagged");
+    assert!(ir.contains("!tbaa !4"), "element access untagged");
+    assert!(ir.contains("!1 = !{!\"array.len\", !0, i64 0}"), "missing TBAA nodes");
+}
+
+#[test]
 fn ax0912_borrowers_reach_soundness_by_two_routes() {
     // The two element-borrower classes over a HEAP element type both reach soundness — by
     // DIFFERENT mechanisms — and now compile natively (both were once AX0912-rejected):
