@@ -1559,6 +1559,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "arena_release",
         "intToPtr",
         "ptrToInt",
+        "handleAddr",
         "newBuffer",
         "withBuffer",
         "bufIota",
@@ -2176,7 +2177,7 @@ impl Lower<'_> {
             // `imperative e` = e (the imperative block is identity; §5)
             ("imperative", 1) => return self.op(args[0], buf),
             // Ptr casts (§18): `Ptr a` is a reinterpreted i64, so intToPtr/ptrToInt are identity.
-            ("intToPtr", 1) | ("ptrToInt", 1) => return self.op(args[0], buf),
+            ("intToPtr", 1) | ("ptrToInt", 1) | ("handleAddr", 1) => return self.op(args[0], buf),
             // withBuffer n f = f (newBuffer n): allocates and passes to the closure (which consumes)
             ("withBuffer", 2) => {
                 let n = self.atom(args[0], buf);

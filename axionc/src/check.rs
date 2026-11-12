@@ -16,7 +16,9 @@
 //!   `--emit drops`;
 //! - **consumptions == 1** ⇒ ownership transferred, no drop.
 //!
-//! Alternative branches (`if`, `case`) count as paths (maximum, not sum).
+//! Alternative branches (`if`, `case`) count as paths (maximum, not sum); a **must-use** value must
+//! also be consumed on EVERY path (the minimum over paths is ≥ 1), else `AX0002` — the maximum alone
+//! hid a branch that leaked it (Auto-Drop covers that for droppable values, not for handles).
 //!
 //! ORDER is also checked: a traversal in evaluation order detects the
 //! use of a `%1` **after** ownership has been moved (use-after-move ⇒
@@ -1306,6 +1308,13 @@ fn bind_named(name: &str, r: OpResult, env: &mut HashMap<String, SessTy>) {
 
 /// A type is *must-use* if its head is a primitive without `Drop`, or a
 /// `data` cuja must-use-ness foi propagada estruturalmente (ver `build_ctx`).
+/// `true` for a must-use type with NO destructor (not a `Buffer`, nor a record holding only those).
+fn is_no_drop(ty: &Type, no_drop_types: &HashSet<String>) -> bool {
+    matches!(ty.head_con(), Some(h)
+        if (MUST_USE_PRIMS.contains(&h) && !AUTO_DROPPED_PRIMS.contains(&h))
+            || no_drop_types.contains(h))
+}
+
 fn is_must_use(ty: &Type, must_use_types: &HashSet<String>) -> bool {
     matches!(ty.head_con(), Some(h) if MUST_USE_PRIMS.contains(&h) || must_use_types.contains(h))
 }
@@ -1314,6 +1323,39 @@ fn is_must_use(ty: &Type, must_use_types: &HashSet<String>) -> bool {
 /// a `data` is must-use if some field of some constructor is must-use (a
 /// primitive without `Drop`, or another already-marked `data`). `Drop` thus propagates
 /// estruturalmente (§2).
+/// Must-use primitives that nonetheless HAVE a destructor: a `Buffer` is freed by Auto-Drop
+/// (`axion_buf_free`) wherever it is not consumed. Only types with no destructor at all get the
+/// stricter rules — tracked from a `let` binding, and consumed on every path.
+const AUTO_DROPPED_PRIMS: &[&str] = &["Buffer"];
+
+/// The must-use types with NO destructor (handles, sockets, endpoints…), propagated through `data`
+/// fields like [`build_must_use_types`] but without [`AUTO_DROPPED_PRIMS`].
+fn build_no_drop_types(module: &Module) -> HashSet<String> {
+    let prim = |h: &str| MUST_USE_PRIMS.contains(&h) && !AUTO_DROPPED_PRIMS.contains(&h);
+    let mut set: HashSet<String> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for d in &module.datas {
+            if set.contains(&d.name) {
+                continue;
+            }
+            let any = d.cons.iter().any(|c| {
+                c.fields
+                    .iter()
+                    .any(|f| matches!(f.ty.head_con(), Some(h) if prim(h) || set.contains(h)))
+            });
+            if any {
+                set.insert(d.name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    set
+}
+
 fn build_must_use_types(module: &Module) -> HashSet<String> {
     let mut set: HashSet<String> = HashSet::new();
     loop {
@@ -1424,6 +1466,7 @@ pub fn builtins() -> HashSet<String> {
         "imperative",
         "intToPtr",
         "ptrToInt",
+        "handleAddr",
         "nullPtr",
         // linear dense Array
         "newArray",
@@ -1493,6 +1536,8 @@ pub fn builtins() -> HashSet<String> {
 /// State of a linear resource after analyzing a clause/scope.
 struct ResUse {
     consumes: usize,
+    /// consumptions on the LEAST-consuming path (a must-use value needs >= 1 on every path)
+    min_consumes: usize,
     borrows: usize,
     uam: Option<(Span, Span)>, // use-after-move (use, move)
     death: Option<Span>,       // last occurrence (death point)
@@ -1525,10 +1570,11 @@ fn check_func(
                 continue;
             }
             if let (Pat::Var(name, span), Some(ty)) = (p, ptypes.get(i)) {
-                let class = class_of_type(ty, &ctx.must_use_types);
+                let class = class_of_type(ty, ctx);
                 let (c, b) = analyze_clause(clause, name, ctx);
                 let use_ = ResUse {
                     consumes: c,
+                    min_consumes: analyze_clause_with(clause, name, ctx, alt_min).0,
                     borrows: b,
                     uam: use_after_move(clause, name, ctx),
                     death: last_occurrence_clause(clause, name),
@@ -1653,6 +1699,7 @@ fn check_func(
                 collect_last(sp_scope, &name, &mut death);
                 let use_ = ResUse {
                     consumes: c,
+                    min_consumes: analyze_with(sp_scope, &name, Mode::Consume, ctx, alt_min).0,
                     borrows: b,
                     uam: walk(sp_scope, &name, Mode::Consume, ctx, MoveState::default()).error,
                     death,
@@ -1937,6 +1984,22 @@ fn report_resource(
                      again — ownership has left this scope (§2).",
             ),
         );
+    } else if u.min_consumes == 0 && u.consumes > 0 && class.no_drop {
+        diags.push(
+            Diagnostic::error(
+                "AX0002",
+                format!("must-use resource '{name}' is not consumed on every path"),
+            )
+            .label(
+                label.0,
+                label.1,
+                format!("'{name}' : {} %1 (no Drop)", class.ty),
+            )
+            .with_help(
+                "some `if`/`case` branch consumes it and another does not, so that path leaks \
+                     it: consume it (or pass it on) in every branch (§2).",
+            ),
+        );
     } else if u.consumes == 0 && class.must_use {
         diags.push(
             Diagnostic::error(
@@ -2210,6 +2273,11 @@ struct Ctx {
     /// functions whose RESULT is a heap value (`data`/tuple) — so `let z = f a`
     /// binds a heap value that must not be contracted (moved into two owned slots).
     fn_ret_heap: HashSet<String>,
+    /// user and foreign functions whose declared RESULT has no destructor (`Handle a`, an
+    /// endpoint…) → that type's head, so `let h = openDev 7` is tracked like a `%1` parameter.
+    fn_ret_must_use: HashMap<String, String>,
+    /// must-use types with no destructor at all (see [`build_no_drop_types`])
+    no_drop_types: HashSet<String>,
 }
 
 /// A value of this type is a HEAP allocation that gets deep-dropped, so moving it
@@ -2395,13 +2463,34 @@ fn build_ctx(module: &Module) -> Ctx {
         })
         .map(|f| f.name.clone())
         .collect();
+    let must_use_types = build_must_use_types(module);
+    let no_drop_types = build_no_drop_types(module);
+    let sigs = module
+        .funcs
+        .iter()
+        .filter_map(|f| Some((f.name.clone(), f.sig.clone()?)))
+        .chain(
+            module
+                .foreigns
+                .iter()
+                .map(|fo| (fo.name.clone(), fo.sig.strip_ffi_wrappers())),
+        );
+    let fn_ret_must_use = sigs
+        .filter_map(|(name, sig)| {
+            let rt = crate::core::result_type(&sig);
+            let head = rt.head_con()?.to_string();
+            is_no_drop(rt, &no_drop_types).then_some((name, head))
+        })
+        .collect();
     Ctx {
         consumers,
         field_mults,
-        must_use_types: build_must_use_types(module),
+        must_use_types,
         data_names,
         con_fields,
         fn_ret_heap,
+        fn_ret_must_use,
+        no_drop_types,
     }
 }
 
@@ -2415,29 +2504,50 @@ fn alt(a: Uses, b: Uses) -> Uses {
     (a.0.max(b.0), a.1.max(b.1))
 }
 
+/// Like [`alt`], but keeps the FEWEST consumptions over alternative paths. A must-use value needs at
+/// least one on EVERY path: the maximum alone hides a path that silently leaks it.
+fn alt_min(a: Uses, b: Uses) -> Uses {
+    (a.0.min(b.0), a.1.max(b.1))
+}
+
+/// Combines the alternatives of an `if`/`case`/guard set with `pick` ([`alt`] or [`alt_min`]).
+fn alts(us: impl Iterator<Item = Uses>, pick: fn(Uses, Uses) -> Uses) -> Uses {
+    us.reduce(pick).unwrap_or((0, 0))
+}
+
 fn analyze_clause(clause: &Clause, x: &str, ctx: &Ctx) -> Uses {
+    analyze_clause_with(clause, x, ctx, alt)
+}
+
+fn analyze_clause_with(clause: &Clause, x: &str, ctx: &Ctx, pick: fn(Uses, Uses) -> Uses) -> Uses {
     // the clause's value is returned ⇒ consumption position
     let mut u = match &clause.body {
-        Body::Plain(e) => analyze(e, x, Mode::Consume, ctx),
-        Body::Guarded(arms) => arms
-            .iter()
-            .map(|(g, r)| {
+        Body::Plain(e) => analyze_with(e, x, Mode::Consume, ctx, pick),
+        Body::Guarded(arms) => alts(
+            arms.iter().map(|(g, r)| {
                 add(
-                    analyze(g, x, Mode::Borrow, ctx),
-                    analyze(r, x, Mode::Consume, ctx),
+                    analyze_with(g, x, Mode::Borrow, ctx, pick),
+                    analyze_with(r, x, Mode::Consume, ctx, pick),
                 )
-            })
-            .fold((0, 0), alt),
+            }),
+            pick,
+        ),
     };
     for w in &clause.wher {
         for c in &w.clauses {
-            u = add(u, analyze_clause(c, x, ctx));
+            u = add(u, analyze_clause_with(c, x, ctx, pick));
         }
     }
     u
 }
 
+/// (consumptions, borrows) of `x` in `e`, taking the MOST consuming alternative path.
 fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
+    analyze_with(e, x, mode, ctx, alt)
+}
+
+fn analyze_with(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, pick: fn(Uses, Uses) -> Uses) -> Uses {
+    let analyze = |e: &Expr, x: &str, mode: Mode, ctx: &Ctx| analyze_with(e, x, mode, ctx, pick);
     match e {
         Expr::Var(n, _) => {
             if n == x {
@@ -2478,19 +2588,17 @@ fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
         // condition read; the branches are alternative paths, in the parent's mode
         Expr::If(c, t, el, _) => add(
             analyze(c, x, Mode::Borrow, ctx),
-            alt(analyze(t, x, mode, ctx), analyze(el, x, mode, ctx)),
+            pick(analyze(t, x, mode, ctx), analyze(el, x, mode, ctx)),
         ),
         Expr::Case(s, arms, _) => add(
             analyze(s, x, Mode::Borrow, ctx),
-            arms.iter()
-                .map(|(_, b)| analyze(b, x, mode, ctx))
-                .fold((0, 0), alt),
+            alts(arms.iter().map(|(_, b)| analyze(b, x, mode, ctx)), pick),
         ),
         Expr::Let(binds, body, _) => {
             let in_binds = binds
                 .iter()
                 .flat_map(|b| &b.clauses)
-                .map(|c| analyze_clause(c, x, ctx))
+                .map(|c| analyze_clause_with(c, x, ctx, pick))
                 .fold((0, 0), add);
             add(in_binds, analyze(body, x, mode, ctx))
         }
@@ -2499,10 +2607,10 @@ fn analyze(e: &Expr, x: &str, mode: Mode, ctx: &Ctx) -> Uses {
             .iter()
             .map(|e| analyze(e, x, mode, ctx))
             .fold((0, 0), add),
-        Expr::RecordCon(_, assigns, _) => analyze_assigns(assigns, x, ctx),
+        Expr::RecordCon(_, assigns, _) => analyze_assigns(assigns, x, ctx, pick),
         Expr::RecordUpd(base, assigns, _) => add(
             analyze(base, x, Mode::Consume, ctx), // the update takes ownership of the base
-            analyze_assigns(assigns, x, ctx),
+            analyze_assigns(assigns, x, ctx, pick),
         ),
         // a lambda that shadows x doesn't reference it; otherwise count the body
         Expr::Lam(pats, body, _) => {
@@ -2524,7 +2632,12 @@ fn binds_var(pats: &[Pat], x: &str) -> bool {
     s.contains(x)
 }
 
-fn analyze_assigns(assigns: &[(String, Expr)], x: &str, ctx: &Ctx) -> Uses {
+fn analyze_assigns(
+    assigns: &[(String, Expr)],
+    x: &str,
+    ctx: &Ctx,
+    pick: fn(Uses, Uses) -> Uses,
+) -> Uses {
     // a record constructor (like any constructor — see the `App`/`is_ctor` case)
     // takes OWNERSHIP of every field: the value is deep-dropped with the record, so
     // storing it CONSUMES it. Counting a `Many`-field store as a mere borrow let
@@ -2532,7 +2645,7 @@ fn analyze_assigns(assigns: &[(String, Expr)], x: &str, ctx: &Ctx) -> Uses {
     // double-free.
     assigns
         .iter()
-        .map(|(_, e)| analyze(e, x, Mode::Consume, ctx))
+        .map(|(_, e)| analyze_with(e, x, Mode::Consume, ctx, pick))
         .fold((0, 0), add)
 }
 
@@ -2767,12 +2880,15 @@ fn join(a: MoveState, b: MoveState) -> MoveState {
 #[derive(Clone)]
 struct Lin {
     must_use: bool,
+    /// no destructor at all: must be consumed on EVERY path (a `Buffer` is must-use but auto-dropped)
+    no_drop: bool,
     ty: String,
 }
 
-fn class_of_type(ty: &Type, mu: &HashSet<String>) -> Lin {
+fn class_of_type(ty: &Type, ctx: &Ctx) -> Lin {
     Lin {
-        must_use: is_must_use(ty, mu),
+        must_use: is_must_use(ty, &ctx.must_use_types),
+        no_drop: is_no_drop(ty, &ctx.no_drop_types),
         ty: ty.head_con().unwrap_or("?").to_string(),
     }
 }
@@ -2814,6 +2930,17 @@ fn scan_lets<'a>(
                         let class = cur[&w].clone();
                         lets.push((b.name.clone(), class.clone(), body, b.span));
                         cur.insert(b.name.clone(), class);
+                    } else if let (Expr::Var(f, _), _) = spine(rhs) {
+                        // a fresh must-use value (`let h = openDev 7`): track it from its binding
+                        if let Some(ty) = ctx.fn_ret_must_use.get(f) {
+                            let class = Lin {
+                                must_use: true,
+                                no_drop: true,
+                                ty: ty.clone(),
+                            };
+                            lets.push((b.name.clone(), class.clone(), body, b.span));
+                            cur.insert(b.name.clone(), class);
+                        }
                     }
                 } else {
                     for c in &b.clauses {

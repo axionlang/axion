@@ -56,6 +56,7 @@ const L1_BUILTINS: &[&str] = &[
     "imperative",
     "intToPtr",
     "ptrToInt",
+    "handleAddr",
     "nullPtr",
     // linear dense Array + compact arrays (Phase B)
     "newArray",

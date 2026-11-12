@@ -297,6 +297,30 @@ fn ffi_linear_handle_lifecycle_enforced() {
             "data D = D\nforeign \"l\" del = \"d\" :: Own (Handle D) -> Int\nf :: Handle D %1 -> Int\nf h = del h + del h\nmain :: Int\nmain = 0\n",
             "AX0001",
         ),
+        // destroyed on one branch, leaked on the other → AX0002 (was accepted: branches took the max).
+        (
+            "data D = D\nforeign \"l\" del = \"d\" :: Own (Handle D) -> Int\nf :: Handle D %1 -> Int -> Int\nf h n = if n == 0 then del h else 5\nmain :: Int\nmain = 0\n",
+            "AX0002",
+        ),
+        // a `let`-bound handle from a creating FFI is tracked from its binding (was untracked):
+        // never destroyed → AX0002, destroyed twice → AX0001, moved into two `%1` calls → AX0001.
+        (
+            "data D = D\nforeign \"l\" mk = \"m\" :: Int -> Handle D\nforeign \"l\" del = \"d\" :: Own (Handle D) -> Int\nmain :: Int\nmain = let h = mk 1 in 3\n",
+            "AX0002",
+        ),
+        (
+            "data D = D\nforeign \"l\" mk = \"m\" :: Int -> Handle D\nforeign \"l\" del = \"d\" :: Own (Handle D) -> Int\nmain :: Int\nmain = let h = mk 1 in del h + del h\n",
+            "AX0001",
+        ),
+        (
+            "data D = D\nforeign \"l\" mk = \"m\" :: Int -> Handle D\nforeign \"l\" del = \"d\" :: Own (Handle D) -> Int\nf :: Handle D %1 -> Int\nf h = del h\nmain :: Int\nmain = let h = mk 1 in f h + f h\n",
+            "AX0001",
+        ),
+        // the same branch rule covers every must-use type, e.g. a socket closed on one path only.
+        (
+            "f :: Sock %1 -> Int -> IO ()\nf s n = if n == 0 then netClose s else putStrLn \"kept\"\nmain :: IO ()\nmain = putStrLn \"x\"\n",
+            "AX0002",
+        ),
     ];
     for (i, (src, code)) in cases.iter().enumerate() {
         let p = dir.join(format!("bad{i}.axi"));

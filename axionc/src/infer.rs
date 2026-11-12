@@ -2689,6 +2689,18 @@ impl<'a> Infer<'a> {
                 ty: Ty::Fun(Box::new(ptr_a()), Box::new(Ty::Con("Int".into(), vec![]))),
             },
         );
+        // handleAddr :: forall a. Handle a -> Int — READS a linear handle's address (a borrow: the
+        // handle stays owned), so a nullable creating FFI can be NULL-checked without consuming it.
+        env.insert(
+            "handleAddr".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(Ty::Con("Handle".into(), vec![Ty::Var(0)])),
+                    Box::new(Ty::Con("Int".into(), vec![])),
+                ),
+            },
+        );
         // fractional permissions (§2). split :: forall a. a -> (a, a);
         // join :: forall a. a -> a -> a. The multiplicities (%1/%0.5) are
         // tracked separately, by the analysis in check.rs.

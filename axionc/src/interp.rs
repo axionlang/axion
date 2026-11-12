@@ -1033,6 +1033,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "ptrToInt",
             args: Vec::new(),
         }),
+        "handleAddr" => Ok(Value::Builtin {
+            name: "handleAddr",
+            args: Vec::new(),
+        }),
         // dense linear Array (§A): native-parity get/set/new + iota/sum/dot. Elements are `Value`s.
         "newArray" => Ok(Value::Builtin {
             name: "newArray",
@@ -2010,7 +2014,7 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
             }
         }
         ("imperative", [v]) => Ok(v.clone()),
-        ("intToPtr", [v]) | ("ptrToInt", [v]) => Ok(v.clone()),
+        ("intToPtr", [v]) | ("ptrToInt", [v]) | ("handleAddr", [v]) => Ok(v.clone()),
         ("lenArray", [Value::Array(a)]) => Ok(Value::Int(a.borrow().len() as i64)),
         ("arrayIota", [Value::Int(n)]) => {
             let len = (*n).max(0);
