@@ -37,10 +37,10 @@ const UNIT: i32 = 2;
 /// A block construct whose body `axionc fmt` re-indents: its items (statements / alternatives /
 /// let-bindings) get one indent level per enclosing modeled block. These are exactly the expression
 /// blocks whose item boundaries the CST exposes (`do`→BIND/EXPR/LET_STMT, `case`→CASE_ALT,
-/// `let`→FUN_CLAUSE).
+/// `let`→FUN_CLAUSE). A do-`let` opens its own block: its bindings are not `do` statements.
 fn is_modeled_block(k: SyntaxKind) -> bool {
-    use SyntaxKind::{CASE_EXPR, DO_EXPR, LET_EXPR};
-    matches!(k, DO_EXPR | CASE_EXPR | LET_EXPR)
+    use SyntaxKind::{CASE_EXPR, DO_EXPR, LET_EXPR, LET_STMT};
+    matches!(k, DO_EXPR | CASE_EXPR | LET_EXPR | LET_STMT)
 }
 
 /// A block whose body we deliberately leave exactly as authored (its own layout rules differ, or we
@@ -121,6 +121,15 @@ fn block_first_item(block: &SyntaxNode) -> Option<SyntaxNode> {
     block.children().find(|c| is_item(c.kind()))
 }
 
+/// Byte offset of a node's last non-trivia token (its trailing trivia belongs to no line of it).
+fn last_token_offset(node: &SyntaxNode) -> Option<usize> {
+    node.descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !is_trivia(t.kind()))
+        .last()
+        .map(|t| usize::from(t.text_range().start()))
+}
+
 /// Number of leading space characters on a line (counts spaces only; a leading tab makes the line
 /// un-normalizable — see `format_src`).
 fn leading_spaces(line: &str) -> usize {
@@ -137,9 +146,9 @@ fn leading_spaces(line: &str) -> usize {
 /// (the offside rule requires it to parse), so the useful, safe transform is making each INDENTED
 /// block sit exactly `UNIT` past its opener LINE's indent — anchoring to the opener line, not to an
 /// abstract block depth, so expression nesting (`if/then`, `let` body, lambda, a long RHS) is captured
-/// and the block stays strictly inside its opener (offside-valid by construction). Each block's shift
-/// is recorded at its first item and re-applied to the siblings; continuation lines carry their item's
-/// shift, so multi-line expressions move as a unit. ALIGNED blocks (first item sharing the opener's
+/// and the block stays strictly right of every enclosing block. Each block's shift
+/// is recorded at its first item and re-applied to the siblings; every other line moves with the
+/// innermost item containing it, so multi-line expressions move as a unit. ALIGNED blocks (first item sharing the opener's
 /// line, `let s = …` / `case x of A -> …`) keep the author's column, and items inside an unmodeled
 /// block (`where`, class/instance, data/foreign) are left exactly as written. Finally trailing
 /// whitespace is stripped, runs of blank lines collapse to one, and the file ends in a single newline.
@@ -204,6 +213,10 @@ pub fn format_src(src: &str) -> Option<String> {
         first_col: i32,
         own_col: i32,
         anchor_line: usize, // the block's opener line; its items sit at that line's indent + UNIT
+        end_line: usize,    // the item's last line: lines up to here move with it
+        // (line, column) of each enclosing block's first item. A block must stay strictly right of
+        // these, even when they sit mid-line (`let x = case …`), or it would close that block.
+        enclosing: Vec<(usize, i32)>,
     }
     const TOP: usize = usize::MAX;
     let mut rec: Vec<Option<ItemRec>> = (0..lines.len()).map(|_| None).collect();
@@ -226,6 +239,9 @@ pub fn format_src(src: &str) -> Option<String> {
         if item_depth(&node).is_none() {
             continue; // inside an unmodeled block (where/class/instance/data) → leave as authored
         }
+        let Some(end_line) = last_token_offset(&node).map(line_of) else {
+            continue;
+        };
         match nearest_modeled_block(&node) {
             None => {
                 // top level: every declaration aligns to column 0 (shift fixed at 0), which also
@@ -236,6 +252,8 @@ pub fn format_src(src: &str) -> Option<String> {
                     first_col: 0,
                     own_col,
                     anchor_line: 0,
+                    end_line,
+                    enclosing: Vec::new(),
                 });
             }
             Some(block) => {
@@ -254,26 +272,40 @@ pub fn format_src(src: &str) -> Option<String> {
                 let Some(block_off) = first_token_offset(&block) else {
                     continue;
                 };
+                // Only blocks this one sits INSIDE AN ITEM of: a `case` after `let … in` or a `case`
+                // scrutinee is outside that block, which has already closed.
+                let enclosing = block
+                    .ancestors()
+                    .zip(block.ancestors().skip(1))
+                    .filter(|(child, parent)| {
+                        is_modeled_block(parent.kind()) && is_item(child.kind())
+                    })
+                    .filter_map(|(_, parent)| block_first_item(&parent))
+                    .filter_map(|i| first_token_offset(&i))
+                    .map(|o| (line_of(o), (o - line_start[line_of(o)]) as i32))
+                    .collect();
                 rec[li] = Some(ItemRec {
                     block_key: block_off,
                     is_first: first == node,
                     first_col,
                     own_col,
                     anchor_line: line_of(block_off),
+                    end_line,
+                    enclosing,
                 });
             }
         }
     }
 
-    // Emit in line order. `carry` is the delta applied to the current item's lines (continuation lines
-    // inherit it). At a block's first item we record its shift; siblings re-anchor to that first item's
-    // NEW column (`first_col + shift`) — so blocks nested in expressions keep their real depth while
-    // ragged siblings get aligned. Trailing whitespace is stripped and blank runs collapse to one.
+    // Emit in line order. A line that does not begin an item moves with the innermost item CONTAINING
+    // it (`open` is that nesting), so an `else`/`in` after a nested block follows its own item rather
+    // than the block that just ended. A block's first item fixes its shift; siblings re-apply it.
+    // Trailing whitespace is stripped and blank runs collapse to one.
     let mut block_shift: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
     block_shift.insert(TOP, 0);
     let mut new_indent_of = vec![0i32; lines.len()];
+    let mut open: Vec<(usize, i32)> = Vec::new(); // (end_line, delta) of the items containing line i
     let mut out = String::new();
-    let mut carry = 0i32;
     let mut pending_blank = false;
     let mut seen = false;
     for (i, raw) in lines.iter().enumerate() {
@@ -287,25 +319,33 @@ pub fn format_src(src: &str) -> Option<String> {
         }
         pending_blank = false;
         seen = true;
+        while open.last().is_some_and(|&(end, _)| end < i) {
+            open.pop();
+        }
         let old = leading_spaces(raw) as i32;
         let delta = match &rec[i] {
-            None => carry,
-            Some(r) if r.is_first => {
-                // first item of an INDENTED block → anchor the block one UNIT past its opener line's
-                // (already-emitted) indent. This captures expression nesting (if/then, let-body,
-                // lambda) that block-depth alone misses, and keeps the block strictly inside its
-                // opener — so the offside parse is preserved.
-                let target = new_indent_of[r.anchor_line] + UNIT;
-                let shift = target - r.first_col;
-                block_shift.insert(r.block_key, shift);
-                carry = shift;
-                shift
-            }
+            None => open.last().map_or(0, |&(_, d)| d),
             Some(r) => {
-                // a sibling item: re-anchor to the block's first item at its new column
-                let shift = *block_shift.get(&r.block_key).unwrap_or(&0);
+                let shift = if r.is_first {
+                    // one UNIT past the opener line's new indent (which captures expression nesting
+                    // such as if/then or a `let` body), but never at or left of an enclosing block.
+                    let floor = r
+                        .enclosing
+                        .iter()
+                        .map(|&(line, col)| {
+                            col + new_indent_of[line] - leading_spaces(lines[line]) as i32 + 1
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    let target = (new_indent_of[r.anchor_line] + UNIT).max(floor);
+                    let shift = target - r.first_col;
+                    block_shift.insert(r.block_key, shift);
+                    shift
+                } else {
+                    *block_shift.get(&r.block_key).unwrap_or(&0)
+                };
                 let d = r.first_col + shift - r.own_col;
-                carry = d;
+                open.push((r.end_line, d));
                 d
             }
         };

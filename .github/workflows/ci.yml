@@ -115,6 +115,12 @@ jobs:
       # (proven to subsume it in Step 0). The coherence cross-check survives as the standalone,
       # non-soundness `scripts/check-coherence.sh` (--check-coherence), not run in CI.
 
+      # The formatter must preserve Core, including when it re-indents (it scales every file's
+      # indentation ×2/×3 and formats that back). Release build: ~1,700 compiler runs, which the
+      # debug build makes about 7× slower.
+      - name: Formatter safety gate (fmt preserves Core, idempotent)
+        run: (cd axionc && cargo build --release) && ./scripts/fmt-check.sh
+
       - name: Bench — Axion dev/rel vs C/Rust agree on every kernel
         run: |
           sudo apt-get update && sudo apt-get install -y clang

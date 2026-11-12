@@ -85,3 +85,33 @@ fn reindent_is_idempotent_on_messy_input() {
     let twice = format_src(&once).expect("parses");
     assert_eq!(once, twice);
 }
+
+#[test]
+fn else_after_nested_block_follows_its_own_item() {
+    // The `else` belongs to the alternative, not to the inner `case` that just ended.
+    let src = "f :: Int\nf = case x of\n        A ->\n                if y then\n                  case z of\n                    B -> 1\n                else 2\n";
+    let want = "f :: Int\nf = case x of\n  A ->\n          if y then\n            case z of\n              B -> 1\n          else 2\n";
+    assert_eq!(format_src(src).expect("parses"), want);
+}
+
+#[test]
+fn do_let_bindings_are_not_do_statements() {
+    let src = "main :: IO ()\nmain = do\n    let a = 1\n        b = 2\n    f a b\n";
+    let want = "main :: IO ()\nmain = do\n  let a = 1\n      b = 2\n  f a b\n";
+    assert_eq!(format_src(src).expect("parses"), want);
+}
+
+#[test]
+fn alternatives_stay_right_of_the_enclosing_let_binding() {
+    // Opener + 2 would put `A` at column 4, left of `x` (column 6), and close the `let` block.
+    let src = "f :: Int\nf =\n  let x = case y of\n            A -> 1\n      z = 2\n  in x\n";
+    let want = "f :: Int\nf =\n  let x = case y of\n       A -> 1\n      z = 2\n  in x\n";
+    assert_eq!(format_src(src).expect("parses"), want);
+}
+
+#[test]
+fn case_after_let_in_is_not_inside_the_let_block() {
+    // `in` closes the bindings block, so `r` (column 6) does not constrain the body's alternatives.
+    let src = "f :: Int\nf =\n  let r = 1 in\n  case r of\n    A -> 1\n    B -> 2\n";
+    assert_eq!(format_src(src).expect("parses"), src);
+}
