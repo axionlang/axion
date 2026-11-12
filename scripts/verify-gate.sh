@@ -39,8 +39,12 @@ for f in $(inputs); do
   #   · user_alias_borrow.axi   — a hand-written element-aliasing borrower; the verifier is
   #     SUPPOSED to report corruption on it (independently agreeing with AX0912's native
   #     rejection — the soundness win, not a false positive). See tests/verify.rs:48.
+  #   · borrowed_tuple_field_consume.axi, uncons_peel_tuple_reject.axi — consume a borrowed
+  #     interior tuple field; the verifier MUST report DropOfAlias on them (asserted by
+  #     tests/verify.rs::borrowed_tuple_field_consume_is_caught_by_verifier).
   case "$(basename "$f")" in
-    recover_partial.axi | user_alias_borrow.axi) skipped=$((skipped + 1)); continue ;;
+    recover_partial.axi | user_alias_borrow.axi | borrowed_tuple_field_consume.axi | uncons_peel_tuple_reject.axi)
+      skipped=$((skipped + 1)); continue ;;
   esac
 
   out=$("$AXIONC" --emit verify "$f" 2>&1)
