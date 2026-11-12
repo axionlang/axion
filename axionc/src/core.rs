@@ -9266,6 +9266,28 @@ fn reclaim_cond_escape(
             let scrut_key = scrut_name
                 .as_deref()
                 .and_then(|s| dty.get(s).cloned().flatten());
+            // The arms below skip the scrutinee on the assumption that `insert_drops` frees it. That
+            // only holds for a DROPPABLE scrutinee; one owned here escapes on some other path (`bump 0
+            // xs = case xs of …` beside `bump k xs = bump (k - 1) xs`), so nobody freed the consumed
+            // cell. Free it in each arm, when that is provably right; otherwise leave it as before.
+            let scrut_owned_here = scrut_name
+                .as_deref()
+                .and_then(|s| owned.iter().find(|(v, _)| v == s))
+                .is_some();
+            // All arms or none: freeing in some arms only would unbalance the paths.
+            let arms = match scrut_name.as_deref() {
+                Some(s) if scrut_owned_here => {
+                    let freed: Option<Vec<(CPat, Term)>> = arms
+                        .iter()
+                        .map(|(pat, arm)| {
+                            free_owned_scrutinee(s, pat, arm.clone(), scrut_key.as_deref(), recinfo)
+                                .map(|a| (pat.clone(), a))
+                        })
+                        .collect();
+                    freed.unwrap_or(arms)
+                }
+                _ => arms,
+            };
             let arms = arms
                 .into_iter()
                 .map(|(pat, arm)| {
@@ -9367,6 +9389,58 @@ fn reclaim_cond_escape(
             t
         }
     }
+}
+
+/// Frees the owned scrutinee `s` at the head of one `case` arm, for [`reclaim_cond_escape`]. A
+/// constructor arm frees only the cell (its heap fields are moved out into the pattern binders, which
+/// the caller then reclaims where they are dead); a wildcard arm frees the whole value; an arm that
+/// already frees `s` is kept as is. `None` when that is not provably right: the arm still reads `s`,
+/// a heap field is unnamed or nested (it would leak or need a skip destructor), or is `%1`-owned.
+fn free_owned_scrutinee(
+    s: &str,
+    pat: &CPat,
+    arm: Term,
+    key: Option<&str>,
+    recinfo: &RecordInfo,
+) -> Option<Term> {
+    fn frees(s: &str, t: &Term) -> bool {
+        match t {
+            Term::Drop(v, _, _, _, b) => v == s || frees(s, b),
+            Term::Let(_, rhs, _, b) => {
+                frees(s, b)
+                    || match rhs {
+                        Rhs::If(_, x, y) => frees(s, x) || frees(s, y),
+                        Rhs::Case(_, arms) => arms.iter().any(|(_, a)| frees(s, a)),
+                        Rhs::Op(_) => false,
+                    }
+            }
+            Term::Ret(Rhs::If(_, x, y), _) => frees(s, x) || frees(s, y),
+            Term::Ret(Rhs::Case(_, arms), _) => arms.iter().any(|(_, a)| frees(s, a)),
+            Term::Ret(_, _) => false,
+        }
+    }
+    if frees(s, &arm) {
+        return Some(arm);
+    }
+    if term_mentions_any(&arm, &HashSet::from([s.to_string()])) {
+        return None;
+    }
+    let drop_key = match pat {
+        CPat::Con(con, subs) => {
+            let fields_ok = subs.iter().enumerate().all(|(fi, sub)| {
+                !recinfo.field_transfers_heap(con, fi)
+                    || (matches!(sub, CPat::Var(_)) && !recinfo.field_is_owned(con, fi))
+            });
+            if !fields_ok {
+                return None;
+            }
+            None // cell only: the heap fields now belong to the binders
+        }
+        CPat::Wild => Some(key?.to_string()),
+        _ => return None,
+    };
+    let sp = term_span(&arm);
+    Some(Term::Drop(s.to_string(), drop_key, Vec::new(), sp, Box::new(arm)))
 }
 
 /// Unique-temp counter for `reclaim_cond_escape`'s post-`ret` drops. Based at 2_000_000 to

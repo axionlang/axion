@@ -1492,6 +1492,12 @@ fn clause_form_param_alias_is_a_borrow_not_a_move() {
 }
 
 #[test]
+fn view_case_in_one_branch_frees_the_consumed_cell() {
+    // The view's input escapes on another path, so only the case arms can free the consumed cell.
+    agree_across_backends("view_case_in_branch.axi", "8\n");
+}
+
+#[test]
 fn every_bench_kernel_passes_the_verifier() {
     // bench/ is outside the oracle corpus and bench.sh only prints `-` for a kernel that fails to
     // build, so `simd` once sat rejected by a false AX0910 without failing anything.
