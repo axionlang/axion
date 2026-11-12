@@ -59,6 +59,13 @@
 -- caller's ownership); the destroying FFI `Own`s it (consumes). `Win`/`Ren` are phantom tags.
 data Win = Win
 data Ren = Ren
+-- Textures, surfaces and GIF animations are linear handles too, so their lifetimes are CHECKED rather
+-- than managed by hand: every path must destroy each one exactly once. A loader can return NULL (a
+-- deleted file); `handleAddr` reads the address without consuming the handle, and the NULL path still
+-- hands it to its destroyer (SDL_FreeSurface(NULL) / IMG_FreeAnimation(NULL) are no-ops).
+data Tex = Tex
+data Surf = Surf
+data Anim = Anim
 
 foreign "libSDL2.so" sdlInit = "SDL_Init" :: Int -> Int
 foreign "libSDL2.so" sdlQuit = "SDL_Quit" :: Int -> Int
@@ -66,16 +73,18 @@ foreign "libSDL2.so" sdlCreateWindow = "SDL_CreateWindow" :: String -> Int -> In
 foreign "libSDL2.so" sdlCreateRenderer = "SDL_CreateRenderer" :: Borrow (Handle Win) -> Int -> Int -> Handle Ren
 foreign "libSDL2.so" sdlDestroyWindow = "SDL_DestroyWindow" :: Own (Handle Win) -> Int
 foreign "libSDL2.so" sdlDestroyRenderer = "SDL_DestroyRenderer" :: Own (Handle Ren) -> Int
-foreign "libSDL2_image.so" imgLoad = "IMG_Load" :: String -> Int
-foreign "libSDL2.so" sdlTexFromSurf = "SDL_CreateTextureFromSurface" :: Borrow (Handle Ren) -> Int -> Int
-foreign "libSDL2.so" sdlFreeSurface = "SDL_FreeSurface" :: Int -> Int
-foreign "libSDL2.so" sdlDestroyTexture = "SDL_DestroyTexture" :: Int -> Int
+foreign "libSDL2_image.so" imgLoad = "IMG_Load" :: String -> Handle Surf
+foreign "libSDL2.so" sdlTexFromSurf = "SDL_CreateTextureFromSurface" :: Borrow (Handle Ren) -> Borrow (Handle Surf) -> Handle Tex
+-- a GIF frame's surface belongs to its IMG_Animation (freed with it), so it stays a raw pointer here
+foreign "libSDL2.so" sdlTexFromFrame = "SDL_CreateTextureFromSurface" :: Borrow (Handle Ren) -> Int -> Handle Tex
+foreign "libSDL2.so" sdlFreeSurface = "SDL_FreeSurface" :: Own (Handle Surf) -> Int
+foreign "libSDL2.so" sdlDestroyTexture = "SDL_DestroyTexture" :: Own (Handle Tex) -> Int
 foreign "libSDL2.so" sdlSetDrawColor = "SDL_SetRenderDrawColor" :: Borrow (Handle Ren) -> Int -> Int -> Int -> Int -> Int
 foreign "libSDL2.so" sdlRenderClear = "SDL_RenderClear" :: Borrow (Handle Ren) -> Int
 -- Render the texture into a dst rect, ROTATED `angle`° clockwise about the rect's centre (the extra
 -- args over SDL_RenderCopy: angle, center=NULL, flip=0). One call serves fit, zoom, pan AND rotation.
 -- The angle is a C `double` → passed as a `Float` over the double-ABI FFI. (srcrect = 0 = whole texture.)
-foreign "libSDL2.so" sdlRenderCopyEx = "SDL_RenderCopyEx" :: Borrow (Handle Ren) -> Int -> Int -> Int -> Float -> Int -> Int -> Int
+foreign "libSDL2.so" sdlRenderCopyEx = "SDL_RenderCopyEx" :: Borrow (Handle Ren) -> Borrow (Handle Tex) -> Int -> Int -> Float -> Int -> Int -> Int
 foreign "libSDL2.so" sdlRenderPresent = "SDL_RenderPresent" :: Borrow (Handle Ren) -> Int
 foreign "libSDL2.so" sdlSetTitle = "SDL_SetWindowTitle" :: Borrow (Handle Win) -> String -> Int
 foreign "libSDL2.so" sdlWaitEvent = "SDL_WaitEvent" :: Int -> Int
@@ -83,7 +92,7 @@ foreign "libSDL2.so" sdlWaitEvent = "SDL_WaitEvent" :: Int -> Int
 -- that a held key piles up while the (reload-per-frame) loop is busy — so releasing the key stops
 -- zoom/pan at the next frame instead of draining a queue of stale repeats for seconds afterward.
 foreign "libSDL2.so" sdlFlushEvent = "SDL_FlushEvent" :: Int -> Int
-foreign "libSDL2.so" sdlQueryTexture = "SDL_QueryTexture" :: Int -> Int -> Int -> Int -> Int -> Int
+foreign "libSDL2.so" sdlQueryTexture = "SDL_QueryTexture" :: Borrow (Handle Tex) -> Int -> Int -> Int -> Int -> Int
 foreign "libSDL2.so" sdlGetOutputSize = "SDL_GetRendererOutputSize" :: Borrow (Handle Ren) -> Int -> Int -> Int
 -- Animated images (GIF/WEBP). IMG_LoadAnimation returns an `IMG_Animation*` — a C struct we read field
 -- by field with `memcpy` (there is no raw-address peek; memcpy copies the bytes into a Buffer we own,
@@ -92,10 +101,11 @@ foreign "libSDL2.so" sdlGetOutputSize = "SDL_GetRendererOutputSize" :: Borrow (H
 -- peekU64 hdr 24. IMG_FreeAnimation frees the struct AND every frame surface (so we must NOT free those
 -- surfaces ourselves — unlike the IMG_Load path). SDL_WaitEventTimeout waits up to `ms` for an event
 -- (returns 1) or times out (returns 0) — that timeout is the frame clock that makes the GIF play.
-foreign "libSDL2_image.so" imgLoadAnimation = "IMG_LoadAnimation" :: String -> Int
-foreign "libSDL2_image.so" imgFreeAnimation = "IMG_FreeAnimation" :: Int -> Int
+foreign "libSDL2_image.so" imgLoadAnimation = "IMG_LoadAnimation" :: String -> Handle Anim
+foreign "libSDL2_image.so" imgFreeAnimation = "IMG_FreeAnimation" :: Own (Handle Anim) -> Int
 foreign "libSDL2.so" sdlWaitEventTimeout = "SDL_WaitEventTimeout" :: Int -> Int -> Int
 foreign "libc.so.6" memcpy = "memcpy" :: Int -> Int -> Int -> Int
+foreign "libc.so.6" memcpyAnim = "memcpy" :: Int -> Borrow (Handle Anim) -> Int -> Int
 
 argCount :: Int -> Int
 argCount i = if strLen (getArg i) == 0 then i else argCount (i + 1)
@@ -158,7 +168,7 @@ foreign struct SDL_Rect { x :: I32, y :: I32, w :: I32, h :: I32 }
 -- Draw the texture at `pct`% of its real size, panned by px/py and rotated `rot`° about the window
 -- centre. `dst` is sized for the UNROTATED texture and window-centred, so the rotation pivot is the
 -- centre → the image stays centred at any angle. (The caller picks `pct` = fit-scale or the zoom %.)
-renderAt :: Handle Ren -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int
+renderAt :: Handle Ren -> Handle Tex -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int
 renderAt ren tex rot pct tw th ow oh px py =
   let dw = (tw * pct) / 100 in
   let dh = (th * pct) / 100 in
@@ -167,10 +177,10 @@ renderAt ren tex rot pct tw th ow oh px py =
 
 -- Load the image for `idx` into a texture ONCE, query its size, then enter the render/event loop on
 -- it. The texture is REUSED across zoom/pan (`frame` loops without reloading) — reloading+decoding
--- from disk every frame was the sluggishness. `tex`/`surf` are opaque C Ints (the unsafe island, not
--- tracked by the verifier), so their lifetime is manual: created here, and destroyed on exactly the
--- two paths that leave this image — `reopen` (image change) and `quitTex` (quit). The surface is
--- freed immediately: SDL_CreateTextureFromSurface copies it, so it is dead once the texture exists.
+-- from disk every frame was the sluggishness. `tex` is a linear `Handle Tex` threaded through the loop,
+-- so the checker proves it is destroyed exactly once on every path out of this image — `reopen`
+-- (image change), `runConfigCmd` and `quitTex` (quit). The surface is freed immediately:
+-- SDL_CreateTextureFromSurface copies it, so it is dead once the texture exists.
 openImage :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
 openImage win ren n idx z px py rot = openTry win ren n idx z px py rot n
 
@@ -194,9 +204,11 @@ isAnimLc q = hasSuffix ".gif" q || hasSuffix ".webp" q
 staticTry :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
 staticTry win ren n idx z px py rot tries = do
   let surf = imgLoad (imagePath idx)
-  if surf == 0
-    then (if tries > 0 then openTry win ren n ((idx + 1) `mod` n) z px py rot (tries - 1)
-          else quitWith win ren)
+  if handleAddr surf == 0
+    then do
+      sdlFreeSurface surf                                       -- NULL: a no-op, but it consumes the handle
+      if tries > 0 then openTry win ren n ((idx + 1) `mod` n) z px py rot (tries - 1)
+        else quitWith win ren
     else do
       let tex = sdlTexFromSurf ren surf
       sdlFreeSurface surf
@@ -209,14 +221,16 @@ staticTry win ren n idx z px py rot tries = do
 -- Read the IMG_Animation header (frame count + the frames/delays array pointers) out of its C struct,
 -- then play. A NULL load (decode failure / deleted) falls back to the skip-ahead budget; a degenerate
 -- single-frame animation is handed to the static path (so zoom/pan/rotate still work on it).
-animStart :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> IO ()
+animStart :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Anim %1 -> Int -> IO ()
 animStart win ren n idx anim tries =
-  if anim == 0
-    then (if tries > 0 then openTry win ren n ((idx + 1) `mod` n) 0 0 0 0 (tries - 1)
-          else quitWith win ren)
+  if handleAddr anim == 0
+    then do
+      imgFreeAnimation anim                                    -- NULL: a no-op, but it consumes the handle
+      if tries > 0 then openTry win ren n ((idx + 1) `mod` n) 0 0 0 0 (tries - 1)
+        else quitWith win ren
     else do
       let hdr = newBuffer 32
-      memcpy (bufPtrN hdr 32) anim 32                          -- copy the 32-byte struct header to read it
+      memcpyAnim (bufPtrN hdr 32) anim 32                      -- copy the 32-byte struct header to read it
       let nf = peekU32 hdr 8                                   -- IMG_Animation.count
       if nf <= 1
         then do
@@ -228,7 +242,7 @@ animStart win ren n idx anim tries =
 -- here), fit-centre it, present, then wait up to the frame's delay for an event. On timeout advance to
 -- the next frame (the animation's clock); on an event hand off to `animAct`. `fp`/`dp` are the C
 -- addresses of the frames (SDL_Surface*[]) and delays (int[]) arrays; element `fi` is pulled with memcpy.
-animPlay :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
+animPlay :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Anim %1 -> Int -> Int -> Int -> Int -> IO ()
 animPlay win ren n idx anim nf fp dp fi = do
   let fb = newBuffer 8
   memcpy (bufPtrN fb 8) (fp + fi * 8) 8                        -- frames[fi] : SDL_Surface*
@@ -236,7 +250,7 @@ animPlay win ren n idx anim nf fp dp fi = do
   let db = newBuffer 4
   memcpy (bufPtrN db 4) (dp + fi * 4) 4                        -- delays[fi] : int (ms)
   let ms = peekU32 db 0
-  let tex = sdlTexFromSurf ren surf
+  let tex = sdlTexFromFrame ren surf
   let wbuf = newBuffer 4
   let hbuf = newBuffer 4
   sdlQueryTexture tex 0 0 (bufPtrN wbuf 4) (bufPtrN hbuf 4)
@@ -268,7 +282,7 @@ animPlay win ren n idx anim nf fp dp fi = do
 -- `!cmd` runs on the current image, a NAMED action rebinds), else the built-in `keyName`. Only the
 -- navigation names (next/prev/first/last/quit) act while animating; zoom/pan/rotate are ignored here
 -- (the GIF stays fit) — paging to a still image via `openImage` restores those. No multi-key sequences.
-animAct :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
+animAct :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Anim %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
 animAct win ren n idx anim nf fp dp fi ty key md =
   if ty == SDL_QUIT then animQuit win ren anim
   else if ty == SDL_KEYDOWN
@@ -278,7 +292,7 @@ animAct win ren n idx anim nf fp dp fi ty key md =
                  (if strLen cact > 0 then cact else keyName key md))
   else animPlay win ren n idx anim nf fp dp fi                 -- resize/expose: keep playing same frame
 
-animNamed :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> String -> IO ()
+animNamed :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Anim %1 -> Int -> Int -> Int -> Int -> String -> IO ()
 animNamed win ren n idx anim nf fp dp fi act =
   if      act == "quit"  then animQuit win ren anim
   else if act == "next"  then animReopen win ren anim n ((idx + 1) `mod` n)
@@ -289,16 +303,16 @@ animNamed win ren n idx anim nf fp dp fi act =
 
 -- Leave a playing animation: free the whole IMG_Animation (struct + every frame surface) FIRST, then
 -- the usual exit (quit) or image change (reopen, which re-detects animated vs still at the new index).
-animQuit :: Handle Win %1 -> Handle Ren %1 -> Int -> IO ()
+animQuit :: Handle Win %1 -> Handle Ren %1 -> Handle Anim %1 -> IO ()
 animQuit win ren anim = do
   imgFreeAnimation anim
   quitWith win ren
-animReopen :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> IO ()
+animReopen :: Handle Win %1 -> Handle Ren %1 -> Handle Anim %1 -> Int -> Int -> IO ()
 animReopen win ren anim n idx = do
   imgFreeAnimation anim
   openImage win ren n idx 0 0 0 0
 -- Config `!cmd` on the current (animated) image: run it, free the animation, reload this index.
-animCmd :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> String -> IO ()
+animCmd :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Anim %1 -> String -> IO ()
 animCmd win ren n idx anim act = do
   runStatus (userCmd (imagePath idx) (substr 1 (strLen act - 1) act))
   imgFreeAnimation anim
@@ -308,7 +322,7 @@ animCmd win ren n idx anim act = do
 -- A clean do-block: pure values are `let` bindings, SDL side effects are statements. Zoom/pan/redraw
 -- loop straight back here (texture reused → one cheap redraw per frame, no disk I/O); only an image
 -- change or quit leaves, freeing the texture.
-frame :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> String -> IO ()
+frame :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Tex %1 -> Int -> Int -> Int -> Int -> Int -> Int -> String -> IO ()
 frame win ren n idx tex tw th z px py rot acc = do
   let owb = newBuffer 4
   let ohb = newBuffer 4
@@ -353,13 +367,13 @@ frame win ren n idx tex tw th z px py rot acc = do
                 else dispatch win ren n idx tex tw th z px py rot fitPct ty key md)) -- built-in (modifier-aware)
 
 -- Leave the current image: destroy its texture, then load image `idx`. Threads the linear handles on.
-reopen :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> IO ()
+reopen :: Handle Win %1 -> Handle Ren %1 -> Handle Tex %1 -> Int -> Int -> IO ()
 reopen win ren tex n idx = do
   sdlDestroyTexture tex
   openImage win ren n idx 0 0 0 0
 
 -- Quit path: destroy the current texture, then the renderer + window handles.
-quitTex :: Handle Win %1 -> Handle Ren %1 -> Int -> IO ()
+quitTex :: Handle Win %1 -> Handle Ren %1 -> Handle Tex %1 -> IO ()
 quitTex win ren tex = do
   sdlDestroyTexture tex
   quitWith win ren
@@ -368,7 +382,7 @@ quitTex win ren tex = do
 -- texture and reload the current image (`openImage` skips to the next if the command deleted it).
 userCmd :: String -> String -> String
 userCmd path cmd = "f=" ++ shQuote path ++ "; { " ++ substPct cmd "\"$f\"" ++ " ; } >/dev/null 2>&1"
-runConfigCmd :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> String -> IO ()
+runConfigCmd :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Tex %1 -> String -> IO ()
 runConfigCmd win ren n idx tex act = do
   runStatus (userCmd (imagePath idx) (substr 1 (strLen act - 1) act))
   sdlDestroyTexture tex
@@ -499,7 +513,7 @@ foreign enum Keycode { KeyEsc = 27, KeySpace = 32, KeyPlus = 43, KeyMinus = 45, 
 -- ty = SDL event type; key = SDL keycode (valid only for KEYDOWN). `curPct` = the currently-displayed
 -- scale (fitPct in fit mode, else z), so +/- step from what's on screen. Changing image resets
 -- zoom/pan; h/j/k/l pan. Every branch consumes the two linear handles exactly once (loop or quit).
-dispatch :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
+dispatch :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Tex %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
 dispatch win ren n idx tex tw th z px py rot fitPct ty key md =
   let curPct = if z == 0 then fitPct else z in
   case ty of
@@ -537,7 +551,7 @@ keyName key md = case key of
 -- consumes them (`quitTex`) exactly once, so must-use linearity holds. `curPct` = the on-screen scale
 -- (so +/- step from what's shown); pan from FIT (z == 0) lifts into pixel mode at that scale so px/py
 -- take effect without zooming first. Used by BOTH a built-in key (via `keyName`) and a config binding.
-runNamed :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> String -> IO ()
+runNamed :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Tex %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> String -> IO ()
 runNamed win ren n idx tex tw th z px py rot curPct act =
   let panZ = if z == 0 then curPct else z in
   if      act == "quit"      then quitTex win ren tex
@@ -556,7 +570,7 @@ runNamed win ren n idx tex tw th z px py rot curPct act =
   else if act == "pan_down"  then frame win ren n idx tex tw th panZ px (py + 10) rot ""
   else frame win ren n idx tex tw th z px py rot ""                          -- unknown name: redraw
 
-onKey :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
+onKey :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Tex %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()
 onKey win ren n idx tex tw th z px py rot curPct key md =
   runNamed win ren n idx tex tw th z px py rot curPct (keyName key md)
 

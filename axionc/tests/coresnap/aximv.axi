@@ -102,7 +102,7 @@
                                             ret if _t23 then
                                           else
                                           let _t22 = == key 57  ; Δ{}
-                                          let _t31 = ffi SDL_DestroyTexture tex  ; Δ{ev}
+                                          let _t31 = ffi SDL_DestroyTexture tex [o]  ; Δ{ev}
                                           ret "*"  ; Δ{}
                                           ret case _t31 of
                                           ret if _t22 then
@@ -388,8 +388,8 @@
             else
             else
             else
-            let _t10 = rtcall axion_peek_u32 wbuf 0  ; Δ{hbuf wbuf}
-            let _t11 = rtcall axion_peek_u32 hbuf 0  ; Δ{hbuf}
+            let _t12 = rtcall axion_peek_u32 wbuf 0  ; Δ{hbuf wbuf}
+            let _t13 = rtcall axion_peek_u32 hbuf 0  ; Δ{hbuf}
             let _t15 = - n 1  ; Δ{}
             let _t16 = - n 1  ; Δ{}
             let _t17 = rtcall axion_str_cmp act "zoom_in"  ; Δ{}
@@ -401,7 +401,7 @@
             ret "_"  ; Δ{}
             ret call animPlay win ren n idx anim nf fp dp fi  ; Δ{}
             ret call animReopen win ren anim n _t15  ; Δ{}
-            ret call frame win ren n idx tex _t10 _t11 z px py rot ""  ; Δ{}
+            ret call frame win ren n idx tex _t12 _t13 z px py rot ""  ; Δ{}
             ret call reopen win ren tex n _t16  ; Δ{}
             ret case _t5 of
             ret if _t18 then
@@ -420,23 +420,29 @@
           else
           let _d1000001 = rtcall axion_strcat cact ""  ; Δ{cact} · makes String
           let _t10 = div _t9 ew  ; Δ{}
+          let _t10 = ffi IMG_FreeAnimation anim [o]  ; Δ{}
           let _t10 = ffi SDL_QueryTexture tex 0 0 _t8 _t9  ; Δ{hbuf wbuf}
-          let _t10 = rtcall axion_peek_u64 hdr 24  ; Δ{hdr}
           let _t11 = * oh 100  ; Δ{}
+          let _t11 = rtcall axion_peek_u64 hdr 16  ; Δ{hdr}
           let _t12 = div _t11 eh  ; Δ{}
+          let _t12 = rtcall axion_peek_u64 hdr 24  ; Δ{hdr}
           let _t13 = rtcall axion_str_cmp act "last"  ; Δ{}
           let _t14 = == _t13 0  ; Δ{}
           let _t14 = rtcall axion_str_cmp act "last"  ; Δ{}
           let _t15 = == _t14 0  ; Δ{}
           let _t17 = ffi SDL_SetRenderDrawColor ren 0 0 0 255  ; Δ{}
           let _t2 = ffi SDL_Quit 0  ; Δ{}
+          let _t4 = + idx 1  ; Δ{}
           let _t4 = == key 1073741898  ; Δ{}
+          let _t5 = + idx 1  ; Δ{}
+          let _t5 = mod _t4 n  ; Δ{}
+          let _t6 = - tries 1  ; Δ{}
           let _t6 = == key 45  ; Δ{}
-          let _t8 = ffi IMG_FreeAnimation anim  ; Δ{}
+          let _t6 = mod _t5 n  ; Δ{}
+          let _t7 = - tries 1  ; Δ{}
           let _t8 = rtcall axion_buf_ptr_n wbuf 4  ; Δ{hbuf wbuf}
           let _t9 = * ow 100  ; Δ{}
           let _t9 = rtcall axion_buf_ptr_n hbuf 4  ; Δ{hbuf wbuf}
-          let _t9 = rtcall axion_peek_u64 hdr 16  ; Δ{hdr}
           let hbuf = rtcall axion_buf_new 4  ; Δ{wbuf} · makes Buffer
           let ms = rtcall axion_peek_u32 db 0  ; Δ{db}
           let tex = ffi SDL_CreateTextureFromSurface ren surf  ; Δ{}
@@ -445,17 +451,21 @@
           ret "?"  ; Δ{}
           ret 100  ; Δ{}
           ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
-          ret call animPlay win ren n idx anim nf _t9 _t10 0  ; Δ{}
+          ret call animPlay win ren n idx anim nf _t11 _t12 0  ; Δ{}
           ret call animReopen win ren anim n 0  ; Δ{}
           ret call imin _t10 _t12  ; Δ{}
           ret call keyName key md  ; Δ{} · makes String
           ret call openImage win ren n idx 0 0 0 0  ; Δ{}
           ret call openImage win ren n idx 0 0 0 0  ; Δ{}
+          ret call openTry win ren n _t5 0 0 0 0 _t6  ; Δ{}
+          ret call openTry win ren n _t6 z px py rot _t7  ; Δ{}
+          ret call quitWith win ren  ; Δ{}
+          ret call quitWith win ren  ; Δ{}
           ret call reopen win ren tex n 0  ; Δ{}
+          ret case _t10 of
           ret case _t10 of
           ret case _t17 of
           ret case _t2 of
-          ret case _t8 of
           ret if _t14 then
           ret if _t15 then
           ret if _t4 then
@@ -475,11 +485,15 @@
         else
         else
         else
+        else
+        else
         let _d1000000 = call animCmd win ren n idx anim cact  ; Δ{cact}
         let _rcl2000000 = call animNamed win ren n idx anim nf fp dp fi _t8  ; Δ{}
         let _t1 = - i 1  ; Δ{}
         let _t10 = - _t9 1  ; Δ{}
         let _t10 = mod _t9 n  ; Δ{}
+        let _t10 = rtcall axion_buf_ptr_n hbuf 4  ; Δ{hbuf wbuf}
+        let _t11 = ffi SDL_QueryTexture tex 0 0 _t9 _t10  ; Δ{hbuf wbuf}
         let _t11 = mod _t10 n  ; Δ{}
         let _t11 = rtcall axion_str_cmp act "first"  ; Δ{}
         let _t12 = == _t11 0  ; Δ{}
@@ -487,19 +501,19 @@
         let _t13 = == _t12 0  ; Δ{}
         let _t3 = + i 1  ; Δ{}
         let _t3 = == key 1073741905  ; Δ{}
+        let _t3 = > tries 0  ; Δ{}
+        let _t4 = > tries 0  ; Δ{}
         let _t4 = call buildKeymap 0  ; Δ{}
         let _t5 = == key 47  ; Δ{}
         let _t6 = rtcall axion_str_len cact  ; Δ{cact}
         let _t7 = > _t6 0  ; Δ{cact}
-        let _t7 = call <=$Int nf 1  ; Δ{hdr}
-        let _t7 = rtcall axion_buf_ptr_n wbuf 4  ; Δ{hbuf wbuf}
         let _t8 = + idx n  ; Δ{}
         let _t8 = > eh 0  ; Δ{}
         let _t8 = if _t7 then
-        let _t8 = rtcall axion_buf_ptr_n hbuf 4  ; Δ{hbuf wbuf}
         let _t9 = + idx n  ; Δ{}
         let _t9 = - _t8 1  ; Δ{}
-        let _t9 = ffi SDL_QueryTexture tex 0 0 _t7 _t8  ; Δ{hbuf wbuf}
+        let _t9 = call <=$Int nf 1  ; Δ{hdr}
+        let _t9 = rtcall axion_buf_ptr_n wbuf 4  ; Δ{hbuf wbuf}
         let hbuf = rtcall axion_buf_new 4  ; Δ{wbuf} · makes Buffer
         let nf = rtcall axion_peek_u32 hdr 8  ; Δ{hdr}
         let wbuf = rtcall axion_buf_new 4  ; Δ{} · makes Buffer
@@ -519,22 +533,26 @@
         ret call laGo ys k  ; Δ{} · makes String
         ret call nthLine ys _t1  ; Δ{} · makes String
         ret call reopen win ren tex n _t11  ; Δ{}
+        ret case _t11 of
         ret case _t4 of
-        ret case _t9 of
         ret fitPct  ; Δ{}
         ret i  ; Δ{}
         ret if _t12 then
         ret if _t13 then
         ret if _t3 then
+        ret if _t3 then
+        ret if _t4 then
         ret if _t5 then
-        ret if _t7 then
         ret if _t8 then
+        ret if _t9 then
         ret rtcall axion_eputs "aximv: no images in this folder"  ; Δ{}
         ret th  ; Δ{}
         ret th  ; Δ{}
         ret tw  ; Δ{}
         ret tw  ; Δ{}
         ret z  ; Δ{}
+      _ ->
+      _ ->
       _ ->
       _ ->
       drop _t0 : String
@@ -596,7 +614,6 @@
       let _t14 = call imagePath idx  ; Δ{} · makes String
       let _t15 = call titleFor _t14 idx n z  ; Δ{_t14} · makes String
       let _t16 = ffi SDL_SetWindowTitle win _t15  ; Δ{_t15}
-      let _t2 = + idx 1  ; Δ{}
       let _t2 = == _t1 0  ; Δ{}
       let _t2 = == _t1 0  ; Δ{}
       let _t2 = == key 1073741906  ; Δ{}
@@ -604,27 +621,22 @@
       let _t3 = + i 1  ; Δ{}
       let _t3 = + i 1  ; Δ{}
       let _t3 = + i 2  ; Δ{}
-      let _t3 = + idx 1  ; Δ{}
       let _t3 = == n 0  ; Δ{}
-      let _t3 = mod _t2 n  ; Δ{}
       let _t3 = mod rot 180  ; Δ{}
       let _t3 = rtcall axion_read_file _t2  ; Δ{_t2} · makes String
       let _t4 = + i 1  ; Δ{}
       let _t4 = + i 1  ; Δ{}
       let _t4 = + idx 1  ; Δ{}
-      let _t4 = - tries 1  ; Δ{}
       let _t4 = == _t3 90  ; Δ{}
       let _t4 = == key 46  ; Δ{}
       let _t4 = call keyToken key md  ; Δ{_t3} · makes String
       let _t4 = call shEsc s _t3 n  ; Δ{} · makes String
       let _t4 = call spGo cmd rep _t3  ; Δ{} · makes String
-      let _t4 = mod _t3 n  ; Δ{}
       let _t4 = rtcall axion_buf_ptr_n db 4  ; Δ{db}
       let _t5 = * fi 4  ; Δ{db}
       let _t5 = + i 1  ; Δ{}
       let _t5 = + i 1  ; Δ{}
       let _t5 = + idx 1  ; Δ{}
-      let _t5 = - tries 1  ; Δ{}
       let _t5 = call hasPrefix "!" cact  ; Δ{cact}
       let _t5 = mod _t4 n  ; Δ{}
       let _t5 = mod rot 180  ; Δ{}
@@ -634,8 +646,8 @@
       let _t6 = + i 1  ; Δ{_t5}
       let _t6 = + i 1  ; Δ{_t5}
       let _t6 = == _t5 90  ; Δ{}
-      let _t6 = ffi IMG_FreeAnimation anim  ; Δ{}
-      let _t6 = ffi SDL_DestroyTexture tex  ; Δ{}
+      let _t6 = ffi IMG_FreeAnimation anim [o]  ; Δ{}
+      let _t6 = ffi SDL_DestroyTexture tex [o]  ; Δ{}
       let _t6 = mod _t5 n  ; Δ{}
       let _t6 = rtcall axion_str_at _t5 cmd  ; Δ{}
       let _t6 = rtcall axion_str_cmp act "prev"  ; Δ{}
@@ -711,11 +723,7 @@
       ret call onKey win ren n idx tex tw th z px py rot curPct key md  ; Δ{}
       ret call openImage win ren n idx 0 0 0 0  ; Δ{}
       ret call openImage win ren n idx 0 0 0 0  ; Δ{}
-      ret call openTry win ren n _t3 0 0 0 0 _t4  ; Δ{}
-      ret call openTry win ren n _t4 z px py rot _t5  ; Δ{}
       ret call quitTex win ren tex  ; Δ{}
-      ret call quitWith win ren  ; Δ{}
-      ret call quitWith win ren  ; Δ{}
       ret call quitWith win ren  ; Δ{}
       ret call quitWith win ren  ; Δ{}
       ret call reopen win ren tex n _t6  ; Δ{}
@@ -814,8 +822,6 @@
     else
     else
     else
-    else
-    else
     let _d1000000 = call findByBase _t2 _t3 0  ; Δ{_t2 _t3}
     let _d1000000 = rtcall axion_strcat _t3 _t5  ; Δ{_t3 _t5} · makes String
     let _d1000000 = rtcall axion_strcat _t6 _t9  ; Δ{_t9} · makes String
@@ -830,7 +836,6 @@
     let _t1 = + k 1  ; Δ{}
     let _t1 = == key 1073741904  ; Δ{}
     let _t1 = == ty 768  ; Δ{}
-    let _t1 = > tries 0  ; Δ{}
     let _t1 = call <=$Int c 90  ; Δ{}
     let _t1 = call findChar 10 s i n  ; Δ{}
     let _t1 = rtcall axion_str_at i s  ; Δ{}
@@ -839,11 +844,11 @@
     let _t2 = - key 32  ; Δ{}
     let _t2 = == _t1 39  ; Δ{}
     let _t2 = == _t1 c  ; Δ{}
-    let _t2 = > tries 0  ; Δ{}
     let _t2 = call imagePath idx  ; Δ{} · makes String
     let _t2 = call imgLines 0  ; Δ{} · makes List$String
     let _t2 = call isPctS cmd i  ; Δ{}
     let _t2 = call lowerChar _t1  ; Δ{}
+    let _t2 = ffi IMG_FreeAnimation anim [o]  ; Δ{}
     let _t2 = rtcall axion_str_at i s  ; Δ{}
     let _t2 = rtcall axion_str_at i s  ; Δ{}
     let _t2 = rtcall axion_str_cmp act "next"  ; Δ{}
@@ -860,6 +865,7 @@
     let _t3 = == key 44  ; Δ{}
     let _t3 = call baseName seed  ; Δ{_t2} · makes String
     let _t3 = ffi IMG_LoadAnimation _t2  ; Δ{_t2}
+    let _t3 = ffi SDL_FreeSurface surf [o]  ; Δ{}
     let _t3 = rtcall axion_chr _t2  ; Δ{} · makes String
     let _t3 = rtcall axion_str_at i cmd  ; Δ{}
     let _t3 = rtcall axion_str_cmp act "next"  ; Δ{}
@@ -876,15 +882,15 @@
     let _t5 = - _t3 _t4  ; Δ{}
     let _t5 = call ctrlHeld md  ; Δ{}
     let _t5 = call toLowerGo s _t4 n  ; Δ{_t3} · makes String
-    let _t5 = rtcall axion_buf_ptr_n hdr 32  ; Δ{hdr}
     let _t5 = rtcall axion_str_cmp _t4 p  ; Δ{_t4}
     let _t5 = showInt z  ; Δ{_t0 _t2 _t3} · makes String
-    let _t6 = ffi SDL_FreeSurface surf  ; Δ{}
-    let _t6 = ffi memcpy _t5 anim 32  ; Δ{hdr}
     let _t6 = if _t5 then
     let _t6 = rtcall axion_str_len q  ; Δ{}
     let _t7 = call altHeld md  ; Δ{}
+    let _t7 = rtcall axion_buf_ptr_n hdr 32  ; Δ{hdr}
     let _t7 = rtcall axion_substr _t5 _t6 s  ; Δ{} · makes String
+    let _t8 = ffi SDL_FreeSurface surf [o]  ; Δ{}
+    let _t8 = ffi memcpy _t7 anim 32  ; Δ{hdr}
     let _t8 = if _t7 then
     let _t8 = rtcall axion_str_cmp _t7 q  ; Δ{_t7}
     let _t9 = rtcall axion_strcat _t8 glyph  ; Δ{} · makes String
@@ -937,8 +943,10 @@
     ret call hasSuffix ".webp" q  ; Δ{}
     ret call quitTex win ren tex  ; Δ{}
     ret call staticTry win ren n idx z px py rot tries  ; Δ{}
-    ret case _t6 of
-    ret case _t6 of
+    ret case _t2 of
+    ret case _t3 of
+    ret case _t8 of
+    ret case _t8 of
     ret con Nil  ; Δ{} · makes List$String
     ret curPct  ; Δ{}
     ret fitPct  ; Δ{}
@@ -946,8 +954,6 @@
     ret if _t1 then
     ret if _t1 then
     ret if _t1 then
-    ret if _t1 then
-    ret if _t2 then
     ret if _t2 then
     ret if _t2 then
     ret if _t2 then
@@ -992,6 +998,8 @@
   ; Δ{ohb owb}
   ; Δ{ohb owb}
   ; Δ{v}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -1271,7 +1279,6 @@
   let _t0 = < k 0  ; Δ{}
   let _t0 = < x y  ; Δ{}
   let _t0 = == ac 0  ; Δ{}
-  let _t0 = == anim 0  ; Δ{}
   let _t0 = == key 1073741903  ; Δ{}
   let _t0 = == ty 256  ; Δ{}
   let _t0 = == z 0  ; Δ{}
@@ -1301,11 +1308,11 @@
   let _t0 = call toLower p  ; Δ{} · makes String
   let _t0 = div md 256  ; Δ{}
   let _t0 = div md 64  ; Δ{}
-  let _t0 = ffi IMG_FreeAnimation anim  ; Δ{}
-  let _t0 = ffi IMG_FreeAnimation anim  ; Δ{}
+  let _t0 = ffi IMG_FreeAnimation anim [o]  ; Δ{}
+  let _t0 = ffi IMG_FreeAnimation anim [o]  ; Δ{}
   let _t0 = ffi SDL_DestroyRenderer ren [o]  ; Δ{}
-  let _t0 = ffi SDL_DestroyTexture tex  ; Δ{}
-  let _t0 = ffi SDL_DestroyTexture tex  ; Δ{}
+  let _t0 = ffi SDL_DestroyTexture tex [o]  ; Δ{}
+  let _t0 = ffi SDL_DestroyTexture tex [o]  ; Δ{}
   let _t0 = mod md 4  ; Δ{}
   let _t0 = rtcall axion_buf_ptr_n fb 8  ; Δ{fb}
   let _t0 = rtcall axion_buf_ptr_n owb 4  ; Δ{ohb owb}
@@ -1331,7 +1338,7 @@
   let _t1 = == _t0 0  ; Δ{base}
   let _t1 = == _t0 0  ; Δ{}
   let _t1 = == _t0 0  ; Δ{}
-  let _t1 = == surf 0  ; Δ{}
+  let _t1 = == anim 0  ; Δ{}
   let _t1 = > _t0 0  ; Δ{v}
   let _t1 = call >=$Int i _t0  ; Δ{}
   let _t1 = call >=$Int i _t0  ; Δ{}
@@ -1358,6 +1365,7 @@
   let _t1 = rtcall axion_str_len s  ; Δ{}
   let _t1 = rtcall axion_str_len s  ; Δ{}
   let _t1 = rtcall axion_substr i _t0 s  ; Δ{} · makes String
+  let _t1 = surf  ; Δ{}
   let _t10 = rtcall axion_buf_free dst  ; Δ{dst} · moves{dst}
   let _t10 = rtcall axion_strcat "/" _t9  ; Δ{_t0 _t2 _t9} · makes String
   let _t10 = rtcall axion_strcat "; km=" _t9  ; Δ{_t1 _t9} · makes String
@@ -1374,6 +1382,7 @@
   let _t2 = - _t1 1  ; Δ{_t0}
   let _t2 = - ow dw  ; Δ{}
   let _t2 = < _t0 _t1  ; Δ{}
+  let _t2 = == _t1 0  ; Δ{}
   let _t2 = == _t1 0  ; Δ{}
   let _t2 = == _t1 0  ; Δ{}
   let _t2 = > _t0 _t1  ; Δ{}
@@ -1504,7 +1513,6 @@
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
-  ret if _t0 then
   ret if _t1 then
   ret if _t1 then
   ret if _t1 then
@@ -1515,6 +1523,7 @@
   ret if _t1 then
   ret if _t1 then
   ret if _t1 then
+  ret if _t2 then
   ret if _t2 then
   ret if _t2 then
   ret if _t2 then

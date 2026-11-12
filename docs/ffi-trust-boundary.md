@@ -86,11 +86,17 @@ raw pointer the verifier can no longer track.
   `Own` argument; it **trusts your claim** that C takes ownership (and will free it, with the matching
   allocator). A wrong `Own`/`Borrow` annotation produces a leak (if neither side frees) or a
   double-free/bad-free (if both do, or C frees with the wrong allocator) — neither is caught.
-- **Returned handles are manually managed.** A pointer C returns (an `SDL_Window*`, a `malloc`'d
-  block) is an opaque scalar with **no lifecycle tracking** — unlike the linear `Sock`/`Listener`
-  session types, there is no close-once enforcement. Forgetting to destroy it leaks; destroying it
-  twice, or using it after destroy, is a C-side double-free / use-after-free the verifier does not
-  model.
+- **Returned handles are checked only if you declare them as handles.** A creating FFI whose result
+  is `Handle T` gives a linear, must-use value: `check.rs` requires it to be consumed (passed to an
+  `Own (Handle T)` destroyer, or moved on as a `%1` argument) **exactly once on every path**, whether
+  it is a `%1` parameter or `let`-bound from the creating call — forgetting it is AX0002, destroying it
+  twice AX0001, using it after destroy AX0004. (Before 2026-11-12 a handle consumed on only one branch,
+  and any `let`-bound handle, slipped through; both are now rejected.) A pointer C returns as `Int` or
+  `Ptr a` still has **no lifecycle tracking** at all. What is never checked: that C's destroyer really
+  frees it, or that the handle is valid — a NULL from a failing creator is still a handle, so test it
+  with `handleAddr h == 0` (a borrow) and still pass it to its destroyer on that path when the
+  destroyer accepts NULL (`SDL_FreeSurface`, `IMG_FreeAnimation`), otherwise end the path in a way
+  that consumes it.
 - **The C callee itself** — whatever `dlopen`/`dlsym` resolves — is entirely trusted. A bug in the
   foreign library is a bug in the program.
 
@@ -107,18 +113,19 @@ discharges. The checklist:
    it is not freed while C still holds the pointer.
 3. **Declare `Own` only when C truly takes ownership** and frees with a compatible allocator;
    otherwise leave the argument `Borrow` (the default) so Axión frees it once.
-4. **Treat returned handles as manually managed:** pair every create with exactly one destroy on
-   every path, and never use a handle after destroying it. (This is the discipline a future
-   linear-handle hardening would make the compiler enforce — see below.)
+4. **Declare every C resource you must destroy as `Handle T`** (creator returns `Handle T`, destroyer
+   takes `Own (Handle T)`, readers `Borrow (Handle T)`), so the compiler enforces one destroy per
+   path. Interior pointers owned by another resource (a GIF frame's surface, owned by its
+   `IMG_Animation`) stay plain `Int`s: their owner's handle is the one that must be tracked.
 5. **Run FFI programs natively.** The interpreter refuses non-scalar FFI by design; `--backend
    cranelift` / `--release` are the faithful executors.
 
 `examples/aximv.axi` is the worked example: a real SDL2 viewer that follows this contract (sized
 `bufPtrN` at every call, a `peek` read-back that anchors each scratch buffer past its FFI call, and
-all-`Borrow` arguments since SDL takes ownership of none of them), and whose header states plainly
-that it is a *demo of reach*, not a safe-by-construction artifact. Its manually-paired
-texture create/destroy is exactly the handle discipline item 4 asks for — and exactly what the
-deferred linear-handle hardening would let the compiler enforce.
+`Borrow` arguments wherever SDL keeps nothing). Its window, renderer, textures, surfaces and GIF
+animations are all `Handle`s, so a missing or doubled destroy on any path — the image change, the
+config `!cmd` reload, quit, the NULL-load skip — is a compile error rather than a leak or double-free
+at runtime. It remains a *demo of reach*: C itself, and the `Own`/`Borrow` annotations, are trusted.
 
 ---
 
@@ -130,9 +137,10 @@ deferred linear-handle hardening would let the compiler enforce.
 - The **trusted base** (GUARANTEE.md §4) separately includes the small, documented `unsafe` blocks in
   `axion-rt` (the runtime's own pointer/layout/FFI code), audited under ASan/LSan/TSan — distinct
   from *user* FFI, which is the subject of this document.
-- **Pushing the boundary outward** (moving responsibility back to the compiler) is future work:
-  - *Linear handles* — model SDL/`malloc` handles as must-use linear types like `Sock`/`Listener`,
-    so leak / double-destroy / use-after-destroy of a handle become compile errors.
-  - *A scoped pointer bracket* — `withBufPtr :: Buffer a -> (Int -> b) -> b` would keep a buffer live
-    for the whole continuation, making the §3 lifetime hazard impossible by construction instead of
-    relying on the read-back-after-call rule.
+- **Pushing the boundary outward** (moving responsibility back to the compiler):
+  - *Linear handles* — done: `Handle T` (see §3) makes leak / double-destroy / use-after-destroy of a
+    declared handle compile errors on every path.
+  - *A scoped pointer bracket* — `borrow buf as p in …` now keeps a buffer live for the whole block
+    (aximv's rect uses it); the read-back-after-call rule remains for bare `bufPtrN` calls.
+  - *Tracking FFI calls as an effect* — calls are still typed pure and unmarked at the call site; an
+    explicit effect would make "safe modulo these sites" visible in the code. Not started.
