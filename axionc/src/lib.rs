@@ -5023,7 +5023,9 @@ fn lower_classes(module: &mut ast::Module) {
         }
     }
     module.funcs.extend(impls);
-    module.funcs.extend(synth_ord_cmp_helpers(&module.instances));
+    module
+        .funcs
+        .extend(synth_ord_cmp_helpers(&module.instances));
 }
 
 /// For each USER `Ord` instance, synthesize strict `lt$T`/`gt$T` from the instance's `le$T`
@@ -5037,7 +5039,11 @@ fn synth_ord_cmp_helpers(instances: &[ast::InstanceDecl]) -> Vec<ast::Func> {
     let var = |n: &str| Expr::Var(n.to_string(), SP);
     // `f a b` as nested application.
     let app2 = |f: Expr, a: Expr, b: Expr| {
-        Expr::App(Box::new(Expr::App(Box::new(f), Box::new(a), SP)), Box::new(b), SP)
+        Expr::App(
+            Box::new(Expr::App(Box::new(f), Box::new(a), SP)),
+            Box::new(b),
+            SP,
+        )
     };
     let mut out = Vec::new();
     for inst in instances {
@@ -5559,7 +5565,13 @@ fn ty_to_src(t: &ast::Type) -> String {
 /// The `poke`/`peek` builtins + any pointer/float wrapping for a struct field of type `ty` with the
 /// given byte `size`. Returns `(poke_store_expr_fn, peek_load_expr)` fragments as source text, given
 /// the buffer/record variable, field offset, and (for poke) the value expression.
-fn field_access_src(ty: &ast::Type, size: usize, buf: &str, off: usize, val: &str) -> (String, String) {
+fn field_access_src(
+    ty: &ast::Type,
+    size: usize,
+    buf: &str,
+    off: usize,
+    val: &str,
+) -> (String, String) {
     let width = match size {
         1 => "U8",
         2 => "U16",
@@ -5601,13 +5613,23 @@ fn expand_foreign_structs(module: &mut ast::Module, diags: &mut Diagnostics) {
             diags.push(
                 Diagnostic::error(
                     "AX0110",
-                    format!("`foreign struct {}` has a field of an unsupported type", fs.name),
+                    format!(
+                        "`foreign struct {}` has a field of an unsupported type",
+                        fs.name
+                    ),
                 )
-                .label(fs.span.0, fs.span.1, "field types must be fixed-width ints, F64, or Ptr"),
+                .label(
+                    fs.span.0,
+                    fs.span.1,
+                    "field types must be fixed-width ints, F64, or Ptr",
+                ),
             );
             continue;
         };
-        field_order.insert(fs.name.clone(), fs.fields.iter().map(|f| f.name.clone()).collect());
+        field_order.insert(
+            fs.name.clone(),
+            fs.fields.iter().map(|f| f.name.clone()).collect(),
+        );
         let params: Vec<String> = fs.fields.iter().map(|f| f.name.clone()).collect();
         let sig_args: Vec<String> = fs.fields.iter().map(|f| ty_to_src(&f.ty)).collect();
         // constructor `mk__S` (a valid lowercase VarId — the struct's own ConId can't name a
@@ -5635,7 +5657,11 @@ fn expand_foreign_structs(module: &mut ast::Module, diags: &mut Diagnostics) {
             ctor,
             params.join(" "),
             size,
-            if pokes.is_empty() { "0".to_string() } else { pokes.join(" + ") },
+            if pokes.is_empty() {
+                "0".to_string()
+            } else {
+                pokes.join(" + ")
+            },
         ));
         // one selector per field:  f :: Buffer a -> T ;  f axsr = <peek>
         for (f, &off) in fs.fields.iter().zip(&offsets) {

@@ -22,7 +22,12 @@ struct Site {
 /// Render the report. `user` is the user's file as parsed (no prelude, no desugaring past
 /// the parser), so spans and function names are the ones in the source; `foreigns` is every
 /// import visible to it, including those from imported modules.
-pub fn report(user: &Module, foreigns: &[Foreign], path: &str, pos: impl Fn(usize) -> (usize, usize)) -> String {
+pub fn report(
+    user: &Module,
+    foreigns: &[Foreign],
+    path: &str,
+    pos: impl Fn(usize) -> (usize, usize),
+) -> String {
     let by_name: HashMap<&str, &Foreign> = foreigns.iter().map(|f| (f.name.as_str(), f)).collect();
     let mut sites = Vec::new();
     for f in &user.funcs {
@@ -37,7 +42,10 @@ pub fn report(user: &Module, foreigns: &[Foreign], path: &str, pos: impl Fn(usiz
     let mut imports: Vec<&Foreign> = foreigns.iter().collect();
     imports.sort_by(|a, b| a.name.cmp(&b.name));
     let pure = imports.iter().filter(|f| f.pure).count();
-    let unused = imports.iter().filter(|f| !counts.contains_key(f.name.as_str())).count();
+    let unused = imports
+        .iter()
+        .filter(|f| !counts.contains_key(f.name.as_str()))
+        .count();
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -126,7 +134,10 @@ fn fmt_type(t: &Type) -> String {
     match t {
         Type::Con(n) | Type::Var(n) => n.clone(),
         Type::Unit => "()".to_string(),
-        Type::Tuple(ts) => format!("({})", ts.iter().map(fmt_type).collect::<Vec<_>>().join(", ")),
+        Type::Tuple(ts) => format!(
+            "({})",
+            ts.iter().map(fmt_type).collect::<Vec<_>>().join(", ")
+        ),
         Type::App(f, x) => format!("{} {}", fmt_type(f), fmt_atom(x)),
         Type::Arrow { from, to, .. } => {
             let from = match **from {
@@ -190,7 +201,14 @@ fn bind_pat(p: &Pat, b: &mut HashSet<String>) {
 }
 
 /// The site for a mention of `name` at `span`, if it names an import not shadowed here.
-fn site(name: &str, span: Span, applied: usize, owner: &str, ffi: &HashMap<&str, &Foreign>, bound: &HashSet<String>) -> Option<Site> {
+fn site(
+    name: &str,
+    span: Span,
+    applied: usize,
+    owner: &str,
+    ffi: &HashMap<&str, &Foreign>,
+    bound: &HashSet<String>,
+) -> Option<Site> {
     (ffi.contains_key(name) && !bound.contains(name)).then(|| Site {
         func: owner.to_string(),
         span,
@@ -199,7 +217,13 @@ fn site(name: &str, span: Span, applied: usize, owner: &str, ffi: &HashMap<&str,
     })
 }
 
-fn walk(e: &Expr, owner: &str, ffi: &HashMap<&str, &Foreign>, bound: &HashSet<String>, out: &mut Vec<Site>) {
+fn walk(
+    e: &Expr,
+    owner: &str,
+    ffi: &HashMap<&str, &Foreign>,
+    bound: &HashSet<String>,
+    out: &mut Vec<Site>,
+) {
     match e {
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => {}
         Expr::Var(n, sp) => out.extend(site(n, *sp, 0, owner, ffi, bound)),

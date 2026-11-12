@@ -460,7 +460,7 @@ impl<'a> Parser<'a> {
         if self.at(&Tok::Foreign) {
             let start = self.span_here().0;
             self.bump(); // foreign
-            // `foreign struct Name { f: T, ... }` — a C-ABI struct declaration (§18).
+                         // `foreign struct Name { f: T, ... }` — a C-ABI struct declaration (§18).
             if matches!(self.cur(), Some(LTok::Tok(Tok::VarId(k))) if k == "struct") {
                 return self.parse_foreign_struct(start);
             }
@@ -496,7 +496,10 @@ impl<'a> Parser<'a> {
                         self.bump();
                         Some(v)
                     }
-                    _ => return Err(self.syntax_err("a \"C symbol\" string after '=' in the foreign import")),
+                    _ => {
+                        return Err(self
+                            .syntax_err("a \"C symbol\" string after '=' in the foreign import"))
+                    }
                 }
             } else {
                 None

@@ -182,8 +182,12 @@ pub struct Effects {
 
 impl Effects {
     pub fn of(module: &Module) -> Self {
-        let mut names: HashSet<String> =
-            module.foreigns.iter().filter(|f| !f.pure).map(|f| f.name.clone()).collect();
+        let mut names: HashSet<String> = module
+            .foreigns
+            .iter()
+            .filter(|f| !f.pure)
+            .map(|f| f.name.clone())
+            .collect();
         let refs: Vec<(&str, HashSet<String>)> = module
             .funcs
             .iter()
@@ -196,8 +200,7 @@ impl Effects {
         loop {
             let mut grew = false;
             for (name, r) in &refs {
-                if !names.contains(*name)
-                    && r.iter().any(|n| is_effectful(n) || names.contains(n))
+                if !names.contains(*name) && r.iter().any(|n| is_effectful(n) || names.contains(n))
                 {
                     names.insert((*name).to_string());
                     grew = true;

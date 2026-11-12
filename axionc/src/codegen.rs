@@ -1073,8 +1073,11 @@ impl Fx<'_, '_> {
                     };
                     sig.params.push(AbiParam::new(ty));
                 }
-                sig.returns
-                    .push(AbiParam::new(if *ret_float { types::F64 } else { types::I64 }));
+                sig.returns.push(AbiParam::new(if *ret_float {
+                    types::F64
+                } else {
+                    types::I64
+                }));
                 let id = self
                     .module
                     .declare_function(name, Linkage::Import, &sig)

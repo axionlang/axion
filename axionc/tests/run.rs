@@ -335,7 +335,10 @@ fn ffi_linear_handle_lifecycle_enforced() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(text.contains(code), "case {i}: expected {code}, got: {text}");
+        assert!(
+            text.contains(code),
+            "case {i}: expected {code}, got: {text}"
+        );
     }
 }
 
@@ -1503,9 +1506,15 @@ fn llvm_ir_separates_array_length_from_elements_in_tbaa() {
         .output()
         .unwrap();
     let ir = String::from_utf8_lossy(&out.stdout);
-    assert!(ir.contains("load i64, ptr %") && ir.contains("!tbaa !3"), "length load untagged");
+    assert!(
+        ir.contains("load i64, ptr %") && ir.contains("!tbaa !3"),
+        "length load untagged"
+    );
     assert!(ir.contains("!tbaa !4"), "element access untagged");
-    assert!(ir.contains("!1 = !{!\"array.len\", !0, i64 0}"), "missing TBAA nodes");
+    assert!(
+        ir.contains("!1 = !{!\"array.len\", !0, i64 0}"),
+        "missing TBAA nodes"
+    );
 }
 
 #[test]
@@ -1527,8 +1536,8 @@ fn every_bench_kernel_passes_the_verifier() {
     // build, so `simd` once sat rejected by a false AX0910 without failing anything.
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../bench");
     for k in [
-        "fib", "loop", "alloc", "simd", "dispatch", "sumtype", "tritvec", "dot_i8", "ternmv", "i8mv",
-        "i32mv", "gauss",
+        "fib", "loop", "alloc", "simd", "dispatch", "sumtype", "tritvec", "dot_i8", "ternmv",
+        "i8mv", "i32mv", "gauss",
     ] {
         let path = format!("{dir}/{k}.axi");
         let out = axionc().args(["--emit", "verify", &path]).output().unwrap();
@@ -5441,9 +5450,18 @@ fn foreign_calls_are_effects_unless_pure() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(out.status.success(), "warnings only: {text}");
-    assert!(text.contains("binding `direct`"), "direct foreign call: {text}");
-    assert!(text.contains("binding `wrapped`"), "call through a wrapper: {text}");
-    assert!(!text.contains("binding `root`"), "a pure import must not warn: {text}");
+    assert!(
+        text.contains("binding `direct`"),
+        "direct foreign call: {text}"
+    );
+    assert!(
+        text.contains("binding `wrapped`"),
+        "call through a wrapper: {text}"
+    );
+    assert!(
+        !text.contains("binding `root`"),
+        "a pure import must not warn: {text}"
+    );
     assert_eq!(text.matches("AX0920").count(), 2, "{text}");
 }
 

@@ -730,13 +730,17 @@ impl Emit<'_> {
         self.array_bounds_check(arr, idx);
         let ep = self.array_elem_ptr(arr, idx);
         let v = self.val();
-        self.ins(&format!("{v} = load i64, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"));
+        self.ins(&format!(
+            "{v} = load i64, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"
+        ));
         v
     }
     fn array_set_inline(&mut self, arr: &str, idx: &str, val: &str) {
         self.array_bounds_check(arr, idx);
         let ep = self.array_elem_ptr(arr, idx);
-        self.ins(&format!("store i64 {val}, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"));
+        self.ins(&format!(
+            "store i64 {val}, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"
+        ));
     }
 
     /// Call to a runtime function (`ret` indicates whether it returns a value).

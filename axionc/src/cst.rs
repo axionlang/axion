@@ -107,13 +107,13 @@ pub enum SyntaxKind {
 }
 
 use SyntaxKind::{
-    APP_EXPR, BIND_STMT, BINOP_EXPR, BORROW_EXPR, CASE_ALT, CASE_EXPR, CLASS_DECL, COMMENT, CONID, CONSTRAINT, CON_DECL,
-    CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL, FOREIGN_DECL, FOREIGN_ENUM, FOREIGN_STRUCT,
-    FUN_CLAUSE, GUARD, IDENT, IF_EXPR, IMPORT_DECL, INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR,
-    LET_STMT,
-    LIST_EXPR, LITERAL, LITERAL_EXPR, LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER,
-    PAREN_EXPR, PUNCT, RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW,
-    TYPE_CON, TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
+    APP_EXPR, BIND_STMT, BINOP_EXPR, BORROW_EXPR, CASE_ALT, CASE_EXPR, CLASS_DECL, COMMENT, CONID,
+    CONSTRAINT, CON_DECL, CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL,
+    FOREIGN_DECL, FOREIGN_ENUM, FOREIGN_STRUCT, FUN_CLAUSE, GUARD, IDENT, IF_EXPR, IMPORT_DECL,
+    INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR, LET_STMT, LIST_EXPR, LITERAL, LITERAL_EXPR,
+    LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER, PAREN_EXPR, PUNCT, RECORD_EXPR,
+    SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON, TYPE_TUPLE,
+    TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -1221,10 +1221,10 @@ impl ExprParser<'_> {
     fn lam_expr(&mut self) {
         self.b.start_node(LAMBDA_EXPR.into());
         self.bump(); // '\'
-        // Consume parameter patterns while one actually STARTS here — not "until `->`/EOF". The old
-        // condition spun forever on a malformed lambda like `(\x)`: at `)` neither `->`/EOF held, but
-        // `apat()` could not consume `)` either, so the loop never advanced. `starts_apat` stops at the
-        // first non-pattern token (e.g. `)`), and `expect(&Arrow)` then reports a clean syntax error.
+                     // Consume parameter patterns while one actually STARTS here — not "until `->`/EOF". The old
+                     // condition spun forever on a malformed lambda like `(\x)`: at `)` neither `->`/EOF held, but
+                     // `apat()` could not consume `)` either, so the loop never advanced. `starts_apat` stops at the
+                     // first non-pattern token (e.g. `)`), and `expect(&Arrow)` then reports a clean syntax error.
         while self.starts_apat() {
             self.apat();
         }
@@ -1713,7 +1713,7 @@ impl ExprParser<'_> {
         }
         self.b.start_node(FOREIGN_DECL.into());
         self.bump(); // foreign
-        // `foreign pure …` marker (only when a library path or the name follows)
+                     // `foreign pure …` marker (only when a library path or the name follows)
         if matches!(self.cur(), Some(Tok::VarId(k)) if k == "pure")
             && matches!(self.peek_tok(1), Some(Tok::Str(_) | Tok::VarId(_)))
         {
@@ -1723,7 +1723,7 @@ impl ExprParser<'_> {
             self.bump(); // library path
         }
         self.var_id(); // name
-        // optional C-symbol alias: `= "SDL_Init"`
+                       // optional C-symbol alias: `= "SDL_Init"`
         if matches!(self.cur(), Some(Tok::Equals)) {
             self.bump(); // '='
             if matches!(self.cur(), Some(Tok::Str(_))) {
@@ -2244,8 +2244,7 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
             // *pattern* position (a `case` arm or a tuple element, both `parse_pat`); as a
             // clause/lambda parameter or a constructor argument (`parse_apat`) it is just
             // its token.
-            let pattern_pos =
-                matches!(node.parent().map(|p| p.kind()), Some(CASE_ALT | TUPLE_PAT));
+            let pattern_pos = matches!(node.parent().map(|p| p.kind()), Some(CASE_ALT | TUPLE_PAT));
             let sp = if args.is_empty() && !pattern_pos {
                 node_span(node)
             } else {
@@ -2767,7 +2766,8 @@ fn lower_foreign_struct(node: &SyntaxNode) -> Option<crate::ast::ForeignStruct> 
 fn lower_foreign(node: &SyntaxNode) -> Option<crate::ast::Foreign> {
     // A string BEFORE the name is the library path; one AFTER it (past `=`) is the C-symbol
     // alias. Walk the direct tokens in order, splitting the two literals by the name's position.
-    let str_of = |t: &rowan::SyntaxToken<AxionLang>| match lex(t.text()).ok()?.first()?.tok.clone() {
+    let str_of = |t: &rowan::SyntaxToken<AxionLang>| match lex(t.text()).ok()?.first()?.tok.clone()
+    {
         Tok::Str(s) => Some(s),
         _ => None,
     };

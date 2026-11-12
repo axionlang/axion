@@ -154,7 +154,10 @@ fn element_alias_double_free_is_caught_by_verifier() {
 /// `DropOfAlias`. Reproducible in plain user code (no `uncons`); the interpreter still runs it.
 #[test]
 fn borrowed_tuple_field_consume_is_caught_by_verifier() {
-    for fx in ["borrowed_tuple_field_consume.axi", "uncons_peel_tuple_reject.axi"] {
+    for fx in [
+        "borrowed_tuple_field_consume.axi",
+        "uncons_peel_tuple_reject.axi",
+    ] {
         let path = format!("{}/tests/fixtures/{fx}", env!("CARGO_MANIFEST_DIR"));
         let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
         let vstdout = String::from_utf8_lossy(&verify.stdout);

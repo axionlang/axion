@@ -46,7 +46,10 @@ fn reindents_over_indented_case_alternatives() {
     // alternatives aligned but over-indented (col 6) → canonical one block level (col 2)
     let src = "f :: Int -> Int\nf x = case x of\n      0 -> 1\n      _ -> 2\n";
     let got = format_src(src).expect("parses");
-    assert_eq!(got, "f :: Int -> Int\nf x = case x of\n  0 -> 1\n  _ -> 2\n");
+    assert_eq!(
+        got,
+        "f :: Int -> Int\nf x = case x of\n  0 -> 1\n  _ -> 2\n"
+    );
 }
 
 #[test]
@@ -80,7 +83,8 @@ fn where_block_is_left_as_authored() {
 
 #[test]
 fn reindent_is_idempotent_on_messy_input() {
-    let src = "main :: IO ()\nmain = do\n        case x of\n            A -> f\n            B -> g\n";
+    let src =
+        "main :: IO ()\nmain = do\n        case x of\n            A -> f\n            B -> g\n";
     let once = format_src(src).expect("parses");
     let twice = format_src(&once).expect("parses");
     assert_eq!(once, twice);

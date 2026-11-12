@@ -2273,7 +2273,10 @@ impl<'a> Infer<'a> {
         //   bufPtr  :: Buffer a -> Int   (address of the data region, for passing to C)
         let peek = |r: Ty| Scheme {
             vars: vec![0],
-            ty: Ty::Fun(Box::new(bufa()), Box::new(Ty::Fun(Box::new(int()), Box::new(r)))),
+            ty: Ty::Fun(
+                Box::new(bufa()),
+                Box::new(Ty::Fun(Box::new(int()), Box::new(r))),
+            ),
         };
         let poke = |v: Ty| Scheme {
             vars: vec![0],
@@ -2821,8 +2824,7 @@ impl<'a> Infer<'a> {
                 // `Float`→`/.`, `Integer`→`div#I`); see `division_resolve`. A user type falls
                 // through to the generic instance arm below (`/$Complex`).
                 Ty::Con(name, _) if is_division_method(&o.method) && is_primitive_num(&name) => {
-                    resolutions
-                        .insert((o.func.clone(), o.span), division_resolve(&name).into());
+                    resolutions.insert((o.func.clone(), o.span), division_resolve(&name).into());
                 }
                 // built-in Num/Ord operator over Float → rewrite to the dotted form
                 // the backends already lower.

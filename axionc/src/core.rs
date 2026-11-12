@@ -2938,9 +2938,11 @@ fn lower_func(
     let mut owned_drop_ty: Vec<(String, Option<String>)> = Vec::new();
     // The per-param "this is an owned heap param → reclaim it" step, shared by the signed path
     // (below) and the `where`-local inferred path. `t` is the param's type, `p` its lowered name.
-    let push_owned = |p: &str, t: &Type, owned: &mut Vec<String>,
-                          owned_drop_ty: &mut Vec<(String, Option<String>)>,
-                          mono_seeds: &mut Vec<Type>| {
+    let push_owned = |p: &str,
+                      t: &Type,
+                      owned: &mut Vec<String>,
+                      owned_drop_ty: &mut Vec<(String, Option<String>)>,
+                      mono_seeds: &mut Vec<Type>| {
         if !heap_ty(t, data_types) {
             return;
         }
@@ -2973,7 +2975,13 @@ fn lower_func(
             let offset = params.len().saturating_sub(ptys.len());
             for (i, pt) in ptys.iter().enumerate() {
                 if let Some(t) = pt {
-                    push_owned(&params[offset + i], t, &mut owned, &mut owned_drop_ty, &mut mono_seeds);
+                    push_owned(
+                        &params[offset + i],
+                        t,
+                        &mut owned,
+                        &mut owned_drop_ty,
+                        &mut mono_seeds,
+                    );
                 }
             }
         }
@@ -9360,8 +9368,7 @@ fn reclaim_cond_escape(
             for (v, key) in owned {
                 if !op_mentions_any(&op, &HashSet::from([v.clone()])) {
                     before.push((v, key));
-                } else if (fresh
-                    || matches!(&op, Op::CallDirect(g, _, _) if !br.contains_key(g)))
+                } else if (fresh || matches!(&op, Op::CallDirect(g, _, _) if !br.contains_key(g)))
                     && !moved.contains(&v)
                 {
                     // the op BORROWS v and its result does not alias v (a fresh producer, or a
@@ -9441,7 +9448,13 @@ fn free_owned_scrutinee(
         _ => return None,
     };
     let sp = term_span(&arm);
-    Some(Term::Drop(s.to_string(), drop_key, Vec::new(), sp, Box::new(arm)))
+    Some(Term::Drop(
+        s.to_string(),
+        drop_key,
+        Vec::new(),
+        sp,
+        Box::new(arm),
+    ))
 }
 
 /// Unique-temp counter for `reclaim_cond_escape`'s post-`ret` drops. Based at 2_000_000 to

@@ -203,7 +203,10 @@ fn resolve_escape(chars: &mut std::str::Chars) -> Option<char> {
             // two hex digits → a byte; malformed falls back to a literal 'x'
             let hi = chars.next();
             let lo = chars.next();
-            match (hi.and_then(|c| c.to_digit(16)), lo.and_then(|c| c.to_digit(16))) {
+            match (
+                hi.and_then(|c| c.to_digit(16)),
+                lo.and_then(|c| c.to_digit(16)),
+            ) {
                 (Some(h), Some(l)) => char::from((h * 16 + l) as u8),
                 _ => 'x',
             }

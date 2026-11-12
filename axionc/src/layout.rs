@@ -79,7 +79,8 @@ pub fn layout(tokens: &[Spanned], lines: &LineMap) -> Vec<LSpanned> {
         // >= the current depth), so the enclosed `case`/`do`/`let` ends before the bracket. Blocks
         // opened outside (lower recorded depth — incl. the depth-0 module) are untouched.
         if matches!(t.tok, Tok::RParen | Tok::RBracket | Tok::RBrace) {
-            while matches!(ctx.last(), Some(&(_, _, d)) if d >= bracket_depth && bracket_depth > 0) {
+            while matches!(ctx.last(), Some(&(_, _, d)) if d >= bracket_depth && bracket_depth > 0)
+            {
                 push(&mut out, LTok::VRBrace, t);
                 ctx.pop();
             }

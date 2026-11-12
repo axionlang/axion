@@ -23,8 +23,8 @@ pub struct Program {
     // FFI: Axión name → (dlsym C symbol, arity, interp-safe). `interp_safe` (§18 #4) is false for
     // float/pointer/arity>3 signatures the interp cannot execute faithfully — those are native-only.
     foreigns: HashMap<String, (String, usize, bool)>,
-    methods: HashSet<String>,           // typeclass method names (dynamic dispatch)
-    con_type: HashMap<String, String>,  // constructor → data type name (for dispatch)
+    methods: HashSet<String>, // typeclass method names (dynamic dispatch)
+    con_type: HashMap<String, String>, // constructor → data type name (for dispatch)
 }
 
 #[derive(Clone)]
@@ -321,7 +321,8 @@ fn buf_peek(buf: &Value, off: &Value, width: usize) -> Result<Value, String> {
         return Err("buffer peek: expected a Buffer and an Int offset".into());
     };
     let v = a.borrow();
-    let o = usize::try_from(*o).map_err(|_| "axion: buffer bounds — negative offset".to_string())?;
+    let o =
+        usize::try_from(*o).map_err(|_| "axion: buffer bounds — negative offset".to_string())?;
     if o + width > v.len() {
         return Err(format!(
             "axion: buffer bounds — index {o} out of range [0, {})",
@@ -345,9 +346,12 @@ fn buf_poke(buf: &Value, off: &Value, val: i64, width: usize) -> Result<Value, S
         return Err("buffer poke: expected a Buffer and an Int offset".into());
     };
     let n = a.borrow().len();
-    let o = usize::try_from(*o).map_err(|_| "axion: buffer bounds — negative offset".to_string())?;
+    let o =
+        usize::try_from(*o).map_err(|_| "axion: buffer bounds — negative offset".to_string())?;
     if o + width > n {
-        return Err(format!("axion: buffer bounds — index {o} out of range [0, {n})"));
+        return Err(format!(
+            "axion: buffer bounds — index {o} out of range [0, {n})"
+        ));
     }
     let uv = val as u64;
     let mut m = a.borrow_mut();
@@ -449,19 +453,16 @@ pub fn read_key_timeout(ms: i64) -> String {
         return read_key();
     }
     // VTIME is a u8 (deciseconds); round ms up so e.g. 25 ms → 1 ds, and clamp to [0, 255].
-    let decis = if ms == 0 { 0 } else { ((ms + 99) / 100).clamp(1, 255) };
+    let decis = if ms == 0 {
+        0
+    } else {
+        ((ms + 99) / 100).clamp(1, 255)
+    };
     struct RawGuard(bool);
     impl RawGuard {
         fn on(time: i64) -> RawGuard {
             let ok = std::process::Command::new("stty")
-                .args([
-                    "-icanon",
-                    "-echo",
-                    "min",
-                    "0",
-                    "time",
-                    &time.to_string(),
-                ])
+                .args(["-icanon", "-echo", "min", "0", "time", &time.to_string()])
                 .stderr(std::process::Stdio::null())
                 .status()
                 .map(|s| s.success())
@@ -1853,7 +1854,11 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
                             if ((*c == 'd') != want_dir) || !kept(n) {
                                 continue;
                             }
-                            raw.push(if *c == 'd' { format!("{n}/") } else { n.clone() });
+                            raw.push(if *c == 'd' {
+                                format!("{n}/")
+                            } else {
+                                n.clone()
+                            });
                             codes.push(c.to_string());
                         }
                     }
@@ -1921,7 +1926,10 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
         // has no meaning off-FFI (interp does no C write-back), so it returns 0.
         ("newBuffer", [Value::Int(n)]) => {
             let len = (*n).max(0) as usize;
-            Ok(Value::Array(Rc::new(RefCell::new(vec![Value::Int(0); len]))))
+            Ok(Value::Array(Rc::new(RefCell::new(vec![
+                Value::Int(0);
+                len
+            ]))))
         }
         ("bufPtr", [Value::Array(_)]) => Ok(Value::Int(0)),
         ("free", [Value::Array(_)]) => Ok(Value::Int(0)),

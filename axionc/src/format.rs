@@ -47,9 +47,7 @@ fn is_modeled_block(k: SyntaxKind) -> bool {
 /// have not modeled its indentation): `where`, class/instance bodies, data/foreign declarations. An
 /// item with any such ancestor is skipped — never re-indented — so those regions are byte-stable.
 fn is_unmodeled_block(k: SyntaxKind) -> bool {
-    use SyntaxKind::{
-        CLASS_DECL, DATA_DECL, FOREIGN_ENUM, FOREIGN_STRUCT, INSTANCE_DECL, WHERE,
-    };
+    use SyntaxKind::{CLASS_DECL, DATA_DECL, FOREIGN_ENUM, FOREIGN_STRUCT, INSTANCE_DECL, WHERE};
     matches!(
         k,
         WHERE | CLASS_DECL | INSTANCE_DECL | DATA_DECL | FOREIGN_STRUCT | FOREIGN_ENUM
@@ -113,7 +111,9 @@ fn item_depth(node: &SyntaxNode) -> Option<i32> {
 
 /// The nearest enclosing modeled block (`do`/`case`/`let`) of an item, if any (else it is top-level).
 fn nearest_modeled_block(node: &SyntaxNode) -> Option<SyntaxNode> {
-    node.ancestors().skip(1).find(|n| is_modeled_block(n.kind()))
+    node.ancestors()
+        .skip(1)
+        .find(|n| is_modeled_block(n.kind()))
 }
 
 /// A block's first item child (its first statement / alternative / binding).
@@ -169,10 +169,11 @@ pub fn format_src(src: &str) -> Option<String> {
     let lines: Vec<&str> = src.lines().collect();
     // A tab anywhere in a line's leading whitespace means our space-based indent math would rewrite
     // it — bail out and leave the file untouched.
-    if lines
-        .iter()
-        .any(|l| l.chars().take_while(|c| c.is_whitespace()).any(|c| c == '\t'))
-    {
+    if lines.iter().any(|l| {
+        l.chars()
+            .take_while(|c| c.is_whitespace())
+            .any(|c| c == '\t')
+    }) {
         return None;
     }
     // Byte offset at which each source line starts (to map a token offset → line index).

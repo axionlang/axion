@@ -240,7 +240,11 @@ pub fn desugar_borrow(buf: Expr, ptr: String, body: Expr, sp: Span) -> Expr {
             sp,
         );
         // case body of $brres -> after
-        Expr::Case(Box::new(body), vec![(Pat::Var(resn.clone(), sp), after)], sp)
+        Expr::Case(
+            Box::new(body),
+            vec![(Pat::Var(resn.clone(), sp), after)],
+            sp,
+        )
     };
 
     match buf {
