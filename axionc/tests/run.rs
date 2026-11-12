@@ -5427,6 +5427,66 @@ fn dropped_effect_where_warns() {
 }
 
 #[test]
+fn foreign_calls_are_effects_unless_pure() {
+    // Every `foreign` import is effectful unless declared `foreign pure`: an unused `where`
+    // binding calling one directly or through a wrapper warns AX0920; a pure one does not.
+    // `foreign pure :: …` (no library, `::` next) imports a C function named `pure`.
+    let out = axionc()
+        .args(["--check", &fixture("ffi_effects.axi")])
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "warnings only: {text}");
+    assert!(text.contains("binding `direct`"), "direct foreign call: {text}");
+    assert!(text.contains("binding `wrapped`"), "call through a wrapper: {text}");
+    assert!(!text.contains("binding `root`"), "a pure import must not warn: {text}");
+    assert_eq!(text.matches("AX0920").count(), 2, "{text}");
+}
+
+#[test]
+fn emit_ffi_lists_imports_and_call_sites() {
+    // `--emit ffi`: each import with symbol, library, per-argument ownership and effect
+    // status, then each mention in user code with its enclosing function. A parameter that
+    // shadows an import is not a site; the prelude's own runtime imports are not listed.
+    let path = fixture("ffi_effects.axi");
+    let out = axionc().args(["--emit", "ffi", &path]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for want in [
+        "imports: 4 (2 pure, 1 never mentioned)",
+        "  cputs = puts from libc.so.6 :: borrow String -> Int  effect  sites: 2",
+        "  csqrt = sqrt from libm.so.6 :: Float -> Float  pure  sites: 1",
+        "  pure = pure from (already loaded) :: Int -> Int  effect  sites: 0",
+        "sites: 4",
+        &format!("  {path}:11:13  in logLine  cputs (puts)  call"),
+        &format!("  {path}:20:14  in main  cabs (labs)  passed as a value"),
+        &format!("  {path}:22:14  in main.direct  cputs (puts)  call"),
+    ] {
+        assert!(text.contains(want), "missing {want:?} in:\n{text}");
+    }
+    assert!(!text.contains("ax_net_"), "prelude imports leaked:\n{text}");
+
+    // Ownership wrappers are spelled out per argument.
+    let aximv = axionc()
+        .args(["--emit", "ffi", &example("aximv.axi")])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&aximv.stdout);
+    assert!(
+        text.contains("sdlDestroyTexture = SDL_DestroyTexture from libSDL2.so :: own (Handle Tex) -> Int  effect"),
+        "{text}"
+    );
+    assert!(
+        text.contains(":: borrow (Handle Ren) -> borrow (Handle Surf) -> Handle Tex"),
+        "{text}"
+    );
+}
+
+#[test]
 fn effects_run_per_occurrence() {
     // The effect model's guarantee: each occurrence of an effectful call runs the
     // effect — they are never coalesced (guarding against a future CSE) or dropped.

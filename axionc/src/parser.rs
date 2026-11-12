@@ -468,6 +468,16 @@ impl<'a> Parser<'a> {
             if matches!(self.cur(), Some(LTok::Tok(Tok::VarId(k))) if k == "enum") {
                 return self.parse_foreign_enum(start);
             }
+            // `foreign pure …`: the import has no side effect. Only a marker when a library
+            // path or the name follows, so a C function named `pure` can still be imported.
+            let pure = matches!(self.cur(), Some(LTok::Tok(Tok::VarId(k))) if k == "pure")
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|t| &t.tok),
+                    Some(LTok::Tok(Tok::Str(_) | Tok::VarId(_)))
+                );
+            if pure {
+                self.bump(); // pure
+            }
             // caminho de biblioteca opcional: `foreign "libfoo.so" nome :: …`
             let lib = if let Some(LTok::Tok(Tok::Str(v))) = self.cur() {
                 let v = v.clone();
@@ -499,6 +509,7 @@ impl<'a> Parser<'a> {
                 symbol,
                 sig,
                 lib,
+                pure,
                 span: (start, end),
             }));
         }

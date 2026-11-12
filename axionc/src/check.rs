@@ -128,7 +128,8 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
 /// REORDER them, and never DROP one whose result is unused. There is no common-subexpr
 /// pass today, so this predicate is the contract any future one must consult. The pure
 /// capability *reads* (`getEnv`/`readFile`/`fileExists`/`readDir`/`randHex`/`getArg`)
-/// are excluded: dropping them changes nothing observable.
+/// are excluded: dropping them changes nothing observable. User `foreign` imports and
+/// the functions that call them are added per module by [`Effects`].
 pub fn is_effectful(name: &str) -> bool {
     matches!(
         name,
@@ -168,18 +169,74 @@ pub fn is_effectful(name: &str) -> bool {
     )
 }
 
+/// Everything whose call performs a side effect in one module: the built-ins of
+/// [`is_effectful`], every `foreign` import not declared `foreign pure` (C code is assumed
+/// to have effects unless the declaration says otherwise), and, transitively, every
+/// top-level function whose body references one of those. This is the module-aware form
+/// of the [`is_effectful`] contract: no optimization may drop, merge or reorder a call to
+/// any of these names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effects {
+    names: HashSet<String>,
+}
+
+impl Effects {
+    pub fn of(module: &Module) -> Self {
+        let mut names: HashSet<String> =
+            module.foreigns.iter().filter(|f| !f.pure).map(|f| f.name.clone()).collect();
+        let refs: Vec<(&str, HashSet<String>)> = module
+            .funcs
+            .iter()
+            .map(|f| {
+                let mut r = HashSet::new();
+                collect_func_refs(f, &mut r);
+                (f.name.as_str(), r)
+            })
+            .collect();
+        loop {
+            let mut grew = false;
+            for (name, r) in &refs {
+                if !names.contains(*name)
+                    && r.iter().any(|n| is_effectful(n) || names.contains(n))
+                {
+                    names.insert((*name).to_string());
+                    grew = true;
+                }
+            }
+            if !grew {
+                return Effects { names };
+            }
+        }
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        is_effectful(name) || self.names.contains(name)
+    }
+}
+
+/// Every name a function references: its clause bodies and, recursively, its `where`s.
+fn collect_func_refs(f: &Func, out: &mut HashSet<String>) {
+    for c in &f.clauses {
+        collect_body_refs(&c.body, out);
+        for w in &c.wher {
+            collect_func_refs(w, out);
+        }
+    }
+}
+
 /// Warn (AX0920) when an effectful value is bound in a `where` clause but never used:
 /// `where` bindings are demand-evaluated, so — unlike a strict `let` in the body — an
 /// unreferenced one is dropped on every backend and its effect NEVER RUNS. That silent
 /// loss is exactly the footgun of typing effects as pure values; the fix is to move the
 /// call into a `do` block (or a `let` in the body), which Axión evaluates strictly.
 fn warn_dropped_effects(module: &Module, diags: &mut Diagnostics) {
+    let effects = Effects::of(module);
     for f in &module.funcs {
-        warn_dropped_in_func(f, diags);
+        warn_dropped_in_func(f, &effects, diags);
     }
 }
 
-fn warn_dropped_in_func(f: &Func, diags: &mut Diagnostics) {
+fn warn_dropped_in_func(f: &Func, effects: &Effects, diags: &mut Diagnostics) {
     for c in &f.clauses {
         // Everything referenced by the clause body, its guards, and every where-binding
         // body — a where-binding whose name is absent here is genuinely unused.
@@ -192,7 +249,7 @@ fn warn_dropped_in_func(f: &Func, diags: &mut Diagnostics) {
         }
         for w in &c.wher {
             let is_value = w.clauses.first().is_some_and(|cl| cl.pats.is_empty());
-            if is_value && !used.contains(&w.name) && where_body_is_effectful(w) {
+            if is_value && !used.contains(&w.name) && where_body_is_effectful(w, effects) {
                 diags.push(
                     Diagnostic::warning(
                         "AX0920",
@@ -211,17 +268,17 @@ fn warn_dropped_in_func(f: &Func, diags: &mut Diagnostics) {
         }
         // Nested `where`s (a where-binding may have its own).
         for w in &c.wher {
-            warn_dropped_in_func(w, diags);
+            warn_dropped_in_func(w, effects, diags);
         }
     }
 }
 
-fn where_body_is_effectful(w: &Func) -> bool {
+fn where_body_is_effectful(w: &Func, effects: &Effects) -> bool {
     let mut refs = HashSet::new();
     for c in &w.clauses {
         collect_body_refs(&c.body, &mut refs);
     }
-    refs.iter().any(|n| is_effectful(n))
+    refs.iter().any(|n| effects.contains(n))
 }
 
 fn collect_body_refs(body: &Body, out: &mut HashSet<String>) {
@@ -281,12 +338,15 @@ fn collect_refs(e: &Expr, out: &mut HashSet<String>) {
 /// check: the set of callable global names + the [`Ctx`] built from signatures,
 /// `data`, and class headers. It never inspects a function's BODY, so it is stable
 /// across body edits — which is what lets the salsa engine memoize
-/// [`check_one_func`] per declaration (`crate::db`).
+/// [`check_one_func`] per declaration (`crate::db`). The one exception is `effects`,
+/// which follows calls through bodies; it is a set of names, so an edit that does not
+/// change which functions have effects still compares equal and is backdated.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "salsa", derive(salsa::SalsaValue, PartialEq))]
 pub struct SigEnv {
     globals: HashSet<String>,
     ctx: Ctx,
+    effects: Effects,
 }
 
 /// Build the [`SigEnv`] for a module — the same globals + `Ctx` that whole-module
@@ -319,6 +379,7 @@ pub fn signature_env(module: &Module) -> SigEnv {
     SigEnv {
         globals,
         ctx: build_ctx(module),
+        effects: Effects::of(module),
     }
 }
 
@@ -331,10 +392,10 @@ pub fn check_one_func(f: &Func, env: &SigEnv) -> Vec<Diagnostic> {
     let mut diags = Diagnostics::new();
     let mut out = Analysis::default();
     check_func(f, &env.globals, &env.ctx, &mut diags, &mut out);
-    // AX0920 (dropped `where` effect) depends only on this function's own body +
-    // where-clauses, so it belongs to the per-decl unit — matching the whole-module
-    // `check` which runs `warn_dropped_effects` over every function.
-    warn_dropped_in_func(f, &mut diags);
+    // AX0920 (dropped `where` effect) depends on this function's own body +
+    // where-clauses and on which names are effectful (`env.effects`), matching the
+    // whole-module `check` which runs `warn_dropped_effects` over every function.
+    warn_dropped_in_func(f, &env.effects, &mut diags);
     diags.items
 }
 

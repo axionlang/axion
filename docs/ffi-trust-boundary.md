@@ -119,6 +119,16 @@ discharges. The checklist:
    `IMG_Animation`) stay plain `Int`s: their owner's handle is the one that must be tracked.
 5. **Run FFI programs natively.** The interpreter refuses non-scalar FFI by design; `--backend
    cranelift` / `--release` are the faithful executors.
+6. **Mark only side-effect-free imports `foreign pure`.** Every other import is an effect: an unused
+   `where` binding that calls one (directly or through a wrapper) warns AX0920 because it would
+   never run, and no optimization may drop, merge or reorder the call. `pure` lifts that, so it is
+   for math like `sqrt`, never for anything that writes, allocates something you must free, or
+   reads changing state.
+
+To review the boundary, run `axionc --emit ffi file.axi`: every import with its C symbol, library,
+per-argument `own`/`borrow` and effect status, then every place the file mentions one, with the
+enclosing function and whether it is a full call, a partial application or passed as a value. The
+list is stable text, so its diff is what changed at the trust boundary.
 
 `examples/aximv.axi` is the worked example: a real SDL2 viewer that follows this contract (sized
 `bufPtrN` at every call, a `peek` read-back that anchors each scratch buffer past its FFI call, and
@@ -142,5 +152,7 @@ at runtime. It remains a *demo of reach*: C itself, and the `Own`/`Borrow` annot
     declared handle compile errors on every path.
   - *A scoped pointer bracket* — `borrow buf as p in …` now keeps a buffer live for the whole block
     (aximv's rect uses it); the read-back-after-call rule remains for bare `bufPtrN` calls.
-  - *Tracking FFI calls as an effect* — calls are still typed pure and unmarked at the call site; an
-    explicit effect would make "safe modulo these sites" visible in the code. Not started.
+  - *Tracking FFI calls as an effect* — done at declaration level: imports are effects unless
+    declared `foreign pure` (§4 item 6), and `--emit ffi` lists every site. Call sites are still
+    unmarked in the code itself, and there is no effect type: a call-site keyword or an `IO`-style
+    effect would make the boundary visible in the source, at a syntax cost not paid today.

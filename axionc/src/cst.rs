@@ -1713,6 +1713,12 @@ impl ExprParser<'_> {
         }
         self.b.start_node(FOREIGN_DECL.into());
         self.bump(); // foreign
+        // `foreign pure …` marker (only when a library path or the name follows)
+        if matches!(self.cur(), Some(Tok::VarId(k)) if k == "pure")
+            && matches!(self.peek_tok(1), Some(Tok::Str(_) | Tok::VarId(_)))
+        {
+            self.bump(); // pure
+        }
         if matches!(self.cur(), Some(Tok::Str(_))) {
             self.bump(); // library path
         }
@@ -2765,12 +2771,21 @@ fn lower_foreign(node: &SyntaxNode) -> Option<crate::ast::Foreign> {
         Tok::Str(s) => Some(s),
         _ => None,
     };
+    // Two direct IDENTs means the first is the `pure` marker (see `foreign_decl`).
+    let idents: Vec<String> = direct_tokens(node)
+        .filter(|t| t.kind() == IDENT)
+        .map(|t| t.text().to_string())
+        .collect();
+    let pure = idents.len() == 2 && idents[0] == "pure";
+    let name = idents.last()?.clone();
     let mut lib = None;
     let mut symbol = None;
+    let mut idents_seen = 0;
     let mut seen_name = false;
     for t in direct_tokens(node) {
         if t.kind() == IDENT {
-            seen_name = true;
+            idents_seen += 1;
+            seen_name = idents_seen == idents.len();
         } else if t.kind() == LITERAL {
             if seen_name {
                 symbol = str_of(&t);
@@ -2779,13 +2794,13 @@ fn lower_foreign(node: &SyntaxNode) -> Option<crate::ast::Foreign> {
             }
         }
     }
-    let name = first_kind_token(node, IDENT)?;
     let sig = lower_type(&node.children().find(|c| is_type_kind(c.kind()))?)?;
     Some(crate::ast::Foreign {
         name,
         symbol,
         sig,
         lib,
+        pure,
         span: span_to_next_token(node),
     })
 }

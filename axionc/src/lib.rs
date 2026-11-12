@@ -56,6 +56,7 @@ mod verify;
 mod diag;
 #[cfg(feature = "native")]
 mod ffi;
+mod ffi_audit;
 mod infer;
 mod interp;
 mod layout;
@@ -109,6 +110,7 @@ enum Emit {
     ExtractTags,
     TagCheck,
     TagLowerCheck,
+    Ffi,
     Clif,
     Llvm,
 }
@@ -270,11 +272,12 @@ pub fn run_cli() -> ExitCode {
                     Some("extract-tags") => emit = Emit::ExtractTags,
                     Some("tag-check") => emit = Emit::TagCheck,
                     Some("tag-lower-check") => emit = Emit::TagLowerCheck,
+                    Some("ffi") => emit = Emit::Ffi,
                     Some("clif") => emit = Emit::Clif,
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
                         eprintln!(
-                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'delta', 'verify', 'ret-alias', 'extract-tags', 'clif' or 'llvm'"
+                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'delta', 'verify', 'ret-alias', 'extract-tags', 'ffi', 'clif' or 'llvm'"
                         );
                         return ExitCode::from(2);
                     }
@@ -393,6 +396,33 @@ pub fn run_cli() -> ExitCode {
         Some(m) => m,
         None => return ExitCode::FAILURE,
     };
+
+    if emit == Emit::Ffi {
+        // The user's file as written (the analyzed module has the prelude merged in and
+        // its bodies desugared); the imports come from the analyzed module so ones
+        // declared in imported modules are included.
+        let Some(user) = parse_source(&src, &mut Diagnostics::new()) else {
+            return ExitCode::FAILURE;
+        };
+        // The prelude's own runtime imports are an implementation detail; list them only
+        // when the user's code calls one directly.
+        let prelude: std::collections::HashSet<&str> = PRELUDE
+            .lines()
+            .filter_map(|l| l.strip_prefix("foreign "))
+            .filter_map(|l| l.trim_start_matches("pure ").split_whitespace().next())
+            .collect();
+        let foreigns: Vec<ast::Foreign> = module
+            .foreigns
+            .iter()
+            .filter(|f| !prelude.contains(f.name.as_str()) || ffi_audit::mentions(&user, &f.name))
+            .cloned()
+            .collect();
+        print!(
+            "{}",
+            ffi_audit::report(&user, &foreigns, &path, |o| lines.pos(o))
+        );
+        return ExitCode::SUCCESS;
+    }
 
     // spans of the `RecordUpd`s eligible for in-place mutation (Linear Elision, §2),
     // which the backends use to mutate the block instead of alloc+copy.
@@ -4244,8 +4274,8 @@ foreign ax_net_recv :: Int -> String
 foreign ax_net_close :: Int -> Int
 
 -- dense Buffer FFI: List ↔ Buffer conversion (Buffer ops via imperative blocks)
-foreign axion_list_to_buf :: List Int -> Int
-foreign axion_buf_to_list :: Int -> List Int
+foreign pure axion_list_to_buf :: List Int -> Int
+foreign pure axion_buf_to_list :: Int -> List Int
 
 compose :: (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
@@ -6115,8 +6145,9 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
         }
         "AX0920" => {
             "AX0920 — an effectful value (a command run, a filesystem mutation, a\n\
-             stdin read, process exit, or console output) is bound in a `where`\n\
-             clause but never used. `where` bindings are demand-evaluated, so an\n\
+             stdin read, process exit, console output, or a call to a `foreign`\n\
+             import not declared `foreign pure` — directly or through a function\n\
+             that makes one) is bound in a `where` clause but never used. `where` bindings are demand-evaluated, so an\n\
              unreferenced one is dropped and its EFFECT NEVER RUNS — silently, because\n\
              Axion types effects as ordinary String/Int values. Move the call into a\n\
              `do` block (or a `let` in the function body), which is evaluated strictly\n\
@@ -6141,6 +6172,7 @@ fn print_usage() {
          axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
          axionc --emit extract-tags <f> ownership tags on heap-field case-extractions (report)\n  \
          axionc --emit tag-check <file> second-opinion tag-checker: double-free report (non-gating)\n  \
+         axionc --emit ffi <file>       every FFI import and call site: C symbol, ownership, effects\n  \
          axionc --emit clif <file>      Cranelift IR of the Int core (--dev backend)\n  \
          axionc --emit llvm <file>      LLVM IR of the Int core (--release backend)\n  \
          axionc --backend cranelift <f> JIT-compile and run main :: Int (--dev)\n  \

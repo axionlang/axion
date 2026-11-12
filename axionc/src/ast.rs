@@ -513,7 +513,7 @@ impl Module {
     }
 }
 
-/// An FFI import: `foreign ["lib.so"] name [= "C_symbol"] :: Int -> … -> Int`. The Axión
+/// An FFI import: `foreign [pure] ["lib.so"] name [= "C_symbol"] :: Int -> … -> Int`. The Axión
 /// binding is the lowercase `name`; the C function resolved by `dlsym` (§18) is `symbol`
 /// when given, else `name`. The alias lets a lowercase Axión name bind an uppercase/CamelCase
 /// C symbol (`sdlInit = "SDL_Init"`), which Axión identifiers cannot spell directly. With the
@@ -527,6 +527,9 @@ pub struct Foreign {
     pub symbol: Option<String>,
     pub sig: Type,
     pub lib: Option<String>,
+    /// Declared `foreign pure …`: the C function has no side effect, so an unused call may be
+    /// dropped. Every other import is effectful (see `check::Effects`).
+    pub pure: bool,
     pub span: Span,
 }
 
