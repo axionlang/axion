@@ -1392,6 +1392,16 @@ fn is_must_use(ty: &Type, must_use_types: &HashSet<String>) -> bool {
 /// stricter rules — tracked from a `let` binding, and consumed on every path.
 const AUTO_DROPPED_PRIMS: &[&str] = &["Buffer"];
 
+/// Built-ins that return a FRESH no-destructor resource, with its type. A `let` or `do`
+/// bind of one is tracked from its binding like a user function's (`Ctx.fn_ret_must_use`).
+/// Built-ins that return an advanced endpoint (`send`/`recv`) consume an existing one
+/// and are covered by ownership inheritance instead.
+const BUILTIN_MUST_USE_RESULTS: &[(&str, &str)] = &[
+    ("netConnect", "Sock"),
+    ("netListen", "Listener"),
+    ("netAccept", "Sock"),
+];
+
 /// The must-use types with NO destructor (handles, sockets, endpoints…), propagated through `data`
 /// fields like [`build_must_use_types`] but without [`AUTO_DROPPED_PRIMS`].
 fn build_no_drop_types(module: &Module) -> HashSet<String> {
@@ -2539,12 +2549,21 @@ fn build_ctx(module: &Module) -> Ctx {
                 .iter()
                 .map(|fo| (fo.name.clone(), fo.sig.strip_ffi_wrappers())),
         );
-    let fn_ret_must_use = sigs
-        .filter_map(|(name, sig)| {
+    let user_names: HashSet<&str> = module
+        .funcs
+        .iter()
+        .map(|f| f.name.as_str())
+        .chain(module.foreigns.iter().map(|f| f.name.as_str()))
+        .collect();
+    let fn_ret_must_use = BUILTIN_MUST_USE_RESULTS
+        .iter()
+        .filter(|(name, _)| !user_names.contains(name))
+        .map(|(name, ty)| (name.to_string(), ty.to_string()))
+        .chain(sigs.filter_map(|(name, sig)| {
             let rt = crate::core::result_type(&sig);
             let head = rt.head_con()?.to_string();
             is_no_drop(rt, &no_drop_types).then_some((name, head))
-        })
+        }))
         .collect();
     Ctx {
         consumers,
@@ -3046,8 +3065,29 @@ fn scan_lets<'a>(
         }
         Expr::Case(s, arms, _) => {
             scan_lets(s, lin, ctx, lets, inplace, func);
+            // `x <- f a` in a `do` block is `case f a of x -> rest`: a fresh must-use value
+            // bound (or discarded by `_`) there is tracked from its binding, like a `let`.
+            let mut cur = lin.clone();
+            if let ([(pat, rest)], (Expr::Var(f, _), _)) = (arms.as_slice(), spine(s)) {
+                if let Some(ty) = ctx.fn_ret_must_use.get(f) {
+                    let class = Lin {
+                        must_use: true,
+                        no_drop: true,
+                        ty: ty.clone(),
+                    };
+                    match pat {
+                        Pat::Var(x, sp) => {
+                            lets.push((x.clone(), class.clone(), rest, *sp));
+                            cur.insert(x.clone(), class);
+                        }
+                        // a name no expression can mention: it is never consumed → AX0002
+                        Pat::Wild(sp) => lets.push((format!("result of {f}"), class, rest, *sp)),
+                        _ => {}
+                    }
+                }
+            }
             for (_, b) in arms {
-                scan_lets(b, lin, ctx, lets, inplace, func);
+                scan_lets(b, &cur, ctx, lets, inplace, func);
             }
         }
         Expr::Tuple(es, _) => es

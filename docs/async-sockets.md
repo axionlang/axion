@@ -70,9 +70,10 @@ main = bound $ acceptLoop (netListen 8080)     -- acceptLoop: accept (yields) �
   impls — `Sock`/`Listener` are i64 fds). Verified by `axionc/tests/net_sock.rs`: a `%1`-`Sock`
   handler round-trips against a background echo server on the interpreter, AND the checker rejects
   forgot-close (AX0002), double-close (AX0001), and use-after-close (AX0004). *(Enforcement covers a
-  `Sock %1` PARAMETER — the handler pattern the flagship uses; a fresh un-threaded local from
-  `netAccept`/`netConnect` isn't must-use-tracked, same as `Buffer`, which relies on the
-  handler/scoped pattern. Native codegen of `net*` is Stage 3 — until then a `net*` program compiles
+  `Sock %1` PARAMETER and, since 2026-11-12, a fresh socket or listener bound by a `do` bind
+  (`s <- netAccept l`, including `_ <-` and a bare statement, which discard it) or a `let`:
+  each must be consumed exactly once on every path from its binding
+  (`fresh_sockets_are_tracked_from_their_binding`). Native codegen of `net*` is Stage 3 — until then a `net*` program compiles
   only on the interpreter.)*
 - **Stage 3 — `SessGen` socket-suspension-points (compiler). ✅ DONE.** In a `bound $ do` session,
   `netRecv`/`netAccept`/`netSend` are now suspension points (`collect_suspensions` + `gen_netsusp`):

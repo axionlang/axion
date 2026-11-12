@@ -112,3 +112,46 @@ fn linear_sock_enforces_close_exactly_once() {
          main :: IO ()\nmain = handler (netConnect \"127.0.0.1\" 1)\n",
     );
 }
+
+#[test]
+fn fresh_sockets_are_tracked_from_their_binding() {
+    // A socket from netAccept/netConnect/netListen bound by a `do` bind or a `let` is checked
+    // where it is bound, not only once it reaches a `%1` parameter.
+    let wrap = |body: &str| {
+        format!("serve :: Listener -> IO ()\nserve l = {body}\nmain :: Int\nmain = 0\n")
+    };
+    let cases = [
+        ("bind_leak", "AX0002", wrap("do\n  s <- netAccept l\n  putStr \"\"")),
+        ("bind_double", "AX0001", wrap("do\n  s <- netAccept l\n  netClose s\n  netClose s")),
+        ("bind_wild", "AX0002", wrap("do\n  _ <- netAccept l\n  putStr \"\"")),
+        ("stmt_discard", "AX0002", wrap("do\n  netAccept l\n  putStr \"\"")),
+        ("bind_uaf", "AX0004", wrap("do\n  s <- netAccept l\n  netClose s\n  _ <- netSend s \"late\"\n  putStr \"\"")),
+        ("let_leak", "AX0002", wrap("let s = netAccept l in putStr \"\"")),
+        ("do_let_leak", "AX0002", wrap("do\n  let s = netAccept l\n  putStr \"\"")),
+        ("let_branch", "AX0002", "serve :: Listener -> Int -> IO ()\nserve l n = let s = netAccept l in if n == 0 then netClose s else putStr \"\"\nmain :: Int\nmain = 0\n".to_string()),
+        ("listen_leak", "AX0002", "go :: Int -> Int\ngo p = let l = netListen p in 0\nmain :: Int\nmain = 0\n".to_string()),
+        ("connect_double", "AX0001", "go :: Int -> IO ()\ngo p = let s = netConnect \"h\" p in do\n  netClose s\n  netClose s\nmain :: Int\nmain = 0\n".to_string()),
+    ];
+    for (tag, code, src) in &cases {
+        assert_rejected(tag, code, src);
+    }
+    // The correct shapes still compile: close it, or hand it to a `%1` handler.
+    for (tag, src) in [
+        ("ok_bind", wrap("do\n  s <- netAccept l\n  msg <- netRecv s\n  _ <- netSend s msg\n  netClose s")),
+        ("ok_let", wrap("let s = netAccept l in netClose s")),
+        (
+            "ok_handoff",
+            "handler :: Sock %1 -> IO ()\nhandler s = netClose s\nserve :: Listener -> IO ()\nserve l = do\n  s <- netAccept l\n  _ <- spawn (handler s)\n  serve l\nmain :: Int\nmain = 0\n".to_string(),
+        ),
+    ] {
+        let path = temp_axi(tag, &src);
+        let out = axionc().arg("--check").arg(&path).output().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            out.status.success(),
+            "{tag} must compile: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
