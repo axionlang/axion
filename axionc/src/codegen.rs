@@ -143,7 +143,7 @@ impl Cg {
             ("axion_array_set", 3, true),
             ("axion_array_len", 1, true),
             ("axion_array_free", 1, false),
-            ("axion_array_oob", 2, false), // cold OOB abort for the INLINED array access (§bce)
+            ("axion_array_oob", 2, false), // cold OOB abort for the INLINED array access
             // TritVec (§10): base-243 packed ternary array
             ("axion_tritvec_new", 2, true),
             ("axion_tritvec_get", 2, true),
@@ -466,41 +466,36 @@ impl Fx<'_, '_> {
         self.builder.inst_results(call)[0]
     }
 
-    /// INLINE `getArray`/`setArray` (§bce): the dense Array is `[i64 len][elems…]` (axion_array_new), so
-    /// an access is a `load`/`store` at `arr + 8 + idx*8`. Inlining it here removes the per-access
-    /// out-of-line runtime CALL (which hid the check from the optimizer entirely) so Cranelift can see,
-    /// hoist, and schedule the access. When `checked`, a single unsigned `idx uge len` (which also
-    /// catches `idx<0`) branches to a cold block that calls `axion_array_oob` (noreturn, same abort as
-    /// the runtime) then traps; `nobc` (Phase 2, proven-in-range) skips the check. For `set`, `val` is
-    /// stored and the array handle is returned (matching `axion_array_set`); for `get`, the element.
+    /// INLINE `getArray`/`setArray`: the dense Array is `[i64 len][elems…]` (axion_array_new), so an
+    /// access is a `load`/`store` at `arr + 8 + idx*8`, with no out-of-line runtime call per access. A
+    /// single unsigned `idx uge len` (which also catches `idx<0`) branches to a cold block that calls
+    /// `axion_array_oob` (noreturn, same abort as the runtime) and traps. For `set`, `val` is stored and
+    /// the array handle is returned (matching `axion_array_set`); for `get`, the element.
     fn array_access_inline(
         &mut self,
         arr: Value,
         idx: Value,
         set_val: Option<Value>,
-        checked: bool,
     ) -> Result<Value, String> {
-        if checked {
-            let n = self.builder.ins().load(types::I64, MemFlags::new(), arr, 0);
-            let oob = self
-                .builder
-                .ins()
-                .icmp(IntCC::UnsignedGreaterThanOrEqual, idx, n);
-            let oob_b = self.builder.create_block();
-            let ok_b = self.builder.create_block();
-            self.builder.ins().brif(oob, oob_b, &[], ok_b, &[]);
-            self.builder.switch_to_block(oob_b);
-            self.builder.seal_block(oob_b);
-            let oob_id = self
-                .rt_fns
-                .get("axion_array_oob")
-                .map(|&(id, _)| id)
-                .ok_or("runtime builtin 'axion_array_oob' not declared")?;
-            self.rt_call(oob_id, &[idx, n]); // noreturn: prints the same abort as axion_array_get/set
-            self.builder.ins().trap(TrapCode::HEAP_OUT_OF_BOUNDS); // terminator after the noreturn call
-            self.builder.switch_to_block(ok_b);
-            self.builder.seal_block(ok_b);
-        }
+        let n = self.builder.ins().load(types::I64, MemFlags::new(), arr, 0);
+        let oob = self
+            .builder
+            .ins()
+            .icmp(IntCC::UnsignedGreaterThanOrEqual, idx, n);
+        let oob_b = self.builder.create_block();
+        let ok_b = self.builder.create_block();
+        self.builder.ins().brif(oob, oob_b, &[], ok_b, &[]);
+        self.builder.switch_to_block(oob_b);
+        self.builder.seal_block(oob_b);
+        let oob_id = self
+            .rt_fns
+            .get("axion_array_oob")
+            .map(|&(id, _)| id)
+            .ok_or("runtime builtin 'axion_array_oob' not declared")?;
+        self.rt_call(oob_id, &[idx, n]);
+        self.builder.ins().trap(TrapCode::HEAP_OUT_OF_BOUNDS); // terminator after the noreturn call
+        self.builder.switch_to_block(ok_b);
+        self.builder.seal_block(ok_b);
         // element pointer arr + 8 + idx*8
         let eight = self.builder.ins().iconst(types::I64, 8);
         let base = self.builder.ins().iadd(arr, eight);
@@ -1036,24 +1031,13 @@ impl Fx<'_, '_> {
                 self.rt_call(self.arena.release, &[mv]);
                 Ok(self.builder.ins().iconst(types::I64, 0)) // () → token
             }
-            // INLINE array access (§bce): emit the load/store directly instead of an opaque runtime
-            // call. `*_nobc` (Phase 2, index proven in range) skips the bounds check.
+            // INLINE array access: emit the load/store directly instead of an opaque runtime call.
             Op::RtCall { func, args, .. }
-                if matches!(
-                    func.as_str(),
-                    "axion_array_get"
-                        | "axion_array_set"
-                        | "axion_array_get_nobc"
-                        | "axion_array_set_nobc"
-                ) =>
+                if func == "axion_array_get" || func == "axion_array_set" =>
             {
-                let checked = !func.ends_with("_nobc");
-                let is_set = func.starts_with("axion_array_set");
                 let vals = self.atoms(args)?;
-                let arr = vals[0];
-                let idx = vals[1];
-                let set_val = if is_set { Some(vals[2]) } else { None };
-                self.array_access_inline(arr, idx, set_val, checked)
+                let set_val = (func == "axion_array_set").then(|| vals[2]);
+                self.array_access_inline(vals[0], vals[1], set_val)
             }
             Op::RtCall {
                 func,

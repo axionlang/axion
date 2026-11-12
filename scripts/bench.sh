@@ -78,9 +78,9 @@ bench_kernel() {
   # Axion --release (LLVM -O2 -flto). Build via `axionc --release -o` so the link matches production
   # exactly — it links BOTH the C runtime and the Rust runtime staticlib (`axion-rt`, e.g. bignum);
   # `axionc` uses the same `$AXION_CLANG` (LLVM) as the C/Rust comparison tiers, so the ratio is fair.
-  if "$AXIONC" --release -o "$tmp/${k}_rel" "bench/$k.axi" 2>/dev/null; then
+  if "$AXIONC" --release -o "$tmp/${k}_rel" "bench/$k.axi" 2>"$tmp/${k}_rel.err"; then
     run "$k:rel" "$tmp/${k}_rel"
-  else run "$k:rel" SKIP; fi
+  else run "$k:rel" SKIP; NOBUILD="$NOBUILD $k"; fi
 }
 bench_c() {
   local k="$1"
@@ -94,6 +94,7 @@ bench_rust() {
 }
 
 KERNELS="fib loop alloc simd dispatch sumtype tritvec dot_i8 ternmv i8mv i32mv gauss"
+NOBUILD=""   # Axion --release kernels that failed to build: a failure, not a `-` in the table
 for k in $KERNELS; do bench_kernel "$k"; bench_c "$k"; bench_rust "$k"; done
 
 echo
@@ -118,6 +119,10 @@ for k in $KERNELS; do
   done
 done
 [ "$ok" = 1 ] && echo "OK: in each kernel, all variants agree on the result." || exit 1
+if [ -n "$NOBUILD" ]; then
+  for k in $NOBUILD; do echo "FAIL: Axion --release did not build bench/$k.axi:"; head -5 "$tmp/${k}_rel.err"; done
+  exit 1
+fi
 
 # ---- perf-regression gate ----------------------------------------------------
 # Ratio (×100, integer) of Axion --release to C -O2 for a kernel, or "" if either

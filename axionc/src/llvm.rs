@@ -726,21 +726,15 @@ impl Emit<'_> {
         self.ins(&format!("{ep} = getelementptr i64, ptr {dp}, i64 {idx}"));
         ep
     }
-    /// `checked=false` (§bce `*_nobc`): the BCE pass proved `0 <= idx < len`, so the per-access
-    /// `icmp/br` is omitted — the load/store is a straight, vectorizable memory op.
-    fn array_get_inline(&mut self, arr: &str, idx: &str, checked: bool) -> String {
-        if checked {
-            self.array_bounds_check(arr, idx);
-        }
+    fn array_get_inline(&mut self, arr: &str, idx: &str) -> String {
+        self.array_bounds_check(arr, idx);
         let ep = self.array_elem_ptr(arr, idx);
         let v = self.val();
         self.ins(&format!("{v} = load i64, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"));
         v
     }
-    fn array_set_inline(&mut self, arr: &str, idx: &str, val: &str, checked: bool) {
-        if checked {
-            self.array_bounds_check(arr, idx);
-        }
+    fn array_set_inline(&mut self, arr: &str, idx: &str, val: &str) {
+        self.array_bounds_check(arr, idx);
         let ep = self.array_elem_ptr(arr, idx);
         self.ins(&format!("store i64 {val}, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"));
     }
@@ -1337,17 +1331,13 @@ impl Emit<'_> {
             }
             // Array element access: inline the bounds-checked load/store instead of an opaque
             // runtime call, so LLVM can optimize the numeric loops (see `array_get_inline`).
-            Op::RtCall { func, args, .. }
-                if func == "axion_array_get" || func == "axion_array_get_nobc" =>
-            {
+            Op::RtCall { func, args, .. } if func == "axion_array_get" => {
                 let vs = self.atoms(args)?;
-                Ok(self.array_get_inline(&vs[0], &vs[1], !func.ends_with("_nobc")))
+                Ok(self.array_get_inline(&vs[0], &vs[1]))
             }
-            Op::RtCall { func, args, .. }
-                if func == "axion_array_set" || func == "axion_array_set_nobc" =>
-            {
+            Op::RtCall { func, args, .. } if func == "axion_array_set" => {
                 let vs = self.atoms(args)?;
-                self.array_set_inline(&vs[0], &vs[1], &vs[2], !func.ends_with("_nobc"));
+                self.array_set_inline(&vs[0], &vs[1], &vs[2]);
                 Ok(vs[0].clone()) // setArray returns the (same) array handle
             }
             Op::RtCall {
