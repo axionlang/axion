@@ -353,6 +353,79 @@ fn early_return_with_a_live_handle_must_close_it() {
 }
 
 #[test]
+fn bracket_closes_on_every_outcome() {
+    // docs/ownership.md "Error paths": the bracket compiles; its body cannot close the handle it
+    // is lent (AX0007), and the bracket itself must close it on every path (AX0002).
+    let path = fixture("bracket_handle.axi");
+    let ok = axionc().args(["--check", &path]).output().unwrap();
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stdout)
+    );
+    let src = std::fs::read_to_string(&path).unwrap();
+    let dir = std::env::temp_dir().join(format!("axion_bracket_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    for (tag, from, to, code) in [
+        (
+            "body_closes",
+            "  Right (x + y))",
+            "  Right (x + y + closeD h))",
+            "AX0007",
+        ),
+        (
+            "never_closes",
+            "let r = body h in case closeD h of",
+            "let r = body h in case 0 of",
+            "AX0002",
+        ),
+    ] {
+        assert!(src.contains(from), "{tag}");
+        let p = dir.join(format!("{tag}.axi"));
+        std::fs::write(&p, src.replace(from, to)).unwrap();
+        let out = axionc().arg("--check").arg(&p).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !out.status.success() && text.contains(code),
+            "{tag}: expected {code}, got:\n{text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn borrowed_resource_parameter_cannot_be_consumed() {
+    // A non-`%1` resource parameter is borrowed: closing it in the callee while the caller also
+    // closes it is a double close. It used to compile; it is AX0007, and `%1` is the fix.
+    let dir = std::env::temp_dir().join(format!("axion_ax0007_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let head = "data Dev = Dev\nforeign \"libc.so.6\" openD = \"abs\" :: Int -> Handle Dev\n\
+                foreign \"libc.so.6\" closeD = \"abs\" :: Own (Handle Dev) -> Int\n";
+    for (tag, body, want) in [
+        (
+            "borrowed",
+            "sneaky :: Handle Dev -> Int\nsneaky h = closeD h\nmain :: Int\nmain = let h = openD 1 in sneaky h + closeD h\n",
+            Some("AX0007"),
+        ),
+        (
+            "owned",
+            "owner :: Handle Dev %1 -> Int\nowner h = closeD h\nmain :: Int\nmain = owner (openD 1)\n",
+            None,
+        ),
+    ] {
+        let p = dir.join(format!("{tag}.axi"));
+        std::fs::write(&p, format!("{head}{body}")).unwrap();
+        let out = axionc().arg("--check").arg(&p).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        match want {
+            Some(code) => assert!(!out.status.success() && text.contains(code), "{tag}: {text}"),
+            None => assert!(out.status.success(), "{tag}: {text}"),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ffi_linear_handle_lifecycle_enforced() {
     // §18 linear handles: `Handle a` is must-use when threaded as a `%1` parameter. The correct
     // threaded pattern compiles (ffi_handle.axi); forgetting to destroy is AX0002, double-destroy

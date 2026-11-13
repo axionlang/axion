@@ -6129,6 +6129,14 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
              Auto-Drop (the compiler inserts 'free' at the death point). Only\n\
              forgetting a must-use is an error (§2)."
         }
+        "AX0007" => {
+            "AX0007 — a borrowed resource is consumed. A parameter whose type has no\n\
+             %1 is borrowed: the caller keeps ownership of the resource (a handle,\n\
+             socket or endpoint) and consumes it itself, so consuming it in the\n\
+             callee as well — passing it to an Own/%1 position, or storing it —\n\
+             would consume it twice (a double close). Mark the parameter %1 to take\n\
+             ownership (the caller then gives it up), or only borrow it (§2)."
+        }
         "AX0100" => {
             "AX0100 — syntax error. The parser could not recognize the\n\
              construct. Check parentheses, '=' and indentation."

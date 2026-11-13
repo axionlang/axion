@@ -42,7 +42,8 @@ foreign "libdev.so" closeD = "dev_close" :: Own (Handle Dev) -> Int
 ```
 
 `Own` consumes the handle, `Borrow` reads it. Bound by `let`, by `x <- …` in a `do` block, or as a
-`%1` parameter, a resource is checked from that point:
+`%1` parameter, a resource is checked from that point. A parameter *without* `%1` is a borrow:
+the function may read it but not consume it, because its caller still will.
 
 | Mistake | Error |
 |---|---|
@@ -51,6 +52,7 @@ foreign "libdev.so" closeD = "dev_close" :: Own (Handle Dev) -> Int
 | consumed twice | **AX0001** `linear resource 'h' consumed 2 times` |
 | used after it was consumed | **AX0004** `use of 'h' after ownership was moved` |
 | discarded (`_ <- netAccept l`, or a bare statement) | **AX0002** |
+| consumed through a parameter without `%1` (the caller still owns it) | **AX0007** `borrowed resource 'h' is consumed in 'f'` |
 
 `handleAddr h` reads a handle's address without consuming it, for NULL checks.
 
@@ -115,6 +117,25 @@ work n = let h = openD n in case check (readD h) of
 This is the cost of "a resource cannot be silently dropped". Rust's `?` cleans up handles on the
 error path because its handles *can* be silently dropped.
 
+The way around it is a **bracket**: one function opens the resource, lends it to your code, and
+consumes it whatever your code returns (`tests/fixtures/bracket_handle.axi`):
+
+```haskell
+withDev :: Int -> (Handle Dev -> Either String Int) -> Either String Int
+withDev n body = let h = openD n in let r = body h in case closeD h of
+  _ -> r
+
+work :: Int -> Either String Int
+work n = withDev n (\h -> do
+  x <-! check (readD h)          -- early returns are fine: withDev closes h
+  y <-! check (readD h - 1)
+  Right (x + y))
+```
+
+The close is written once and runs on every outcome, and the body uses `<-!` freely. Both halves
+stay checked: the body is only lent the handle (its type has no `%1`), so closing it there is
+**AX0007**, and `withDev` forgetting the close is **AX0002**.
+
 ## Effects
 
 Axion has no `IO` type: effects are ordinary values (`putStrLn s :: IO ()`, `runStatus cmd :: Int`).
@@ -151,7 +172,7 @@ heap. See [`metatheory/GUARANTEE.md`](../metatheory/GUARANTEE.md) for exactly wh
 | Resources (files, sockets, sessions) | affine: may be silently dropped | linear: must be consumed on every path |
 | Typestate | marker types + `PhantomData` + `impl` per state | phantom parameter on `Handle`, no extra code |
 | Protocols between threads | library encodings | session types in the language |
-| Early-return cleanup of resources | automatic (`?` + `Drop`) | explicit in each arm |
+| Early-return cleanup of resources | automatic (`?` + `Drop`) | a bracket function, or explicit in each arm |
 | Mutation | `&mut T` | in-place when the old value is dead (records, arrays, buffers) |
 | Unsafe code | `unsafe` blocks | the FFI boundary |
 | Memory-safety argument | type system (RustBelt for the core) | type checks + a verifier over the final program, mechanized in Lean |

@@ -18,6 +18,7 @@ as JSON and are explainable via `axion --explain AXnnnn`.
 | `AX0004` | Linearity | Use-after-move: reading/consuming a `%1` after ownership was moved | **enforced by `axionc`** (Phase 2) |
 | `AX0005` | Regions | Use-after-release: value allocated after `arena_mark` used after `arena_release` | **enforced by `axionc`** (Phase 2) |
 | `AX0006` | Linearity | Write through a `%0.5` half (shared read) | **enforced by `axionc`** (Phase 2) |
+| `AX0007` | Linearity | A borrowed resource parameter (a `Handle`/`Sock`/endpoint whose type has no `%1`) is consumed — the caller would consume it again | **enforced by `axionc`** |
 | `AX0100` | Syntax | Syntax error / unexpected character | **enforced by `axionc`** (Phase 1) |
 | `AX0101` | Names | Name not found (out of scope) | **enforced by `axionc`** (Phase 1) |
 | `AX0200` | Types | Type mismatch (unification failed) | **enforced by `axionc`** (Phase 1) |
@@ -33,7 +34,7 @@ as JSON and are explainable via `axion --explain AXnnnn`.
 | `AX0400`–`AX0405` | Typeclasses | Class/instance coherence and use-site constraints (see the `AX04xx` band below) | **enforced by `axionc`** |
 | `AX0500` | Levels | A declaration's *written* level (its own multiplicities/level-defining types/builtins) exceeds the module's `{-# LEVEL Ln #-}` ceiling (§8) | **enforced by `axionc`** |
 
-Next free per band — language: `AX0007`; front-end: `AX0102`; types: `AX0204`;
+Next free per band — language: `AX0008`; front-end: `AX0102`; types: `AX0204`;
 channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`.
 
 **`AX03xx` channels and session types (Phase 3).** The §17 band for the session
@@ -230,6 +231,31 @@ error[AX0006]: write through the %0.5 half 'a'
 
 Fixtures: `frac_write.axi` (write → `AX0006`), `frac_join.axi` (reads + `join` →
 accepted, and runs).
+
+---
+
+## `AX0007` — a borrowed resource is consumed
+
+A parameter whose type has no `%1` is **borrowed**: the caller keeps ownership. For a resource
+(a `Handle`, `Sock`, `Listener` or session endpoint, which has no destructor) the caller must
+consume it itself, so consuming it in the callee too — passing it to an `Own`/`%1` position, or
+storing it — would consume it twice: a double close.
+
+```
+error[AX0007]: borrowed resource 'h' is consumed in 'sneaky'
+ --> dbl.axi:7:8
+  |
+7 | sneaky h = closeD h
+  |        ^ 'h' is borrowed: its type has no `%1`
+  |
+7 | sneaky h = closeD h
+  |                   ^ given to `closeD` here
+```
+
+Fix: mark the parameter `%1` (`sneaky :: Handle Dev %1 -> Int`) to take ownership — the caller
+then gives it up — or only borrow it (`Borrow` arguments). The same rule covers a lambda lent a
+handle by a bracket function (`withDev n (\h -> …)`): it may read the handle, not close it.
+Tests: `borrowed_resource_parameter_cannot_be_consumed`, `bracket_closes_on_every_outcome`.
 
 ---
 

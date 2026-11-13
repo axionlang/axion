@@ -1669,6 +1669,13 @@ fn check_func(
                 continue; // %1 handled above
             }
             if let (Pat::Var(name, span), Some(ty)) = (p, ptypes.get(i)) {
+                // A borrowed (non-`%1`) RESOURCE parameter: the caller keeps it and consumes it
+                // itself, so giving it away here too would consume it twice (a double close).
+                if class_of_type(ty, ctx).no_drop && analyze_clause(clause, name, ctx).0 > 0 {
+                    diags.push(borrowed_resource_consumed(
+                        name, *span, &f.name, clause, ctx,
+                    ));
+                }
                 let heap = is_heap_ty(ty, ctx);
                 let consumes = if heap {
                     analyze_clause(clause, name, ctx).0
@@ -2036,6 +2043,47 @@ fn contraction_diag(name: &str, span: Span, n: usize, scope: &[&Expr], ctx: &Ctx
          because `filter` consumes the list it is given. To use the value twice, make those \
          calls only read it, compute both results in one call, or 'split' it into two %0.5 \
          halves (§2).",
+    )
+}
+
+/// AX0007: a resource parameter without `%1` (borrowed: the caller still owns it) is given
+/// away — passed to a function that takes ownership (`Own`, `%1`) or stored.
+fn borrowed_resource_consumed(
+    name: &str,
+    span: Span,
+    func: &str,
+    clause: &Clause,
+    ctx: &Ctx,
+) -> Diagnostic {
+    // a lifted lambda (`hoflamN`, `hoflamcapN`) has no name the user wrote
+    let func = if func.starts_with("hoflam") {
+        "this lambda"
+    } else {
+        func
+    };
+    let mut d = Diagnostic::error(
+        "AX0007",
+        format!("borrowed resource '{name}' is consumed in '{func}'"),
+    )
+    .label(
+        span.0,
+        span.1,
+        format!("'{name}' is borrowed: its type has no `%1`"),
+    );
+    let mut sites = Vec::new();
+    for e in clause_exprs(clause) {
+        consume_sites(name, e, ctx, &mut sites);
+    }
+    sites.sort_by_key(|(_, sp)| *sp);
+    for (what, sp) in &sites {
+        d = d.label(sp.0, sp.1, format!("given to {what} here"));
+    }
+    d.with_help(
+        "a parameter without `%1` is borrowed: the caller keeps ownership and consumes the \
+         resource itself, so consuming it here as well would consume it twice (a double close). \
+         To take ownership, mark the parameter `%1` in the signature (e.g. `Handle Dev %1 -> \
+         Int`; for a lambda, in the function type it is passed as); the caller then gives it up. To only use it here, call \
+         functions that borrow it (`Borrow` in a foreign signature)."
     )
 }
 
