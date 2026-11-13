@@ -4242,11 +4242,11 @@ fn array_threaded_through_helpers_reclaims_once() {
 fn json_roundtrips_on_all_backends() {
     // The JSON flagship: a scannerless recursive-descent parser + serializer over a recursive
     // `Json` ADT with mixed heap fields (String/Float/List Json/object members). Parses a source
-    // string and re-serializes it; all three backends must produce the identical round-trip.
-    // Object members use a named `data Member`, not a bare `(String, Json)` tuple — the latter is
-    // AX0912-rejected on native (nested-tuple poly-payload); see examples/json.axi. ASan/LSan gated
-    // in scripts/sanitize.sh.
-    let want = "{\"name\":\"ax\",\"ok\":true,\"xs\":[1,2,null],\"pi\":3.5}\n";
+    // string and re-serializes it, then queries the parsed object (`field`, `hasKey` via `any`,
+    // `numCount` via `filter` with a tuple-pattern lambda over the `(String, Json)` members); all
+    // three backends must agree. ASan/LSan gated in scripts/sanitize.sh.
+    let want =
+        "{\"name\":\"ax\",\"ok\":true,\"xs\":[1,2,null],\"pi\":3.5}\n[1,2,null] missing has-ok 1\n";
     for backend in [["", ""], ["--backend", "cranelift"], ["--release", ""]] {
         let args: Vec<&str> = backend.iter().copied().filter(|s| !s.is_empty()).collect();
         let out = axionc()

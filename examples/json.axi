@@ -165,5 +165,51 @@ roundtrip src = case parseJson src of
   Left e -> strAppend "ERROR: " e
   Right v -> showJson v
 
+-- ─── object queries: predicates over the `(String, Json)` members ───
+-- `keyIs` only READS its member, so it borrows it: `filter`/`any` keep or skip members of a list
+-- the caller still owns, natively and leak-free (a tuple reader used to take ownership, which
+-- made `filter` free the members it kept).
+keyIs :: String -> (String, Json) -> Bool
+keyIs k m = case m of
+  (key, val) -> key == k
+
+hasKey :: String -> Json -> Bool
+hasKey k v = case v of
+  JObj ms -> any (keyIs k) ms
+  other -> False
+
+-- the serialized value of member `k` (first match), or `missing`. A direct walk, not
+-- `filter`: `v` is borrowed, so its member list belongs to the caller, and `filter` consumes
+-- the list it is given.
+field :: String -> Json -> String
+field k v = case v of
+  JObj ms -> fieldIn k ms
+  other -> "not an object"
+
+fieldIn :: String -> List (String, Json) -> String
+fieldIn k ms = case ms of
+  Nil -> "missing"
+  Cons m rest -> case m of
+    (key, val) -> if key == k then showJson val else fieldIn k rest
+
+-- how many members hold a number
+numCount :: Json -> Int
+numCount v = case v of
+  JObj ms -> length (filter (\(key, val) -> case val of
+      JNum n -> True
+      other -> False) ms)
+  other -> 0
+
+-- parse once, then query the parsed object
+report :: String -> String
+report src = case parseJson src of
+  Left e -> strAppend "ERROR: " e
+  Right v -> strAppend (field "xs" v)
+    (strAppend " " (strAppend (field "zz" v)
+    (strAppend " " (strAppend (if hasKey "ok" v then "has-ok" else "no-ok")
+    (strAppend " " (showInt (numCount v)))))))
+
 main :: IO ()
-main = putStrLn (roundtrip "{\"name\":\"ax\",\"ok\":true,\"xs\":[1,2,null],\"pi\":3.5}")
+main = do
+  putStrLn (roundtrip "{\"name\":\"ax\",\"ok\":true,\"xs\":[1,2,null],\"pi\":3.5}")
+  putStrLn (report "{\"name\":\"ax\",\"ok\":true,\"xs\":[1,2,null],\"pi\":3.5}")
