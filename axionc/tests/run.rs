@@ -270,6 +270,89 @@ fn buffer_peek_poke_roundtrip_on_all_backends() {
 }
 
 #[test]
+fn typestate_handle_enforces_the_protocol() {
+    // docs/ownership.md: a phantom state on `Handle` gives Rust-style typestate, and unlike Rust
+    // an abandoned session is rejected too. The correct sequence compiles; each mistake does not.
+    let path = fixture("typestate_handle.axi");
+    let ok = axionc().args(["--check", &path]).output().unwrap();
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stdout)
+    );
+    let src = std::fs::read_to_string(&path).unwrap();
+    let good = "session n = let s = authS (connectS (openS n)) in sendS s + sendS s + closeS s";
+    assert!(src.contains(good));
+    let dir = std::env::temp_dir().join(format!("axion_typestate_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    for (tag, body, code) in [
+        // send before authenticating: wrong state
+        ("skip_auth", "session n = let s = connectS (openS n) in sendS s + closeS s", "AX0200"),
+        // never closed
+        ("no_close", "session n = let s = authS (connectS (openS n)) in sendS s", "AX0002"),
+        // the disconnected handle reused after it moved on
+        ("reuse", "session n = let d = openS n in let s = authS (connectS d) in closeS s + closeS (authS (connectS d))", "AX0001"),
+        // used after close
+        ("after_close", "session n = let s = authS (connectS (openS n)) in closeS s + sendS s", "AX0004"),
+    ] {
+        let p = dir.join(format!("{tag}.axi"));
+        std::fs::write(&p, src.replace(good, body)).unwrap();
+        let out = axionc().arg("--check").arg(&p).output().unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(!out.status.success() && text.contains(code), "{tag}: expected {code}, got:\n{text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn early_return_with_a_live_handle_must_close_it() {
+    // docs/ownership.md "Error paths": a `<-!` short-circuit while a handle is open leaks it on the
+    // `Left` path (AX0002); writing the `case` out and closing in both arms compiles. Ordinary heap
+    // data on the same early-return path is freed automatically (no annotation needed).
+    let head = "data Dev = Dev\nforeign \"libc.so.6\" openD = \"abs\" :: Int -> Handle Dev\n\
+                foreign \"libc.so.6\" readD = \"abs\" :: Borrow (Handle Dev) -> Int\n\
+                foreign \"libc.so.6\" closeD = \"abs\" :: Own (Handle Dev) -> Int\n\
+                check :: Int -> Either String Int\ncheck n = if n > 0 then Right n else Left \"bad\"\n\
+                work :: Int -> Either String Int\n";
+    let bang = "work n = do\n  let h = openD n\n  x <-! check (readD h)\n  Right (x + closeD h)\n";
+    let explicit = "work n = let h = openD n in case check (readD h) of\n  Left e -> case closeD h of\n    _ -> Left e\n  Right x -> Right (x + closeD h)\n";
+    let data = "check :: Int -> Either String Int\ncheck n = if n > 0 then Right n else Left \"bad\"\n\
+                work :: Int -> Either String Int\nwork n = do\n  let s = show n\n  x <-! check (strLen s - 2)\n  Right (x + strLen s)\n";
+    let dir = std::env::temp_dir().join(format!("axion_errpath_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let run = |tag: &str, src: String| {
+        let p = dir.join(format!("{tag}.axi"));
+        std::fs::write(&p, src + "main :: Int\nmain = 0\n").unwrap();
+        let out = axionc()
+            .args(["--emit", "verify"])
+            .arg(&p)
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    let (ok, text) = run("bang", format!("{head}{bang}"));
+    assert!(
+        !ok && text.contains("AX0002"),
+        "`<-!` with a live handle: {text}"
+    );
+    let (ok, text) = run("explicit", format!("{head}{explicit}"));
+    assert!(ok, "closing in both arms: {text}");
+    let (ok, text) = run("data", data.to_string());
+    assert!(
+        ok && text.contains("no corruption findings (0 leak"),
+        "heap data on the early path: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ffi_linear_handle_lifecycle_enforced() {
     // §18 linear handles: `Handle a` is must-use when threaded as a `%1` parameter. The correct
     // threaded pattern compiles (ffi_handle.axi); forgetting to destroy is AX0002, double-destroy
