@@ -645,6 +645,7 @@ fn run_fn(
         children: HashMap::new(),
         leak_exempt: HashSet::new(),
         projections: HashMap::new(),
+        heap_inside: HashSet::new(),
         borrowed_params,
         ret_alias,
         frees_heap,
@@ -714,6 +715,12 @@ struct Verifier<'a> {
     /// the source's shell free, rather than dangling it. Populated by `bind_op`, consumed by
     /// `do_drop`'s skip handling.
     projections: HashMap<String, (String, usize)>,
+    /// Values built by MOVING an owned heap resource into a fresh tuple / constructor / record
+    /// (`let t = tuple s 1` with `s` an owned `String`), and their aliases. Ownership of `s`
+    /// passes to `t`, so only a DEEP (keyed) drop of `t` reclaims it; an unkeyed drop is a flat
+    /// `free` of the cell that leaks `s`. `do_drop` reports that as a leak. Core names are
+    /// unique per function, so a path-insensitive set is exact here.
+    heap_inside: HashSet<String>,
     /// The GENUINELY-borrowed params (in `borrow_args`): the caller retains and drops the
     /// whole structure. Distinct from a MOVED-in param modelled the same way here (a view
     /// like `dropWhile` — not in `borrow_args`). `consume` flags freeing an interior of one
@@ -909,6 +916,17 @@ impl Verifier<'_> {
             self.use_atom(a, sp, st);
         }
         let val = self.classify(op, st);
+        // does `x` take ownership of a heap resource moved into it (see `heap_inside`)?
+        let holds_heap = match op {
+            Op::MakeTuple(_) | Op::MakeCon { .. } | Op::MakeRecord { .. } => e.moves.iter().any(|a| {
+                matches!(a, Atom::Var(v) if st.get(v).is_some_and(|w| w.owned && w.dead.is_none())
+                    && !self.leak_exempt.contains(v))
+            }),
+            _ => matches!(e.alias, Some(Atom::Var(src)) if self.heap_inside.contains(src)),
+        };
+        if holds_heap {
+            self.heap_inside.insert(x.to_string());
+        }
         if let Some(Atom::Var(src)) = e.alias {
             Self::kill(src, Cat::UseAfterFree, st);
         }
@@ -1087,6 +1105,11 @@ impl Verifier<'_> {
             }
             Some(v) if !v.owned => self.finding(Cat::DropOfAlias, x, sp),
             Some(_) => {
+                // An unkeyed (flat) free of a value that owns a heap resource moved into it
+                // reclaims only the cell: the moved-in resource leaks.
+                if key.is_none() && skip.is_empty() && self.heap_inside.contains(x) {
+                    self.finding(Cat::Leak, x, sp);
+                }
                 // A deep drop of an OWNED value that shares a heap element with an
                 // already-freed resource (its `borrows` name a dead value — the
                 // element-alias class, `take`/`drop` over a heap element type) frees that
@@ -1250,6 +1273,12 @@ impl Verifier<'_> {
         tail: bool,
     ) -> Val {
         self.use_atom(scrut, sp, st);
+        // A value taken apart by a `case` may have its heap fields moved out (and freed or
+        // returned separately), leaving a shell whose flat free is correct: stop treating it as
+        // holding moved-in heap (`heap_inside`). Under-reports, never false-flags.
+        if let Atom::Var(v) = scrut {
+            self.heap_inside.remove(v);
+        }
         // extracted fields are owned iff the scrutinee is an owned resource (consumed) — the
         // reclamation transfers them out. A BORROWED scrutinee's heap fields are INTERIOR
         // ALIASES of it: reading one is fine, but CONSUMING one (moving it into a callee or a
@@ -1599,6 +1628,65 @@ mod tests {
         assert!(
             fs.iter().any(|f| f.cat == Cat::UseAfterFree),
             "expected a UseAfterFree finding, got {fs:?}"
+        );
+    }
+
+    /// `let s = show 7; let t = (s, 1); <tail on t>; ret 0` — `s` (an owned heap String) is
+    /// moved into the tuple, so only a keyed (deep) drop of `t` reclaims it.
+    fn string_in_tuple(drop_key: Option<String>, destructure_first: bool) -> CoreFn {
+        let ret0 = || Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), (0, 0)));
+        let drop_t = Term::Drop("t".into(), drop_key, vec![], (0, 0), ret0());
+        let after_t = if destructure_first {
+            // case t of (a, b) -> drop a : String ; drop t ; ret 0   (field moved out first)
+            Term::Ret(
+                Rhs::Case(
+                    Atom::Var("t".into()),
+                    vec![(
+                        CPat::Tuple(vec![CPat::Var("a".into()), CPat::Var("b".into())]),
+                        Term::Drop(
+                            "a".into(),
+                            Some("String".into()),
+                            vec![],
+                            (0, 0),
+                            Box::new(drop_t),
+                        ),
+                    )],
+                ),
+                (0, 0),
+            )
+        } else {
+            drop_t
+        };
+        fn_body(Term::Let(
+            "s".into(),
+            Rhs::Op(Op::ShowInt(Atom::Int(7))),
+            (0, 0),
+            Box::new(Term::Let(
+                "t".into(),
+                Rhs::Op(Op::MakeTuple(vec![Atom::Var("s".into()), Atom::Int(1)])),
+                (0, 0),
+                Box::new(after_t),
+            )),
+        ))
+    }
+
+    /// A flat (unkeyed) free of a tuple that owns a moved-in String frees only the cell: the
+    /// String leaks. The verifier used to accept this (LSan caught it, the verifier did not).
+    #[test]
+    fn flags_flat_free_of_value_owning_moved_in_heap() {
+        let fs = one(string_in_tuple(None, false));
+        assert!(
+            fs.iter().any(|f| f.cat == Cat::Leak && f.var == "t"),
+            "expected a leak on `t`, got {fs:?}"
+        );
+        // the keyed drop reclaims the String: clean
+        let fs = one(string_in_tuple(Some("tuple2$String$Int".into()), false));
+        assert!(fs.is_empty(), "keyed drop must be clean, got {fs:?}");
+        // a shell free after the field was moved out by a `case` is correct: clean
+        let fs = one(string_in_tuple(None, true));
+        assert!(
+            !fs.iter().any(|f| f.cat == Cat::Leak && f.var == "t"),
+            "shell free after move-out flagged: {fs:?}"
         );
     }
 
