@@ -328,9 +328,15 @@ Workarounds today, in order of preference: pass the predicate **literally** at t
 `filter` site so it specializes; wrap the element in a named `data` record instead of
 a bare heap element where the surrounding code allows it; or run the program on the
 **interpreter** (`axionc <file>`), which reclaims via Rust `Drop` and has no aliasing
-hazard. The same note covers heap **tuple** elements (`List (a, b)`) for the
-element-*extracting* consumers, which hit a separate monomorphizer residual with the
-same three workarounds.
+hazard.
+
+Heap **tuple** elements (`List (String, Int)`) work like `data` elements when the
+predicate's tuple type is concrete: a function or lambda that only *reads* a tuple's
+components borrows it (`big (a, b) = b > 1`, `\t -> case t of (k, _) -> k == key`), so
+`filter`/`any`/`takeWhile` keep or skip elements soundly. One that lets a heap component
+escape (`fstS (a, _) = a`) still takes ownership. A *polymorphic* tuple reader
+(`sndG :: (a, Int) -> Int`) keeps the older owning treatment, so it can be applied to a
+given tuple only once; give it a concrete type to lift that.
 
 Already **reclaimed** (they were leaks, now closed): **runtime C-strings** (`show`,
 `showInt`, `strAppend`, …) — a heap `String` carries a nonzero size header at offset

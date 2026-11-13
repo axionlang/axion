@@ -11,6 +11,7 @@
 
 
 
+
             let _t4 = con Cons z les  ; Δ{_t2 z} · moves{z}
             let _t4 = con Cons z les  ; Δ{_t2 z} · moves{z} · makes List$String
             let _t5 = con Cons z gre  ; Δ{_t2 z} · moves{z}
@@ -159,10 +160,15 @@
   else
   else
   else
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = call axion_drop_List$String _dd0  ; Δ{}
+  let _dd2 = loadraw _p+0  ; Δ{}
+  let _dd3 = call axion_drop_List$String _dd2  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _dd6 = band _p 1  ; Δ{}
   let _dd7 = if _dd6 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = con Nil  ; Δ{} · makes List$String
   let _t0 = rtcall axion_str_cmp x y  ; Δ{}
   let _t0 = rtcall axion_str_len a  ; Δ{}
@@ -175,6 +181,7 @@
   let _t5 = call sort$String _t4  ; Δ{_t4} · moves{_t4} · makes List$String
   let _t6 = call unlines _t5  ; Δ{_t5} · makes String
   let _t7 = putStr _t6  ; Δ{_t6}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret < _t0 _t1  ; Δ{}
@@ -193,6 +200,7 @@ append$String xs ys  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$String _p  =
+axion_drop_tuple2$List$String$List$String _p  =
 byLen a b  =
 le$String x y  =
 main  =

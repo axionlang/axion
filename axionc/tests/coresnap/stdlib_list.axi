@@ -95,18 +95,20 @@
                       let _t28 = putStrLn _t27  ; Δ{_t27}
                       ret case _t28 of
                     _ ->
+                  drop _t20 : tuple2$List$Int$List$Int
                   drop _t22 : String
                   let _t19 = call range 1 6  ; Δ{} · makes List$Int
-                  let _t20 = call splitAt 2 _t19  ; Δ{_t19} · moves{_t19}
-                  let _t21 = call sumPair _t20  ; Δ{}
+                  let _t20 = call splitAt 2 _t19  ; Δ{_t19} · moves{_t19} · makes tuple2$List$Int$List$Int
+                  let _t21 = call sumPair _t20  ; Δ{_t20}
                   let _t22 = call show$Int _t21  ; Δ{} · makes String
                   let _t23 = putStrLn _t22  ; Δ{_t22}
                   ret case _t23 of
                 _ ->
+              drop _t15 : tuple2$List$Int$List$Int
               drop _t17 : String
               let _t14 = call range 1 6  ; Δ{} · makes List$Int
               let _t15 = call span$$lt5 _t14  ; Δ{_t14} · moves{_t14} · makes tuple2$List$Int$List$Int
-              let _t16 = call sumPair _t15  ; Δ{_t15} · moves{_t15}
+              let _t16 = call sumPair _t15  ; Δ{_t15}
               let _t17 = call show$Int _t16  ; Δ{} · makes String
               let _t18 = putStrLn _t17  ; Δ{_t17}
               ret case _t18 of
@@ -155,7 +157,6 @@
       drop _t5 : List$Int
       drop _t7 : String
       drop ab
-      drop ab : tuple2$List$Int$List$Int
       drop ab : tuple2$List$Int$List$Int skip{0 1}
       drop m
       drop m
@@ -200,14 +201,14 @@
       let _t0 = call lt5 y  ; Δ{y ys}
       let _t0 = call lt5 y  ; Δ{}
       let _t0 = call product ys  ; Δ{}
-      let _t0 = call sum a  ; Δ{ab}
+      let _t0 = call sum a  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
       let _t0 = con Cons y a  ; Δ{ab}
       let _t0 = con Cons y a  ; Δ{}
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{} · makes List$Int
       let _t1 = call map$$dup ys  ; Δ{_t0 ys} · moves{ys} · makes List$List$Int
-      let _t1 = call sum b  ; Δ{ab}
+      let _t1 = call sum b  ; Δ{}
       let _t1 = con Nil  ; Δ{_t0} · makes List$Int
       let _t1 = con Nil  ; Δ{}
       let _t2 = < n 1  ; Δ{}

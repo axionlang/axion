@@ -4058,7 +4058,13 @@ impl<'a> Infer<'a> {
                     .push((ts, arms.iter().map(|(p, _)| p.clone()).collect(), *span));
                 rty.unwrap_or_else(|| self.fresh())
             }
-            Expr::Tuple(es, _) => Ty::Tuple(es.iter().map(|e| self.infer_expr(env, e)).collect()),
+            Expr::Tuple(es, span) => {
+                let t = Ty::Tuple(es.iter().map(|e| self.infer_expr(env, e)).collect());
+                // Recorded like a call result: the lowering keys a tuple temporary's drop by
+                // it, so a caller that owns the tuple deep-drops its heap components.
+                self.call_ret_tys.insert(*span, t.clone());
+                t
+            }
             Expr::RecordCon(con, assigns, span) => {
                 let (tyname, fields) = match self.cons.get(con) {
                     Some(x) => x.clone(),

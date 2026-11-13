@@ -11,6 +11,7 @@
 
 
 
+
       drop xs
       drop xs
       drop xs
@@ -88,13 +89,14 @@
   drop _t2
   drop _t5 : Integer
   drop _t6 : String
-  drop x : Integer
+  drop eta$1 : Integer
   else
   else
   else
   else
   else
   else
+  let _d1000000 = call hoflam11 eta$1 eta$2  ; Δ{} · makes Integer
   let _d1000000 = putStrLn _t6  ; Δ{_t6}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
@@ -115,6 +117,7 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{}
   ret acc  ; Δ{}
   ret case xs of
@@ -124,15 +127,16 @@
   ret if _t0 then
   ret rtcall axion_array_free _p  ; Δ{}
   ret rtcall axion_bignum_add a b  ; Δ{} · makes Integer
-  ret rtcall axion_bignum_from_i64 eta$1  ; Δ{} · makes Integer
+  ret rtcall axion_bignum_from_i64 eta$4  ; Δ{} · makes Integer
 addI a b  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$Integer _p  =
 foldr$Integer f z xs  =
-lam$0 [env ]x acc  =
-lam$1 [env ]eta$1  =
+hoflam11 x acc  =
+lam$0 [env ]eta$1 eta$2  =
+lam$1 [env ]eta$4  =
 main  =
 map$Int f xs  =
 range lo hi  =

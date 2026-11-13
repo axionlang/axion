@@ -1531,6 +1531,14 @@ fn view_case_in_one_branch_frees_the_consumed_cell() {
 }
 
 #[test]
+fn tuple_reader_borrows_its_tuple() {
+    // A function that only reads a concrete tuple's components borrows it, so `filter`/`any`/
+    // `takeWhile` with a named, clause-head, lambda or capturing predicate over a tuple list,
+    // and calling a reader twice, compile natively and are leak-free.
+    agree_across_backends("tuple_param_borrow.axi", "49\n");
+}
+
+#[test]
 fn every_bench_kernel_passes_the_verifier() {
     // bench/ is outside the oracle corpus and bench.sh only prints `-` for a kernel that fails to
     // build, so `simd` once sat rejected by a false AX0910 without failing anything.

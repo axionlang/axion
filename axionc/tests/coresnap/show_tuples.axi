@@ -22,7 +22,11 @@
 
 
 
-                          drop _t29
+
+
+
+
+                          drop _t29 : tuple2$tuple2$Int$Int$tuple2$Int$Int
                           drop _t30 : String
                           let _d1000000 = putStrLn _t30  ; Δ{_t30}
                           let _t27 = tuple 1 2  ; Δ{} · makes heap
@@ -50,7 +54,7 @@
                   let _t22 = putStrLn _t21  ; Δ{_t21}
                   ret case _t22 of
                 _ ->
-              drop _t13
+              drop _t13 : tuple2$Int$List$Int
               drop _t14 : String
               let _t10 = con Nil  ; Δ{} · makes List$Int
               let _t11 = con Cons 3 _t10  ; Δ{_t10} · moves{_t10} · makes List$Int
@@ -60,7 +64,7 @@
               let _t15 = putStrLn _t14  ; Δ{_t14}
               ret case _t15 of
             _ ->
-          drop _t7
+          drop _t7 : tuple2$Maybe$Int$Int
           drop _t8 : String
           let _t6 = con Just 5  ; Δ{} · makes Maybe$Int
           let _t7 = tuple _t6 7  ; Δ{_t6} · moves{_t6} · makes heap
@@ -100,13 +104,13 @@
       drop _t2 : String
       drop _t2 : String
       drop _t2 : String
-      drop _t3
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
       drop _t3 : String
+      drop _t3 : tuple3$Int$Int$Int
       drop _t4 : String
       drop _t4 : String
       drop _t4 : String
@@ -294,9 +298,9 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t0
   drop _t0 : String
   drop _t0 : String
+  drop _t0 : tuple2$Int$Int
   drop _t1 : String
   drop _t1 : String
   drop _t1 : String
@@ -308,7 +312,15 @@
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
   let _dd0 = band _p 1  ; Δ{}
+  let _dd0 = loadraw _p+0  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_Maybe$Int _dd0  ; Δ{}
+  let _dd1 = call axion_drop_tuple2$Int$Int _dd0  ; Δ{}
   let _dd1 = if _dd0 then
+  let _dd2 = loadraw _p+0  ; Δ{}
+  let _dd3 = call axion_drop_tuple2$Int$Int _dd2  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
@@ -318,6 +330,10 @@
   let _dd6 = band _p 1  ; Δ{}
   let _dd7 = if _dd6 then
   let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = call showListElems$(Int,Int) xs  ; Δ{} · makes String
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
   let _t0 = tuple 1 2  ; Δ{} · makes heap
@@ -325,6 +341,10 @@
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t2 = putStrLn _t1  ; Δ{_t1}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -356,6 +376,10 @@ axion_drop_List$tuple2$Int$Int _p  =
 axion_drop_Maybe$Int _p  =
 axion_drop_Maybe$tuple2$Int$Int _p  =
 axion_drop_tuple2$Int$Int _p  =
+axion_drop_tuple2$Int$List$Int _p  =
+axion_drop_tuple2$Maybe$Int$Int _p  =
+axion_drop_tuple2$tuple2$Int$Int$tuple2$Int$Int _p  =
+axion_drop_tuple3$Int$Int$Int _p  =
 main  =
 show$((Int,Int),(Int,Int)) p  =
 show$(Int,Int) p  =

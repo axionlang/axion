@@ -872,11 +872,10 @@ pub fn run_cli() -> ExitCode {
                      `%1` so it CONSUMES the list (the element becomes a genuine move, the \
                      remainder is freed), exactly how the prelude `head`/`take`/`last`/`drop` are \
                      defined; closure-taking borrowers like `filter`/`takeWhile` get this \
-                     automatically via higher-order specialization. (2) An element-extracting \
-                     consumer over a TUPLE element type (`List (a, b)`) hits the nested-tuple \
-                     poly-payload residual the monomorphizer cannot yet lower — there is no source \
-                     fix; run it on the interpreter (`axionc <file>`), which reclaims via Rust \
-                     Drop, or use a `data` record element instead of a bare tuple.",
+                     automatically via higher-order specialization. (2) The predicate is not \
+                     known statically (a closure parameter, or a polymorphic lambda/predicate over \
+                     a TUPLE element) — pass a named or literal predicate with a concrete type, \
+                     use a `data` record element, or run on the interpreter (`axionc <file>`).",
                 );
                 eprint!("{}", d.render(&path, &src, &lines));
             }
@@ -1618,6 +1617,17 @@ fn specialize_hofs(module: &mut ast::Module) {
         }
         // commit the lambda lifts whose candidate got a CONCRETE signature: sign the hoflam
         // and rewrite its call site (lambda → the hoflam name). Drop the rest (poly lambdas).
+        // A lambda typed polymorphic in isolation (`\t -> case t of (a, b) -> b > 1` leaves `a`
+        // free) still has exactly one use, so the concrete type at that call site is a sound
+        // signature for it: fall back to it, as the capturing lift above does.
+        let mut inferred = inferred;
+        for (name, span) in &candidates {
+            if !inferred.contains_key(name) {
+                if let Some(ty) = lam_tys.get(span) {
+                    inferred.insert(name.clone(), ty.clone());
+                }
+            }
+        }
         let committed = commit_lambda_lifts(module, &candidates, &inferred);
         fn_names.extend(committed);
     }
@@ -2162,11 +2172,17 @@ fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
     let Some(sig) = f.sig.as_ref() else {
         return true;
     };
+    // A tuple pattern of plain binders (`big (a, b) = b > 1`, `\(a, b) -> …`) is judged
+    // like a variable: safe iff none of its binders escapes.
+    let plain_tuple = |p: &ast::Pat| {
+        matches!(p, ast::Pat::Tuple(subs, _)
+            if subs.iter().all(|s| matches!(s, ast::Pat::Var(..) | ast::Pat::Wild(_))))
+    };
     if f.clauses.len() != 1
         || !f.clauses[0]
             .pats
             .iter()
-            .all(|p| matches!(p, ast::Pat::Var(..)))
+            .all(|p| matches!(p, ast::Pat::Var(..)) || plain_tuple(p))
     {
         return true;
     }
@@ -2178,8 +2194,16 @@ fn closure_unsafe_to_specialize(f: &ast::Func) -> bool {
     let mults = sig.param_mults();
     let ptypes = sig.param_types();
     let all_safe = clause.pats.iter().enumerate().all(|(i, p)| {
-        let ast::Pat::Var(n, _) = p else { return false };
         let Some(t) = ptypes.get(i) else { return false };
+        if let ast::Pat::Tuple(subs, _) = p {
+            // the tuple is borrowed unless a binder escapes (then it must be a concrete `%1`)
+            let escapes = subs.iter().any(|s| {
+                matches!(s, ast::Pat::Var(b, _) if bodies.iter().any(|body| escapes_via_result(b, body)))
+            });
+            return !escapes
+                || (!core::ty_has_var(t) && mults.get(i) == Some(&ast::Mult::One));
+        }
+        let ast::Pat::Var(n, _) = p else { return false };
         if !core::is_heap_shaped(t) || is_bare_scalar(t) {
             return true; // scalar (copied)
         }
@@ -3553,17 +3577,36 @@ fn param_has_genuine_escape(
             || moved_into_closure(b, body, closures)
             || moved_into_consuming(b, body, &wo_self)
     };
+    // Which components of a CONCRETE tuple-typed param hold heap memory. `None` when the param
+    // is not a tuple, or its type has a variable: a polymorphic tuple reader keeps the old
+    // owning treatment, since nothing can prove its result does not point into the tuple.
+    let tuple_heap: Option<Vec<bool>> = match f
+        .sig
+        .as_ref()
+        .and_then(|s| s.param_types().get(idx).copied())
+    {
+        Some(t @ ast::Type::Tuple(ts)) if !core::ty_has_var(t) => Some(
+            ts.iter()
+                .map(|t| core::is_heap_shaped(t) && !is_bare_scalar(t))
+                .collect(),
+        ),
+        _ => None,
+    };
     for clause in &f.clauses {
         let bodies: Vec<&ast::Expr> = match &clause.body {
             ast::Body::Plain(e) => vec![e],
             ast::Body::Guarded(arms) => arms.iter().map(|(_, r)| r).collect(),
         };
         match clause.pats.get(idx) {
-            // A TUPLE-destructured param keeps the ORIGINAL optimistic treatment: a function
-            // that takes a tuple apart OWNS it (it deep-drops whatever cells it does not move
-            // out). Tuples were never subject to the self-recursive-copier false positive —
-            // that is a DATA (`Con`) shape — so they are always "anchored" (treated consuming).
-            Some(ast::Pat::Tuple(_, _)) => return true,
+            // A TUPLE-destructured param is anchored (owned) exactly like a `data` one: only
+            // when one of its heap components escapes genuinely. One that only READS its
+            // components (`big t = case t of (a, b) -> b > 1`) borrows, so a caller can keep
+            // the tuple — `filter big` over a tuple list no longer frees the kept element.
+            Some(ast::Pat::Tuple(subs, _))
+                if tuple_binder_genuine(subs, tuple_heap.as_deref(), &bodies, &genuine) =>
+            {
+                return true
+            }
             // head-destructured data param: `f (Cons z zs) = <z embedded>`
             Some(ast::Pat::Con(con, subs, _))
                 if arm_field_genuine(con, subs, &bodies, cfh, &genuine) =>
@@ -3573,8 +3616,13 @@ fn param_has_genuine_escape(
             // `case param of …` (possibly nested down the recursive spine)
             Some(ast::Pat::Var(p, _)) => {
                 for body in &bodies {
-                    // `case param of (a, b) -> …`: tuple destructure of the param → optimistic.
-                    if has_tuple_case(p, body) || case_field_genuine(p, body, cfh, &genuine) {
+                    // `case param of (a, b) -> …`: owned iff a heap component escapes (as for
+                    // `data`), or the whole tuple does.
+                    // (A tuple-typed param has no constructor arms, so `case_field_genuine`,
+                    // which anchors on any tuple arm, only applies to other types.)
+                    if tuple_case_genuine(p, body, tuple_heap.as_deref(), &genuine)
+                        || (tuple_heap.is_none() && case_field_genuine(p, body, cfh, &genuine))
+                    {
                         return true;
                     }
                 }
@@ -3602,22 +3650,82 @@ fn arm_field_genuine(
     })
 }
 
-/// `true` if some binder of a TUPLE destructure escapes genuinely in any `body`. Unlike
-/// `true` if `e` destructures `p` with a TUPLE pattern anywhere (`case p of (a, b) -> …`).
-/// Such a param keeps the optimistic "consuming" treatment (see `param_has_genuine_escape`).
-fn has_tuple_case(p: &str, e: &ast::Expr) -> bool {
-    if let ast::Expr::Case(scrut, arms, _) = e {
-        if is_var_named(scrut, p)
-            && arms
-                .iter()
-                .any(|(pat, _)| matches!(pat, ast::Pat::Tuple(..)))
-        {
+/// `true` if a TUPLE destructure `subs` must own its tuple: some heap component (per
+/// `heap`) escapes genuinely in one of `bodies`. Unknown component types (`heap` is `None`)
+/// and nested patterns over a heap component are treated as escaping — owning is the
+/// conservative choice, the treatment every tuple had before.
+fn tuple_binder_genuine(
+    subs: &[ast::Pat],
+    heap: Option<&[bool]>,
+    bodies: &[&ast::Expr],
+    genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+) -> bool {
+    let Some(heap) = heap else { return true };
+    if heap.len() != subs.len() {
+        return true;
+    }
+    subs.iter().zip(heap).any(|(sp, &h)| match sp {
+        // Any component returned as the result, scalar or not, keeps the owning treatment: the
+        // verifier treats such a result as possibly pointing into the tuple. A heap component
+        // that is itself taken apart (`case a of (x, y) -> x`) may pass an interior out, so it
+        // does too.
+        ast::Pat::Var(b, _) => bodies.iter().any(|body| {
+            returned_directly(b, body)
+                || (h && (genuine(b, body) || is_rebound(b, body) || is_case_scrutinee(b, body)))
+        }),
+        ast::Pat::Wild(_) => false,
+        _ => h,
+    })
+}
+
+/// `true` if `name` is the scrutinee of some `case` in `e`.
+fn is_case_scrutinee(name: &str, e: &ast::Expr) -> bool {
+    if let ast::Expr::Case(scrut, _, _) = e {
+        if is_var_named(scrut, name) {
             return true;
         }
     }
     let mut found = false;
     for_each_subexpr(e, &mut |sub| {
-        found = found || has_tuple_case(p, sub);
+        found = found || is_case_scrutinee(name, sub);
+    });
+    found
+}
+
+/// `true` if `e` destructures `p` with a TUPLE pattern (`case p of (a, b) -> …`) that must own
+/// it (see [`tuple_binder_genuine`]), or if `p` itself escapes genuinely anywhere in `e`.
+fn tuple_case_genuine(
+    p: &str,
+    e: &ast::Expr,
+    heap: Option<&[bool]>,
+    genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+) -> bool {
+    if heap.is_some() && genuine(p, e) {
+        return true;
+    }
+    tuple_case_genuine_rec(p, e, heap, genuine)
+}
+
+fn tuple_case_genuine_rec(
+    p: &str,
+    e: &ast::Expr,
+    heap: Option<&[bool]>,
+    genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+) -> bool {
+    if let ast::Expr::Case(scrut, arms, _) = e {
+        if is_var_named(scrut, p) {
+            for (pat, body) in arms {
+                if let ast::Pat::Tuple(subs, _) = pat {
+                    if tuple_binder_genuine(subs, heap, &[body], genuine) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let mut found = false;
+    for_each_subexpr(e, &mut |sub| {
+        found = found || tuple_case_genuine_rec(p, sub, heap, genuine);
     });
     found
 }

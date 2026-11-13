@@ -1,6 +1,7 @@
 
 
 
+
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       ret 0  ; Δ{}
@@ -16,17 +17,20 @@
   ; Δ{}
   drop r : Rec
   drop r2 : Rec skip{0}
-  drop t
+  drop t : tuple2$Int$Int
   else
   let _d1000000 = field f r2  ; Δ{r2}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let r = record Rec { f = 3 g = 4}  ; Δ{} · makes Rec
   let r2 = update r { g = 5}  ; Δ{r} · makes heap
   let t = tuple 1 2  ; Δ{} · makes heap
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{r2}
   ret rtcall axion_array_free _p  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =
+axion_drop_tuple2$Int$Int _p  =
 main  =

@@ -9,15 +9,12 @@
 
 
       drop _t0 : Integer
-      drop a : Integer
-      drop b : Integer
-      drop t : tuple2$Integer$Integer skip{0 1}
       drop xs
       drop xs
       drop xs
       drop xs
       drop y : Integer
-      let _d1000000 = rtcall axion_bignum_add a b  ; Δ{t} · makes Integer
+      drop y : tuple2$Integer$Integer
       let _d1000000 = rtcall axion_bignum_add y _t0  ; Δ{_t0 y} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -29,7 +26,7 @@
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_tuple2$Integer$Integer _dd2  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = call sndSum y  ; Δ{y ys} · moves{y} · makes Integer
+      let _t0 = call sndSum y  ; Δ{y ys} · makes Integer
       let _t0 = call sumL ys  ; Δ{y ys} · moves{ys} · makes Integer
       let _t1 = call map$$sndSum ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
       ret 0  ; Δ{}
@@ -38,10 +35,10 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret _d1000000  ; Δ{_d1000000 t} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
       ret con Nil  ; Δ{} · makes List$Integer
+      ret rtcall axion_bignum_add a b  ; Δ{} · makes Integer
       ret rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
     (a, b) ->
     Cons y ys ->

@@ -2359,6 +2359,14 @@ impl Lower<'_> {
                         self.mono_seeds.push(ty.clone());
                         *key = Some(mk);
                     }
+                } else if key.is_none() && matches!(ty, Type::Tuple(_)) {
+                    // A generic callee returning a tuple (`unzip`) instantiated concretely
+                    // here: key the result so its owner deep-drops it. A reader that only
+                    // borrows the tuple no longer frees it on the caller's behalf.
+                    if let Some(mk) = mono_key(ty) {
+                        self.mono_seeds.push(ty.clone());
+                        *key = Some(mk);
+                    }
                 } else if key.is_none() && head == Some("Integer") {
                     // A POLYMORPHIC callee (declared return a type-variable `b`, so no
                     // `fn_ret_ty` key) instantiated at a SCALAR heap type at THIS call
@@ -5617,6 +5625,23 @@ pub fn lower_with(
             }
         }
     }
+    // A tuple literal whose drop is keyed from its inferred type (`collect_drop_types`) needs that
+    // tuple's destructor, or the keyed drop falls back to a flat free and leaks the components.
+    {
+        let used: HashSet<&str> = all_dty
+            .values()
+            .flat_map(|m| m.values())
+            .filter_map(|k| k.as_deref())
+            .filter(|k| k.starts_with("tuple"))
+            .collect();
+        let mut tys: Vec<&Type> = makecon_tys
+            .values()
+            .filter(|t| matches!(t, Type::Tuple(_)))
+            .filter(|t| mono_key(t).is_some_and(|k| used.contains(k.as_str())))
+            .collect();
+        tys.sort_by_key(|t| mono_key(t));
+        mono_seeds.extend(tys.into_iter().cloned());
+    }
     // Seed every TUPLE and CONTAINER sub-type appearing in a seed, so each gets its concrete mono
     // destructor even when it only ever appears NESTED: a `List (Int,Int)` seeds `(Int,Int)` (its
     // tuple element, else the list frees only its spine and leaks every tuple cell); a
@@ -6940,6 +6965,14 @@ fn collect_drop_types(
                             ty = Some(mk);
                         }
                     }
+                }
+                // A tuple literal carries no key in its op; inference records its type at
+                // the binding's span. Only a fully concrete key (every component resolved).
+                if ty.is_none() && matches!(op, Op::MakeTuple(_)) {
+                    ty = makecon_tys
+                        .get(span)
+                        .and_then(mono_key)
+                        .filter(|k| k.starts_with("tuple"));
                 }
                 if ty.is_some() {
                     out.insert(x.clone(), ty);

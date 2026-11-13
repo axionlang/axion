@@ -5,15 +5,11 @@
 
 
 
-      drop a : String
-      drop b : String
-      drop t : tuple2$String$String skip{0 1}
-      let _d1000000 = rtcall axion_strcat a b  ; Δ{t} · makes String
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret _d1000000  ; Δ{_d1000000 t} · moves{_d1000000}
+      ret rtcall axion_strcat a b  ; Δ{} · makes String
     (a, b) ->
     else
     let $aliascopy0 = call axion_copy_tuple2$String$String t  ; Δ{} · makes tuple2$String$String
@@ -29,8 +25,10 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t0 : tuple2$String$String
   drop _t1 : String
   drop _t2 : String
+  drop _t2 : tuple2$String$String
   drop _t3 : String
   else
   else
@@ -46,11 +44,11 @@
   let _t0 = > c 0  ; Δ{}
   let _t0 = call pickT 0 t  ; Δ{} · makes tuple2$String$String
   let _t0 = rtcall axion_strcat "p" ""  ; Δ{} · makes String
-  let _t1 = call useT _t0  ; Δ{_t0} · moves{_t0} · makes String
+  let _t1 = call useT _t0  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat "q" ""  ; Δ{_t0} · makes String
   let _t2 = call useT t  ; Δ{_t1} · makes String
   let _t2 = tuple _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes heap
-  let _t3 = call go _t2  ; Δ{_t2} · moves{_t2} · makes String
+  let _t3 = call go _t2  ; Δ{_t2} · makes String
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
