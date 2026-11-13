@@ -1614,6 +1614,27 @@ fn view_case_in_one_branch_frees_the_consumed_cell() {
 }
 
 #[test]
+fn filter_in_a_case_scrutinee_takes_ownership() {
+    // Ownership inference used to miss a consuming move inside a `case` scrutinee, so `field`
+    // borrowed its argument and the verifier rejected it as an internal error (AX0910). Now the
+    // single-use program runs on every backend, and a double use is AX0001 naming `field`.
+    agree_across_backends("filter_in_case_scrutinee.axi", "21\n");
+    let src = std::fs::read_to_string(fixture("filter_in_case_scrutinee.axi")).unwrap();
+    let twice = src.replace(
+        "main = field \"2\" (JObj [(show 1, 10), (show 2, 20), (show 3, 30)])",
+        "main = let v = JObj [(show 1, 10)] in field \"1\" v + field \"2\" v",
+    );
+    let p = std::env::temp_dir().join(format!("axion_filter_twice_{}.axi", std::process::id()));
+    std::fs::write(&p, twice).unwrap();
+    let out = axionc().arg("--check").arg(&p).output().unwrap();
+    let _ = std::fs::remove_file(&p);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success() && text.contains("AX0001"), "{text}");
+    assert_eq!(text.matches("given to `field` here").count(), 2, "{text}");
+    assert!(!text.contains("AX0910"), "{text}");
+}
+
+#[test]
 fn tuple_reader_borrows_its_tuple() {
     // A function that only reads a concrete tuple's components borrows it, so `filter`/`any`/
     // `takeWhile` with a named, clause-head, lambda or capturing predicate over a tuple list,

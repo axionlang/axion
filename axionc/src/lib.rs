@@ -3460,11 +3460,15 @@ fn escapes_every_path(
             escapes_every_path(name, t, consuming, closures)
                 && escapes_every_path(name, el, consuming, closures)
         }
-        ast::Expr::Case(_, arms, _) => {
-            !arms.is_empty()
-                && arms
-                    .iter()
-                    .all(|(_, b)| escapes_every_path(name, b, consuming, closures))
+        // A `case` whose scrutinee moves `name` into a CONSUMING call (`case filter p ms of …`)
+        // gives it away on every path. Only consuming calls: a closure call in a scrutinee or an
+        // `if` condition is a predicate test (`dropWhile`'s `p y`), not an escape.
+        ast::Expr::Case(scrut, arms, _) => {
+            moved_into_consuming(name, scrut, consuming)
+                || (!arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|(_, b)| escapes_every_path(name, b, consuming, closures)))
         }
         ast::Expr::Let(_, body, _) => escapes_every_path(name, body, consuming, closures),
         _ => {

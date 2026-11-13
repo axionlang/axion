@@ -1676,26 +1676,13 @@ fn check_func(
                     0
                 };
                 if consumes > 1 {
-                    diags.push(
-                        Diagnostic::error(
-                            "AX0001",
-                            format!(
-                                "heap value '{name}' consumed {consumes} times \
-                                 (contraction forbidden)"
-                            ),
-                        )
-                        .label(
-                            span.0,
-                            span.1,
-                            format!("'{name}' is moved into an owned position more than once"),
-                        )
-                        .with_help(
-                            "a borrowed heap value may be READ freely, but moving it by \
-                             ownership (into a constructor/tuple/%1 argument) may happen \
-                             only once — to share it by ownership, 'split' it into two \
-                             %0.5 halves (§2).",
-                        ),
-                    );
+                    diags.push(contraction_diag(
+                        name,
+                        *span,
+                        consumes,
+                        &clause_exprs(clause),
+                        ctx,
+                    ));
                 }
             }
         }
@@ -1730,7 +1717,14 @@ fn check_func(
                             if rhs_is_heap(rhs, &heap, ctx, &locals) {
                                 let n = analyze_clause(clause, &w.name, ctx).0;
                                 if n > 1 {
-                                    push_contraction(&w.name, rhs.span(), n, diags);
+                                    push_contraction(
+                                        &w.name,
+                                        rhs.span(),
+                                        n,
+                                        &clause_exprs(clause),
+                                        ctx,
+                                        diags,
+                                    );
                                 }
                                 heap.insert(w.name.clone());
                             }
@@ -1806,7 +1800,7 @@ fn check_contraction(
                 for (name, span) in pat_heap_binders(pat, ctx) {
                     let n = analyze(body, &name, Mode::Consume, ctx).0;
                     if n > 1 {
-                        push_contraction(&name, span, n, diags);
+                        push_contraction(&name, span, n, &[body], ctx, diags);
                     }
                     heap.insert(name);
                 }
@@ -1838,7 +1832,15 @@ fn check_contraction(
                                     }
                                 }
                                 if n > 1 {
-                                    push_contraction(&f.name, rhs.span(), n, diags);
+                                    let mut scope = vec![body.as_ref()];
+                                    for g in binds {
+                                        if g.name != f.name {
+                                            for gc in &g.clauses {
+                                                scope.extend(clause_exprs(gc));
+                                            }
+                                        }
+                                    }
+                                    push_contraction(&f.name, rhs.span(), n, &scope, ctx, diags);
                                 }
                                 heap.insert(f.name.clone());
                             }
@@ -1995,23 +1997,125 @@ fn rhs_is_heap(rhs: &Expr, heap: &HashSet<String>, ctx: &Ctx, lh: &LocalHeap) ->
     }
 }
 
-fn push_contraction(name: &str, span: Span, n: usize, diags: &mut Diagnostics) {
-    diags.push(
-        Diagnostic::error(
-            "AX0001",
-            format!("heap value '{name}' consumed {n} times (contraction forbidden)"),
-        )
-        .label(
-            span.0,
-            span.1,
-            format!("'{name}' is moved into an owned position more than once"),
-        )
-        .with_help(
-            "a heap value may be READ freely, but moving it by ownership (into a \
-             constructor/tuple/%1 argument) may happen only once — to share it by \
-             ownership, 'split' it into two %0.5 halves (§2).",
-        ),
+fn push_contraction(
+    name: &str,
+    span: Span,
+    n: usize,
+    scope: &[&Expr],
+    ctx: &Ctx,
+    diags: &mut Diagnostics,
+) {
+    diags.push(contraction_diag(name, span, n, scope, ctx));
+}
+
+/// AX0001 for a heap value given away more than once, labelling each place it is given away
+/// (`scope` = the expressions it is used in) and naming the function or constructor that takes it.
+fn contraction_diag(name: &str, span: Span, n: usize, scope: &[&Expr], ctx: &Ctx) -> Diagnostic {
+    let mut d = Diagnostic::error(
+        "AX0001",
+        format!("heap value '{name}' consumed {n} times (contraction forbidden)"),
+    )
+    .label(
+        span.0,
+        span.1,
+        format!("'{name}' is moved into an owned position more than once"),
     );
+    let mut sites = Vec::new();
+    for e in scope {
+        consume_sites(name, e, ctx, &mut sites);
+    }
+    sites.sort_by_key(|(_, sp)| *sp);
+    for (what, sp) in &sites {
+        d = d.label(sp.0, sp.1, format!("given to {what} here"));
+    }
+    d.with_help(
+        "a heap value may be READ any number of times, but given away (to a constructor, a \
+         tuple, or a function that takes ownership of the argument) only once. A function takes \
+         ownership when its parameter is `%1`, or when it keeps or passes on part of the argument \
+         — the compiler infers that, e.g. a function passing a field to `filter` owns the value, \
+         because `filter` consumes the list it is given. To use the value twice, make those \
+         calls only read it, compute both results in one call, or 'split' it into two %0.5 \
+         halves (§2).",
+    )
+}
+
+/// Every place `name` is given away in `e`: an argument in a position the callee takes `%1`
+/// (declared or inferred), a constructor field, or a tuple component.
+fn consume_sites(name: &str, e: &Expr, ctx: &Ctx, out: &mut Vec<(String, Span)>) {
+    let is_name = |x: &Expr| matches!(x, Expr::Var(v, _) if v == name);
+    match e {
+        Expr::App(..) => {
+            let (head, args) = spine(e);
+            let mults = head_mults(head, ctx);
+            // a constructor stores every field by ownership; a call only its `%1` arguments
+            let is_con = matches!(head, Expr::Con(..));
+            for (i, a) in args.iter().enumerate() {
+                if is_name(a) && (is_con || mults.get(i) == Some(&Mult::One)) {
+                    let what = match head {
+                        Expr::Var(g, _) => format!("`{g}`"),
+                        Expr::Con(c, _) => format!("the constructor `{c}`"),
+                        _ => "a call".to_string(),
+                    };
+                    out.push((what, a.span()));
+                }
+            }
+            consume_sites(name, head, ctx, out);
+            for a in args {
+                consume_sites(name, a, ctx, out);
+            }
+        }
+        Expr::Tuple(es, _) => {
+            for x in es {
+                if is_name(x) {
+                    out.push(("a tuple".to_string(), x.span()));
+                }
+                consume_sites(name, x, ctx, out);
+            }
+        }
+        Expr::BinOp(_, l, r, _) => {
+            consume_sites(name, l, ctx, out);
+            consume_sites(name, r, ctx, out);
+        }
+        Expr::If(c, t, el, _) => {
+            for x in [c, t, el] {
+                consume_sites(name, x, ctx, out);
+            }
+        }
+        Expr::Let(binds, body, _) => {
+            for b in binds {
+                for c in &b.clauses {
+                    if let Body::Plain(x) = &c.body {
+                        consume_sites(name, x, ctx, out);
+                    }
+                }
+            }
+            consume_sites(name, body, ctx, out);
+        }
+        Expr::Case(scrut, arms, _) => {
+            consume_sites(name, scrut, ctx, out);
+            for (_, b) in arms {
+                consume_sites(name, b, ctx, out);
+            }
+        }
+        Expr::RecordCon(_, fs, _) => fs
+            .iter()
+            .for_each(|(_, x)| consume_sites(name, x, ctx, out)),
+        Expr::RecordUpd(base, fs, _) => {
+            consume_sites(name, base, ctx, out);
+            fs.iter()
+                .for_each(|(_, x)| consume_sites(name, x, ctx, out));
+        }
+        Expr::Lam(_, body, _) => consume_sites(name, body, ctx, out),
+        Expr::Var(..) | Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => {}
+    }
+}
+
+/// The expressions of a clause (body, guards).
+fn clause_exprs(c: &Clause) -> Vec<&Expr> {
+    match &c.body {
+        Body::Plain(e) => vec![e],
+        Body::Guarded(arms) => arms.iter().flat_map(|(g, r)| [g, r]).collect(),
+    }
 }
 
 /// Emits the diagnostic or records the drop, applying the linearity rule to a
