@@ -134,6 +134,24 @@ escape/move op the model can't describe most corpus functions (which return or e
 which is why the current bridge is a curated per-shape pairing. `moveOut` ↔ a value leaving Δ in
 `verify.rs` (`DeltaEffect.moves` / `.alias`).
 
+## Moved-in heap — `AxionNest.lean`
+
+`AxionMove` treats a value moved into a constructor as gone. But the constructor now OWNS it: only
+the container's keyed (deep) drop reclaims it, and a flat drop (`drop t`, no key) frees the
+container's cell and strands the moved-in value. `verify.rs` tracks the occupied slots
+(`heap_inside`), clears a slot when a `case` binds it to a variable, and reports a flat drop of a
+container with an occupied slot as a leak. `AxionNest.lean` gives the machine containment
+(`Cell.inside c i`) and `pack`/`unpack`/`dropFlat`/`dropDeep`:
+
+| Theorem | Statement |
+|---|---|
+| `no_corruption` / `no_leak` / `sound` | the guarantees, with containment; a cell stranded in a freed container counts as leaked |
+| `flat_drop_with_contents_rejected` | once a container holding a moved-in cell is flat-freed, the program can never be accepted — so reporting the leak AT the drop rejects nothing the exit leak check would accept |
+| `flat_drop_rejected` / `deep_drop_accepted` / `flat_drop_after_unpack_accepted` | non-vacuity: `t = (s); drop t` is rejected, the keyed drop and the emptied-shell flat drop are accepted |
+
+Not modelled: `verify.rs` clears every slot of a value on a raw field load (`loadraw`), since it
+does not map offsets to slots — an under-report, never a false rejection.
+
 ## Concurrency: deadlock-freedom — `AxionSession.lean`
 
 The other files mechanize the *memory-safety* verifier. This one opens the *concurrency* half — the

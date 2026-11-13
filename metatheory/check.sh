@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 # reproducible; bump the rev deliberately (and update the proofs) when moving Lean. Same pin in
 # exhaustive.sh and model-trace.sh.
 LEAN=(nix shell github:NixOS/nixpkgs/b6018f87da91d19d0ab4cf979885689b469cdd41#lean4 --command lean)
-for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionExtract.lean AxionSession.lean AxionFidelity.lean; do
+for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionExtract.lean AxionNest.lean AxionSession.lean AxionFidelity.lean; do
   # `if ! OUT=…` so `set -e` does NOT abort the script on a lean/nix failure BEFORE we print the
   # captured output — otherwise the real error (e.g. a nix fetch/eval failure) is swallowed and CI
   # shows only a bare exit 1.
@@ -27,4 +27,4 @@ for f in AxionDrop.lean AxionAlias.lean AxionKey.lean AxionMove.lean AxionExtrac
     exit 1
   fi
 done
-echo "OK: AxionDrop + AxionAlias + AxionKey + AxionMove + AxionExtract + AxionSession + AxionFidelity metatheory check (no sorry; axioms = propext/Quot.sound only)"
+echo "OK: AxionDrop + AxionAlias + AxionKey + AxionMove + AxionExtract + AxionNest + AxionSession + AxionFidelity metatheory check (no sorry; axioms = propext/Quot.sound only)"
