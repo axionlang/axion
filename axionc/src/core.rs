@@ -3393,16 +3393,87 @@ fn susp_key(e: &Expr) -> Span {
 
 /// The `spawn` targets named anywhere in a session body (including choice arms).
 fn spawn_targets(body: &Expr, out: &mut Vec<String>) {
-    if let Expr::Case(scrut, arms, _) = body {
-        if let (Some("spawn"), args) = sess_spine(scrut) {
-            if let (Some(t), _) = sess_spine(args[0]) {
-                out.push(t.to_string());
+    match body {
+        Expr::Case(scrut, arms, _) => {
+            if let (Some("spawn"), args) = sess_spine(scrut) {
+                if let (Some(t), _) = sess_spine(args[0]) {
+                    out.push(t.to_string());
+                }
+            }
+            for (_, b) in arms {
+                spawn_targets(b, out);
             }
         }
-        for (_, b) in arms {
-            spawn_targets(b, out);
+        // a branch of the session spine (keep-alive handlers) may spawn too
+        Expr::If(_, t, el, _) => {
+            spawn_targets(t, out);
+            spawn_targets(el, out);
+        }
+        _ => {}
+    }
+}
+
+/// The heads of the session spine's TAIL calls (`… ; sendAll s msg 0`), through `case`
+/// continuations and `if` branches.
+fn sess_tail_calls(body: &Expr, out: &mut Vec<String>) {
+    match body {
+        Expr::Case(_, arms, _) => arms.iter().for_each(|(_, b)| sess_tail_calls(b, out)),
+        Expr::If(_, t, el, _) => {
+            sess_tail_calls(t, out);
+            sess_tail_calls(el, out);
+        }
+        _ => {
+            if let (Some(h), _) = sess_spine(body) {
+                out.push(h.to_string());
+            }
         }
     }
+}
+
+/// `true` if `f` takes a socket, listener or channel endpoint: a function that can only run as a
+/// session task (its socket ops suspend), never as an ordinary native call.
+fn takes_session_resource(f: &ast::Func) -> bool {
+    f.sig.as_ref().is_some_and(|s| {
+        s.param_types()
+            .iter()
+            .any(|t| matches!(t.head_con(), Some("Sock" | "Listener" | "Ep")))
+    })
+}
+
+/// Every function that runs as a session task under `main`'s `bound` body: the transitive `spawn`
+/// targets, plus each function a task TAIL-calls that takes a session resource (`handler s = do
+/// … ; sendAll s msg 0`). Such a tail call hands the task over (see `SessGen::gen_tail`).
+fn session_workers<'m>(module: &'m ast::Module, bound_body: &Expr) -> Vec<&'m ast::Func> {
+    let mut workers: Vec<&ast::Func> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut worklist = Vec::new();
+    let push_from = |b: &Expr, worklist: &mut Vec<String>| {
+        spawn_targets(b, worklist);
+        let mut tails = Vec::new();
+        sess_tail_calls(b, &mut tails);
+        for t in tails {
+            if module
+                .funcs
+                .iter()
+                .any(|f| f.name == t && takes_session_resource(f))
+            {
+                worklist.push(t);
+            }
+        }
+    };
+    push_from(bound_body, &mut worklist);
+    while let Some(name) = worklist.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(wf) = module.funcs.iter().find(|f| f.name == name) {
+            workers.push(wf);
+            if let Some(b) = sess_clause_body(wf) {
+                push_from(b, &mut worklist);
+            }
+        }
+    }
+    workers
 }
 
 /// All variables bound (by patterns) anywhere in a session body.
@@ -3510,6 +3581,70 @@ struct SessGen<'a> {
     susp: HashMap<Span, i32>,       // suspension `Case` span → index (resume = index+1)
     susp_live: Vec<Vec<String>>,    // live vars in scope at each suspension
     tmp: u32,
+    /// Heap reclamation inside the task (`None` = untracked, the parMap workers).
+    own: Option<SessOwn<'a>>,
+}
+
+/// A session task's ownership state at one point: its owned heap locals (with drop keys) and
+/// the locals it has given away.
+type OwnState = (Vec<(String, String)>, HashSet<String>);
+
+/// What a session task needs to reclaim the heap values it owns: who owns which parameter, which
+/// calls return fresh values, and the per-path ownership state while generating.
+struct SessOwn<'a> {
+    funcs: &'a HashMap<String, &'a ast::Func>,
+    ret_alias: &'a HashMap<String, HashSet<usize>>,
+    /// worker parameters that some call site fills with a value the caller does not own: never
+    /// freed by the worker (`(worker, index)`; grown to a fixpoint by `session_fns`).
+    demoted: &'a std::cell::RefCell<HashSet<(String, usize)>>,
+    /// heap locals this task owns on the current path, with their drop key
+    owned: Vec<(String, String)>,
+    /// fresh heap temporaries of the operation being generated, freed once it has run
+    pending: Vec<(String, String)>,
+    /// heap locals given away on the current path (a later read would be a use after free)
+    moved: HashSet<String>,
+    /// the ownership state on entry to each suspension, for its resume region
+    at_susp: HashMap<i32, OwnState>,
+}
+
+/// The drop key of a session-held heap value whose destructor needs no per-instance seed.
+/// Other heap types are left unreclaimed inside a task (they are not tracked).
+fn sess_drop_key(t: &Type) -> Option<String> {
+    match t.head_con() {
+        Some(h @ ("String" | "Integer" | "Buffer")) => Some(h.to_string()),
+        _ => None,
+    }
+}
+
+/// The result type of a signature: what is left after its top-level arrows.
+fn sig_result(t: &Type) -> &Type {
+    match t {
+        Type::Arrow { to, .. } => sig_result(to),
+        _ => t,
+    }
+}
+
+/// Built-ins whose `String` result is freshly allocated and whose arguments are only read.
+fn sess_fresh_string_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "strAppend"
+            | "substr"
+            | "showFloat"
+            | "showInteger"
+            | "getEnv"
+            | "runCapture"
+            | "execCapture"
+            | "readFile"
+            | "readDir"
+            | "readDirTyped"
+            | "readDirListing"
+            | "readLine"
+            | "readSecret"
+            | "chr"
+            | "randHex"
+            | "getArg"
+    )
 }
 
 impl SessGen<'_> {
@@ -3517,6 +3652,92 @@ impl SessGen<'_> {
         let n = self.tmp;
         self.tmp += 1;
         format!("sess$t{n}")
+    }
+
+    /// Stops tracking `v` (moved, or given to an owner we cannot follow). `true` if it was owned.
+    fn take_var(&mut self, v: &str) -> bool {
+        let Some(o) = self.own.as_mut() else {
+            return false;
+        };
+        let before = o.owned.len() + o.pending.len();
+        o.owned.retain(|(n, _)| n != v);
+        o.pending.retain(|(n, _)| n != v);
+        before != o.owned.len() + o.pending.len()
+    }
+
+    /// The drop key of parameter `i` of session worker `w`, if the worker owns (and frees) it.
+    fn worker_param_key(&self, w: &str, i: usize) -> Option<String> {
+        let o = self.own.as_ref()?;
+        if o.demoted.borrow().contains(&(w.to_string(), i)) {
+            return None;
+        }
+        let f = o.funcs.get(w)?;
+        sess_drop_key(f.sig.as_ref()?.param_types().get(i)?)
+    }
+
+    /// Hands argument `a` to parameter `i` of worker `w` (a spawn, a hand-off, a loop). An owned
+    /// value moves with it; a value we do not own cannot become the worker's to free, so that
+    /// parameter is demoted (never freed by the worker) and generation is redone.
+    fn give_to_worker(&mut self, w: &str, i: usize, a: &Atom) {
+        let Atom::Var(v) = a else { return };
+        let was_owned = self.take_var(v);
+        let key = self.worker_param_key(w, i);
+        let Some(o) = self.own.as_mut() else { return };
+        if was_owned {
+            // moved: the worker frees it (or, when it does not own the parameter, nobody does —
+            // the value is shared with a task whose lifetime we cannot see)
+            o.moved.insert(v.clone());
+        } else if key.is_some() {
+            o.demoted.borrow_mut().insert((w.to_string(), i));
+        }
+    }
+
+    /// `drop` every listed value, then `k`.
+    fn drop_all(list: Vec<(String, String)>, k: Term) -> Term {
+        list.into_iter().rev().fold(k, |acc, (v, key)| {
+            Term::Drop(v, Some(key), Vec::new(), NO_SPAN, Box::new(acc))
+        })
+    }
+
+    /// The pending temporaries of the operation just generated.
+    fn take_pending(&mut self) -> Vec<(String, String)> {
+        self.own
+            .as_mut()
+            .map(|o| std::mem::take(&mut o.pending))
+            .unwrap_or_default()
+    }
+
+    /// Everything the task still owns on this path (its terminal: done, loop or hand-off).
+    fn take_all_owned(&mut self) -> Vec<(String, String)> {
+        let Some(o) = self.own.as_mut() else {
+            return Vec::new();
+        };
+        let mut all = std::mem::take(&mut o.owned);
+        all.append(&mut o.pending);
+        all
+    }
+
+    fn save_own(&self) -> Option<OwnState> {
+        self.own
+            .as_ref()
+            .map(|o| (o.owned.clone(), o.moved.clone()))
+    }
+
+    fn restore_own(&mut self, st: &Option<OwnState>) {
+        if let (Some(o), Some((ow, mv))) = (self.own.as_mut(), st) {
+            o.owned = ow.clone();
+            o.moved = mv.clone();
+            o.pending.clear();
+        }
+    }
+
+    /// Records the ownership state on entry to suspension `idx` (its resume region starts there).
+    fn note_susp(&mut self, idx: i32) {
+        if let Some(o) = self.own.as_mut() {
+            o.at_susp
+                .entry(idx)
+                .or_insert_with(|| (o.owned.clone(), o.moved.clone()));
+        }
     }
     fn sched_atom() -> Atom {
         Atom::Var(SESS_SCHED.to_string())
@@ -3537,7 +3758,13 @@ impl SessGen<'_> {
     fn val(&mut self, e: &Expr, binds: &mut Vec<(String, Rhs)>) -> Atom {
         match e {
             Expr::Int(n, _) => Atom::Int(*n),
-            Expr::Var(n, _) => Atom::Var(n.clone()),
+            Expr::Var(n, _) => {
+                if self.own.as_ref().is_some_and(|o| o.moved.contains(n)) {
+                    // read after it was handed to another task or an owning call
+                    return self.unsupported(binds);
+                }
+                Atom::Var(n.clone())
+            }
             Expr::BinOp(op, a, b, _) => {
                 let av = self.val(a, binds);
                 let bv = self.val(b, binds);
@@ -3567,7 +3794,37 @@ impl SessGen<'_> {
                     let name = name.to_string();
                     let atoms: Vec<Atom> = args.iter().map(|a| self.val(a, binds)).collect();
                     let t = self.fresh();
-                    binds.push((t.clone(), Rhs::Op(Op::CallDirect(name, atoms, None))));
+                    // ownership across the call: a `%1` heap parameter takes the argument; a
+                    // heap result is fresh unless the callee may return one of its parameters.
+                    let sig = self
+                        .own
+                        .as_ref()
+                        .and_then(|o| o.funcs.get(&name))
+                        .and_then(|f| f.sig.clone());
+                    if let Some(sig) = &sig {
+                        let mults = sig.param_mults();
+                        for (i, a) in atoms.iter().enumerate() {
+                            if mults.get(i) == Some(&ast::Mult::One) {
+                                if let Atom::Var(v) = a {
+                                    if self.take_var(v) {
+                                        if let Some(o) = self.own.as_mut() {
+                                            o.moved.insert(v.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    binds.push((
+                        t.clone(),
+                        Rhs::Op(Op::CallDirect(name.clone(), atoms, None)),
+                    ));
+                    if let (Some(sig), Some(o)) = (&sig, self.own.as_mut()) {
+                        let fresh = o.ret_alias.get(&name).is_none_or(|s| s.is_empty());
+                        if let Some(key) = sess_drop_key(sig_result(sig)).filter(|_| fresh) {
+                            o.pending.push((t.clone(), key));
+                        }
+                    }
                     Atom::Var(t)
                 } else if let Some((func, arity)) = head.and_then(sess_builtin_rt) {
                     if args.len() == arity {
@@ -3581,6 +3838,11 @@ impl SessGen<'_> {
                                 returns: true,
                             }),
                         ));
+                        if head.is_some_and(sess_fresh_string_builtin) {
+                            if let Some(o) = self.own.as_mut() {
+                                o.pending.push((t.clone(), "String".into()));
+                            }
+                        }
                         Atom::Var(t)
                     } else {
                         self.unsupported(binds)
@@ -3625,6 +3887,10 @@ impl SessGen<'_> {
             for a in &args {
                 vals.push(self.val(a, &mut binds));
             }
+            let me = self.name.to_string();
+            for (i, v) in vals.iter().enumerate() {
+                self.give_to_worker(&me, i, v);
+            }
             for (slot, v) in slots.iter().zip(vals) {
                 binds.push((
                     self.fresh(),
@@ -3635,24 +3901,81 @@ impl SessGen<'_> {
                 self.fresh(),
                 Rhs::Op(Op::StoreRaw(Self::state_atom(), 8, Atom::Int(0))),
             ));
+            // the previous iteration's values that were not passed on die here
+            let dead = self.take_all_owned();
             return wrap(
                 binds,
-                Term::Ret(Rhs::Op(Op::Atom(Atom::Int(2))), NO_SPAN),
+                Self::drop_all(dead, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(2))), NO_SPAN)),
                 NO_SPAN,
             );
+        }
+        // Hand-off: a tail call to ANOTHER session task (`handler s = do … ; sendAll s msg 0`).
+        // Nothing runs after a tail call, so spawning the callee as a fresh task with every
+        // parameter seeded and finishing this one is the same computation; the linear socket
+        // moves to the new task with its argument.
+        if let Some(h) = head.filter(|h| *h != self.name) {
+            if let Some(tl) = self.all.get(h) {
+                if !tl.param_slots.is_empty() && args.len() == tl.param_slots.len() {
+                    let (size, step, slots) = (tl.size, tl.step.clone(), tl.param_slots.clone());
+                    let mut binds = Vec::new();
+                    let cs = self.fresh();
+                    binds.push((
+                        cs.clone(),
+                        Self::rt(
+                            "axion_sess_alloc",
+                            vec![Self::sched_atom(), Atom::Int(size as i64)],
+                            true,
+                        ),
+                    ));
+                    let target = h.to_string();
+                    for (i, (slot, arg)) in slots.iter().zip(args.iter()).enumerate() {
+                        let v = self.val(arg, &mut binds);
+                        self.give_to_worker(&target, i, &v);
+                        binds.push((
+                            self.fresh(),
+                            Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
+                        ));
+                    }
+                    let fa = self.fresh();
+                    binds.push((fa.clone(), Rhs::Op(Op::FuncAddr(step))));
+                    binds.push((
+                        self.fresh(),
+                        Self::rt(
+                            "axion_sess_spawn",
+                            vec![Self::sched_atom(), Atom::Var(fa), Atom::Var(cs)],
+                            false,
+                        ),
+                    ));
+                    binds.push((
+                        self.fresh(),
+                        Rhs::Op(Op::StoreRaw(Self::state_atom(), 0, Atom::Int(0))),
+                    ));
+                    let dead = self.take_all_owned();
+                    return wrap(
+                        binds,
+                        Self::drop_all(dead, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1))), NO_SPAN)),
+                        NO_SPAN,
+                    );
+                }
+            }
         }
         let mut binds = Vec::new();
         let result = match sess_spine(tail).0 {
             Some("close" | "cancel") => Atom::Int(0), // effect as tail → unit
             _ => self.val(tail, &mut binds),
         };
+        // the task's result leaves with it (read by the scheduler/parent), not freed here
+        if let Atom::Var(v) = &result {
+            self.take_var(v);
+        }
         binds.push((
             self.fresh(),
             Rhs::Op(Op::StoreRaw(Self::state_atom(), 0, result)),
         ));
+        let dead = self.take_all_owned();
         wrap(
             binds,
-            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1))), NO_SPAN),
+            Self::drop_all(dead, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1))), NO_SPAN)),
             NO_SPAN,
         )
     }
@@ -3692,11 +4015,18 @@ impl SessGen<'_> {
         if let Expr::If(cond, then_e, else_e, _) = e {
             let mut binds = Vec::new();
             let c = self.val(cond, &mut binds);
+            let tmps = self.take_pending();
+            let st = self.save_own();
             let t = self.gen_cont(then_e);
+            self.restore_own(&st);
             let el = self.gen_cont(else_e);
+            self.restore_own(&st);
             return wrap(
                 binds,
-                Term::Ret(Rhs::If(c, Box::new(t), Box::new(el)), NO_SPAN),
+                Self::drop_all(
+                    tmps,
+                    Term::Ret(Rhs::If(c, Box::new(t), Box::new(el)), NO_SPAN),
+                ),
                 NO_SPAN,
             );
         }
@@ -3743,6 +4073,7 @@ impl SessGen<'_> {
     /// `(value, endpoint) <- recv ep; rest` — the only value suspension.
     fn gen_recv(&mut self, pat: &Pat, rest: &Expr, ep_expr: &Expr, span: Span) -> Term {
         let idx = self.susp[&span];
+        self.note_susp(idx);
         let mut binds = Vec::new();
         let ep = self.val(ep_expr, &mut binds);
         let pend = self.fresh();
@@ -3800,12 +4131,16 @@ impl SessGen<'_> {
         span: Span,
     ) -> Term {
         let idx = self.susp[&span];
+        self.note_susp(idx);
         let mut binds = Vec::new();
         let fd = self.val(args[0], &mut binds);
         let mut rt_args = vec![fd.clone()];
         for a in &args[1..] {
             rt_args.push(self.val(a, &mut binds));
         }
+        // the op only reads its arguments: its temporaries die once it ran, or before the task
+        // parks (the region re-runs on resume and computes them again)
+        let tmps = self.take_pending();
         let rv = self.fresh();
         binds.push((rv.clone(), Self::rt(op_ax, rt_args, true)));
         let wb = self.fresh();
@@ -3829,7 +4164,19 @@ impl SessGen<'_> {
                 Self::rt("ax_net_set_nonblocking", vec![Atom::Var(rv)], true),
             ));
         }
-        let cont = wrap(cbinds, self.gen_cont(rest), NO_SPAN);
+        let st = self.save_own();
+        // a received String is the task's to free
+        if op_ax == "ax_net_recv" {
+            if let (Some(v0), Some(o)) = (pv.first(), self.own.as_mut()) {
+                o.owned.push((v0.clone(), "String".into()));
+            }
+        }
+        let cont = wrap(
+            cbinds,
+            Self::drop_all(tmps.clone(), self.gen_cont(rest)),
+            NO_SPAN,
+        );
+        self.restore_own(&st);
         // blocked: park the fd (read=0 / write=1), then suspend.
         let park = (
             self.fresh(),
@@ -3839,7 +4186,7 @@ impl SessGen<'_> {
                 false,
             ),
         );
-        let blocked = wrap(vec![park], self.block(idx), NO_SPAN);
+        let blocked = Self::drop_all(tmps, wrap(vec![park], self.block(idx), NO_SPAN));
         wrap(
             binds,
             Term::Ret(
@@ -3864,6 +4211,7 @@ impl SessGen<'_> {
         let atoms: Vec<Atom> = args.iter().map(|a| self.val(a, &mut binds)).collect();
         let rv = self.fresh();
         binds.push((rv.clone(), Self::rt(op_ax, atoms, true)));
+        let tmps = self.take_pending();
         // set the created listener/socket non-blocking so accept/recv on it yield (async sockets).
         if set_nb {
             binds.push((
@@ -3876,12 +4224,13 @@ impl SessGen<'_> {
         if let Some(v0) = pv.first() {
             binds.push((v0.clone(), Rhs::Op(Op::Atom(Atom::Var(rv)))));
         }
-        wrap(binds, self.gen_cont(rest), NO_SPAN)
+        wrap(binds, Self::drop_all(tmps, self.gen_cont(rest)), NO_SPAN)
     }
 
     /// `case offer ep of { L1 d -> B1 ; … }` — a label suspension + dispatch.
     fn gen_offer(&mut self, ep_expr: &Expr, arms: &[(Pat, Expr)], span: Span) -> Term {
         let idx = self.susp[&span];
+        self.note_susp(idx);
         let mut binds = Vec::new();
         let ep = self.val(ep_expr, &mut binds);
         let pend = self.fresh();
@@ -3917,7 +4266,9 @@ impl SessGen<'_> {
                     ab.push((d.clone(), Rhs::Op(Op::Atom(ep.clone()))));
                 }
             }
+            let st = self.save_own();
             let t = wrap(ab, self.gen_cont(body), NO_SPAN);
+            self.restore_own(&st);
             arm_terms.push((tag, t));
         }
         // fold into nested ifs; the last arm is the (exhaustive) else
@@ -3978,13 +4329,15 @@ impl SessGen<'_> {
                     true,
                 ),
             ));
-            for (slot, arg) in slots.iter().zip(target_args.iter()) {
+            for (i, (slot, arg)) in slots.iter().zip(target_args.iter()).enumerate() {
                 let v = self.val(arg, &mut binds);
+                self.give_to_worker(&target, i, &v);
                 binds.push((
                     self.fresh(),
                     Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
                 ));
             }
+            let tmps = self.take_pending();
             let fa = self.fresh();
             binds.push((fa.clone(), Rhs::Op(Op::FuncAddr(step))));
             binds.push((
@@ -4001,7 +4354,7 @@ impl SessGen<'_> {
             if let Some(c) = pv.first() {
                 binds.push((c.clone(), Rhs::Op(Op::Atom(Atom::Int(0)))));
             }
-            return wrap(binds, self.gen_cont(rest), NO_SPAN);
+            return wrap(binds, Self::drop_all(tmps, self.gen_cont(rest)), NO_SPAN);
         }
         let mut binds = Vec::new();
         let a = self.fresh();
@@ -4031,8 +4384,9 @@ impl SessGen<'_> {
             ));
         }
         // already-applied leading args → the accumulator param slots (in order)
-        for (slot, arg) in slots.iter().zip(target_args.iter()) {
+        for (i, (slot, arg)) in slots.iter().zip(target_args.iter()).enumerate() {
             let v = self.val(arg, &mut binds);
+            self.give_to_worker(&target, i, &v);
             binds.push((
                 self.fresh(),
                 Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
@@ -4053,7 +4407,8 @@ impl SessGen<'_> {
         if let Some(c) = pv.first() {
             binds.push((c.clone(), Rhs::Op(Op::Atom(Atom::Var(a)))));
         }
-        wrap(binds, self.gen_cont(rest), NO_SPAN)
+        let tmps = self.take_pending();
+        wrap(binds, Self::drop_all(tmps, self.gen_cont(rest)), NO_SPAN)
     }
 
     /// `c <- send ep v; rest`.
@@ -4061,6 +4416,15 @@ impl SessGen<'_> {
         let mut binds = Vec::new();
         let ep = self.val(args[0], &mut binds);
         let v = self.val(args[1], &mut binds);
+        // the value leaves on the channel (the receiver does not free it: not tracked)
+        if let Atom::Var(x) = &v {
+            if self.take_var(x) {
+                if let Some(o) = self.own.as_mut() {
+                    o.moved.insert(x.clone());
+                }
+            }
+        }
+        let tmps = self.take_pending();
         binds.push((
             self.fresh(),
             Self::rt(
@@ -4074,7 +4438,7 @@ impl SessGen<'_> {
         if let Some(c) = pv.first() {
             binds.push((c.clone(), Rhs::Op(Op::Atom(ep))));
         }
-        wrap(binds, self.gen_cont(rest), NO_SPAN)
+        wrap(binds, Self::drop_all(tmps, self.gen_cont(rest)), NO_SPAN)
     }
 
     /// `c <- select Label ep; rest` — send the label's tag (internal choice, ⊕).
@@ -4146,10 +4510,32 @@ impl SessGen<'_> {
         self.susp_live = susps.iter().map(|(_, l)| l.clone()).collect();
 
         let nsusp = susps.len();
+        // the task owns its heap parameters (its spawner moved them in), unless demoted
+        let mut ps = Vec::new();
+        for p in pats {
+            pat_vars(p, &mut ps);
+        }
+        let me = self.name.to_string();
+        let init: Vec<(String, String)> = ps
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| self.worker_param_key(&me, i).map(|k| (v.clone(), k)))
+            .collect();
+        // region 0 (fresh entry) first: it records the ownership state at every suspension,
+        // which the resume regions start from
+        if let Some(o) = self.own.as_mut() {
+            o.owned = init;
+        }
+        let mut regions: Vec<Option<Term>> = (0..=nsusp).map(|_| None).collect();
+        regions[0] = Some(self.region(0, &susps, body));
+        for (rv, slot) in regions.iter_mut().enumerate().skip(1) {
+            *slot = Some(self.region(rv, &susps, body));
+        }
+        let mut take = |rv: usize| regions[rv].take().unwrap_or_else(|| panic!("region {rv}"));
         // resume==0 → fresh entry; resume==k → re-enter suspension #(k-1)
-        let mut chain = self.region(nsusp, &susps, body);
+        let mut chain = take(nsusp);
         for rv in (0..nsusp).rev() {
-            let then_t = self.region(rv, &susps, body);
+            let then_t = take(rv);
             let eq = self.fresh();
             chain = Term::Let(
                 eq.clone(),
@@ -4195,6 +4581,16 @@ impl SessGen<'_> {
         let (case_e, live) = &susps[rv - 1];
         let case_e = *case_e;
         let live = live.clone();
+        if let Some(o) = self.own.as_mut() {
+            let (owned, moved) = o
+                .at_susp
+                .get(&((rv - 1) as i32))
+                .cloned()
+                .unwrap_or_default();
+            o.owned = owned;
+            o.moved = moved;
+            o.pending.clear();
+        }
         let mut binds = Vec::new();
         for v in &live {
             binds.push((
@@ -4215,7 +4611,11 @@ fn sess_clause_body(f: &ast::Func) -> Option<&Expr> {
     }
 }
 
-fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn> {
+fn session_fns(
+    module: &ast::Module,
+    native_fns: &HashSet<String>,
+    ret_alias: &HashMap<String, HashSet<usize>>,
+) -> Vec<CoreFn> {
     let clause_body = sess_clause_body;
     let main = module.funcs.iter().find(|f| f.name == "main");
     let Some(bound_body) = main.and_then(clause_body).and_then(as_bound) else {
@@ -4228,22 +4628,8 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
             tags.insert(c.name.clone(), i as i64);
         }
     }
-    // collect spawn targets transitively
-    let mut workers: Vec<&ast::Func> = Vec::new();
-    let mut seen = HashSet::new();
-    let mut worklist = Vec::new();
-    spawn_targets(bound_body, &mut worklist);
-    while let Some(name) = worklist.pop() {
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        if let Some(wf) = module.funcs.iter().find(|f| f.name == name) {
-            workers.push(wf);
-            if let Some(b) = clause_body(wf) {
-                spawn_targets(b, &mut worklist);
-            }
-        }
-    }
+    // spawn targets and session hand-off targets, transitively
+    let workers = session_workers(module, bound_body);
     // layouts (needed by `spawn` to fill in a child's params)
     let mut layouts: HashMap<String, SessLayout> = HashMap::new();
     layouts.insert(
@@ -4262,7 +4648,9 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
         );
     }
 
-    let mut out = Vec::new();
+    let funcs: HashMap<String, &ast::Func> =
+        module.funcs.iter().map(|f| (f.name.clone(), f)).collect();
+    let demoted: std::cell::RefCell<HashSet<(String, usize)>> = Default::default();
     // one step function per task
     let step_of = |name: &str, pats: &[Pat], body: &Expr, layouts: &HashMap<String, SessLayout>| {
         let lay = &layouts[name];
@@ -4275,6 +4663,15 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
             susp: HashMap::new(),
             susp_live: Vec::new(),
             tmp: 0,
+            own: Some(SessOwn {
+                funcs: &funcs,
+                ret_alias,
+                demoted: &demoted,
+                owned: Vec::new(),
+                pending: Vec::new(),
+                moved: HashSet::new(),
+                at_susp: HashMap::new(),
+            }),
         };
         CoreFn {
             name: lay.step.clone(),
@@ -4286,14 +4683,23 @@ fn session_fns(module: &ast::Module, native_fns: &HashSet<String>) -> Vec<CoreFn
             body: g.build_step(pats, body),
         }
     };
-    out.push(step_of("main", &[], bound_body, &layouts));
-    for wf in &workers {
-        out.push(step_of(
-            &wf.name,
-            &wf.clauses[0].pats,
-            clause_body(wf).unwrap_or_else(|| panic!("where body")),
-            &layouts,
-        ));
+    // Generate until no worker parameter is newly demoted (a call site passing a value its task
+    // does not own): a demotion changes what that worker frees, and what its callers may move.
+    let mut out;
+    loop {
+        let before = demoted.borrow().len();
+        out = vec![step_of("main", &[], bound_body, &layouts)];
+        for wf in &workers {
+            out.push(step_of(
+                &wf.name,
+                &wf.clauses[0].pats,
+                clause_body(wf).unwrap_or_else(|| panic!("where body")),
+                &layouts,
+            ));
+        }
+        if demoted.borrow().len() == before {
+            break;
+        }
     }
     // driver `main`: create scheduler, alloc root state, run, return result. A socket server (a
     // worker takes a `Sock`/`Listener` — spawned fire-and-forget, no channel back) runs in PAR mode
@@ -4432,6 +4838,7 @@ fn parmap_worker_steps(
             susp: HashMap::new(),
             susp_live: Vec::new(),
             tmp: 0,
+            own: None,
         };
         let body = clause_body(wf).unwrap_or_else(|| panic!("parMap worker body"));
         let step_body = g.build_step(&wf.clauses[0].pats, body);
@@ -4928,7 +5335,6 @@ pub fn lower_with(
     // native session state machines (§11), now that we know which functions are
     // native (callable in value position from a worker's compute).
     let native_fn_names: HashSet<String> = native_ok.keys().cloned().collect();
-    let session = session_fns(orig_module, &native_fn_names);
     // §9 structured fork-join: worker state machines for every `parMap` target,
     // plus the map the lowering uses to emit `axion_par_map`. Runs pre-eta.
     let (parmap_steps, parmap_map) = parmap_worker_steps(orig_module, &native_fn_names);
@@ -4945,22 +5351,8 @@ pub fn lower_with(
         .and_then(as_bound)
     {
         native_ok.remove("main");
-        let mut worklist = Vec::new();
-        let mut seen = HashSet::new();
-        spawn_targets(bound_body, &mut worklist);
-        while let Some(name) = worklist.pop() {
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-            native_ok.remove(&name);
-            if let Some(b) = orig_module
-                .funcs
-                .iter()
-                .find(|f| f.name == name)
-                .and_then(sess_clause_body)
-            {
-                spawn_targets(b, &mut worklist);
-            }
+        for wf in session_workers(orig_module, bound_body) {
+            native_ok.remove(&wf.name);
         }
     }
     // function arities, to split over-applied spines (`(f a) b`): top-level functions
@@ -5713,8 +6105,11 @@ pub fn lower_with(
         ));
     }
     // native session state machines (§11): also hand-managed (task states live in
-    // the scheduler's nursery arena), so they bypass the drop analysis too.
-    result.extend(session);
+    // the scheduler's nursery arena), so they bypass the drop analysis too. Generated after the
+    // native functions so a task knows which calls may return one of their arguments (a result it
+    // must not free).
+    let ret_alias = crate::verify::ret_alias_summary(&result);
+    result.extend(session_fns(orig_module, &native_fn_names, &ret_alias));
     // §9 structured fork-join worker state machines (same hand-managed nursery
     // arena as the session steps — they bypass the drop analysis too).
     result.extend(parmap_steps);

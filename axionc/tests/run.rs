@@ -1745,6 +1745,14 @@ fn handing_a_list_to_an_owning_callee_takes_ownership() {
 }
 
 #[test]
+fn session_tasks_free_the_heap_values_they_own() {
+    // A session task's `String`s (a looping accumulator, a temporary given to a reading call, the
+    // last value at task end) used to leak every round. The worker also hands its task over to
+    // `loop` with a tail call. Leak-freedom itself is checked by sanitize.sh (LEAKFREE).
+    agree_across_backends("session_heap_reclaim.axi", "20\n");
+}
+
+#[test]
 fn every_bench_kernel_passes_the_verifier() {
     // bench/ is outside the oracle corpus and bench.sh only prints `-` for a kernel that fails to
     // build, so `simd` once sat rejected by a false AX0910 without failing anything.

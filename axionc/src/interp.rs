@@ -2278,6 +2278,25 @@ fn step(
             return Err(format!("offer: no branch handles the label '{label}'"));
         }
     }
+    // a branch of the session spine (`if n == 0 then do … close d else loop (n - 1) acc d`):
+    // evaluate the condition, then continue with the chosen arm, which may itself run session
+    // ops. The native session lowering has the same rule (`SessGen::gen_cont`).
+    if let Expr::If(c, t, el, _) = &task.cont {
+        let chosen = match eval(prog, &task.env, c)? {
+            Value::Bool(b) => {
+                if b {
+                    t
+                } else {
+                    el
+                }
+            }
+            other => return Err(format!("if: expected a Bool, got {}", type_name(&other))),
+        };
+        return Ok(StepOut::Went(Task {
+            cont: chosen.as_ref().clone(),
+            env: task.env,
+        }));
+    }
     // `case <op> of pat -> rest` → runs, binds `pat`, continues with `rest`.
     if let Expr::Case(scrut, arms, _) = &task.cont {
         if arms.len() == 1 {
