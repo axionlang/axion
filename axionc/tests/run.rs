@@ -1605,6 +1605,27 @@ fn filter_over_heap_specializes_and_runs_on_all_backends() {
 }
 
 #[test]
+fn array_of_heap_elements_is_rejected_natively() {
+    // An Array of heap values double-freed natively (each slot holds the same pointer, and each
+    // consuming read freed it) while the drop verifier saw nothing: array elements are raw words.
+    // Both native backends now refuse with AX0914, also through a generic wrapper; the
+    // interpreter still runs it.
+    let fx = fixture("array_heap_elem_reject.axi");
+    for flags in [vec!["--release"], vec!["--backend", "cranelift"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{flags:?} must reject: {err}");
+        assert!(
+            err.contains("AX0914") && err.contains("List Int"),
+            "{flags:?}: {err}"
+        );
+    }
+    let out = axionc().arg(&fx).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
+}
+
+#[test]
 fn array_out_of_bounds_index_aborts_not_reads_garbage() {
     // Bounds safety: an out-of-bounds `getArray` must be a CONTROLLED abort (the runtime
     // bounds-check), never a silent OOB read returning garbage (UB). Asserts the process does

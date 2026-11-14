@@ -881,6 +881,34 @@ pub fn run_cli() -> ExitCode {
             }
             return ExitCode::FAILURE;
         }
+        // A native `Array` stores each element as a raw word and owns nothing inside it:
+        // `newArray` puts the same value in every slot, `getArray` hands that word out as if
+        // it were a fresh value, and freeing the array frees only its block. A HEAP element
+        // would therefore be leaked, or freed once per read that consumes it (a double free).
+        // Interp is unaffected (Rust reclaims its values).
+        if !analysis.heap_array_elems.is_empty() {
+            for (span, ty) in &analysis.heap_array_elems {
+                let d = Diagnostic::error(
+                    "AX0914",
+                    format!("an `Array` cannot hold `{ty}` in a native build"),
+                )
+                .label(
+                    span.0,
+                    span.1,
+                    "this puts a heap value into an Array (here, or through the generic function \
+                     called here)",
+                )
+                .with_help(
+                    "native arrays hold only scalar elements: Int, Float, Bool, Char, or a `data` \
+                     type whose constructors take no fields. Store a heap value in a List or a \
+                     `data` structure instead, or keep the scalars in the array and the heap \
+                     values elsewhere (indexed by position). The interpreter (`axionc <file>`) \
+                     runs this program as is.",
+                );
+                eprint!("{}", d.render(&path, &src, &lines));
+            }
+            return ExitCode::FAILURE;
+        }
         let lowered = core::lower_with(
             &module,
             &inplace,
@@ -1308,6 +1336,7 @@ pub fn analyze_module(
     module.funcs.extend(mono.synth_shows);
     analysis.makecon_tys = mono.makecon_tys;
     analysis.array_tys = mono.array_tys;
+    analysis.heap_array_elems = mono.heap_array_elems;
     analysis.integer_lits = mono.integer_lits;
     analysis.where_ret_tys = mono.where_ret_tys;
     analysis.where_param_tys = mono.where_param_tys;
@@ -6638,6 +6667,18 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
              Axion types effects as ordinary String/Int values. Move the call into a\n\
              `do` block (or a `let` in the function body), which is evaluated strictly\n\
              and in order."
+        }
+        "AX0914" => {
+            "AX0914 — a native build cannot put a heap value into an `Array`. A native\n\
+             Array stores raw words it does not own: `newArray` writes the same value\n\
+             into every slot, `getArray` returns it as a fresh value, and freeing the\n\
+             array frees only its block. A heap element (List, String, Integer, tuple,\n\
+             closure, or a `data` value with fields) would leak, or be freed twice once\n\
+             two reads consume it. Elements may be Int, Float, Bool, Char, or a `data`\n\
+             type whose constructors take no fields. The error points at the\n\
+             newArray/setArray call, or at the call that instantiates a generic function\n\
+             passing its type variable on to one. Keep heap values in a List or `data`\n\
+             structure instead. The interpreter runs the program unchanged."
         }
         _ => return None,
     };

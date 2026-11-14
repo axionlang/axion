@@ -36,23 +36,28 @@ main = imperative $ do
   getArray a 0             -- returns 10
 ```
 
-## Phase 2c: Deep-drop for parametric elements — NOT YET REACHABLE
+## Element types: scalars only in native builds (AX0914)
 
-> **Status (2026-08, see `validation-report.md` F-2): aspirational / dead code.**
-> The API is `Int`-valued only — `newArray :: Int -> Int -> Array a`, `getArray ::
-> Array a -> Int -> Int`, `setArray :: Array a -> Int -> Int -> Array a` — so the
-> element type `a` is **phantom**: no operation moves a value of type `a` into or out
-> of an array. Consequently `Op::ArrayNew.elem_ty` never resolves to a concrete heap
-> type in a well-typed program (nothing constrains it, and `array_ret_tys` is stored
-> un-zonked), the `axion_drop_Array$List$P` generator is **never triggered**, and every
-> array is freed by the flat `axion_drop_Array` (`axion_array_free`). Verified via
-> `--emit core`. Making this real needs `newArray`/`setArray` to accept element-typed
-> values and the element type to be threaded (zonked) to the call site.
+`newArray :: Int -> a -> Array a`, `getArray :: Array a -> Int -> a` and
+`setArray :: Array a -> Int -> a -> Array a` are generic in the element type, so a program
+can put any value into an array. Natively, though, an element is a raw word the array does
+not own: `newArray` writes the same word into every slot, `getArray` returns it as if it were
+a fresh value, and freeing the array frees only its block. With a heap element (a `List`,
+`String`, `Integer`, tuple, closure, or a `data` value with fields) that leaks, or double-frees
+once two reads consume the element. The drop verifier cannot see it, since it treats elements
+as scalars.
 
-The *intended* design (once elements can be heap): when the element type is a concrete
-heap type (`List P`, `Maybe P`), the compiler threads it through inference → lowering →
-destructor generation, emitting `axion_drop_Array$List$P` that loops `i = n-1..0`,
-loads `elem[i]`, calls `axion_drop_List$P`, and frees the shell.
+So a native build rejects an array whose element type is heap (`error[AX0914]`), reporting
+the `newArray`/`setArray` call, or the call to a generic function that passes its type
+variable on to one of them (inference traces the variable through every instantiation). The
+allowed elements are `Int`, `Float`, `Bool`, `Char`, and `data` types whose constructors take
+no fields (immediate tags). The interpreter runs any element type. Fixture:
+`array_heap_elem_reject.axi`.
+
+Real heap-element arrays would need `newArray` to copy its initial value into each slot,
+`getArray` to return a copy or a borrow, `setArray` to free the element it replaces, and a
+per-element destructor (`axion_drop_Array$List$P`, whose generator already exists in
+`core.rs` but is never triggered: `Op::ArrayNew.elem_ty` stays `None`).
 
 ## Imperative block
 
@@ -70,9 +75,9 @@ main = imperative $ do
 
 | Operation     | Signature                              | Purpose                          |
 |---------------|----------------------------------------|----------------------------------|
-| `newArray`    | `Int -> Int -> Array a`                | Allocate n elements, init to val |
-| `getArray`    | `Array a -> Int -> Int`                | Read element at index            |
-| `setArray`    | `Array a %1 -> Int -> Int -> Array a`  | Write element in-place (linear)  |
+| `newArray`    | `Int -> a -> Array a`                  | Allocate n elements, init to val |
+| `getArray`    | `Array a -> Int -> a`                  | Read element at index            |
+| `setArray`    | `Array a %1 -> Int -> a -> Array a`    | Write element in-place (linear)  |
 | `lenArray`    | `Array a -> Int`                       | Number of elements               |
 
 ## Runtime representation
@@ -108,9 +113,8 @@ limitation shared with `Buffer` operations.
   and **`abort()`** with `array bounds — index N out of range [0, len)` on OOB
   (`axion_rt.c`) — a clean abort, not memory corruption or a silent 0/no-op. No
   *static* bounds checking.
-- **Interpreter unsupported.** `newArray`/`imperative` are native-only (shared with
-  `Buffer`); Array programs run under `--dev`/`--release`, not the interpreter.
+- **Interpreter.** Runs Array programs too (any element type), alongside `--dev`/`--release`.
 - **No bulk operations.** No `fill`, `copy`, or `iota` — each element must be
   individually set/read.
-- **`Int` elements only in practice.** The element type is phantom (see Phase 2c) —
-  arrays hold `i64` values; heap-typed elements are not yet reachable.
+- **Scalar elements only natively.** `Int`, `Float`, `Bool`, `Char` or a field-less `data`
+  type; a heap element type is rejected with AX0914 (see above).

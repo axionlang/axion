@@ -94,6 +94,18 @@ struct Infer<'a> {
     /// `newArray` call span → the inferred element type (for monomorphized
     /// array destructor generation, analog to `con_ret_tys`).
     array_ret_tys: HashMap<Span, Ty>,
+    /// Every element type put into an `Array` (`newArray`'s initial value, `setArray`'s
+    /// value), by the occurrence span: the native backends store elements as raw words with no
+    /// ownership, so a HEAP element must be rejected there (AX0914). Resolved in
+    /// `heap_array_elems`.
+    arr_elems: Vec<(Ty, Span)>,
+    /// Each use of a generic binding: (scheme var → the fresh var it was instantiated to, use
+    /// span). Traces an element type that is still a type variable at `newArray`/`setArray`
+    /// out to the call sites that fix it.
+    inst_uses: Vec<(HashMap<u32, u32>, Span)>,
+    /// For each signed top-level function, its scheme var → the fresh var its BODY was checked
+    /// against (`check_body`).
+    body_insts: Vec<HashMap<u32, u32>>,
     /// Phase 4: result type at each application span (for the concrete drop key of
     /// a call/rtcall-bound local of a parametric heap type).
     call_ret_tys: HashMap<Span, Ty>,
@@ -179,6 +191,9 @@ pub struct Mono {
     pub makecon_tys: HashMap<Span, Type>,
     /// Phase 2c: `newArray` call-site return types (span → Array element type)
     pub array_tys: HashMap<Span, Type>,
+    /// Spans where a HEAP value is put into an `Array` (directly, or through a generic function
+    /// instantiated at a heap type), with the element type shown: rejected natively (AX0914).
+    pub heap_array_elems: Vec<(Span, String)>,
     /// Phase 1b: integer-literal spans that resolved to `Integer` (rewritten `fromInt n`).
     pub integer_lits: std::collections::HashSet<Span>,
     /// Phase 1b: integer-literal (EXPRESSION) spans that resolved to a USER numeric type with a
@@ -409,6 +424,9 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         cur_fn: String::new(),
         con_ret_tys: HashMap::new(),
         array_ret_tys: HashMap::new(),
+        arr_elems: Vec::new(),
+        inst_uses: Vec::new(),
+        body_insts: Vec::new(),
         call_ret_tys: HashMap::new(),
         lam_param_tys: HashMap::new(),
         lam_full_tys: HashMap::new(),
@@ -621,7 +639,15 @@ impl Infer<'_> {
     /// signature). Emits that function's type diagnostics and accumulates its
     /// obligations (discharged in [`Infer::finish`]).
     fn check_body(&mut self, env: &Env, f: &Func) {
-        let declared = env.get(&f.name).cloned().map(|s| self.instantiate(&s));
+        let declared = env.get(&f.name).cloned().map(|s| {
+            let (ty, map) = self.instantiate_map(&s);
+            // the body sees the scheme's vars as these fresh vars: a USE elsewhere instantiates
+            // the scheme var, so record the pair for `heap_array_elems`' tracing (fresh ↔ scheme).
+            if !map.is_empty() {
+                self.body_insts.push(map);
+            }
+            ty
+        });
         // Checking mode (parameters inherit the declared types) ONLY when there is a
         // signature. Without a signature, `declared` is a `Var` placeholder that
         // `peel_fun` cannot split into arrows — infer freely and unify the
@@ -702,6 +728,75 @@ impl Infer<'_> {
     /// The post-passes: integer-literal defaulting, exhaustiveness, obligation
     /// discharge, and the monomorphization artifacts. Runs over whatever bodies
     /// were checked (all of them for [`infer`], one for a per-decl partial).
+    /// The element types put into an `Array` that are (or are instantiated to) HEAP types. An
+    /// element still a type variable is traced through every use that instantiates it: a
+    /// body var of a signed function maps back to its scheme var (`body_insts`), and each use
+    /// of that scheme (`inst_uses`) yields the instantiated type at the use's span, checked in
+    /// turn. Conservative: a var shared by several schemes is followed into all of them.
+    fn heap_array_elems(&mut self) -> Vec<(Span, String)> {
+        // resolved body var id → scheme var ids
+        let mut to_scheme: HashMap<u32, Vec<u32>> = HashMap::new();
+        for m in &self.body_insts {
+            for (sv, fv) in m {
+                if let Ty::Var(id) = self.apply(&Ty::Var(*fv)) {
+                    to_scheme.entry(id).or_default().push(*sv);
+                }
+            }
+        }
+        // scheme var → (instantiated var, use span)
+        let mut uses: HashMap<u32, Vec<(u32, Span)>> = HashMap::new();
+        for (m, sp) in &self.inst_uses {
+            for (sv, fv) in m {
+                uses.entry(*sv).or_default().push((*fv, *sp));
+            }
+        }
+        let mut out: Vec<(Span, String)> = Vec::new();
+        let mut seen_vars: HashSet<u32> = HashSet::new();
+        let mut work: Vec<(Ty, Span)> = self.arr_elems.clone();
+        while let Some((t, sp)) = work.pop() {
+            let t = self.apply(&t);
+            let mut vars = HashSet::new();
+            free_vars(&t, &mut vars);
+            if !self.is_scalar_elem(&t) && !matches!(t, Ty::Var(_)) {
+                out.push((sp, show_ty(&t)));
+                continue;
+            }
+            // a bare var: follow it to the uses that instantiate it
+            for v in vars {
+                if !seen_vars.insert(v) {
+                    continue;
+                }
+                let mut svs = vec![v];
+                svs.extend(to_scheme.get(&v).cloned().unwrap_or_default());
+                for sv in svs {
+                    for (fv, usp) in uses.get(&sv).cloned().unwrap_or_default() {
+                        work.push((Ty::Var(fv), usp));
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|(sp, _)| *sp);
+        out.dedup_by_key(|(sp, _)| *sp);
+        out
+    }
+
+    /// An `Array` element the native backends store as a raw word with nothing to reclaim: a
+    /// primitive scalar, or a `data` type whose constructors are all nullary (an immediate tag).
+    fn is_scalar_elem(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Con(n, args) if args.is_empty() => {
+                matches!(n.as_str(), "Int" | "Float" | "Bool" | "Char")
+                    || (self.cons.values().any(|(d, _)| d == n)
+                        && self
+                            .cons
+                            .values()
+                            .filter(|(d, _)| d == n)
+                            .all(|(_, fs)| fs.is_empty()))
+            }
+            _ => false,
+        }
+    }
+
     fn finish(&mut self, module: &Module) -> Mono {
         let inf = self;
         // Phase 1b: resolve each integer literal. If context unified it to `Integer`,
@@ -764,6 +859,7 @@ impl Infer<'_> {
                 ty_to_ast(&resolved).map(|ast| (sp, ast))
             })
             .collect();
+        mono.heap_array_elems = inf.heap_array_elems();
         // `where`-local return types: reify each to its concrete RESULT type (peel the
         // parameter arrows) so the lowering can key a call to a heap-returning local. Only
         // ground result types survive `ty_to_ast` (a polymorphic local returning a bare
@@ -3416,6 +3512,7 @@ impl<'a> Infer<'a> {
             specs,
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
+            heap_array_elems: Vec::new(),
             integer_lits: std::collections::HashSet::new(),
             user_lits: std::collections::HashMap::new(),
             synth_shows: synth_show_funcs(&show_needs, &decls),
@@ -3559,6 +3656,7 @@ impl<'a> Infer<'a> {
             specs,
             makecon_tys: HashMap::new(),
             array_tys: HashMap::new(),
+            heap_array_elems: Vec::new(),
             integer_lits: std::collections::HashSet::new(),
             user_lits: std::collections::HashMap::new(),
             synth_shows: Vec::new(),
@@ -3749,13 +3847,18 @@ impl<'a> Infer<'a> {
     }
 
     fn instantiate(&mut self, s: &Scheme) -> Ty {
+        self.instantiate_map(s).0
+    }
+
+    /// `instantiate`, also returning the scheme var → fresh var map.
+    fn instantiate_map(&mut self, s: &Scheme) -> (Ty, HashMap<u32, u32>) {
         let mut map = HashMap::new();
         for v in &s.vars {
             if let Ty::Var(f) = self.fresh() {
                 map.insert(*v, f);
             }
         }
-        rename_vars(&s.ty, &map)
+        (rename_vars(&s.ty, &map), map)
     }
 
     fn generalize(&self, env: &Env, ty: &Ty) -> Scheme {
@@ -3948,9 +4051,26 @@ impl<'a> Infer<'a> {
             Expr::Str(_, _) => Ty::Con("String".into(), vec![]),
             Expr::Var(n, span) => {
                 let ty = match env.get(n) {
-                    Some(s) => self.instantiate(s),
+                    Some(s) => {
+                        let (ty, map) = self.instantiate_map(s);
+                        if !map.is_empty() {
+                            self.inst_uses.push((map, *span));
+                        }
+                        ty
+                    }
                     None => self.fresh(), // name not found: reported by check.rs
                 };
+                // an element put into an `Array` (AX0914, `heap_array_elems`)
+                let elem_arg = match n.as_str() {
+                    "newArray" => Some(1),
+                    "setArray" => Some(2),
+                    _ => None,
+                };
+                if let Some(i) = elem_arg {
+                    if let Some(t) = nth_param(&ty, i) {
+                        self.arr_elems.push((t, *span));
+                    }
+                }
                 if self.record_var_tys {
                     self.var_use_tys.insert(*span, ty.clone());
                 }

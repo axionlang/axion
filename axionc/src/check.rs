@@ -93,6 +93,8 @@ pub struct Analysis {
     pub makecon_tys: HashMap<Span, Type>,
     /// Phase 2c: `newArray` call-site types for mono array destructors
     pub array_tys: HashMap<Span, Type>,
+    /// Spans where a HEAP value is put into an `Array` (rejected natively, AX0914).
+    pub heap_array_elems: Vec<(Span, String)>,
     /// Literal patterns inference resolved to `Integer` (matched by bignum `==`).
     pub integer_lits: HashSet<Span>,
     /// Generic pure-escape functions (consume-inferred `%1` on a var-carrying param
