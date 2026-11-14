@@ -8,8 +8,6 @@
 
 
 
-
-
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       ret 0  ; Δ{}
@@ -23,43 +21,35 @@
     ret 0  ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t1
-  drop _t2
   else
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _t0 = + a b  ; Δ{}
   let _t0 = call adder 10 5  ; Δ{}
-  let _t0 = callclo g x  ; Δ{}
-  let _t1 = closure lam$0  ; Δ{} · makes heap
-  let _t2 = closure lam$1  ; Δ{_t1} · makes heap
-  let _t3 = call compose _t1 _t2 10  ; Δ{_t1 _t2}
-  let _t4 = + _t0 _t3  ; Δ{}
-  let _t5 = call mk 1 2 3  ; Δ{}
-  let _t6 = + _t4 _t5  ; Δ{}
-  let _t7 = call main$wadd 100  ; Δ{}
-  let _t8 = callclo _t7 8  ; Δ{}
+  let _t0 = call dbl x  ; Δ{}
+  let _t1 = call compose$$inc$$dbl 10  ; Δ{}
+  let _t2 = + _t0 _t1  ; Δ{}
+  let _t3 = call mk 1 2 3  ; Δ{}
+  let _t4 = + _t2 _t3  ; Δ{}
+  let _t5 = call main$wadd 100  ; Δ{}
+  let _t6 = callclo _t5 8  ; Δ{}
   ret + _t0 c  ; Δ{}
-  ret + _t6 _t8  ; Δ{}
+  ret + _t4 _t6  ; Δ{}
   ret + a b  ; Δ{}
   ret + x 1  ; Δ{}
   ret + x x  ; Δ{}
   ret + x y  ; Δ{}
   ret 0  ; Δ{}
-  ret call dbl eta$3  ; Δ{}
-  ret call inc eta$1  ; Δ{}
-  ret callclo f _t0  ; Δ{}
-  ret closure lam$2 a  ; Δ{} · makes heap
+  ret call inc _t0  ; Δ{}
+  ret closure lam$0 a  ; Δ{} · makes heap
   ret rtcall axion_array_free _p  ; Δ{}
 adder x y  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
-compose f g x  =
+compose$$inc$$dbl x  =
 dbl x  =
 inc x  =
-lam$0 [env ]eta$1  =
-lam$1 [env ]eta$3  =
-lam$2 [env a]b  =
+lam$0 [env a]b  =
 main  =
 main$wadd a  =
 mk a b c  =

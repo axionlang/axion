@@ -304,29 +304,39 @@ element-aliasing — and thus `AX0912` — simply vanishes. The structural borro
 (`take`/`drop`/`head`/`last`) reach the same place the other way: a `%1` list
 parameter in the prelude.
 
-What remains rejected is the **generic / higher-order** case, where the predicate is
-*not* statically resolvable — a runtime closure parameter, or one pulled out of a
-data structure:
+The same holds when the predicate reaches `filter` through a **closure parameter** of your
+own function, as long as every call of that function passes a known closure:
 
 ```axion
 keepWith :: (Integer -> Bool) -> List Integer -> Integer
-keepWith p xs = foldr addI 0 (filter p xs)   -- AX0912: `filter` over a heap element
+keepWith p xs = foldr addI 0 (filter p xs)
+
+both :: List Integer -> List Integer -> Integer -> Integer
+both ys zs k = keepWith gt2 ys + keepWith (\n -> n > k) zs
 ```
 
-Here specialization cannot fire (the predicate `p` is unknown at the `filter` call),
-so the generic `filter` stays an alias-borrower. Marking its list parameter `%1`
+Specialization clones `keepWith` once per closure it is called with (`keepWith$$gt2`), so
+the `filter` inside each clone sees a known predicate. This covers named functions,
+lambdas (capturing ones too, including captures of `let`/`do` locals), a lambda bound by
+`let p = \x -> …` and then passed by name, and functions taking several closures
+(`keepBoth p q xs`, specialized one closure at a time). The generic `keepWith` is dropped
+once every call has been specialized (`tests/fixtures/hof_closure_param.axi`).
+
+What remains rejected is a predicate that is **not known at any call site**: one pulled
+out of a data structure, a function stored and passed around as a value, or a `let`-bound
+lambda whose captured variable is re-bound before the call. There specialization cannot
+fire, so the generic `filter` stays an alias-borrower. Marking its list parameter `%1`
 is not enough on its own: the element `y` is handed to the predicate as `p y` through
 the generic closure call (`callclo`), whose calling convention **moves** its
 argument — so after `p y` the element can no longer be safely kept or freed. Closing
 this needs a *generic* closure-call **borrow** convention for the retained element
 (sound because a `… -> Bool` predicate's result cannot carry the element out) — the
 closure-argument-linearity arc, verifier-backed (`AX0910`/`AX0911` remain the net for
-any misinference). It is **deferred**: the benefit (higher-order combinator code over
-heap lists) is narrow, and it is the most delicate slice of the reclamation work.
+any misinference). It is **deferred**.
 
-Workarounds today, in order of preference: pass the predicate **literally** at the
-`filter` site so it specializes; wrap the element in a named `data` record instead of
-a bare heap element where the surrounding code allows it; or run the program on the
+Workarounds, in order of preference: pass the predicate (or a function that takes it)
+directly at the call; wrap the element in a named `data` record instead of a bare heap
+element where the surrounding code allows it; or run the program on the
 **interpreter** (`axionc <file>`), which reclaims via Rust `Drop` and has no aliasing
 hazard.
 

@@ -10,10 +10,7 @@
 
 
 
-
       drop _t0 : Integer
-      drop xs
-      drop xs
       drop xs
       drop xs
       drop xs
@@ -28,7 +25,6 @@
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = call reduceWith f z ys  ; Δ{y ys} · moves{ys} · makes Integer
       let _t0 = call reduceWith$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
       let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t1 = call map$Int f ys  ; Δ{ys} · moves{ys} · makes List
@@ -39,15 +35,11 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
-      ret callclo f y _t0  ; Δ{_t0 y} · moves{_t0 y}
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
       ret con Nil  ; Δ{}
       ret z  ; Δ{}
-      ret z  ; Δ{}
     Cons y ys ->
     Cons y ys ->
-    Cons y ys ->
-    Nil ->
     Nil ->
     Nil ->
     else
@@ -94,7 +86,6 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  ; Δ{}
   drop _t1
   drop _t4 : Integer
   drop _t5 : String
@@ -126,7 +117,6 @@
   ret _d1000000  ; Δ{}
   ret case xs of
   ret case xs of
-  ret case xs of
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
@@ -144,5 +134,4 @@ map$Int f xs  =
 range lo hi  =
 rangeFused lo hi c n  =
 rangeFusedSum lo hi acc  =
-reduceWith f z xs  =
 reduceWith$$addI z xs  =

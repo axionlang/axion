@@ -14,10 +14,10 @@
         drop y : String
         drop y : String
         drop ys : List$String
-        let _t1 = call filter$$hoflam14 ys  ; Δ{y ys} · moves{ys} · makes List$String
-        let _t1 = call takeWhile$$hoflam10 ys  ; Δ{y ys} · moves{ys} · makes List$String
-        ret call dropWhile$$hoflam12 ys  ; Δ{ys} · moves{ys} · makes List$String
-        ret call filter$$hoflam14 ys  ; Δ{ys} · moves{ys} · makes List$String
+        let _t1 = call filter$$hoflam19 ys  ; Δ{y ys} · moves{ys} · makes List$String
+        let _t1 = call takeWhile$$hoflam15 ys  ; Δ{y ys} · moves{ys} · makes List$String
+        ret call dropWhile$$hoflam17 ys  ; Δ{ys} · moves{ys} · makes List$String
+        ret call filter$$hoflam19 ys  ; Δ{ys} · moves{ys} · makes List$String
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$String
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$String
         ret con Cons y ys  ; Δ{y ys} · moves{y ys} · makes List$String
@@ -37,9 +37,9 @@
       let _dd1 = call axion_drop_List$String _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
-      let _t0 = call hoflam10 y  ; Δ{y ys}
-      let _t0 = call hoflam12 y  ; Δ{y ys}
-      let _t0 = call hoflam14 y  ; Δ{y ys}
+      let _t0 = call hoflam15 y  ; Δ{y ys}
+      let _t0 = call hoflam17 y  ; Δ{y ys}
+      let _t0 = call hoflam19 y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
       ret + 1 _t0  ; Δ{}
       ret 0  ; Δ{}
@@ -100,17 +100,17 @@
   let _t0 = rtcall axion_str_len s  ; Δ{}
   let _t0 = rtcall axion_str_len s  ; Δ{}
   let _t0 = rtcall axion_str_len s  ; Δ{}
-  let _t1 = call takeWhile$$hoflam10 _t0  ; Δ{_t0} · moves{_t0} · makes List$String
+  let _t1 = call takeWhile$$hoflam15 _t0  ; Δ{_t0} · moves{_t0} · makes List$String
   let _t1 = con Cons "dd" _t0  ; Δ{_t0} · moves{_t0} · makes List$String
   let _t2 = call length _t1  ; Δ{_t1}
   let _t2 = con Cons "c" _t1  ; Δ{_t1} · moves{_t1} · makes List$String
   let _t3 = call names  ; Δ{} · makes List$String
   let _t3 = con Cons "bb" _t2  ; Δ{_t2} · moves{_t2} · makes List$String
-  let _t4 = call dropWhile$$hoflam12 _t3  ; Δ{_t3} · moves{_t3} · makes List$String
+  let _t4 = call dropWhile$$hoflam17 _t3  ; Δ{_t3} · moves{_t3} · makes List$String
   let _t5 = call length _t4  ; Δ{_t4}
   let _t6 = + _t2 _t5  ; Δ{}
   let _t7 = call names  ; Δ{} · makes List$String
-  let _t8 = call filter$$hoflam14 _t7  ; Δ{_t7} · moves{_t7} · makes List$String
+  let _t8 = call filter$$hoflam19 _t7  ; Δ{_t7} · moves{_t7} · makes List$String
   let _t9 = call length _t8  ; Δ{_t8}
   ret + _t6 _t9  ; Δ{}
   ret 0  ; Δ{}
@@ -127,12 +127,12 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$String _p  =
-dropWhile$$hoflam12 xs  =
-filter$$hoflam14 xs  =
-hoflam10 s  =
-hoflam12 s  =
-hoflam14 s  =
+dropWhile$$hoflam17 xs  =
+filter$$hoflam19 xs  =
+hoflam15 s  =
+hoflam17 s  =
+hoflam19 s  =
 length xs  =
 main  =
 names  =
-takeWhile$$hoflam10 xs  =
+takeWhile$$hoflam15 xs  =

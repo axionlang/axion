@@ -1716,6 +1716,16 @@ fn tuple_reader_borrows_its_tuple() {
 }
 
 #[test]
+fn closure_parameters_specialize_natively() {
+    // A user HOF that passes its closure parameter on to `filter` (`keepWith p xs`) is cloned
+    // per closure it is called with, so the native build no longer stops at AX0912: named,
+    // capturing, `let`-bound and two-closure cases, a recursive HOF, and `map` building records
+    // from Ints all agree with the interpreter, as does a hand-written records-from-`List Int`
+    // builder the verifier used to reject.
+    agree_across_backends("hof_closure_param.axi", "12\n2\n2\n2\n3\n40\n15\n5\n");
+}
+
+#[test]
 fn handing_a_list_to_an_owning_callee_takes_ownership() {
     // `keepW` gives its whole list to `filter big`, which owns it, so `keepW` owns it too and
     // calling it twice on one list is AX0001. It used to borrow, and the native build freed the

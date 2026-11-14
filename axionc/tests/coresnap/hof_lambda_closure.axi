@@ -6,8 +6,8 @@
 
 
         drop y : Integer
-        let _t1 = call filter$$hoflam10 ys  ; Δ{y ys} · moves{ys} · makes List$Integer
-        ret call filter$$hoflam10 ys  ; Δ{ys} · moves{ys} · makes List$Integer
+        let _t1 = call filter$$hoflam15 ys  ; Δ{y ys} · moves{ys} · makes List$Integer
+        ret call filter$$hoflam15 ys  ; Δ{ys} · moves{ys} · makes List$Integer
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Integer
       drop xs
       drop xs
@@ -18,7 +18,7 @@
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = call hoflam10 y  ; Δ{y ys}
+      let _t0 = call hoflam15 y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
       ret + 1 _t0  ; Δ{}
       ret 0  ; Δ{}
@@ -71,7 +71,7 @@
   let _t4 = con Cons _t2 _t3  ; Δ{_t0 _t1 _t2 _t3} · moves{_t2 _t3} · makes List$Integer
   let _t5 = con Cons _t1 _t4  ; Δ{_t0 _t1 _t4} · moves{_t1 _t4} · makes List$Integer
   let _t6 = con Cons _t0 _t5  ; Δ{_t0 _t5} · moves{_t0 _t5} · makes List$Integer
-  let _t7 = call filter$$hoflam10 _t6  ; Δ{_t6} · moves{_t6} · makes List$Integer
+  let _t7 = call filter$$hoflam15 _t6  ; Δ{_t6} · moves{_t6} · makes List$Integer
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
@@ -82,7 +82,7 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Integer _p  =
-filter$$hoflam10 xs  =
-hoflam10 x  =
+filter$$hoflam15 xs  =
+hoflam15 x  =
 length xs  =
 main  =

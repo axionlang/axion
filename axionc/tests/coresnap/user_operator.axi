@@ -6,8 +6,6 @@
 
 
 
-
-
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       ret 0  ; Δ{}
@@ -32,19 +30,15 @@
   ret + _t0 b  ; Δ{}
   ret 0  ; Δ{}
   ret call <+> _op0 _op1  ; Δ{}
-  ret call applyOp$$hoflam11 s t  ; Δ{}
+  ret call applyOp$$hoflam16 s t  ; Δ{}
   ret call double x  ; Δ{}
-  ret call hoflam11 a b  ; Δ{}
-  ret callclo f a b  ; Δ{}
-  ret callclo f x  ; Δ{}
+  ret call hoflam16 a b  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
 <+> a b  =
-applyOp f a b  =
-applyOp$$hoflam11 a b  =
+applyOp$$hoflam16 a b  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 double n  =
-hoflam11 _op0 _op1  =
+hoflam16 _op0 _op1  =
 main  =
-|> x f  =
 |>$$double x  =

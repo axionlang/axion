@@ -7,7 +7,6 @@
 
 
 
-
           drop _t4
           drop _t4
           let _t5 = + x y  ; Δ{x y}
@@ -27,10 +26,8 @@
       ret case _t4 of
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Int
       ret r  ; Δ{r} · moves{r}
-      ret r  ; Δ{}
     Left $bindErr ->
     Right x ->
-    _ ->
     _ ->
     else
     let _dd0 = loadraw _p+8  ; Δ{}
@@ -57,7 +54,6 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  ; Δ{}
   else
   else
   else
@@ -73,20 +69,16 @@
   let _t0 = > n 0  ; Δ{}
   let _t0 = ffi abs h  ; Δ{}
   let _t0 = ffi abs h [o]  ; Δ{r}
-  let _t0 = ffi abs h [o]  ; Δ{}
   let _t1 = call check _t0  ; Δ{} · makes Either$String$Int
   let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
   let h = ffi abs n  ; Δ{}
-  let h = ffi abs n  ; Δ{}
-  let r = call hoflam9 h  ; Δ{} · makes Either$String$Int
-  let r = callclo body h  ; Δ{}
+  let r = call hoflam14 h  ; Δ{} · makes Either$String$Int
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call withDev$$hoflam9 n  ; Δ{} · makes Either$String$Int
-  ret case _t0 of
+  ret call withDev$$hoflam14 n  ; Δ{} · makes Either$String$Int
   ret case _t0 of
   ret case _t1 of
   ret if _t0 then
@@ -96,8 +88,7 @@ axion_drop_Either$String _p  =
 axion_drop_Either$String$Int _p  =
 axion_drop_List _p  =
 check n  =
-hoflam9 h  =
+hoflam14 h  =
 main  =
-withDev n body  =
-withDev$$hoflam9 n  =
+withDev$$hoflam14 n  =
 work n  =

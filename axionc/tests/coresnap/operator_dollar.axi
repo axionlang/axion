@@ -3,7 +3,6 @@
 
 
 
-
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       ret 0  ; Δ{}
@@ -25,9 +24,7 @@
   ret 0  ; Δ{}
   ret call <$>$$inc _t0  ; Δ{}
   ret call inc x  ; Δ{}
-  ret callclo f x  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
-<$> f x  =
 <$>$$inc x  =
 axion_drop_Array _p  =
 axion_drop_List _p  =

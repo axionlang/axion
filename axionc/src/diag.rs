@@ -113,8 +113,9 @@ impl Diagnostic {
         };
         let mut out = format!("{sev}[{}]: {}\n", self.code, self.message);
         for (i, lbl) in self.labels.iter().enumerate() {
-            let (line, col) = lines.pos(lbl.start);
-            let (_, end_col) = lines.pos(lbl.end.max(lbl.start));
+            let (start, end) = (lbl.start % CLONE_SPAN_STRIDE, lbl.end % CLONE_SPAN_STRIDE);
+            let (line, col) = lines.pos(start);
+            let (_, end_col) = lines.pos(end.max(start));
             let width = (end_col.saturating_sub(col)).max(1);
             let src_line = src.lines().nth(line - 1).unwrap_or("");
             let gutter = format!("{line}");
@@ -144,6 +145,24 @@ impl Diagnostic {
     }
 }
 
+/// Spans of a specialization clone are its source's spans shifted by a multiple of this stride
+/// (so the clones' inference keys stay distinct); `span % CLONE_SPAN_STRIDE` recovers the source
+/// span. Source files are far smaller than the stride.
+pub const CLONE_SPAN_STRIDE: usize = 10_000_000;
+
+/// `keepWith$$hoflamcap0` → `keepWith`: the user-facing name of a specialization clone.
+fn unclone_names(s: &str) -> String {
+    let mut parts = s.split("$$");
+    let mut out = parts.next().unwrap_or_default().to_string();
+    for p in parts {
+        // drop the closure name that followed `$$` (an identifier, possibly mangled with `$`)
+        out.push_str(p.trim_start_matches(|c: char| {
+            c.is_alphanumeric() || c == '_' || c == '$' || c == '\''
+        }));
+    }
+    out
+}
+
 /// Collection of diagnostics from a compilation.
 #[derive(Debug, Default)]
 pub struct Diagnostics {
@@ -155,8 +174,33 @@ impl Diagnostics {
         Diagnostics { items: Vec::new() }
     }
 
-    pub fn push(&mut self, d: Diagnostic) {
-        self.items.push(d);
+    pub fn push(&mut self, mut d: Diagnostic) {
+        // A diagnostic raised inside a higher-order specialization clone (`keepWith$$gt2`) is
+        // reported on the user's source: the clone's spans map back to the original ones, and
+        // its name to the function it was cloned from. Once mapped, the same error reported for
+        // two clones of one function is shown once.
+        for l in &mut d.labels {
+            l.start %= CLONE_SPAN_STRIDE;
+            l.end %= CLONE_SPAN_STRIDE;
+            l.message = unclone_names(&l.message);
+        }
+        if let Some(fix) = &mut d.fix {
+            fix.start %= CLONE_SPAN_STRIDE;
+            fix.end %= CLONE_SPAN_STRIDE;
+        }
+        d.message = unclone_names(&d.message);
+        let same = |o: &Diagnostic| {
+            o.code == d.code
+                && o.message == d.message
+                && o.labels.len() == d.labels.len()
+                && o.labels
+                    .iter()
+                    .zip(&d.labels)
+                    .all(|(a, b)| (a.start, a.end, &a.message) == (b.start, b.end, &b.message))
+        };
+        if !self.items.iter().any(same) {
+            self.items.push(d);
+        }
     }
 
     pub fn has_errors(&self) -> bool {

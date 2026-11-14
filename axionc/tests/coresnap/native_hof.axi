@@ -23,14 +23,14 @@
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = call evenN y  ; Δ{y ys}
-      let _t0 = call foldr$$hoflam11 z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call foldr$$hoflam16 z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call sq y  ; Δ{y ys}
       let _t1 = call map$$sq ys  ; Δ{y ys} · moves{ys} · makes List$Int
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret call hoflam11 y _t0  ; Δ{y}
+      ret call hoflam16 y _t0  ; Δ{y}
       ret con Cons _t0 _t1  ; Δ{_t1 y} · moves{_t1} · makes List$Int
       ret con Nil  ; Δ{} · makes List$Int
       ret con Nil  ; Δ{} · makes List$Int
@@ -85,7 +85,7 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret == _t0 0  ; Δ{}
-  ret call foldr$$hoflam11 0 _t8  ; Δ{_t8} · moves{_t8}
+  ret call foldr$$hoflam16 0 _t8  ; Δ{_t8} · moves{_t8}
   ret case xs of
   ret case xs of
   ret case xs of
@@ -95,8 +95,8 @@ axion_drop_List _p  =
 axion_drop_List$Int _p  =
 evenN n  =
 filter$$evenN xs  =
-foldr$$hoflam11 z xs  =
-hoflam11 x a  =
+foldr$$hoflam16 z xs  =
+hoflam16 x a  =
 main  =
 map$$sq xs  =
 sq n  =

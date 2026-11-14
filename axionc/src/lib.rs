@@ -1263,9 +1263,22 @@ pub fn analyze_module(
     // the user's own top-level functions — the DCE roots. Captured BEFORE the
     // prelude is injected, so everything the prelude/deriving/specialization adds is
     // kept only if reachable from user code.
-    let user_fns: std::collections::HashSet<String> =
+    let mut user_fns: std::collections::HashSet<String> =
         module.funcs.iter().map(|f| f.name.clone()).collect();
     let (mut module, consume_exempt) = prepare_for_check(module, path, diags);
+    // A user higher-order function that specialization cloned (`keepWith` → `keepWith$$gt2`) is
+    // no longer a root by itself: its clones replace it at every call site whose closure was
+    // known. It stays only if something still references it (a call with an unknown closure,
+    // or a use as a value). Otherwise its generic body, which calls `filter p` on an unknown
+    // `p`, would be compiled for nothing and trip AX0912.
+    let specialized: Vec<String> = module
+        .funcs
+        .iter()
+        .filter_map(|f| f.name.split_once("$$").map(|(h, _)| h.to_string()))
+        .collect();
+    for h in specialized {
+        user_fns.remove(&h);
+    }
     let mut analysis = check::check(&module, diags);
     analysis.consume_native_exempt = consume_exempt;
     // Inference returns the monomorphic method resolutions (use span →
@@ -1553,16 +1566,27 @@ fn specialize_hofs(module: &mut ast::Module) {
     // that still fails to specialize) AND gate-clean, validated over the corpus + the differential
     // fuzzer (scripts/fuzz.py, ~850 programs, 0 corruption/divergence). An unsafe CLOSURE argument
     // is still rejected downstream (`closure_unsafe_to_specialize` → generic HOF → AX0912).
-    let mut hof_arrow: HashMap<String, usize> = HashMap::new();
-    for f in &module.funcs {
-        if let Some(k) = single_arrow_param(f) {
-            hof_arrow.insert(f.name.clone(), k);
-        }
-    }
+    // A HOF with several closure parameters (`keepBoth p q xs`) is specialized one closure at a
+    // time, first slot first: `keepBoth$$p` still takes `q`, so it is itself a HOF the fixpoint
+    // below specializes next (`keepBoth$$p$$q`). The lambda lifts see every slot (`all_arrows`).
+    let all_arrows: HashMap<String, Vec<usize>> = module
+        .funcs
+        .iter()
+        .filter_map(|f| Some((f.name.clone(), arrow_params(f)?)))
+        .collect();
+    let mut hof_arrow: HashMap<String, usize> = all_arrows
+        .iter()
+        .map(|(n, ks)| (n.clone(), ks[0]))
+        .collect();
     if hof_arrow.is_empty() {
         return;
     }
     let mut fn_names = fn_names;
+    // `let p = \s -> … in keepWith p xs`: the lambda reaches the closure slot through a name.
+    // Put it in the slot, so the lifts below see a literal lambda there.
+    for f in &mut module.funcs {
+        for_each_func_expr_mut(f, &mut |e| inline_let_lambdas(e, &all_arrows));
+    }
     // A CAPTURING lambda at a HOF's arrow slot (`filter (\x -> x > n) xs`, `n` an enclosing
     // local) is rewritten UP FRONT to a partial application of a fresh top-level function whose
     // LEADING params are the captures (`hoflamcap<N> n x = x > n`, call `filter (hoflamcap<N> n)
@@ -1573,8 +1597,8 @@ fn specialize_hofs(module: &mut ast::Module) {
     // A preliminary inference of the ORIGINAL module recovers each lambda's full type in context;
     // `lift_capturing_lambdas` uses it (with enclosing declared-signature capture types) to sign a
     // lifted capturing lambda up front. Concrete only when the enclosing scope pins the captures.
-    let lam_tys = infer::infer_lambda_site_types(module);
-    let cap_committed = lift_capturing_lambdas(module, &hof_arrow, &lam_tys);
+    let (lam_tys, var_tys) = infer::infer_lambda_site_types(module);
+    let cap_committed = lift_capturing_lambdas(module, &all_arrows, &lam_tys, &var_tys);
     fn_names.extend(cap_committed);
     // A NON-CAPTURING lambda literal at a HOF's arrow slot (`filter (\x -> x > fromInt 2) xs`)
     // is a candidate to lift to a fresh top-level function so the closure becomes a NAME the
@@ -1584,7 +1608,7 @@ fn specialize_hofs(module: &mut ast::Module) {
     // concrete type and is committed; a POLYMORPHIC one (`\x -> x` in `fromMaybe`) would, if
     // lifted to an unsigned fn, become a single monomorphic shared placeholder and
     // over-constrain its callers — so it is dropped and stays inline (the generic HOF).
-    let candidates = build_lambda_candidates(module, &hof_arrow);
+    let candidates = build_lambda_candidates(module, &all_arrows);
     // Recover a CONCRETE signature for every UNSIGNED closure passed to a HOF (a lambda
     // candidate, or an unsigned named fn): `closure_unsafe_to_specialize` and the clone's
     // element-type concretization both need the closure's type. Without it an unsigned/lambda
@@ -1636,6 +1660,12 @@ fn specialize_hofs(module: &mut ast::Module) {
         .iter()
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
+    // The HOF bodies clones are built from; a clone that still takes a closure joins them.
+    let mut clone_src: HashMap<String, ast::Func> = by_name
+        .iter()
+        .filter(|(n, _)| hof_arrow.contains_key(*n))
+        .map(|(n, f)| (n.clone(), f.clone()))
+        .collect();
     // Closures UNSAFE to specialize: one that EMBEDS a parameter into a returned container
     // (`pairUp n = (n, …)`, `single n = Cons n Nil`). The generic `callclo` is sound because
     // Route C assumes the closure MOVES its arg; a direct call uses the closure's real
@@ -1668,11 +1698,16 @@ fn specialize_hofs(module: &mut ast::Module) {
         }
         for (hof, clos) in &fresh {
             generated.insert((hof.clone(), clos.clone()));
-            if let Some(src) = by_name.get(hof) {
+            if let Some(src) = clone_src.get(hof) {
                 let clos_sig = by_name.get(clos).and_then(|f| f.sig.as_ref());
                 span_base += 1;
-                let delta = span_base * 10_000_000;
+                let delta = span_base * diag::CLONE_SPAN_STRIDE;
                 if let Some(clone) = make_hof_spec(src, hof_arrow[hof], clos, clos_sig, delta) {
+                    // a clone that still takes a closure is a HOF in its own right
+                    if let Some(ks) = arrow_params(&clone) {
+                        hof_arrow.insert(clone.name.clone(), ks[0]);
+                        clone_src.insert(clone.name.clone(), clone.clone());
+                    }
                     module.funcs.push(clone);
                 }
             }
@@ -1681,6 +1716,107 @@ fn specialize_hofs(module: &mut ast::Module) {
         for f in &mut module.funcs {
             rewrite_func_calls(f, &generated, &hof_arrow, &fn_names, &HashSet::new());
         }
+    }
+}
+
+/// Substitutes a `let`-bound lambda (`let p = \s -> strLen s > n`) into the closure slots of
+/// HOF calls in the `let` body that pass it by name (`keepWith p xs` → `keepWith (\s -> …) xs`),
+/// so specialization sees a literal lambda there. A use is replaced only when neither `p` nor
+/// any name the lambda refers to has been re-bound between the `let` and the use; a binding
+/// left without uses is removed. Bottom-up, so nested `let`s are handled first.
+fn inline_let_lambdas(
+    e: &mut ast::Expr,
+    all_arrows: &std::collections::HashMap<String, Vec<usize>>,
+) {
+    use std::collections::HashSet;
+    for_each_subexpr_mut(e, &mut |c| inline_let_lambdas(c, all_arrows));
+    let ast::Expr::Let(binds, body, _) = e else {
+        return;
+    };
+    // a lambda in the closure slot `k` of a call: replace `Var(name)` there.
+    fn subst(
+        e: &mut ast::Expr,
+        name: &str,
+        lam: &ast::Expr,
+        lam_refs: &HashSet<String>,
+        bound: &HashSet<String>,
+        all_arrows: &std::collections::HashMap<String, Vec<usize>>,
+    ) {
+        if bound.contains(name) || lam_refs.iter().any(|r| bound.contains(r)) {
+            return; // `name`, or something the lambda refers to, means something else here
+        }
+        if let ast::Expr::App(..) = e {
+            let slots: Vec<usize> = match app_spine(e).0 {
+                ast::Expr::Var(h, _) if !bound.contains(h) => {
+                    all_arrows.get(h).cloned().unwrap_or_default()
+                }
+                _ => Vec::new(),
+            };
+            let n = app_spine(e).1.len();
+            for k in slots {
+                if k >= n {
+                    continue;
+                }
+                // the `k`-th argument of the spine: descend `n - 1 - k` callees, take the arg
+                let mut cur: &mut ast::Expr = e;
+                for _ in 0..(n - 1 - k) {
+                    let ast::Expr::App(f, _, _) = cur else { break };
+                    cur = f;
+                }
+                if let ast::Expr::App(_, a, _) = cur {
+                    if matches!(&**a, ast::Expr::Var(v, _) if v == name) {
+                        **a = lam.clone();
+                    }
+                }
+            }
+        }
+        for_each_subexpr_scoped_mut(e, bound, &mut |c, b| {
+            subst(c, name, lam, lam_refs, b, all_arrows);
+        });
+    }
+    let lets: Vec<(String, ast::Expr)> = binds
+        .iter()
+        .filter_map(|b| {
+            let [c] = b.clauses.as_slice() else {
+                return None;
+            };
+            let ast::Body::Plain(lam @ ast::Expr::Lam(..)) = &c.body else {
+                return None;
+            };
+            (c.pats.is_empty() && c.wher.is_empty()).then(|| (b.name.clone(), lam.clone()))
+        })
+        .collect();
+    for (name, lam) in &lets {
+        let mut lam_refs = HashSet::new();
+        collect_expr_refs(lam, &mut lam_refs);
+        if lam_refs.contains(name) {
+            continue; // refers to itself
+        }
+        // a sibling binding of the same `let` is in scope in the body, but not a re-binding
+        subst(body, name, lam, &lam_refs, &HashSet::new(), all_arrows);
+    }
+    // drop the lambda bindings nothing refers to any more
+    let mut used = HashSet::new();
+    collect_expr_refs(body, &mut used);
+    for b in binds.iter() {
+        for c in &b.clauses {
+            for x in clause_exprs_of(c) {
+                collect_expr_refs(x, &mut used);
+            }
+        }
+    }
+    binds.retain(|b| !lets.iter().any(|(n, _)| n == &b.name) || used.contains(&b.name));
+    if binds.is_empty() {
+        let inner = std::mem::replace(&mut **body, ast::Expr::Int(0, (0, 0)));
+        *e = inner;
+    }
+}
+
+/// The expressions of a clause (body and guards).
+fn clause_exprs_of(c: &ast::Clause) -> Vec<&ast::Expr> {
+    match &c.body {
+        ast::Body::Plain(x) => vec![x],
+        ast::Body::Guarded(arms) => arms.iter().flat_map(|(g, r)| [g, r]).collect(),
     }
 }
 
@@ -1704,10 +1840,39 @@ fn specialize_hofs(module: &mut ast::Module) {
 /// another lifts first.
 fn lift_capturing_lambdas(
     module: &mut ast::Module,
-    hof_arrow: &std::collections::HashMap<String, usize>,
+    hof_arrow: &std::collections::HashMap<String, Vec<usize>>,
     lam_tys: &std::collections::HashMap<ast::Span, ast::Type>,
+    var_tys: &std::collections::HashMap<ast::Span, ast::Type>,
 ) -> std::collections::HashSet<String> {
     use std::collections::{HashMap, HashSet};
+    // The concrete type of capture `c` read from its occurrences in the lambda body: every
+    // occurrence must have been inferred, to one and the same concrete type (an inner binder
+    // shadowing `c` with another type makes them disagree, and the lift is skipped).
+    fn capture_ty(
+        body: &ast::Expr,
+        c: &str,
+        var_tys: &HashMap<ast::Span, ast::Type>,
+    ) -> Option<ast::Type> {
+        fn spans(e: &ast::Expr, c: &str, out: &mut Vec<ast::Span>) {
+            if let ast::Expr::Var(n, sp) = e {
+                if n == c {
+                    out.push(*sp);
+                }
+            }
+            for_each_subexpr(e, &mut |sub| spans(sub, c, out));
+        }
+        let mut sps = Vec::new();
+        spans(body, c, &mut sps);
+        let mut found: Option<&ast::Type> = None;
+        for sp in &sps {
+            let t = var_tys.get(sp)?;
+            if found.is_some_and(|f| f != t) {
+                return None;
+            }
+            found = Some(t);
+        }
+        found.cloned()
+    }
     // The `from_end`-th argument (0 = the last/outermost) of a left-nested `App` spine: descend
     // into the callee `.0` that many times, then take the argument `.1`.
     fn arg_mut(e: &mut ast::Expr, from_end: usize) -> Option<&mut ast::Expr> {
@@ -1726,8 +1891,9 @@ fn lift_capturing_lambdas(
     // Shared state, bundled so the recursive walkers take few arguments. The two maps are the
     // read-only inputs; `new_funcs`/`committed`/`counter` accumulate the lifted functions.
     struct Ctx<'a> {
-        hof_arrow: &'a std::collections::HashMap<String, usize>,
+        hof_arrow: &'a std::collections::HashMap<String, Vec<usize>>,
         lam_tys: &'a std::collections::HashMap<ast::Span, ast::Type>,
+        var_tys: &'a std::collections::HashMap<ast::Span, ast::Type>,
         new_funcs: Vec<ast::Func>,
         committed: HashSet<String>,
         counter: usize,
@@ -1744,16 +1910,30 @@ fn lift_capturing_lambdas(
         if !matches!(e, ast::Expr::App(..)) {
             return;
         }
+        // every closure slot of the HOF applied here (`keepBoth p q xs` has two)
+        let slots: Vec<usize> = {
+            let (head, _) = app_spine(e);
+            match head {
+                ast::Expr::Var(h, _) if !bound.contains(h) => {
+                    ctx.hof_arrow.get(h).cloned().unwrap_or_default()
+                }
+                _ => Vec::new(), // a shadowed HOF name is a local, not our top-level HOF.
+            }
+        };
+        for k in slots {
+            lift_slot(e, k, bound, sig_binders, ctx);
+        }
+    }
+    fn lift_slot(
+        e: &mut ast::Expr,
+        k: usize,
+        bound: &HashSet<String>,
+        sig_binders: &HashMap<String, ast::Type>,
+        ctx: &mut Ctx,
+    ) {
         // Gather what we need under an immutable borrow, then release it before mutating `e`.
         let (k, n, caps, cap_tys, lam_pats, lam_body, lam_ty, lspan) = {
-            let (head, args) = app_spine(e);
-            let ast::Expr::Var(h, _) = head else { return };
-            if bound.contains(h) {
-                return; // a shadowed HOF name is a local, not our top-level HOF.
-            }
-            let Some(&k) = ctx.hof_arrow.get(h) else {
-                return;
-            };
+            let (_, args) = app_spine(e);
             let n = args.len();
             if k >= n {
                 return;
@@ -1782,8 +1962,14 @@ fn lift_capturing_lambdas(
             // concrete signature → skip (leave inline; native falls to the generic HOF).
             let mut cap_tys = Vec::with_capacity(caps.len());
             for c in &caps {
-                let Some(t) = sig_binders.get(c) else { return };
-                cap_tys.push(t.clone());
+                let Some(t) = sig_binders
+                    .get(c)
+                    .cloned()
+                    .or_else(|| capture_ty(body, c, ctx.var_tys))
+                else {
+                    return;
+                };
+                cap_tys.push(t);
             }
             (
                 k,
@@ -1881,6 +2067,7 @@ fn lift_capturing_lambdas(
     let mut ctx = Ctx {
         hof_arrow,
         lam_tys,
+        var_tys,
         new_funcs: Vec::new(),
         committed: HashSet::new(),
         counter: 0,
@@ -1902,7 +2089,7 @@ fn lift_capturing_lambdas(
 /// falls back to the generic HOF (Route C + AX0912), the correct conservative floor.
 fn build_lambda_candidates(
     module: &mut ast::Module,
-    hof_arrow: &std::collections::HashMap<String, usize>,
+    hof_arrow: &std::collections::HashMap<String, Vec<usize>>,
 ) -> Vec<(String, ast::Span)> {
     let mut candidates: Vec<(String, ast::Span)> = Vec::new();
     let mut new_funcs: Vec<ast::Func> = Vec::new();
@@ -1910,7 +2097,7 @@ fn build_lambda_candidates(
     fn walk_func(
         f: &ast::Func,
         outer_bound: &std::collections::HashSet<String>,
-        hof_arrow: &std::collections::HashMap<String, usize>,
+        hof_arrow: &std::collections::HashMap<String, Vec<usize>>,
         candidates: &mut Vec<(String, ast::Span)>,
         new_funcs: &mut Vec<ast::Func>,
         counter: &mut usize,
@@ -1933,7 +2120,7 @@ fn build_lambda_candidates(
     fn walk_expr(
         e: &ast::Expr,
         bound: &std::collections::HashSet<String>,
-        hof_arrow: &std::collections::HashMap<String, usize>,
+        hof_arrow: &std::collections::HashMap<String, Vec<usize>>,
         candidates: &mut Vec<(String, ast::Span)>,
         new_funcs: &mut Vec<ast::Func>,
         counter: &mut usize,
@@ -1942,7 +2129,7 @@ fn build_lambda_candidates(
             let (head, args) = app_spine(e);
             if let ast::Expr::Var(h, _) = head {
                 if !bound.contains(h) {
-                    if let Some(&k) = hof_arrow.get(h) {
+                    for &k in hof_arrow.get(h).map_or(&[][..], Vec::as_slice) {
                         if let Some(ast::Expr::Lam(pats, body, lspan)) = args.get(k) {
                             if !lambda_captures_local(pats, body, bound) {
                                 let name = format!("hoflam{}", *counter);
@@ -2117,9 +2304,9 @@ fn rewrite_func_calls(
     }
 }
 
-/// `Some(k)` if `f` is an MVP-eligible HOF: a signature with EXACTLY ONE arrow-typed
-/// parameter (at index `k`), a single clause, and all-`Pat::Var` parameters.
-fn single_arrow_param(f: &ast::Func) -> Option<usize> {
+/// The arrow-typed (closure) parameter indices of a specializable HOF: a signature with at
+/// least one arrow-typed parameter, a single clause, and all-`Pat::Var` parameters.
+fn arrow_params(f: &ast::Func) -> Option<Vec<usize>> {
     let sig = f.sig.as_ref()?;
     if f.clauses.len() != 1 {
         return None;
@@ -2138,7 +2325,7 @@ fn single_arrow_param(f: &ast::Func) -> Option<usize> {
         .filter(|(_, t)| matches!(t, ast::Type::Arrow { .. }))
         .map(|(i, _)| i)
         .collect();
-    (arrows.len() == 1).then(|| arrows[0])
+    (!arrows.is_empty()).then_some(arrows)
 }
 
 /// `true` if `f` is UNSAFE to specialize — the complement of a PROVABLY-fresh producer.

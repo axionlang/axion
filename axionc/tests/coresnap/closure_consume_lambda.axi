@@ -166,7 +166,7 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
-  ret call hoflam10 eta$1  ; Δ{} · makes Box
+  ret call hoflam15 eta$1  ; Δ{} · makes Box
   ret case b of
   ret case xs of
   ret case xs of
@@ -186,7 +186,7 @@ axion_drop_List$Box _p  =
 axion_drop_List$Int _p  =
 axion_drop_List$Integer _p  =
 foldr$$addI z xs  =
-hoflam10 x  =
+hoflam15 x  =
 lam$0 [env ]eta$1  =
 lam$1 [env ]eta$3  =
 main  =

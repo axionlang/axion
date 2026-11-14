@@ -201,7 +201,7 @@
         drop y : tuple2$String$Json
         else
         else
-        let _t1 = call filter$$hoflam10 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Json
+        let _t1 = call filter$$hoflam15 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Json
         let _t10 = tuple _t8 _t9  ; Δ{_t8} · moves{_t8} · makes heap
         let _t12 = call litMatch s i "false" 0  ; Δ{}
         let _t17 = == c 34  ; Δ{}
@@ -217,7 +217,7 @@
         ret 1  ; Δ{}
         ret == c 13  ; Δ{}
         ret call any$$keyIs _cap0 ys  ; Δ{}
-        ret call filter$$hoflam10 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Json
+        ret call filter$$hoflam15 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Json
         ret case pr of
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$tuple2$String$Json
         ret con Left "bad literal"  ; Δ{} · makes Either$String$tuple2$Json$Int
@@ -303,8 +303,8 @@
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
       let _t0 = call append$(String,Json) zs ys  ; Δ{z zs} · moves{zs} · makes List$tuple2$String$Json
       let _t0 = call append$Json zs ys  ; Δ{z zs} · moves{zs} · makes List$Json
-      let _t0 = call filter$$hoflam10 ms  ; Δ{ms} · moves{ms} · makes List$tuple2$String$Json
-      let _t0 = call hoflam10 y  ; Δ{y ys}
+      let _t0 = call filter$$hoflam15 ms  ; Δ{ms} · moves{ms} · makes List$tuple2$String$Json
+      let _t0 = call hoflam15 y  ; Δ{y ys}
       let _t0 = call keyIs _cap0 y  ; Δ{}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call reverse ys  ; Δ{y ys} · moves{ys} · makes List
@@ -867,9 +867,9 @@ axion_drop_tuple2$Json$Int _p  =
 axion_drop_tuple2$String$Json _p  =
 field k v  =
 fieldIn k ms  =
-filter$$hoflam10 xs  =
+filter$$hoflam15 xs  =
 hasKey k v  =
-hoflam10 _p0  =
+hoflam15 _p0  =
 isDigitCh c  =
 isWsCh c  =
 keyIs k m  =

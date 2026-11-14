@@ -107,6 +107,10 @@ struct Infer<'a> {
     /// concretely-signed top-level function (`infer_lambda_site_types`). Distinct from
     /// `lam_param_tys` (individual param types for drop keys); this is the whole arrow chain.
     lam_full_tys: HashMap<Span, Ty>,
+    /// Each variable occurrence's type, by span; filled only when `record_var_tys` is set
+    /// (`infer_lambda_site_types`).
+    var_use_tys: HashMap<Span, Ty>,
+    record_var_tys: bool,
     /// Phase 1b: each integer-literal expression's fresh type var (span → var), so a
     /// literal resolved to `Integer` by context is rewritten `fromInt n`, and an
     /// unconstrained one defaults to `Int`.
@@ -285,9 +289,10 @@ pub fn infer_unsigned_sigs(module: &Module) -> HashMap<String, Type> {
 /// enclosing scope (its captures pinned by that scope) can become a concretely-signed top-level
 /// function; a polymorphic one is absent here and stays inline (the conservative floor). A
 /// throwaway inference (mirrors `infer_unsigned_sigs`), so it never perturbs the real check.
-pub fn infer_lambda_site_types(module: &Module) -> HashMap<Span, Type> {
+pub fn infer_lambda_site_types(module: &Module) -> (HashMap<Span, Type>, HashMap<Span, Type>) {
     let mut diags = Diagnostics::new();
     let (mut inf, env) = setup(module, &mut diags);
+    inf.record_var_tys = true;
     for f in &module.funcs {
         inf.check_body(&env, f);
     }
@@ -300,7 +305,16 @@ pub fn infer_lambda_site_types(module: &Module) -> HashMap<Span, Type> {
             out.insert(sp, ast);
         }
     }
-    out
+    // the concrete type of each variable occurrence: a lambda's captured local (`k` in
+    // `\n -> n > k`, bound by a `let` or a `do` bind) is typed from its use inside the lambda.
+    let var_tys = std::mem::take(&mut inf.var_use_tys);
+    let mut vars = HashMap::new();
+    for (sp, ty) in var_tys {
+        if let Some(ast) = ty_to_ast_sig(&inf.apply(&ty)) {
+            vars.insert(sp, ast);
+        }
+    }
+    (out, vars)
 }
 
 /// Top-level functions WITHOUT a signature. In inference these get a monomorphic
@@ -398,6 +412,8 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         call_ret_tys: HashMap::new(),
         lam_param_tys: HashMap::new(),
         lam_full_tys: HashMap::new(),
+        var_use_tys: HashMap::new(),
+        record_var_tys: false,
         int_lit_vars: Vec::new(),
         int_lit_pat_spans: std::collections::HashSet::new(),
         where_ret_tys: HashMap::new(),
@@ -3878,6 +3894,9 @@ impl<'a> Infer<'a> {
                     Some(s) => self.instantiate(s),
                     None => self.fresh(), // name not found: reported by check.rs
                 };
+                if self.record_var_tys {
+                    self.var_use_tys.insert(*span, ty.clone());
+                }
                 // method use: collects the instance obligation over the type of the
                 // dispatch parameter (resolved at the end).
                 if let Some((class, Some(idx))) = self.method_meta.get(n).cloned() {

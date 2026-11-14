@@ -9,14 +9,10 @@
 
 
 
-
-        ret call myDropWhile p ys  ; Δ{} · makes List
         ret call myDropWhile$$lt5 ys  ; Δ{y ys} · moves{ys} · makes List$Int
         ret con Cons y ys  ; Δ{y ys} · moves{y ys} · makes List$Int
-        ret con Cons y ys  ; Δ{}
       drop xs
       drop xs
-      else
       else
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -24,21 +20,16 @@
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = call lt5 y  ; Δ{y ys}
       let _t0 = call sum ys  ; Δ{}
-      let _t0 = callclo p y  ; Δ{}
       ret + y _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$Int
       ret if _t0 then
-      ret if _t0 then
     Cons y ys ->
     Cons y ys ->
-    Cons y ys ->
-    Nil ->
     Nil ->
     Nil ->
     else
@@ -77,8 +68,6 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  ; Δ{}
-  ; Δ{}
   drop _t1 : List$Int
   drop _t3 : String
   else
@@ -104,7 +93,6 @@
   ret _d1000000  ; Δ{}
   ret case xs of
   ret case xs of
-  ret case xs of
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
@@ -115,7 +103,6 @@ axion_drop_List _p  =
 axion_drop_List$Int _p  =
 lt5 n  =
 main  =
-myDropWhile p xs  =
 myDropWhile$$lt5 xs  =
 range lo hi  =
 rangeFused lo hi c n  =

@@ -58,8 +58,8 @@
         drop ys : List$tuple2$String$Int
         let _t1 = call filter$$big ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
         let _t1 = call filter$$bigH ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
-        let _t1 = call filter$$hoflam10 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
-        let _t1 = call filter$$hoflam12 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
+        let _t1 = call filter$$hoflam15 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
+        let _t1 = call filter$$hoflam17 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
         let _t1 = call filter$$hoflamcap0 _cap0 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
         let _t1 = call filter$$isK _cap0 ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$J
         let _t1 = call takeWhile$$big ys  ; Δ{y ys} · moves{ys} · makes List$tuple2$String$Int
@@ -67,8 +67,8 @@
         ret call any$$big ys  ; Δ{}
         ret call filter$$big ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Int
         ret call filter$$bigH ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Int
-        ret call filter$$hoflam10 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Int
-        ret call filter$$hoflam12 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Int
+        ret call filter$$hoflam15 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Int
+        ret call filter$$hoflam17 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Int
         ret call filter$$hoflamcap0 _cap0 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$Int
         ret call filter$$isK _cap0 ys  ; Δ{ys} · moves{ys} · makes List$tuple2$String$J
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$tuple2$String$Int
@@ -121,9 +121,9 @@
       let _t0 = call big y  ; Δ{y ys}
       let _t0 = call big y  ; Δ{}
       let _t0 = call bigH y  ; Δ{y ys}
-      let _t0 = call hoflam10 y  ; Δ{y ys}
-      let _t0 = call hoflam12 y  ; Δ{y ys}
-      let _t0 = call hoflam15 z y  ; Δ{y ys} · moves{y}
+      let _t0 = call hoflam15 y  ; Δ{y ys}
+      let _t0 = call hoflam17 y  ; Δ{y ys}
+      let _t0 = call hoflam20 z y  ; Δ{y ys} · moves{y}
       let _t0 = call hoflamcap0 _cap0 y  ; Δ{y ys}
       let _t0 = call isK _cap0 y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
@@ -149,7 +149,7 @@
       ret a  ; Δ{t}
       ret b  ; Δ{}
       ret b  ; Δ{}
-      ret call foldl$$hoflam15 _t0 ys  ; Δ{ys} · moves{ys}
+      ret call foldl$$hoflam20 _t0 ys  ; Δ{ys} · moves{ys}
       ret case p of
       ret case v of
       ret con Nil  ; Δ{} · makes List$tuple2$String$Int
@@ -320,7 +320,7 @@
   let _t10 = + _t6 _t9  ; Δ{}
   let _t10 = con Cons _t4 _t9  ; Δ{_t1 _t4 _t9} · moves{_t4 _t9} · makes List$tuple2$String$Int
   let _t11 = call pairs 40  ; Δ{} · makes List$tuple2$String$Int
-  let _t12 = call filter$$hoflam12 _t11  ; Δ{_t11} · moves{_t11} · makes List$tuple2$String$Int
+  let _t12 = call filter$$hoflam17 _t11  ; Δ{_t11} · moves{_t11} · makes List$tuple2$String$Int
   let _t13 = call length _t12  ; Δ{_t12}
   let _t14 = + _t10 _t13  ; Δ{}
   let _t15 = call pairs 50  ; Δ{} · makes List$tuple2$String$Int
@@ -379,10 +379,10 @@
   let _t60 = con Cons _t55 _t59  ; Δ{_t52 _t55 _t59} · moves{_t55 _t59} · makes List$tuple2$String$J
   let _t61 = con Cons _t52 _t60  ; Δ{_t52 _t60} · moves{_t52 _t60} · makes List$tuple2$String$J
   let _t62 = call filter$$isK "b" _t61  ; Δ{_t61} · moves{_t61} · makes List$tuple2$String$J
-  let _t63 = call foldl$$hoflam15 0 _t62  ; Δ{_t62} · moves{_t62}
+  let _t63 = call foldl$$hoflam20 0 _t62  ; Δ{_t62} · moves{_t62}
   let _t7 = call pairs 30  ; Δ{} · makes List$tuple2$String$Int
   let _t7 = tuple _t6 3  ; Δ{_t1 _t4 _t6} · moves{_t6} · makes heap
-  let _t8 = call filter$$hoflam10 _t7  ; Δ{_t7} · moves{_t7} · makes List$tuple2$String$Int
+  let _t8 = call filter$$hoflam15 _t7  ; Δ{_t7} · moves{_t7} · makes List$tuple2$String$Int
   let _t8 = con Nil  ; Δ{_t1 _t4 _t7} · makes List$tuple2$String$Int
   let _t9 = call length _t8  ; Δ{_t8}
   let _t9 = con Cons _t7 _t8  ; Δ{_t1 _t4 _t7 _t8} · moves{_t7 _t8} · makes List$tuple2$String$Int
@@ -438,15 +438,15 @@ bigH _p0  =
 count k xs  =
 filter$$big xs  =
 filter$$bigH xs  =
-filter$$hoflam10 xs  =
-filter$$hoflam12 xs  =
+filter$$hoflam15 xs  =
+filter$$hoflam17 xs  =
 filter$$hoflamcap0 _cap0 xs  =
 filter$$isK _cap0 xs  =
-foldl$$hoflam15 z xs  =
+foldl$$hoflam20 z xs  =
 fstS t  =
-hoflam10 t  =
-hoflam12 _p0  =
-hoflam15 acc m  =
+hoflam15 t  =
+hoflam17 _p0  =
+hoflam20 acc m  =
 hoflamcap0 k t  =
 inner t  =
 isK k m  =

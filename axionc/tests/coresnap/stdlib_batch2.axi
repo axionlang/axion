@@ -20,8 +20,6 @@
 
 
 
-
-
               let _t0 = call add3 a b c  ; Δ{}
               let _t1 = call zipWith3$$add3 as_ bs cs  ; Δ{} · makes List$Int
               ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
@@ -118,17 +116,15 @@
   drop _t29 : List$Int
   drop _t3 : List$Int
   drop _t30 : List$Int
-  drop _t36
-  drop _t37
+  drop _t38 : String
   drop _t4 : List$Int
-  drop _t40 : String
   drop _t8 : List$Int
   else
   else
   else
   else
   let _d1000000 = call findIndicesFrom _t0 0 xs  ; Δ{_t0} · makes List$Int
-  let _d1000000 = putStrLn _t40  ; Δ{_t40}
+  let _d1000000 = putStrLn _t38  ; Δ{_t38}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -136,12 +132,12 @@
   let _t0 = + a b  ; Δ{}
   let _t0 = < x y  ; Δ{}
   let _t0 = call dbl x  ; Δ{}
+  let _t0 = call dbl x  ; Δ{}
   let _t0 = call scanlGo$$add z xs  ; Δ{} · makes List$Int
-  let _t0 = callclo f x  ; Δ{}
-  let _t0 = closure lam$2 x  ; Δ{} · makes heap
+  let _t0 = closure lam$0 x  ; Δ{} · makes heap
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t1 = call dbl y  ; Δ{}
-  let _t1 = callclo f y  ; Δ{}
+  let _t1 = call dbl y  ; Δ{}
   let _t1 = con Cons 3 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   let _t10 = con Cons 20 _t9  ; Δ{_t8 _t9} · moves{_t9} · makes List$Int
   let _t11 = con Cons 10 _t10  ; Δ{_t10 _t8} · moves{_t10} · makes List$Int
@@ -171,12 +167,10 @@
   let _t33 = call comparing$$dbl 5 2  ; Δ{}
   let _t34 = if _t33 then
   let _t35 = + _t32 _t34  ; Δ{}
-  let _t36 = closure lam$0  ; Δ{} · makes heap
-  let _t37 = closure lam$1  ; Δ{_t36} · makes heap
-  let _t38 = call on _t36 _t37 3 4  ; Δ{_t36 _t37}
-  let _t39 = + _t35 _t38  ; Δ{}
+  let _t36 = call on$$add$$dbl 3 4  ; Δ{}
+  let _t37 = + _t35 _t36  ; Δ{}
+  let _t38 = call show$Int _t37  ; Δ{} · makes String
   let _t4 = call scanl$$add 0 _t3  ; Δ{_t3} · makes List$Int
-  let _t40 = call show$Int _t39  ; Δ{} · makes String
   let _t5 = call sum _t4  ; Δ{_t4}
   let _t6 = con Nil  ; Δ{} · makes List$Int
   let _t7 = con Cons 2 _t6  ; Δ{_t6} · moves{_t6} · makes List$Int
@@ -191,12 +185,10 @@
   ret > n 3  ; Δ{}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{}
-  ret call add eta$1 eta$2  ; Δ{}
-  ret call dbl eta$4  ; Δ{}
+  ret call add _t0 _t1  ; Δ{}
   ret call eq$Int x y  ; Δ{}
   ret call findIndicesFrom$$isBig 0 xs  ; Δ{} · makes List$Int
   ret call le$Int _t0 _t1  ; Δ{}
-  ret callclo g _t0 _t1  ; Δ{}
   ret case xs of
   ret case xs of
   ret case xs of
@@ -219,12 +211,10 @@ findIndices$$isBig xs  =
 findIndicesFrom p i xs  =
 findIndicesFrom$$isBig i xs  =
 isBig n  =
-lam$0 [env ]eta$1 eta$2  =
-lam$1 [env ]eta$4  =
-lam$2 [env x]y  =
+lam$0 [env x]y  =
 le$Int x y  =
 main  =
-on g f x y  =
+on$$add$$dbl x y  =
 scanl$$add z xs  =
 scanlGo$$add z xs  =
 show$Int x  =
