@@ -7,6 +7,7 @@
 
 
 
+
       drop xs
       drop xs
       drop xs
@@ -77,7 +78,7 @@
   let _t4 = rtcall axion_array_get a 1  ; Δ{a}
   let _t5 = call reverse$Int _t4  ; Δ{} · makes List$Int
   let _t6 = call length _t5  ; Δ{_t5}
-  let a = call fill 3 _t0  ; Δ{_t0} · makes Array
+  let a = call fill$List$Int 3 _t0  ; Δ{_t0} · makes Array
   ret + _t3 _t6  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -86,12 +87,14 @@
   ret case xs of
   ret con Cons n _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
   ret newArray n x  ; Δ{} · makes Array
+  ret newArray n x  ; Δ{} · makes Array
   ret rtcall axion_array_free _p  ; Δ{}
 append$Int xs ys  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 fill n x  =
+fill$List$Int n x  =
 length xs  =
 main  =
 mk n  =

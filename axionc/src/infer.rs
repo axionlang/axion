@@ -611,19 +611,38 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         let mults = sig.param_mults();
         let ptypes = sig.param_types();
         let mut owned = Vec::new();
+        let mut bare = Vec::new();
         for (i, p) in ptypes.iter().enumerate() {
-            if mults.get(i) != Some(&Mult::One) {
+            // A BARE type-variable param (`pickG b x y`, `x :: a`) has no drop key in the generic
+            // body, so a heap argument the body does not return or pass on (the unchosen one)
+            // leaks. The callee owns it (the caller moves it in), so specialize the function at
+            // each HEAP instantiation (`pickG$String`), whose Auto-Drop frees it. Seeded only for
+            // heap instantiations (`discharge_owning`).
+            if matches!(p, Type::Var(_)) {
+                bare.push((i, var_paths(p)));
                 continue;
             }
-            // a bare var param is not heap (i64 ABI) — no key to resolve;
-            // only heap-shaped (`App`/`Tuple`) owned params can leak payloads.
-            if matches!(p, Type::Var(_)) {
+            if mults.get(i) != Some(&Mult::One) {
                 continue;
             }
             let vars = var_paths(p);
             if !vars.is_empty() {
                 owned.push((i, vars));
             }
+        }
+        // the spec substitutes ONE type variable (`SpecPlan.subs` comes from the first entry):
+        // add the bare params only when every owned param uses that same single variable
+        let mut names: Vec<&String> = owned
+            .iter()
+            .chain(bare.iter())
+            .flat_map(|(_, vs)| vs.iter().map(|(v, _)| v))
+            .collect();
+        names.sort();
+        names.dedup();
+        // not when the body holds a lambda: lambdas are lifted by span, and a clone duplicates
+        // the spans (the lifted lambda would not match the clone)
+        if names.len() == 1 && !f.clauses.iter().any(clause_has_lambda) {
+            owned.extend(bare);
         }
         if !owned.is_empty() {
             inf.owned_meta.insert(f.name.clone(), owned);
@@ -1158,6 +1177,34 @@ fn type_vars(t: &Type, out: &mut HashSet<String>) {
 
 /// All type-variable occurrences in `t`, each with its positional path.
 /// Multi-var owning params (e.g. `Tree a b`) return both vars' paths.
+fn clause_has_lambda(c: &Clause) -> bool {
+    fn ex(e: &Expr) -> bool {
+        match e {
+            Expr::Lam(..) => true,
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Var(..) | Expr::Con(..) => {
+                false
+            }
+            Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => ex(a) || ex(b),
+            Expr::If(a, b, c, _) => ex(a) || ex(b) || ex(c),
+            Expr::Let(fs, b, _) => {
+                fs.iter().any(|f| f.clauses.iter().any(clause_has_lambda)) || ex(b)
+            }
+            Expr::Case(s, arms, _) => ex(s) || arms.iter().any(|(_, a)| ex(a)),
+            Expr::Tuple(es, _) => es.iter().any(ex),
+            Expr::RecordCon(_, fs, _) => fs.iter().any(|(_, e)| ex(e)),
+            Expr::RecordUpd(b, fs, _) => ex(b) || fs.iter().any(|(_, e)| ex(e)),
+        }
+    }
+    let body = match &c.body {
+        Body::Plain(e) => ex(e),
+        Body::Guarded(arms) => arms.iter().any(|(g, r)| ex(g) || ex(r)),
+    };
+    body || c
+        .wher
+        .iter()
+        .any(|w| w.clauses.iter().any(clause_has_lambda))
+}
+
 fn var_paths(t: &Type) -> Vec<(String, Vec<usize>)> {
     fn walk(t: &Type, var: &str, acc: &mut Vec<usize>) -> Option<Vec<usize>> {
         match t {
@@ -3688,6 +3735,15 @@ impl<'a> Infer<'a> {
                         concrete = false;
                         break;
                     }
+                }
+            }
+            // a bare type-variable param instantiated at a SCALAR (`pickG True 1 2`) needs no
+            // specialization: nothing to free
+            let bare = o.vars.len() == 1 && o.vars[0].1.is_empty();
+            if bare && concrete {
+                let r = self.resolve(&o.param_ty);
+                if self.is_scalar_elem(&r) {
+                    continue;
                 }
             }
             if concrete && !repls.is_empty() {

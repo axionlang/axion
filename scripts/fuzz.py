@@ -760,11 +760,9 @@ sndT t = case t of
 def _bi_str(rng, d):
     """A String-valued expression from a random mix of producers (heap and literal).
 
-    Left out on purpose — known conservative classes, not built-in ownership bugs, which would
-    make every run fail: a generic function that DISCARDS a heap argument (`pickG b x y` leaks the
-    unchosen one: a bare type-variable parameter is never freed), a PARTIALLY applied built-in
-    passed as a closure (`twiceS (strAppend "x") s` stays a generic closure, whose String argument
-    leaks)."""
+    Left out on purpose — a known conservative class, not a built-in ownership bug, which would
+    make every run fail: a PARTIALLY applied built-in passed as a closure (`twiceS (strAppend "x")
+    s` stays a generic closure, whose String argument leaks)."""
     if d <= 0 or rng.random() < 0.25:
         return rng.choice([f'"s{rng.randint(0, 9)}"', f"showInt {rng.randint(0, 999)}",
                            f"chr {rng.randint(65, 90)}"])
@@ -774,6 +772,7 @@ def _bi_str(rng, d):
         f"substr 0 1 (strAppend ({a}) \"pad\")",
         f"showInteger ({_bi_int(rng, d - 1)})",
         f"idG ({a})",
+        f"pickG {rng.choice(['True', 'False'])} ({a}) ({_bi_str(rng, d - 1)})",
         f"unboxS (BoxS ({a}) {rng.randint(0, 9)})",
         f"sndT ({rng.randint(0, 9)}, {a})",
         f"(case Just ({a}) of\n    Just v -> v\n    Nothing -> \"\")",
