@@ -2112,6 +2112,63 @@ impl<'a> Infer<'a> {
             "netCloseL".into(),
             mono(Ty::Fun(Box::new(listener()), Box::new(io_u()))),
         );
+        // netSendBuf :: forall a. Sock -> Buffer a -> Int -> Int -> Int  (bytes from an offset)
+        env.insert(
+            "netSendBuf".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(sock()),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Con("Buffer".into(), vec![Ty::Var(0)])),
+                        Box::new(Ty::Fun(
+                            Box::new(int()),
+                            Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                        )),
+                    )),
+                ),
+            },
+        );
+        // Files: a linear `File` (an fd, or the errno of a failed open) and byte Buffers.
+        //   fileOpenRaw :: String -> File        fileErrno :: File -> Int (0 = open)
+        //   fileSize :: File -> Int (-EISDIR…)   fileRead :: File -> Int -> Buffer U8
+        //   fileClose :: File -> IO ()           bufLen :: forall a. Buffer a -> Int
+        let file = || Ty::Con("File".into(), vec![]);
+        // `U8` collapses to `Int` (normalize_num), so `Buffer U8` is `Buffer Int` here
+        let u8buf = || Ty::Con("Buffer".into(), vec![int()]);
+        env.insert(
+            "fileOpenRaw".into(),
+            mono(Ty::Fun(Box::new(string()), Box::new(file()))),
+        );
+        env.insert(
+            "fileErrno".into(),
+            mono(Ty::Fun(Box::new(file()), Box::new(int()))),
+        );
+        env.insert(
+            "fileSize".into(),
+            mono(Ty::Fun(Box::new(file()), Box::new(int()))),
+        );
+        env.insert(
+            "fileRead".into(),
+            mono(Ty::Fun(
+                Box::new(file()),
+                Box::new(Ty::Fun(Box::new(int()), Box::new(u8buf()))),
+            )),
+        );
+        env.insert(
+            "fileClose".into(),
+            mono(Ty::Fun(Box::new(file()), Box::new(io_u()))),
+        );
+        env.insert(
+            "bufLen".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(Ty::Con("Buffer".into(), vec![Ty::Var(0)])),
+                    Box::new(int()),
+                ),
+            },
+        );
         // structured-concurrency nursery (§9). `bound` opens a nursery whose
         // body is confined (endpoints don't escape — `check_bound_escapes`);
         // `newChannel` creates a dual endpoint pair; `spawn` forks a child that

@@ -41,7 +41,7 @@ pub fn op_fixity(op: &str, user: &FixityTable) -> (u8, Assoc) {
         "*" | "*." | "/" | "/." => (7, Assoc::Left),
         "+" | "-" | "+." | "-." => (6, Assoc::Left),
         ":" | "++" => (5, Assoc::Right),
-        "==" | "<" | ">" | "<=" | ">=" | "==." | "<." | ">." => (4, Assoc::Left),
+        "==" | "/=" | "<" | ">" | "<=" | ">=" | "==." | "<." | ">." => (4, Assoc::Left),
         "&&" => (3, Assoc::Right),
         "||" => (2, Assoc::Right),
         _ => user.get(op).copied().unwrap_or_else(|| {

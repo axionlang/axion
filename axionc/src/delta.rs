@@ -352,6 +352,12 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                 // sumBytes reads the whole buffer and returns the scalar sum (borrow); foldBytes
                 // folds a closure over the bytes and returns a scalar (reads the buffer only).
                 || func == "axion_buf_sum"
+                || func == "axion_buf_len"
+                || func == "ax_net_send_buf"
+                || func == "axion_file_open"
+                || func == "axion_file_errno"
+                || func == "axion_file_size"
+                || func == "axion_file_close"
                 || func == "axion_fold_bytes"
                 || func == "axion_str_cmp"
                 // OS capability layer (§pass): effectful primitives that READ their
@@ -422,7 +428,10 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
                     parent: None,
                     slot: None,
                 });
-            } else if func == "axion_buf_new" || func == "axion_buf_iota" || func == "axion_buf_xor"
+            } else if func == "axion_buf_new"
+                || func == "axion_buf_iota"
+                || func == "axion_buf_xor"
+                || func == "axion_file_read"
             {
                 // Buffer (§4): `newBuffer` allocates; `bufIota`/`xorInPlace` CONSUME the old
                 // buffer (arg 0, moved above) and return the same in-place handle — all produce a

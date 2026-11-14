@@ -4991,6 +4991,9 @@ instance Ord String where
 (<=) x y = le x y
 (>=) :: Ord a => a -> a -> Bool
 (>=) x y = le y x
+-- `/=` (not equal, precedence 4) in terms of the `Eq` method, for every `Eq` instance.
+(/=) :: Eq a => a -> a -> Bool
+(/=) x y = if eq x y then False else True
 -- Show for lists: `[1, 2, 3]` (bracketed, comma-separated). Elements use
 -- `show` (not showArg) so nested constructors aren't parenthesised inside the
 -- brackets, matching Haskell's `show [Just 1, Nothing]` = `[Just 1, Nothing]`.

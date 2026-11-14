@@ -1749,6 +1749,32 @@ fn session_tasks_free_the_heap_values_they_own() {
 }
 
 #[test]
+fn not_equal_operator() {
+    agree_across_backends(
+        "not_equal.axi",
+        "true\nfalse\nfalse\ntrue\ntrue\nfalse\nfalse\n",
+    );
+}
+
+#[test]
+fn files_are_read_in_chunks_and_closed_once() {
+    // `File` is linear: opened, read into byte Buffers, closed exactly once on every path (a
+    // failed open carries its errno and is closed too). The fixture reads itself.
+    let src = std::fs::read(fixture("file_read_chunks.axi")).unwrap();
+    let sum: u64 = src.iter().map(|&b| u64::from(b)).sum();
+    let want = format!("{} bytes, sum {sum}\nerror 2\nnot a file 21\n", src.len());
+    agree_across_backends("file_read_chunks.axi", &want);
+}
+
+#[test]
+fn session_tasks_bind_locals_and_run_statements() {
+    // `let` and plain statements between channel ops: a `let`-bound String survives a `recv`
+    // (saved in the task's state), a statement's discarded String is freed at once. These were
+    // outside the native session subset. Leak-freedom is checked by sanitize.sh (LEAKFREE).
+    agree_across_backends("session_let_stmt.axi", "42\n");
+}
+
+#[test]
 fn a_list_element_handed_to_a_storing_function_is_owned() {
     // `keepGood` passes an element of its list to `consRight`, which stores it; the list's
     // elements are therefore given away and `keepGood` must own the list (it borrowed it, so the

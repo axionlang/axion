@@ -44,6 +44,8 @@ const MUST_USE_PRIMS: &[&str] = &[
     "Buffer",
     "Sock",
     "Listener",
+    // an open (or failed-to-open) file: closed exactly once with `fileClose`
+    "File",
     // §18: a linear FFI resource handle (`Handle a`, e.g. an SDL Window*/Renderer*). Must-use so a
     // handle can't be dropped (leaked), double-destroyed, or used after destroy — enforced when it
     // is threaded as a `%1` parameter; consumed by an `Own`-annotated destroyer FFI.
@@ -166,6 +168,12 @@ pub fn is_effectful(name: &str) -> bool {
             | "netRecv"
             | "netClose"
             | "netCloseL"
+            | "netSendBuf"
+            // files: opening, reading and closing are effects (the size can change between calls)
+            | "fileOpenRaw"
+            | "fileSize"
+            | "fileRead"
+            | "fileClose"
     )
 }
 
@@ -1400,6 +1408,7 @@ const BUILTIN_MUST_USE_RESULTS: &[(&str, &str)] = &[
     ("netConnect", "Sock"),
     ("netListen", "Listener"),
     ("netAccept", "Sock"),
+    ("fileOpenRaw", "File"),
 ];
 
 /// The must-use types with NO destructor (handles, sockets, endpoints…), propagated through `data`
@@ -1502,6 +1511,13 @@ pub fn builtins() -> HashSet<String> {
         "netSend",
         "netClose",
         "netCloseL",
+        "netSendBuf",
+        "fileOpenRaw",
+        "fileErrno",
+        "fileSize",
+        "fileRead",
+        "fileClose",
+        "bufLen",
         "otherwise",
         "True",
         "False",
@@ -2671,6 +2687,17 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("netSend".to_string(), vec![Mult::Many, Mult::Many]);
     consumers.insert("netClose".to_string(), vec![Mult::One]);
     consumers.insert("netCloseL".to_string(), vec![Mult::One]);
+    consumers.insert(
+        "netSendBuf".to_string(),
+        vec![Mult::Many, Mult::Many, Mult::Many, Mult::Many],
+    );
+    // a `File` is borrowed by every op but `fileClose`, which consumes it (close exactly once)
+    consumers.insert("fileOpenRaw".to_string(), vec![Mult::Many]);
+    consumers.insert("fileErrno".to_string(), vec![Mult::Many]);
+    consumers.insert("fileSize".to_string(), vec![Mult::Many]);
+    consumers.insert("fileRead".to_string(), vec![Mult::Many, Mult::Many]);
+    consumers.insert("fileClose".to_string(), vec![Mult::One]);
+    consumers.insert("bufLen".to_string(), vec![Mult::Many]);
     // Buffer U8 linear (§4/§5): as ops in-place (bufIota/xorInPlace) e o `free`
     // consume the %1 Buffer (xorInPlace returns a fresh %1 — the linear thread);
     // sumBytes/withBuffer only borrow.

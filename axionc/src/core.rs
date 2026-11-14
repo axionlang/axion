@@ -281,7 +281,9 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
             | "Ptr"
             // `Handle a` (§18): a linear FFI resource handle — a raw i64, destroyed via an FFI
             // (never `axion_free`), so like `Ptr` it lowers as a scalar and is not auto-reclaimed.
-            | "Handle",
+            | "Handle"
+            // `File`: a linear file (an fd, or -errno), closed by `fileClose` — a scalar like `Handle`.
+            | "File",
         ) => true,
         Some(h) => data_types.contains(h),
         None => false,
@@ -518,6 +520,12 @@ pub fn is_scalar_reader(func: &str) -> bool {
             | "axion_buf_ptr"
             | "axion_buf_ptr_n"
             | "axion_buf_sum"
+            | "axion_buf_len"
+            | "axion_file_errno"
+            | "axion_file_size"
+            | "axion_file_open"
+            | "axion_file_close"
+            | "ax_net_send_buf"
             | "axion_fold_bytes"
             | "axion_str_cmp"
             | "axion_system"
@@ -583,6 +591,12 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "execCapture" => ("axion_exec_capture", 2),
         "execStatus" => ("axion_exec_status", 2),
         "readFile" => ("axion_read_file", 1),
+        "fileOpenRaw" => ("axion_file_open", 1),
+        "fileErrno" => ("axion_file_errno", 1),
+        "fileSize" => ("axion_file_size", 1),
+        "fileRead" => ("axion_file_read", 2),
+        "fileClose" => ("axion_file_close", 1),
+        "bufLen" => ("axion_buf_len", 1),
         "writeFile" => ("axion_write_file", 2),
         "fileExists" => ("axion_file_exists", 1),
         "makeDir" => ("axion_mkdir_p", 1),
@@ -1566,6 +1580,12 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "xorInPlace",
         "sumBytes",
         "free",
+        "fileOpenRaw",
+        "fileErrno",
+        "fileSize",
+        "fileRead",
+        "fileClose",
+        "bufLen",
         "imperative",
         "newArray",
         "getArray",
@@ -2108,6 +2128,13 @@ impl Lower<'_> {
             ("bufIota", 1) => return self.rtcall("axion_buf_iota", &args, true, buf),
             ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
             ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
+            // files (linear `File`, an fd or -errno) and the byte Buffers read from them
+            ("fileOpenRaw", 1) => return self.rtcall("axion_file_open", &args, true, buf),
+            ("fileErrno", 1) => return self.rtcall("axion_file_errno", &args, true, buf),
+            ("fileSize", 1) => return self.rtcall("axion_file_size", &args, true, buf),
+            ("fileRead", 2) => return self.rtcall("axion_file_read", &args, true, buf),
+            ("fileClose", 1) => return self.rtcall("axion_file_close", &args, true, buf),
+            ("bufLen", 1) => return self.rtcall("axion_buf_len", &args, true, buf),
             ("free", 1) => return self.rtcall("axion_buf_free", &args, true, buf),
             ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
             // linear dense Array: imperative operations
@@ -3409,7 +3436,47 @@ fn spawn_targets(body: &Expr, out: &mut Vec<String>) {
             spawn_targets(t, out);
             spawn_targets(el, out);
         }
+        Expr::Let(_, body, _) => spawn_targets(body, out),
         _ => {}
+    }
+}
+
+/// A head `gen_cont` lowers as a session operation of its own (a channel or socket op), not as
+/// a value to compute.
+fn is_sess_op(h: &str) -> bool {
+    matches!(
+        h,
+        "recv"
+            | "offer"
+            | "spawn"
+            | "send"
+            | "select"
+            | "cancel"
+            | "close"
+            | "netRecv"
+            | "netAccept"
+            | "netSend"
+            | "netSendBuf"
+            | "netListen"
+            | "netConnect"
+            | "netClose"
+            | "netCloseL"
+    )
+}
+
+/// `let x = e` with one parameterless, unguarded binding: `(x, e, body)`. The only `let` shape a
+/// session task supports (it lowers to a local, saved across a suspension like any other).
+fn sess_let(e: &Expr) -> Option<(&str, &Expr, &Expr)> {
+    let Expr::Let(binds, body, _) = e else {
+        return None;
+    };
+    let [b] = binds.as_slice() else { return None };
+    let [c] = b.clauses.as_slice() else {
+        return None;
+    };
+    match (&c.body, c.pats.is_empty()) {
+        (Body::Plain(rhs), true) => Some((b.name.as_str(), rhs, body)),
+        _ => None,
     }
 }
 
@@ -3422,6 +3489,7 @@ fn sess_tail_calls(body: &Expr, out: &mut Vec<String>) {
             sess_tail_calls(t, out);
             sess_tail_calls(el, out);
         }
+        Expr::Let(_, body, _) => sess_tail_calls(body, out),
         _ => {
             if let (Some(h), _) = sess_spine(body) {
                 out.push(h.to_string());
@@ -3486,6 +3554,9 @@ fn collect_bound_vars(e: &Expr, out: &mut Vec<String>) {
     } else if let Expr::If(_, t, el, _) = e {
         collect_bound_vars(t, out);
         collect_bound_vars(el, out);
+    } else if let Some((x, _, body)) = sess_let(e) {
+        out.push(x.to_string());
+        collect_bound_vars(body, out);
     }
 }
 
@@ -3503,6 +3574,12 @@ fn collect_suspensions<'a>(
         collect_suspensions(else_e, scope, out);
         return;
     }
+    if let Some((x, _, body)) = sess_let(e) {
+        scope.push(x.to_string());
+        collect_suspensions(body, scope, out);
+        scope.pop();
+        return;
+    }
     let Expr::Case(scrut, arms, _) = e else {
         return;
     };
@@ -3510,7 +3587,10 @@ fn collect_suspensions<'a>(
     let is_offer = head == Some("offer");
     // Async sockets (docs/async-sockets.md): netRecv/netAccept/netSend can yield the would-block
     // sentinel, so they are suspension points too (park on the fd, resume on readiness).
-    let is_netsusp = matches!(head, Some("netRecv" | "netAccept" | "netSend"));
+    let is_netsusp = matches!(
+        head,
+        Some("netRecv" | "netAccept" | "netSend" | "netSendBuf")
+    );
     if head == Some("recv") || is_offer || is_netsusp {
         out.push((e, scope.clone()));
     }
@@ -3622,6 +3702,15 @@ fn sig_result(t: &Type) -> &Type {
         Type::Arrow { to, .. } => sig_result(to),
         _ => t,
     }
+}
+
+/// The drop key of a built-in's freshly allocated result (its arguments are only read): a `String`
+/// producer, or `fileRead`'s `Buffer`. `None` for a scalar or borrowed result.
+fn sess_fresh_builtin(name: &str) -> Option<&'static str> {
+    if name == "fileRead" {
+        return Some("Buffer");
+    }
+    sess_fresh_string_builtin(name).then_some("String")
 }
 
 /// Built-ins whose `String` result is freshly allocated and whose arguments are only read.
@@ -3838,9 +3927,9 @@ impl SessGen<'_> {
                                 returns: true,
                             }),
                         ));
-                        if head.is_some_and(sess_fresh_string_builtin) {
+                        if let Some(key) = head.and_then(sess_fresh_builtin) {
                             if let Some(o) = self.own.as_mut() {
-                                o.pending.push((t.clone(), "String".into()));
+                                o.pending.push((t.clone(), key.into()));
                             }
                         }
                         Atom::Var(t)
@@ -4030,6 +4119,22 @@ impl SessGen<'_> {
                 NO_SPAN,
             );
         }
+        // `let x = v` / `x <- v` / a plain statement `v; rest`, where `v` is a native call or a
+        // runtime builtin (no session op): compute it, bind it, continue.
+        if let Some((x, rhs, body)) = sess_let(e) {
+            return self.gen_local(Some(x), rhs, body);
+        }
+        if let Expr::Case(scrut, arms, _) = e {
+            if let [(pat @ (Pat::Var(..) | Pat::Wild(_)), rest)] = arms.as_slice() {
+                if !sess_spine(scrut).0.is_some_and(is_sess_op) {
+                    let x = match pat {
+                        Pat::Var(x, _) => Some(x.as_str()),
+                        _ => None,
+                    };
+                    return self.gen_local(x, scrut, rest);
+                }
+            }
+        }
         let Expr::Case(scrut, arms, _) = e else {
             return self.gen_tail(e);
         };
@@ -4055,6 +4160,15 @@ impl SessGen<'_> {
             Some("netSend") => {
                 self.gen_netsusp("ax_net_send", 1, false, &arms[0].0, &arms[0].1, &args, key)
             }
+            Some("netSendBuf") => self.gen_netsusp(
+                "ax_net_send_buf",
+                1,
+                false,
+                &arms[0].0,
+                &arms[0].1,
+                &args,
+                key,
+            ),
             // non-suspending socket ops: a plain runtime call, then continue. The listen/connect fd
             // is set non-blocking (true) so accept/recv on it yield instead of blocking a pool thread.
             Some("netListen") => {
@@ -4068,6 +4182,28 @@ impl SessGen<'_> {
             }
             _ => self.gen_tail(e),
         }
+    }
+
+    /// Binds `x` (if any) to the value of `rhs`, frees the temporaries it left, then continues
+    /// with `rest`. A fresh heap result becomes `x`'s to free; one nobody binds (a plain
+    /// statement's) is freed at once. An owned value bound to a new name moves to that name.
+    fn gen_local(&mut self, x: Option<&str>, rhs: &Expr, rest: &Expr) -> Term {
+        let mut binds = Vec::new();
+        let a = self.val(rhs, &mut binds);
+        if let (Some(x), Atom::Var(v), Some(o)) = (x, &a, self.own.as_mut()) {
+            if let Some(i) = o.pending.iter().position(|(n, _)| n == v) {
+                let (_, key) = o.pending.remove(i);
+                o.owned.push((x.to_string(), key));
+            } else if let Some(i) = o.owned.iter().position(|(n, _)| n == v) {
+                o.owned[i].0 = x.to_string();
+                o.moved.insert(v.clone());
+            }
+        }
+        let tmps = self.take_pending();
+        if let Some(x) = x {
+            binds.push((x.to_string(), Rhs::Op(Op::Atom(a))));
+        }
+        wrap(binds, Self::drop_all(tmps, self.gen_cont(rest)), NO_SPAN)
     }
 
     /// `(value, endpoint) <- recv ep; rest` — the only value suspension.
@@ -7291,6 +7427,7 @@ impl Op {
             // stays the one owned binding, like `axion_tritvec_set`.
             Op::RtCall { func, .. }
                 if func == "axion_buf_new"
+                    || func == "axion_file_read"
                     || func == "axion_buf_iota"
                     || func == "axion_buf_xor" =>
             {

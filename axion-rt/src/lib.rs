@@ -1391,6 +1391,29 @@ pub unsafe extern "C" fn ax_net_send(fd: i64, data_ptr: i64) -> i64 {
     }
 }
 
+/// `ax_net_send_buf(fd, buf, off, len)` → bytes sent from `buf[off..off+len]`, [`AX_NET_WOULDBLOCK`],
+/// or −errno. Aborts if the range is not inside the buffer.
+#[no_mangle]
+pub unsafe extern "C" fn ax_net_send_buf(fd: i64, buf: i64, off: i64, len: i64) -> i64 {
+    let n = blen(buf);
+    if off < 0 || len < 0 || off > n || len > n - off {
+        bounds_abort("netSendBuf", off.saturating_add(len), n + 1);
+    }
+    let r = libc::send(
+        fd as libc::c_int,
+        (buf as *const u8).add(8 + off as usize) as *const libc::c_void,
+        len as usize,
+        libc::MSG_NOSIGNAL,
+    );
+    if r >= 0 {
+        r as i64
+    } else if errno_is_wouldblock() {
+        AX_NET_WOULDBLOCK
+    } else {
+        -i64::from(errno())
+    }
+}
+
 /// `ax_net_recv(fd)` → a fresh `axion_free`-compatible String ("" on orderly close/error), or
 /// [`AX_NET_WOULDBLOCK`] if the fd is non-blocking and no data is ready. Note "" (orderly close,
 /// `recv` == 0) is DISTINCT from the would-block sentinel, so the caller can tell "peer closed"
@@ -1870,6 +1893,90 @@ pub unsafe extern "C" fn axion_read_file(path: i64) -> i64 {
         Ok(bytes) => alloc_str(&bytes),
         Err(_) => alloc_str(b""),
     }
+}
+
+/// `fileOpenRaw path` — open for reading. A `File` is the fd (>= 0), or `-errno` when the open
+/// failed; every other `file*` op accepts either, so a failed open is still closed exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn axion_file_open(path: i64) -> i64 {
+    let Ok(c) = std::ffi::CString::new(str_bytes(path)) else {
+        return -i64::from(libc::EINVAL); // an embedded NUL names no file
+    };
+    let fd = libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+    if fd >= 0 {
+        i64::from(fd)
+    } else {
+        -i64::from(errno())
+    }
+}
+
+/// `fileErrno f` — 0 for an open file, else the errno its open failed with.
+#[no_mangle]
+pub extern "C" fn axion_file_errno(f: i64) -> i64 {
+    if f < 0 {
+        -f
+    } else {
+        0
+    }
+}
+
+/// `fileSize f` — the size in bytes of a regular file; `-EISDIR` for a directory, `-EINVAL` for
+/// anything else that is not a regular file, `-errno` for a failed open or `fstat`.
+#[no_mangle]
+pub unsafe extern "C" fn axion_file_size(f: i64) -> i64 {
+    if f < 0 {
+        return f;
+    }
+    let mut st: libc::stat = std::mem::zeroed();
+    if libc::fstat(f as libc::c_int, &mut st) != 0 {
+        return -i64::from(errno());
+    }
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFREG => st.st_size,
+        libc::S_IFDIR => -i64::from(libc::EISDIR),
+        _ => -i64::from(libc::EINVAL),
+    }
+}
+
+/// `fileRead f n` — a fresh `Buffer` of the next (at most `n`) bytes; its length is the count
+/// read, so an empty buffer means end of file (or an error, or a file that failed to open).
+#[no_mangle]
+pub unsafe extern "C" fn axion_file_read(f: i64, n: i64) -> i64 {
+    let buf = axion_buf_new(n.max(0));
+    if f < 0 || n <= 0 {
+        *(buf as *mut i64) = 0;
+        return buf;
+    }
+    let got = loop {
+        let r = libc::read(
+            f as libc::c_int,
+            (buf as *mut u8).add(8) as *mut libc::c_void,
+            n as usize,
+        );
+        if r >= 0 {
+            break r as i64;
+        }
+        if errno() != libc::EINTR {
+            break 0;
+        }
+    };
+    *(buf as *mut i64) = got;
+    buf
+}
+
+/// `fileClose f` — closes an open file (a failed open has nothing to close). Returns 0.
+#[no_mangle]
+pub unsafe extern "C" fn axion_file_close(f: i64) -> i64 {
+    if f >= 0 {
+        libc::close(f as libc::c_int);
+    }
+    0
+}
+
+/// `bufLen b` — the buffer's length in bytes.
+#[no_mangle]
+pub unsafe extern "C" fn axion_buf_len(buf: i64) -> i64 {
+    blen(buf)
 }
 
 /// `writeFile path content` — write `content` (mode 0600), truncating. 0 / -1.
@@ -2651,6 +2758,13 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("ax_net_listen", ax_net_listen as *const u8),
         ("ax_net_recv", ax_net_recv as *const u8),
         ("ax_net_send", ax_net_send as *const u8),
+        ("ax_net_send_buf", ax_net_send_buf as *const u8),
+        ("axion_file_open", axion_file_open as *const u8),
+        ("axion_file_errno", axion_file_errno as *const u8),
+        ("axion_file_size", axion_file_size as *const u8),
+        ("axion_file_read", axion_file_read as *const u8),
+        ("axion_file_close", axion_file_close as *const u8),
+        ("axion_buf_len", axion_buf_len as *const u8),
         ("ax_net_set_nonblocking", ax_net_set_nonblocking as *const u8),
         ("ax_net_wouldblock", ax_net_wouldblock as *const u8),
         ("axion_read_key_timeout", axion_read_key_timeout as *const u8),

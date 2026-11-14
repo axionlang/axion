@@ -304,7 +304,8 @@ fn builtin_arity(name: &str) -> usize {
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
         | "getArray" | "arrayDot" | "peekU8" | "peekU16" | "peekU32" | "peekU64" | "peekF64"
-        | "bufPtrN" => 2,
+        | "bufPtrN" | "fileRead" => 2,
+        "netSendBuf" => 4,
         _ => 1,
     }
 }
@@ -1100,6 +1101,38 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "netCloseL",
             args: Vec::new(),
         }),
+        "netSendBuf" => Ok(Value::Builtin {
+            name: "netSendBuf",
+            args: Vec::new(),
+        }),
+        "fileOpenRaw" => Ok(Value::Builtin {
+            name: "fileOpenRaw",
+            args: Vec::new(),
+        }),
+        "fileErrno" => Ok(Value::Builtin {
+            name: "fileErrno",
+            args: Vec::new(),
+        }),
+        "fileSize" => Ok(Value::Builtin {
+            name: "fileSize",
+            args: Vec::new(),
+        }),
+        "fileRead" => Ok(Value::Builtin {
+            name: "fileRead",
+            args: Vec::new(),
+        }),
+        "fileClose" => Ok(Value::Builtin {
+            name: "fileClose",
+            args: Vec::new(),
+        }),
+        "bufLen" => Ok(Value::Builtin {
+            name: "bufLen",
+            args: Vec::new(),
+        }),
+        "sumBytes" => Ok(Value::Builtin {
+            name: "sumBytes",
+            args: Vec::new(),
+        }),
         _ => Err(format!("name not found at runtime: '{name}'")),
     }
 }
@@ -1239,6 +1272,89 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         )),
     }
 }
+
+/// `fileOpenRaw` off-FFI: the raw fd of the opened file, or `-errno`.
+#[cfg(unix)]
+fn file_open(path: &str) -> i64 {
+    use std::os::fd::IntoRawFd;
+    match std::fs::File::open(path) {
+        Ok(f) => i64::from(f.into_raw_fd()),
+        Err(e) => -i64::from(e.raw_os_error().unwrap_or(libc_eio())),
+    }
+}
+#[cfg(not(unix))]
+fn file_open(_path: &str) -> i64 {
+    -i64::from(libc_eio())
+}
+
+const fn libc_eio() -> i32 {
+    5 // EIO
+}
+
+/// Borrow fd `f` as a `File` without taking ownership of it (the program closes it).
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn with_fd<R>(f: i64, k: impl FnOnce(&mut std::fs::File) -> R) -> R {
+    use std::os::fd::FromRawFd;
+    // SAFETY: `f` is an fd this program opened with `fileOpenRaw` and has not closed (the checker
+    // enforces close-exactly-once); ManuallyDrop keeps it open.
+    let mut file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(f as i32) });
+    k(&mut file)
+}
+
+/// `fileSize` off-FFI (same contract as `axion_file_size`).
+#[cfg(unix)]
+fn file_size(f: i64) -> i64 {
+    if f < 0 {
+        return f;
+    }
+    with_fd(f, |file| match file.metadata() {
+        Ok(m) if m.is_file() => m.len() as i64,
+        Ok(m) if m.is_dir() => -21, // EISDIR
+        Ok(_) => -22,               // EINVAL
+        Err(e) => -i64::from(e.raw_os_error().unwrap_or(libc_eio())),
+    })
+}
+#[cfg(not(unix))]
+fn file_size(f: i64) -> i64 {
+    f.min(-i64::from(libc_eio()))
+}
+
+/// `fileRead` off-FFI: the next (at most `n`) bytes; empty at end of file or on an error.
+#[cfg(unix)]
+fn file_read(f: i64, n: i64) -> Vec<u8> {
+    use std::io::Read;
+    if f < 0 || n <= 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u8; n as usize];
+    let got = with_fd(f, |file| loop {
+        match file.read(&mut buf) {
+            Ok(k) => break k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break 0,
+        }
+    });
+    buf.truncate(got);
+    buf
+}
+#[cfg(not(unix))]
+fn file_read(_f: i64, _n: i64) -> Vec<u8> {
+    Vec::new()
+}
+
+/// `fileClose` off-FFI: closes an open fd (a failed open has nothing to close).
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn file_close(f: i64) {
+    use std::os::fd::FromRawFd;
+    if f >= 0 {
+        // SAFETY: as in `with_fd`; this is the one close of the fd.
+        drop(unsafe { std::fs::File::from_raw_fd(f as i32) });
+    }
+}
+#[cfg(not(unix))]
+fn file_close(_f: i64) {}
 
 /// Maps a typed async-socket builtin (docs/async-sockets.md) to the underlying libc socket op
 /// implemented in `net_call_foreign`. `Sock`/`Listener` are i64 fds, so the mapping is a rename.
@@ -1732,6 +1848,31 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
                 .map_or(-1, i64::from);
             Ok(Value::Int(code))
         }
+        // files: a `File` is the fd, or -errno for a failed open (as natively)
+        ("fileOpenRaw", [Value::Str(path)]) => Ok(Value::Int(file_open(path))),
+        ("fileErrno", [Value::Int(f)]) => Ok(Value::Int(if *f < 0 { -f } else { 0 })),
+        ("fileSize", [Value::Int(f)]) => Ok(Value::Int(file_size(*f))),
+        ("fileRead", [Value::Int(f), Value::Int(n)]) => Ok(Value::Array(Rc::new(RefCell::new(
+            file_read(*f, *n)
+                .into_iter()
+                .map(|b| Value::Int(i64::from(b)))
+                .collect(),
+        )))),
+        ("fileClose", [Value::Int(f)]) => {
+            file_close(*f);
+            Ok(Value::Unit)
+        }
+        ("bufLen", [Value::Array(a)]) => Ok(Value::Int(a.borrow().len() as i64)),
+        ("sumBytes", [Value::Array(a)]) => Ok(Value::Int(
+            a.borrow()
+                .iter()
+                .map(|v| match v {
+                    Value::Int(b) => b & 0xFF,
+                    _ => 0,
+                })
+                .sum(),
+        )),
+        ("netSendBuf", _) => Err("netSendBuf: sockets run natively only".into()),
         ("readFile", [Value::Str(path)]) => Ok(Value::Str(
             std::fs::read(path)
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -2315,6 +2456,36 @@ fn step(
                         None => StepOut::Blocked(task),
                     },
                 );
+            }
+        }
+    }
+    // `let x = v` / `x <- v` / a plain statement `v; rest` between session ops, where `v` is an
+    // ordinary value (no session op): evaluate it, bind it, continue (`SessGen::gen_local`).
+    if let Expr::Let(binds, body, _) = &task.cont {
+        if let [b] = binds.as_slice() {
+            if let [c] = b.clauses.as_slice() {
+                if c.pats.is_empty() {
+                    let child = child_env(&task.env);
+                    let v = eval_body(prog, &task.env, &c.body)?;
+                    child.vars.borrow_mut().insert(b.name.clone(), v);
+                    return Ok(StepOut::Went(Task {
+                        cont: body.as_ref().clone(),
+                        env: child,
+                    }));
+                }
+            }
+        }
+    }
+    if let Expr::Case(scrut, arms, _) = &task.cont {
+        if let [(pat @ (Pat::Var(..) | Pat::Wild(_)), rest)] = arms.as_slice() {
+            if as_session_op(scrut).is_none() {
+                let v = eval(prog, &task.env, scrut)?;
+                let child = child_env(&task.env);
+                match_pat(pat, &v, &child);
+                return Ok(StepOut::Went(Task {
+                    cont: rest.clone(),
+                    env: child,
+                }));
             }
         }
     }
