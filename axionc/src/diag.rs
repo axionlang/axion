@@ -150,6 +150,13 @@ impl Diagnostic {
 /// span. Source files are far smaller than the stride.
 pub const CLONE_SPAN_STRIDE: usize = 10_000_000;
 
+/// Span band of the injected prelude. Its source and every imported module's are parsed from
+/// offset 0, like the user's file, so without a band of their own a prelude expression and a user
+/// expression at the same byte offsets share every span-keyed inference fact (a call's result type
+/// → its drop key). Far above any clone band; kept inside `u32` on 32-bit targets (the wasm
+/// playground).
+pub const PRELUDE_SPAN_BAND: usize = if usize::BITS >= 64 { 1 << 24 } else { 300 };
+
 /// `keepWith$$hoflamcap0` → `keepWith`: the user-facing name of a specialization clone.
 fn unclone_names(s: &str) -> String {
     let mut parts = s.split("$$");

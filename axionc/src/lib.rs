@@ -1279,6 +1279,18 @@ pub fn analyze_module(
     for h in specialized {
         user_fns.remove(&h);
     }
+    // Likewise a user function that TAKES a closure is not a root by itself: every live use of it
+    // is a call from reachable code (specialized or not), which keeps it. An unused one would only
+    // be compiled generically, over an unknown closure, and trip AX0912 for nothing.
+    for f in &module.funcs {
+        if f.sig.as_ref().is_some_and(|s| {
+            s.param_types()
+                .iter()
+                .any(|t| matches!(t, ast::Type::Arrow { .. }))
+        }) {
+            user_fns.remove(&f.name);
+        }
+    }
     let mut analysis = check::check(&module, diags);
     analysis.consume_native_exempt = consume_exempt;
     // Inference returns the monomorphic method resolutions (use span →
@@ -2872,9 +2884,13 @@ fn drop_arrow_param(sig: &ast::Type, k: usize) -> ast::Type {
 /// produces the same clone spans — otherwise the salsa `processed_module` output would vary
 /// across edits and invalidate every declaration. Spans then no longer point at real source,
 /// but a synthesized clone never surfaces a diagnostic (its bodies are correct by construction).
+/// Moves a span into clone band `d`, REPLACING any band it already has: a clone of a clone
+/// (`keepBoth$$a$$b`, copied from `keepBoth$$a`) must land in its own band, not in the sum of
+/// both offsets. That sum is another clone's band, so the two would share span-keyed inference
+/// facts (a call's result type) and lower each other's expressions at the wrong type.
 fn offset_span(s: &mut ast::Span, d: usize) {
-    s.0 += d;
-    s.1 += d;
+    s.0 = s.0 % diag::CLONE_SPAN_STRIDE + d;
+    s.1 = s.1 % diag::CLONE_SPAN_STRIDE + d;
 }
 
 fn offset_pat(p: &mut ast::Pat, d: usize) {
@@ -2938,6 +2954,20 @@ fn offset_expr(e: &mut ast::Expr, d: usize) {
             offset_expr(body, d);
         }
     }
+}
+
+/// Moves every expression span of a parsed module (functions, `where`-locals, instance methods)
+/// into its own band `band * CLONE_SPAN_STRIDE` (see [`diag::PRELUDE_SPAN_BAND`]).
+fn band_module_spans(m: &mut ast::Module, band: usize) {
+    let d = band * diag::CLONE_SPAN_STRIDE;
+    m.funcs.iter_mut().for_each(|f| offset_func_spans(f, d));
+    for i in &mut m.instances {
+        i.methods.iter_mut().for_each(|f| offset_func_spans(f, d));
+        offset_span(&mut i.span, d);
+    }
+    m.classes
+        .iter_mut()
+        .for_each(|c| offset_span(&mut c.span, d));
 }
 
 fn offset_func_spans(f: &mut ast::Func, d: usize) {
@@ -5849,6 +5879,8 @@ fn resolve_imports_rec(
         let Some((mut imported, resolved_path)) = resolve(dir, &import, diags) else {
             continue;
         };
+        // each imported module in its own span band, after the prelude's (see `band_module_spans`)
+        band_module_spans(&mut imported, diag::PRELUDE_SPAN_BAND + resolved.len());
         resolve_imports_rec(&mut imported, &resolved_path, diags, resolve, resolved);
         // prepend imported definitions, skipping those already defined locally.
         // qualified imports: prefix names with the alias (or last module component).
@@ -5918,7 +5950,9 @@ fn prelude_module() -> &'static ast::Module {
         let lines = LineMap::new(PRELUDE);
         let tokens = lexer::lex(PRELUDE).unwrap_or_else(|e| panic!("prelude: lex: {e:?}"));
         let lt = layout::layout(&tokens, &lines);
-        parser::parse_module(&lt).unwrap_or_else(|e| panic!("prelude: parse: {e:?}"))
+        let mut m = parser::parse_module(&lt).unwrap_or_else(|e| panic!("prelude: parse: {e:?}"));
+        band_module_spans(&mut m, diag::PRELUDE_SPAN_BAND);
+        m
     })
 }
 
@@ -6593,4 +6627,38 @@ fn print_usage() {
          axionc --certified --release <file>  native build that MUST pass the verifier (no bypass), stamped\n  \
          axionc --explain AX0001        explain an error code"
     );
+}
+
+#[cfg(test)]
+mod span_band_tests {
+    use super::*;
+
+    /// A user call placed at the same byte offsets as a prelude call must not share its
+    /// span-keyed result type. `length`'s recursive `length ys` (an `Int`) used to pick up the
+    /// type of a user `range 2 2` (`List Int`) sitting at those offsets, so the native build
+    /// dropped the count as a list and crashed.
+    #[test]
+    fn prelude_spans_do_not_collide_with_user_spans() {
+        let needle = "Cons y ys -> 1 + length ys";
+        let off =
+            PRELUDE.find(needle).expect("prelude `length`") + needle.len() - "length ys".len();
+        let pre = "main :: IO ()\nmain = putStrLn (show (length (map fromInt (";
+        let pad = off - pre.len() - 4;
+        let src = format!("-- {}\n{pre}range 2 2))))\n", "x".repeat(pad));
+        assert_eq!(src.get(off..off + 9), Some("range 2 2"));
+        let mut diags = Diagnostics::default();
+        let (module, analysis) = compile_front(&src, "band.axi", &mut diags);
+        assert!(module.is_some(), "{diags:?}");
+        let user = analysis.makecon_tys.get(&(off, off + 9));
+        assert!(
+            matches!(user, Some(ast::Type::App(..))),
+            "user `range 2 2`: {user:?}"
+        );
+        let d = diag::PRELUDE_SPAN_BAND * diag::CLONE_SPAN_STRIDE;
+        let prel = analysis.makecon_tys.get(&(off + d, off + 9 + d));
+        assert!(
+            matches!(prel, Some(ast::Type::Con(n)) if n == "Int"),
+            "prelude `length ys`: {prel:?}"
+        );
+    }
 }
