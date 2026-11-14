@@ -1699,9 +1699,9 @@ mod tests {
         let l = lower_with(
             &module,
             &inplace,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
             &analysis.where_param_tys,
@@ -1726,9 +1726,9 @@ mod tests {
         lower_with(
             &module,
             &inplace,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
             &analysis.where_param_tys,
@@ -1745,9 +1745,9 @@ mod tests {
         let l = lower_with(
             &module,
             &inplace,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
             &analysis.where_param_tys,
@@ -1765,9 +1765,9 @@ mod tests {
         let l = lower_with(
             &module,
             &inplace,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
             &analysis.where_param_tys,
@@ -2018,9 +2018,7 @@ mod tests {
         });
     }
 
-    /// The `grabBox` shape over `String` fields, whose cells the verifier tracks as moved into the
-    /// `Pair` (`heap_inside`); the locally built `Cons` cells of `grabBox` carry no produce key and
-    /// are not tracked there.
+    /// The `grabBox` shape over `String` fields (boxed scalars rather than `data`).
     const RAW_LOAD_STRINGS: &str = "data Pair = Pair String String\n\
         grabBox :: Int -> String\n\
         grabBox n = case Pair (showInt n) (showInt 9) of\n  Pair x _ -> x\n\
@@ -2031,12 +2029,14 @@ mod tests {
     /// out either. (Clearing every slot on any load used to hide both.)
     #[test]
     fn verify_catches_raw_load_of_the_wrong_slot() {
-        let fs = verify_tampered(RAW_LOAD_STRINGS, |_| {});
-        assert!(fs.is_empty(), "expected clean, got {fs:?}");
-        for bad in [0, 24] {
-            assert_verify_catches(RAW_LOAD_STRINGS, "raw-load wrong slot", |fns| {
-                tamper_raw_load(fns, &mut |off, _| *off = bad);
-            });
+        for src in [CASE_EXTRACT_ESCAPE, RAW_LOAD_STRINGS] {
+            let fs = verify_tampered(src, |_| {});
+            assert!(fs.is_empty(), "expected clean, got {fs:?}");
+            for bad in [0, 24] {
+                assert_verify_catches(src, "raw-load wrong slot", |fns| {
+                    tamper_raw_load(fns, &mut |off, _| *off = bad);
+                });
+            }
         }
     }
 
@@ -2202,9 +2202,9 @@ mod tests {
         let l = lower_with(
             &module,
             &inplace,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
             &analysis.where_param_tys,
@@ -2288,9 +2288,9 @@ mod tests {
         let l = lower_with(
             &module,
             &inplace,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
             &analysis.where_param_tys,
