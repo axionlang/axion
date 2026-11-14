@@ -234,229 +234,31 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             }
             return e;
         }
+        // The ownership of every runtime call comes from one table, checked against the runtime
+        // (`builtins::RT_TABLE`). An unlisted call (the drift tests make that a test failure)
+        // keeps the conservative reading: it consumes its arguments and returns nothing owned.
         Op::RtCall { func, args, .. } => {
-            // String builtins (§tc) READ their operands (no free) and return a
-            // fresh heap String the caller reclaims via `axion_str_drop`. So they
-            // BORROW their args (the caller still drops them) — unlike the general
-            // runtime-owns-its-args rule below.
-            if func == "axion_strcat"
-                || func == "axion_show_float"
-                || func == "axion_bignum_to_string"
-                || func == "axion_substr"
-                // OS capability layer (§pass): read String args, return a fresh
-                // reclaimable heap String.
-                || func == "axion_getenv"
-                || func == "axion_run"
-                || func == "axion_exec_capture"
-                || func == "axion_read_file"
-                || func == "axion_readdir"
-                || func == "axion_readdir_typed"
-                || func == "axion_readdir_listing"
-                || func == "axion_read_line"
-                || func == "axion_read_secret"
-                || func == "axion_read_key"
-                || func == "axion_read_key_timeout"
-                || func == "axion_chr"
-                || func == "axion_rand_hex"
-                || func == "axion_getargs"
-                || func == "axion_getarg"
-            {
-                e.borrows.extend(args.iter());
-                e.produces = Some(Res {
-                    key: Some("String".into()),
-                    parent: None,
-                    slot: None,
-                });
-                return e;
+            let (own, out) = crate::builtins::rt_entry(func).map_or(
+                (crate::builtins::ArgOwn::Move, crate::builtins::Out::Scalar),
+                |r| (r.args, r.out),
+            );
+            match own {
+                crate::builtins::ArgOwn::Borrow => e.borrows.extend(args.iter()),
+                crate::builtins::ArgOwn::Move => e.moves.extend(args.iter()),
             }
-            // Integer (bignum) arithmetic READS its operands (no free) and returns a
-            // fresh heap Integer the caller reclaims via `axion_bignum_free`. So the
-            // args are BORROWED and the result PRODUCES an owned `Integer`. `from_i64`
-            // takes a scalar `Int` (nothing to borrow); `from_str` borrows its String.
-            if func == "axion_bignum_add"
-                || func == "axion_bignum_sub"
-                || func == "axion_bignum_mul"
-                || func == "axion_bignum_div"
-                || func == "axion_bignum_mod"
-                || func == "axion_bignum_from_str"
-                || func == "axion_bignum_from_i64"
-                || func == "axion_bignum_copy"
-            {
-                if func != "axion_bignum_from_i64" {
-                    e.borrows.extend(args.iter());
-                }
-                e.produces = Some(Res {
-                    key: Some("Integer".into()),
+            e.produces = match out {
+                crate::builtins::Out::Scalar => None,
+                crate::builtins::Out::Owned(k) => Some(Res {
+                    key: Some(k.into()),
                     parent: None,
                     slot: None,
-                });
-                return e;
-            }
-            // Integer comparisons READ both operands and return a scalar `Bool` — they
-            // BORROW their args (the owner still Auto-Drops them) and produce nothing.
-            if func == "axion_bignum_eq" || func == "axion_bignum_lt" || func == "axion_bignum_gt" {
-                e.borrows.extend(args.iter());
-                return e;
-            }
-            // tritDot (§10) READS both the packed vec and the activation array and
-            // returns a scalar Int — it BORROWS both (the caller still Auto-Drops
-            // them), and produces no heap resource.
-            // tritVecFromBuffer BORROWS the buffer (caller frees it) and PRODUCES a
-            // fresh owned TritVec — the ShowInt shape (borrow input, produce output).
-            if func == "axion_tritvec_from_buffer" {
-                e.borrows.extend(args.iter());
-                e.produces = Some(Res {
-                    key: Some("TritVec".into()),
+                }),
+                crate::builtins::Out::OwnedFlat => Some(Res {
+                    key: None,
                     parent: None,
                     slot: None,
-                });
-                return e;
-            }
-            if func == "axion_tritvec_dot"
-                || func == "axion_tritvec_matvec_sum"
-                || func == "axion_i8_matvec_sum"
-                || func == "axion_i8_sum"
-                || func == "axion_i8_dot"
-                || func == "axion_i8_dot_i8"
-                || func == "axion_array_sum"
-                || func == "axion_array_dot"
-                || func == "axion_i32_sum"
-                || func == "axion_i32_dot"
-                || func == "axion_i32_matvec_sum"
-                // read-only getters BORROW their resource (arg 0) and return a
-                // scalar — they don't free it, so the owner still reclaims it. Not
-                // treating these as borrows here leaked any owned resource whose
-                // last use was a get/len in a flat scope (the caller never saw it
-                // die, since a `move` marks it escaped into the runtime call).
-                || func == "axion_array_get"
-                || func == "axion_array_len"
-                || func == "axion_tritvec_get"
-                || func == "axion_tritvec_len"
-                || func == "axion_i8_get"
-                || func == "axion_i8_len"
-                || func == "axion_i32_get"
-                || func == "axion_i32_len"
-                // char-level string reads: BORROW the string, return a scalar Int.
-                || func == "axion_str_len"
-                || func == "axion_str_at"
-                // Buffer peek/poke + bufPtr: BORROW the buffer (read/write in place, or take its
-                // data address), return a scalar Int/Float — the buffer stays owned by the caller.
-                || func == "axion_poke_u32"
-                || func == "axion_poke_u8"
-                || func == "axion_poke_u16"
-                || func == "axion_poke_u64"
-                || func == "axion_poke_f64"
-                || func == "axion_peek_u8"
-                || func == "axion_peek_u16"
-                || func == "axion_peek_u32"
-                || func == "axion_peek_u64"
-                || func == "axion_peek_f64"
-                || func == "axion_buf_ptr"
-                || func == "axion_buf_ptr_n"
-                // sumBytes reads the whole buffer and returns the scalar sum (borrow); foldBytes
-                // folds a closure over the bytes and returns a scalar (reads the buffer only).
-                || func == "axion_buf_sum"
-                || func == "axion_buf_len"
-                || func == "ax_net_send_buf"
-                || func == "axion_file_open"
-                || func == "axion_file_errno"
-                || func == "axion_file_size"
-                || func == "axion_file_close"
-                || func == "axion_fold_bytes"
-                || func == "axion_str_cmp"
-                // OS capability layer (§pass): effectful primitives that READ their
-                // String args (no free) and return a scalar Int.
-                || func == "axion_system"
-                || func == "axion_exec_status"
-                // stderr writes (ePutStr/ePutStrLn): read the string, return nothing.
-                || func == "axion_eput"
-                || func == "axion_eputs"
-                || func == "axion_write_file"
-                || func == "axion_file_exists"
-                || func == "axion_mkdir_p"
-                || func == "axion_unlink"
-                || func == "axion_rename"
-                || func == "axion_exit"
-            {
-                e.borrows.extend(args.iter());
-                return e;
-            }
-            // runtime/FFI calls own their arguments: the reclamation analysis
-            // marks them as escaped, so the caller never frees them — a
-            // resource passed here dies here (`axion_free` is the runtime free)
-            e.moves.extend(args.iter());
-            // `axion_array_new` allocates, and `axion_array_set` CONSUMES the old
-            // array (arg 0, already moved above) and returns a new owned handle
-            // (same pointer, in-place) — both produce an Array the caller reclaims,
-            // so a threaded array is dropped exactly once at its final binding.
-            if func == "axion_array_new" || func == "axion_array_set" {
-                e.produces = Some(Res {
-                    key: Some("Array".into()),
-                    parent: None,
-                    slot: None,
-                });
-            } else if func == "axion_tritvec_iota" {
-                // bulk builder → fresh owned TritVec, reclaimed like newTritVec.
-                e.produces = Some(Res {
-                    key: Some("TritVec".into()),
-                    parent: None,
-                    slot: None,
-                });
-            } else if func == "axion_array_iota" {
-                e.produces = Some(Res {
-                    key: Some("Array".into()),
-                    parent: None,
-                    slot: None,
-                });
-            } else if func == "axion_i8_new" || func == "axion_i8_iota" || func == "axion_i8_set" {
-                // I8Array constructors + in-place set → fresh/threaded owned block.
-                e.produces = Some(Res {
-                    key: Some("I8Array".into()),
-                    parent: None,
-                    slot: None,
-                });
-            } else if func == "axion_i32_new" || func == "axion_i32_iota" || func == "axion_i32_set"
-            {
-                e.produces = Some(Res {
-                    key: Some("I32Array".into()),
-                    parent: None,
-                    slot: None,
-                });
-            } else if func == "axion_tritvec_new" || func == "axion_tritvec_set" {
-                // TritVec (§10): new allocates, set CONSUMES the old vec (arg 0,
-                // moved above) and returns the same in-place handle — both produce
-                // a TritVec the caller reclaims (flat `axion_free`), so a threaded
-                // vec is dropped exactly once at its final binding, like Array.
-                e.produces = Some(Res {
-                    key: Some("TritVec".into()),
-                    parent: None,
-                    slot: None,
-                });
-            } else if func == "axion_buf_new"
-                || func == "axion_buf_iota"
-                || func == "axion_buf_xor"
-                || func == "axion_file_read"
-            {
-                // Buffer (§4): `newBuffer` allocates; `bufIota`/`xorInPlace` CONSUME the old
-                // buffer (arg 0, moved above) and return the same in-place handle — all produce a
-                // Buffer the caller reclaims via `axion_buf_free`, so a threaded buffer is dropped
-                // exactly once at its final binding. Matches the owned-key inference in core.rs.
-                e.produces = Some(Res {
-                    key: Some("Buffer".into()),
-                    parent: None,
-                    slot: None,
-                });
-            } else if func == "axion_par_map" {
-                // §9 parMap returns an owned `List` of the workers' replies; the
-                // consumer reclaims it via the generic `axion_drop_List` (flat
-                // cons-cell free). The input list is moved in (above) and freed by
-                // the runtime driver, so it is reclaimed exactly once here too.
-                e.produces = Some(Res {
-                    key: Some("List".into()),
-                    parent: None,
-                    slot: None,
-                });
-            }
+                }),
+            };
         }
         Op::ArrayNew { len, init, elem_ty } => {
             e.moves.push(len);

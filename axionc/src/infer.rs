@@ -634,6 +634,34 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
     (inf, env)
 }
 
+#[cfg(test)]
+fn empty_module() -> Module {
+    Module {
+        name: None,
+        imports: Vec::new(),
+        funcs: Vec::new(),
+        datas: Vec::new(),
+        foreigns: Vec::new(),
+        foreign_structs: Vec::new(),
+        foreign_enums: Vec::new(),
+        classes: Vec::new(),
+        instances: Vec::new(),
+        level_ceiling: None,
+    }
+}
+
+/// Every name the type checker gives a built-in type (`base_env`), for the ownership table's
+/// drift test (`builtins::SURFACE`).
+#[cfg(test)]
+pub fn builtin_names() -> Vec<String> {
+    let mut diags = Diagnostics::default();
+    let module = empty_module();
+    let (mut inf, _) = setup(&module, &mut diags);
+    let mut v: Vec<String> = inf.base_env().into_keys().collect();
+    v.sort();
+    v
+}
+
 impl Infer<'_> {
     /// Infer one function's body against `env` (checking mode when it has a
     /// signature). Emits that function's type diagnostics and accumulates its

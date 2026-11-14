@@ -304,7 +304,7 @@ fn builtin_arity(name: &str) -> usize {
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
         | "getArray" | "arrayDot" | "peekU8" | "peekU16" | "peekU32" | "peekU64" | "peekF64"
-        | "bufPtrN" | "fileRead" => 2,
+        | "bufPtrN" | "fileRead" | "xorInPlace" => 2,
         "netSendBuf" => 4,
         _ => 1,
     }
@@ -1133,6 +1133,14 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "sumBytes",
             args: Vec::new(),
         }),
+        "bufIota" => Ok(Value::Builtin {
+            name: "bufIota",
+            args: Vec::new(),
+        }),
+        "xorInPlace" => Ok(Value::Builtin {
+            name: "xorInPlace",
+            args: Vec::new(),
+        }),
         _ => Err(format!("name not found at runtime: '{name}'")),
     }
 }
@@ -1863,6 +1871,22 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
             Ok(Value::Unit)
         }
         ("bufLen", [Value::Array(a)]) => Ok(Value::Int(a.borrow().len() as i64)),
+        // bufIota: byte i := i & 0xFF; xorInPlace: every byte ^= key (low byte). In place, the
+        // same buffer returned (the runtime's `axion_buf_iota`/`axion_buf_xor`).
+        ("bufIota", [Value::Array(a)]) => {
+            for (i, v) in a.borrow_mut().iter_mut().enumerate() {
+                *v = Value::Int((i & 0xFF) as i64);
+            }
+            Ok(Value::Array(a.clone()))
+        }
+        ("xorInPlace", [Value::Array(a), Value::Int(k)]) => {
+            for v in a.borrow_mut().iter_mut() {
+                if let Value::Int(b) = v {
+                    *b = (*b ^ (k & 0xFF)) & 0xFF;
+                }
+            }
+            Ok(Value::Array(a.clone()))
+        }
         ("sumBytes", [Value::Array(a)]) => Ok(Value::Int(
             a.borrow()
                 .iter()

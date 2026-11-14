@@ -41,6 +41,7 @@
 #[allow(dead_code)]
 mod ast;
 mod bigint;
+mod builtins;
 mod check;
 #[cfg(feature = "native")]
 mod codegen;

@@ -732,6 +732,128 @@ def gen_closure_param(rng):
     return (helpers + hofs + "main :: IO ()\nmain = do\n"
             f"  let k = {k}\n  let lp = {lp}\n" + "\n".join(lines) + "\n")
 
+BUILTINS_PRE = '''-- fuzz:builtins
+idG :: a -> a
+idG x = x
+
+pickG :: Bool -> a -> a -> a
+pickG b x y = if b then x else y
+
+app1 :: (a -> Int) -> a -> Int
+app1 f x = f x
+
+twiceS :: (String -> String) -> String -> String
+twiceS f s = f (f s)
+
+data BoxS = BoxS String Int
+
+unboxS :: BoxS -> String
+unboxS b = case b of
+  BoxS s n -> s
+
+sndT :: (Int, String) -> String
+sndT t = case t of
+  (a, s) -> s
+
+'''
+
+def _bi_str(rng, d):
+    """A String-valued expression from a random mix of producers (heap and literal).
+
+    Left out on purpose — known conservative classes, not built-in ownership bugs, which would
+    make every run fail: a generic function that DISCARDS a heap argument (`pickG b x y` leaks the
+    unchosen one: a bare type-variable parameter is never freed), a PARTIALLY applied built-in
+    passed as a closure (`twiceS (strAppend "x") s` stays a generic closure, whose String argument
+    leaks), and a `let`-bound `case` mixing a moved-out String with a literal arm (AX0911)."""
+    if d <= 0 or rng.random() < 0.25:
+        return rng.choice([f'"s{rng.randint(0, 9)}"', f"showInt {rng.randint(0, 999)}",
+                           f"chr {rng.randint(65, 90)}"])
+    a = _bi_str(rng, d - 1)
+    return rng.choice([
+        f"strAppend ({a}) ({_bi_str(rng, d - 1)})",
+        f"substr 0 1 (strAppend ({a}) \"pad\")",
+        f"showInteger ({_bi_int(rng, d - 1)})",
+        f"idG ({a})",
+        f"unboxS (BoxS ({a}) {rng.randint(0, 9)})",
+        f"sndT ({rng.randint(0, 9)}, {a})",
+    ])
+
+def _bi_int(rng, d):
+    """An Integer-valued expression."""
+    if d <= 0 or rng.random() < 0.3:
+        return f"fromInt {rng.randint(0, 99)}"
+    a = _bi_int(rng, d - 1)
+    return rng.choice([
+        f"({a}) + ({_bi_int(rng, d - 1)})",
+        f"({a}) * ({_bi_int(rng, d - 1)})",
+        f"bignumFromStr (showInt {rng.randint(0, 999)})",
+        f"idG ({a})",
+        f"divInteger (({a}) + fromInt 7) (fromInt 3)",
+    ])
+
+def _bi_buf(rng):
+    n = rng.randint(1, 16)
+    return rng.choice([f"newBuffer {n}", f"bufIota (newBuffer {n})",
+                       f"xorInPlace (bufIota (newBuffer {n})) {rng.randint(0, 255)}"])
+
+def _bi_term(rng, binds):
+    """One scalar term consuming heap values through built-ins. May add a `let` binding (in
+    `binds`) that later terms read again: a built-in that wrongly consumes its argument then
+    double-frees or is rejected (AX0910)."""
+    if binds and rng.random() < 0.4:
+        v, ty = rng.choice(binds)
+        if ty == "S":
+            return rng.choice([f"strLen {v}", f"charAt 0 (strAppend {v} \"z\")",
+                               f"strCmp {v} {v}", f"app1 strLen {v}"])
+        if ty == "I":
+            return rng.choice([f"strLen (showInteger {v})", f"(if {v} > fromInt 5 then 1 else 0)"])
+        return rng.choice([f"bufLen {v}", f"sumBytes {v}", f"peekU8 {v} 0"])
+    k = rng.random()
+    if k < 0.15:
+        name = f"v{len(binds)}"
+        ty = rng.choice(["S", "S", "I", "B"])
+        val = {"S": lambda: _bi_str(rng, 2), "I": lambda: _bi_int(rng, 2),
+               "B": lambda: _bi_buf(rng)}[ty]()
+        binds.append((name, ty))
+        return ("let", name, val)
+    if k < 0.55:
+        s = _bi_str(rng, rng.randint(1, 3))
+        return rng.choice([f"strLen ({s})", f"strCmp ({s}) ({_bi_str(rng, 1)})",
+                           f"charAt 0 (strAppend ({s}) \"z\")", f"app1 strLen ({s})",
+                           f"length (Cons ({s}) Nil)", f"sum (map strLen [({s}), \"ab\"])"])
+    if k < 0.75:
+        i = _bi_int(rng, rng.randint(1, 3))
+        return rng.choice([f"strLen (showInteger ({i}))",
+                           f"(if ({i}) == ({_bi_int(rng, 1)}) then 1 else 0)"])
+    if k < 0.97:
+        b = _bi_buf(rng)
+        return rng.choice([f"bufLen ({b})", f"sumBytes ({b})", f"peekU8 ({b}) 0",
+                           f"app1 bufLen ({b})"])
+    # an Array of a heap element: natively rejected (AX0914), interp runs it
+    return f"lenArray (newArray 2 ({_bi_str(rng, 1)}))"
+
+def gen_builtins(rng):
+    """Built-ins over heap arguments of every shape (String, Integer, Buffer, data, tuple, list,
+    through generic wrappers and closures, read again after a `let`): every program is safe, so a
+    native rejection other than AX0914, a leak, or a divergence means a built-in's ownership
+    entry (builtins::RT_TABLE) is wrong."""
+    binds = []
+    lets, terms = [], []
+    for _ in range(rng.randint(2, 6)):
+        t = _bi_term(rng, binds)
+        if isinstance(t, tuple):
+            lets.append(f"  let {t[1]} = {t[2]}")
+        else:
+            terms.append(t)
+    if not terms:
+        terms.append("0")
+    # every bound value is read at least once (an unread String is fine; this adds coverage)
+    for v, ty in binds:
+        terms.append({"S": f"strLen {v}", "I": f"strLen (showInteger {v})", "B": f"bufLen {v}"}[ty])
+    body = "\n".join(lets) + ("\n" if lets else "")
+    body += "  putStrLn (showInt (" + " + ".join(terms) + "))\n"
+    return BUILTINS_PRE + "main :: IO ()\nmain = do\n" + body
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
@@ -756,8 +878,10 @@ def gen(rng):
         return gen_large(rng)           # large inputs → O(N^2)/hang guard (timeout-detected)
     if r < 0.88:
         return gen_tuple_consume(rng)   # consume-of-borrowed-interior-tuple-field (verifier net)
-    if r < 0.94:
+    if r < 0.91:
         return gen_closure_param(rng)   # closure-param HOF specialization + moved-in hand-off
+    if r < 0.97:
+        return gen_builtins(rng)        # built-ins over heap args (the ownership table)
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:
@@ -834,6 +958,9 @@ def asan_run(src, work, oracle_out):
         # session tasks free what they own: a leak in a session-heap program is a real finding
         if "fuzz:session-heap" in src.read_text():
             return ("sessleak", err[-600:])
+        # built-in programs reclaim everything: a leak means a wrong ownership entry
+        if "fuzz:builtins" in src.read_text():
+            return ("bileak", err[-600:])
         return ("leak", None)              # LSan `_exit`s without flushing stdout
     if oracle_out is not None and rr == 0 and orr.strip() != oracle_out.strip():
         return ("divergence", f"interp={oracle_out!r} llvm+asan={orr!r}\n{err[-300:]}")
@@ -863,6 +990,12 @@ def check(prog, work):
         return ("hang", f"cranelift exceeded {HANG_SECS}s:\n{prog[:500]}")
     # verdict divergence
     if ri == 0 and rc != 0:
+        if "AX0914" in ec:
+            return ("ax0914", None)            # expected: a heap Array element, rejected natively
+        if "fuzz:builtins" in prog and "AX0910" in ec:
+            # every built-in program is safe: the verifier rejecting one means a built-in is
+            # classified as consuming an argument the runtime only reads (the netSend class)
+            return ("biax0910", ec[-600:])
         if "AX0912" in ec:
             return ("ax0912", None)            # expected: the heap-alias guard
         if "AX0910" in ec:
@@ -901,7 +1034,8 @@ def main():
             prog = gen(rng)
             verdict, detail = check(prog, work)
             tally[verdict] = tally.get(verdict, 0) + 1
-            if verdict in ("corruption", "divergence", "verdict", "hang", "sessleak"):
+            if verdict in ("corruption", "divergence", "verdict", "hang", "sessleak", "bileak",
+                           "biax0910"):
                 hard += 1
                 FAILDIR.mkdir(exist_ok=True)
                 f = FAILDIR / f"seed{a.seed}_i{i}_{verdict}.axi"
