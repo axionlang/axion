@@ -3216,12 +3216,13 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
                 }
                 let handed_off = f.clauses.iter().any(|c| {
                     let shadow = std::collections::HashSet::new();
+                    let off = |e: &ast::Expr| {
+                        hands_off_whole(n, e, &f.name, &consuming, &shadow)
+                            || field_handed_off(n, e, &f.name, &consuming, &con_field_heap)
+                    };
                     match &c.body {
-                        ast::Body::Plain(e) => hands_off_whole(n, e, &f.name, &consuming, &shadow),
-                        ast::Body::Guarded(arms) => arms.iter().any(|(g, r)| {
-                            hands_off_whole(n, g, &f.name, &consuming, &shadow)
-                                || hands_off_whole(n, r, &f.name, &consuming, &shadow)
-                        }),
+                        ast::Body::Plain(e) => off(e),
+                        ast::Body::Guarded(arms) => arms.iter().any(|(g, r)| off(g) || off(r)),
                     }
                 });
                 if handed_off {
@@ -3293,6 +3294,44 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
         }
     }
     exempt
+}
+
+/// `true` if a heap field extracted from `v` by a `case v of C .. b ..` arm is passed whole to
+/// a consuming position of another function (`Cons s rest -> consRight s (…)`, where
+/// `consRight` stores `s`): the callee keeps the element, so the list `v` must be owned
+/// here and its spine shell-freed, or the caller frees the element a second time.
+fn field_handed_off(
+    v: &str,
+    e: &ast::Expr,
+    me: &str,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+) -> bool {
+    if let ast::Expr::Case(scrut, arms, _) = e {
+        if matches!(scrut.as_ref(), ast::Expr::Var(x, _) if x == v) {
+            for (pat, body) in arms {
+                let ast::Pat::Con(con, subs, _) = pat else {
+                    continue;
+                };
+                let Some(heaps) = con_field_heap.get(con) else {
+                    continue;
+                };
+                let shadow = std::collections::HashSet::new();
+                let hit = subs.iter().enumerate().any(|(fi, sp)| {
+                    matches!(sp, ast::Pat::Var(b, _) if heaps.get(fi).copied().unwrap_or(false)
+                        && hands_off_whole(b, body, me, consuming, &shadow))
+                });
+                if hit {
+                    return true;
+                }
+            }
+        }
+    }
+    let mut found = false;
+    for_each_subexpr(e, &mut |c| {
+        found = found || field_handed_off(v, c, me, consuming, con_field_heap);
+    });
+    found
 }
 
 /// `true` if the variable `v` (not shadowed: absent from `shadow`) is passed WHOLE as an

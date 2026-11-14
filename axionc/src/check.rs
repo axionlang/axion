@@ -1700,6 +1700,16 @@ fn check_func(
         // a `let` (`let z = xs in T z z`) evaded them and double-freed natively.
         {
             let mut heap: HashSet<String> = HashSet::new();
+            // declared types of the parameters (and, below, of binders whose type follows)
+            let tys: HashMap<String, Type> = clause
+                .pats
+                .iter()
+                .zip(&ptypes)
+                .filter_map(|(p, t)| match p {
+                    Pat::Var(n, _) => Some((n.clone(), (*t).clone())),
+                    _ => None,
+                })
+                .collect();
             for (i, p) in clause.pats.iter().enumerate() {
                 // MANY heap params only — `%1` sources are handled by `scan_lets`
                 // below (avoid a double AX0001 on the same alias).
@@ -1741,17 +1751,17 @@ fn check_func(
             }
             // walk the clause body (Plain, or each guarded result) + `where` bodies
             match &clause.body {
-                Body::Plain(body) => check_contraction(body, &heap, ctx, &locals, diags),
+                Body::Plain(body) => check_contraction(body, &heap, &tys, ctx, &locals, diags),
                 Body::Guarded(arms) => {
                     for (_, r) in arms {
-                        check_contraction(r, &heap, ctx, &locals, diags);
+                        check_contraction(r, &heap, &tys, ctx, &locals, diags);
                     }
                 }
             }
             for w in &clause.wher {
                 for c in &w.clauses {
                     if let Body::Plain(rhs) = &c.body {
-                        check_contraction(rhs, &heap, ctx, &locals, diags);
+                        check_contraction(rhs, &heap, &tys, ctx, &locals, diags);
                     }
                 }
             }
@@ -1795,31 +1805,45 @@ fn check_func(
 fn check_contraction(
     e: &Expr,
     heap: &HashSet<String>,
+    tys: &HashMap<String, Type>,
     ctx: &Ctx,
     locals: &LocalHeap,
     diags: &mut Diagnostics,
 ) {
     match e {
         Expr::Case(scrut, arms, _) => {
-            check_contraction(scrut, heap, ctx, locals, diags);
+            check_contraction(scrut, heap, tys, ctx, locals, diags);
+            let sty = scrut_type(scrut, tys, ctx);
             for (pat, body) in arms {
                 let mut heap = heap.clone();
-                for (name, span) in pat_heap_binders(pat, ctx) {
+                let mut tys = tys.clone();
+                let mut shadowed = HashSet::new();
+                pat_names(pat, &mut shadowed);
+                tys.retain(|n, _| !shadowed.contains(n));
+                for (name, span) in pat_heap_binders(pat, sty.as_ref(), ctx, &mut tys) {
                     let n = analyze(body, &name, Mode::Consume, ctx).0;
                     if n > 1 {
                         push_contraction(&name, span, n, &[body], ctx, diags);
                     }
                     heap.insert(name);
                 }
-                check_contraction(body, &heap, ctx, locals, diags);
+                check_contraction(body, &heap, &tys, ctx, locals, diags);
             }
         }
         Expr::Let(binds, body, _) => {
             let mut heap = heap.clone();
+            let mut tys = tys.clone();
             for f in binds {
+                if let [c] = f.clauses.as_slice() {
+                    if let (true, Body::Plain(rhs)) = (c.pats.is_empty(), &c.body) {
+                        if let Some(t) = scrut_type(rhs, &tys, ctx) {
+                            tys.insert(f.name.clone(), t);
+                        }
+                    }
+                }
                 for c in &f.clauses {
                     if let Body::Plain(rhs) = &c.body {
-                        check_contraction(rhs, &heap, ctx, locals, diags);
+                        check_contraction(rhs, &heap, &tys, ctx, locals, diags);
                     }
                 }
                 // a plain `let name = rhs` (no params) whose RHS is a heap value:
@@ -1855,30 +1879,30 @@ fn check_contraction(
                     }
                 }
             }
-            check_contraction(body, &heap, ctx, locals, diags);
+            check_contraction(body, &heap, &tys, ctx, locals, diags);
         }
         Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
-            check_contraction(a, heap, ctx, locals, diags);
-            check_contraction(b, heap, ctx, locals, diags);
+            check_contraction(a, heap, tys, ctx, locals, diags);
+            check_contraction(b, heap, tys, ctx, locals, diags);
         }
         Expr::If(a, b, c, _) => {
-            check_contraction(a, heap, ctx, locals, diags);
-            check_contraction(b, heap, ctx, locals, diags);
-            check_contraction(c, heap, ctx, locals, diags);
+            check_contraction(a, heap, tys, ctx, locals, diags);
+            check_contraction(b, heap, tys, ctx, locals, diags);
+            check_contraction(c, heap, tys, ctx, locals, diags);
         }
         Expr::Tuple(es, _) => es
             .iter()
-            .for_each(|e| check_contraction(e, heap, ctx, locals, diags)),
+            .for_each(|e| check_contraction(e, heap, tys, ctx, locals, diags)),
         Expr::RecordCon(_, fs, _) => {
             fs.iter()
-                .for_each(|(_, e)| check_contraction(e, heap, ctx, locals, diags));
+                .for_each(|(_, e)| check_contraction(e, heap, tys, ctx, locals, diags));
         }
         Expr::RecordUpd(base, fs, _) => {
-            check_contraction(base, heap, ctx, locals, diags);
+            check_contraction(base, heap, tys, ctx, locals, diags);
             fs.iter()
-                .for_each(|(_, e)| check_contraction(e, heap, ctx, locals, diags));
+                .for_each(|(_, e)| check_contraction(e, heap, tys, ctx, locals, diags));
         }
-        Expr::Lam(_, b, _) => check_contraction(b, heap, ctx, locals, diags),
+        Expr::Lam(_, b, _) => check_contraction(b, heap, tys, ctx, locals, diags),
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Var(..) | Expr::Con(..) => {}
     }
 }
@@ -1887,23 +1911,111 @@ fn check_contraction(
 /// those of `y`/`ys` whose field type is a `data`/tuple). Recurses into nested
 /// constructor patterns; tuple sub-patterns are skipped (element types unknown
 /// here — conservative, never a false positive).
-fn pat_heap_binders(pat: &Pat, ctx: &Ctx) -> Vec<(String, Span)> {
+fn pat_heap_binders(
+    pat: &Pat,
+    sty: Option<&Type>,
+    ctx: &Ctx,
+    tys: &mut HashMap<String, Type>,
+) -> Vec<(String, Span)> {
     let mut out = Vec::new();
-    collect_pat_heap(pat, ctx, &mut out);
+    collect_pat_heap(pat, sty, ctx, tys, &mut out);
     out
 }
 
-fn collect_pat_heap(pat: &Pat, ctx: &Ctx, out: &mut Vec<(String, Span)>) {
+fn collect_pat_heap(
+    pat: &Pat,
+    sty: Option<&Type>,
+    ctx: &Ctx,
+    tys: &mut HashMap<String, Type>,
+    out: &mut Vec<(String, Span)>,
+) {
     if let Pat::Con(c, subpats, _) = pat {
-        if let Some(ftys) = ctx.con_fields.get(c) {
-            for (sp, fty) in subpats.iter().zip(ftys) {
+        if let Some(ftys) = con_field_types(c, sty, ctx) {
+            for (sp, fty) in subpats.iter().zip(&ftys) {
                 match sp {
-                    Pat::Var(name, span) if is_heap_ty(fty, ctx) => out.push((name.clone(), *span)),
-                    Pat::Con(..) => collect_pat_heap(sp, ctx, out),
+                    Pat::Var(name, span) => {
+                        if is_heap_ty(fty, ctx) {
+                            out.push((name.clone(), *span));
+                        }
+                        tys.insert(name.clone(), fty.clone());
+                    }
+                    Pat::Con(..) => collect_pat_heap(sp, Some(fty), ctx, tys, out),
                     _ => {}
                 }
             }
         }
+    }
+}
+
+/// The field types of constructor `c`, with its `data` type's parameters replaced by the
+/// scrutinee type's arguments when that type is known (`Right` at `Either Int (List String)` →
+/// `[List String]`); otherwise the declared (possibly polymorphic) field types.
+fn con_field_types(c: &str, sty: Option<&Type>, ctx: &Ctx) -> Option<Vec<Type>> {
+    let ftys = ctx.con_fields.get(c)?;
+    let params = ctx.con_params.get(c);
+    let mut args = Vec::new();
+    let mut t = sty;
+    while let Some(Type::App(f, a)) = t {
+        args.push(a.as_ref().clone());
+        t = Some(f.as_ref());
+    }
+    args.reverse();
+    match params {
+        Some(ps) if !ps.is_empty() && ps.len() == args.len() => {
+            let sub: HashMap<&str, &Type> =
+                ps.iter().map(String::as_str).zip(args.iter()).collect();
+            Some(ftys.iter().map(|f| subst_ty(f, &sub)).collect())
+        }
+        _ => Some(ftys.clone()),
+    }
+}
+
+fn subst_ty(t: &Type, sub: &HashMap<&str, &Type>) -> Type {
+    match t {
+        Type::Var(v) => sub
+            .get(v.as_str())
+            .map_or_else(|| t.clone(), |r| (*r).clone()),
+        Type::App(f, a) => Type::App(Box::new(subst_ty(f, sub)), Box::new(subst_ty(a, sub))),
+        Type::Arrow { mult, from, to } => Type::Arrow {
+            mult: *mult,
+            from: Box::new(subst_ty(from, sub)),
+            to: Box::new(subst_ty(to, sub)),
+        },
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|x| subst_ty(x, sub)).collect()),
+        Type::Con(_) | Type::Unit => t.clone(),
+    }
+}
+
+/// The type of a `case` scrutinee (or `let` right-hand side) when it is evident without
+/// inference: a binder of known type, or a saturated call of a function whose declared
+/// result type is closed (no type variables — a polymorphic result is left unknown).
+fn scrut_type(e: &Expr, tys: &HashMap<String, Type>, ctx: &Ctx) -> Option<Type> {
+    match e {
+        Expr::Var(v, _) => tys.get(v).cloned(),
+        Expr::App(..) => {
+            let (head, args) = spine(e);
+            let Expr::Var(f, _) = head else { return None };
+            if tys.contains_key(f) {
+                return None; // a local shadows the top-level function
+            }
+            let sig = ctx.fn_sigs.get(f)?;
+            if sig.param_types().len() != args.len() {
+                return None;
+            }
+            let rt = crate::core::result_type(sig);
+            (!has_ty_var(rt)).then(|| rt.clone())
+        }
+        _ => None,
+    }
+}
+
+fn has_ty_var(t: &Type) -> bool {
+    match t {
+        Type::Var(_) => true,
+        Type::App(f, a) => has_ty_var(f) || has_ty_var(a),
+        Type::Arrow { from, to, .. } => has_ty_var(from) || has_ty_var(to),
+        Type::Tuple(ts) => ts.iter().any(has_ty_var),
+        Type::Con(_) | Type::Unit => false,
     }
 }
 
@@ -2496,6 +2608,12 @@ struct Ctx {
     /// constructor name → its field types (positional), for classifying the heap-ness
     /// of `case`-extracted field binders in the contraction check.
     con_fields: HashMap<String, Vec<Type>>,
+    /// constructor name → its `data` type's parameters, to instantiate polymorphic field
+    /// types (`Right b`) with the scrutinee's type arguments (`Either Int (List String)`).
+    con_params: HashMap<String, Vec<String>>,
+    /// function → declared signature (user functions with one), to type a `case` scrutinee
+    /// that is a saturated call.
+    fn_sigs: HashMap<String, Type>,
     /// functions whose RESULT is a heap value (`data`/tuple) — so `let z = f a`
     /// binds a heap value that must not be contracted (moved into two owned slots).
     fn_ret_heap: HashSet<String>,
@@ -2523,8 +2641,10 @@ fn build_ctx(module: &Module) -> Ctx {
         }
     }
     let mut con_fields = HashMap::new();
+    let mut con_params = HashMap::new();
     for d in &module.datas {
         for c in &d.cons {
+            con_params.insert(c.name.clone(), d.params.clone());
             consumers.insert(c.name.clone(), c.fields.iter().map(|f| f.mult).collect());
             con_fields.insert(
                 c.name.clone(),
@@ -2723,6 +2843,12 @@ fn build_ctx(module: &Module) -> Ctx {
         must_use_types,
         data_names,
         con_fields,
+        con_params,
+        fn_sigs: module
+            .funcs
+            .iter()
+            .filter_map(|f| Some((f.name.clone(), f.sig.clone()?)))
+            .collect(),
         fn_ret_heap,
         fn_ret_must_use,
         no_drop_types,

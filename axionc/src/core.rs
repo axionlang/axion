@@ -9617,6 +9617,12 @@ fn reclaim_cond_escape(
                     if v == &x || rhs_moves(v, &rhs, ba) {
                         return false; // moved/consumed here, or its name rebound
                     }
+                    // a conditional whose branches already free v (`insert_drops` dropped it at
+                    // its last use inside each branch): it is gone after the `let`, so freeing
+                    // it again at a later death point would be a double free.
+                    if rhs_drops_var(v, &rhs) {
+                        return false;
+                    }
                     // a binding that READS v must produce a FRESH value to keep v
                     // reclaimable — a `Field`/`get`/call may return a pointer INTO v (an
                     // escaping interior alias), and dropping v later would free it. A direct

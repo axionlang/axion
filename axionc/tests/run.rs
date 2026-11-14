@@ -123,11 +123,11 @@ fn fib_compiles_and_runs() {
 }
 
 #[test]
-fn consuming_a_borrowed_heap_element_is_rejected() {
-    // Soundness (§verify): a function that passes a BORROWED list's concrete heap element into
-    // a consuming call frees memory the owner still holds → the owner's drop double-frees. The
-    // drop-verifier now CATCHES this (it was a false-negative → a silent native double-free):
-    // AX0910, pointing at the consuming call. `firstOr` (which MOVES its arg) stays sound.
+fn handing_a_list_field_to_a_consumer_owns_the_list() {
+    // `secondOr` passes a field of its list (`ys`) to `firstOr`, which consumes it. Borrowing
+    // the list there freed memory the caller still held (a native double free, later caught by
+    // the verifier as AX0910 DropOfAlias). Ownership inference now sees the hand-off of the
+    // field: `secondOr` owns its list, and the program runs.
     let src = r#"firstOr :: String -> List String -> String
 firstOr d xs = case xs of
   Nil -> d
@@ -147,17 +147,13 @@ main = putStrLn (secondOr "none" (words "a b c"))
         .args(["run", "--backend", "cranelift", path.to_str().unwrap()])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "should be rejected");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(text.contains("AX0910"), "expected AX0910, got: {text}");
-    assert!(
-        text.contains("DropOfAlias") && text.contains("secondOr"),
-        "expected DropOfAlias in secondOr, got: {text}"
-    );
+    assert!(out.status.success(), "should compile and run: {text}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "b\n", "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1750,6 +1746,44 @@ fn session_tasks_free_the_heap_values_they_own() {
     // last value at task end) used to leak every round. The worker also hands its task over to
     // `loop` with a tail call. Leak-freedom itself is checked by sanitize.sh (LEAKFREE).
     agree_across_backends("session_heap_reclaim.axi", "20\n");
+}
+
+#[test]
+fn a_list_element_handed_to_a_storing_function_is_owned() {
+    // `keepGood` passes an element of its list to `consRight`, which stores it; the list's
+    // elements are therefore given away and `keepGood` must own the list (it borrowed it, so the
+    // caller freed the element again: AX0910).
+    agree_across_backends("field_handoff_consume.axi", "3\n403\n");
+}
+
+#[test]
+fn an_owned_value_freed_in_both_branches_is_not_freed_again() {
+    // A non-tail `if` whose branches free an owned String at its last use left it in the
+    // reclaimer's owned set, which freed it a second time after the `if` (AX0910).
+    agree_across_backends(
+        "cond_branch_drop_reclaim.axi",
+        "root/a/index.html\nroot/b.txt\nroot/c/index.html\nroot/d.css\n",
+    );
+}
+
+#[test]
+fn a_case_bound_value_of_a_polymorphic_field_cannot_be_given_away_twice() {
+    // `Right parts` binds a `List String` through `Either`'s type parameter. The contraction
+    // check read only the declared field type (`b`), so a double hand-off was accepted and
+    // double-freed natively (AX0910). It is now AX0001, naming both sites.
+    let src = "pick :: Int -> List String -> String\n\
+               pick n xs = case xs of\n  Nil -> \"\"\n  Cons y ys -> if n == 0 then y else pick (n - 1) ys\n\
+               both :: Either Int (List String) -> Int\n\
+               both e = case e of\n  Left c -> c\n  Right parts -> strLen (pick 0 parts) + strLen (pick 1 parts)\n\
+               main :: IO ()\nmain = putStrLn (show (both (Right (words \"ab cde\"))))\n";
+    let p = std::env::temp_dir().join(format!("axion_case_contract_{}.axi", std::process::id()));
+    std::fs::write(&p, src).unwrap();
+    let out = axionc().arg("--check").arg(&p).output().unwrap();
+    let _ = std::fs::remove_file(&p);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success() && text.contains("AX0001"), "{text}");
+    assert_eq!(text.matches("given to `pick` here").count(), 2, "{text}");
+    assert!(!text.contains("AX0910"), "{text}");
 }
 
 #[test]
