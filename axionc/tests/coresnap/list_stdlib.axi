@@ -154,6 +154,7 @@
   drop _t4 : List$Int
   drop _t45 : List$Int
   drop _t55 : List$Int
+  drop _t58 : List$Int
   drop _t65 : List$Int
   else
   else
@@ -217,8 +218,8 @@
   let _t55 = call filter$$evenN _t54  ; Δ{_t54} · moves{_t54} · makes List$Int
   let _t56 = call sum _t55  ; Δ{_t55}
   let _t57 = + _t47 _t56  ; Δ{}
-  let _t58 = con Nil  ; Δ{}
-  let _t59 = call null _t58  ; Δ{}
+  let _t58 = con Nil  ; Δ{} · makes List$Int
+  let _t59 = call null _t58  ; Δ{_t58}
   let _t6 = con Nil  ; Δ{} · makes List$Int
   let _t60 = call b2i _t59  ; Δ{}
   let _t61 = + _t57 _t60  ; Δ{}

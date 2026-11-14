@@ -51,8 +51,8 @@
   let _t0 = call grabFst 7  ; Δ{} · makes List$Int
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t1 = con Cons n _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
-  let _t2 = con Nil  ; Δ{_t1}
-  let _t3 = tuple _t1 _t2  ; Δ{_t1} · moves{_t1} · makes heap
+  let _t2 = con Nil  ; Δ{_t1} · makes List$Int
+  let _t3 = tuple _t1 _t2  ; Δ{_t1 _t2} · moves{_t1 _t2} · makes heap
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}

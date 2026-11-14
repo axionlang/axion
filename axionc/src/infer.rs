@@ -908,6 +908,19 @@ impl Infer<'_> {
         out
     }
 
+    /// The resolved ids of the type variables a signed function's body was checked against (its
+    /// signature's variables, instantiated): they stand for the caller's types.
+    fn signature_vars(&self) -> HashSet<u32> {
+        self.body_insts
+            .iter()
+            .flat_map(|m| m.values())
+            .filter_map(|fv| match self.apply(&Ty::Var(*fv)) {
+                Ty::Var(id) => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// An `Array` element the native backends store as a raw word with nothing to reclaim: a
     /// primitive scalar, or a `data` type whose constructors are all nullary (an immediate tag).
     fn is_scalar_elem(&self, t: &Ty) -> bool {
@@ -968,12 +981,19 @@ impl Infer<'_> {
         let owning = inf.discharge_owning();
         mono.resolutions.extend(owning.resolutions);
         mono.specs.extend(owning.specs);
-        // Phase 4: resolve + convert constructor return types before passing on
+        // Phase 4: resolve + convert constructor return types before passing on. A type
+        // variable NOTHING constrains (`Left s :: Either String b` in monomorphic code) has no
+        // values anywhere in the program, so it defaults to `Int`: the cell then gets a concrete
+        // destructor key (`Either$String$Int`) that frees its real payload — without one it was
+        // never freed. A variable of a generic function's own signature (`own_vars`) is NOT
+        // defaulted: it stands for whatever the caller passes.
+        let own_vars = inf.signature_vars();
         let con_tys = std::mem::take(&mut inf.con_ret_tys);
         mono.makecon_tys = con_tys
             .into_iter()
             .filter_map(|(sp, ty)| {
                 let resolved = inf.apply(&ty);
+                let resolved = default_free_vars(&resolved, &own_vars);
                 ty_to_ast(&resolved).map(|ast| (sp, ast))
             })
             .collect();
@@ -1177,6 +1197,23 @@ fn type_vars(t: &Type, out: &mut HashSet<String>) {
 
 /// All type-variable occurrences in `t`, each with its positional path.
 /// Multi-var owning params (e.g. `Tree a b`) return both vars' paths.
+/// `t` with every type variable outside `keep` replaced by `Int` (see `finish`).
+fn default_free_vars(t: &Ty, keep: &HashSet<u32>) -> Ty {
+    match t {
+        Ty::Var(v) if !keep.contains(v) => Ty::Con("Int".into(), vec![]),
+        Ty::Var(_) => t.clone(),
+        Ty::Con(n, args) => Ty::Con(
+            n.clone(),
+            args.iter().map(|a| default_free_vars(a, keep)).collect(),
+        ),
+        Ty::Fun(a, b) => Ty::Fun(
+            Box::new(default_free_vars(a, keep)),
+            Box::new(default_free_vars(b, keep)),
+        ),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|a| default_free_vars(a, keep)).collect()),
+    }
+}
+
 fn clause_has_lambda(c: &Clause) -> bool {
     fn ex(e: &Expr) -> bool {
         match e {

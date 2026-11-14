@@ -1655,6 +1655,22 @@ fn generic_functions_free_the_heap_values_they_discard() {
 }
 
 #[test]
+fn partly_typed_constructors_are_freed_on_all_backends() {
+    // `Left s :: Either String b` with `b` unconstrained had no destructor key, so the cell and its
+    // String leaked natively. The unconstrained variable now defaults to `Int`.
+    let fx = fixture("partial_type_con_reclaim.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n", "{flags:?}");
+    }
+}
+
+#[test]
 fn socket_ops_borrow_their_string_arguments() {
     // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
     // but were classified as consuming them, so a session freeing a computed string after the
