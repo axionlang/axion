@@ -567,6 +567,69 @@ def gen_tuple_consume(rng):
         f"main :: IO ()\nmain = putStr (show (pick ({src})))\n"
     )
 
+def gen_closure_param(rng):
+    """User HOFs that RECEIVE a closure and hand it on to `filter` / call it directly — the
+    closure-parameter specialization class (`keepWith p xs = length (filter p xs)` is cloned per
+    predicate, `keepWith$$gt2`). Predicates come as a named function, a literal lambda, a lambda
+    capturing a `do`-local, and a `let`-bound lambda passed by name; HOFs take one or two closures,
+    or recurse over the list. Elements are HEAP (String / Integer) so a wrong clone ownership is a
+    double-free the ASan leg catches. A wrapper that hands its list to an owning callee is also
+    called on a shared list once or twice: twice must be rejected (AX0001) by BOTH legs, once must
+    run — the moved-in-parameter class the verifier used to miss."""
+    elem = rng.choice(["String", "Integer"])
+    k = rng.randint(0, 5)
+    if elem == "String":
+        helpers = ("big :: String -> Bool\nbig s = strLen s > 1\n"
+                   "ext :: String -> String\next s = s ++ \"!\"\n")
+        def lit():
+            ws = ["".join(rng.choice("abc") for _ in range(rng.randint(0, 5)))
+                  for _ in range(rng.randint(0, 6))]
+            return "[" + ", ".join(f'"{w}"' for w in ws) + "]"
+        named, f = "big", "ext"
+        cmp = lambda v, op, c: f"strLen {v} {op} {c}"
+    else:
+        helpers = ("big :: Integer -> Bool\nbig n = n > fromInt 2\n"
+                   "ext :: Integer -> Integer\next n = n * n\n")
+        def lit():
+            return f"map fromInt (range {rng.randint(0, 3)} {rng.randint(0, 8)})"
+        named, f = "big", "ext"
+        cmp = lambda v, op, c: f"{v} {op} fromInt ({c})"
+    T = elem
+    hofs = (f"keepWith :: ({T} -> Bool) -> List {T} -> Int\n"
+            f"keepWith p xs = length (filter p xs)\n"
+            f"keepBoth :: ({T} -> Bool) -> ({T} -> Bool) -> List {T} -> Int\n"
+            f"keepBoth p q xs = length (filter p (filter q xs))\n"
+            f"countIf :: ({T} -> Bool) -> List {T} -> Int\n"
+            f"countIf p xs = case xs of\n  Nil -> 0\n"
+            f"  Cons y ys -> (if p y then 1 else 0) + countIf p ys\n"
+            f"mapKeep :: ({T} -> {T}) -> ({T} -> Bool) -> List {T} -> Int\n"
+            f"mapKeep g p xs = length (filter p (map g xs))\n"
+            f"keepW :: List {T} -> Int\nkeepW xs = length (filter {named} xs)\n")
+    def pred():
+        c = rng.randint(0, 6)
+        return rng.choice([named,
+                           f"(\\v -> {cmp('v', rng.choice(['>', '<']), c)})",
+                           f"(\\v -> {cmp('v', rng.choice(['>', '<']), 'k')})",
+                           "lp"])
+    lines = []
+    for _ in range(rng.randint(1, 4)):
+        t = rng.randint(0, 4)
+        if t == 0:
+            e = f"keepWith {pred()} ({lit()})"
+        elif t == 1:
+            e = f"keepBoth {pred()} {pred()} ({lit()})"
+        elif t == 2:
+            e = f"countIf {pred()} ({lit()})"
+        elif t == 3:
+            e = f"mapKeep {f} {pred()} ({lit()})"
+        else:
+            twice = rng.random() < 0.3                 # twice ⇒ AX0001 on every leg
+            e = f"(let ws = {lit()} in keepW ws" + (" + keepW ws)" if twice else ")")
+        lines.append(f"  putStrLn (show ({e}))")
+    lp = f"\\v -> {cmp('v', rng.choice(['>', '<']), rng.randint(0, 6))}"
+    return (helpers + hofs + "main :: IO ()\nmain = do\n"
+            f"  let k = {k}\n  let lp = {lp}\n" + "\n".join(lines) + "\n")
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
@@ -589,8 +652,10 @@ def gen(rng):
         return gen_shadow(rng)          # local-shadows-global scope class (full differential)
     if r < 0.84:
         return gen_large(rng)           # large inputs → O(N^2)/hang guard (timeout-detected)
-    if r < 0.90:
+    if r < 0.88:
         return gen_tuple_consume(rng)   # consume-of-borrowed-interior-tuple-field (verifier net)
+    if r < 0.94:
+        return gen_closure_param(rng)   # closure-param HOF specialization + moved-in hand-off
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:
