@@ -143,6 +143,11 @@ jobs:
       # ASan — the exact shape two shipped double-frees lived in, which the fixture corpus missed.
       - name: pass(1) clone under ASan
         run: AXION_CLANG=clang ./scripts/axpass-asan.sh
+      # The HTTP/1.1 static file server (examples/httpd.axi): curl drives a throwaway site under
+      # ASan/LSan — statuses, MIME types, HEAD, a multi-chunk binary, traversal refused, 20
+      # concurrent downloads — and the server exits by itself so LeakSanitizer checks every task.
+      - name: httpd static file server under ASan/LSan
+        run: AXION_CLANG=clang ./scripts/httpd-test.sh
       # §11: the M:N session scheduler runs on a thread pool → race-freedom must be
       # proven too. The concurrent session fixtures run under ThreadSanitizer.
       - name: Session scheduler under ThreadSanitizer
