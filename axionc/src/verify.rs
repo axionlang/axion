@@ -49,6 +49,7 @@ fn merge_vals(rets: &[Val]) -> Val {
             .collect(),
         dead: None,
         key,
+        moved_in: false,
     }
 }
 
@@ -139,6 +140,10 @@ struct Val {
     /// Drives the drop-key cross-check (`do_drop`): freeing a value with the wrong reclaimer is a
     /// bad-free / leak the balance analysis alone can't see. `None` = unknown → not cross-checked.
     key: Option<String>,
+    /// a heap parameter the caller MOVED in (absent from `ba`, so the caller does not free it)
+    /// without a `%1` drop obligation here: this function may hand it on, but only ONCE. A
+    /// second move gives two owners the same allocation (a double free).
+    moved_in: bool,
 }
 
 type State = HashMap<String, Val>;
@@ -621,10 +626,12 @@ fn run_fn(
                 .and_then(|ks| ks.get(i))
                 .cloned()
                 .flatten();
+            let moved_in = key.is_some() && !borrowed.is_some_and(|s| s.contains(&i));
             st.insert(
                 p.clone(),
                 Val {
                     key,
+                    moved_in,
                     ..Default::default()
                 },
             );
@@ -804,6 +811,7 @@ impl Verifier<'_> {
                                     borrows: alias,
                                     dead: None,
                                     key: None,
+                                    moved_in: false,
                                 },
                             );
                         }
@@ -1002,6 +1010,7 @@ impl Verifier<'_> {
                     borrows,
                     dead: None,
                     key: None,
+                    moved_in: false,
                 };
             }
         }
@@ -1014,7 +1023,8 @@ impl Verifier<'_> {
             if let Atom::Var(v) = a {
                 if let Some(val) = st.get(v) {
                     inherited.extend(val.borrows.iter().cloned());
-                    if !val.owned {
+                    // a moved-in param is TRANSFERRED, not lent: the result does not borrow it.
+                    if !val.owned && !val.moved_in {
                         inherited.insert(v.clone());
                     }
                 }
@@ -1037,7 +1047,8 @@ impl Verifier<'_> {
             if let Atom::Var(v) = a {
                 if let Some(val) = st.get(v) {
                     inherited.extend(val.borrows.iter().cloned());
-                    if !val.owned {
+                    // a moved-in param is TRANSFERRED, not lent: the result does not borrow it.
+                    if !val.owned && !val.moved_in {
                         inherited.insert(v.clone());
                     }
                 }
@@ -1060,6 +1071,21 @@ impl Verifier<'_> {
                 if let Some(params) = self.elem_aliases.get(g) {
                     for &i in params {
                         if let Some(Atom::Var(v)) = args.get(i) {
+                            // an argument whose own key says every element is an unboxed scalar
+                            // (`List$Int` into `map mkP`, `Either$Int$Int`) has no heap element
+                            // to share.
+                            if st
+                                .get(v)
+                                .and_then(|val| val.key.as_deref())
+                                .is_some_and(|k| {
+                                    k.contains('$')
+                                        && k.split('$')
+                                            .skip(1)
+                                            .all(|e| matches!(e, "Int" | "Float" | "Bool" | "Char"))
+                                })
+                            {
+                                continue;
+                            }
                             // ONLY when the arg is BORROWED by the call, not MOVED. A moved arg
                             // (`tail`/`last`/`uncons`: `moves{xs}`) transfers ownership to the
                             // callee — the caller no longer frees it, so a result sharing its
@@ -1086,6 +1112,7 @@ impl Verifier<'_> {
                     borrows: inherited,
                     dead: None,
                     key: None,
+                    moved_in: false,
                 };
             }
         }
@@ -1095,6 +1122,7 @@ impl Verifier<'_> {
                 borrows: inherited,
                 dead: None,
                 key: res.key.clone(),
+                moved_in: false,
             };
         }
         // A constructor with no concrete produce key (a POLYMORPHIC `Cons y ys` in a generic
@@ -1110,6 +1138,7 @@ impl Verifier<'_> {
                 borrows: inherited,
                 dead: None,
                 key: None,
+                moved_in: false,
             };
         }
         Val::default()
@@ -1584,7 +1613,7 @@ impl Verifier<'_> {
     /// still governs its validity), so neither is killed.
     fn kill(v: &str, cat: Cat, st: &mut State) {
         if let Some(val) = st.get_mut(v) {
-            if val.owned && val.dead.is_none() {
+            if (val.owned || val.moved_in) && val.dead.is_none() {
                 val.dead = Some(cat);
             }
         }
@@ -1726,6 +1755,76 @@ mod tests {
         assert!(
             !fs.iter().any(|f| f.cat == Cat::Leak && f.var == "t"),
             "shell free after move-out flagged: {fs:?}"
+        );
+    }
+
+    /// `twice xs = let a = call sink xs; let b = call sink xs; ret 0`, where `sink` owns its
+    /// argument (frees it) and `twice`'s `xs` is not borrowed (its caller moved it in). Handing
+    /// `xs` to `sink` twice frees it twice; the verifier used to accept it because `xs` has no
+    /// `%1` and so was treated as a borrow.
+    #[test]
+    fn flags_a_moved_in_param_handed_over_twice() {
+        let ret0 = || Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), (0, 0)));
+        let call = |v: &str, k: Box<Term>| {
+            Box::new(Term::Let(
+                v.into(),
+                Rhs::Op(Op::CallDirect(
+                    "sink".into(),
+                    vec![Atom::Var("xs".into())],
+                    None,
+                )),
+                (0, 0),
+                k,
+            ))
+        };
+        let sink = CoreFn {
+            name: "sink".into(),
+            params: vec!["xs".into()],
+            captures: vec![],
+            is_closure: false,
+            owned_params: vec!["xs".into()],
+            owned_drop_ty: vec![("xs".into(), Some("List$String".into()))],
+            body: Term::Drop(
+                "xs".into(),
+                Some("List$String".into()),
+                vec![],
+                (0, 0),
+                ret0(),
+            ),
+        };
+        let twice = |n: usize| CoreFn {
+            name: "twice".into(),
+            params: vec!["xs".into()],
+            captures: vec![],
+            is_closure: false,
+            owned_params: vec![],
+            owned_drop_ty: vec![],
+            body: if n == 2 {
+                *call("a", call("b", ret0()))
+            } else {
+                *call("a", ret0())
+            },
+        };
+        let run = |n: usize| {
+            verify(&Lowered {
+                fns: vec![sink.clone(), twice(n)],
+                borrow_args: BorrowArgs::new(),
+                recinfo: RecordInfo::default(),
+                param_keys: [("twice".to_string(), vec![Some("List$String".to_string())])]
+                    .into_iter()
+                    .collect(),
+            })
+        };
+        let fs = run(2);
+        assert!(
+            fs.iter()
+                .any(|f| f.cat == Cat::UseAfterFree && f.var == "xs"),
+            "expected the second hand-over of `xs` flagged, got {fs:?}"
+        );
+        let fs = run(1);
+        assert!(
+            fs.is_empty(),
+            "a single hand-over must be clean, got {fs:?}"
         );
     }
 

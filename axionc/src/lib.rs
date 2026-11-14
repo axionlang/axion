@@ -2975,6 +2975,49 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
             }
         }
     }
+    // Rule C — WHOLE-PARAM HAND-OFF: a concrete heap param passed WHOLE to a consuming position
+    // of another function (`keepW xs = length (filter$$big xs)`) is moved there, so this function
+    // must own it too. Otherwise its caller keeps treating the argument as borrowed and may hand
+    // the same value over twice (`keepW xs + keepW xs`, a double free) without AX0001. A least
+    // fixpoint, since the hand-off chains (`twiceW` → `keepW` → `filter$$big`).
+    loop {
+        let mut changed = false;
+        for (idx, f) in module.funcs.iter().enumerate() {
+            let Some(sig) = &f.sig else { continue };
+            if !f.constraints.is_empty() || f.clauses.len() != 1 {
+                continue;
+            }
+            let ptypes = sig.param_types();
+            for (i, (p, t)) in f.clauses[0].pats.iter().zip(&ptypes).enumerate() {
+                let ast::Pat::Var(n, _) = p else { continue };
+                if consuming.get(&f.name).is_some_and(|s| s.contains(&i))
+                    || !core::is_heap_shaped(t)
+                    || core::ty_has_var(t)
+                    || is_bare_scalar(t)
+                {
+                    continue;
+                }
+                let handed_off = f.clauses.iter().any(|c| {
+                    let shadow = std::collections::HashSet::new();
+                    match &c.body {
+                        ast::Body::Plain(e) => hands_off_whole(n, e, &f.name, &consuming, &shadow),
+                        ast::Body::Guarded(arms) => arms.iter().any(|(g, r)| {
+                            hands_off_whole(n, g, &f.name, &consuming, &shadow)
+                                || hands_off_whole(n, r, &f.name, &consuming, &shadow)
+                        }),
+                    }
+                });
+                if handed_off {
+                    consuming.entry(f.name.clone()).or_default().insert(i);
+                    apply.push((idx, i));
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
     // Rule B — GENERIC pure-escape: a var-carrying param where EVERY extracted heap
     // field escapes (returned/embedded OR moved into a consuming call) and NONE is
     // deep-dropped. Such a function only SHELL-FREES its spine natively (no element
@@ -3033,6 +3076,40 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
         }
     }
     exempt
+}
+
+/// `true` if the variable `v` (not shadowed: absent from `shadow`) is passed WHOLE as an
+/// argument at a consuming position (`consuming`) of a function other than `me`, anywhere in `e`.
+fn hands_off_whole(
+    v: &str,
+    e: &ast::Expr,
+    me: &str,
+    consuming: &std::collections::HashMap<String, std::collections::HashSet<usize>>,
+    shadow: &std::collections::HashSet<String>,
+) -> bool {
+    if shadow.contains(v) {
+        return false;
+    }
+    if let ast::Expr::App(..) = e {
+        let (head, args) = app_spine(e);
+        if let ast::Expr::Var(g, _) = head {
+            if g != me && !shadow.contains(g) {
+                if let Some(idxs) = consuming.get(g) {
+                    let hit = args.iter().enumerate().any(|(j, a)| {
+                        idxs.contains(&j) && matches!(a, ast::Expr::Var(x, _) if x == v)
+                    });
+                    if hit {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let mut found = false;
+    for_each_subexpr_scoped(e, shadow, &mut |c, b| {
+        found = found || hands_off_whole(v, c, me, consuming, b);
+    });
+    found
 }
 
 /// `true` if `ty` transitively carries a reclaimable heap payload: a tuple with a heap/var

@@ -1716,6 +1716,25 @@ fn tuple_reader_borrows_its_tuple() {
 }
 
 #[test]
+fn handing_a_list_to_an_owning_callee_takes_ownership() {
+    // `keepW` gives its whole list to `filter big`, which owns it, so `keepW` owns it too and
+    // calling it twice on one list is AX0001. It used to borrow, and the native build freed the
+    // list twice while the verifier passed it.
+    let src = "big :: String -> Bool\nbig s = strLen s > 2\n\
+               keepW :: List String -> Int\nkeepW xs = length (filter big xs)\n\
+               twiceW :: List String -> Int\ntwiceW xs = keepW xs + keepW xs\n\
+               main :: IO ()\nmain = putStrLn (show (twiceW [\"a\", \"abc\"]))\n";
+    let p = std::env::temp_dir().join(format!("axion_handoff_{}.axi", std::process::id()));
+    std::fs::write(&p, src).unwrap();
+    let out = axionc().arg("--check").arg(&p).output().unwrap();
+    let _ = std::fs::remove_file(&p);
+    let text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && text.contains("AX0001"), "{text}");
+    assert!(text.contains("twiceW xs = keepW xs + keepW xs"), "{text}");
+}
+
+#[test]
 fn every_bench_kernel_passes_the_verifier() {
     // bench/ is outside the oracle corpus and bench.sh only prints `-` for a kernel that fails to
     // build, so `simd` once sat rejected by a false AX0910 without failing anything.

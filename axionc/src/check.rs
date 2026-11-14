@@ -3043,8 +3043,26 @@ fn walk(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, mut st: MoveState) -> MoveStat
             let (head, args) = spine(e);
             let mults = head_mults(head, ctx);
             st = walk(head, x, Mode::Borrow, ctx, st);
+            // Every argument is evaluated before the call, and `x` given BARE to a consuming
+            // position moves only at the call itself: `unifyR sub (resolve sub a)` reads `sub` in
+            // the inner call first. So such a hand-over is walked after the other arguments.
+            // Not when an argument holds a lambda: a closure capturing `x` may run after the
+            // callee has taken (and freed) it.
+            let handed = |i: usize, a: &Expr| {
+                arg_mode(mults.get(i)) == Mode::Consume && matches!(a, Expr::Var(v, _) if v == x)
+            };
+            let reorder = !args.iter().any(|a| contains_lambda(a));
             for (i, a) in args.iter().enumerate() {
-                st = walk(a, x, arg_mode(mults.get(i)), ctx, st);
+                if !(reorder && handed(i, a)) {
+                    st = walk(a, x, arg_mode(mults.get(i)), ctx, st);
+                }
+            }
+            if reorder {
+                for (i, a) in args.iter().enumerate() {
+                    if handed(i, a) {
+                        st = walk(a, x, Mode::Consume, ctx, st);
+                    }
+                }
             }
             st
         }
@@ -3091,6 +3109,36 @@ fn walk(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, mut st: MoveState) -> MoveStat
                 walk(body, x, mode, ctx, st)
             }
         }
+    }
+}
+
+/// `true` if `e` contains a lambda anywhere.
+fn contains_lambda(e: &Expr) -> bool {
+    match e {
+        Expr::Lam(..) => true,
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => contains_lambda(a) || contains_lambda(b),
+        Expr::If(c, t, el, _) => contains_lambda(c) || contains_lambda(t) || contains_lambda(el),
+        Expr::Case(sc, arms, _) => {
+            contains_lambda(sc) || arms.iter().any(|(_, b)| contains_lambda(b))
+        }
+        Expr::Let(binds, body, _) => {
+            contains_lambda(body)
+                || binds
+                    .iter()
+                    .flat_map(|b| &b.clauses)
+                    .any(|c| match &c.body {
+                        Body::Plain(x) => contains_lambda(x),
+                        Body::Guarded(arms) => arms
+                            .iter()
+                            .any(|(g, r)| contains_lambda(g) || contains_lambda(r)),
+                    })
+        }
+        Expr::Tuple(es, _) => es.iter().any(contains_lambda),
+        Expr::RecordCon(_, fs, _) => fs.iter().any(|(_, x)| contains_lambda(x)),
+        Expr::RecordUpd(b, fs, _) => {
+            contains_lambda(b) || fs.iter().any(|(_, x)| contains_lambda(x))
+        }
+        Expr::Var(..) | Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => false,
     }
 }
 
