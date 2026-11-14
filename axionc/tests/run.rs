@@ -1622,6 +1622,23 @@ fn borrowed_results_outlive_their_temporaries_on_all_backends() {
 }
 
 #[test]
+fn let_bound_case_of_field_or_literal_is_reclaimed_on_all_backends() {
+    // `let s = case m of Just v -> v; Nothing -> ""` (a String field moved out of the scrutinee,
+    // or a literal) was refused natively as a leak (AX0911): no arm was a recognized owned value.
+    // `nested` also covers two sibling `case`s binding the same name.
+    let fx = fixture("let_case_field_or_literal.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "134\n", "{flags:?}");
+    }
+}
+
+#[test]
 fn socket_ops_borrow_their_string_arguments() {
     // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
     // but were classified as consuming them, so a session freeing a computed string after the

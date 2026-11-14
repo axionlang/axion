@@ -6620,7 +6620,7 @@ pub fn lower_with(
             &mut f.body,
             Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
         );
-        f.body = normalize_mixed_cond_lets(body);
+        f.body = normalize_mixed_cond_lets(body, &recinfo, &mut HashMap::new());
         // Clause-form functions bind patterns as `let buf = _p1`. Removing that alias BEFORE borrow
         // analysis lets every pass see the parameter itself: otherwise it read as a move, so the
         // caller gave up ownership while the callee never freed (a leak), and a later use by the
@@ -9157,8 +9157,21 @@ fn fv_rhs_in(
         }
         Rhs::Case(s, arms) => {
             atom_use(s, drp, bound, out);
-            for (_, b) in arms {
+            for (p, b) in arms {
+                // a pattern's binders are bound in its arm. Binder names are unique only along a
+                // scope path, not across sibling `case`s: without this, a droppable `v` of one
+                // `case` looked free in another `case` binding its own `v`, whose arm balancing
+                // then dropped a `v` that arm never bound.
+                let mut binders = Vec::new();
+                cpat_binders(p, &mut binders);
+                let fresh: Vec<String> = binders
+                    .into_iter()
+                    .filter(|n| bound.insert(n.clone()))
+                    .collect();
                 fv_drop_in(b, drp, ba, bound, out);
+                for n in fresh {
+                    bound.remove(&n);
+                }
             }
         }
     }
@@ -10489,7 +10502,11 @@ fn cond_temp_key(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Option<Stri
 /// sensitive drop. Returns the rewritten `rhs` + its uniform key, or `None` when not a cleanly-
 /// copyable mixed case (a disagreeing key, a non-`String`/`Integer` key, or a non-atom tail) —
 /// left conservative (still a leak, never a double free).
-fn copy_mixed_cond_arms(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Option<(Rhs, String)> {
+fn copy_mixed_cond_arms(
+    rhs: &Rhs,
+    br: &HashMap<String, HashSet<usize>>,
+    hint: Option<String>,
+) -> Option<(Rhs, String)> {
     let arms: Vec<&Term> = match rhs {
         Rhs::If(_, th, el) => vec![th, el],
         Rhs::Case(_, arms) => arms.iter().map(|(_, a)| a).collect(),
@@ -10507,7 +10524,9 @@ fn copy_mixed_cond_arms(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Opti
             None => any_nonowned = true,
         }
     }
-    let key = key?; // at least one arm must be a recognized owned heap producer
+    // at least one arm must be a recognized owned heap producer — or the arms' type is known
+    // otherwise (`hint`: a `case` arm returning a String/Integer field it bound)
+    let key = key.or(hint)?;
     if !any_nonowned {
         return None; // all owned → the existing all-heap path handles it
     }
@@ -10541,19 +10560,23 @@ fn copy_mixed_cond_arms(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Opti
 /// seeds. (Running it later would change a param consumed→borrowed after the caller's call-site
 /// annotation was already fixed as a move → the argument freed by neither → a leak.) Only non-tail
 /// `let` conditionals; a TAIL `ret if/case` escapes and is the caller's / ret-alias pass's domain.
-fn normalize_mixed_cond_lets(t: Term) -> Term {
+fn normalize_mixed_cond_lets(
+    t: Term,
+    recinfo: &RecordInfo,
+    env: &mut HashMap<String, String>,
+) -> Term {
     let empty: HashMap<String, HashSet<usize>> = HashMap::new();
-    fn norm_rhs(rhs: Rhs) -> Rhs {
+    fn norm_rhs(rhs: Rhs, recinfo: &RecordInfo, env: &mut HashMap<String, String>) -> Rhs {
         match rhs {
             Rhs::If(c, th, el) => Rhs::If(
                 c,
-                Box::new(normalize_mixed_cond_lets(*th)),
-                Box::new(normalize_mixed_cond_lets(*el)),
+                Box::new(normalize_mixed_cond_lets(*th, recinfo, env)),
+                Box::new(normalize_mixed_cond_lets(*el, recinfo, env)),
             ),
             Rhs::Case(s, arms) => Rhs::Case(
                 s,
                 arms.into_iter()
-                    .map(|(p, a)| (p, normalize_mixed_cond_lets(a)))
+                    .map(|(p, a)| (p, normalize_mixed_cond_lets(a, recinfo, env)))
                     .collect(),
             ),
             other => other,
@@ -10564,23 +10587,73 @@ fn normalize_mixed_cond_lets(t: Term) -> Term {
             let rhs = if matches!(&rhs, Rhs::If(..) | Rhs::Case(..))
                 && cond_temp_key(&rhs, &empty).is_none()
             {
-                copy_mixed_cond_arms(&rhs, &empty)
+                let hint = case_field_ret_key(&rhs, recinfo, env);
+                copy_mixed_cond_arms(&rhs, &empty, hint)
                     .map(|(r, _)| r)
                     .unwrap_or(rhs)
             } else {
                 rhs
             };
+            // the mono key of a fresh owned value (a constructor, a keyed call, a conditional of
+            // them), for a later `case` on it
+            let k = match &rhs {
+                Rhs::Op(op) => op_owned_key(op, &empty),
+                _ => cond_temp_key(&rhs, &empty),
+            };
+            if let Some(k) = k {
+                env.insert(x.clone(), k);
+            }
             Term::Let(
                 x,
-                norm_rhs(rhs),
+                norm_rhs(rhs, recinfo, env),
                 sp,
-                Box::new(normalize_mixed_cond_lets(*b)),
+                Box::new(normalize_mixed_cond_lets(*b, recinfo, env)),
             )
         }
-        Term::Drop(v, k, sk, sp, b) => {
-            Term::Drop(v, k, sk, sp, Box::new(normalize_mixed_cond_lets(*b)))
-        }
-        Term::Ret(rhs, sp) => Term::Ret(norm_rhs(rhs), sp),
+        Term::Drop(v, k, sk, sp, b) => Term::Drop(
+            v,
+            k,
+            sk,
+            sp,
+            Box::new(normalize_mixed_cond_lets(*b, recinfo, env)),
+        ),
+        Term::Ret(rhs, sp) => Term::Ret(norm_rhs(rhs, recinfo, env), sp),
+    }
+}
+
+/// The type (`String`/`Integer`) of a `case` whose arm returns a field it bound
+/// (`case m of Just v -> v; Nothing -> ""`), from the scrutinee's mono key (`Maybe$String`) —
+/// the key `copy_mixed_cond_arms` needs when no arm is a recognized owned producer.
+fn case_field_ret_key(
+    rhs: &Rhs,
+    recinfo: &RecordInfo,
+    env: &HashMap<String, String>,
+) -> Option<String> {
+    let Rhs::Case(Atom::Var(s), arms) = rhs else {
+        return None;
+    };
+    let sk = env.get(s)?;
+    arms.iter().find_map(|(p, a)| {
+        let CPat::Con(con, subs) = p else { return None };
+        let ret = tail_ret_var(a)?;
+        let fi = subs
+            .iter()
+            .position(|sp| matches!(sp, CPat::Var(n) if n == ret))?;
+        recinfo.field_tagged_key(con, fi, sk).or_else(|| {
+            // a concretely-typed field (`Tagged String Int`)
+            recinfo
+                .field_drop_slot(con, fi)
+                .filter(|k| k == "String" || k == "Integer")
+        })
+    })
+}
+
+/// The variable a straight-line arm returns (`… ret v`), if it returns a bare variable.
+fn tail_ret_var(t: &Term) -> Option<&String> {
+    match t {
+        Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => tail_ret_var(b),
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => Some(v),
+        Term::Ret(..) => None,
     }
 }
 
@@ -12013,9 +12086,15 @@ impl Elab<'_> {
             .collect();
         let fvs: Vec<HashSet<String>> = arms
             .iter()
-            .map(|(_, b)| {
+            .map(|(p, b)| {
                 let mut s = HashSet::new();
                 self.fv_drop(b, &mut s);
+                // the arm's own binders are not free in it (see `fv_rhs_in`)
+                let mut binders = Vec::new();
+                cpat_binders(p, &mut binders);
+                for n in binders {
+                    s.remove(&n);
+                }
                 s
             })
             .collect();

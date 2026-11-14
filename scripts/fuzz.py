@@ -764,7 +764,7 @@ def _bi_str(rng, d):
     make every run fail: a generic function that DISCARDS a heap argument (`pickG b x y` leaks the
     unchosen one: a bare type-variable parameter is never freed), a PARTIALLY applied built-in
     passed as a closure (`twiceS (strAppend "x") s` stays a generic closure, whose String argument
-    leaks), and a `let`-bound `case` mixing a moved-out String with a literal arm (AX0911)."""
+    leaks)."""
     if d <= 0 or rng.random() < 0.25:
         return rng.choice([f'"s{rng.randint(0, 9)}"', f"showInt {rng.randint(0, 999)}",
                            f"chr {rng.randint(65, 90)}"])
@@ -776,6 +776,7 @@ def _bi_str(rng, d):
         f"idG ({a})",
         f"unboxS (BoxS ({a}) {rng.randint(0, 9)})",
         f"sndT ({rng.randint(0, 9)}, {a})",
+        f"(case Just ({a}) of\n    Just v -> v\n    Nothing -> \"\")",
     ])
 
 def _bi_int(rng, d):
