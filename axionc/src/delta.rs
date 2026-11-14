@@ -1960,6 +1960,86 @@ mod tests {
         });
     }
 
+    // --- raw field loads (`loadraw s+off`): Auto-Drop's per-field drop of a heap field a `case`
+    //     arm leaves as `_` (`grabBox`: `Box x _ -> x` loads slot 1 and frees it). The verifier
+    //     maps the offset to ONE slot through the arm's constructor and tracks the load as an owned
+    //     child — so each tamper below, invisible while a raw load cleared every slot and went
+    //     untracked, is now caught. ---
+
+    const CASE_EXTRACT_ESCAPE: &str = include_str!("../tests/fixtures/case_extract_escape.axi");
+
+    /// Apply `edit` to the `let tmp = loadraw …` in `grabBox` (it receives the load's offset and
+    /// the term after the `let`).
+    fn tamper_raw_load(fns: &mut [CoreFn], edit: &mut impl FnMut(&mut i32, &mut Box<Term>)) {
+        let f = fns.iter_mut().find(|f| f.name == "grabBox").unwrap();
+        let mut hit = false;
+        map_term(&mut f.body, &mut |t| {
+            if let Term::Let(_, Rhs::Op(Op::LoadRaw(_, off)), _, body) = t {
+                edit(off, body);
+                hit = true;
+            }
+        });
+        assert!(hit, "grabBox no longer has a raw field load");
+    }
+
+    #[test]
+    fn verify_accepts_untampered_raw_field_load() {
+        let fs = verify_tampered(CASE_EXTRACT_ESCAPE, |_| {});
+        assert!(fs.is_empty(), "expected clean, got {fs:?}");
+    }
+
+    #[test]
+    fn verify_catches_raw_loaded_field_never_freed() {
+        assert_verify_catches(CASE_EXTRACT_ESCAPE, "raw-load leak", |fns| {
+            tamper_raw_load(fns, &mut |_, body| {
+                if let Term::Drop(_, _, _, _, rest) = body.as_mut() {
+                    let rest = std::mem::replace(
+                        rest,
+                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                    );
+                    *body = rest;
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn verify_catches_raw_loaded_field_freed_twice() {
+        assert_verify_catches(CASE_EXTRACT_ESCAPE, "raw-load double free", |fns| {
+            tamper_raw_load(fns, &mut |_, body| {
+                if let Term::Drop(v, k, _, _, rest) = body.as_mut() {
+                    let inner = std::mem::replace(
+                        rest,
+                        Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN)),
+                    );
+                    **rest = Term::Drop(v.clone(), k.clone(), Vec::new(), NO_SPAN, inner);
+                }
+            });
+        });
+    }
+
+    /// The `grabBox` shape over `String` fields, whose cells the verifier tracks as moved into the
+    /// `Pair` (`heap_inside`); the locally built `Cons` cells of `grabBox` carry no produce key and
+    /// are not tracked there.
+    const RAW_LOAD_STRINGS: &str = "data Pair = Pair String String\n\
+        grabBox :: Int -> String\n\
+        grabBox n = case Pair (showInt n) (showInt 9) of\n  Pair x _ -> x\n\
+        main :: Int\nmain = strLen (grabBox 7)\n";
+
+    /// Loading the WRONG slot (0, already moved out to `x`) leaves slot 1 occupied, so the
+    /// scrutinee's flat free strands it — a leak. A load at an offset no field has moves nothing
+    /// out either. (Clearing every slot on any load used to hide both.)
+    #[test]
+    fn verify_catches_raw_load_of_the_wrong_slot() {
+        let fs = verify_tampered(RAW_LOAD_STRINGS, |_| {});
+        assert!(fs.is_empty(), "expected clean, got {fs:?}");
+        for bad in [0, 24] {
+            assert_verify_catches(RAW_LOAD_STRINGS, "raw-load wrong slot", |fns| {
+                tamper_raw_load(fns, &mut |off, _| *off = bad);
+            });
+        }
+    }
+
     // --- Δ-2: the annotated dump locks the format (the oracle gate sorts
     //     lines, so it cannot see an annotation on the wrong line) ---
 

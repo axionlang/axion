@@ -23,8 +23,9 @@ use std::collections::{HashMap, HashSet};
 /// The operand a DIRECT interior projection returns a HEAP pointer INTO — reading a HEAP
 /// field of a record. Its result aliases that operand's heap, so freeing the operand
 /// dangles the result. A SCALAR field read (`field val c :: Int`) is a value copy, not an
-/// alias. Array `*_get` yields a scalar element (Int/byte) and `LoadRaw` occurs only in
-/// (skipped) destructors, so neither aliases here. A call is NOT an alias — a view MOVES
+/// alias. Array `*_get` yields a scalar element (Int/byte), and a `LoadRaw` either sits in a
+/// (skipped) destructor or moves a field OUT of a `case` scrutinee (`bind_raw_field`), so
+/// neither aliases here. A call is NOT an alias — a view MOVES
 /// its argument instead (ownership transfers), and a normal call returns a fresh value.
 fn alias_target<'a>(op: &'a Op, recinfo: &RecordInfo) -> Option<&'a Atom> {
     match op {
@@ -653,6 +654,7 @@ fn run_fn(
         leak_exempt: HashSet::new(),
         projections: HashMap::new(),
         heap_inside: HashMap::new(),
+        arm_con: HashMap::new(),
         borrowed_params,
         ret_alias,
         frees_heap,
@@ -727,11 +729,17 @@ struct Verifier<'a> {
     /// for its aliases. Ownership of `s` passes to `t`, so only a DEEP (keyed) drop of `t`
     /// reclaims it; an unkeyed drop is a flat `free` of the cell that leaks `s`, and `do_drop`
     /// reports it as a leak. A slot is cleared when a `case` binds it to a variable (that
-    /// variable is then tracked as owned in its own right); a raw load from the value clears
-    /// every slot (its offset is not mapped to a slot — an under-report, never a false flag).
+    /// variable is then tracked as owned in its own right), or when a raw load inside a `case`
+    /// arm reads it (`raw_slot` maps the offset to the slot through the arm's constructor).
     /// Core names are unique per function, so path-insensitive tracking is exact up to `case`
     /// arms, whose clears are unioned (again only an under-report).
     heap_inside: HashMap<String, HashSet<usize>>,
+    /// Scrutinee var → the constructor the ENCLOSING `case` arm matched it against (set while that
+    /// arm's body is checked). A raw field load `loadraw s+off` inside the arm (Auto-Drop's
+    /// per-field drop of a wildcard-discarded heap field, `emit_per_field_drops`) maps its offset to
+    /// a slot through it: exactly that slot is cleared from `heap_inside[s]`, and the loaded value
+    /// is tracked as an owned child — the same treatment `bind_pattern` gives a named field.
+    arm_con: HashMap<String, String>,
     /// The GENUINELY-borrowed params (in `borrow_args`): the caller retains and drops the
     /// whole structure. Distinct from a MOVED-in param modelled the same way here (a view
     /// like `dropWhile` — not in `borrow_args`). `consume` flags freeing an interior of one
@@ -950,8 +958,18 @@ impl Verifier<'_> {
                         .map_or(usize::MAX, |(_, slot)| slot)
                 })
                 .collect(),
-            Op::LoadRaw(Atom::Var(src), _) => {
-                self.heap_inside.remove(src);
+            Op::LoadRaw(Atom::Var(src), off) => {
+                // a raw load moves ONE slot out: the one at `off` under the arm's constructor. With
+                // no known constructor (a load outside a `case` arm on `src`) nothing is moved out
+                // of the tracked slots, so they all stay occupied.
+                if let Some(fi) = self.raw_slot(src, *off) {
+                    if let Some(slots) = self.heap_inside.get_mut(src) {
+                        slots.remove(&fi);
+                        if slots.is_empty() {
+                            self.heap_inside.remove(src);
+                        }
+                    }
+                }
                 HashSet::new()
             }
             _ => match e.alias {
@@ -984,6 +1002,57 @@ impl Verifier<'_> {
                 }
             }
             st.insert(x.to_string(), val);
+        }
+        if let Op::LoadRaw(Atom::Var(src), off) = op {
+            self.bind_raw_field(x, src, *off, st);
+        }
+    }
+
+    /// The field index a raw load `loadraw src+off` reads, under the constructor the enclosing
+    /// `case` arm matched `src` against (`arm_con`); `None` when there is no such arm or no field
+    /// lives at `off`.
+    fn raw_slot(&self, src: &str, off: i32) -> Option<usize> {
+        let con = self.arm_con.get(src)?;
+        let arity = self.recinfo.con_arity(con).unwrap_or(0);
+        (0..arity).find(|&fi| self.recinfo.field_offset(con, fi) == off)
+    }
+
+    /// A raw load of a HEAP field of an OWNED scrutinee transfers that field out as an owned
+    /// resource (Auto-Drop then frees it): track it exactly as `bind_pattern` tracks a named
+    /// field of an owned scrutinee — owned, keyed, a child at its slot, leak-exempt when the
+    /// field is polymorphic — so its drop is checked (double-free, wrong key) and a missing drop
+    /// is a leak.
+    fn bind_raw_field(&mut self, x: &str, src: &str, off: i32, st: &mut State) {
+        let Some(fi) = self.raw_slot(src, off) else {
+            return;
+        };
+        let Some(con) = self.arm_con.get(src).cloned() else {
+            return;
+        };
+        if !self.recinfo.field_transfers_heap(&con, fi) {
+            return;
+        }
+        let Some(sv) = st.get(src).filter(|v| v.owned && v.dead.is_none()) else {
+            return;
+        };
+        let fkey = sv
+            .key
+            .as_deref()
+            .and_then(|sk| self.recinfo.field_tagged_key(&con, fi, sk));
+        st.insert(
+            x.to_string(),
+            Val {
+                owned: true,
+                key: fkey,
+                ..Default::default()
+            },
+        );
+        self.children
+            .entry(src.to_string())
+            .or_default()
+            .push((x.to_string(), fi));
+        if self.recinfo.field_drop_slot(&con, fi).is_none() {
+            self.leak_exempt.insert(x.to_string());
         }
     }
 
@@ -1365,7 +1434,20 @@ impl Verifier<'_> {
         for (pat, body) in arms {
             let mut s = st.clone();
             self.bind_pattern(pat, scrut_var.as_deref(), scrut_owned, &mut s);
+            // the arm's constructor, for raw field loads of the scrutinee inside it (`raw_slot`).
+            let prev = match (scrut, pat) {
+                (Atom::Var(v), CPat::Con(con, _)) => {
+                    Some((v.clone(), self.arm_con.insert(v.clone(), con.clone())))
+                }
+                _ => None,
+            };
             rets.push(self.term(body, &mut s, tail));
+            if let Some((v, old)) = prev {
+                match old {
+                    Some(c) => self.arm_con.insert(v, c),
+                    None => self.arm_con.remove(&v),
+                };
+            }
             exits.push(s);
         }
         self.merge(&outer, &exits, sp, st);

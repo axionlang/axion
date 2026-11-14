@@ -74,6 +74,11 @@ struct Tr<'a> {
     /// a SEPARATE high id space for borrowed extracted fields, so their ids never collide with the
     /// per-arm-reused owned `next` ids (an id can't be both owned-`alloc`ed and seeded `borrowed`).
     borrow_next: u32,
+    /// OWNED scrutinee var → the constructor of the `case` arm being translated. A raw field load
+    /// `loadraw s+off` inside the arm is Auto-Drop's per-field drop of a wildcard-discarded heap
+    /// field (`emit_per_field_drops`): it extracts that one slot, exactly as a pattern variable
+    /// would (`verify.rs::bind_raw_field`), so it translates to the same `alloc` of an owned child.
+    arm_con: HashMap<String, String>,
 }
 
 impl Tr<'_> {
@@ -198,6 +203,24 @@ impl Tr<'_> {
 
     fn tr_term(&mut self, t: &Term) -> Result<MExpr, &'static str> {
         match t {
+            // a raw load of a field of an owned scrutinee inside its `case` arm: per-slot extraction.
+            Term::Let(x, Rhs::Op(Op::LoadRaw(Atom::Var(src), off)), _, k)
+                if self.arm_con.contains_key(src) =>
+            {
+                let con = self.arm_con[src].clone();
+                let arity = self.recinfo.con_arity(&con).unwrap_or(0);
+                let fi = (0..arity)
+                    .find(|&fi| self.recinfo.field_offset(&con, fi) == *off)
+                    .ok_or("raw/unsupported")?;
+                let mut pre = Vec::new();
+                if self.recinfo.field_is_heap(&con, fi) || dropped_within(x, k) {
+                    let id = self.fresh();
+                    self.ids.insert(x.clone(), id);
+                    pre.push(MOp::Alloc(id));
+                }
+                let rest = self.tr_term(k)?;
+                Ok(prepend(pre, rest))
+            }
             Term::Let(x, Rhs::Op(op), _, k) => {
                 let ops = self.tr_op(op, Some(x))?;
                 let rest = self.tr_term(k)?;
@@ -323,7 +346,19 @@ impl Tr<'_> {
                         }
                         _ => return Err("case extraction pattern"),
                     }
-                    let arm_body = self.tr_term(body)?;
+                    // the arm's constructor, for raw field loads of an OWNED scrutinee inside it.
+                    let raw_ctx = match (scrut, pat) {
+                        (Atom::Var(sv), CPat::Con(con, _)) if !scrut_borrowed => {
+                            self.arm_con.insert(sv.clone(), con.clone());
+                            Some(sv.clone())
+                        }
+                        _ => None,
+                    };
+                    let arm_body = self.tr_term(body);
+                    if let Some(sv) = raw_ctx {
+                        self.arm_con.remove(&sv);
+                    }
+                    let arm_body = arm_body?;
                     arm_exprs.push(prepend(pre, arm_body));
                 }
                 self.ids = saved;
@@ -420,6 +455,7 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
         alias_suspect: HashSet::new(),
         next: 0,
         borrow_next: 1_000_000,
+        arm_con: HashMap::new(),
     };
     let mut param_ops = Vec::new();
     if let Some(keys) = pkeys {

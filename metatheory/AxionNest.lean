@@ -17,7 +17,9 @@
 
   Correspondence to `verify.rs`:
     * `Op.pack c i n`   ↔ a `MakeTuple`/`MakeCon`/`MakeRecord` moving owned `n` into slot `i` of `c`.
-    * `Op.unpack c i n` ↔ a `case c of …` binding slot `i` to a variable (now owned on its own).
+    * `Op.unpack c i n` ↔ a `case c of …` binding slot `i` to a variable (now owned on its own), or
+                          a raw load `loadraw c+off` inside that `case` arm, where `off` is slot
+                          `i`'s offset under the arm's constructor.
     * `Op.dropDeep c`   ↔ `Drop(c, Some key)` — the destructor frees the contents too.
     * `Op.dropFlat c`   ↔ `Drop(c, None)` — a flat `free` of the cell only.
     * `Cell.inside c i` ↔ an entry `i ∈ heap_inside[c]`.
@@ -270,6 +272,21 @@ theorem flat_drop_with_contents_rejected {e k : Expr} {S : St} {c i n : Nat}
       rcases hleak n with h | h <;> rw [this] at h <;> cases h
     · cases hr
 
+/-- **A raw field load reads exactly one slot.** `verify.rs` maps a `loadraw c+off` inside a `case`
+    arm to the slot `off` names under the arm's constructor — an `unpack c j n`. If the cell `n` it
+    claims sits in a DIFFERENT slot `i ≠ j`, the program is never accepted: a load cannot move out a
+    cell that is not at its offset. (A load at an offset with no constructor in scope moves nothing
+    out, so the slots stay occupied and a flat drop is caught by `flat_drop_with_contents_rejected`.) -/
+theorem unpack_wrong_slot_rejected {e k : Expr} {S : St} {c i j n : Nat}
+    (hreach : Star Step (sInit, e) (S, .op (.unpack c j n) k)) (hn : S n = .inside c i)
+    (hij : j ≠ i) : ¬ accepts e := by
+  rintro ⟨Sf, hchk, _⟩
+  have hwt : WT Sf (S, .op (.unpack c j n) k) := star_wt (Sf := Sf) hreach hchk
+  cases hwt with
+  | op hr _ =>
+    simp only [rstep, hn] at hr
+    cases hc : S c <;> simp [hc, Ne.symm hij] at hr
+
 /-! ## Non-vacuity. Container `0`, a heap value `1` moved into its slot `0`. -/
 
 private def P (tail : Expr) : Expr :=
@@ -305,11 +322,47 @@ theorem flat_drop_after_unpack_accepted :
     · subst h1; simp [freeDeep, upd, h0]
     · simp [freeDeep, upd, sInit, h0, h1]
 
+/-! ## Raw field loads (`grabBox`): container `0` holds `1` in slot `0` and `2` in slot `1`. The
+    arm binds slot `0` (`Box x _`) and Auto-Drop raw-loads slot `1` to free it. -/
+
+private def Q (tail : Expr) : Expr :=
+  .op (.alloc 0) (.op (.alloc 1) (.op (.alloc 2) (.op (.pack 0 0 1) (.op (.pack 0 1 2) tail))))
+
+private def T5 : St := upd (upd (upd (upd (upd sInit 0 .live) 1 .live) 2 .live) 1 (.inside 0 0)) 2 (.inside 0 1)
+
+private theorem reach_q (tail : Expr) : Star Step (sInit, Q tail) (T5, tail) :=
+  .step (Step.op rfl) (.step (Step.op rfl) (.step (Step.op rfl)
+    (.step (Step.op rfl) (.step (Step.op rfl) .refl))))
+
+/-- `x` bound (slot 0) and freed, slot 1 raw-loaded and freed, then the emptied shell flat-freed:
+    accepted. -/
+theorem raw_load_per_slot_accepted :
+    accepts (Q (.op (.unpack 0 0 1) (.op (.dropDeep 1)
+      (.op (.unpack 0 1 2) (.op (.dropDeep 2) (.op (.dropFlat 0) .done)))))) := by
+  refine ⟨_, Chk.op rfl (Chk.op rfl (Chk.op rfl (Chk.op rfl (Chk.op rfl (Chk.op rfl
+    (Chk.op rfl (Chk.op rfl (Chk.op rfl (Chk.op rfl Chk.done))))))))), ?_⟩
+  intro n
+  by_cases h0 : n = 0
+  · subst h0; simp [upd]
+  · by_cases h1 : n = 1
+    · subst h1; simp [freeDeep, upd]
+    · by_cases h2 : n = 2
+      · subst h2; simp [freeDeep, upd]
+      · simp [freeDeep, upd, sInit, h0, h1, h2]
+
+/-- Raw-loading slot `0` (already moved out) as if it held `2` (which sits in slot `1`): rejected. -/
+theorem raw_load_wrong_slot_rejected :
+    ¬ accepts (Q (.op (.unpack 0 0 2) (.op (.dropDeep 2) (.op (.dropFlat 0) .done)))) :=
+  unpack_wrong_slot_rejected (i := 1) (reach_q _) (by rfl) (by decide)
+
 /-! ## Axiom audit. -/
 #print axioms sound
 #print axioms flat_drop_with_contents_rejected
 #print axioms flat_drop_rejected
 #print axioms deep_drop_accepted
 #print axioms flat_drop_after_unpack_accepted
+#print axioms unpack_wrong_slot_rejected
+#print axioms raw_load_per_slot_accepted
+#print axioms raw_load_wrong_slot_rejected
 
 end AxionNest

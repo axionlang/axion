@@ -149,8 +149,19 @@ container with an occupied slot as a leak. `AxionNest.lean` gives the machine co
 | `flat_drop_with_contents_rejected` | once a container holding a moved-in cell is flat-freed, the program can never be accepted — so reporting the leak AT the drop rejects nothing the exit leak check would accept |
 | `flat_drop_rejected` / `deep_drop_accepted` / `flat_drop_after_unpack_accepted` | non-vacuity: `t = (s); drop t` is rejected, the keyed drop and the emptied-shell flat drop are accepted |
 
-Not modelled: `verify.rs` clears every slot of a value on a raw field load (`loadraw`), since it
-does not map offsets to slots — an under-report, never a false rejection.
+A raw field load is an `unpack` too. Auto-Drop frees a heap field that a `case` arm leaves as `_`
+by loading it (`loadraw s+off`) and dropping it. `verify.rs` maps the offset to one slot through the
+arm's constructor, clears only that slot, and tracks the loaded value as an owned child, just as it
+tracks a pattern variable. A load with no constructor in scope moves nothing out, so every slot stays
+occupied. `--emit model-trace` translates the load the same way, as the `alloc` of an extracted child.
+
+| Theorem | Statement |
+|---|---|
+| `unpack_wrong_slot_rejected` | an `unpack` of a slot other than the one the cell sits in is never accepted |
+| `raw_load_per_slot_accepted` / `raw_load_wrong_slot_rejected` | `grabBox` (`Box x _ -> x`): binding slot 0 and raw-loading slot 1 is accepted; loading slot 0 for the cell in slot 1 is rejected |
+
+The tamper tests `delta::tests::verify_catches_raw_load*` check the same three cases over real
+lowered Core: a loaded field that is never freed, one freed twice, and a load of the wrong slot.
 
 ## Concurrency: deadlock-freedom — `AxionSession.lean`
 
