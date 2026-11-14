@@ -1,0 +1,109 @@
+================================================================================
+foreign imports: pure, library, symbol
+================================================================================
+
+foreign pure "libm.so.6" csqrt = "sqrt" :: Float -> Float
+foreign ax_net_send :: Int -> String -> Int
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (foreign_declaration
+    (string)
+    name: (variable)
+    (string)
+    (type_constructor)
+    (arrow)
+    (type_constructor))
+  (foreign_declaration
+    name: (variable)
+    (type_constructor)
+    (arrow)
+    (type_constructor)
+    (arrow)
+    (type_constructor)))
+
+================================================================================
+foreign struct and enum
+================================================================================
+
+foreign struct Rect { x :: Int, w :: Int }
+foreign enum Event { Quit = 256, Key }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (foreign_struct
+    name: (type_constructor)
+    (struct_field
+      name: (variable)
+      (type_constructor))
+    (struct_field
+      name: (variable)
+      (type_constructor)))
+  (foreign_enum
+    name: (type_constructor)
+    (enum_member
+      name: (constructor)
+      (integer))
+    (enum_member
+      name: (constructor))))
+
+================================================================================
+fixity, user operators, sections
+================================================================================
+
+infixl 6 +++
+x = a /= b && c >= 1.5e3
+y = foldr xs 0 (+)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (fixity_declaration
+    (integer)
+    (operator))
+  (function_equation
+    name: (variable)
+    (application
+      (variable))
+    (operator)
+    (application
+      (variable))
+    (operator)
+    (application
+      (variable))
+    (operator)
+    (application
+      (float)))
+  (function_equation
+    name: (variable)
+    (application
+      (variable)
+      (variable)
+      (integer)
+      (operator_section
+        (operator)))))
+
+================================================================================
+short-circuit binds
+================================================================================
+
+main = do
+  p <-! parsed
+  q <-? found
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_equation
+    name: (variable)
+    (do_expression
+      (bind_statement
+        (variable)
+        (application
+          (variable)))
+      (bind_statement
+        (variable)
+        (application
+          (variable))))))

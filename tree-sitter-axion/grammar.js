@@ -14,12 +14,15 @@ module.exports = grammar({
   name: 'axion',
 
   word: $ => $.variable,
-  extras: $ => [/[ \t\r\n]/, $.comment],
+  extras: $ => [/[ \t\r\n]/, $.comment, ';'],
 
   conflicts: $ => [
     [$._aexpr, $._apattern],
     [$._constraint, $._atype],
     [$.constructor_pattern, $._aexpr],
+    // Without layout, `f a b` followed by a new line could also end at `a` (`b …` starting the
+    // next equation): GLR keeps both readings until one fails, so applications are not cut short.
+    [$.application],
   ],
 
   rules: {
@@ -33,6 +36,9 @@ module.exports = grammar({
       $.class_declaration,
       $.instance_declaration,
       $.foreign_declaration,
+      $.foreign_struct,
+      $.foreign_enum,
+      $.fixity_declaration,
       $.type_signature,
       $.function_equation,
     ),
@@ -77,8 +83,27 @@ module.exports = grammar({
     )),
     _constraint: $ => seq($.type_constructor, $.variable),
 
+    // `foreign [pure] ["lib"] name [= "symbol"] :: Type`
     foreign_declaration: $ => seq(
-      'foreign', optional($.string), field('name', $.variable), '::', $._type,
+      'foreign', optional('pure'), optional($.string), field('name', $.variable),
+      optional(seq('=', $.string)), '::', $._type,
+    ),
+    // `foreign struct Name { field :: Type, … }`
+    foreign_struct: $ => seq(
+      'foreign', 'struct', field('name', $.type_constructor),
+      '{', optional(sep1($.struct_field, ',')), '}',
+    ),
+    struct_field: $ => seq(field('name', $.variable), '::', $._type),
+    // `foreign enum Name { Member [= int], … }`
+    foreign_enum: $ => seq(
+      'foreign', 'enum', field('name', $.type_constructor),
+      '{', optional(sep1($.enum_member, ',')), '}',
+    ),
+    enum_member: $ => seq(field('name', $.constructor), optional(seq('=', $.integer))),
+
+    // `infixl 6 +++` / `infixr 5 <:>` / `infix 4 ===`
+    fixity_declaration: $ => seq(
+      choice('infixl', 'infixr', 'infix'), $.integer, sep1($.operator, ','),
     ),
 
     type_signature: $ => prec(2, seq(
@@ -96,12 +121,14 @@ module.exports = grammar({
     ),
 
     // ---- function equations ---------------------------------------------
-    function_equation: $ => prec.right(seq(
+    // prec.dynamic: where GLR keeps two readings, prefer the one with more equations / arms /
+    // binds — i.e. split at the line break rather than run an application on into the next one
+    function_equation: $ => prec.dynamic(1, prec.right(seq(
       field('name', $.variable),
       repeat($._apattern),
       choice($._rhs, repeat1($.guard)),
       optional($.where_clause),
-    )),
+    ))),
     _rhs: $ => seq('=', $._expression),
     guard: $ => prec.right(seq('|', $._expression, '=', $._expression)),
     where_clause: $ => prec.right(seq('where', repeat($.function_equation))),
@@ -131,7 +158,7 @@ module.exports = grammar({
     let_expression: $ => prec.right(seq('let', repeat($.function_equation), 'in', $._expression)),
     if_expression: $ => seq('if', $._expression, 'then', $._expression, 'else', $._expression),
     case_expression: $ => prec.right(seq('case', $._expression, 'of', repeat($.case_alternative))),
-    case_alternative: $ => prec.right(seq($._pattern, '->', $._expression)),
+    case_alternative: $ => prec.dynamic(1, prec.right(seq($._pattern, '->', $._expression))),
     lambda: $ => prec.right(seq('\\', repeat1($._apattern), '->', $._expression)),
     do_expression: $ => prec.right(seq('do', repeat($._statement))),
     _statement: $ => choice(
@@ -140,15 +167,17 @@ module.exports = grammar({
       $._expression,
     ),
     let_statement: $ => prec.right(seq('let', repeat($.function_equation))),
-    bind_statement: $ => prec(1, seq($._pattern, '<-', $._expression)),
+    // `x <- e`, and the short-circuiting binds `x <-? e` (Maybe) / `x <-! e` (Either)
+    bind_statement: $ => prec.dynamic(1, prec(1, seq($._pattern, choice('<-', '<-?', '<-!'), $._expression))),
 
     _op_expression: $ => prec.left(sep1($.application, $.operator)),
-    application: $ => prec.left(repeat1($._aexpr)),
+    application: $ => repeat1($._aexpr),
     _aexpr: $ => choice(
       $.variable,
       $.constructor,
       $._literal,
       $.record_expression,
+      $.operator_section,
       seq('(', optional(sep1($._expression, ',')), ')'),
       $.list_expression,
     ),
@@ -156,15 +185,19 @@ module.exports = grammar({
       choice($.constructor, $.variable),
       '{', optional(sep1($.field_assignment, ',')), '}',
     )),
+    // an operator used as a value: `foldr (+) 0 xs`
+    operator_section: $ => seq('(', $.operator, ')'),
     field_assignment: $ => seq($.variable, '=', $._expression),
     list_expression: $ => seq('[', optional(seq($._expression, optional(seq('..', $._expression)))), ']'),
 
     // ---- lexical --------------------------------------------------------
     _literal: $ => choice($.integer, $.float, $.string, $.char),
 
+    // any symbolic operator (built-in or user-defined: `/=`, `&&`, `>>=`, `+++`…), or a
+    // backticked name. The reserved symbols (`=`, `->`, `<-`, `|`, `::`, `..`) are literal
+    // tokens, which win over this pattern where both match.
     operator: $ => choice(
-      '+', '-', '*', '==', '<', '>', '.', '<>', '/.',
-      '+.', '-.', '*.', '<.', '>.', '==.', '++', ':', '$',
+      /[!#$&*+./<=>?@^|~:\-]+/,
       seq('`', $.variable, '`'),
     ),
 
@@ -175,7 +208,7 @@ module.exports = grammar({
     type_constructor: $ => $._conid,
     constructor: $ => $._conid,
     variable: $ => /[a-z_][A-Za-z0-9_']*/,
-    float: $ => /[0-9]+\.[0-9]+/,
+    float: $ => /[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+|\.[0-9]+([eE][+-]?[0-9]+)?/,
     integer: $ => /[0-9]+|0x[0-9a-fA-F]+/,
     string: $ => /"([^"\\]|\\.)*"/,
     char: $ => /'([^'\\]|\\.)'/,

@@ -9,7 +9,12 @@ tree-sitter, not the LSP, so this — not `axion-lsp` — is what colours Axión
 constructors (upper/lowercase is lexical), variables, functions, strings, numbers,
 comments, and the `%1`/`%0.5` linearity mark all colour correctly — while deeply nested
 `where`/`let`/`do`/`case` blocks parse approximately (a few boundary `ERROR` nodes). That
-does **not** affect colouring: token captures fire inside `ERROR` nodes too. A fully
+does **not** affect colouring: token captures fire inside `ERROR` nodes too. Without layout, a line
+break is ambiguous; the grammar keeps both readings (a GLR conflict on `application`) and prefers
+the one that starts a new equation, `case` arm or bind (`prec.dynamic`). A bare expression
+statement at the end of a `do` has no such marker, so it can merge into the line before it.
+Over the repo's examples and fixtures this leaves 470 `ERROR` nodes (was 6115), and 296 files
+parse with none. A fully
 structural parse (for tree-sitter text-objects / auto-indent) would need the scanner and
 is out of scope.
 

@@ -20,6 +20,11 @@
 (function_equation name: (variable) @function)
 (type_signature name: (variable) @function)
 (foreign_declaration name: (variable) @function)
+(foreign_declaration (string) @string.special)
+(struct_field name: (variable) @variable.other.member)
+(foreign_struct name: (type_constructor) @type)
+(foreign_enum name: (type_constructor) @type)
+(enum_member name: (constructor) @constructor)
 
 ; a constructor being declared, and the type being declared
 (data_constructor name: (constructor) @constructor)
@@ -31,6 +36,7 @@
   "module" "import" "qualified" "as"
   "data" "class" "instance" "foreign" "deriving"
   "where" "let" "in"
+  "pure" "struct" "enum" "infixl" "infixr" "infix"
 ] @keyword
 
 [
@@ -40,7 +46,7 @@
 ; --- operators & punctuation ---
 (operator) @operator
 [
-  "::" "->" "=>" "=" "|" "<-" ".." "\\"
+  "::" "->" "=>" "=" "|" "<-" "<-?" "<-!" ".." "\\"
 ] @operator
 
 [ "(" ")" "[" "]" "{" "}" ] @punctuation.bracket
