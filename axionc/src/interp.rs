@@ -2476,17 +2476,21 @@ fn step(
             }
         }
     }
+    // `case v of …` on an ordinary value (a `let`-like bind, or a match on data), whose arms may
+    // run session ops: evaluate it, then continue with the first arm that matches.
     if let Expr::Case(scrut, arms, _) = &task.cont {
-        if let [(pat @ (Pat::Var(..) | Pat::Wild(_)), rest)] = arms.as_slice() {
-            if as_session_op(scrut).is_none() {
-                let v = eval(prog, &task.env, scrut)?;
+        if as_session_op(scrut).is_none() {
+            let v = eval(prog, &task.env, scrut)?;
+            for (pat, rest) in arms {
                 let child = child_env(&task.env);
-                match_pat(pat, &v, &child);
-                return Ok(StepOut::Went(Task {
-                    cont: rest.clone(),
-                    env: child,
-                }));
+                if match_pat(pat, &v, &child) {
+                    return Ok(StepOut::Went(Task {
+                        cont: rest.clone(),
+                        env: child,
+                    }));
+                }
             }
+            return Err("case: no arm matches".into());
         }
     }
     // session op as the tail of the `do` (e.g. final `close c`) → it is the block's value.
@@ -2605,7 +2609,15 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
         env: child_env(env),
     })];
     let mut budget: u64 = 5_000_000;
+    // the root's value, once it has finished; the nursery ends when every task has (as natively)
+    let mut root: Option<Value> = None;
     loop {
+        if let Some(v) = root.take() {
+            if tasks.iter().all(Option::is_none) {
+                return Ok(v);
+            }
+            root = Some(v);
+        }
         let mut progressed = false;
         let n = tasks.len();
         for i in 0..n {
@@ -2632,14 +2644,19 @@ fn run_session(prog: &Program, body: &Expr, env: &Env) -> Result<Value, RunError
                     StepOut::Done(v) => {
                         progressed = true;
                         if i == 0 {
-                            return Ok(v); // the root finished → the `bound` value
+                            root = Some(v); // the `bound` value, once the children finish too
                         }
-                        break; // a child finished → discard it
+                        break;
                     }
                 }
             }
         }
         if !progressed {
+            if let Some(v) = root.take() {
+                if tasks.iter().all(Option::is_none) {
+                    return Ok(v);
+                }
+            }
             return Err(
                 "deadlock in the scheduler (should not happen — types guarantee it)".into(),
             );

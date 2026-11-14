@@ -3464,6 +3464,70 @@ fn is_sess_op(h: &str) -> bool {
     )
 }
 
+/// For every function a session task calls, the argument positions given a variable (the
+/// tasks' bodies: `main`'s `bound` block and every worker it reaches).
+fn session_call_var_args(module: &ast::Module) -> HashMap<String, HashSet<usize>> {
+    fn walk(e: &Expr, out: &mut HashMap<String, HashSet<usize>>) {
+        match e {
+            Expr::App(..) => {
+                let (head, args) = sess_spine(e);
+                if let Some(h) = head {
+                    for (i, a) in args.iter().enumerate() {
+                        if matches!(a, Expr::Var(..)) {
+                            out.entry(h.to_string()).or_default().insert(i);
+                        }
+                    }
+                }
+                for a in args {
+                    walk(a, out);
+                }
+            }
+            Expr::Case(sc, arms, _) => {
+                walk(sc, out);
+                arms.iter().for_each(|(_, b)| walk(b, out));
+            }
+            Expr::If(c, t, el, _) => {
+                walk(c, out);
+                walk(t, out);
+                walk(el, out);
+            }
+            Expr::Let(binds, body, _) => {
+                for b in binds {
+                    for c in &b.clauses {
+                        if let Body::Plain(x) = &c.body {
+                            walk(x, out);
+                        }
+                    }
+                }
+                walk(body, out);
+            }
+            Expr::BinOp(_, a, b, _) => {
+                walk(a, out);
+                walk(b, out);
+            }
+            Expr::Tuple(es, _) => es.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = HashMap::new();
+    let Some(bound) = module
+        .funcs
+        .iter()
+        .find(|f| f.name == "main")
+        .and_then(sess_clause_body)
+        .and_then(as_bound)
+    else {
+        return out;
+    };
+    walk(bound, &mut out);
+    for w in session_workers(module, bound) {
+        if let Some(b) = sess_clause_body(w) {
+            walk(b, &mut out);
+        }
+    }
+    out
+}
+
 /// `let x = e` with one parameterless, unguarded binding: `(x, e, body)`. The only `let` shape a
 /// session task supports (it lowers to a local, saved across a suspension like any other).
 fn sess_let(e: &Expr) -> Option<(&str, &Expr, &Expr)> {
@@ -3685,6 +3749,224 @@ struct SessOwn<'a> {
     moved: HashSet<String>,
     /// the ownership state on entry to each suspension, for its resume region
     at_susp: HashMap<i32, OwnState>,
+    /// inferred types by span: a `send` payload at its expression's span, a `recv` payload at the
+    /// `recv` name's span (see `infer`), plus every call's result type
+    tys: &'a HashMap<Span, Type>,
+    /// payload types read off the task's protocols (same keys; preferred over `tys`, which
+    /// leaves an unused received value's type open)
+    proto: HashMap<Span, Type>,
+    /// constructor → its `data` type's parameters and field types (for a `case` on data)
+    cons: &'a HashMap<String, (Vec<String>, Vec<Type>)>,
+    /// per native function, the parameters it only borrows (the rest it consumes)
+    borrow: &'a BorrowArgs,
+    /// per native function, the parameters it frees on some path (it owns them, whatever
+    /// `borrow` says — e.g. a conditionally-escaping parameter freed on the other branch)
+    frees: &'a HashMap<String, HashSet<usize>>,
+    /// `data` types with a constructor that has fields (their values are heap cells)
+    boxed: &'a HashSet<String>,
+    /// the known type of a local (parameter, `let`, constructor field)
+    var_tys: HashMap<String, Type>,
+    /// parametric `data` instances a task frees whole (`List$String`): their destructors are
+    /// generated after the session steps
+    drop_seeds: &'a std::cell::RefCell<Vec<Type>>,
+}
+
+/// A session protocol at some point of a task: the current type, and the enclosing `Rec` a
+/// `Loop` stands for.
+type Proto = (Type, Option<Type>);
+
+fn ty_apply(head: &str, args: Vec<Type>) -> Type {
+    args.into_iter().fold(Type::Con(head.to_string()), |f, a| {
+        Type::App(Box::new(f), Box::new(a))
+    })
+}
+
+/// Unfolds `Rec S` (remembering it for `Loop`) and `Loop` until a protocol step shows. Bounded:
+/// a degenerate `Rec Loop` has no step, and gives `None`.
+fn proto_norm((mut t, mut rec): Proto) -> Option<Proto> {
+    for _ in 0..8 {
+        let next = match ty_head_args(&t) {
+            (Some("Rec"), a) if a.len() == 1 => a[0].clone(),
+            (Some("Loop"), a) if a.is_empty() => rec.clone()?,
+            _ => return Some((t, rec)),
+        };
+        if matches!(ty_head_args(&t).0, Some("Rec")) {
+            rec = Some(t);
+        }
+        t = next;
+    }
+    None
+}
+
+/// The other end's protocol: sends and receives swap, as do `Select` and `Offer`.
+fn proto_dual(t: &Type) -> Type {
+    let (h, a) = ty_head_args(t);
+    match h {
+        Some("Send") if a.len() == 2 => ty_apply("Recv", vec![a[0].clone(), proto_dual(a[1])]),
+        Some("Recv") if a.len() == 2 => ty_apply("Send", vec![a[0].clone(), proto_dual(a[1])]),
+        Some(sel @ ("Select" | "Offer")) => {
+            let other = if sel == "Select" { "Offer" } else { "Select" };
+            let branches = a
+                .iter()
+                .map(|b| match ty_head_args(b) {
+                    (Some(l), ba) if ba.len() == 1 => ty_apply(l, vec![proto_dual(ba[0])]),
+                    _ => (*b).clone(),
+                })
+                .collect();
+            ty_apply(other, branches)
+        }
+        Some("Rec") if a.len() == 1 => ty_apply("Rec", vec![proto_dual(a[0])]),
+        _ => t.clone(),
+    }
+}
+
+/// The protocol of an endpoint type `Ep P`.
+fn ep_proto(t: &Type) -> Option<Type> {
+    match ty_head_args(t) {
+        (Some("Ep" | "Channel" | "Chan" | "Endpoint"), a) if a.len() == 1 => Some(a[0].clone()),
+        _ => None,
+    }
+}
+
+/// The type of every channel payload in a task body, read off its endpoints' protocols: a `recv`
+/// payload keyed by the `recv` name's span, a `send` payload by the sent expression's span (the
+/// keys `infer` uses). Endpoints start from the task's `Ep` parameters and from `spawn` (the dual
+/// of the worker's endpoint parameter); each operation advances its endpoint's protocol.
+fn sess_payload_types(
+    pats: &[Pat],
+    sig: Option<&Type>,
+    body: &Expr,
+    funcs: &HashMap<String, &ast::Func>,
+) -> HashMap<Span, Type> {
+    let mut env: HashMap<String, Proto> = HashMap::new();
+    if let Some(sig) = sig {
+        for (p, t) in pats.iter().zip(sig.param_types()) {
+            if let (Pat::Var(n, _), Some(pr)) = (p, ep_proto(t)) {
+                env.insert(n.clone(), (pr, None));
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    payload_walk(body, &mut env, funcs, &mut out);
+    out
+}
+
+fn payload_walk(
+    e: &Expr,
+    env: &mut HashMap<String, Proto>,
+    funcs: &HashMap<String, &ast::Func>,
+    out: &mut HashMap<Span, Type>,
+) {
+    if let Expr::If(_, t, el, _) = e {
+        payload_walk(t, env, funcs, out);
+        payload_walk(el, env, funcs, out);
+        return;
+    }
+    if let Some((_, _, body)) = sess_let(e) {
+        payload_walk(body, env, funcs, out);
+        return;
+    }
+    let Expr::Case(scrut, arms, _) = e else {
+        return;
+    };
+    let (head, args) = sess_spine(scrut);
+    let ep_of = |a: &Expr, env: &HashMap<String, Proto>| match a {
+        Expr::Var(n, _) => env.get(n).cloned().and_then(proto_norm),
+        _ => None,
+    };
+    let bind = |p: &Pat, pr: Proto, env: &mut HashMap<String, Proto>| {
+        if let Pat::Var(n, _) = p {
+            env.insert(n.clone(), pr);
+        }
+    };
+    match (head, arms.as_slice()) {
+        (Some("recv"), [(pat, _)]) if !args.is_empty() => {
+            if let Some((t, rec)) = ep_of(args[0], env) {
+                if let (Some("Recv"), a) = ty_head_args(&t) {
+                    if a.len() == 2 {
+                        if let Some(sp) = spine_head_span(scrut) {
+                            out.insert(sp, a[0].clone());
+                        }
+                        if let Pat::Tuple(ps, _) = pat {
+                            if let Some(p) = ps.get(1) {
+                                bind(p, (a[1].clone(), rec), env);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (Some("send"), [(pat, _)]) if args.len() >= 2 => {
+            if let Some((t, rec)) = ep_of(args[0], env) {
+                if let (Some("Send"), a) = ty_head_args(&t) {
+                    if a.len() == 2 {
+                        out.insert(args[1].span(), a[0].clone());
+                        bind(pat, (a[1].clone(), rec), env);
+                    }
+                }
+            }
+        }
+        (Some("select"), [(pat, _)]) if args.len() >= 2 => {
+            if let (Expr::Con(label, _), Some((t, rec))) = (args[0], ep_of(args[1], env)) {
+                if let (Some("Select"), bs) = ty_head_args(&t) {
+                    for b in bs {
+                        if let (Some(l), ba) = ty_head_args(b) {
+                            if l == label {
+                                let cont =
+                                    ba.first().map_or(Type::Con("End".into()), |c| (*c).clone());
+                                bind(pat, (cont, rec.clone()), env);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (Some("offer"), _) if !args.is_empty() => {
+            if let Some((t, rec)) = ep_of(args[0], env) {
+                if let (Some("Offer"), bs) = ty_head_args(&t) {
+                    for (pat, _) in arms {
+                        if let Pat::Con(label, sub, _) = pat {
+                            for b in &bs {
+                                if let (Some(l), ba) = ty_head_args(b) {
+                                    if l == label {
+                                        let cont = ba
+                                            .first()
+                                            .map_or(Type::Con("End".into()), |c| (*c).clone());
+                                        if let Some(p) = sub.first() {
+                                            bind(p, (cont, rec.clone()), env);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (Some("spawn"), [(pat, _)]) if !args.is_empty() => {
+            // the parent's end of a spawned worker's channel: the dual of its endpoint parameter
+            let target = sess_spine(args[0]).0.and_then(|w| funcs.get(w));
+            let proto = target
+                .and_then(|f| f.sig.as_ref())
+                .and_then(|s| s.param_types().into_iter().rev().find_map(ep_proto));
+            if let Some(pr) = proto {
+                bind(pat, (proto_dual(&pr), None), env);
+            }
+        }
+        _ => {}
+    }
+    for (_, b) in arms {
+        payload_walk(b, env, funcs, out);
+    }
+}
+
+/// The span of the head name of an application spine (`recv` in `recv c`).
+fn spine_head_span(e: &Expr) -> Option<Span> {
+    match e {
+        Expr::App(f, _, _) => spine_head_span(f),
+        Expr::Var(_, sp) => Some(*sp),
+        _ => None,
+    }
 }
 
 /// The drop key of a session-held heap value whose destructor needs no per-instance seed.
@@ -3761,24 +4043,215 @@ impl SessGen<'_> {
             return None;
         }
         let f = o.funcs.get(w)?;
-        sess_drop_key(f.sig.as_ref()?.param_types().get(i)?)
+        self.owned_key(f.sig.as_ref()?.param_types().get(i)?)
+    }
+
+    /// The drop key of a heap value of type `t` a task can own: a String/Integer/Buffer, or a
+    /// `data` value with a heap cell (freed by its destructor; a parametric one is seeded).
+    fn owned_key(&self, t: &Type) -> Option<String> {
+        if let Some(k) = sess_drop_key(t) {
+            return Some(k);
+        }
+        let o = self.own.as_ref()?;
+        let head = t.head_con()?;
+        if !o.boxed.contains(head) {
+            return None;
+        }
+        let key = mono_key(t)?;
+        if key.contains('$') {
+            o.drop_seeds.borrow_mut().push(t.clone());
+        }
+        Some(key)
+    }
+
+    /// The type of a session expression, when known: a local's, or a call's inferred result.
+    fn expr_ty(&self, e: &Expr) -> Option<Type> {
+        let o = self.own.as_ref()?;
+        match e {
+            Expr::Var(n, _) => o.var_tys.get(n).cloned(),
+            Expr::App(..) => o.tys.get(&e.span()).cloned(),
+            _ => None,
+        }
+    }
+
+    /// `case v of C x y -> … ; D -> … ; _ -> …` on a `data` value (constructor arms with variable
+    /// or `_` fields, then an optional catch-all). An owned scrutinee is consumed: each arm frees
+    /// the cell and owns the fields (a heap field bound to `_` is freed at once); a catch-all arm
+    /// keeps it whole. A scrutinee the task does not own is only read.
+    fn gen_case(&mut self, scrut: &Expr, arms: &[(Pat, Expr)]) -> Term {
+        let mut binds = Vec::new();
+        let sty = self.expr_ty(scrut);
+        let a = self.val(scrut, &mut binds);
+        let owned_key = match &a {
+            Atom::Var(v) => {
+                let key = self.own.as_ref().and_then(|o| {
+                    o.owned
+                        .iter()
+                        .chain(o.pending.iter())
+                        .find(|(n, _)| n == v)
+                        .map(|(_, k)| k.clone())
+                });
+                if key.is_some() {
+                    self.take_var(v);
+                }
+                key
+            }
+            _ => None,
+        };
+        let tmps = self.take_pending();
+        let st = self.save_own();
+        let mut carms = Vec::new();
+        for (pat, body) in arms {
+            self.restore_own(&st);
+            let mut pre = Vec::new(); // frees at the arm's entry
+            let cpat = match pat {
+                Pat::Con(c, subs, _) => {
+                    let ftys = self.con_field_tys(c, sty.as_ref());
+                    let mut csubs = Vec::new();
+                    for (i, sp) in subs.iter().enumerate() {
+                        let fty = ftys.as_ref().and_then(|f| f.get(i)).cloned();
+                        let key = match (&owned_key, &fty) {
+                            (Some(_), Some(t)) => self.owned_key(t),
+                            _ => None,
+                        };
+                        match sp {
+                            Pat::Var(n, _) => {
+                                if let (Some(t), Some(o)) = (&fty, self.own.as_mut()) {
+                                    o.var_tys.insert(n.clone(), t.clone());
+                                }
+                                if let (Some(k), Some(o)) = (key, self.own.as_mut()) {
+                                    o.owned.push((n.clone(), k));
+                                }
+                                csubs.push(CPat::Var(n.clone()));
+                            }
+                            _ => match key {
+                                Some(k) => {
+                                    let n = self.fresh();
+                                    pre.push((n.clone(), k));
+                                    csubs.push(CPat::Var(n));
+                                }
+                                None => csubs.push(CPat::Wild),
+                            },
+                        }
+                    }
+                    // the consumed cell itself (a nullary constructor is no cell)
+                    if let (Some(_), Atom::Var(v), false) = (&owned_key, &a, subs.is_empty()) {
+                        let t = Self::drop_all(pre, self.gen_cont(body));
+                        carms.push((
+                            CPat::Con(c.clone(), csubs),
+                            Term::Drop(v.clone(), None, Vec::new(), NO_SPAN, Box::new(t)),
+                        ));
+                        continue;
+                    }
+                    CPat::Con(c.clone(), csubs)
+                }
+                Pat::Var(n, _) => {
+                    // catch-all binding the whole value: it owns what the scrutinee owned
+                    if let (Some(k), Some(o)) = (&owned_key, self.own.as_mut()) {
+                        o.owned.push((n.clone(), k.clone()));
+                    }
+                    if let (Some(t), Some(o)) = (&sty, self.own.as_mut()) {
+                        o.var_tys.insert(n.clone(), t.clone());
+                    }
+                    CPat::Var(n.clone())
+                }
+                _ => {
+                    if let (Some(k), Atom::Var(v)) = (&owned_key, &a) {
+                        pre.push((v.clone(), k.clone()));
+                    }
+                    CPat::Wild
+                }
+            };
+            carms.push((cpat, Self::drop_all(pre, self.gen_cont(body))));
+        }
+        self.restore_own(&st);
+        wrap(
+            binds,
+            Self::drop_all(tmps, Term::Ret(Rhs::Case(a, carms), NO_SPAN)),
+            NO_SPAN,
+        )
+    }
+
+    /// Constructor `c`'s field types at the scrutinee type `sty` (its `data` parameters replaced
+    /// by `sty`'s arguments).
+    fn con_field_tys(&self, c: &str, sty: Option<&Type>) -> Option<Vec<Type>> {
+        let o = self.own.as_ref()?;
+        let (params, fields) = o.cons.get(c)?;
+        let args: Vec<Type> = sty
+            .map(|t| ty_head_args(t).1.into_iter().cloned().collect())
+            .unwrap_or_default();
+        if params.is_empty() {
+            return Some(fields.clone());
+        }
+        if params.len() != args.len() {
+            return None;
+        }
+        let sub: HashMap<String, Type> = params.iter().cloned().zip(args).collect();
+        Some(fields.iter().map(|f| subst_ty(f, &sub)).collect())
     }
 
     /// Hands argument `a` to parameter `i` of worker `w` (a spawn, a hand-off, a loop). An owned
     /// value moves with it; a value we do not own cannot become the worker's to free, so that
     /// parameter is demoted (never freed by the worker) and generation is redone.
-    fn give_to_worker(&mut self, w: &str, i: usize, a: &Atom) {
-        let Atom::Var(v) = a else { return };
-        let was_owned = self.take_var(v);
-        let key = self.worker_param_key(w, i);
-        let Some(o) = self.own.as_mut() else { return };
-        if was_owned {
-            // moved: the worker frees it (or, when it does not own the parameter, nobody does —
-            // the value is shared with a task whose lifetime we cannot see)
-            o.moved.insert(v.clone());
-        } else if key.is_some() {
-            o.demoted.borrow_mut().insert((w.to_string(), i));
+    /// Returns the atom to store in the parameter. A value this task does not own (an alias of
+    /// one it does, a field of a value it only reads) may be freed by this task once the call
+    /// is made — the hand-off ends it, a loop's back-edge frees the old iteration's values — so
+    /// the worker gets a copy of a String/Integer/Buffer; a `data` value it cannot copy is
+    /// outside the native subset.
+    fn give_to_worker(
+        &mut self,
+        w: &str,
+        i: usize,
+        a: &Atom,
+        binds: &mut Vec<(String, Rhs)>,
+    ) -> Atom {
+        let Atom::Var(v) = a else { return a.clone() };
+        if self.own.is_none() {
+            return a.clone();
         }
+        if self.take_var(v) {
+            // moved: the worker frees it (or, when it does not own the parameter, nobody does)
+            if let Some(o) = self.own.as_mut() {
+                o.moved.insert(v.clone());
+            }
+            return a.clone();
+        }
+        let pty = self
+            .own
+            .as_ref()
+            .and_then(|o| o.funcs.get(w))
+            .and_then(|f| f.sig.as_ref())
+            .and_then(|s| s.param_types().get(i).map(|t| (*t).clone()));
+        match pty.as_ref() {
+            Some(t) if sess_drop_key(t).is_some() => {
+                let key = sess_drop_key(t).unwrap_or_default();
+                self.copy_of(&key, a, binds)
+            }
+            Some(t) if self.owned_key(t).is_some() => self.unsupported(binds),
+            _ => a.clone(),
+        }
+    }
+
+    /// A fresh copy of a String/Integer/Buffer value (keyed by `key`).
+    fn copy_of(&mut self, key: &str, a: &Atom, binds: &mut Vec<(String, Rhs)>) -> Atom {
+        let (func, extra) = match key {
+            "Integer" => ("axion_bignum_copy", None),
+            "Buffer" => ("axion_buf_copy", None),
+            _ => ("axion_strcat", Some(Atom::Str(String::new()))),
+        };
+        let mut cargs = vec![a.clone()];
+        cargs.extend(extra);
+        let c = self.fresh();
+        binds.push((c.clone(), Self::rt(func, cargs, true)));
+        Atom::Var(c)
+    }
+
+    /// The drop key of a channel payload whose type inference recorded at `sp`, when the task
+    /// tracks ownership and the type is one it reclaims.
+    fn payload_key(&self, sp: Option<Span>) -> Option<String> {
+        let o = self.own.as_ref()?;
+        let sp = sp?;
+        sess_drop_key(o.proto.get(&sp).or_else(|| o.tys.get(&sp))?)
     }
 
     /// `drop` every listed value, then `k`.
@@ -3847,6 +4320,34 @@ impl SessGen<'_> {
     fn val(&mut self, e: &Expr, binds: &mut Vec<(String, Rhs)>) -> Atom {
         match e {
             Expr::Int(n, _) => Atom::Int(*n),
+            // a static literal: never freed (the String drop skips literals), copied when sent
+            Expr::Str(s, _) => Atom::Str(s.clone()),
+            Expr::Con(c, _) if c == "True" => Atom::Int(1),
+            Expr::Con(c, _) if c == "False" => Atom::Int(0),
+            // a value-position `if` (`a && b` desugars to one): each branch computes its value; a
+            // branch that makes a heap temporary would own it on one path only — unsupported
+            Expr::If(c, t, el, _) => {
+                let cv = self.val(c, binds);
+                let before = self.own.as_ref().map(|o| (o.pending.len(), o.owned.len()));
+                let mut arms = Vec::new();
+                for e in [t, el] {
+                    let mut b = Vec::new();
+                    let v = self.val(e, &mut b);
+                    arms.push(wrap(b, Term::Ret(Rhs::Op(Op::Atom(v)), NO_SPAN), NO_SPAN));
+                }
+                // a branch that makes or gives away a heap value would change ownership on one
+                // path only
+                if self.own.as_ref().map(|o| (o.pending.len(), o.owned.len())) != before {
+                    return self.unsupported(binds);
+                }
+                let (et, tt) = (arms.pop(), arms.pop());
+                let (Some(tt), Some(et)) = (tt, et) else {
+                    return self.unsupported(binds);
+                };
+                let r = self.fresh();
+                binds.push((r.clone(), Rhs::If(cv, Box::new(tt), Box::new(et))));
+                Atom::Var(r)
+            }
             Expr::Var(n, _) => {
                 if self.own.as_ref().is_some_and(|o| o.moved.contains(n)) {
                     // read after it was handed to another task or an owning call
@@ -3881,26 +4382,47 @@ impl SessGen<'_> {
                 let (head, args) = sess_spine(e);
                 if let Some(name) = head.filter(|n| self.fns.contains(*n)) {
                     let name = name.to_string();
-                    let atoms: Vec<Atom> = args.iter().map(|a| self.val(a, binds)).collect();
+                    let mut atoms: Vec<Atom> = args.iter().map(|a| self.val(a, binds)).collect();
                     let t = self.fresh();
-                    // ownership across the call: a `%1` heap parameter takes the argument; a
-                    // heap result is fresh unless the callee may return one of its parameters.
+                    // ownership across the call, as the native code decided it (`borrow_args`,
+                    // not only the written `%1`): a parameter the callee consumes takes the
+                    // argument — an owned value moves, one this task does not own is passed as
+                    // a copy (else the callee would free what another owner frees).
                     let sig = self
                         .own
                         .as_ref()
                         .and_then(|o| o.funcs.get(&name))
                         .and_then(|f| f.sig.clone());
+                    let mut consumed: HashSet<usize> = HashSet::new();
                     if let Some(sig) = &sig {
                         let mults = sig.param_mults();
-                        for (i, a) in atoms.iter().enumerate() {
-                            if mults.get(i) == Some(&ast::Mult::One) {
-                                if let Atom::Var(v) = a {
-                                    if self.take_var(v) {
-                                        if let Some(o) = self.own.as_mut() {
-                                            o.moved.insert(v.clone());
-                                        }
-                                    }
+                        let ptys: Vec<Type> = sig.param_types().into_iter().cloned().collect();
+                        let borrowed = self.own.as_ref().and_then(|o| o.borrow.get(&name)).cloned();
+                        let frees = self.own.as_ref().and_then(|o| o.frees.get(&name)).cloned();
+                        for (i, atom) in atoms.iter_mut().enumerate() {
+                            let takes = frees.as_ref().is_some_and(|f| f.contains(&i))
+                                || match &borrowed {
+                                    Some(b) => !b.contains(&i),
+                                    None => mults.get(i) == Some(&ast::Mult::One),
+                                };
+                            let heap = ptys.get(i).and_then(|t| self.owned_key(t));
+                            if !takes || heap.is_none() {
+                                continue;
+                            }
+                            consumed.insert(i);
+                            let Atom::Var(v) = atom.clone() else {
+                                continue;
+                            };
+                            if self.take_var(&v) {
+                                if let Some(o) = self.own.as_mut() {
+                                    o.moved.insert(v);
                                 }
+                            } else {
+                                let pk = ptys.get(i).and_then(sess_drop_key);
+                                *atom = match pk {
+                                    Some(k) => self.copy_of(&k, atom, binds),
+                                    None => self.unsupported(binds),
+                                };
                             }
                         }
                     }
@@ -3908,10 +4430,37 @@ impl SessGen<'_> {
                         t.clone(),
                         Rhs::Op(Op::CallDirect(name.clone(), atoms, None)),
                     ));
-                    if let (Some(sig), Some(o)) = (&sig, self.own.as_mut()) {
-                        let fresh = o.ret_alias.get(&name).is_none_or(|s| s.is_empty());
-                        if let Some(key) = sess_drop_key(sig_result(sig)).filter(|_| fresh) {
-                            o.pending.push((t.clone(), key));
+                    if let Some(sig) = &sig {
+                        // fresh unless it may return a parameter it only borrowed (one it took
+                        // and hands back is still the caller's to free)
+                        let fresh = self.own.as_ref().is_some_and(|o| {
+                            o.ret_alias
+                                .get(&name)
+                                .is_none_or(|s| s.iter().all(|i| consumed.contains(i)))
+                        });
+                        if let Some(key) = self.owned_key(sig_result(sig)).filter(|_| fresh) {
+                            if let Some(o) = self.own.as_mut() {
+                                o.pending.push((t.clone(), key));
+                            }
+                        }
+                    }
+                    Atom::Var(t)
+                } else if let (Some(h @ ("showInt" | "putStrLn" | "putStr")), [x]) =
+                    (head, args.as_slice())
+                {
+                    // built-ins with their own Core op: `showInt` makes a fresh String; the
+                    // writes only read theirs
+                    let a = self.val(x, binds);
+                    let t = self.fresh();
+                    let op = match h {
+                        "showInt" => Op::ShowInt(a),
+                        "putStrLn" => Op::PutStrLn(a),
+                        _ => Op::PutStr(a),
+                    };
+                    binds.push((t.clone(), Rhs::Op(op)));
+                    if h == "showInt" {
+                        if let Some(o) = self.own.as_mut() {
+                            o.pending.push((t.clone(), "String".into()));
                         }
                     }
                     Atom::Var(t)
@@ -3977,9 +4526,11 @@ impl SessGen<'_> {
                 vals.push(self.val(a, &mut binds));
             }
             let me = self.name.to_string();
-            for (i, v) in vals.iter().enumerate() {
-                self.give_to_worker(&me, i, v);
-            }
+            let vals: Vec<Atom> = vals
+                .iter()
+                .enumerate()
+                .map(|(i, v)| self.give_to_worker(&me, i, v, &mut binds))
+                .collect();
             for (slot, v) in slots.iter().zip(vals) {
                 binds.push((
                     self.fresh(),
@@ -4019,7 +4570,7 @@ impl SessGen<'_> {
                     let target = h.to_string();
                     for (i, (slot, arg)) in slots.iter().zip(args.iter()).enumerate() {
                         let v = self.val(arg, &mut binds);
-                        self.give_to_worker(&target, i, &v);
+                        let v = self.give_to_worker(&target, i, &v, &mut binds);
                         binds.push((
                             self.fresh(),
                             Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
@@ -4082,7 +4633,14 @@ impl SessGen<'_> {
     fn block(&mut self, idx: i32) -> Term {
         let live = self.susp_live[idx as usize].clone();
         let mut binds = Vec::new();
-        for v in &live {
+        // a value already given away (sent, moved into a call) is not this task's to park; its
+        // slot is never read again on resume (a read after the move is unsupported)
+        let moved = self
+            .own
+            .as_ref()
+            .map(|o| o.moved.clone())
+            .unwrap_or_default();
+        for v in live.iter().filter(|v| !moved.contains(*v)) {
             let s = self.lay.slot[v];
             binds.push(self.store(s, Atom::Var(v.clone())));
         }
@@ -4125,6 +4683,18 @@ impl SessGen<'_> {
             return self.gen_local(Some(x), rhs, body);
         }
         if let Expr::Case(scrut, arms, _) = e {
+            let data_case = !sess_spine(scrut).0.is_some_and(is_sess_op)
+                && arms.iter().any(|(p, _)| matches!(p, Pat::Con(..)))
+                && arms.iter().all(|(p, _)| match p {
+                    Pat::Con(_, subs, _) => subs
+                        .iter()
+                        .all(|q| matches!(q, Pat::Var(..) | Pat::Wild(_))),
+                    Pat::Var(..) | Pat::Wild(_) => true,
+                    _ => false,
+                });
+            if data_case && self.own.is_some() {
+                return self.gen_case(scrut, arms);
+            }
             if let [(pat @ (Pat::Var(..) | Pat::Wild(_)), rest)] = arms.as_slice() {
                 if !sess_spine(scrut).0.is_some_and(is_sess_op) {
                     let x = match pat {
@@ -4141,7 +4711,10 @@ impl SessGen<'_> {
         let key = scrut.span(); // suspension key = scrutinee span (see susp_key)
         let (head, args) = sess_spine(scrut);
         match head {
-            Some("recv") => self.gen_recv(&arms[0].0, &arms[0].1, args[0], key),
+            Some("recv") => {
+                let payload = spine_head_span(scrut);
+                self.gen_recv(&arms[0].0, &arms[0].1, args[0], key, payload)
+            }
             Some("offer") => self.gen_offer(args[0], arms, key),
             Some("spawn") => self.gen_spawn(&arms[0].0, args[0], &arms[0].1),
             Some("send") => self.gen_send(&arms[0].0, &args, &arms[0].1),
@@ -4188,6 +4761,11 @@ impl SessGen<'_> {
     /// with `rest`. A fresh heap result becomes `x`'s to free; one nobody binds (a plain
     /// statement's) is freed at once. An owned value bound to a new name moves to that name.
     fn gen_local(&mut self, x: Option<&str>, rhs: &Expr, rest: &Expr) -> Term {
+        if let (Some(x), Some(t)) = (x, self.expr_ty(rhs)) {
+            if let Some(o) = self.own.as_mut() {
+                o.var_tys.insert(x.to_string(), t);
+            }
+        }
         let mut binds = Vec::new();
         let a = self.val(rhs, &mut binds);
         if let (Some(x), Atom::Var(v), Some(o)) = (x, &a, self.own.as_mut()) {
@@ -4207,7 +4785,14 @@ impl SessGen<'_> {
     }
 
     /// `(value, endpoint) <- recv ep; rest` — the only value suspension.
-    fn gen_recv(&mut self, pat: &Pat, rest: &Expr, ep_expr: &Expr, span: Span) -> Term {
+    fn gen_recv(
+        &mut self,
+        pat: &Pat,
+        rest: &Expr,
+        ep_expr: &Expr,
+        span: Span,
+        payload: Option<Span>,
+    ) -> Term {
         let idx = self.susp[&span];
         self.note_susp(idx);
         let mut binds = Vec::new();
@@ -4222,8 +4807,18 @@ impl SessGen<'_> {
             ),
         ));
         let rv = self.fresh();
-        let mut pv = Vec::new();
-        pat_vars(pat, &mut pv);
+        // `(value, endpoint)`: either side may be `_`, so read the two positions, not the names
+        let pv: Vec<Option<String>> = match pat {
+            Pat::Tuple(ps, _) => ps
+                .iter()
+                .map(|p| match p {
+                    Pat::Var(n, _) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect(),
+            Pat::Var(n, _) => vec![Some(n.clone())],
+            _ => Vec::new(),
+        };
         let mut cbinds = vec![(
             rv.clone(),
             Self::rt(
@@ -4232,13 +4827,29 @@ impl SessGen<'_> {
                 true,
             ),
         )];
-        if let Some(v0) = pv.first() {
-            cbinds.push((v0.clone(), Rhs::Op(Op::Atom(Atom::Var(rv)))));
+        if let Some(Some(v0)) = pv.first() {
+            cbinds.push((v0.clone(), Rhs::Op(Op::Atom(Atom::Var(rv.clone())))));
         }
-        if let Some(v1) = pv.get(1) {
+        if let Some(Some(v1)) = pv.get(1) {
             cbinds.push((v1.clone(), Rhs::Op(Op::Atom(ep))));
         }
-        let cont = wrap(cbinds, self.gen_cont(rest), NO_SPAN);
+        // A received heap value is this task's: every sender hands over a value it owned (or a
+        // copy, see `gen_send`). Bound to nothing, it is freed at once.
+        let st = self.save_own();
+        let key = self.payload_key(payload);
+        let mut drop_now = Vec::new();
+        if let (Some(key), Some(o)) = (key, self.own.as_mut()) {
+            match pv.first() {
+                Some(Some(v0)) => o.owned.push((v0.clone(), key)),
+                _ => drop_now.push((rv, key)),
+            }
+        }
+        let cont = wrap(
+            cbinds,
+            Self::drop_all(drop_now, self.gen_cont(rest)),
+            NO_SPAN,
+        );
+        self.restore_own(&st);
         let blocked = self.block(idx);
         wrap(
             binds,
@@ -4467,7 +5078,7 @@ impl SessGen<'_> {
             ));
             for (i, (slot, arg)) in slots.iter().zip(target_args.iter()).enumerate() {
                 let v = self.val(arg, &mut binds);
-                self.give_to_worker(&target, i, &v);
+                let v = self.give_to_worker(&target, i, &v, &mut binds);
                 binds.push((
                     self.fresh(),
                     Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
@@ -4522,7 +5133,7 @@ impl SessGen<'_> {
         // already-applied leading args → the accumulator param slots (in order)
         for (i, (slot, arg)) in slots.iter().zip(target_args.iter()).enumerate() {
             let v = self.val(arg, &mut binds);
-            self.give_to_worker(&target, i, &v);
+            let v = self.give_to_worker(&target, i, &v, &mut binds);
             binds.push((
                 self.fresh(),
                 Rhs::Op(Op::StoreRaw(Atom::Var(cs.clone()), *slot, v)),
@@ -4551,13 +5162,17 @@ impl SessGen<'_> {
     fn gen_send(&mut self, pat: &Pat, args: &[&Expr], rest: &Expr) -> Term {
         let mut binds = Vec::new();
         let ep = self.val(args[0], &mut binds);
-        let v = self.val(args[1], &mut binds);
-        // the value leaves on the channel (the receiver does not free it: not tracked)
+        let mut v = self.val(args[1], &mut binds);
+        // the value leaves on the channel and the receiver frees it (`gen_recv`): an owned value
+        // moves, one this task does not own is copied first
+        let key = self.payload_key(Some(args[1].span()));
         if let Atom::Var(x) = &v {
             if self.take_var(x) {
                 if let Some(o) = self.own.as_mut() {
                     o.moved.insert(x.clone());
                 }
+            } else if let (Some(key), true) = (key, self.own.is_some()) {
+                v = self.copy_of(&key, &v, &mut binds);
             }
         }
         let tmps = self.take_pending();
@@ -4659,8 +5274,18 @@ impl SessGen<'_> {
             .collect();
         // region 0 (fresh entry) first: it records the ownership state at every suspension,
         // which the resume regions start from
+        let ptys: Vec<Type> = self
+            .own
+            .as_ref()
+            .and_then(|o| o.funcs.get(me.as_str()))
+            .and_then(|f| f.sig.as_ref())
+            .map(|s| s.param_types().into_iter().cloned().collect())
+            .unwrap_or_default();
         if let Some(o) = self.own.as_mut() {
             o.owned = init;
+            for (v, t) in ps.iter().zip(ptys) {
+                o.var_tys.insert(v.clone(), t);
+            }
         }
         let mut regions: Vec<Option<Term>> = (0..=nsusp).map(|_| None).collect();
         regions[0] = Some(self.region(0, &susps, body));
@@ -4751,6 +5376,10 @@ fn session_fns(
     module: &ast::Module,
     native_fns: &HashSet<String>,
     ret_alias: &HashMap<String, HashSet<usize>>,
+    tys: &HashMap<Span, Type>,
+    drop_seeds: &std::cell::RefCell<Vec<Type>>,
+    borrow_args: &BorrowArgs,
+    frees: &HashMap<String, HashSet<usize>>,
 ) -> Vec<CoreFn> {
     let clause_body = sess_clause_body;
     let main = module.funcs.iter().find(|f| f.name == "main");
@@ -4787,6 +5416,22 @@ fn session_fns(
     let funcs: HashMap<String, &ast::Func> =
         module.funcs.iter().map(|f| (f.name.clone(), f)).collect();
     let demoted: std::cell::RefCell<HashSet<(String, usize)>> = Default::default();
+    let mut cons: HashMap<String, (Vec<String>, Vec<Type>)> = HashMap::new();
+    let mut boxed: HashSet<String> = HashSet::new();
+    for d in &module.datas {
+        for c in &d.cons {
+            cons.insert(
+                c.name.clone(),
+                (
+                    d.params.clone(),
+                    c.fields.iter().map(|f| f.ty.clone()).collect(),
+                ),
+            );
+            if !c.fields.is_empty() {
+                boxed.insert(d.name.clone());
+            }
+        }
+    }
     // one step function per task
     let step_of = |name: &str, pats: &[Pat], body: &Expr, layouts: &HashMap<String, SessLayout>| {
         let lay = &layouts[name];
@@ -4807,6 +5452,19 @@ fn session_fns(
                 pending: Vec::new(),
                 moved: HashSet::new(),
                 at_susp: HashMap::new(),
+                tys,
+                proto: sess_payload_types(
+                    pats,
+                    funcs.get(name).and_then(|f| f.sig.as_ref()),
+                    body,
+                    &funcs,
+                ),
+                cons: &cons,
+                boxed: &boxed,
+                borrow: borrow_args,
+                frees,
+                var_tys: HashMap::new(),
+                drop_seeds,
             }),
         };
         CoreFn {
@@ -5819,7 +6477,12 @@ pub fn lower_with(
             .map(|d| d.name.clone())
             .collect();
         let ret_alias = crate::verify::ret_alias_summary(&out);
-        let reused = reused_after_call(&out, &ret_alias);
+        let mut reused = reused_after_call(&out, &ret_alias);
+        // session tasks are generated later, so count their calls here: a variable passed from a
+        // task may well be read again after the call (conservatively, every one)
+        for (g, idx) in session_call_var_args(orig_module) {
+            reused.entry(g).or_default().extend(idx);
+        }
         let mut copy_ctr = 0usize;
         for f in &mut out {
             let Some(ptys) = fn_param_types
@@ -6245,7 +6908,29 @@ pub fn lower_with(
     // native functions so a task knows which calls may return one of their arguments (a result it
     // must not free).
     let ret_alias = crate::verify::ret_alias_summary(&result);
-    result.extend(session_fns(orig_module, &native_fn_names, &ret_alias));
+    let sess_seeds = std::cell::RefCell::new(Vec::new());
+    result.extend(session_fns(
+        orig_module,
+        &native_fn_names,
+        &ret_alias,
+        makecon_tys,
+        &sess_seeds,
+        &borrow_args,
+        &crate::verify::frees_heap_params(&result),
+    ));
+    // destructors for the parametric `data` instances only session tasks free (`List$String`)
+    {
+        let have: HashSet<String> = result.iter().map(|f| f.name.clone()).collect();
+        let seeds: Vec<Type> = sess_seeds
+            .into_inner()
+            .into_iter()
+            .filter(|t| mono_key(t).is_some_and(|k| !have.contains(&format!("axion_drop_{k}"))))
+            .collect();
+        if !seeds.is_empty() {
+            let extra = gen_mono_destructors(orig_module, &recinfo, &parametric_data, seeds);
+            result.extend(extra.into_iter().filter(|f| !have.contains(&f.name)));
+        }
+    }
     // §9 structured fork-join worker state machines (same hand-managed nursery
     // arena as the session steps — they bypass the drop analysis too).
     result.extend(parmap_steps);

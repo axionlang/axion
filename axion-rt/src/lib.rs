@@ -1006,13 +1006,15 @@ unsafe fn sess_worker(sched_p: i64) {
         g.running -= 1;
         let mut readied = false;
         if fin == 1 {
-            if g.par {
-                g.ncompleted += 1;
-                if g.ncompleted == g.tasks.len() {
-                    g.done = true;
-                }
-            } else if i == 0 {
+            // A `bound` nursery's value is its root task's result, but the nursery ends only once
+            // EVERY task has finished: a child still running when the root returns completes its
+            // protocol (session typing guarantees it can) and frees what it holds, instead of being
+            // abandoned with its queued messages. parMap (`par`) has no root.
+            if !g.par && i == 0 {
                 g.result = *(st as *const i64);
+            }
+            g.ncompleted += 1;
+            if g.ncompleted == g.tasks.len() {
                 g.done = true;
             }
         } else if fin == 2 || g.gen != gen0 {
@@ -1092,7 +1094,8 @@ unsafe fn sess_free(sched_p: i64) -> i64 {
     result
 }
 
-/// Run the root task (task 0) on the pool until it finishes; return its result (state[0]).
+/// Run the root task (task 0) and every task it spawns on the pool until all have finished;
+/// return the root's result (state[0]).
 #[no_mangle]
 pub unsafe extern "C" fn axion_sess_run(sched_p: i64, step: i64, state: i64) -> i64 {
     axion_sess_spawn(sched_p, step, state); // root = task 0

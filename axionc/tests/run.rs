@@ -1767,6 +1767,23 @@ fn files_are_read_in_chunks_and_closed_once() {
 }
 
 #[test]
+fn session_tasks_case_on_data() {
+    // `case` on a `data` value inside a session task, with session ops in the arms: an owned
+    // scrutinee is consumed (cells freed, fields owned, a `_` heap field freed at once), a
+    // catch-all keeps it whole. Also string literals, `showInt` and `&&` in task code.
+    agree_across_backends("session_case_data.axi", "20\n");
+}
+
+#[test]
+fn session_channel_payloads_are_owned_by_the_receiver() {
+    // A heap value sent over a channel is freed by its receiver: a fresh one moves, one the sender
+    // does not own is sent as a copy, a received one handed to another task moves on, and one
+    // received into `_` is freed at once. Payload types come from the endpoints' protocols. They
+    // all leaked before. Leak-freedom is checked by sanitize.sh (LEAKFREE).
+    agree_across_backends("session_channel_heap.axi", "5\n");
+}
+
+#[test]
 fn session_tasks_bind_locals_and_run_statements() {
     // `let` and plain statements between channel ops: a `let`-bound String survives a `recv`
     // (saved in the task's state), a statement's discarded String is freed at once. These were

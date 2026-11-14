@@ -132,24 +132,12 @@ joinWith segs = case segs of
 
 -- ─── the decision a session task acts on ───────────────────────────────────────────────────
 
--- 0 when the request may be served, else the error status to answer with
-reqStatus :: String -> Int
-reqStatus raw = case parseReq raw of
-  Left code -> code
-  Right r -> 0
+-- the file to open for a path (a directory path gets `index.html`)
+filePath :: String -> String
+filePath p = strAppend (docRoot 0) (if hasSuffix "/" p then strAppend p "index.html" else p)
 
--- the file to open for an accepted request (a directory path gets `index.html`)
-reqFile :: String -> String
-reqFile raw = case parseReq raw of
-  Left code -> ""
-  Right r -> case r of
-    Req m p -> strAppend (docRoot 0) (if hasSuffix "/" p then strAppend p "index.html" else p)
-
-reqIsHead :: String -> Bool
-reqIsHead raw = case parseReq raw of
-  Left code -> False
-  Right r -> case r of
-    Req m p -> m == "HEAD"
+isHead :: String -> Bool
+isHead m = m == "HEAD"
 
 -- an errno from opening a file → the status it answers with
 errnoStatus :: Int -> Int
@@ -234,12 +222,12 @@ readHead s acc = do
         then respond s (strAppend acc chunk)
         else readHead s (strAppend acc chunk)
 
--- Decide: an early error status, or open the file.
+-- Decide: parse once, then answer an early error status or open the file.
 respond :: Sock %1 -> String -> IO ()
-respond s raw =
-  if reqStatus raw /= 0
-    then sendText s (errorResponse (reqStatus raw)) 0
-    else openFile s (reqFile raw) (reqIsHead raw)
+respond s raw = case parseReq raw of
+  Left code -> sendText s (errorResponse code) 0
+  Right r -> case r of
+    Req m p -> openFile s (filePath p) (isHead m)
 
 -- Open the file and check it is a regular file. Every early exit closes it.
 openFile :: Sock %1 -> String -> Bool -> IO ()
@@ -298,10 +286,7 @@ sendText s msg off =
         else sendText s msg (off + n)
 
 handler :: Sock %1 -> IO ()
-handler s = readHead s (emptyStr 0)
-
-emptyStr :: Int -> String
-emptyStr d = ""
+handler s = readHead s ""
 
 -- Accept connections, each handled by its own task. `left` counts down the connections still to
 -- serve (AXHTTPD_MAX); below zero it never reaches 0, so the server runs until killed.

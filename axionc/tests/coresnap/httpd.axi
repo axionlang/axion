@@ -77,8 +77,6 @@
 
 
 
-
-
                               ret "application/octet-stream"  ; Δ{}
                               ret "application/pdf"  ; Δ{}
                             drop _t0 : String
@@ -165,41 +163,22 @@
             Right segs ->
             Right v ->
             drop _t0 : String
-            drop p : String
-            drop p : String
             else
-            let _d1000001 = rtcall axion_strcat p "index.html"  ; Δ{_t1 p} · makes String
-            let _d1000002 = rtcall axion_strcat p ""  ; Δ{_t1 p} · makes String
             let _t11 = rtcall axion_str_cmp _t0 "txt"  ; Δ{_t0}
             let _t12 = == _t11 0  ; Δ{_t0}
             ret "application/json"  ; Δ{}
-            ret _d1000001  ; Δ{_d1000001 _t1} · moves{_d1000001}
-            ret _d1000002  ; Δ{_d1000002 _t1} · moves{_d1000002}
             ret if _t12 then
           drop _t0 : String
           drop _t1
           drop _t1
-          drop _t1 : String
-          drop _t3 : String
           drop _t4
           drop _t4
-          drop m : String
-          drop m : String
-          drop p : String
           drop parts : List$String
-          drop r
-          drop r
           drop s : String
           else
-          else
-          let _d1000000 = rtcall axion_strcat _t1 _t3  ; Δ{_t1} · makes String
-          let _t1 = call docRoot 0  ; Δ{p} · makes String
-          let _t1 = rtcall axion_str_cmp m "HEAD"  ; Δ{m}
           let _t10 = == _t9 0  ; Δ{_t0}
-          let _t2 = call hasSuffix "/" p  ; Δ{_t1 p}
           let _t2 = call splitOn 47 d  ; Δ{d slash} · makes List$String
           let _t3 = call safeSegments _t2  ; Δ{_t2 d slash} · moves{_t2} · makes Either$Int$List$String
-          let _t3 = if _t2 then
           let _t5 = call pick 2 parts  ; Δ{m parts} · makes String
           let _t5 = rtcall axion_str_cmp s "."  ; Δ{rest s}
           let _t6 = call knownVersion _t5  ; Δ{_t5 m parts} · moves{_t5} · makes Either$Int$String
@@ -207,9 +186,7 @@
           let _t9 = rtcall axion_str_cmp _t0 "json"  ; Δ{_t0}
           ret "text/javascript"  ; Δ{}
           ret 1  ; Δ{rest s}
-          ret == _t1 0  ; Δ{}
           ret == _t5 0  ; Δ{rest s}
-          ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
           ret call consRight s _t7  ; Δ{_t7 s} · moves{_t7 s} · makes Either$Int$List$String
           ret call safeSegments rest  ; Δ{rest} · moves{rest} · makes Either$Int$List$String
           ret case _t3 of
@@ -219,8 +196,6 @@
           ret if _t10 then
         Left $bindErr ->
         Left $bindErr ->
-        Req m p ->
-        Req m p ->
         Right d ->
         Right m ->
         drop _t0 : String
@@ -270,12 +245,6 @@
         ret rtcall axion_strcat y ""  ; Δ{} · makes String
       drop _t0
       drop _t0
-      drop _t0
-      drop _t0
-      drop _t0
-      drop _t0
-      drop _t0 : Either$Int$Req
-      drop _t0 : Either$Int$Req
       drop _t0 : String
       drop _t0 : String
       drop _t2
@@ -350,7 +319,6 @@
       let _t8 = + i 1  ; Δ{}
       let _t8 = rtcall axion_str_at _t7 t  ; Δ{}
       let _t9 = call hexVal _t8  ; Δ{}
-      ret ""  ; Δ{code}
       ret ""  ; Δ{}
       ret ""  ; Δ{}
       ret ""  ; Δ{}
@@ -366,8 +334,6 @@
       ret + 1 _t0  ; Δ{}
       ret + c 32  ; Δ{}
       ret - c 87  ; Δ{}
-      ret 0  ; Δ{}
-      ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -397,9 +363,6 @@
       ret callclo f x  ; Δ{x} · moves{x}
       ret case _t1 of
       ret case _t4 of
-      ret case r of
-      ret case r of
-      ret code  ; Δ{code} · moves{code}
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$Int$Req
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$Int$String
       ret con Left 400  ; Δ{} · makes Either$Int$String
@@ -433,9 +396,6 @@
     Just x ->
     Left $bindErr ->
     Left $bindErr ->
-    Left code ->
-    Left code ->
-    Left code ->
     Left e ->
     Nil ->
     Nil ->
@@ -444,9 +404,6 @@
     Nil ->
     Nothing ->
     Right parts ->
-    Right r ->
-    Right r ->
-    Right r ->
     Right slash ->
     Right xs ->
     _ ->
@@ -640,6 +597,8 @@
     ret if _t7 then
     ret n  ; Δ{}
     ret rtcall axion_getenv "AXHTTPD_ROOT"  ; Δ{} · makes String
+    ret rtcall axion_strcat p ""  ; Δ{_t0} · makes String
+    ret rtcall axion_strcat p "index.html"  ; Δ{_t0} · makes String
     ret rtcall axion_strcat s ""  ; Δ{} · makes String
     ret rtcall axion_substr _t1 _t4 s  ; Δ{} · makes String
     ret rtcall axion_substr _t3 _t4 b  ; Δ{} · makes String
@@ -658,9 +617,6 @@
   ; Δ{_t0}
   ; Δ{_t0}
   ; Δ{_t0}
-  ; Δ{_t0}
-  ; Δ{_t0}
-  ; Δ{_t1 p}
   ; Δ{_t1 slash}
   ; Δ{_t1}
   ; Δ{_t1}
@@ -673,8 +629,6 @@
   ; Δ{rest s}
   ; Δ{rest s}
   ; Δ{rest s}
-  ; Δ{r}
-  ; Δ{r}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -759,10 +713,12 @@
   drop _t0 : String
   drop _t0 : String
   drop _t0 : String
+  drop _t0 : String
   drop _t1 : String
   drop _t1 : String
   drop _t1 : String
   drop _t1 : String
+  drop _t2 : String
   drop _t2 : String
   drop _t2 : String
   drop _t2 : String
@@ -816,9 +772,11 @@
   else
   else
   else
+  else
   let _d1000000 = call concatStr _t8  ; Δ{_t8} · makes String
   let _d1000000 = call maybe d _t0 m  ; Δ{_t0}
   let _d1000000 = call toLower _t1  ; Δ{_t1} · makes String
+  let _d1000000 = rtcall axion_strcat _t0 _t2  ; Δ{_t0} · makes String
   let _d1000000 = rtcall axion_strcat _t1 _t3  ; Δ{_t1 _t3} · makes String
   let _d1000000 = rtcall axion_strcat _t1 _t4  ; Δ{_t1} · makes String
   let _d1000000 = rtcall axion_strcat _t2 _t3  ; Δ{_t2 _t3} · makes String
@@ -862,6 +820,7 @@
   let _t0 = call >=$Int i n  ; Δ{}
   let _t0 = call baseName path  ; Δ{} · makes String
   let _t0 = call cutAt t 0  ; Δ{}
+  let _t0 = call docRoot 0  ; Δ{} · makes String
   let _t0 = call eq$Int x y  ; Δ{}
   let _t0 = call errorBody code  ; Δ{} · makes String
   let _t0 = call extension path  ; Δ{} · makes String
@@ -873,9 +832,6 @@
   let _t0 = call length ws  ; Δ{}
   let _t0 = call lineEnd raw 0  ; Δ{}
   let _t0 = call mimeType path  ; Δ{} · makes String
-  let _t0 = call parseReq raw  ; Δ{} · makes Either$Int$Req
-  let _t0 = call parseReq raw  ; Δ{} · makes Either$Int$Req
-  let _t0 = call parseReq raw  ; Δ{} · makes Either$Int$Req
   let _t0 = call startsWithSlash t  ; Δ{} · makes Either$Int$Int
   let _t0 = call statusLine code  ; Δ{} · makes String
   let _t0 = closure lam$0  ; Δ{} · makes heap
@@ -884,6 +840,7 @@
   let _t0 = rtcall axion_getenv "AXHTTPD_ROOT"  ; Δ{} · makes String
   let _t0 = rtcall axion_str_at i s  ; Δ{}
   let _t0 = rtcall axion_str_cmp m "GET"  ; Δ{}
+  let _t0 = rtcall axion_str_cmp m "HEAD"  ; Δ{}
   let _t0 = rtcall axion_str_cmp v "HTTP/1.1"  ; Δ{}
   let _t0 = rtcall axion_str_len pat  ; Δ{}
   let _t0 = rtcall axion_str_len q  ; Δ{}
@@ -915,6 +872,7 @@
   let _t1 = call >=$Int i _t0  ; Δ{}
   let _t1 = call >=$Int i _t0  ; Δ{}
   let _t1 = call baseAfterDot _t0  ; Δ{_t0} · makes String
+  let _t1 = call hasSuffix "/" p  ; Δ{_t0}
   let _t1 = call isSpace _t0  ; Δ{}
   let _t1 = call lastIndex 47 s 0 _t0  ; Δ{}
   let _t1 = call readInt _t0  ; Δ{_t0} · makes Maybe$Int
@@ -943,6 +901,7 @@
   let _t2 = call threeWords _t1  ; Δ{_t1} · moves{_t1} · makes Either$Int$List$String
   let _t2 = call wordsFrom s j n  ; Δ{_t1} · makes List$String
   let _t2 = con Nil  ; Δ{_t0 _t1} · makes List$String
+  let _t2 = if _t1 then
   let _t2 = rtcall axion_str_len s  ; Δ{}
   let _t2 = rtcall axion_strcat _t1 " "  ; Δ{_t1} · makes String
   let _t3 = > _t1 _t2  ; Δ{}
@@ -972,7 +931,6 @@
   let sess$res = rtcall axion_sess_run_par sess$sched sess$fa sess$root  ; Δ{}
   let sess$root = rtcall axion_sess_alloc sess$sched 24  ; Δ{}
   let sess$sched = rtcall axion_sess_new  ; Δ{}
-  ret ""  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -984,7 +942,9 @@
   ret 0  ; Δ{}
   ret 65536  ; Δ{}
   ret 8192  ; Δ{}
+  ret == _t0 0  ; Δ{}
   ret == x y  ; Δ{}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -1002,9 +962,6 @@
   ret call splitFrom c s 0 _t0  ; Δ{} · makes List$String
   ret call toLowerGo s 0 _t0  ; Δ{} · makes String
   ret call wordsFrom s 0 _t0  ; Δ{} · makes List$String
-  ret case _t0 of
-  ret case _t0 of
-  ret case _t0 of
   ret case _t0 of
   ret case _t2 of
   ret case code of
@@ -1078,12 +1035,12 @@ consWord s i n j  =
 cutAt t i  =
 decodeEscape t i acc  =
 docRoot d  =
-emptyStr d  =
 eq$Int x y  =
 errnoStatus e  =
 errorBody code  =
 errorResponse code  =
 extension path  =
+filePath p  =
 findChar c s i n  =
 findFrom s pat i  =
 firstLine raw  =
@@ -1094,6 +1051,7 @@ headDone s  =
 header code ctype len  =
 hexVal c  =
 isDigit c  =
+isHead m  =
 isSpace c  =
 joinSegs segs dir  =
 joinWith segs  =
@@ -1118,9 +1076,6 @@ pick n xs  =
 readInt s  =
 readIntGo s i acc  =
 reason code  =
-reqFile raw  =
-reqIsHead raw  =
-reqStatus raw  =
 safeSegments segs  =
 splitFrom c s i n  =
 splitOn c s  =

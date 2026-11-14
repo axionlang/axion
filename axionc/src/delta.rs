@@ -181,9 +181,13 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
         }
         Op::Field { rec, .. } => e.borrows.push(rec),
         Op::LoadRaw(a, _) => e.borrows.push(a),
+        // A raw store (only generated code writes one: a session step parking a live value in its
+        // task state, filling a spawned task's parameters, storing its result) hands the stored
+        // value over to the block — a move, so a value stored on the suspending path and freed on
+        // the path that continues is balanced.
         Op::StoreRaw(p, _, v) => {
             e.borrows.push(p);
-            e.borrows.push(v);
+            e.moves.push(v);
         }
         Op::FuncAddr(_) => {}
         Op::PutStrLn(a) | Op::PutStr(a) => e.borrows.push(a),
@@ -726,9 +730,11 @@ pub fn check_drop_coherence(
 /// dump is the oracle-locked `--emit core` output, not a soundness verdict).
 pub fn dump_annotated(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &RecordInfo) -> String {
     let mut out = String::new();
+    // `AXION_DUMP_STEPS=1` also prints the generated session steps (for debugging them; the
+    // default output is the oracle-locked one)
+    let steps = std::env::var_os("AXION_DUMP_STEPS").is_some();
     for f in fns {
-        if f.name.starts_with("sess$")
-            || f.name.ends_with("$step")
+        if (f.name.starts_with("sess$") || f.name.ends_with("$step")) && !steps
             || f.name.starts_with("axion_copy_")
         {
             continue;

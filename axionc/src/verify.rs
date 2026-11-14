@@ -181,7 +181,7 @@ fn is_generated(name: &str) -> bool {
 /// callee that frees it: the owner's later deep-drop of the container then double-frees that
 /// element. Keyed on a real free (a `Drop` with a reclaimer), not a move-out (which escapes,
 /// never freed), so a callee that merely embeds/returns the arg is not implicated.
-fn frees_heap_params(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
+pub fn frees_heap_params(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
     fn scan(t: &crate::core::Term, idx: &HashMap<&str, usize>, out: &mut HashSet<usize>) {
         use crate::core::{Rhs, Term};
         let rhs = |r: &Rhs, out: &mut HashSet<usize>| match r {

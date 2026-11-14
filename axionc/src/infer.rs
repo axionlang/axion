@@ -4044,7 +4044,23 @@ impl<'a> Infer<'a> {
             Expr::App(f, x, span) => {
                 let tf = self.infer_expr(env, f);
                 let tx = self.infer_expr(env, x);
+                // Session payloads: a native session task frees a received heap value and copies
+                // an unowned one it sends, so both ends need the value's type. `send c v` records
+                // it at `v`'s span (an App span there already holds the same type), `recv c` at the
+                // `recv` name's span — spans no other entry of this map uses.
+                if let Expr::App(g, _, _) = &**f {
+                    if matches!(&**g, Expr::Var(n, _) if n == "send") {
+                        self.call_ret_tys.insert(x.span(), tx.clone());
+                    }
+                }
                 let r = self.fresh();
+                if let Expr::Var(n, vs) = &**f {
+                    if n == "recv" {
+                        let (p, q) = (self.fresh(), self.fresh());
+                        self.unify(&r, &Ty::Tuple(vec![p.clone(), q]), *span);
+                        self.call_ret_tys.insert(*vs, p);
+                    }
+                }
                 self.unify(&tf, &Ty::Fun(Box::new(tx), Box::new(r.clone())), *span);
                 // Phase 4: record constructor return types for MakeCon lowering
                 if let Expr::Con(n, _s) = &**f {
