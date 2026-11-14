@@ -130,6 +130,9 @@ def gen_arena(rng):
 SESSION_INT_COMP = {"sq": "x * x", "incr": "x + fromInt 1", "idI": "x", "dblI": "x + x"}
 def gen_session(rng):
     r = rng.random()
+    if r < 0.5:
+        return gen_session_heap(rng)         # String traffic, let, case on data, hand-off
+    r = rng.random()
     if r < 0.35:
         return gen_session_offer(rng)        # branching Offer/select protocols
     if r < 0.7:
@@ -149,6 +152,105 @@ def gen_session(rng):
               f"worker d = do\n  (n, d2) <- recv d\n  d3 <- send d2 ({comp})\n  close d3\n")
     main = ("main :: Int\nmain = bound $ do\n  c <- spawn worker\n"
             f"  c2 <- send c {v}\n  (r, c3) <- recv c2\n  close c3\n  r\n")
+    return worker + main
+
+# Heap traffic between session tasks: a random protocol of String/Int messages both ways. The
+# worker binds received Strings (or drops them into `_`), sends literals, fresh values, moved
+# locals and maybe-aliased values (`same`), binds `let`s, may end with a `case` on an `Either`, and
+# may hand its last send to a second task (a tail call). Session tasks free what they own, so an
+# LSan leak here is a hard finding (the `fuzz:session-heap` marker gates it in `check`).
+SESSION_HEAP_PRE = '''-- fuzz:session-heap
+tag :: Int -> String
+tag n = strAppend "t" (showInt n)
+
+same :: String -> String
+same s = if strLen s > 1000 then strAppend s "" else s
+
+pick :: String -> Either Int String
+pick s = if strLen s > 3 then Right (strAppend s "") else Left (strLen s)
+
+finish :: String -> Ep (Send String End) %1 -> IO ()
+finish s d = do
+  d2 <- send d s
+  close d2
+
+'''
+def gen_session_heap(rng):
+    steps = [(rng.choice(["in", "out"]), rng.choice(["String", "String", "Int"]))
+             for _ in range(rng.randint(1, 5))]
+    if rng.random() < 0.5:                      # end on a String send: case / hand-off shapes
+        steps.append(("out", "String"))
+    proto = "End"
+    for dirn, ty in reversed(steps):
+        proto = f"({'Recv' if dirn == 'in' else 'Send'} {ty} {proto})"
+    lines, svars, ivars, moved = [], [], [], set()
+    d, uid = 0, [0]
+    def fresh(prefix):
+        uid[0] += 1
+        return f"{prefix}{uid[0]}"
+    def live_s():
+        return [v for v in svars if v not in moved]
+    def str_expr():
+        opts = [f'"l{rng.randint(0, 9)}"']
+        if ivars:
+            opts.append(f"tag {rng.choice(ivars)}")
+        for v in live_s():
+            opts += [f'strAppend {v} "+"', f"same {v}", v]
+        e = rng.choice(opts)
+        if e in live_s():
+            moved.add(e)                        # sent as is: moved, never read again
+        return e
+    def int_expr():
+        opts = [str(rng.randint(0, 9))] + ivars + [f"strLen {v}" for v in live_s()]
+        return rng.choice(opts)
+    last = len(steps) - 1
+    for i, (dirn, ty) in enumerate(steps):
+        if dirn == "in":
+            if rng.random() < 0.2:
+                lines.append(f"(_, d{d + 1}) <- recv d{d}")
+            else:
+                v = fresh("s" if ty == "String" else "n")
+                lines.append(f"({v}, d{d + 1}) <- recv d{d}")
+                (svars if ty == "String" else ivars).append(v)
+            d += 1
+            continue
+        if ty == "String" and rng.random() < 0.3:   # a `let` first
+            t = fresh("t")
+            lines.append(f"let {t} = {str_expr()}")
+            svars.append(t)
+        if i == last and ty == "String" and live_s() and rng.random() < 0.5:
+            v = rng.choice(live_s())
+            if rng.random() < 0.5:                  # case on data, each arm finishing the protocol
+                lines.append(f"case pick {v} of")
+                lines.append(f"  Left k -> do\n      e1 <- send d{d} (tag k)\n      close e1")
+                lines.append(f"  Right r -> do\n      e2 <- send d{d} r\n      close e2")
+            else:                                   # hand the last send to another task
+                lines.append(f"finish ({str_expr()}) d{d}")
+            return SESSION_HEAP_PRE + session_heap_wrap(proto, lines, steps, rng)
+        e = str_expr() if ty == "String" else int_expr()
+        lines.append(f"d{d + 1} <- send d{d} ({e})")
+        d += 1
+    lines.append(f"close d{d}")
+    return SESSION_HEAP_PRE + session_heap_wrap(proto, lines, steps, rng)
+
+def session_heap_wrap(proto, lines, steps, rng):
+    body = "".join(f"  {l}\n" for l in lines)
+    worker = f"worker :: Ep {proto} %1 -> IO ()\nworker d0 = do\n{body}\n"
+    # main runs the dual: it sends what the worker receives and adds up what it gets back
+    m, acc, c = [], [], 0
+    for dirn, ty in steps:
+        if dirn == "in":
+            val = (rng.choice([f'"m{rng.randint(0, 9)}"', f"tag {rng.randint(0, 99)}"])
+                   if ty == "String" else str(rng.randint(0, 9)))
+            m.append(f"c{c + 1} <- send c{c} ({val})")
+        else:
+            r = f"r{c}"
+            m.append(f"({r}, c{c + 1}) <- recv c{c}")
+            acc.append(f"strLen {r}" if ty == "String" else r)
+        c += 1
+    m.append(f"close c{c}")
+    m.append(" + ".join(acc) if acc else "0")
+    main = "main :: Int\nmain = bound $ do\n  c0 <- spawn worker\n" + "".join(f"  {l}\n" for l in m)
     return worker + main
 
 def gen_session_offer(rng):
@@ -729,6 +831,9 @@ def asan_run(src, work, oracle_out):
     if "use-after-free" in err or "double-free" in err or "invalid pointer" in err:
         return ("corruption", err[-600:])
     if "detected memory leaks" in err:
+        # session tasks free what they own: a leak in a session-heap program is a real finding
+        if "fuzz:session-heap" in src.read_text():
+            return ("sessleak", err[-600:])
         return ("leak", None)              # LSan `_exit`s without flushing stdout
     if oracle_out is not None and rr == 0 and orr.strip() != oracle_out.strip():
         return ("divergence", f"interp={oracle_out!r} llvm+asan={orr!r}\n{err[-300:]}")
@@ -796,7 +901,7 @@ def main():
             prog = gen(rng)
             verdict, detail = check(prog, work)
             tally[verdict] = tally.get(verdict, 0) + 1
-            if verdict in ("corruption", "divergence", "verdict", "hang"):
+            if verdict in ("corruption", "divergence", "verdict", "hang", "sessleak"):
                 hard += 1
                 FAILDIR.mkdir(exist_ok=True)
                 f = FAILDIR / f"seed{a.seed}_i{i}_{verdict}.axi"
