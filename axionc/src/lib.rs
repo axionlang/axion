@@ -1535,6 +1535,7 @@ pub fn prepare_for_check_with(
     // the generic `callclo`'s Route-C move — sound to specialize). A SECOND consume pass then
     // marks the freshly-generated CLONES (ordinary direct-call functions).
     if specialize {
+        wrap_builtin_closure_args(&mut module);
         specialize_hofs(&mut module);
         consume_exempt.extend(infer_consumed_ownership(&mut module));
     }
@@ -1581,6 +1582,134 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
         new_funcs.push(clone);
     }
     module.funcs.extend(new_funcs);
+}
+
+/// A built-in passed by name as the function argument of a user higher-order function
+/// (`app1 strLen s`, `foldr strAppend "" xs`) becomes a call to a synthesized top-level wrapper
+/// `strLen$fn x = strLen x` with the built-in's signature, so `specialize_hofs` clones the HOF
+/// for it like for any named function (`app1$$strLen$fn`): ownership is then exact. Left as a
+/// bare built-in it would only be eta-expanded into a generic closure, whose String/Buffer
+/// arguments leak (the closure cannot know whether the caller still owns them). The wrapper's
+/// spans are the built-in's occurrence span (a bare name, never an application span).
+fn wrap_builtin_closure_args(module: &mut ast::Module) {
+    use std::collections::{HashMap, HashSet};
+    let fn_names: HashSet<String> = module.funcs.iter().map(|f| f.name.clone()).collect();
+    let arrows: HashMap<String, Vec<usize>> = module
+        .funcs
+        .iter()
+        .filter_map(|f| Some((f.name.clone(), arrow_params(f)?)))
+        .collect();
+    if arrows.is_empty() {
+        return;
+    }
+    let sigs: HashMap<String, ast::Type> = infer::builtin_sigs()
+        .into_iter()
+        .filter(|(n, t)| {
+            !fn_names.contains(n)
+                && matches!(t, ast::Type::Arrow { .. })
+                && n.chars().next().is_some_and(|c| c.is_alphabetic())
+                && !core::NOT_ETA.contains(&n.as_str())
+        })
+        .collect();
+    // the argument at spine position `i` (of `n`) of an application, mutably
+    fn arg_mut(e: &mut ast::Expr, n: usize, i: usize) -> Option<&mut ast::Expr> {
+        let mut cur = e;
+        for _ in 0..(n - 1 - i) {
+            match cur {
+                ast::Expr::App(f, _, _) => cur = f,
+                _ => return None,
+            }
+        }
+        match cur {
+            ast::Expr::App(_, a, _) => Some(a),
+            _ => None,
+        }
+    }
+    fn visit(
+        e: &mut ast::Expr,
+        bound: &HashSet<String>,
+        arrows: &HashMap<String, Vec<usize>>,
+        sigs: &HashMap<String, ast::Type>,
+        wanted: &mut HashMap<String, ast::Span>,
+    ) {
+        if let ast::Expr::App(..) = e {
+            let (head, n) = {
+                let (h, args) = core::spine(e);
+                (
+                    match h {
+                        ast::Expr::Var(name, _) if !bound.contains(name) => Some(name.clone()),
+                        _ => None,
+                    },
+                    args.len(),
+                )
+            };
+            if let Some(idxs) = head.and_then(|h| arrows.get(&h)) {
+                for &i in idxs {
+                    if i >= n {
+                        continue;
+                    }
+                    if let Some(ast::Expr::Var(b, sp)) = arg_mut(e, n, i) {
+                        if sigs.contains_key(b.as_str()) && !bound.contains(b.as_str()) {
+                            wanted.entry(b.clone()).or_insert(*sp);
+                            *b = format!("{b}$fn");
+                        }
+                    }
+                }
+            }
+        }
+        for_each_subexpr_scoped_mut(e, bound, &mut |sub, bd| {
+            visit(sub, bd, arrows, sigs, wanted);
+        });
+    }
+    let mut wanted: HashMap<String, ast::Span> = HashMap::new();
+    for f in &mut module.funcs {
+        for c in &mut f.clauses {
+            let mut bound = HashSet::new();
+            c.pats.iter().for_each(|p| pat_bound(p, &mut bound));
+            for w in &c.wher {
+                bound.insert(w.name.clone());
+            }
+            match &mut c.body {
+                ast::Body::Plain(e) => visit(e, &bound, &arrows, &sigs, &mut wanted),
+                ast::Body::Guarded(arms) => {
+                    for (g, r) in arms {
+                        visit(g, &bound, &arrows, &sigs, &mut wanted);
+                        visit(r, &bound, &arrows, &sigs, &mut wanted);
+                    }
+                }
+            }
+        }
+    }
+    let mut names: Vec<_> = wanted.into_iter().collect();
+    names.sort();
+    for (b, sp) in names {
+        let sig = sigs[&b].clone();
+        let mut arity = 0;
+        let mut t = &sig;
+        while let ast::Type::Arrow { to, .. } = t {
+            arity += 1;
+            t = to;
+        }
+        let params: Vec<String> = (0..arity).map(|i| format!("x{i}")).collect();
+        let body = params.iter().fold(ast::Expr::Var(b.clone(), sp), |acc, p| {
+            ast::Expr::App(Box::new(acc), Box::new(ast::Expr::Var(p.clone(), sp)), sp)
+        });
+        module.funcs.push(ast::Func {
+            name: format!("{b}$fn"),
+            sig: Some(sig),
+            clauses: vec![ast::Clause {
+                pats: params
+                    .iter()
+                    .map(|p| ast::Pat::Var(p.clone(), sp))
+                    .collect(),
+                body: ast::Body::Plain(body),
+                wher: Vec::new(),
+                span: sp,
+            }],
+            span: sp,
+            constraints: Vec::new(),
+        });
+    }
 }
 
 /// Higher-order specialization (defunctionalization). Clones a HOF per statically-known

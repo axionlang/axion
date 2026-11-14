@@ -11,7 +11,7 @@
 
 
 
-          ret call mapM_$$compose _cap0 _cap1 ys  ; Δ{}
+          ret call mapM_ f ys  ; Δ{}
         _ ->
         ret "Buzz"  ; Δ{}
         ret call show$Int n  ; Δ{} · makes String
@@ -20,7 +20,7 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _t0 = call compose _cap0 _cap1 y  ; Δ{}
+      let _t0 = callclo f y  ; Δ{}
       let _t0 = mod n 5  ; Δ{}
       let _t1 = == _t0 0  ; Δ{}
       ret "Fizz"  ; Δ{}
@@ -77,15 +77,16 @@
   ; Δ{}
   ; Δ{}
   drop _t0
-  drop _t1
-  drop _t2 : List$Int
+  drop _t0 : String
+  drop _t1 : List$Int
   else
   else
   else
   else
   else
   else
-  let _d1000000 = call mapM_$$compose _t0 _t1 _t2  ; Δ{_t0 _t1 _t2}
+  let _d1000000 = call mapM_ _t0 _t1  ; Δ{_t0 _t1}
+  let _d1000000 = call putStrLn$fn _t0  ; Δ{_t0}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -93,34 +94,33 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
-  let _t0 = callclo g x  ; Δ{}
+  let _t0 = call fizzbuzz x  ; Δ{} · makes String
   let _t0 = closure lam$0  ; Δ{} · makes heap
-  let _t1 = closure lam$1  ; Δ{_t0} · makes heap
-  let _t2 = call range 1 15  ; Δ{_t0 _t1} · makes List$Int
+  let _t1 = call range 1 15  ; Δ{_t0} · makes List$Int
   let _t4 = mod n 15  ; Δ{}
   let _t5 = == _t4 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
-  ret call fizzbuzz eta$3  ; Δ{} · makes String
-  ret callclo f _t0  ; Δ{}
+  ret _d1000000  ; Δ{}
+  ret call compose$$putStrLn$fn$$fizzbuzz eta$1  ; Δ{}
   ret case xs of
   ret if _t0 then
   ret if _t0 then
   ret if _t0 then
   ret if _t5 then
-  ret putStrLn eta$1  ; Δ{}
+  ret putStrLn x0  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
   ret showInt x  ; Δ{} · makes String
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
-compose f g x  =
+compose$$putStrLn$fn$$fizzbuzz x  =
 fizzbuzz n  =
 lam$0 [env ]eta$1  =
-lam$1 [env ]eta$3  =
 main  =
-mapM_$$compose _cap0 _cap1 xs  =
+mapM_ f xs  =
+putStrLn$fn x0  =
 range lo hi  =
 rangeFused lo hi c n  =
 rangeFusedSum lo hi acc  =

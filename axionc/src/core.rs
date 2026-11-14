@@ -2394,15 +2394,16 @@ impl Lower<'_> {
                         self.mono_seeds.push(ty.clone());
                         *key = Some(mk);
                     }
-                } else if key.is_none() && head == Some("Integer") {
+                } else if key.is_none() && matches!(head, Some("Integer") | Some("String")) {
                     // A POLYMORPHIC callee (declared return a type-variable `b`, so no
                     // `fn_ret_ty` key) instantiated at a SCALAR heap type at THIS call
                     // site — `foldr addI 0 xs :: Integer`. Key the result at the concrete
                     // type so Auto-Drop reclaims the returned bignum; without this a
                     // poly-heap call result leaks (integer_first_class `_t7`). Safe: the
                     // callee returns a fresh/owned value here — an alias-returning callee
-                    // has its key nulled downstream by `null_borrow_result_keys`.
-                    *key = Some("Integer".to_string());
+                    // has its key nulled downstream by `null_borrow_result_keys`. Same for a
+                    // String (`idG s`); its reclaimer skips a literal.
+                    *key = head.map(str::to_string);
                 }
             }
         }
@@ -2749,8 +2750,12 @@ fn pat_irrefutable(p: &Pat, single_con: &HashSet<String>) -> bool {
 /// types with a destructor. Mirrors the owned-`%1` key logic in `lower_func`, extended
 /// with `Integer` (its own `axion_bignum_free`, not a `heap_ty`). None for a scalar /
 /// function / non-owned type. Pushes a mono-seed for a parametric instantiation so its
-/// specialized destructor is generated. (String is intentionally excluded: its runtime
-/// C-string is a documented conservative leak, not reclaimed through closures.)
+/// specialized destructor is generated. `String`/`Buffer` are intentionally NOT keyed: a String
+/// or Buffer returned by a generic function is untracked by the caller, which may pass it into a
+/// generic higher-order function and read it again afterwards, so a closure freeing it would be a
+/// use-after-free the verifier cannot see (`app1 strLen v + strLen v`, v = `idG s`). Such an
+/// argument leaks instead (the documented conservative closure leak); a closure argument that is
+/// specialized (`app1$$f`) is reclaimed exactly.
 fn heap_drop_key(
     t: &Type,
     data_types: &HashSet<String>,
@@ -3092,6 +3097,42 @@ fn absorb_lambda_caf(mut f: ast::Func) -> ast::Func {
 
 /// Eta-expands the functions/constructors used as a value or partially
 /// parcialmente, para o backend nativo (first-class functions via closures).
+/// Built-ins with their own lowering (sessions, sockets, arenas, control forms): never wrapped
+/// in a lambda (`eta_expand`) or a top-level wrapper (`lib::wrap_builtin_closure_args`).
+pub const NOT_ETA: &[&str] = &[
+    "bound",
+    "spawn",
+    "send",
+    "recv",
+    "newChannel",
+    "select",
+    "offer",
+    "cancel",
+    "close",
+    "join",
+    "split",
+    "parMap",
+    "connect",
+    "pipe3",
+    "netListen",
+    "netAccept",
+    "netConnect",
+    "netRecv",
+    "netSend",
+    "netSendBuf",
+    "netClose",
+    "netCloseL",
+    "withArena",
+    "withSubArena",
+    "allocateCell",
+    "promote",
+    "arena_mark",
+    "arena_release",
+    "imperative",
+    "withBuffer",
+    "foldBytes",
+];
+
 fn eta_expand(module: &ast::Module) -> ast::Module {
     // absorb point-free curried lambdas into clause params first (`add = \x -> \y -> …`
     // → `add x y = …`), so the arities below and the whole lowering see a proper
@@ -3116,24 +3157,15 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
             arity.insert(c.name.clone(), c.fields.len());
         }
     }
-    for b in [
-        "putStrLn",
-        "putStr",
-        "showInt",
-        "showFloat",
-        "toFloat",
-        "truncate",
-        "sqrt",
-        "floor",
-        "abs",
-        "fromInt",
-        "showInteger",
-        "bignumFromStr",
-    ] {
-        arity.entry(b.into()).or_insert(1);
-    }
-    for b in ["strAppend", "divInteger", "modInteger"] {
-        arity.entry(b.into()).or_insert(2);
+    // every built-in function used as a value (`map strLen xs`, `twice (strAppend "x")`) is
+    // wrapped in a lambda like a user function — except the ones with their own lowering:
+    // sessions, sockets, arenas and the control forms, whose arguments are not plain values.
+
+    for (b, n) in crate::infer::builtin_arities() {
+        let symbolic = !b.chars().next().is_some_and(|c| c.is_alphabetic());
+        if n > 0 && !symbolic && !NOT_ETA.contains(&b.as_str()) {
+            arity.entry(b).or_insert(n);
+        }
     }
     let mut e = Eta {
         arity,
@@ -6017,7 +6049,7 @@ pub fn lower_with(
     // eta-lambda `\v.. -> base v..` owns each heap-typed `v` (the closure consume-ABI
     // — `callclo` moves its args in); its drop keys come from the WRAPPED callable's
     // signature (the eta vars are the trailing args of the body's application spine).
-    let fn_param_types: HashMap<String, Vec<Type>> = module
+    let mut fn_param_types: HashMap<String, Vec<Type>> = module
         .funcs
         .iter()
         .filter_map(|f| {
@@ -6025,6 +6057,12 @@ pub fn lower_with(
             Some((f.name.clone(), ps.into_iter().cloned().collect()))
         })
         .collect();
+    // built-ins too (a user definition of the same name wins): an eta lambda wrapping one
+    // (`twice (strAppend "x") s`) owns its heap params like any closure, and must free those
+    // the built-in only reads
+    for (name, ps) in crate::infer::builtin_param_types() {
+        fn_param_types.entry(name).or_insert(ps);
+    }
     // parametric data types (`data List a = …`): a dropped CONCRETE instantiation
     // (`List P`) routes to a specialized destructor. Shared by the lowering
     // (owned `%1` param keys) and the destructor generation.
@@ -6611,8 +6649,51 @@ pub fn lower_with(
     // the drops. Idempotent + a no-op for programs with no borrow-returning function.
     let borrow_ret = crate::verify::borrow_return_summary(&out, &borrow_args, &recinfo);
     if !borrow_ret.is_empty() {
+        // A borrow MOVED into a new owned value (`Just (unboxS b)`, a consuming call) would end
+        // up with two owners: copy it there (its type is the callee's declared result).
+        let mut kinds: HashMap<String, CopyKind> = HashMap::new();
+        for g in borrow_ret.keys() {
+            let Some(k) = fn_ret_ty.get(g) else { continue };
+            let kind = match k.as_str() {
+                "String" => Some(CopyKind::Str),
+                "Integer" => Some(CopyKind::Int),
+                _ => module
+                    .funcs
+                    .iter()
+                    .find(|f| &f.name == g)
+                    .and_then(|f| f.sig.as_ref())
+                    .map(result_type)
+                    .filter(|t| {
+                        matches!(t, Type::Tuple(_))
+                            || t.head_con().is_some_and(|h| {
+                                module.datas.iter().any(|d| {
+                                    d.name == h && d.cons.iter().any(|c| !c.fields.is_empty())
+                                })
+                            })
+                    })
+                    .and_then(|t| {
+                        mono_key(t).map(|key| {
+                            copy_seeds.push(t.clone());
+                            CopyKind::Container(key)
+                        })
+                    }),
+            };
+            if let Some(kind) = kind {
+                kinds.insert(g.clone(), kind);
+            }
+        }
+        let mut ctr = 0usize;
         for f in &mut out {
             null_borrow_result_keys(&mut f.body, &borrow_ret);
+            if !kinds.is_empty() {
+                copy_moved_borrows(
+                    &mut f.body,
+                    &kinds,
+                    &borrow_args,
+                    &mut HashMap::new(),
+                    &mut ctr,
+                );
+            }
         }
     }
 
@@ -6676,7 +6757,8 @@ pub fn lower_with(
     let force_unsafe_string_reclaim = std::env::var_os("AXION_STRING_RECLAIM").is_some();
     for f in out {
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
-        let (mut f, seeds, tuple_seeds_skip) = insert_drops(f, &borrow_args, dty, &recinfo);
+        let (mut f, seeds, tuple_seeds_skip) =
+            insert_drops(f, &borrow_args, dty, &recinfo, &borrow_ret);
         // A2: reclaim a conditionally-escaping owned heap param in a tail case/if.
         // Guard: only when the Core params line up 1:1 with the signature arrows
         // (a captured/synthetic param would otherwise pick the WRONG destructor key
@@ -10151,6 +10233,122 @@ fn rewrite_alias_tails(t: &mut Term, targets: &HashMap<String, CopyKind>, ctr: &
     }
 }
 
+/// Copies a borrow (the result of a borrow-returning call, or an alias of one) at each op that
+/// MOVES it into something new — a constructor, a tuple, a consuming call — so the new value
+/// owns a copy instead of sharing memory with the borrow's owner (who frees it). A `ret` of the
+/// bare borrow is left as is: that is how a borrow-returning function hands its borrow on.
+fn copy_moved_borrows(
+    t: &mut Term,
+    kinds: &HashMap<String, CopyKind>,
+    ba: &BorrowArgs,
+    bv: &mut HashMap<String, CopyKind>,
+    ctr: &mut usize,
+) {
+    // the copies an op needs (borrows it moves), and the op with them substituted
+    fn plan(
+        op: &Op,
+        ba: &BorrowArgs,
+        bv: &HashMap<String, CopyKind>,
+        ctr: &mut usize,
+    ) -> Vec<(String, String, CopyKind)> {
+        if matches!(op, Op::Atom(_)) {
+            return Vec::new();
+        }
+        let e = crate::delta::op_delta_effect(op, ba);
+        let mut out: Vec<(String, String, CopyKind)> = Vec::new();
+        for a in &e.moves {
+            if let Atom::Var(v) = a {
+                if let Some(k) = bv.get(v) {
+                    if !out.iter().any(|(w, _, _)| w == v) {
+                        let c = format!("$borrowcopy{ctr}");
+                        *ctr += 1;
+                        out.push((v.clone(), c, k.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+    fn wrap(mut t: Term, copies: Vec<(String, String, CopyKind)>, sp: Span) -> Term {
+        for (v, c, k) in copies.into_iter().rev() {
+            t = Term::Let(c, Rhs::Op(alias_copy_op(&v, &k)), sp, Box::new(t));
+        }
+        t
+    }
+    match t {
+        Term::Let(x, rhs, sp, body) => {
+            if let Rhs::Op(op) = rhs {
+                match op {
+                    Op::CallDirect(g, _, _) if kinds.contains_key(g) => {
+                        bv.insert(x.clone(), kinds[g].clone());
+                    }
+                    Op::Atom(Atom::Var(y)) if bv.contains_key(y) => {
+                        let k = bv[y].clone();
+                        bv.insert(x.clone(), k);
+                    }
+                    _ => {}
+                }
+                let copies = plan(op, ba, bv, ctr);
+                if !copies.is_empty() {
+                    let env: HashMap<String, String> = copies
+                        .iter()
+                        .map(|(v, c, _)| (v.clone(), c.clone()))
+                        .collect();
+                    uq_op(op, &env);
+                    let sp0 = *sp;
+                    copy_moved_borrows(body, kinds, ba, bv, ctr);
+                    let cur =
+                        std::mem::replace(t, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
+                    *t = wrap(cur, copies, sp0);
+                    return;
+                }
+            } else {
+                copy_rhs(rhs, kinds, ba, bv, ctr);
+            }
+            copy_moved_borrows(body, kinds, ba, bv, ctr);
+        }
+        Term::Drop(_, _, _, _, body) => copy_moved_borrows(body, kinds, ba, bv, ctr),
+        Term::Ret(rhs, sp) => {
+            if let Rhs::Op(op) = rhs {
+                let copies = plan(op, ba, bv, ctr);
+                if !copies.is_empty() {
+                    let env: HashMap<String, String> = copies
+                        .iter()
+                        .map(|(v, c, _)| (v.clone(), c.clone()))
+                        .collect();
+                    uq_op(op, &env);
+                    let sp0 = *sp;
+                    let cur =
+                        std::mem::replace(t, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
+                    *t = wrap(cur, copies, sp0);
+                }
+            } else {
+                copy_rhs(rhs, kinds, ba, bv, ctr);
+            }
+        }
+    }
+    fn copy_rhs(
+        rhs: &mut Rhs,
+        kinds: &HashMap<String, CopyKind>,
+        ba: &BorrowArgs,
+        bv: &mut HashMap<String, CopyKind>,
+        ctr: &mut usize,
+    ) {
+        match rhs {
+            Rhs::Op(_) => {}
+            Rhs::If(_, a, b) => {
+                copy_moved_borrows(a, kinds, ba, bv, ctr);
+                copy_moved_borrows(b, kinds, ba, bv, ctr);
+            }
+            Rhs::Case(_, arms) => {
+                for (_, b) in arms {
+                    copy_moved_borrows(b, kinds, ba, bv, ctr);
+                }
+            }
+        }
+    }
+}
+
 /// Copy the bare-param returns that a caller actually reuses (R-2/R-3, docs/call-site-ownership.md):
 /// for each parameter index in `copy_params` (= `ret_alias(f) ∩ reused(f)`, precomputed by the
 /// caller) that is a non-`%1` heap **String** or **Integer**, rewrite `ret param` → `let t =
@@ -11055,6 +11253,106 @@ fn null_borrow_result_in_rhs(rhs: &mut Rhs, borrow_ret: &HashMap<String, HashSet
     }
 }
 
+/// The borrows of a function body and their owners (see `Elab::aliases`). Core names are unique
+/// per function, so one forward pass sees every binding before its uses. A borrow that is itself
+/// droppable (owned) is not an alias.
+fn borrow_aliases(
+    body: &Term,
+    borrow_ret: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+    drp: &HashSet<String>,
+) -> HashMap<String, HashSet<String>> {
+    fn owners_of(v: &Atom, m: &HashMap<String, HashSet<String>>) -> HashSet<String> {
+        match v {
+            Atom::Var(n) => {
+                let mut o = m.get(n).cloned().unwrap_or_default();
+                o.insert(n.clone());
+                o
+            }
+            _ => HashSet::new(),
+        }
+    }
+    fn walk(
+        t: &Term,
+        br: &HashMap<String, HashSet<usize>>,
+        ri: &RecordInfo,
+        drp: &HashSet<String>,
+        m: &mut HashMap<String, HashSet<String>>,
+    ) {
+        match t {
+            Term::Let(x, rhs, _, k) => {
+                if !drp.contains(x) {
+                    let owners = match rhs {
+                        Rhs::Op(Op::CallDirect(g, args, _)) => br.get(g).map(|ps| {
+                            ps.iter()
+                                .filter_map(|&i| args.get(i))
+                                .flat_map(|a| owners_of(a, m))
+                                .collect::<HashSet<_>>()
+                        }),
+                        Rhs::Op(Op::Field { name, rec }) if ri.named_field_is_heap(name) => {
+                            Some(owners_of(rec, m))
+                        }
+                        Rhs::Op(Op::Atom(Atom::Var(y))) => m.get(y).cloned(),
+                        _ => None,
+                    };
+                    if let Some(o) = owners.filter(|o| !o.is_empty()) {
+                        m.insert(x.clone(), o);
+                    }
+                }
+                walk_rhs(rhs, br, ri, drp, m);
+                walk(k, br, ri, drp, m);
+            }
+            Term::Drop(_, _, _, _, k) => walk(k, br, ri, drp, m),
+            Term::Ret(rhs, _) => walk_rhs(rhs, br, ri, drp, m),
+        }
+    }
+    fn walk_rhs(
+        rhs: &Rhs,
+        br: &HashMap<String, HashSet<usize>>,
+        ri: &RecordInfo,
+        drp: &HashSet<String>,
+        m: &mut HashMap<String, HashSet<String>>,
+    ) {
+        match rhs {
+            Rhs::Op(_) => {}
+            Rhs::If(_, a, b) => {
+                walk(a, br, ri, drp, m);
+                walk(b, br, ri, drp, m);
+            }
+            Rhs::Case(s, arms) => {
+                // fields bound out of a borrow point into the same owners
+                let owners = match s {
+                    Atom::Var(b) => m.get(b).cloned(),
+                    _ => None,
+                };
+                for (p, b) in arms {
+                    if let Some(o) = &owners {
+                        let mut binders = Vec::new();
+                        cpat_binders(p, &mut binders);
+                        for n in binders {
+                            if !drp.contains(&n) {
+                                m.insert(n, o.clone());
+                            }
+                        }
+                    }
+                    walk(b, br, ri, drp, m);
+                }
+            }
+        }
+    }
+    let mut m = HashMap::new();
+    walk(body, borrow_ret, recinfo, drp, &mut m);
+    m
+}
+
+fn cpat_binders(p: &CPat, out: &mut Vec<String>) {
+    match p {
+        CPat::Var(n) => out.push(n.clone()),
+        CPat::Con(_, subs) | CPat::Tuple(subs) => subs.iter().for_each(|s| cpat_binders(s, out)),
+        _ => {}
+    }
+}
+
 /// A `(type_key, skip_slots)` seed for a `data`/record skip-variant destructor.
 type SkipSeed = (String, Vec<usize>);
 /// A `(tuple_key, arity, skip_slots)` seed for a TUPLE skip-variant destructor.
@@ -11065,11 +11363,13 @@ fn insert_drops(
     ba: &BorrowArgs,
     drop_ty: &HashMap<String, Option<String>>,
     recinfo: &RecordInfo,
+    borrow_ret: &HashMap<String, HashSet<usize>>,
 ) -> (CoreFn, Vec<SkipSeed>, Vec<TupleSkipSeed>) {
     let drp = droppable_vars(&f, ba);
     if drp.is_empty() {
         return (f, Vec::new(), Vec::new());
     }
+    let aliases = borrow_aliases(&f.body, borrow_ret, recinfo, &drp);
     let mut update_skip = collect_update_skips(&f.body, recinfo, &drp);
     // §move-out: fold in projected-heap-field escapes (a fresh local's field moved out
     // while the local is deep-dropped → the local's destructor skips that slot). Union
@@ -11091,6 +11391,7 @@ fn insert_drops(
     }
     let mut e = Elab {
         drp,
+        aliases,
         tmp: 1_000_000,
         ba,
         drop_ty: drop_ty.clone(),
@@ -11122,6 +11423,11 @@ fn insert_drops(
 
 struct Elab<'a> {
     drp: HashSet<String>,
+    /// A borrowed value (not itself droppable) → the variables whose memory it points into:
+    /// the result of a call to a borrow-returning function (`unboxS b`), a heap field projection,
+    /// an alias of either, or a field a `case` binds out of one. A use of the borrow is a use of
+    /// its owners, so an owner is dropped only after the borrow's last use (`fv_drop`/`fv_op`).
+    aliases: HashMap<String, HashSet<String>>,
     tmp: u32,
     ba: &'a BorrowArgs,
     /// Owned (not borrowed) so `case_arms` can REGISTER the resolved element key of a
@@ -11365,6 +11671,41 @@ fn has_non_owning_transfer(pat: &CPat, body: &Term, recinfo: &RecordInfo) -> boo
 }
 
 impl Elab<'_> {
+    /// `fv_drop`, with each free borrow (`aliases`) counted as a use of its droppable owners.
+    fn fv_drop(&self, t: &Term, out: &mut HashSet<String>) {
+        if self.aliases.is_empty() {
+            return fv_drop(t, &self.drp, self.ba, out);
+        }
+        let mut wide = self.drp.clone();
+        wide.extend(self.aliases.keys().cloned());
+        let mut raw = HashSet::new();
+        fv_drop(t, &wide, self.ba, &mut raw);
+        self.expand_borrows(raw, out);
+    }
+
+    /// `fv_op`, with each borrow it reads counted as a use of its droppable owners.
+    fn fv_op(&self, op: &Op, out: &mut HashSet<String>) {
+        if self.aliases.is_empty() {
+            return fv_op(op, &self.drp, self.ba, out);
+        }
+        let mut wide = self.drp.clone();
+        wide.extend(self.aliases.keys().cloned());
+        let mut raw = HashSet::new();
+        fv_op(op, &wide, self.ba, &mut raw);
+        self.expand_borrows(raw, out);
+    }
+
+    fn expand_borrows(&self, raw: HashSet<String>, out: &mut HashSet<String>) {
+        for v in raw {
+            if let Some(owners) = self.aliases.get(&v) {
+                out.extend(owners.iter().filter(|o| self.drp.contains(*o)).cloned());
+            }
+            if self.drp.contains(&v) {
+                out.insert(v);
+            }
+        }
+    }
+
     fn fresh(&mut self) -> String {
         let n = format!("_d{}", self.tmp);
         self.tmp += 1;
@@ -11558,7 +11899,7 @@ impl Elab<'_> {
             Term::Ret(rhs, _) => match rhs {
                 Rhs::Op(op) => {
                     let mut u = HashSet::new();
-                    fv_op(&op, &self.drp, self.ba, &mut u);
+                    self.fv_op(&op, &mut u);
                     let dying: Vec<String> =
                         u.into_iter().filter(|v| !live_out.contains(v)).collect();
                     if dying.is_empty() {
@@ -11585,10 +11926,10 @@ impl Elab<'_> {
             Term::Let(x, rhs, _, body) => match rhs {
                 Rhs::Op(op) => {
                     let mut fvb = HashSet::new();
-                    fv_drop(&body, &self.drp, self.ba, &mut fvb);
+                    self.fv_drop(&body, &mut fvb);
                     let body2 = self.go(*body, live_out);
                     let mut u = HashSet::new();
-                    fv_op(&op, &self.drp, self.ba, &mut u);
+                    self.fv_op(&op, &mut u);
                     let mut dying: Vec<String> = u
                         .into_iter()
                         .filter(|v| !fvb.contains(v) && !live_out.contains(v))
@@ -11606,7 +11947,7 @@ impl Elab<'_> {
                 }
                 Rhs::If(c, th, el) => {
                     let mut fvb = HashSet::new();
-                    fv_drop(&body, &self.drp, self.ba, &mut fvb);
+                    self.fv_drop(&body, &mut fvb);
                     let body2 = self.go(*body, live_out);
                     let mut lo = live_out.clone();
                     lo.extend(fvb);
@@ -11620,7 +11961,7 @@ impl Elab<'_> {
                 }
                 Rhs::Case(s, arms) => {
                     let mut fvb = HashSet::new();
-                    fv_drop(&body, &self.drp, self.ba, &mut fvb);
+                    self.fv_drop(&body, &mut fvb);
                     let body2 = self.go(*body, live_out);
                     let mut lo = live_out.clone();
                     lo.extend(fvb);
@@ -11635,9 +11976,9 @@ impl Elab<'_> {
     /// branch is freed at the entry of the other (to free once per path).
     fn branches2(&mut self, th: Term, el: Term, live_out: &HashSet<String>) -> (Term, Term) {
         let mut fth = HashSet::new();
-        fv_drop(&th, &self.drp, self.ba, &mut fth);
+        self.fv_drop(&th, &mut fth);
         let mut fel = HashSet::new();
-        fv_drop(&el, &self.drp, self.ba, &mut fel);
+        self.fv_drop(&el, &mut fel);
         let mut th2 = self.go(th, live_out);
         let mut el2 = self.go(el, live_out);
         for v in fth.difference(&fel) {
@@ -11674,11 +12015,23 @@ impl Elab<'_> {
             .iter()
             .map(|(_, b)| {
                 let mut s = HashSet::new();
-                fv_drop(b, &self.drp, self.ba, &mut s);
+                self.fv_drop(b, &mut s);
                 s
             })
             .collect();
-        let union: HashSet<String> = fvs.iter().flatten().cloned().collect();
+        let mut union: HashSet<String> = fvs.iter().flatten().cloned().collect();
+        // a `case` on a borrow uses its owners: an arm that does not use them again frees them
+        // at its head (the balancing below), like any droppable another arm still reads.
+        if let Atom::Var(b) = scrut {
+            if let Some(owners) = self.aliases.get(b) {
+                union.extend(
+                    owners
+                        .iter()
+                        .filter(|o| self.drp.contains(*o) && !live_out.contains(*o))
+                        .cloned(),
+                );
+            }
+        }
 
         let scrut_drop = match scrut {
             Atom::Var(n) if self.drp.contains(n) && !live_out.contains(n) => Some(n.clone()),

@@ -1605,6 +1605,47 @@ fn filter_over_heap_specializes_and_runs_on_all_backends() {
 }
 
 #[test]
+fn borrowed_results_outlive_their_temporaries_on_all_backends() {
+    // A borrow-returning accessor on a temporary (`strLen (unboxS (BoxS …))`) used to be refused
+    // natively (AX0910): the temporary was freed before the borrow was read. Its owner now lives
+    // until the borrow's last use, and a borrow moved into a new value is copied.
+    let fx = fixture("borrowed_result_lifetime.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "23\n", "{flags:?}");
+    }
+}
+
+#[test]
+fn socket_ops_borrow_their_string_arguments() {
+    // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
+    // but were classified as consuming them, so a session freeing a computed string after the
+    // call was refused natively (AX0910). Connecting to a closed port fails fast; the program
+    // only has to compile and run.
+    let src = "main :: IO ()\n\
+               main = bound $ do\n  \
+               s <- netConnect (strAppend \"local\" \"host\") 1\n  \
+               _ <- netSend s (strAppend \"hel\" \"lo\")\n  \
+               netClose s\n";
+    let path = std::env::temp_dir().join(format!("axion_netstr_{}.axi", std::process::id()));
+    std::fs::write(&path, src).unwrap();
+    for flags in [vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&path).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn array_of_heap_elements_is_rejected_natively() {
     // An Array of heap values double-freed natively (each slot holds the same pointer, and each
     // consuming read freed it) while the drop verifier saw nothing: array elements are raw words.

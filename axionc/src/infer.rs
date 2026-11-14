@@ -634,7 +634,6 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
     (inf, env)
 }
 
-#[cfg(test)]
 fn empty_module() -> Module {
     Module {
         name: None,
@@ -660,6 +659,88 @@ pub fn builtin_names() -> Vec<String> {
     let mut v: Vec<String> = inf.base_env().into_keys().collect();
     v.sort();
     v
+}
+
+/// The full type of each built-in as an AST signature (arrows `Many`, type variables kept as
+/// `Type::Var`), for the top-level wrapper a built-in passed to a higher-order function gets
+/// (`lib::wrap_builtin_closure_args`). `None`-free: a type that cannot be expressed is skipped.
+pub fn builtin_sigs() -> HashMap<String, Type> {
+    fn conv(t: &Ty) -> Option<Type> {
+        Some(match t {
+            Ty::Var(v) => Type::Var(format!("t{v}")),
+            Ty::Con(n, args) => args.iter().try_fold(Type::Con(n.clone()), |acc, a| {
+                Some(Type::App(Box::new(acc), Box::new(conv(a)?)))
+            })?,
+            Ty::Tuple(ts) => Type::Tuple(ts.iter().map(conv).collect::<Option<_>>()?),
+            Ty::Fun(a, b) => Type::Arrow {
+                mult: Mult::Many,
+                from: Box::new(conv(a)?),
+                to: Box::new(conv(b)?),
+            },
+        })
+    }
+    let mut diags = Diagnostics::default();
+    let module = empty_module();
+    let (mut inf, _) = setup(&module, &mut diags);
+    inf.base_env()
+        .into_iter()
+        .filter_map(|(n, sch)| Some((n, conv(&sch.ty)?)))
+        .collect()
+}
+
+/// The arity (number of arrows) of every built-in, for eta-expanding one used as a value.
+pub fn builtin_arities() -> HashMap<String, usize> {
+    let mut diags = Diagnostics::default();
+    let module = empty_module();
+    let (mut inf, _) = setup(&module, &mut diags);
+    inf.base_env()
+        .into_iter()
+        .map(|(name, sch)| {
+            let mut n = 0;
+            let mut ty = &sch.ty;
+            while let Ty::Fun(_, b) = ty {
+                n += 1;
+                ty = b;
+            }
+            (name, n)
+        })
+        .collect()
+}
+
+/// The parameter types of the built-ins (type variables kept as `Type::Var`), as AST types: the lowering's `fn_param_types` for a built-in, so an eta lambda wrapping one
+/// (`strAppend "x"` passed as a function) knows which of its parameters are heap values it owns.
+pub fn builtin_param_types() -> HashMap<String, Vec<Type>> {
+    let mut diags = Diagnostics::default();
+    let module = empty_module();
+    let (mut inf, _) = setup(&module, &mut diags);
+    let mut out = HashMap::new();
+    for (name, sch) in inf.base_env() {
+        let mut ty = sch.ty;
+        let mut ps = Vec::new();
+        while let Ty::Fun(a, b) = ty {
+            ps.push(*a);
+            ty = *b;
+        }
+        if ps.is_empty() {
+            continue;
+        }
+        fn conv(t: &Ty) -> Option<Type> {
+            Some(match t {
+                Ty::Var(v) => Type::Var(format!("t{v}")),
+                Ty::Con(n, args) => args.iter().try_fold(Type::Con(n.clone()), |acc, a| {
+                    Some(Type::App(Box::new(acc), Box::new(conv(a)?)))
+                })?,
+                Ty::Tuple(ts) => Type::Tuple(ts.iter().map(conv).collect::<Option<_>>()?),
+                Ty::Fun(..) => return None,
+            })
+        }
+        // a param that is a function type (or holds one) stays unknown (`None` skips the whole
+        // built-in; such built-ins take closures, which are never keyed anyway)
+        if let Some(a) = ps.iter().map(conv).collect::<Option<Vec<Type>>>() {
+            out.insert(name, a);
+        }
+    }
+    out
 }
 
 impl Infer<'_> {

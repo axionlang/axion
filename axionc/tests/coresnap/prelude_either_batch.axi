@@ -145,9 +145,10 @@
                   let _t18 = putStrLn _t17  ; Δ{_t17}
                   ret case _t18 of
                 _ ->
+              drop _t13 : String
               let _t12 = call ls  ; Δ{} · makes Either$String$Int
-              let _t13 = call fromLeft "z" _t12  ; Δ{_t12} · moves{_t12}
-              let _t14 = putStrLn _t13  ; Δ{}
+              let _t13 = call fromLeft "z" _t12  ; Δ{_t12} · moves{_t12} · makes String
+              let _t14 = putStrLn _t13  ; Δ{_t13}
               ret case _t14 of
             _ ->
             ret 0  ; Δ{}
