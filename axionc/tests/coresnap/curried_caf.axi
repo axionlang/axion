@@ -20,16 +20,16 @@
   else
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let _t0 = call apply$$hoflam15 20  ; Δ{}
+  let _t0 = call apply$$hoflam10 20  ; Δ{}
   ret + n 1  ; Δ{}
   ret + x y  ; Δ{}
   ret 0  ; Δ{}
   ret call add _t0 20  ; Δ{}
-  ret call hoflam15 x  ; Δ{}
+  ret call hoflam10 x  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
 add x y  =
-apply$$hoflam15 x  =
+apply$$hoflam10 x  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
-hoflam15 n  =
+hoflam10 n  =
 main  =

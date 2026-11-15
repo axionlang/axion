@@ -1584,8 +1584,8 @@ fn materialize_specs(module: &mut ast::Module, specs: &[infer::SpecPlan]) {
     module.funcs.extend(new_funcs);
 }
 
-/// A built-in passed by name as the function argument of a user higher-order function
-/// (`app1 strLen s`, `foldr strAppend "" xs`) becomes a call to a synthesized top-level wrapper
+/// A built-in passed by name (or partially applied: `twice (strAppend "x") s`) as the function
+/// argument of a user higher-order function (`app1 strLen s`, `foldr strAppend "" xs`) becomes a call to a synthesized top-level wrapper
 /// `strLen$fn x = strLen x` with the built-in's signature, so `specialize_hofs` clones the HOF
 /// for it like for any named function (`app1$$strLen$fn`): ownership is then exact. Left as a
 /// bare built-in it would only be eta-expanded into a generic closure, whose String/Buffer
@@ -1648,7 +1648,13 @@ fn wrap_builtin_closure_args(module: &mut ast::Module) {
                     if i >= n {
                         continue;
                     }
-                    if let Some(ast::Expr::Var(b, sp)) = arg_mut(e, n, i) {
+                    // the built-in itself (`app1 strLen`) or partially applied (`twice
+                    // (strAppend "x")`): the head of the argument's application spine
+                    let mut head = arg_mut(e, n, i);
+                    while let Some(ast::Expr::App(f, _, _)) = head {
+                        head = Some(f.as_mut());
+                    }
+                    if let Some(ast::Expr::Var(b, sp)) = head {
                         if sigs.contains_key(b.as_str()) && !bound.contains(b.as_str()) {
                             wanted.entry(b.clone()).or_insert(*sp);
                             *b = format!("{b}$fn");
@@ -5262,14 +5268,19 @@ isRight e = case e of
   Left _ -> False
   Right _ -> True
 
--- Delegated through `either` (like `fromMaybe` through `maybe`): returning the
--- extracted payload via a function, not BARE, keeps the result from being classified
--- as an interior alias of the consumed Either (which would UAF once the caller frees it).
+-- The payload path returns a field of the borrowed Either while the other returns the owned
+-- default, so the compiler copies the field there (every path returns an owned value), and a
+-- heap default is freed on the payload path. No lambda in the body, so a heap instantiation is
+-- specialized (`fromLeft$String`).
 fromLeft :: a -> Either a b -> a
-fromLeft d e = either (\\x -> x) (\\_ -> d) e
+fromLeft d e = case e of
+  Left x -> x
+  Right _ -> d
 
 fromRight :: b -> Either a b -> b
-fromRight d e = either (\\_ -> d) (\\y -> y) e
+fromRight d e = case e of
+  Left _ -> d
+  Right y -> y
 
 lefts :: List (Either a b) -> List a
 lefts xs = case xs of

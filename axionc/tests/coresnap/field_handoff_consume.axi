@@ -36,7 +36,7 @@
       drop y : List$String
       else
       else
-      let _d1000000 = call hoflam17 y  ; Δ{y}
+      let _d1000000 = call hoflam12 y  ; Δ{y}
       let _d1000000 = putStrLn _t8  ; Δ{_t8}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -64,7 +64,7 @@
       ret 1  ; Δ{}
       ret _d1000000  ; Δ{}
       ret _d1000000  ; Δ{}
-      ret call hoflam18 x  ; Δ{x} · moves{x}
+      ret call hoflam13 x  ; Δ{x} · moves{x}
       ret call wordEnd s _t3 n  ; Δ{}
       ret con Left e  ; Δ{e} · moves{e} · makes Either$Int$List$String
       ret con Right _t0  ; Δ{_t0} · moves{_t0} · makes Either$Int$List$String
@@ -168,7 +168,7 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call either$$hoflam18$$hoflam17 r  ; Δ{}
+  ret call either$$hoflam13$$hoflam12 r  ; Δ{}
   ret call length xs  ; Δ{}
   ret call wordsFrom s 0 _t0  ; Δ{} · makes List$String
   ret case _t4 of
@@ -192,9 +192,9 @@ axion_drop_List$String _p  =
 consRight s r  =
 consWord s i n j  =
 count r  =
-either$$hoflam18$$hoflam17 e  =
-hoflam17 xs  =
-hoflam18 e  =
+either$$hoflam13$$hoflam12 e  =
+hoflam12 xs  =
+hoflam13 e  =
 isSpace c  =
 keepGood segs  =
 length xs  =

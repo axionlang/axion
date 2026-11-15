@@ -30,15 +30,15 @@
   ret + _t0 b  ; Δ{}
   ret 0  ; Δ{}
   ret call <+> _op0 _op1  ; Δ{}
-  ret call applyOp$$hoflam16 s t  ; Δ{}
+  ret call applyOp$$hoflam11 s t  ; Δ{}
   ret call double x  ; Δ{}
-  ret call hoflam16 a b  ; Δ{}
+  ret call hoflam11 a b  ; Δ{}
   ret rtcall axion_array_free _p  ; Δ{}
 <+> a b  =
-applyOp$$hoflam16 a b  =
+applyOp$$hoflam11 a b  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 double n  =
-hoflam16 _op0 _op1  =
+hoflam11 _op0 _op1  =
 main  =
 |>$$double x  =

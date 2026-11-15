@@ -16,10 +16,10 @@
 
 
 
-          let _t0 = call hoflam16 a b  ; Δ{}
+          let _t0 = call hoflam11 a b  ; Δ{}
           let _t0 = callclo f a b  ; Δ{}
           let _t1 = call zipWith f as_ bs  ; Δ{} · makes List
-          let _t1 = call zipWith$$hoflam16 as_ bs  ; Δ{} · makes List$Int
+          let _t1 = call zipWith$$hoflam11 as_ bs  ; Δ{} · makes List$Int
           ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
           ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
           ret con Nil  ; Δ{}
@@ -188,7 +188,7 @@
   let _t29 = con Cons 20 _t28  ; Δ{_t25 _t28} · moves{_t28} · makes List$Int
   let _t3 = con Nil  ; Δ{_t2} · makes List$Int
   let _t30 = con Cons 10 _t29  ; Δ{_t25 _t29} · moves{_t29} · makes List$Int
-  let _t31 = call zipWith$$hoflam16 _t25 _t30  ; Δ{_t25 _t30} · makes List$Int
+  let _t31 = call zipWith$$hoflam11 _t25 _t30  ; Δ{_t25 _t30} · makes List$Int
   let _t32 = call sum _t31  ; Δ{_t31}
   let _t33 = + _t21 _t32  ; Δ{}
   let _t34 = con Nil  ; Δ{} · makes List$Int
@@ -233,7 +233,7 @@ axion_drop_List$List$Int _p  =
 axion_drop_List$tuple2$Int$Int _p  =
 axion_drop_tuple2$Int$Int _p  =
 concat$Int xs  =
-hoflam16 a b  =
+hoflam11 a b  =
 lam$0 [env ]a b  =
 main  =
 map$$snd xs  =
@@ -241,4 +241,4 @@ snd p  =
 sum xs  =
 zip xs ys  =
 zipWith f xs ys  =
-zipWith$$hoflam16 xs ys  =
+zipWith$$hoflam11 xs ys  =

@@ -57,8 +57,8 @@
       let _t0 = == x y  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call evenN y  ; Δ{y ys}
-      let _t0 = call foldr$$hoflam16 z ys  ; Δ{y ys} · moves{ys}
-      let _t0 = call hoflam19 z y  ; Δ{y ys}
+      let _t0 = call foldr$$hoflam11 z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call hoflam14 z y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call reverse$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
       let _t0 = call sum ys  ; Δ{}
@@ -76,8 +76,8 @@
       ret 0  ; Δ{}
       ret 1  ; Δ{}
       ret call append$Int _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List$Int
-      ret call foldl$$hoflam19 _t0 ys  ; Δ{y ys} · moves{ys}
-      ret call hoflam16 y _t0  ; Δ{y}
+      ret call foldl$$hoflam14 _t0 ys  ; Δ{y ys} · moves{ys}
+      ret call hoflam11 y _t0  ; Δ{y}
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
@@ -183,14 +183,14 @@
   let _t23 = con Cons 3 _t22  ; Δ{_t22} · moves{_t22} · makes List$Int
   let _t24 = con Cons 2 _t23  ; Δ{_t23} · moves{_t23} · makes List$Int
   let _t25 = con Cons 1 _t24  ; Δ{_t24} · moves{_t24} · makes List$Int
-  let _t26 = call foldr$$hoflam16 0 _t25  ; Δ{_t25} · moves{_t25}
+  let _t26 = call foldr$$hoflam11 0 _t25  ; Δ{_t25} · moves{_t25}
   let _t27 = + _t21 _t26  ; Δ{}
   let _t28 = con Nil  ; Δ{} · makes List$Int
   let _t29 = con Cons 6 _t28  ; Δ{_t28} · moves{_t28} · makes List$Int
   let _t3 = con Cons 2 _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
   let _t30 = con Cons 5 _t29  ; Δ{_t29} · moves{_t29} · makes List$Int
   let _t31 = con Cons 4 _t30  ; Δ{_t30} · moves{_t30} · makes List$Int
-  let _t32 = call foldl$$hoflam19 0 _t31  ; Δ{_t31} · moves{_t31}
+  let _t32 = call foldl$$hoflam14 0 _t31  ; Δ{_t31} · moves{_t31}
   let _t33 = + _t27 _t32  ; Δ{}
   let _t34 = con Nil  ; Δ{} · makes List$Int
   let _t35 = con Cons 300 _t34  ; Δ{_t34} · moves{_t34} · makes List$Int
@@ -260,10 +260,10 @@ drop$Int n xs  =
 elem x xs  =
 evenN n  =
 filter$$evenN xs  =
-foldl$$hoflam19 z xs  =
-foldr$$hoflam16 z xs  =
-hoflam16 x a  =
-hoflam19 a x  =
+foldl$$hoflam14 z xs  =
+foldr$$hoflam11 z xs  =
+hoflam11 x a  =
+hoflam14 a x  =
 length xs  =
 main  =
 null xs  =

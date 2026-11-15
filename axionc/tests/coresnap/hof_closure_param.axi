@@ -55,7 +55,7 @@
                           let _t44 = call range 1 5  ; Δ{} · makes List$Int
                           let _t45 = call map$$mkP _t44  ; Δ{_t44} · moves{_t44} · makes List$P
                           let _t46 = call map$$getA _t45  ; Δ{_t45} · moves{_t45} · makes List$Int
-                          let _t47 = call foldr$$hoflam28 0 _t46  ; Δ{_t46} · moves{_t46}
+                          let _t47 = call foldr$$hoflam23 0 _t46  ; Δ{_t46} · moves{_t46}
                           let _t48 = call show$Int _t47  ; Δ{} · makes String
                           let _t49 = putStrLn _t48  ; Δ{_t48}
                           ret case _t49 of
@@ -66,7 +66,7 @@
                       else
                       let _t39 = > k 1  ; Δ{}
                       let _t40 = if _t39 then
-                      let _t41 = call either$$hoflam25$$hoflam24 _t40  ; Δ{}
+                      let _t41 = call either$$hoflam20$$hoflam19 _t40  ; Δ{}
                       let _t42 = call show$Int _t41  ; Δ{} · makes String
                       let _t43 = putStrLn _t42  ; Δ{_t42}
                       ret case _t43 of
@@ -83,7 +83,7 @@
               let _t30 = con Cons "abcd" _t29  ; Δ{_t29 ws} · moves{_t29} · makes List$String
               let _t31 = con Cons "abc" _t30  ; Δ{_t30 ws} · moves{_t30} · makes List$String
               let _t32 = con Cons "a" _t31  ; Δ{_t31 ws} · moves{_t31} · makes List$String
-              let _t33 = call keepBoth$$hoflam20$$hoflam19 _t32  ; Δ{_t32 ws} · moves{_t32}
+              let _t33 = call keepBoth$$hoflam15$$hoflam14 _t32  ; Δ{_t32 ws} · moves{_t32}
               let _t34 = call show$Int _t33  ; Δ{ws} · makes String
               let _t35 = putStrLn _t34  ; Δ{_t34 ws}
               ret case _t35 of
@@ -93,7 +93,7 @@
           let _t22 = con Cons "xyz" _t21  ; Δ{_t21 ws} · moves{_t21} · makes List$String
           let _t23 = con Cons "abcde" _t22  ; Δ{_t22 ws} · moves{_t22} · makes List$String
           let _t24 = con Cons "a" _t23  ; Δ{_t23 ws} · moves{_t23} · makes List$String
-          let _t25 = call keepWith$$hoflam15 _t24  ; Δ{_t24 ws} · moves{_t24}
+          let _t25 = call keepWith$$hoflam10 _t24  ; Δ{_t24 ws} · moves{_t24}
           let _t26 = call show$Int _t25  ; Δ{ws} · makes String
           let _t27 = putStrLn _t26  ; Δ{_t26 ws}
           ret case _t27 of
@@ -104,16 +104,16 @@
         drop y : String
         drop y : String
         let _t1 = call filter$$gt2 ys  ; Δ{y ys} · moves{ys} · makes List$Integer
+        let _t1 = call filter$$hoflam10 ys  ; Δ{y ys} · moves{ys} · makes List$String
+        let _t1 = call filter$$hoflam14 ys  ; Δ{y ys} · moves{ys} · makes List$String
         let _t1 = call filter$$hoflam15 ys  ; Δ{y ys} · moves{ys} · makes List$String
-        let _t1 = call filter$$hoflam19 ys  ; Δ{y ys} · moves{ys} · makes List$String
-        let _t1 = call filter$$hoflam20 ys  ; Δ{y ys} · moves{ys} · makes List$String
         let _t1 = call filter$$hoflamcap0 _cap0 ys  ; Δ{y ys} · moves{ys} · makes List$String
         ret 0  ; Δ{ys}
         ret 1  ; Δ{ys}
         ret call filter$$gt2 ys  ; Δ{ys} · moves{ys} · makes List$Integer
+        ret call filter$$hoflam10 ys  ; Δ{ys} · moves{ys} · makes List$String
+        ret call filter$$hoflam14 ys  ; Δ{ys} · moves{ys} · makes List$String
         ret call filter$$hoflam15 ys  ; Δ{ys} · moves{ys} · makes List$String
-        ret call filter$$hoflam19 ys  ; Δ{ys} · moves{ys} · makes List$String
-        ret call filter$$hoflam20 ys  ; Δ{ys} · moves{ys} · makes List$String
         ret call filter$$hoflamcap0 _cap0 ys  ; Δ{ys} · moves{ys} · makes List$String
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Integer
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$String
@@ -172,12 +172,12 @@
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
       let _t0 = call big y  ; Δ{y ys}
       let _t0 = call foldr$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
-      let _t0 = call foldr$$hoflam28 z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call foldr$$hoflam23 z ys  ; Δ{y ys} · moves{ys}
       let _t0 = call getA y  ; Δ{y ys}
       let _t0 = call gt2 y  ; Δ{y ys}
+      let _t0 = call hoflam10 y  ; Δ{y ys}
+      let _t0 = call hoflam14 y  ; Δ{y ys}
       let _t0 = call hoflam15 y  ; Δ{y ys}
-      let _t0 = call hoflam19 y  ; Δ{y ys}
-      let _t0 = call hoflam20 y  ; Δ{y ys}
       let _t0 = call hoflamcap0 _cap0 y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call mkP y  ; Δ{y ys} · moves{y} · makes P
@@ -210,9 +210,9 @@
       ret 0  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret a  ; Δ{}
-      ret call hoflam24 y  ; Δ{y}
-      ret call hoflam25 x  ; Δ{x} · moves{x}
-      ret call hoflam28 y _t0  ; Δ{y}
+      ret call hoflam19 y  ; Δ{y}
+      ret call hoflam20 x  ; Δ{x} · moves{x}
+      ret call hoflam23 y _t0  ; Δ{y}
       ret case _t20 of
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$P
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$P
@@ -381,8 +381,8 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
-  let _t0 = call filter$$hoflam15 xs  ; Δ{} · makes List$String
-  let _t0 = call filter$$hoflam19 xs  ; Δ{} · makes List$String
+  let _t0 = call filter$$hoflam10 xs  ; Δ{} · makes List$String
+  let _t0 = call filter$$hoflam14 xs  ; Δ{} · makes List$String
   let _t0 = call filter$$hoflamcap0 _cap0 xs  ; Δ{} · makes List$String
   let _t0 = con Nil  ; Δ{} · makes List$String
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
@@ -393,7 +393,7 @@
   let _t0 = rtcall axion_str_len s  ; Δ{}
   let _t0 = rtcall axion_str_len s  ; Δ{}
   let _t1 = call filter$$gt2 xs  ; Δ{_t0} · makes List$Integer
-  let _t1 = call filter$$hoflam20 _t0  ; Δ{_t0} · moves{_t0} · makes List$String
+  let _t1 = call filter$$hoflam15 _t0  ; Δ{_t0} · moves{_t0} · makes List$String
   let _t1 = con Cons "xy" _t0  ; Δ{_t0} · moves{_t0} · makes List$String
   let _t10 = con Cons _t4 _t9  ; Δ{_t4 _t9 ws} · moves{_t4 _t9} · makes List$Integer
   let _t11 = call sumWith$$gt2 _t10  ; Δ{_t10 ws} · moves{_t10} · makes Integer
@@ -465,25 +465,25 @@ axion_drop_List$P _p  =
 axion_drop_List$String _p  =
 big s  =
 countIf$$big xs  =
-either$$hoflam25$$hoflam24 e  =
+either$$hoflam20$$hoflam19 e  =
 filter$$gt2 xs  =
+filter$$hoflam10 xs  =
+filter$$hoflam14 xs  =
 filter$$hoflam15 xs  =
-filter$$hoflam19 xs  =
-filter$$hoflam20 xs  =
 filter$$hoflamcap0 _cap0 xs  =
 foldr$$addI z xs  =
-foldr$$hoflam28 z xs  =
+foldr$$hoflam23 z xs  =
 getA p  =
 gt2 n  =
+hoflam10 s  =
+hoflam14 s  =
 hoflam15 s  =
-hoflam19 s  =
-hoflam20 s  =
-hoflam24 r  =
-hoflam25 l  =
-hoflam28 a b  =
+hoflam19 r  =
+hoflam20 l  =
+hoflam23 a b  =
 hoflamcap0 k s  =
-keepBoth$$hoflam20$$hoflam19 xs  =
-keepWith$$hoflam15 xs  =
+keepBoth$$hoflam15$$hoflam14 xs  =
+keepWith$$hoflam10 xs  =
 keepWith$$hoflamcap0 _cap0 xs  =
 length xs  =
 main  =

@@ -1671,6 +1671,22 @@ fn partly_typed_constructors_are_freed_on_all_backends() {
 }
 
 #[test]
+fn partial_builtin_closures_and_from_left_defaults_are_freed() {
+    // `twiceS (strAppend "x") s` leaked its String argument (a generic closure), and `fromLeft`
+    // with a heap default leaked it (mixed borrowed/owned result).
+    let fx = fixture("residual_leak_reclaim.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "17\n", "{flags:?}");
+    }
+}
+
+#[test]
 fn socket_ops_borrow_their_string_arguments() {
     // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
     // but were classified as consuming them, so a session freeing a computed string after the

@@ -73,12 +73,12 @@
   let _tag = loadraw _p+0  ; Δ{}
   let _tag = loadraw _p+0  ; Δ{}
   let h = ffi abs n  ; Δ{}
-  let r = call hoflam14 h  ; Δ{} · makes Either$String$Int
+  let r = call hoflam9 h  ; Δ{} · makes Either$String$Int
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call withDev$$hoflam14 n  ; Δ{} · makes Either$String$Int
+  ret call withDev$$hoflam9 n  ; Δ{} · makes Either$String$Int
   ret case _t0 of
   ret case _t1 of
   ret if _t0 then
@@ -88,7 +88,7 @@ axion_drop_Either$String _p  =
 axion_drop_Either$String$Int _p  =
 axion_drop_List _p  =
 check n  =
-hoflam14 h  =
+hoflam9 h  =
 main  =
-withDev$$hoflam14 n  =
+withDev$$hoflam9 n  =
 work n  =

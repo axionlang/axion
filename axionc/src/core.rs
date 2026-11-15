@@ -6547,6 +6547,40 @@ pub fn lower_with(
         }
     }
 
+    // A function returning a field of a BORROWED param on some paths (`fromLeft d e = case e of
+    // Left x -> x; Right _ -> d`) and an owned value on others has a result the caller can
+    // neither own (it may be the borrow) nor leave (it may be `d`): copy the field on those
+    // paths, so every path returns an owned value the caller frees. A function returning only
+    // such fields is a pure accessor (a borrow-returning function) and is left alone.
+    if std::env::var_os("AXION_NO_ALIAS_COPY").is_none() {
+        for f in &mut out {
+            // per function: the generated names must not depend on the order functions come in
+            let mut ctr = 0usize;
+            let kind = match fn_ret_ty.get(&f.name).map(String::as_str) {
+                Some("String") => CopyKind::Str,
+                Some("Integer") => CopyKind::Int,
+                _ => continue,
+            };
+            let borrowed: HashSet<String> = f
+                .params
+                .iter()
+                .filter(|p| !f.owned_params.contains(p))
+                .cloned()
+                .collect();
+            let (mut alias, mut other) = (0usize, 0usize);
+            count_field_tails(
+                &f.body,
+                &borrowed,
+                &mut HashSet::new(),
+                &mut alias,
+                &mut other,
+            );
+            if alias > 0 && other > 0 {
+                copy_field_tails(&mut f.body, &borrowed, &mut HashSet::new(), &kind, &mut ctr);
+            }
+        }
+    }
+
     // deep-drop (§2): `data` type of each droppable, so the backend reclaims
     // nested fields via a recursive destructor instead of a flat `free`.
     let recinfo = RecordInfo::build(module);
@@ -6682,8 +6716,9 @@ pub fn lower_with(
                 kinds.insert(g.clone(), kind);
             }
         }
-        let mut ctr = 0usize;
         for f in &mut out {
+            // per function: the generated names must not depend on the order functions come in
+            let mut ctr = 0usize;
             null_borrow_result_keys(&mut f.body, &borrow_ret);
             if !kinds.is_empty() {
                 copy_moved_borrows(
@@ -10359,6 +10394,103 @@ fn copy_moved_borrows(
                 }
             }
         }
+    }
+}
+
+/// Counts the tail returns of `t`: `alias` = returns of a field a `case` bound out of a borrowed
+/// param (`fields` holds those binders in scope), `other` = every other return.
+fn count_field_tails(
+    t: &Term,
+    borrowed: &HashSet<String>,
+    fields: &mut HashSet<String>,
+    alias: &mut usize,
+    other: &mut usize,
+) {
+    match t {
+        Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => {
+            count_field_tails(b, borrowed, fields, alias, other)
+        }
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) if fields.contains(v) => *alias += 1,
+        Term::Ret(Rhs::If(_, a, b), _) => {
+            count_field_tails(a, borrowed, fields, alias, other);
+            count_field_tails(b, borrowed, fields, alias, other);
+        }
+        Term::Ret(Rhs::Case(sc, arms), _) => {
+            for (p, b) in arms {
+                let added = case_param_binders(sc, p, borrowed, fields);
+                count_field_tails(b, borrowed, fields, alias, other);
+                for n in added {
+                    fields.remove(&n);
+                }
+            }
+        }
+        Term::Ret(..) => *other += 1,
+    }
+}
+
+/// The binders a `case` on a borrowed param brings into scope (added to `fields`; returned so
+/// the caller can remove them after the arm).
+fn case_param_binders(
+    sc: &Atom,
+    p: &CPat,
+    borrowed: &HashSet<String>,
+    fields: &mut HashSet<String>,
+) -> Vec<String> {
+    let Atom::Var(s) = sc else { return Vec::new() };
+    if !borrowed.contains(s) {
+        return Vec::new();
+    }
+    let mut bs = Vec::new();
+    if let CPat::Con(_, subs) = p {
+        for sp in subs {
+            if let CPat::Var(n) = sp {
+                if fields.insert(n.clone()) {
+                    bs.push(n.clone());
+                }
+            }
+        }
+    }
+    bs
+}
+
+/// Rewrites each tail `ret field` counted as `alias` by `count_field_tails` into a fresh copy.
+fn copy_field_tails(
+    t: &mut Term,
+    borrowed: &HashSet<String>,
+    fields: &mut HashSet<String>,
+    kind: &CopyKind,
+    ctr: &mut usize,
+) {
+    match t {
+        Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => {
+            copy_field_tails(b, borrowed, fields, kind, ctr)
+        }
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp) if fields.contains(v) => {
+            let (v, sp) = (v.clone(), *sp);
+            let tmp = format!("$fieldcopy{ctr}");
+            *ctr += 1;
+            *t = Term::Let(
+                tmp.clone(),
+                Rhs::Op(alias_copy_op(&v, kind)),
+                sp,
+                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))), sp)),
+            );
+        }
+        Term::Ret(Rhs::If(_, a, b), _) => {
+            copy_field_tails(a, borrowed, fields, kind, ctr);
+            copy_field_tails(b, borrowed, fields, kind, ctr);
+        }
+        Term::Ret(Rhs::Case(sc, arms), _) => {
+            let sc = sc.clone();
+            for (p, b) in arms {
+                let added = case_param_binders(&sc, p, borrowed, fields);
+                copy_field_tails(b, borrowed, fields, kind, ctr);
+                for n in added {
+                    fields.remove(&n);
+                }
+            }
+        }
+        Term::Ret(..) => {}
     }
 }
 

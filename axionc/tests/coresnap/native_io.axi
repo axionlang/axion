@@ -7,13 +7,13 @@
 
 
           drop _t6 : List$Int
-          let _d1000000 = call mapM_$$hoflam15 _t6  ; Δ{_t6}
+          let _d1000000 = call mapM_$$hoflam10 _t6  ; Δ{_t6}
           let _t3 = con Nil  ; Δ{} · makes List$Int
           let _t4 = con Cons 3 _t3  ; Δ{_t3} · moves{_t3} · makes List$Int
           let _t5 = con Cons 2 _t4  ; Δ{_t4} · moves{_t4} · makes List$Int
           let _t6 = con Cons 1 _t5  ; Δ{_t5} · moves{_t5} · makes List$Int
           ret _d1000000  ; Δ{}
-          ret call mapM_$$hoflam15 ys  ; Δ{}
+          ret call mapM_$$hoflam10 ys  ; Δ{}
         _ ->
         _ ->
       drop _t1 : String
@@ -21,7 +21,7 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _t0 = call hoflam15 y  ; Δ{}
+      let _t0 = call hoflam10 y  ; Δ{}
       let _t1 = call show$Int 6  ; Δ{} · makes String
       let _t2 = putStrLn _t1  ; Δ{_t1}
       ret 0  ; Δ{}
@@ -79,7 +79,7 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 double n  =
-hoflam15 n  =
+hoflam10 n  =
 main  =
-mapM_$$hoflam15 xs  =
+mapM_$$hoflam10 xs  =
 show$Int x  =

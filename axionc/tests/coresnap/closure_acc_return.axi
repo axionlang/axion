@@ -95,7 +95,7 @@
   else
   else
   else
-  let _d1000000 = call hoflam16 eta$1 eta$2  ; Δ{} · makes Integer
+  let _d1000000 = call hoflam11 eta$1 eta$2  ; Δ{} · makes Integer
   let _d1000000 = putStrLn _t5  ; Δ{_t5}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
@@ -133,7 +133,7 @@ axion_drop_List$Int _p  =
 axion_drop_List$Integer _p  =
 foldr$Integer f z xs  =
 fromInt$fn x0  =
-hoflam16 x acc  =
+hoflam11 x acc  =
 lam$0 [env ]eta$1 eta$2  =
 main  =
 map$$fromInt$fn xs  =
