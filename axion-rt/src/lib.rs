@@ -349,7 +349,17 @@ pub unsafe extern "C" fn axion_tritvec_iota(len: i64) -> i64 {
     let p = axion_alloc(8 + nbytes);
     *(p as *mut i64) = n;
     let data = (p as *mut u8).add(8);
-    for b in 0..nbytes {
+    // full bytes (5 trits) without a per-trit bound test, then the partial tail byte
+    let full = n / 5;
+    for b in 0..full {
+        let base = b * 5;
+        let mut byte = 0i64;
+        for (k, pw) in POW3.iter().enumerate() {
+            byte += ((base + k as i64) % 3) * pw; // (w + 1) with w = (i mod 3) - 1
+        }
+        *data.add(b as usize) = byte as u8;
+    }
+    for b in full..nbytes {
         let base = b * 5;
         let mut byte = 0i64;
         let mut k = 0i64;
@@ -613,14 +623,28 @@ pub unsafe extern "C" fn axion_tritvec_matvec_sum(tv: i64, arr: i64, k_width: i6
     let act = std::slice::from_raw_parts((arr as *const u8).add(8).cast::<i64>(), alen as usize);
     let mut acc = 0i64;
     let mut k = 0usize;
+    let kw = k_width as usize;
     for (b, &byte) in data.iter().enumerate() {
         let w = &TRIT_LUT[byte as usize];
         let base = b * 5;
+        // a full byte whose 5 activations do not wrap: 5 MACs, no per-trit tests
+        if base + 5 <= n as usize && k + 5 <= kw {
+            acc += i64::from(w[0]) * *act.get_unchecked(k)
+                + i64::from(w[1]) * *act.get_unchecked(k + 1)
+                + i64::from(w[2]) * *act.get_unchecked(k + 2)
+                + i64::from(w[3]) * *act.get_unchecked(k + 3)
+                + i64::from(w[4]) * *act.get_unchecked(k + 4);
+            k += 5;
+            if k == kw {
+                k = 0;
+            }
+            continue;
+        }
         let mut j = 0;
         while j < 5 && base + j < n as usize {
             acc += i64::from(*w.get_unchecked(j)) * *act.get_unchecked(k);
             k += 1;
-            if k == k_width as usize {
+            if k == kw {
                 k = 0;
             }
             j += 1;
@@ -2784,4 +2808,38 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("ax_net_wouldblock", ax_net_wouldblock as *const u8),
         ("axion_read_key_timeout", axion_read_key_timeout as *const u8),
     ]
+}
+
+#[cfg(test)]
+mod tritvec_tests {
+    use super::*;
+
+    /// The weight `tritVecIota` packs at position `i`, and the naive (per-trit) matvec sum.
+    fn naive_matvec(n: i64, k_width: i64) -> i64 {
+        (0..n).map(|i| ((i % 3) - 1) * (i % k_width)).sum()
+    }
+
+    /// The fast paths (full bytes, unrolled MACs) agree with the naive definition on every size,
+    /// including partial tail bytes and activation widths below / not dividing 5.
+    #[test]
+    fn iota_and_matvec_match_the_naive_definition() {
+        unsafe {
+            for n in [0i64, 1, 4, 5, 6, 9, 10, 11, 24, 25, 26, 99, 1000, 1003] {
+                let tv = axion_tritvec_iota(n);
+                for i in 0..n {
+                    assert_eq!(axion_tritvec_get(tv, i), (i % 3) - 1, "iota n={n} i={i}");
+                }
+                for kw in [1i64, 2, 3, 4, 5, 6, 7, 10, 13, 64] {
+                    let act = axion_array_iota(kw);
+                    assert_eq!(
+                        axion_tritvec_matvec_sum(tv, act, kw),
+                        naive_matvec(n, kw),
+                        "matvec n={n} k_width={kw}"
+                    );
+                    axion_array_free(act);
+                }
+                axion_free(tv);
+            }
+        }
+    }
 }
