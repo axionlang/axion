@@ -30,16 +30,17 @@
               pkgs.hlint
               pkgs.haskell-language-server
             ];
-            # SDL for the aximv example's FFI: in buildInputs their lib dirs reach NIX_LDFLAGS (which
-            # axionc's soname resolver reads); the shellHook also sets LIBRARY_PATH/LD_LIBRARY_PATH so a
-            # one-command `axionc -o aximv examples/aximv.axi` links + bakes an rpath, and `./aximv` runs.
-            buildInputs = [ pkgs.SDL2 pkgs.SDL2_image ];
+            # SDL and FFmpeg for media and graphics FFI: added to buildInputs so their
+            # lib dirs reach NIX_LDFLAGS, and shellHook configures LIBRARY_PATH/LD_LIBRARY_PATH
+            # so axionc links and bakes the rpath successfully.
+            buildInputs = [ pkgs.SDL2 pkgs.SDL2_image pkgs.ffmpeg ];
             shellHook = ''
-              export LIBRARY_PATH="${pkgs.SDL2}/lib:${pkgs.SDL2_image}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
-              export LD_LIBRARY_PATH="${pkgs.SDL2}/lib:${pkgs.SDL2_image}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export LIBRARY_PATH="${pkgs.SDL2}/lib:${pkgs.SDL2_image}/lib:${pkgs.ffmpeg}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+              export LD_LIBRARY_PATH="${pkgs.SDL2}/lib:${pkgs.SDL2_image}/lib:${pkgs.ffmpeg}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               echo "Axion · Phase 0 — dev shell (GHC $(ghc --numeric-version), LinearTypes + linear-base)"
               echo "  cabal build   ·   cabal test   ·   ./scripts/check-negative.sh"
-              echo "  build aximv:  axionc -o aximv examples/aximv.axi   (SDL on LIBRARY_PATH)"
+              echo "  build aximv:  axionc -o aximv examples/aximv.axi"
+              echo "  build axmpv:  axionc -o axmpv examples/axmpv.axi"
             '';
           };
         });
