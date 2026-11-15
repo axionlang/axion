@@ -926,6 +926,35 @@ pub fn run_cli() -> ExitCode {
         let corruption: Vec<_> = all.iter().filter(|f| f.cat.is_corruption()).collect();
         if !corruption.is_empty() {
             for f in &corruption {
+                if f.cat == verify::Cat::Duplicated {
+                    let (base, spec) = f.func.split_once('$').unwrap_or((&f.func, ""));
+                    let generic = if spec.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" `{base}` is generic and is used here at `{spec}`, a heap type.")
+                    };
+                    let d = Diagnostic::error(
+                        "AX0910",
+                        format!(
+                            "duplicated a linear value: `{}` in `{base}` is stored twice",
+                            f.var
+                        ),
+                    )
+                    .label(
+                        f.span.0,
+                        f.span.1,
+                        "this hands the same heap value to two owners",
+                    )
+                    .with_help(format!(
+                        "a heap value (String, Integer, Buffer, list, record, …) has exactly one \
+                         owner, so it cannot appear twice in one structure or call.{generic} \
+                         Copy it for the second use (e.g. `strAppend s \"\"` for a String), or \
+                         use the function only at scalar types. The interpreter \
+                         (`axionc <file>`) runs this program as is."
+                    ));
+                    eprint!("{}", d.render(&path, &src, &lines));
+                    continue;
+                }
                 let d = Diagnostic::error(
                     "AX0910",
                     format!(

@@ -83,6 +83,10 @@ pub enum Cat {
     /// or `String` with the wrong key (a flat `free` of a bignum/string, or a mismatched
     /// tagged reclaimer) → a bad-free / leak the balance analysis alone can't see.
     WrongDropKey,
+    /// one owned (linear) value handed to two owners at once (`tuple x x`, or a generic
+    /// `dup x = (x, x)` instantiated at a heap type) — a double free once both are reclaimed.
+    /// A program error, not an Auto-Drop one: a heap value cannot be duplicated without a copy.
+    Duplicated,
     /// an owned resource still live at a `ret` and not returned — a (soft) leak.
     Leak,
 }
@@ -97,6 +101,7 @@ impl Cat {
                 | Cat::DropOfAlias
                 | Cat::Unbalanced
                 | Cat::WrongDropKey
+                | Cat::Duplicated
         )
     }
 }
@@ -975,7 +980,7 @@ impl Verifier<'_> {
             if let Atom::Var(v) = a {
                 let owned_live = st.get(v).is_some_and(|val| val.owned && val.dead.is_none());
                 if !moved.insert(v.as_str()) && owned_live {
-                    self.finding(Cat::UseAfterFree, v, sp);
+                    self.finding(Cat::Duplicated, v, sp);
                 }
             }
         }

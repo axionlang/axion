@@ -1726,7 +1726,7 @@ fn a_generic_duplication_at_a_heap_type_is_refused_natively() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("UseAfterFree") && text.contains("dup$String"),
+        text.contains("Duplicated") && text.contains("dup$String"),
         "verifier missed the double store: {text}"
     );
     let out = axionc()
@@ -1735,6 +1735,12 @@ fn a_generic_duplication_at_a_heap_type_is_refused_natively() {
         .output()
         .unwrap();
     assert!(!out.status.success(), "native must refuse it");
+    // a program error, so the message must say so, not blame Auto-Drop
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("duplicated a linear value") && !err.contains("Auto-Drop bug"),
+        "{err}"
+    );
     let out = axionc().arg(&path).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
     let _ = std::fs::remove_file(&path);

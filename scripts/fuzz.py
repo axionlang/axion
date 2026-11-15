@@ -888,7 +888,7 @@ main =
     return prog
 
 OWN_PRE = """-- fuzz:ownership
-data Rec = Rec { name :: String, tag :: Integer, items :: List String }
+data Rec = Rec { name :: String, tag :: Int, items :: List String }
 
 idG :: a -> a
 idG x = x
@@ -942,7 +942,7 @@ def _own_term(rng, binds):
         elif kind == "L":
             val = _own_list(rng)
         else:
-            val = f"Rec {{ name = {_own_str(rng)}, tag = fromInt {rng.randint(0, 9)}, items = {_own_list(rng)} }}"
+            val = f"Rec {{ name = {_own_str(rng)}, tag = {rng.randint(0, 9)}, items = {_own_list(rng)} }}"
         binds.append((name, kind))
         return ("let", name, val)
     if binds and rng.random() < 0.5:
@@ -956,7 +956,7 @@ def _own_term(rng, binds):
                                f"sumWith (\\s -> strLen (idG s)) {v}",
                                f"(case {v} of\n    Nil -> 0\n    Cons x _ -> strLen (orDefault \"d\" x))"])
         return rng.choice([f"recLen {v}", f"strLen (name {v})", f"strLen (firstItem {v})",
-                           f"strLen (showInteger (tag {v}))", f"recLen (rename {v} ({_own_str(rng)}))",
+                           f"strLen (showInt (tag {v}))", f"recLen (rename {v} ({_own_str(rng)}))",
                            f"(case {v} of\n    Rec n t is -> strLen n + length is)"])
     # a where-local capturing a heap value
     if k < 0.45:
@@ -966,7 +966,7 @@ def _own_term(rng, binds):
         return rng.choice([f"strLen (konst ({_own_str(rng)}) ({_own_str(rng)}))",
                            f"strLen (pickG False ({_own_str(rng)}) ({_own_str(rng)}))",
                            f"length (idG ({_own_list(rng)}))"])
-    return f"recLen (Rec {{ name = {_own_str(rng)}, tag = fromInt 1, items = {_own_list(rng)} }})"
+    return f"recLen (Rec {{ name = {_own_str(rng)}, tag = 1, items = {_own_list(rng)} }})"
 
 def gen_ownership(rng):
     """Ownership shapes no other generator reaches: records with heap fields (read, updated by
