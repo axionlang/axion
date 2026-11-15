@@ -72,7 +72,7 @@ const INTEGER: Out = Owned("Integer");
 /// Element types the arrays assume: they store raw words and own nothing inside them.
 const SCALAR_ELEMS: &str = "elements are scalars (a heap element is rejected natively, AX0914)";
 const SESSION: &str = "session runtime: payload ownership follows the protocol (SessGen); the \
-                       generated steps are checked for corruption only";
+                       generated steps are verified like any function (corruption and leaks)";
 
 pub const RT_TABLE: &[RtEntry] = &[
     // --- frees (the destructors Auto-Drop and the generated code call) ---

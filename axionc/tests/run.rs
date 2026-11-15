@@ -1785,6 +1785,47 @@ fn a_specialized_hof_that_only_reads_borrows_its_list() {
 }
 
 #[test]
+fn integer_fields_of_data_are_reclaimed_and_move_out() {
+    // `Integer` fields are reclaimed by their container's destructor, like `String` fields, and an
+    // extracted one is moved out. Before, a container dropped with its Integer unread leaked
+    // (verifier-blind), and the same field read twice was refused natively (AX0913).
+    let fx = fixture("integer_field_reclaim.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "246\n42\n77\n4\n[1, 22]\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
+fn a_view_consumes_its_list_and_frees_the_skipped_prefix() {
+    // `tail`/`dropWhile`/`delete` and a user view take their list (`%1`, inferred for a generic
+    // view) and free the cells and elements they skip, which used to leak.
+    let fx = fixture("view_consumes_reclaim.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "Just [\"33\"]\n[\"22\", \"3\"]\n[\"55\"]\n6\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn socket_ops_borrow_their_string_arguments() {
     // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
     // but were classified as consuming them, so a session freeing a computed string after the
@@ -1969,7 +2010,7 @@ fn handing_a_list_to_an_owning_callee_takes_ownership() {
 fn session_tasks_free_the_heap_values_they_own() {
     // A session task's `String`s (a looping accumulator, a temporary given to a reading call, the
     // last value at task end) used to leak every round. The worker also hands its task over to
-    // `loop` with a tail call. Leak-freedom itself is checked by sanitize.sh (LEAKFREE).
+    // `loop` with a tail call. Leak-freedom itself is checked by sanitize.sh (it leak-gates every fixture).
     agree_across_backends("session_heap_reclaim.axi", "20\n");
 }
 
@@ -2004,7 +2045,7 @@ fn session_channel_payloads_are_owned_by_the_receiver() {
     // A heap value sent over a channel is freed by its receiver: a fresh one moves, one the sender
     // does not own is sent as a copy, a received one handed to another task moves on, and one
     // received into `_` is freed at once. Payload types come from the endpoints' protocols. They
-    // all leaked before. Leak-freedom is checked by sanitize.sh (LEAKFREE).
+    // all leaked before. Leak-freedom is checked by sanitize.sh (it leak-gates every fixture).
     agree_across_backends("session_channel_heap.axi", "5\n");
 }
 
@@ -2012,7 +2053,7 @@ fn session_channel_payloads_are_owned_by_the_receiver() {
 fn session_tasks_bind_locals_and_run_statements() {
     // `let` and plain statements between channel ops: a `let`-bound String survives a `recv`
     // (saved in the task's state), a statement's discarded String is freed at once. These were
-    // outside the native session subset. Leak-freedom is checked by sanitize.sh (LEAKFREE).
+    // outside the native session subset. Leak-freedom is checked by sanitize.sh (it leak-gates every fixture).
     agree_across_backends("session_let_stmt.axi", "42\n");
 }
 

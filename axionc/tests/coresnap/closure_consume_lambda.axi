@@ -16,9 +16,11 @@
 
 
 
+
       drop _t0 : Integer
       drop xs
       drop xs : List$Integer
+      let $borrowcopy0 = rtcall axion_bignum_copy _t0  ; Δ{_t1} · makes Integer
       let _d1000000 = call addI y _t0  ; Δ{_t0} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -30,14 +32,14 @@
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
+      let _dd3 = call axion_drop_Box _dd2  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _dd3 = rtcall axion_free _dd2  ; Δ{}
       let _t0 = call foldr$$addI z ys  ; Δ{} · makes Integer
       let _t0 = call fromInt$fn y  ; Δ{} · makes Integer
-      let _t0 = call unbox y  ; Δ{} · makes Integer
+      let _t0 = call unbox y  ; Δ{}
       let _t0 = callclo f y  ; Δ{y ys} · moves{y}
       let _t1 = call map$$fromInt$fn ys  ; Δ{_t0} · makes List$Integer
-      let _t1 = call map$$unbox ys  ; Δ{_t0} · makes List$Integer
+      let _t1 = call map$$unbox ys  ; Δ{} · makes List$Integer
       let _t1 = call map$Integer f ys  ; Δ{ys} · moves{ys} · makes List
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -48,7 +50,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
-      ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
+      ret con Cons $borrowcopy0 _t1  ; Δ{$borrowcopy0 _t1} · moves{$borrowcopy0 _t1} · makes List$Integer
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$Integer
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1}
       ret con Nil  ; Δ{}
@@ -135,6 +137,8 @@
   else
   else
   let _d1000000 = putStrLn _t7  ; Δ{_t7}
+  let _dd0 = loadraw _p+0  ; Δ{}
+  let _dd1 = rtcall axion_bignum_free _dd0  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -143,6 +147,7 @@
   let _dd6 = band _p 1  ; Δ{}
   let _dd7 = if _dd6 then
   let _dd7 = if _dd6 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
@@ -154,6 +159,7 @@
   let _t5 = call map$$unbox _t4  ; Δ{_t0 _t4} · makes List$Integer
   let _t6 = call foldr$$addI _t0 _t5  ; Δ{_t0 _t5} · moves{_t0} · makes Integer
   let _t7 = rtcall axion_bignum_to_string _t6  ; Δ{_t6} · makes String
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -174,6 +180,7 @@
   ret rtcall axion_bignum_from_i64 x0  ; Δ{} · makes Integer
 addI a b  =
 axion_drop_Array _p  =
+axion_drop_Box _p  =
 axion_drop_List _p  =
 axion_drop_List$Box _p  =
 axion_drop_List$Int _p  =

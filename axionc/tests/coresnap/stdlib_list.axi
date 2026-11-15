@@ -36,7 +36,6 @@
 
 
 
-
                                       drop _t57 : List$Int
                                       drop _t60 : String
                                       let _d1000000 = putStrLn _t60  ; Δ{_t60}
@@ -99,7 +98,7 @@
                   drop _t20 : tuple2$List$Int$List$Int
                   drop _t22 : String
                   let _t19 = call range 1 6  ; Δ{} · makes List$Int
-                  let _t20 = call splitAt 2 _t19  ; Δ{_t19} · moves{_t19} · makes tuple2$List$Int$List$Int
+                  let _t20 = call splitAt$Int 2 _t19  ; Δ{_t19} · moves{_t19} · makes tuple2$List$Int$List$Int
                   let _t21 = call sumPair _t20  ; Δ{_t20}
                   let _t22 = call show$Int _t21  ; Δ{} · makes String
                   let _t23 = putStrLn _t22  ; Δ{_t22}
@@ -135,18 +134,18 @@
         let _t1 = call findIndex$$lt5 ys  ; Δ{} · makes Maybe$Int
         let _t1 = call takeWhile$$lt5 ys  ; Δ{y ys} · moves{ys} · makes List$Int
         let _t3 = call span$$lt5 ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$Int$List$Int
-        let _t3 = con Nil  ; Δ{}
-        let _t4 = con Cons y ys  ; Δ{}
+        let _t3 = con Nil  ; Δ{y ys}
+        let _t4 = con Cons y ys  ; Δ{y ys} · moves{y ys}
         let _t4 = con Nil  ; Δ{y ys} · makes List$Int
-        let _t5 = - n 1  ; Δ{}
+        let _t5 = - n 1  ; Δ{y ys}
         let _t5 = con Cons y ys  ; Δ{_t4 y ys} · moves{y ys} · makes List$Int
-        let _t6 = call splitAt _t5 ys  ; Δ{}
+        let _t6 = call splitAt$Int _t5 ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$Int$List$Int
         ret 0  ; Δ{}
         ret 1  ; Δ{}
         ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
         ret call and ys  ; Δ{}
-        ret call consFst y _t6  ; Δ{}
         ret call consFst$Int y _t3  ; Δ{_t3 y} · moves{_t3 y} · makes tuple2$List$Int$List$Int
+        ret call consFst$Int y _t6  ; Δ{_t6 y} · moves{_t6 y} · makes tuple2$List$Int$List$Int
         ret call dropWhile$$lt5 ys  ; Δ{y ys} · moves{ys} · makes List$Int
         ret call or ys  ; Δ{}
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Int
@@ -157,10 +156,11 @@
         ret tuple _t4 _t5  ; Δ{_t4 _t5} · moves{_t4 _t5} · makes heap
       drop _t5 : List$Int
       drop _t7 : String
-      drop ab
       drop ab : tuple2$List$Int$List$Int skip{0 1}
       drop m
       drop m
+      drop xs
+      drop xs
       drop xs
       drop xs
       drop xs
@@ -203,14 +203,13 @@
       let _t0 = call sum a  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
       let _t0 = con Cons y a  ; Δ{ab}
-      let _t0 = con Cons y a  ; Δ{}
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{} · makes List$Int
       let _t1 = call map$$dup ys  ; Δ{_t0} · makes List$List$Int
       let _t1 = call sum b  ; Δ{}
       let _t1 = con Nil  ; Δ{_t0} · makes List$Int
       let _t1 = con Nil  ; Δ{}
-      let _t2 = < n 1  ; Δ{}
+      let _t2 = < n 1  ; Δ{y ys}
       let _t2 = call lt5 y  ; Δ{y ys}
       let _t4 = call range 1 10  ; Δ{} · makes List$Int
       let _t5 = call takeWhile$$lt5 _t4  ; Δ{_t4} · moves{_t4} · makes List$Int
@@ -259,9 +258,7 @@
       ret tuple _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes heap
       ret tuple _t0 _t1  ; Δ{} · makes heap
       ret tuple _t0 b  ; Δ{ab} · makes heap
-      ret tuple _t0 b  ; Δ{} · makes heap
       ret ys  ; Δ{}
-    (a, b) ->
     (a, b) ->
     (a, b) ->
     Cons p ps ->
@@ -351,8 +348,7 @@
   ; Δ{y ys}
   ; Δ{y ys}
   ; Δ{y ys}
-  ; Δ{}
-  ; Δ{}
+  ; Δ{y ys}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -457,7 +453,6 @@
   ret case _t3 of
   ret case ab of
   ret case ab of
-  ret case ab of
   ret case m of
   ret case m of
   ret case xs of
@@ -494,7 +489,6 @@ axion_drop_tuple2$Int$Int _p  =
 axion_drop_tuple2$List$Int$List$Int _p  =
 concat$Int xs  =
 concatMap$$dup xs  =
-consFst y ab  =
 consFst$Int y ab  =
 dropWhile$$lt5 xs  =
 dup n  =
@@ -516,7 +510,7 @@ rangeFusedSum lo hi acc  =
 show$Bool x  =
 show$Int x  =
 span$$lt5 xs  =
-splitAt n xs  =
+splitAt$Int n xs  =
 sum xs  =
 sumPair ab  =
 takeWhile$$lt5 xs  =

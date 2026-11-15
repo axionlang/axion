@@ -4,10 +4,11 @@
 //! borrow-return summary from the TYPE-based tags — so it sees `Integer` fields the drop_slots-gated
 //! verifier misses. Two properties, asserted here:
 //!   · FAITHFUL — zero violations over the whole ASan-clean corpus (no false positives).
-//!   · STRICTLY STRONGER — it flags the Integer grab-via-case REUSE double-free that `--emit verify`
-//!     (AX0910) reports clean, while leaving the sound single-use / String / map-getter shapes alone.
-//! Step 3 (first increment) ENFORCES it alongside AX0910: a tag-detected double-free aborts with
-//! AX0913 (see `gate_rejects_integer_grab_reuse`). The eventual flip makes it the sole authority.
+//!   · It used to be STRICTLY STRONGER than `--emit verify`: it flagged the Integer grab-via-case
+//!     REUSE double-free the verifier was blind to (Integer fields were outside `con_drop_slots`).
+//!     Since Integer fields are reclaimed like String fields (2026-11-15) that shape lowers soundly —
+//!     the getter borrows and returns a borrow — so the checker must now leave it alone too.
+//! Step 3 ENFORCES it alongside AX0910: a tag-detected double-free aborts with AX0913.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::process::Command;
@@ -34,47 +35,41 @@ fn violations(src: &str, name: &str) -> i64 {
         .unwrap_or_else(|| panic!("bad tag-check summary for {name}: {line}"))
 }
 
-/// STRICTLY STRONGER: the Integer grab-via-case REUSE is a verifier-blind double-free — the field
-/// `a` of the borrowed record is extracted twice and each result freed. The tag-checker flags it.
+const INTEGER_GRAB_REUSE: &str = "data R = R Integer Integer\n\
+    getF :: R -> Integer\n\
+    getF r = case r of\n  R a b -> a\n\
+    useBoth :: R -> Integer\n\
+    useBoth r = getF r + getF r\n\
+    main :: IO ()\n\
+    main = putStrLn (showInteger (useBoth (R (fromInt 3) (fromInt 4))))\n";
+
+/// The Integer grab-via-case REUSE (`getF r + getF r`) used to double-free natively (Integer fields
+/// were outside `con_drop_slots`, so each call's result was freed). It now lowers like its String
+/// twin — `getF` borrows `r` and returns a borrow — so the tag-checker finds nothing.
 #[test]
-fn tag_checker_flags_integer_grab_reuse() {
-    let src = "data R = R Integer Integer\n\
-               getF :: R -> Integer\n\
-               getF r = case r of\n  R a b -> a\n\
-               useBoth :: R -> Integer\n\
-               useBoth r = getF r + getF r\n\
-               main :: IO ()\n\
-               main = putStrLn (showInteger (useBoth (R (fromInt 3) (fromInt 4))))\n";
-    assert!(
-        violations(src, "int_reuse") >= 1,
-        "tag-checker must flag the Integer grab-via-case reuse double-free (AX0910 is blind to it)"
+fn tag_checker_accepts_integer_grab_reuse() {
+    assert_eq!(
+        violations(INTEGER_GRAB_REUSE, "int_reuse"),
+        0,
+        "the Integer grab-via-case reuse is sound now; the tag-checker must not flag it"
     );
 }
 
-/// GATE (Step 3): the tag-checker is ENFORCED on native builds — the Integer grab-via-case reuse
-/// is REJECTED with `AX0913` instead of silently miscompiling into a double-free. `--no-verify`
-/// bypasses (proving the gate is what protects). The sound twins still compile.
+/// GATE: the same program compiles natively and computes 3 + 3 (it used to be refused, AX0913).
 #[test]
-fn gate_rejects_integer_grab_reuse() {
-    let src = "data R = R Integer Integer\n\
-               getF :: R -> Integer\n\
-               getF r = case r of\n  R a b -> a\n\
-               useBoth :: R -> Integer\n\
-               useBoth r = getF r + getF r\n\
-               main :: IO ()\n\
-               main = putStrLn (showInteger (useBoth (R (fromInt 3) (fromInt 4))))\n";
+fn integer_grab_reuse_compiles_natively() {
     let path = std::env::temp_dir().join("axion_tagcheck_gate.axi");
-    std::fs::write(&path, src).unwrap();
+    std::fs::write(&path, INTEGER_GRAB_REUSE).unwrap();
     let out = axionc()
         .args(["--backend", "cranelift", path.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
-        !out.status.success(),
-        "the AX0913 gate must reject the Integer grab-via-case reuse"
+        out.status.success(),
+        "the Integer grab-via-case reuse must compile: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("AX0913"), "rejection must carry AX0913: {err}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n");
 }
 
 /// SOUND SHAPES stay clean — the single-use and String-grab twins are ASan-clean, so the checker

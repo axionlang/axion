@@ -65,7 +65,7 @@
           let _t14 = con Cons 9 _t13  ; Δ{_t13} · moves{_t13} · makes List$Int
           let _t15 = con Cons 8 _t14  ; Δ{_t14} · moves{_t14} · makes List$Int
           let _t16 = con Cons 7 _t15  ; Δ{_t15} · moves{_t15} · makes List$Int
-          let _t17 = call tail _t16  ; Δ{_t16} · moves{_t16} · makes Maybe$List$Int
+          let _t17 = call tail$Int _t16  ; Δ{_t16} · moves{_t16} · makes Maybe$List$Int
           let _t18 = call show$Maybe$List$Int _t17  ; Δ{_t17} · makes String
           let _t19 = putStrLn _t18  ; Δ{_t18}
           ret call last$Int _t0  ; Δ{y} · makes Maybe$Int
@@ -99,6 +99,8 @@
       drop xs
       drop xs
       drop xs
+      drop xs
+      drop xs : List$Int
       drop xs : List$Int
       drop xs : List$Int
       drop xs : List$Int
@@ -169,7 +171,7 @@
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
       ret con Just _t0  ; Δ{_t0} · moves{_t0}
       ret con Just y  ; Δ{y} · moves{y}
-      ret con Just ys  ; Δ{}
+      ret con Just ys  ; Δ{y ys} · moves{ys}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$Int
       ret con Nothing  ; Δ{}
@@ -373,5 +375,5 @@ showArg$Int x  =
 showArg$List$Int xs  =
 showListElems$Int xs  =
 showListRest$Int ys  =
-tail xs  =
+tail$Int xs  =
 uncons$Int xs  =

@@ -1017,8 +1017,8 @@ pub fn run_cli() -> ExitCode {
         }
         // Leak gate (second hard guarantee): a heap resource Auto-Drop never frees. Gated
         // unless `--allow-leaks` (keeps corruption checking) or `--no-verify` (bypasses all).
-        // Whitelisted synthetic sites (session/parmap `*$step`, polymorphic elements) are
-        // excluded by `verify::leak_gates` — those are the documented conservative leaks.
+        // Polymorphic-element leaks are excluded upstream (`leak_exempt`); every other leak gates,
+        // in the session/parmap state machines (`*$step`) too.
         let leaks: Vec<_> = all.iter().filter(|f| verify::leak_gates(f)).collect();
         if !allow_leaks && !leaks.is_empty() {
             for f in &leaks {
@@ -3467,6 +3467,46 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
             }
         }
     }
+    // Rule V — VIEWS CONSUME: a GENERIC param whose RECURSIVE (spine) field escapes via the
+    // result (`tail`'s `Cons y ys -> Just ys`, `dropWhile`'s `… else Cons y ys`) hands its spine
+    // to the caller. The caller must therefore MOVE the argument (core's view auto-move does), and
+    // the cells and elements the function skips have no other owner — so the function owns the
+    // param (`%1`) and reclaims them. Without it a view leaked its dropped prefix by design.
+    // Concrete views are already `%1` by Rule A; this is the generic counterpart. Not exempt:
+    // a view deep-drops the elements it skips, so it compiles natively only monomorphized.
+    let con_spine: HashMap<String, Vec<bool>> = module
+        .datas
+        .iter()
+        .flat_map(|d| {
+            d.cons.iter().map(|c| {
+                let flags = c
+                    .fields
+                    .iter()
+                    .map(|f| f.ty.head_con() == Some(d.name.as_str()))
+                    .collect();
+                (c.name.clone(), flags)
+            })
+        })
+        .collect();
+    for (idx, f) in module.funcs.iter().enumerate() {
+        let Some(sig) = &f.sig else { continue };
+        if !f.constraints.is_empty() {
+            continue;
+        }
+        let ptypes = sig.param_types();
+        for i in consumed_params(f, &con_spine) {
+            if consuming.get(&f.name).is_some_and(|s| s.contains(&i)) {
+                continue;
+            }
+            if ptypes
+                .get(i)
+                .is_some_and(|t| core::is_heap_shaped(t) && core::ty_has_var(t))
+            {
+                consuming.entry(f.name.clone()).or_default().insert(i);
+                apply.push((idx, i));
+            }
+        }
+    }
     // Rule C — WHOLE-PARAM HAND-OFF: a concrete heap param passed WHOLE to a consuming position
     // of another function (`keepW xs = length (filter$$big xs)`) is moved there, so this function
     // must own it too. Otherwise its caller keeps treating the argument as borrowed and may hand
@@ -5713,8 +5753,10 @@ deleteBy f x xs = case xs of
   Nil -> Nil
   Cons y ys -> if f x y then ys else Cons y (deleteBy f x ys)
 
-delete :: Eq a => a -> List a -> List a
-delete x xs = deleteBy eq x xs
+delete :: Eq a => a -> List a %1 -> List a
+delete x xs = case xs of
+  Nil -> Nil
+  Cons y ys -> if x == y then ys else Cons y (delete x ys)
 
 -- `unzip`/`zip3`: tuple-building/consuming list HOFs — leak-free now that container destructors
 -- reclaim tuple cells (drop_way handles tuples). `zip3` reuses the prelude `zipWith3`.

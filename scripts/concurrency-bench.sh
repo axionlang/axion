@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 
 CLANG="${AXION_CLANG:-clang}"
 command -v "$CLANG" >/dev/null 2>&1 || { echo "clang not found (set AXION_CLANG)"; exit 2; }
-AXIONC="axionc/target/debug/axionc"
+AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 [ -x "$AXIONC" ] || (cd axionc && cargo build -q)
 cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "axion-rt build failed"; exit 2; }
 RT_A="axion-rt/target/release/libaxion_rt.a"

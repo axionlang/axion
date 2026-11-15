@@ -129,7 +129,7 @@ jobs:
   # Sanitizers (§2/§11): GC-free memory safety has to actually be safe. The native
   # runtime (--release LLVM IR + C runtime) runs under AddressSanitizer (zero
   # use-after-free/double-free across all fixtures) and LeakSanitizer (allocs==frees
-  # on the proven leak-free subset). Needs Rust (axionc) and clang.
+  # on every native fixture). Needs Rust (axionc) and clang.
   sanitize:
     runs-on: ubuntu-latest
     steps:

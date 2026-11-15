@@ -17,7 +17,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-AXIONC="axionc/target/release/axionc"
+AXIONC="${AXIONC:-axionc/target/release/axionc}"
 if [ ! -x "$AXIONC" ]; then
   echo "building axionc..."
   (cd axionc && cargo build --release -q) || { echo "build failed"; exit 2; }

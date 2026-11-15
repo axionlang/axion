@@ -26,7 +26,7 @@ if ! "$CLANG" --version >/dev/null 2>&1; then
   echo "no clang (set AXION_CLANG or put clang on PATH) — skipping"
   exit 0
 fi
-AXIONC="axionc/target/debug/axionc"
+AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 [ -x "$AXIONC" ] || (cd axionc && cargo build -q)
 cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "axion-rt build failed"; exit 2; }
 RT_A="axion-rt/target/release/libaxion_rt.a"

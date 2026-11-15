@@ -20,9 +20,17 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 
-AX="$repo/axionc/target/debug/axionc"
-if [ ! -x "$AX" ]; then
-  AX="$repo/axionc/target/release/axionc"
+# The NEWER of the two builds (an old debug binary next to a fresh release one would trace a
+# stale compiler and report a disagreement the current verifier does not have). `AXIONC` overrides.
+AX="${AXIONC:-}"
+if [ -z "$AX" ]; then
+  dbg="$repo/axionc/target/debug/axionc"
+  rel="$repo/axionc/target/release/axionc"
+  if [ -x "$dbg" ] && { [ ! -x "$rel" ] || [ "$dbg" -nt "$rel" ]; }; then
+    AX="$dbg"
+  else
+    AX="$rel"
+  fi
 fi
 if [ ! -x "$AX" ]; then
   (cd "$repo/axionc" && cargo build)

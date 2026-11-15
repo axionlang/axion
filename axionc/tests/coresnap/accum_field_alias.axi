@@ -21,6 +21,7 @@
     Box xs ->
     Cons y ys ->
     Nil ->
+    drop acc : Box skip{0}
     else
     else
     let _dd2 = == _tag 1  ; Δ{}

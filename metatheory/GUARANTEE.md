@@ -20,8 +20,9 @@ it says so.
 > 1. never frees a heap resource twice (**no double-free**),
 > 2. never uses a heap resource after it is freed (**no use-after-free**),
 > 3. never frees a resource with the wrong reclaimer (**no bad-free / `WrongDropKey`**), and
-> 4. leaves no heap resource unreclaimed at exit (**no leak**), *except* a characterized set of
->    conservative leaks (§5).
+> 4. leaves no heap resource unreclaimed at exit (**no leak**). The verifier proves this for every
+>    function except the leak accounting of polymorphic extracted fields (§5), which LeakSanitizer
+>    gates instead: every native fixture is leak-checked, with no exempt subset.
 >
 > For concurrent programs, additionally: the communication graph is acyclic by construction, and the
 > system is **deadlock-free** with **session fidelity** and **cancellation-safety** — established at the
@@ -146,26 +147,25 @@ and well-mitigated this list is.
     the monomorphizer residual (deep monomorphizer work, not a guard tweak). So: some *currently
     rejected programs are in fact safe* (the rebuilders) — an honest expressiveness cost beyond the
     strict minimum, bounded and worked-around, never a safety compromise.
-- **Conservative leaks** (`verify::leak_gates` whitelist): session/parmap `*$step` and some polymorphic
-  elements are known-conservative leaks Auto-Drop does not reclaim. These are the "except" in clause (4);
-  they are safe (no corruption) and characterized, not unbounded.
-- **`Integer` (bignum) fields of `data`/record types** (`con_drop_slots`, `core.rs`): a boxed `Integer`
-  stored in a record/constructor field is **not** freed by that type's destructor, so if the container is
-  dropped *without* the field being extracted, the bignum leaks — and the verifier does **not** report it
-  (`AX0911` is blind to this class). `String` fields, by contrast, **are** reclaimed. The asymmetry is a
-  deliberate conservative choice: reclaiming the `Integer` field would make `drop`-and-the-destructor
-  double-free it in the common *extract-and-escape* shape (`getV r = rv r`; `map getV`), the
-  partial-consumer-over-a-heap-element class ([[axion-partial-consumer-uaf]]). The sound fix (a per-field
-  move-out that lets the destructor skip an extracted field — which would also lift the same limitation on
-  `String` fields) is the interprocedural partial-consumer work (roadmap §6); until then this is a
-  **characterized, corruption-free leak**, not a hole in the hard (no-corruption) guarantee. Investigated
-  2026-10-10: the naive reclaim (add `Integer` to `con_drop_slots`) fixes the leak but turns the
-  extract-and-escape shape into a sound **AX0910 rejection** (consistent with how `String` already behaves)
-  — an expressiveness regression, not shipped. Re-confirmed 2026-10-16: the owned-`String`-*param* leak
-  below was closed by the `bep` borrowed-element precision, but `bep` is a **param-reclaim** exclusion and
-  does **not** control the destructor's field-drop — so adding `Integer` to `con_drop_slots` still turns the
-  extract-and-escape shape into the same AX0910 rejection (empirically re-verified on the `getV r = n r`;
-  `map getV` shape). The field case genuinely needs the per-field move-out, not `bep`; it remains deferred.
+- **Leaks — no characterized exceptions (2026-11-15).** Clause (4) used to carry a list of known
+  conservative leaks. Each is closed and leak-gated:
+  - *`Integer` fields of `data`/record types* are reclaimed by the container's destructor like `String`
+    fields (`con_drop_slots`); an extracted field is moved out and the container frees only the rest
+    (skip destructors, a shell-free after a `case`). The 2026-10 attempt at this was rejected because
+    it refused `map getV`; the ownership inference added since (consumed parameters, per-clone
+    re-inference) makes the same change sound and leak-free. Regression: `integer_field_reclaim.axi`.
+  - *Views* (`tail`, `dropWhile`, `delete`, any function returning its list's own tail) consume their
+    list: consume-inference marks a generic view's list `%1` (Rule V), so the skipped cells and
+    elements are freed instead of "leaking the dropped prefix". Regression: `view_consumes_reclaim.axi`.
+  - *Session/parMap state machines* (`*$step`): a parMap worker tracks ownership like a `spawn`ed task
+    (it used to be generated untracked), and a fresh runtime result is classified by the built-in
+    ownership table. `verify::leak_gates` no longer whitelists `*$step`: a leak there is AX0911.
+  - *A field read out of an owned record that dies* is a move-out (`drop v : T skip{slot}`), so the
+    record's shell no longer leaks (`accum_field_alias.axi`, `poly_payload_borrow_return.axi`).
+  The remaining gap is one of PROOF, not of reclamation: the verifier's `leak_exempt` set still skips
+  leak accounting for polymorphic extracted fields and moved-in leaves (their heap-ness is unresolved
+  where it runs). LSan covers it: `scripts/sanitize.sh` leak-gates every native fixture, the
+  examples included.
 - **Owned `String` parameters in a tail-recursive accumulator — NOW RECLAIMED, SOUNDLY** (`core.rs`
   seeding of `reclaim_cond_escape`, default-**on**): an owned `String` *parameter* rebuilt each step of a
   tail recursion — `go acc n = … go (strAppend acc …) …`, the shape behind a `cmdLine`/search key

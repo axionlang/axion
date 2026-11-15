@@ -5,8 +5,8 @@
 #
 #   1. CORRUPTION (AddressSanitizer, all native fixtures): zero
 #      use-after-free / double-free. This is the hard guarantee ("no use-after-free").
-#   2. LEAKS (LeakSanitizer, proven leak-free subset): allocs == frees.
-#      Excludes fixtures whose leak is conservative and known (see LEAKY below).
+#   2. LEAKS (LeakSanitizer, every native fixture): allocs == frees. There is no exempt
+#      subset: a fixture that leaks fails the gate.
 #
 # Run:  AXION_CLANG=<clang> ./scripts/sanitize.sh
 set -uo pipefail
@@ -18,7 +18,7 @@ if ! "$CLANG" --version >/dev/null 2>&1; then
   exit 0
 fi
 
-AXIONC="axionc/target/debug/axionc"
+AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 if [ ! -x "$AXIONC" ]; then
   echo "building axionc..."
   (cd axionc && cargo build -q) || { echo "build failed"; exit 2; }
@@ -222,6 +222,8 @@ NATIVE=(
   axionc/tests/fixtures/borrowed_passthrough_reclaim.axi
   axionc/tests/fixtures/record_update_shared_fields.axi
   axionc/tests/fixtures/hof_clone_borrows_list.axi
+  axionc/tests/fixtures/integer_field_reclaim.axi
+  axionc/tests/fixtures/view_consumes_reclaim.axi
   axionc/tests/fixtures/file_read_chunks.axi
   axionc/tests/fixtures/not_equal.axi
   axionc/tests/fixtures/field_handoff_consume.axi
@@ -233,43 +235,6 @@ NATIVE=(
   examples/02_fib.axi
 )
 
-# PROVEN leak-free subset (heap/arena/borrow memory, no IO). The excluded ones
-# leak by known and documented conservative reclamation:
-#   · show/putStrLn → the runtime C-string is not reclaimed (heap vs. static
-#     indistinguishable at drop): record_run, 01_hello, 02_fib.
-#   · closure returned by a function → may be a borrowed param, not fresh;
-#     reclaiming it would be unsound: native_closure, lambda_hof.
-#   · `drop n xs` is a view — the caller relinquishes `xs` at the call (the
-#     result shares its tail), so the dropped prefix leaks: drop_view.
-# (integer_first_class + closure_consume_lambda + closure_data_elem + closure_acc_return —
-# heap values flowing through a closure in map/foldr — are leak-free, closed by the
-# closure-linearity arc: consuming HOFs own their list and the lifted lambda reclaims its
-# owned heap params (types from the wrapped callable's signature for an eta lambda, or
-# inferred at the `Pat::Var` span for a user lambda like `\x acc -> acc`). In LEAKFREE.)
-LEAKFREE=(
-  integer_first_class closure_consume_lambda closure_data_elem closure_acc_return closure_mono_hof
-  closure_foldl closure_record_elem closure_nested_list closure_alias_combiner closure_discard_combiner closure_heaplist_combiner
-  heap_loop linear_move borrow_reclaim update_borrow arena_run
-  buffer_sum buffer_roundtrip ffi_ptr division_operator buffer_ptr_checked buffer_borrow ffi_struct ffi_enum buffer_linear inplace_update native_case native_fib
-  num_user_instance num_constrained_poly num_literal_overload user_eq_ord user_integral rational
-  layout_paren_case layout_paren_case_multiline layout_paren_let layout_paren_do
-  layout_semi_case layout_semi_do
-  nested_drop sum_payload array_sum single_scope_reclaim array_thread_let array_thread_do tritvec_roundtrip tritvec_dot tritvec_iota tritvec_matvec tritvec_from_buffer i8array_matvec i8array_run array_reduce i8_reduce i8_dot_i8 i32array_run i32_reduce drift_reductions drift_matvec drift_codec float_array_dot
-  poly_payload_drop poly_payload_tco poly_payload_borrow_alias
-  poly_payload_generic_drop poly_payload_generic_nested poly_payload_generic_compose poly_payload_gap
-  land_call_boxed land_enum_call land_deepdrop_safety land_field_split_owned land_field_mixed land_owned_multi make_bound_drop make_bound_drop_local tuple_owned tuple_discard_owned tuple_elem_discard list_elem_borrow_reclaim list_integer_discard list_foldl_accum embed_param_consume filter_discard_reclaim tuple_field_borrow_reclaim tuple_nested_elem_reclaim stdlib_batch stdlib_batch2 stdlib_sortby stdlib_batch3 stdlib_unzip either_discard land_tuple_upd land_owned_poly land_cond_owned_temp basename_borrowed_elem grab_case_field tuple_cond_return_reuse nested_tuple_extract_escape
-  session_run_pingpong session_run_offer session_run_cancel
-  session_run_twospawn session_run_choice3 session_run_fib session_run_parfib session_run_server session_heap_reclaim session_let_stmt session_channel_heap session_case_data file_read_chunks not_equal field_handoff_consume cond_branch_drop_reclaim borrowed_result_lifetime let_case_field_or_literal generic_discard_reclaim partial_type_con_reclaim residual_leak_reclaim borrowed_passthrough_reclaim record_update_shared_fields hof_clone_borrows_list
-  poly_nested_list session_run_parmap_heap list_heap_reclaim strings_text data_heap_field peel_heap_reclaim
-  structural_borrowers_reclaim take_heap_reclaim tuple_element_extract_reclaim uncons_safe_tuple_read do_monad_bind either_map_reclaim mixed_param_return_reclaim mixed_param_return_integer container_copy_reclaim borrowed_list_elem_consume dead_binding_reclaim sort_heap_reclaim where_local_unlines neg_literals neg_nonbreaking float_forms prelude_either_batch cond_owned_temp
-  string_compare capability_sanitize readline_sanitize readkey_sanitize readkeytimeout_sanitize chr_sanitize cond_temp_reclaim lambda typecheck gauss json hello_cli cond_escape_let
-  record_update_reclaim record_update_multi record_update_chain
-  record_update_escape record_update_escape_read integer_reclaim integer_accumulator
-  field_alias_return integer_divmod rsa_modexp escape_local_borrow
-  case_extract_escape tuple_extract_escape hof_unsigned_closure hof_lambda_closure hof_partial_closure curried_caf curried_partial
-  land_borrowing_copier clause_param_borrow view_case_in_branch tuple_param_borrow filter_in_case_scrutinee hof_closure_param
-)
-is_leakfree() { local n; for n in "${LEAKFREE[@]}"; do [ "$n" = "$1" ] && return 0; done; return 1; }
 
 compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if native
   "$AXIONC" --emit llvm "$1" >"$WORK/ir.ll" 2>/dev/null || return 1
@@ -280,16 +245,15 @@ compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if nativ
 # ever test startup. Drive it with a key stream over a seeded, sandboxed HOME so the ASan corruption
 # gate actually exercises the operational paths (nav, scroll, search, mkdir/mkfile/rename/chmod, go-
 # dir, mark+paste, attributes). Exact outcomes don't matter here — we only assert NO corruption; a
-# failed op's modal just eats the next key / EOF. (fff is NOT leak-gated: a known compiler-level
-# string-accumulator leak affects cmdLine/search; see the flagship memory. Corruption is the gate.)
+# failed op's modal just eats the next key / EOF. The same drive runs the leak gate.
 FFF_DRIVE='jkgG.oJK/note\n;,nMADE\nfTOUCHED\nrRENAMED\nX:sub\nypxgdpyui.bbt][T3jBb'
-run_corruption() { # <name> <exe> → run under ASan (leaks off); stderr→$WORK/e; return exit code
+run_asan() { # <name> <exe> <detect_leaks 0|1> → run under ASan; stderr→$WORK/e; return exit code
   if [ "$1" = axfm ]; then
     local H="$WORK/fffhome"; rm -rf "$H"; mkdir -p "$H/sub"
     : >"$H/a.txt"; : >"$H/b.txt"; printf 'line1\nline2\nline3\n' >"$H/note.txt"
-    printf '%b' "$FFF_DRIVE" | HOME="$H" ASAN_OPTIONS=detect_leaks=0 "$2" "$H" >/dev/null 2>"$WORK/e"
+    printf '%b' "$FFF_DRIVE" | HOME="$H" ASAN_OPTIONS=detect_leaks=$3 "$2" "$H" >/dev/null 2>"$WORK/e"
   else
-    ASAN_OPTIONS=detect_leaks=0 "$2" </dev/null >/dev/null 2>"$WORK/e"
+    ASAN_OPTIONS=detect_leaks=$3 "$2" </dev/null >/dev/null 2>"$WORK/e"
   fi
 }
 
@@ -302,26 +266,22 @@ for f in "${NATIVE[@]}"; do
     echo "· $name: not in the native subset (skipped)"
     continue
   fi
-  # corruption gate (leaks off) — fff is driven with a key stream (see run_corruption)
-  if ! run_corruption "$name" "$exe"; then
+  # corruption gate (leaks off) — fff is driven with a key stream (see run_asan)
+  if ! run_asan "$name" "$exe" 0; then
     echo "✗ $name: memory CORRUPTION under ASan"; grep -E 'ERROR|SUMMARY' "$WORK/e" | head -2; fail=1; continue
   fi
   corr=$((corr + 1))
-  # leak gate (only on the proven subset)
-  if is_leakfree "$name"; then
-    if ASAN_OPTIONS=detect_leaks=1 "$exe" </dev/null >/dev/null 2>"$WORK/e"; then
-      echo "✓ $name: ASan + LSan clean"; leak=$((leak + 1))
-    else
-      echo "✗ $name: LEAK under LSan (should be leak-free)"; grep -E 'SUMMARY' "$WORK/e" | head -1; fail=1
-    fi
+  # leak gate (every fixture)
+  if run_asan "$name" "$exe" 1; then
+    echo "✓ $name: ASan + LSan clean"; leak=$((leak + 1))
   else
-    echo "✓ $name: ASan clean (known conservative leak — outside the gate)"
+    echo "✗ $name: LEAK under LSan"; grep -E 'SUMMARY' "$WORK/e" | head -1; fail=1
   fi
 done
 
 echo "---"
 if [ "$fail" -eq 0 ]; then
-  echo "OK: $corr fixtures without corruption; $leak proven leak-free."
+  echo "OK: $corr fixtures without corruption; $leak leak-free (every native fixture is leak-gated)."
 else
   echo "FAILURE: memory regression detected."
 fi

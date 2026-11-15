@@ -40,7 +40,7 @@ if ! "$CLANG" --version >/dev/null 2>&1; then
   exit 0
 fi
 
-AXIONC="axionc/target/debug/axionc"
+AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 if [ ! -x "$AXIONC" ]; then
   echo "building axionc..."
   (cd axionc && cargo build -q) || { echo "build failed"; exit 2; }

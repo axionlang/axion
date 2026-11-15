@@ -744,17 +744,15 @@ impl RecordInfo {
                     // A heap-owning field is a separate allocation a flat `free` would leave
                     // behind → it must be reclaimed when the record dies (its `drop_way`
                     // picks the right reclaimer: a `data` destructor or the tagged
-                    // `axion_str_drop`). `String` is heap (`strAppend`/`substr` allocate), so a
-                    // constructor that owns one — `Var String`, `CloV String …` — must free it;
-                    // the tagged reclaimer is safe on a static-literal string too. Bare `Int`,
-                    // `Buffer`, and functions are non-heap and left out. `Integer` is heap too
-                    // but is NOT reclaimed here: a borrowing field-extractor (`getV r = rv r`)
-                    // returns the field as an interior alias, so a `map getV` over a container
-                    // of such records would double-free the shared bignum against the record's
-                    // deep-drop (the alias-borrower-through-a-HOF class, [[axion-partial-consumer-uaf]])
-                    // — left as a conservative leak until that analysis covers record fields.
+                    // `axion_str_drop`/`axion_bignum_free`). `String` and `Integer` are heap
+                    // (`strAppend`/`substr`/bignum arithmetic allocate), so a constructor that
+                    // owns one — `Var String`, `R Integer` — must free it; the tagged string
+                    // reclaimer is safe on a static literal too. Bare `Int`, `Buffer`, and
+                    // functions are non-heap and left out. (An extracted field is MOVED out: the
+                    // container then frees only the remainder — skip destructors, a shell-free
+                    // after a `case`, or a copy where the field is read twice.)
                     if let Some(h) = f.ty.head_con() {
-                        if data_names.contains(h) || h == "String" {
+                        if data_names.contains(h) || h == "String" || h == "Integer" {
                             // store the FULL field type (not just the head), so the
                             // destructor generator can key a parametric field on its
                             // mono key (`List String` → `axion_drop_List$String`,
@@ -4460,7 +4458,7 @@ impl SessGen<'_> {
                     }
                     binds.push((
                         t.clone(),
-                        Rhs::Op(Op::CallDirect(name.clone(), atoms, None)),
+                        Rhs::Op(Op::CallDirect(name.clone(), atoms.clone(), None)),
                     ));
                     if let Some(sig) = &sig {
                         // fresh unless it may return a parameter it only borrowed (one it took
@@ -4473,6 +4471,29 @@ impl SessGen<'_> {
                         if let Some(key) = self.owned_key(sig_result(sig)).filter(|_| fresh) {
                             if let Some(o) = self.own.as_mut() {
                                 o.pending.push((t.clone(), key));
+                            }
+                        } else if let Some(o) = self.own.as_mut() {
+                            // the result may BE a borrowed argument (`idI (fromInt n)`): a fresh
+                            // temporary passed there is owned by the result from now on, so it is
+                            // freed (or moved on) once, through the result — not after the call.
+                            let alias: Vec<usize> = o
+                                .ret_alias
+                                .get(&name)
+                                .map(|s| {
+                                    s.iter()
+                                        .copied()
+                                        .filter(|i| !consumed.contains(i))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            for i in alias {
+                                let Some(Atom::Var(v)) = atoms.get(i) else {
+                                    continue;
+                                };
+                                if let Some(at) = o.pending.iter().position(|(p, _)| p == v) {
+                                    let (_, key) = o.pending.remove(at);
+                                    o.pending.push((t.clone(), key));
+                                }
                             }
                         }
                     }
@@ -4508,7 +4529,18 @@ impl SessGen<'_> {
                                 returns: true,
                             }),
                         ));
-                        if let Some(key) = head.and_then(sess_fresh_builtin) {
+                        // a fresh heap result the task owns: per the runtime ownership table (the
+                        // one authority — `fromInt`'s Integer, `strAppend`'s String, …) when the
+                        // call only reads its arguments, else the session's own list.
+                        let table = crate::builtins::rt_entry(func).and_then(|e| match e {
+                            crate::builtins::RtEntry {
+                                args: crate::builtins::ArgOwn::Borrow,
+                                out: crate::builtins::Out::Owned(k),
+                                ..
+                            } => Some(*k),
+                            _ => None,
+                        });
+                        if let Some(key) = table.or_else(|| head.and_then(sess_fresh_builtin)) {
                             if let Some(o) = self.own.as_mut() {
                                 o.pending.push((t.clone(), key.into()));
                             }
@@ -5605,10 +5637,11 @@ fn session_fns(
 // endpoints (recv-from-upstream, send-to-downstream), so it reads both slots.
 type ParmapWorkers = HashMap<String, (String, i32, i32, i32)>;
 
-fn parmap_worker_steps(
-    module: &ast::Module,
-    native_fns: &HashSet<String>,
-) -> (Vec<CoreFn>, ParmapWorkers) {
+/// The `parMap` workers of the module and their state layouts. The layout alone fixes the
+/// `worker → (step, size, slots)` map the lowering of `main` needs, so it is computed early
+/// (`parmap_worker_map`); the step BODIES are generated late (`parmap_worker_steps`), once the
+/// native functions exist, so a worker can reclaim the heap values it owns like a session task.
+fn parmap_worker_layouts(module: &ast::Module) -> (Vec<&ast::Func>, HashMap<String, SessLayout>) {
     let clause_body = sess_clause_body;
     // collect worker names from every function body (incl. `where` clauses)
     let mut names = Vec::new();
@@ -5632,16 +5665,6 @@ fn parmap_worker_steps(
         .filter(|n| seen.insert(n.clone()))
         .filter_map(|n| module.funcs.iter().find(|f| f.name == n))
         .collect();
-    if workers.is_empty() {
-        return (Vec::new(), HashMap::new());
-    }
-    // choice labels → tags (parity with `session_fns`; a worker may use offer/select)
-    let mut tags: HashMap<String, i64> = HashMap::new();
-    for d in &module.datas {
-        for (i, c) in d.cons.iter().enumerate() {
-            tags.insert(c.name.clone(), i as i64);
-        }
-    }
     let mut layouts: HashMap<String, SessLayout> = HashMap::new();
     for wf in &workers {
         let pats = &wf.clauses[0].pats;
@@ -5651,10 +5674,72 @@ fn parmap_worker_steps(
             sess_layout(pats, body, format!("{}$step", wf.name)),
         );
     }
-    let mut fns = Vec::new();
+    (workers, layouts)
+}
+
+/// `worker → (step name, state size, endpoint slots)` for every `parMap` target (empty if none).
+fn parmap_worker_map(module: &ast::Module) -> ParmapWorkers {
+    let (workers, layouts) = parmap_worker_layouts(module);
     let mut map = HashMap::new();
     for wf in &workers {
         let lay = &layouts[&wf.name];
+        let up_slot = lay.param_slots.first().copied().unwrap_or(16);
+        let down_slot = lay.param_slots.get(1).copied().unwrap_or(up_slot);
+        map.insert(
+            wf.name.clone(),
+            (lay.step.clone(), lay.size, up_slot, down_slot),
+        );
+    }
+    map
+}
+
+/// The `parMap` workers' state machines (`<worker>$step`). Like a `spawn`ed session task, a
+/// worker OWNS the heap values it creates (`fromInt n`, a call's fresh result) and frees each once
+/// it is no longer needed, so its temporaries do not leak. (They used to be generated untracked —
+/// `own: None` — and every heap temporary of a worker leaked.)
+#[allow(clippy::too_many_arguments)]
+fn parmap_worker_steps(
+    module: &ast::Module,
+    native_fns: &HashSet<String>,
+    ret_alias: &HashMap<String, HashSet<usize>>,
+    tys: &HashMap<Span, Type>,
+    drop_seeds: &std::cell::RefCell<Vec<Type>>,
+    borrow_args: &BorrowArgs,
+    frees: &HashMap<String, HashSet<usize>>,
+) -> Vec<CoreFn> {
+    let (workers, layouts) = parmap_worker_layouts(module);
+    if workers.is_empty() {
+        return Vec::new();
+    }
+    // choice labels → tags (parity with `session_fns`; a worker may use offer/select)
+    let mut tags: HashMap<String, i64> = HashMap::new();
+    let mut cons: HashMap<String, (Vec<String>, Vec<Type>)> = HashMap::new();
+    let mut boxed: HashSet<String> = HashSet::new();
+    for d in &module.datas {
+        for (i, c) in d.cons.iter().enumerate() {
+            tags.insert(c.name.clone(), i as i64);
+            cons.insert(
+                c.name.clone(),
+                (
+                    d.params.clone(),
+                    c.fields.iter().map(|f| f.ty.clone()).collect(),
+                ),
+            );
+            if !c.fields.is_empty() {
+                boxed.insert(d.name.clone());
+            }
+        }
+    }
+    let funcs: HashMap<String, &ast::Func> =
+        module.funcs.iter().map(|f| (f.name.clone(), f)).collect();
+    // a parMap worker is only ever started by the runtime with its endpoint: no call site can
+    // pass it a value it does not own, so nothing is demoted.
+    let demoted: std::cell::RefCell<HashSet<(String, usize)>> = Default::default();
+    let mut fns = Vec::new();
+    for wf in &workers {
+        let lay = &layouts[&wf.name];
+        let pats = &wf.clauses[0].pats;
+        let body = sess_clause_body(wf).unwrap_or_else(|| panic!("parMap worker body"));
         let mut g = SessGen {
             name: wf.name.as_str(),
             lay,
@@ -5664,10 +5749,25 @@ fn parmap_worker_steps(
             susp: HashMap::new(),
             susp_live: Vec::new(),
             tmp: 0,
-            own: None,
+            own: Some(SessOwn {
+                funcs: &funcs,
+                ret_alias,
+                demoted: &demoted,
+                owned: Vec::new(),
+                pending: Vec::new(),
+                moved: HashSet::new(),
+                at_susp: HashMap::new(),
+                tys,
+                proto: sess_payload_types(pats, wf.sig.as_ref(), body, &funcs),
+                cons: &cons,
+                boxed: &boxed,
+                borrow: borrow_args,
+                frees,
+                var_tys: HashMap::new(),
+                drop_seeds,
+            }),
         };
-        let body = clause_body(wf).unwrap_or_else(|| panic!("parMap worker body"));
-        let step_body = g.build_step(&wf.clauses[0].pats, body);
+        let step_body = g.build_step(pats, body);
         fns.push(CoreFn {
             name: lay.step.clone(),
             params: vec![SESS_SCHED.into(), SESS_STATE.into()],
@@ -5677,14 +5777,8 @@ fn parmap_worker_steps(
             owned_drop_ty: Vec::new(),
             body: step_body,
         });
-        let up_slot = lay.param_slots.first().copied().unwrap_or(16);
-        let down_slot = lay.param_slots.get(1).copied().unwrap_or(up_slot);
-        map.insert(
-            wf.name.clone(),
-            (lay.step.clone(), lay.size, up_slot, down_slot),
-        );
     }
-    (fns, map)
+    fns
 }
 
 /// The lowering plus the analysis inputs the Δ checker reads (Δ-1):
@@ -6173,7 +6267,7 @@ pub fn lower_with(
     let native_fn_names: HashSet<String> = native_ok.keys().cloned().collect();
     // §9 structured fork-join: worker state machines for every `parMap` target,
     // plus the map the lowering uses to emit `axion_par_map`. Runs pre-eta.
-    let (parmap_steps, parmap_map) = parmap_worker_steps(orig_module, &native_fn_names);
+    let parmap_map = parmap_worker_map(orig_module);
     // Session source functions (main's `bound` body + its transitive `spawn` targets) are compiled
     // to state machines by `session_fns` above; drop them from normal native lowering so they are
     // not emitted twice. For an `Ep`-typed worker the transitive-candidacy loop already removes it
@@ -6990,6 +7084,8 @@ pub fn lower_with(
             );
             f.body = reclaim_cond_escape(body, owned, &borrow_args, &borrow_ret, &recinfo, dty);
         }
+        // the skip drops it emitted (a field move-out) need their skip destructors too
+        collect_drop_skips(&f.body, &mut skip_seeds);
         result.push(f);
         skip_seeds.extend(seeds);
         tuple_skip_seeds.extend(tuple_seeds_skip);
@@ -7141,15 +7237,28 @@ pub fn lower_with(
     // must not free).
     let ret_alias = crate::verify::ret_alias_summary(&result);
     let sess_seeds = std::cell::RefCell::new(Vec::new());
-    result.extend(session_fns(
+    let frees = crate::verify::frees_heap_params(&result);
+    let sess = session_fns(
         orig_module,
         &native_fn_names,
         &ret_alias,
         makecon_tys,
         &sess_seeds,
         &borrow_args,
-        &crate::verify::frees_heap_params(&result),
-    ));
+        &frees,
+    );
+    // §9 structured fork-join worker state machines: same nursery arena and the same ownership
+    // tracking as the session steps.
+    let parmap_steps = parmap_worker_steps(
+        orig_module,
+        &native_fn_names,
+        &ret_alias,
+        makecon_tys,
+        &sess_seeds,
+        &borrow_args,
+        &frees,
+    );
+    result.extend(sess);
     // destructors for the parametric `data` instances only session tasks free (`List$String`)
     {
         let have: HashSet<String> = result.iter().map(|f| f.name.clone()).collect();
@@ -9451,9 +9560,8 @@ pub struct ExtractFact {
 
 /// Classify every `Con` heap-field extraction in the lowered module by the intra-procedural
 /// container-liveness rule (read-only; see the section header). `module` supplies the constructors'
-/// declared field TYPES, so heap-ness is judged by TYPE (`Integer` included) rather than by
-/// `con_drop_slots` — which excludes `Integer` and would blind the analysis exactly where a bug
-/// lives.
+/// declared field TYPES, so heap-ness is judged by TYPE rather than by `con_drop_slots` (which
+/// once excluded `Integer` and would have blinded the analysis exactly where a bug lived).
 pub fn classify_extractions(
     fns: &[CoreFn],
     module: &ast::Module,
@@ -9516,7 +9624,7 @@ pub fn classify_extractions(
 
 /// A field's declared type needs heap reclamation — `Integer`/`String`/`data`/`List`/tuple/poly,
 /// but not `Int`/`Float`/`Bool`/`Char`/`Buffer`/function or an unboxed enum. Type-based so it is
-/// NOT gated on `con_drop_slots` (which drops `Integer`).
+/// NOT gated on `con_drop_slots`.
 fn field_ty_heap(ty: &Type, recinfo: &RecordInfo) -> bool {
     match ty {
         Type::Var(_) => true,   // polymorphic — may instantiate to heap
@@ -11337,6 +11445,69 @@ fn wrap_tail_copy(t: Term, key: &str) -> Option<Term> {
     }
 }
 
+/// The FIELD MOVE-OUT candidate of `op` for [`reclaim_cond_escape`]: `field f v` reading a heap
+/// field of an OWNED record `v` (in `owned`, keyed by its plain type name) — a single-constructor,
+/// non-parametric record whose field `f` is not `%1`. Returns `(v, T, slot(f), key of f)`. The
+/// caller adds the liveness condition (`v` not mentioned afterwards).
+fn field_moveout(
+    op: &Op,
+    owned: &[(String, Option<String>)],
+    recinfo: &RecordInfo,
+) -> Option<(String, String, usize, String)> {
+    let Op::Field {
+        name,
+        rec: Atom::Var(src),
+    } = op
+    else {
+        return None;
+    };
+    let ty = owned
+        .iter()
+        .find(|(v, _)| v == src)
+        .and_then(|(_, k)| k.clone())?;
+    if !recinfo.named_field_is_heap(name) {
+        return None;
+    }
+    let (con, slot) = recinfo.named_field_slot(name)?;
+    let fkey = recinfo.field_drop_slot(&con, slot)?;
+    (recinfo.is_single_con(&con)
+        && !recinfo.field_is_owned(&con, slot)
+        && recinfo.con_type_name(&con) == Some(ty.as_str()))
+    .then(|| (src.clone(), ty, slot, fkey))
+}
+
+/// Every `drop v : T skip{…}` in `t` as a skip-destructor seed `(T, slots)` (deduplicated).
+fn collect_drop_skips(t: &Term, out: &mut Vec<SkipSeed>) {
+    match t {
+        Term::Let(_, rhs, _, b) => {
+            match rhs {
+                Rhs::Op(_) => {}
+                Rhs::If(_, th, el) => {
+                    collect_drop_skips(th, out);
+                    collect_drop_skips(el, out);
+                }
+                Rhs::Case(_, arms) => arms.iter().for_each(|(_, a)| collect_drop_skips(a, out)),
+            }
+            collect_drop_skips(b, out);
+        }
+        Term::Drop(_, Some(ty), skip, _, b) => {
+            if !skip.is_empty() && !out.iter().any(|(t, s)| t == ty && s == skip) {
+                out.push((ty.clone(), skip.clone()));
+            }
+            collect_drop_skips(b, out);
+        }
+        Term::Drop(_, None, _, _, b) => collect_drop_skips(b, out),
+        Term::Ret(Rhs::If(_, th, el), _) => {
+            collect_drop_skips(th, out);
+            collect_drop_skips(el, out);
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => {
+            arms.iter().for_each(|(_, a)| collect_drop_skips(a, out));
+        }
+        Term::Ret(Rhs::Op(_), _) => {}
+    }
+}
+
 fn reclaim_cond_escape(
     body: Term,
     owned: Vec<(String, Option<String>)>,
@@ -11355,6 +11526,34 @@ fn reclaim_cond_escape(
             } else {
                 None
             };
+            // FIELD MOVE-OUT: `let x = field f v` reads a heap field of an owned record `v` that is
+            // never mentioned again. The read is then a MOVE: free `v` at once except that slot
+            // (`drop v : T skip{slot}` — the shell and the sibling fields), and `x` owns the field
+            // from here on (reclaimed where it dies, kept where it escapes). The same per-field
+            // move-out an owned `case` scrutinee gets for its extracted fields; without it `v`
+            // left the owned set (a `Field` may alias) and its shell leaked — the accumulator
+            // `build (k - 1) (Box { items = Cons k (items acc) })`. Single-constructor,
+            // non-parametric records only (the skip destructor is keyed by the plain type name).
+            let field_moveout = match &rhs {
+                Rhs::Op(op) => field_moveout(op, &owned, recinfo).filter(|(src, ..)| {
+                    x != *src && !term_mentions_any(&b, &HashSet::from([src.clone()]))
+                }),
+                _ => None,
+            };
+            if let Some((src, ty, slot, fkey)) = field_moveout {
+                let owned: Vec<_> = owned
+                    .into_iter()
+                    .filter(|(v, _)| v != &src && v != &x)
+                    .chain(std::iter::once((x.clone(), Some(fkey))))
+                    .collect();
+                let rest = reclaim_cond_escape(*b, owned, ba, br, recinfo, dty);
+                return Term::Let(
+                    x,
+                    rhs,
+                    sp,
+                    Box::new(Term::Drop(src, Some(ty), vec![slot], sp, Box::new(rest))),
+                );
+            }
             let mut owned: Vec<_> = owned
                 .into_iter()
                 .filter(|(v, _)| {
@@ -11518,6 +11717,21 @@ fn reclaim_cond_escape(
                 })
                 .collect();
             Term::Ret(Rhs::Case(scrut, arms), sp)
+        }
+        Term::Ret(Rhs::Op(op), sp) if field_moveout(&op, &owned, recinfo).is_some() => {
+            // a tail `ret field f v` of an owned record: the FIELD MOVE-OUT above in tail form —
+            // `let t = field f v; drop v : T skip{slot}; <the other owned die here>; ret t`.
+            let tmp = format!(
+                "_rcl{}",
+                RECL_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            let tail = Term::Let(
+                tmp.clone(),
+                Rhs::Op(op),
+                sp,
+                Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))), sp)),
+            );
+            reclaim_cond_escape(tail, owned, ba, br, recinfo, dty)
         }
         Term::Ret(Rhs::Op(op), sp) => {
             // An owned param dies at this tail `ret` in one of two ways:

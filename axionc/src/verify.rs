@@ -106,14 +106,13 @@ impl Cat {
     }
 }
 
-/// `true` if a leak finding should GATE native compilation — a genuine unintended leak in
-/// Auto-Drop-governed code. EXEMPT: compiler-synthesized session/parmap state machines
-/// (`*$step`), whose memory is hand-rolled (NOT Auto-Drop-driven) and whose residual leaks
-/// are the documented conservative session/parmap class — the same rationale as the skipped
-/// `axion_drop_*` destructors. (Polymorphic-element leaks are already suppressed upstream via
+/// `true` if a leak finding should GATE native compilation — a heap resource nothing frees.
+/// Every function is gated, the compiler-synthesized session/parmap state machines (`*$step`)
+/// included: their tasks own and reclaim what they create (`SessOwn`), so a leak there is a bug,
+/// not a documented residual. (Polymorphic-element leaks are suppressed upstream via
 /// `leak_exempt`, so they never reach here.)
 pub fn leak_gates(f: &Finding) -> bool {
-    f.cat == Cat::Leak && !f.func.ends_with("$step")
+    f.cat == Cat::Leak
 }
 
 /// The type CONSTRUCTOR of a mono/destructor key: the segment before the first `$` argument
@@ -1691,7 +1690,7 @@ impl Verifier<'_> {
             // → ["String","Int"]) rather than a constructor's drop slots. Only the BORROWED case is
             // tracked: an OWNED tuple's fields already reclaim soundly via the Core skip-destructors
             // (the tuple_owned / nested_tuple_extract_escape / tuple_elem_discard fixtures are
-            // LEAKFREE), and tracking them here would risk a scalar-field leak false-positive.
+            // LSan leak-gated), and tracking them here would risk a scalar-field leak false-positive.
             if !scrut_owned && self.mode.track_fields {
                 // segment the tuple key into per-field keys; `None` ⇒ unknown (no scrut key / arity
                 // mismatch) ⇒ fields are tracked CONSERVATIVELY (see `track` below).
@@ -2229,11 +2228,10 @@ mod tests {
         );
     }
 
-    /// A leak inside a compiler-synthesized session/parmap state machine (`*$step`) is NOT
-    /// gate-worthy — its memory is hand-rolled (not Auto-Drop-driven) and its residual leaks
-    /// are the documented conservative class (see `leak_gates`).
+    /// A leak inside a compiler-synthesized session/parmap state machine (`*$step`) gates like
+    /// any other: its tasks reclaim what they own, so nothing there is a tolerated residual.
     #[test]
-    fn synthetic_worker_leak_is_whitelisted() {
+    fn synthetic_worker_leak_gates() {
         let body = Term::Let(
             "x".into(),
             Rhs::Op(Op::MakeTuple(vec![Atom::Int(1), Atom::Int(2)])),
@@ -2245,9 +2243,6 @@ mod tests {
         let fs = one(f);
         let leak = fs.iter().find(|f| f.cat == Cat::Leak);
         assert!(leak.is_some(), "the leak is still detected/reported");
-        assert!(
-            !leak_gates(leak.unwrap()),
-            "a $step worker leak must not gate"
-        );
+        assert!(leak_gates(leak.unwrap()), "a $step worker leak must gate");
     }
 }

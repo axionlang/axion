@@ -7,6 +7,7 @@
 
       drop xs
       drop xs
+      drop y : P skip{0}
       drop ys : List$P
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -14,11 +15,12 @@
       let _dd1 = call axion_drop_List$P _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_P _dd2  ; Δ{}
+      let _rcl2000000 = field inner y  ; Δ{y}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret field inner y  ; Δ{y}
+      ret _rcl2000000  ; Δ{y}
       ret record Inner { z = 0}  ; Δ{} · makes Inner
     Cons y ys ->
     Nil ->

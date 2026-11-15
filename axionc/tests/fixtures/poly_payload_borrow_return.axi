@@ -4,8 +4,8 @@
 -- deep drop (`axion_drop_List$P`, which frees `y` and its `inner`) would then
 -- free the very pointer being returned → double-free (interp disagreeing with the
 -- crashing native backends). Auto-Drop detects the heap-typed result and falls
--- back to a SHALLOW scrutinee free (safe; the untouched tail leaks — the deferred
--- extracted-field gap). All three executors must agree: z (inner of head) = 3.
+-- back to a SHALLOW scrutinee free; the tail is deep-dropped and `inner y` is MOVED out of
+-- `y` (`drop y : P skip{inner}`), so nothing leaks. All three executors must agree: z = 3.
 data Inner = Inner { z :: Int }
 data P = P { inner :: Inner }
 data List a = Nil | Cons a (List a)

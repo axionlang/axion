@@ -14,7 +14,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 
-AX="$repo/axionc/target/debug/axionc"
+AX="${AXIONC:-$repo/axionc/target/debug/axionc}"
 [ -x "$AX" ] || (cd "$repo/axionc" && cargo build)
 LEAN=(nix shell github:NixOS/nixpkgs/b6018f87da91d19d0ab4cf979885689b469cdd41#lean4 --command lean)
 
