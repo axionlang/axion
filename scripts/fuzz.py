@@ -887,6 +887,110 @@ main =
 """
     return prog
 
+OWN_PRE = """-- fuzz:ownership
+data Rec = Rec { name :: String, tag :: Integer, items :: List String }
+
+idG :: a -> a
+idG x = x
+
+pickG :: Bool -> a -> a -> a
+pickG b x y = if b then x else y
+
+konst :: a -> a -> a
+konst x y = x
+
+orDefault :: String -> String -> String
+orDefault d s = if strLen s == 0 then d else s
+
+relJoin :: String -> String -> String
+relJoin rel nm = if strLen rel == 0 then nm else strAppend (strAppend rel "/") nm
+
+recLen :: Rec -> Int
+recLen r = strLen (name r) + length (items r)
+
+rename :: Rec -> String -> Rec
+rename r n = r { name = n }
+
+firstItem :: Rec -> String
+firstItem r = case items r of
+  Nil -> name r
+  Cons x _ -> x
+
+sumWith :: (String -> Int) -> List String -> Int
+sumWith f xs = case xs of
+  Nil -> 0
+  Cons x rest -> f x + sumWith f rest
+
+"""
+
+def _own_str(rng):
+    return rng.choice([f'"s{rng.randint(0, 9)}"', f"showInt {rng.randint(0, 999)}",
+                       f"strAppend \"a\" (showInt {rng.randint(0, 99)})", '""'])
+
+def _own_list(rng):
+    xs = [_own_str(rng) for _ in range(rng.randint(0, 4))]
+    return "Nil" if not xs else "".join(f"Cons ({x}) (" for x in xs) + "Nil" + ")" * len(xs)
+
+def _own_term(rng, binds):
+    """One Int term; may introduce a `let` (returned as a tuple) that later terms read."""
+    k = rng.random()
+    if k < 0.2:
+        name = f"v{len(binds)}"
+        kind = rng.choice(["S", "L", "R"])
+        if kind == "S":
+            val = _own_str(rng)
+        elif kind == "L":
+            val = _own_list(rng)
+        else:
+            val = f"Rec {{ name = {_own_str(rng)}, tag = fromInt {rng.randint(0, 9)}, items = {_own_list(rng)} }}"
+        binds.append((name, kind))
+        return ("let", name, val)
+    if binds and rng.random() < 0.5:
+        v, kind = rng.choice(binds)
+        if kind == "S":
+            return rng.choice([f"strLen {v}", f"strLen (idG {v})", f"strLen (orDefault \"d\" {v})",
+                               f"strLen (relJoin \"\" {v})", f"strLen (pickG True {v} \"x\")"])
+        if kind == "L":
+            return rng.choice([f"length {v}", f"sumWith strLen {v}",
+                               f"sumWith (\\s -> strLen (relJoin \"\" s)) {v}",
+                               f"sumWith (\\s -> strLen (idG s)) {v}",
+                               f"(case {v} of\n    Nil -> 0\n    Cons x _ -> strLen (orDefault \"d\" x))"])
+        return rng.choice([f"recLen {v}", f"strLen (name {v})", f"strLen (firstItem {v})",
+                           f"strLen (showInteger (tag {v}))", f"recLen (rename {v} ({_own_str(rng)}))",
+                           f"(case {v} of\n    Rec n t is -> strLen n + length is)"])
+    # a where-local capturing a heap value
+    if k < 0.45:
+        s = _own_str(rng)
+        return f"(let w = {s} in strLen (strAppend w w))"
+    if k < 0.7:
+        return rng.choice([f"strLen (konst ({_own_str(rng)}) ({_own_str(rng)}))",
+                           f"strLen (pickG False ({_own_str(rng)}) ({_own_str(rng)}))",
+                           f"length (idG ({_own_list(rng)}))"])
+    return f"recLen (Rec {{ name = {_own_str(rng)}, tag = fromInt 1, items = {_own_list(rng)} }})"
+
+def gen_ownership(rng):
+    """Ownership shapes no other generator reaches: records with heap fields (read, updated by
+    copy, case-extracted), let-bound heap values read again after borrowing calls, generic
+    pass-through (`idG`, `pickG`, `konst`) and functions that may return a parameter WHOLE
+    (`orDefault`, `relJoin`) over owned values, borrowed parameters and borrowed list elements,
+    closures over them. Every program is safe: a divergence or an ASan finding is a hard failure;
+    an AX0910 refusal is sound but counted, so a rise shows a missed reclamation."""
+    binds = []
+    lets, terms = [], []
+    for _ in range(rng.randint(2, 6)):
+        t = _own_term(rng, binds)
+        if isinstance(t, tuple):
+            lets.append(f"  let {t[1]} = {t[2]}")
+        else:
+            terms.append(t)
+    for v, kind in binds:
+        terms.append({"S": f"strLen {v}", "L": f"length {v}", "R": f"recLen {v}"}[kind])
+    if not terms:
+        terms.append("0")
+    body = "\n".join(lets) + ("\n" if lets else "")
+    body += "  putStrLn (showInt (" + " + ".join(terms) + "))\n"
+    return OWN_PRE + "main :: IO ()\nmain = do\n" + body
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
@@ -915,8 +1019,10 @@ def gen(rng):
         return gen_tuple_consume(rng)   # consume-of-borrowed-interior-tuple-field (verifier net)
     if r < 0.91:
         return gen_closure_param(rng)   # closure-param HOF specialization + moved-in hand-off
-    if r < 0.97:
+    if r < 0.95:
         return gen_builtins(rng)        # built-ins over heap args (the ownership table)
+    if r < 0.985:
+        return gen_ownership(rng)       # records, generic pass-through, borrowed returns
     heap = rng.random() < 0.75          # bias toward the heap element space (the theme)
     n = rng.randint(1, 6)
     if heap:

@@ -1,0 +1,55 @@
+name: fuzz-nightly
+
+# The differential fuzzer at scale. CI's per-push run is a few hundred programs; every new
+# generator so far found real bugs within its first 150, so this runs tens of thousands a night
+# across all generators (interpreter vs Cranelift vs LLVM under ASan/LSan). A failing program is
+# saved in `fuzz-fail/` (named seed<S>_i<I>_<verdict>.axi) and uploaded as an artifact; reproduce
+# it by running the saved file through `axionc` (interpreter) and `axionc --release` / the ASan
+# build (`scripts/fuzz.py`'s `check` does both).
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "programs per shard"
+        default: "2500"
+
+concurrency:
+  group: fuzz-nightly
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Build axionc and the runtime (release)
+        run: |
+          (cd axionc && cargo build --release)
+          (cd axion-rt && cargo build --release)
+      - name: Fuzz (interp vs native, ASan/LSan)
+        env:
+          AXIONC: axionc/target/release/axionc
+          AXION_CLANG: clang
+          COUNT: ${{ github.event.inputs.count || '2500' }}
+        run: |
+          seed=$(( ${{ github.run_number }} * 16 + ${{ matrix.shard }} ))
+          echo "seed=$seed count=$COUNT"
+          python3 scripts/fuzz.py --count "$COUNT" --seed "$seed" --keep-going
+      - name: Upload failing programs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-fail-shard${{ matrix.shard }}
+          path: fuzz-fail/
+          if-no-files-found: ignore
