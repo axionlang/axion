@@ -1351,6 +1351,35 @@ impl Emit<'_> {
                 self.array_set_inline(&vs[0], &vs[1], &vs[2]);
                 Ok(vs[0].clone()) // setArray returns the (same) array handle
             }
+            // the length word at offset 0 (TBAA-tagged like the bounds check's load), inline so LLVM
+            // can hoist and combine it (the `bce.rs` entry guard reads it)
+            Op::RtCall { func, args, .. } if func == "axion_array_len" => {
+                let vs = self.atoms(args)?;
+                let ap = self.val();
+                self.ins(&format!("{ap} = inttoptr i64 {} to ptr", vs[0]));
+                let n = self.val();
+                self.ins(&format!("{n} = load i64, ptr {ap}, !tbaa {TBAA_ARRAY_LEN}"));
+                Ok(n)
+            }
+            // index proven in bounds for the whole loop by `bce.rs`'s entry guard: no check
+            Op::RtCall { func, args, .. } if func == crate::bce::GET_NOBC => {
+                let vs = self.atoms(args)?;
+                let ep = self.array_elem_ptr(&vs[0], &vs[1]);
+                let v = self.val();
+                self.ins(&format!(
+                    "{v} = load i64, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}"
+                ));
+                Ok(v)
+            }
+            Op::RtCall { func, args, .. } if func == crate::bce::SET_NOBC => {
+                let vs = self.atoms(args)?;
+                let ep = self.array_elem_ptr(&vs[0], &vs[1]);
+                self.ins(&format!(
+                    "store i64 {}, ptr {ep}, !tbaa {TBAA_ARRAY_ELEM}",
+                    vs[2]
+                ));
+                Ok(vs[0].clone())
+            }
             Op::RtCall {
                 func,
                 args,

@@ -40,6 +40,7 @@
 // so nothing here is published API — no pub-doc obligations.
 #[allow(dead_code)]
 mod ast;
+mod bce;
 mod bigint;
 mod builtins;
 mod check;

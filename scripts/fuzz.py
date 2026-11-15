@@ -852,14 +852,51 @@ def gen_builtins(rng):
     body += "  putStrLn (showInt (" + " + ".join(terms) + "))\n"
     return BUILTINS_PRE + "main :: IO ()\nmain = do\n" + body
 
+def gen_bce(rng):
+    """Counting loops for the bounds-check versioning (axionc/src/bce.rs): random lengths, offsets,
+    strides (0, negative, huge — wrapping), starts and bounds, all four exit forms, reads and
+    writes, often out of bounds. The interpreter always checks; native runs a check-free clone
+    when its entry guard proves the whole loop in bounds. They must agree: same output, or both
+    reject (an out-of-bounds abort). A run that native completes and the interpreter rejects —
+    or any ASan finding — is an unsound elision."""
+    big = [0, 1, 2, 3, -1, -2, 7, 64, 4611686018427387904, -9223372036854775807, 9223372036854775807]
+    pick = lambda: rng.choice(big) if rng.random() < 0.15 else rng.randint(-3, 12)
+    length = rng.randint(0, 24)
+    c, st, j0, n = pick(), rng.choice([0, 1, 1, 1, 2, 3, -1]) if rng.random() > 0.1 else pick(), pick(), pick()
+    exit_, step = rng.choice([("j > n", "j + 1"), ("j >= n", "j + 1"), ("j == n", "j + 1"),
+                              ("j < 0", "j - 1")])
+    if exit_ == "j == n" and (j0 > n or n - j0 > 40):
+        j0 = n - rng.randint(0, 6)  # an == loop must reach n
+    if exit_ == "j < 0" and j0 > 40:
+        j0 = rng.randint(-2, 30)
+    if exit_ != "j < 0" and exit_ != "j == n" and isinstance(n, int) and n - j0 > 40:
+        n = j0 + rng.randint(-2, 30)
+    idx = rng.choice(["c + s * j", "c + j * s", "s * j + c", "c + j", "c"])
+    prog = f"""-- fuzz:bce
+fillL :: Array Int -> Int -> Int -> Int -> Int -> Array Int
+fillL a c s j n = if {exit_} then a else fillL (setArray a ({idx}) (j * 3 + 1)) c s ({step}) n
+
+sumL :: Array Int -> Int -> Int -> Int -> Int -> Int -> Int
+sumL a c s j n acc = if {exit_} then acc else sumL a c s ({step}) n (acc + getArray a ({idx}))
+
+main :: Int
+main =
+  let a = newArray {length} 5 in
+  let a = fillL a ({c}) ({st}) ({j0}) ({n}) in
+  sumL a ({c}) ({st}) ({j0}) ({n}) 0 + lenArray a
+"""
+    return prog
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.10:
         return gen_arena(rng)           # native-only
     if r < 0.26:
         return gen_session(rng)         # full differential (interp supports sessions)
-    if r < 0.38:
+    if r < 0.33:
         return gen_array(rng)           # full differential (interp now has arrays)
+    if r < 0.38:
+        return gen_bce(rng)             # bounds-check versioning: guard soundness (bce.rs)
     if r < 0.46:
         return gen_cond_return(rng)     # call-site-ownership shapes (full differential)
     if r < 0.54:

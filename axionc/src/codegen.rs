@@ -1040,11 +1040,17 @@ impl Fx<'_, '_> {
                 Ok(self.builder.ins().iconst(types::I64, 0)) // () → token
             }
             // INLINE array access: emit the load/store directly instead of an opaque runtime call.
+            // (the `_nobc` forms, proven in bounds by `bce.rs`, keep the check here: the Cranelift
+            // `--dev` backend does not optimize around it, so dropping it would gain little)
             Op::RtCall { func, args, .. }
-                if func == "axion_array_get" || func == "axion_array_set" =>
+                if func == "axion_array_get"
+                    || func == "axion_array_set"
+                    || func == crate::bce::GET_NOBC
+                    || func == crate::bce::SET_NOBC =>
             {
                 let vals = self.atoms(args)?;
-                let set_val = (func == "axion_array_set").then(|| vals[2]);
+                let set_val =
+                    (func == "axion_array_set" || func == crate::bce::SET_NOBC).then(|| vals[2]);
                 self.array_access_inline(vals[0], vals[1], set_val)
             }
             Op::RtCall {

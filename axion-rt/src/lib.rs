@@ -242,6 +242,18 @@ pub unsafe extern "C" fn axion_array_set(arr: i64, idx: i64, val: i64) -> i64 {
     *(arr as *mut u8).add(8).cast::<i64>().add(idx as usize) = val;
     arr
 }
+/// `getArray` with the index already proven in bounds (`axionc/src/bce.rs`: a counting loop's
+/// entry guard covers every iteration). The native backends inline it; defined for completeness.
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_get_nobc(arr: i64, idx: i64) -> i64 {
+    *(arr as *const u8).add(8).cast::<i64>().add(idx as usize)
+}
+/// `setArray` with the index already proven in bounds (see `axion_array_get_nobc`).
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_set_nobc(arr: i64, idx: i64, val: i64) -> i64 {
+    *(arr as *mut u8).add(8).cast::<i64>().add(idx as usize) = val;
+    arr
+}
 #[no_mangle]
 pub unsafe extern "C" fn axion_array_len(arr: i64) -> i64 {
     blen(arr)

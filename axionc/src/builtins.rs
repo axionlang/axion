@@ -165,6 +165,18 @@ pub const RT_TABLE: &[RtEntry] = &[
     ea("axion_array_new", M, Owned("Array"), SCALAR_ELEMS),
     ea("axion_array_set", M, Owned("Array"), SCALAR_ELEMS),
     ea("axion_array_get", B, Scalar, SCALAR_ELEMS),
+    ea(
+        "axion_array_get_nobc",
+        B,
+        Scalar,
+        "index proven in bounds for every iteration by the bce.rs entry guard",
+    ),
+    ea(
+        "axion_array_set_nobc",
+        M,
+        Owned("Array"),
+        "index proven in bounds for every iteration by the bce.rs entry guard",
+    ),
     e("axion_array_len", B, Scalar),
     e("axion_array_iota", M, Owned("Array")),
     e("axion_array_sum", B, Scalar),
@@ -465,7 +477,7 @@ mod tests {
     /// Every runtime function name `core.rs` mentions (a quoted `axion_*`/`ax_net_*` literal;
     /// prefixes such as `"axion_drop_"` end in `_` and are skipped).
     fn emitted() -> HashSet<String> {
-        let src = include_str!("core.rs");
+        let src = [include_str!("core.rs"), include_str!("bce.rs")].concat();
         let mut out = HashSet::new();
         // the odd-numbered pieces of a split on `"` are the insides of string literals
         for lit in src.split('"').skip(1).step_by(2) {

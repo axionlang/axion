@@ -7071,6 +7071,28 @@ pub fn lower_with(
             (name.clone(), keys)
         })
         .collect();
+    // bounds-check elimination by loop versioning (`bce.rs`): a counting loop whose accesses are
+    // provably in bounds for every iteration runs a check-free clone `f$bce` (same Core, same
+    // drops); its parameter ownership is `f`'s. `AXION_NO_BCE` turns it off (measurement/tests).
+    let mut borrow_args = borrow_args;
+    let mut param_keys = param_keys;
+    if std::env::var_os("AXION_NO_BCE").is_none() {
+        let before: HashSet<String> = result.iter().map(|f| f.name.clone()).collect();
+        crate::bce::version_counting_loops(&mut result);
+        for f in &result {
+            if before.contains(&f.name) {
+                continue;
+            }
+            if let Some(orig) = f.name.strip_suffix("$bce") {
+                if let Some(b) = borrow_args.get(orig).cloned() {
+                    borrow_args.insert(f.name.clone(), b);
+                }
+                if let Some(k) = param_keys.get(orig).cloned() {
+                    param_keys.insert(f.name.clone(), k);
+                }
+            }
+        }
+    }
     Lowered {
         fns: result,
         borrow_args,
