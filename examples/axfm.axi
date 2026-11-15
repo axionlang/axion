@@ -313,7 +313,8 @@ lscEnd s j n = if j >= n then n else if charAt j s == ':' then j else lscEnd s (
 
 -- SGR color for an entry, from its TYPE CHAR (typesCmd) + name: honour $LS_COLORS (`di`/`ln`/`or`/
 -- `ex`, and `*.<ext>` for plain files), else a built-in fallback. `dup`/literal keep each owned temp
--- borrow-only (no conditionally-moved String — the rootIfEmpty idiom; avoids the AX0911 gotcha).
+-- borrow-only (the rootIfEmpty idiom; written before conditionally-moved Strings were reclaimed,
+-- and still the simplest form).
 entryColor :: String -> String -> String -> String
 entryColor lsc ty raw =
   if ty == "d" then dirColor lsc
@@ -439,7 +440,8 @@ iconForExt e =
 -- `listW - 3` (mark + glyph + space = the 3 reserved columns), so the row is still exactly `listW` VISIBLE
 -- columns and the absolutely-positioned `│` separator stays aligned. The glyph (1 display column but a
 -- multi-byte literal) NEVER enters `sizedCell`/`clip` (byte-based), so it can't be sliced mid-codepoint.
--- The conditional is in TAIL position (a helper, never a `let x = if… heap`) — the #1 axfm reclamation gotcha.
+-- The conditional is in tail position (a helper); a `let x = if … heap` would now be reclaimed as
+-- well (that early reclamation gotcha is long fixed).
 rowCell :: String -> String -> String -> String -> String -> Int -> Bool -> String
 rowCell icfg ty raw mark name listW prev =
   if strLen icfg == 0 then sizedCell (mark ++ " " ++ name) listW prev
