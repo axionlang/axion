@@ -5700,6 +5700,10 @@ pub struct Lowered {
     /// `field_tagged_key` instead of the generic-constructor poly-erasure. Closes the poly-element
     /// blind spot behind the `axpass` borrowed-list-element double-frees (docs/call-site-ownership).
     pub param_keys: HashMap<String, Vec<Option<String>>>,
+    /// Per-function, each parameter's type when it is a heap LEAF (`String`, `Integer`, `Buffer`),
+    /// else `None`. The verifier tracks a MOVED-IN parameter of such a type as owned, so storing
+    /// it twice (`dup$String x = (x, x)`, a generic body specialized at a heap type) is caught.
+    pub param_leaf: HashMap<String, Vec<Option<String>>>,
 }
 
 /// Stream-fusion pass: rewrites producer→consumer chains on `List`
@@ -6581,6 +6585,37 @@ pub fn lower_with(
         }
     }
 
+    // A by-copy record update (`r { name = n }`) SHARES the unchanged heap fields with its base.
+    // Within one function the skip-destructors (`collect_update_skips`) decide which side frees
+    // them; but when the base is not owned here (a parameter, a field bound by a pattern), the
+    // base's owner frees them while the new record — returned or dropped — frees them too (a
+    // double free across the call). Give the new record its OWN copies of those fields.
+    if std::env::var_os("AXION_NO_ALIAS_COPY").is_none() {
+        let fields_of = record_field_types(module);
+        let enum_types: HashSet<String> = module
+            .datas
+            .iter()
+            .filter(|d| d.cons.iter().all(|c| c.fields.is_empty()))
+            .map(|d| d.name.clone())
+            .collect();
+        for f in &mut out {
+            let mut lets = HashSet::new();
+            let_bound_names(&f.body, &mut lets);
+            let owned: HashSet<String> = f.owned_params.iter().cloned().collect();
+            let mut ctr = 0usize;
+            copy_shared_update_fields(
+                &mut f.body,
+                &owned,
+                &lets,
+                &fields_of,
+                &data_types,
+                &enum_types,
+                &mut copy_seeds,
+                &mut ctr,
+            );
+        }
+    }
+
     // deep-drop (§2): `data` type of each droppable, so the backend reclaims
     // nested fields via a recursive destructor instead of a flat `free`.
     let recinfo = RecordInfo::build(module);
@@ -6671,7 +6706,75 @@ pub fn lower_with(
         );
         f.body = collapse_param_aliases(body, &borrowable);
     }
-    let borrow_args = compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
+    let mut borrow_args =
+        compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
+    // A function that may return a parameter WHOLE (`consume n = if … then n else …`) hands the
+    // caller that very value. When some caller passes it a value it does not OWN — an element of a
+    // borrowed list, or its own borrowed parameter — and then drops the result, the owner's later
+    // free is a double free (the verifier reports it, AX0910). Copy those returns, so the result is
+    // always fresh and the parameter only read; then recompute the borrow analysis (the parameter
+    // is now borrowed, so callers keep and free their own values). The reuse-gated copy above
+    // cannot see this: it runs before ownership is known.
+    if std::env::var_os("AXION_NO_ALIAS_COPY").is_none() {
+        let enum_types: HashSet<String> = module
+            .datas
+            .iter()
+            .filter(|d| d.cons.iter().all(|c| c.fields.is_empty()))
+            .map(|d| d.name.clone())
+            .collect();
+        let mut ctr = 0usize;
+        for _ in 0..4 {
+            let ret_alias = crate::verify::ret_alias_summary(&out);
+            if ret_alias.is_empty() {
+                break;
+            }
+            let mut fed_borrowed =
+                crate::verify::borrowed_elem_params(&out, &borrow_args, &recinfo);
+            for (g, idx) in borrowed_param_args(&out, &borrow_args) {
+                fed_borrowed.entry(g).or_default().extend(idx);
+            }
+            for (g, idx) in live_scrutinee_field_args(&out) {
+                fed_borrowed.entry(g).or_default().extend(idx);
+            }
+            let mut changed = false;
+            for f in &mut out {
+                let (Some(ra), Some(fb)) = (ret_alias.get(&f.name), fed_borrowed.get(&f.name))
+                else {
+                    continue;
+                };
+                let copy: HashSet<usize> = ra
+                    .intersection(fb)
+                    .copied()
+                    .filter(|i| !borrow_args.get(&f.name).is_some_and(|b| b.contains(i)))
+                    .collect();
+                let Some(ptys) = fn_param_types
+                    .get(&f.name)
+                    .filter(|p| p.len() == f.params.len())
+                else {
+                    continue;
+                };
+                if copy.is_empty() {
+                    continue;
+                }
+                let before = ctr;
+                normalize_alias_returns(
+                    f,
+                    ptys,
+                    &copy,
+                    &mut ctr,
+                    &data_types,
+                    &enum_types,
+                    &mut copy_seeds,
+                );
+                changed |= ctr != before; // a copy was inserted
+            }
+            if !changed {
+                break;
+            }
+            borrow_args =
+                compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
+        }
+    }
 
     // Regions/lifetimes (§): a function whose return is, on EVERY path, a pure interior heap
     // alias of a (borrowed) parameter (`grab w = inner w`) hands back a BORROW, not a fresh
@@ -7076,6 +7179,20 @@ pub fn lower_with(
     // drops); its parameter ownership is `f`'s. `AXION_NO_BCE` turns it off (measurement/tests).
     let mut borrow_args = borrow_args;
     let mut param_keys = param_keys;
+    let mut param_leaf: HashMap<String, Vec<Option<String>>> = fn_param_types
+        .iter()
+        .map(|(name, tys)| {
+            let leaf = tys
+                .iter()
+                .map(|t| match t {
+                    Type::Con(h) if matches!(h.as_str(), "String" | "Integer") => Some(h.clone()),
+                    t if t.head_con() == Some("Buffer") => Some("Buffer".to_string()),
+                    _ => None,
+                })
+                .collect();
+            (name.clone(), leaf)
+        })
+        .collect();
     if std::env::var_os("AXION_NO_BCE").is_none() {
         let before: HashSet<String> = result.iter().map(|f| f.name.clone()).collect();
         crate::bce::version_counting_loops(&mut result);
@@ -7090,6 +7207,9 @@ pub fn lower_with(
                 if let Some(k) = param_keys.get(orig).cloned() {
                     param_keys.insert(f.name.clone(), k);
                 }
+                if let Some(k) = param_leaf.get(orig).cloned() {
+                    param_leaf.insert(f.name.clone(), k);
+                }
             }
         }
     }
@@ -7098,6 +7218,7 @@ pub fn lower_with(
         borrow_args,
         recinfo,
         param_keys,
+        param_leaf,
     }
 }
 
@@ -10232,6 +10353,358 @@ fn scan_reuse(
         }
         // a tail `ret op` (incl. a tail call): no continuation → no reuse-after.
         Term::Ret(Rhs::Op(_), _) => {}
+    }
+}
+
+/// For each callee, the parameter positions some caller fills with a field bound by a `case` whose
+/// scrutinee is used AFTER the `case` (`let n = case v of Cons x _ -> f x in … v …`): the `case`
+/// does not consume `v`, so `x` is a borrow of it.
+fn live_scrutinee_field_args(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
+    fn calls(t: &Term, xs: &HashSet<String>, out: &mut HashMap<String, HashSet<usize>>) {
+        let op = |o: &Op, out: &mut HashMap<String, HashSet<usize>>| {
+            if let Op::CallDirect(g, args, _) = o {
+                for (i, a) in args.iter().enumerate() {
+                    if matches!(a, Atom::Var(v) if xs.contains(v)) {
+                        out.entry(g.clone()).or_default().insert(i);
+                    }
+                }
+            }
+        };
+        match t {
+            Term::Let(_, rhs, _, b) => {
+                match rhs {
+                    Rhs::Op(o) => op(o, out),
+                    Rhs::If(_, a, c) => {
+                        calls(a, xs, out);
+                        calls(c, xs, out);
+                    }
+                    Rhs::Case(_, arms) => arms.iter().for_each(|(_, a)| calls(a, xs, out)),
+                }
+                calls(b, xs, out);
+            }
+            Term::Drop(_, _, _, _, b) => calls(b, xs, out),
+            Term::Ret(Rhs::Op(o), _) => op(o, out),
+            Term::Ret(Rhs::If(_, a, c), _) => {
+                calls(a, xs, out);
+                calls(c, xs, out);
+            }
+            Term::Ret(Rhs::Case(_, arms), _) => arms.iter().for_each(|(_, a)| calls(a, xs, out)),
+        }
+    }
+    fn walk(t: &Term, out: &mut HashMap<String, HashSet<usize>>) {
+        match t {
+            Term::Let(_, rhs, _, b) => {
+                if let Rhs::Case(Atom::Var(sv), arms) = rhs {
+                    if term_mentions_any(b, &HashSet::from([sv.clone()])) {
+                        for (p, a) in arms {
+                            let mut bs = Vec::new();
+                            cpat_binders(p, &mut bs);
+                            calls(a, &bs.into_iter().collect(), out);
+                        }
+                    }
+                }
+                match rhs {
+                    Rhs::If(_, a, c) => {
+                        walk(a, out);
+                        walk(c, out);
+                    }
+                    Rhs::Case(_, arms) => arms.iter().for_each(|(_, a)| walk(a, out)),
+                    Rhs::Op(_) => {}
+                }
+                walk(b, out);
+            }
+            Term::Drop(_, _, _, _, b) => walk(b, out),
+            Term::Ret(Rhs::If(_, a, c), _) => {
+                walk(a, out);
+                walk(c, out);
+            }
+            Term::Ret(Rhs::Case(_, arms), _) => arms.iter().for_each(|(_, a)| walk(a, out)),
+            Term::Ret(Rhs::Op(_), _) => {}
+        }
+    }
+    let mut out = HashMap::new();
+    for f in fns {
+        walk(&f.body, &mut out);
+    }
+    out
+}
+
+/// For each callee, the parameter positions some caller fills with one of ITS OWN borrowed
+/// parameters (the caller does not own the value it passes).
+fn borrowed_param_args(fns: &[CoreFn], ba: &BorrowArgs) -> HashMap<String, HashSet<usize>> {
+    fn walk(t: &Term, mine: &HashSet<&str>, out: &mut HashMap<String, HashSet<usize>>) {
+        let op = |op: &Op, out: &mut HashMap<String, HashSet<usize>>| {
+            if let Op::CallDirect(g, args, _) = op {
+                for (i, a) in args.iter().enumerate() {
+                    if matches!(a, Atom::Var(v) if mine.contains(v.as_str())) {
+                        out.entry(g.clone()).or_default().insert(i);
+                    }
+                }
+            }
+        };
+        match t {
+            Term::Let(_, rhs, _, b) => {
+                match rhs {
+                    Rhs::Op(o) => op(o, out),
+                    Rhs::If(_, a, c) => {
+                        walk(a, mine, out);
+                        walk(c, mine, out);
+                    }
+                    Rhs::Case(_, arms) => arms.iter().for_each(|(_, a)| walk(a, mine, out)),
+                }
+                walk(b, mine, out);
+            }
+            Term::Drop(_, _, _, _, b) => walk(b, mine, out),
+            Term::Ret(Rhs::Op(o), _) => op(o, out),
+            Term::Ret(Rhs::If(_, a, c), _) => {
+                walk(a, mine, out);
+                walk(c, mine, out);
+            }
+            Term::Ret(Rhs::Case(_, arms), _) => arms.iter().for_each(|(_, a)| walk(a, mine, out)),
+        }
+    }
+    let mut out = HashMap::new();
+    for f in fns {
+        let Some(b) = ba.get(&f.name) else { continue };
+        let mine: HashSet<&str> = b
+            .iter()
+            .filter_map(|&i| f.params.get(i).map(String::as_str))
+            .collect();
+        if !mine.is_empty() {
+            walk(&f.body, &mine, &mut out);
+        }
+    }
+    out
+}
+
+/// Each named record field → every field (name, type) of its constructor, in order.
+fn record_field_types(module: &ast::Module) -> HashMap<String, Vec<(String, Type)>> {
+    let mut out = HashMap::new();
+    for d in &module.datas {
+        for c in &d.cons {
+            if c.fields.iter().all(|f| !f.name.is_empty()) {
+                let all: Vec<(String, Type)> = c
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                for f in &c.fields {
+                    out.insert(f.name.clone(), all.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn let_bound_names(t: &Term, out: &mut HashSet<String>) {
+    match t {
+        Term::Let(x, rhs, _, b) => {
+            out.insert(x.clone());
+            match rhs {
+                Rhs::If(_, a, c) => {
+                    let_bound_names(a, out);
+                    let_bound_names(c, out);
+                }
+                Rhs::Case(_, arms) => arms.iter().for_each(|(_, a)| let_bound_names(a, out)),
+                Rhs::Op(_) => {}
+            }
+            let_bound_names(b, out);
+        }
+        Term::Drop(_, _, _, _, b) => let_bound_names(b, out),
+        Term::Ret(Rhs::If(_, a, c), _) => {
+            let_bound_names(a, out);
+            let_bound_names(c, out);
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => arms.iter().for_each(|(_, a)| let_bound_names(a, out)),
+        Term::Ret(Rhs::Op(_), _) => {}
+    }
+}
+
+/// See the call site in `lower_with`: a by-copy update whose base this function does not own (a
+/// parameter not consumed here, or a pattern binder — anything not `let`-bound) gets fresh copies
+/// of every unchanged heap field. Left alone when a field's type cannot be copied (a type
+/// variable, a Buffer).
+#[allow(clippy::too_many_arguments)]
+fn copy_shared_update_fields(
+    t: &mut Term,
+    owned: &HashSet<String>,
+    lets: &HashSet<String>,
+    fields_of: &HashMap<String, Vec<(String, Type)>>,
+    data_types: &HashSet<String>,
+    enum_types: &HashSet<String>,
+    copy_seeds: &mut Vec<Type>,
+    ctr: &mut usize,
+) {
+    // the copies to add to an update, or None when it must be left alone
+    #[allow(clippy::too_many_arguments)]
+    fn plan(
+        op: &Op,
+        ctr: &mut usize,
+        owned: &HashSet<String>,
+        lets: &HashSet<String>,
+        fields_of: &HashMap<String, Vec<(String, Type)>>,
+        data_types: &HashSet<String>,
+        enum_types: &HashSet<String>,
+        copy_seeds: &mut Vec<Type>,
+    ) -> Option<Vec<(String, String, Op)>> {
+        let Op::UpdateRecord {
+            base: Atom::Var(b),
+            fields,
+            inplace: false,
+        } = op
+        else {
+            return None;
+        };
+        // a base owned here (`let`-bound, or a consumed `%1` param) is handled by the skips
+        if lets.contains(b) || owned.contains(b) {
+            return None;
+        }
+        let all = fields_of.get(&fields.first()?.0)?;
+        let updated: HashSet<&String> = fields.iter().map(|(n, _)| n).collect();
+        let mut out = Vec::new();
+        for (fname, ty) in all {
+            if updated.contains(fname) {
+                continue;
+            }
+            let kind = match ty.head_con() {
+                Some("Int" | "Float" | "Bool" | "Char") => continue,
+                Some(h) if enum_types.contains(h) => continue,
+                Some("String") => CopyKind::Str,
+                Some("Integer") => CopyKind::Int,
+                Some(h) if data_types.contains(h) || matches!(ty, Type::Tuple(_)) => {
+                    let k = mono_key(ty)?;
+                    copy_seeds.push(ty.clone());
+                    CopyKind::Container(k)
+                }
+                _ if matches!(ty, Type::Tuple(_)) => {
+                    let k = mono_key(ty)?;
+                    copy_seeds.push(ty.clone());
+                    CopyKind::Container(k)
+                }
+                _ => return None, // a type variable, Buffer, function: cannot copy
+            };
+            *ctr += 1;
+            let fv = format!("$updfield{ctr}");
+            out.push((fv.clone(), fname.clone(), alias_copy_op(&fv, &kind)));
+        }
+        Some(out)
+    }
+    fn wrap(t: Term, copies: Vec<(String, String, Op)>, b: &str, sp: Span) -> Term {
+        let mut t = t;
+        for (i, (fv, fname, cop)) in copies.into_iter().enumerate().rev() {
+            let cv = format!("{fv}c{i}");
+            // rename the copy's target in the update's field list
+            fn set_field(t: &mut Term, fname: &str, cv: &str) {
+                if let Term::Let(_, Rhs::Op(Op::UpdateRecord { fields, .. }), _, _)
+                | Term::Ret(Rhs::Op(Op::UpdateRecord { fields, .. }), _) = t
+                {
+                    fields.push((fname.to_string(), Atom::Var(cv.to_string())));
+                } else if let Term::Let(_, _, _, b) = t {
+                    set_field(b, fname, cv);
+                }
+            }
+            set_field(&mut t, &fname, &cv);
+            t = Term::Let(cv, Rhs::Op(cop), sp, Box::new(t));
+            t = Term::Let(
+                fv,
+                Rhs::Op(Op::Field {
+                    name: fname,
+                    rec: Atom::Var(b.to_string()),
+                }),
+                sp,
+                Box::new(t),
+            );
+        }
+        t
+    }
+    match t {
+        Term::Let(_, Rhs::Op(op), sp, b) => {
+            let base = match op {
+                Op::UpdateRecord {
+                    base: Atom::Var(v), ..
+                } => Some(v.clone()),
+                _ => None,
+            };
+            copy_shared_update_fields(
+                b, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+            );
+            if let (Some(base), Some(copies)) = (
+                base,
+                plan(
+                    op, ctr, owned, lets, fields_of, data_types, enum_types, copy_seeds,
+                ),
+            ) {
+                if !copies.is_empty() {
+                    let sp = *sp;
+                    let cur =
+                        std::mem::replace(t, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
+                    *t = wrap(cur, copies, &base, sp);
+                }
+            }
+        }
+        Term::Let(_, rhs, _, b) => {
+            match rhs {
+                Rhs::If(_, a, c) => {
+                    copy_shared_update_fields(
+                        a, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+                    );
+                    copy_shared_update_fields(
+                        c, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+                    );
+                }
+                Rhs::Case(_, arms) => {
+                    for (_, a) in arms {
+                        copy_shared_update_fields(
+                            a, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+                        );
+                    }
+                }
+                Rhs::Op(_) => {}
+            }
+            copy_shared_update_fields(
+                b, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+            );
+        }
+        Term::Drop(_, _, _, _, b) => copy_shared_update_fields(
+            b, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+        ),
+        Term::Ret(Rhs::Op(op), sp) => {
+            let base = match op {
+                Op::UpdateRecord {
+                    base: Atom::Var(v), ..
+                } => Some(v.clone()),
+                _ => None,
+            };
+            if let (Some(base), Some(copies)) = (
+                base,
+                plan(
+                    op, ctr, owned, lets, fields_of, data_types, enum_types, copy_seeds,
+                ),
+            ) {
+                if !copies.is_empty() {
+                    let sp = *sp;
+                    let cur =
+                        std::mem::replace(t, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN));
+                    *t = wrap(cur, copies, &base, sp);
+                }
+            }
+        }
+        Term::Ret(Rhs::If(_, a, c), _) => {
+            copy_shared_update_fields(
+                a, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+            );
+            copy_shared_update_fields(
+                c, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+            );
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => {
+            for (_, a) in arms {
+                copy_shared_update_fields(
+                    a, owned, lets, fields_of, data_types, enum_types, copy_seeds, ctr,
+                );
+            }
+        }
     }
 }
 

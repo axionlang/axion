@@ -34,6 +34,12 @@ fn alias_target<'a>(op: &'a Op, recinfo: &RecordInfo) -> Option<&'a Atom> {
     }
 }
 
+fn union_slots(into: &mut HashMap<String, HashSet<usize>>, from: &HashMap<String, HashSet<usize>>) {
+    for (k, v) in from {
+        into.entry(k.clone()).or_default().extend(v.iter().copied());
+    }
+}
+
 /// The classification of a value produced on EITHER branch of an `if`/`case`: a resource
 /// (owned, or holding interior pointers) iff some branch yields one; the borrow sets union.
 fn merge_vals(rets: &[Val]) -> Val {
@@ -252,6 +258,7 @@ pub fn verify(lowered: &Lowered) -> Vec<Finding> {
             &ret_alias,
             &frees_heap,
             &lowered.param_keys,
+            &lowered.param_leaf,
             PassMode {
                 track_fields: true,
                 poly_elem: false,
@@ -293,6 +300,7 @@ pub fn borrowed_elem_params(
             &elem_aliases,
             &ret_alias,
             &no_fh,
+            &no_pk,
             &no_pk,
             PassMode {
                 track_fields: true,
@@ -502,7 +510,8 @@ fn compute_summaries(
                 poly_elem: false,
             };
             let rv = run_fn(
-                f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, pure_mode, None, None,
+                f, ba, recinfo, &sums, &no_elem, &no_ret, &no_fh, &no_pk, &no_pk, pure_mode, None,
+                None,
             );
             let pure_borrowed = params_borrowed(&rv, f);
             let orig_pure = if rv.owned {
@@ -520,7 +529,8 @@ fn compute_summaries(
                 poly_elem: true,
             };
             let rve = run_fn(
-                f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, elem_mode, None, None,
+                f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, &no_pk, elem_mode, None,
+                None,
             );
             let elem_full = params_borrowed(&rve, f);
             // GRAB-VIA-CASE promotion: the track_fields-OFF pure pass cannot see a case-extracted
@@ -580,6 +590,7 @@ fn run_fn(
     ret_alias: &HashMap<String, HashSet<usize>>,
     frees_heap: &HashMap<String, HashSet<usize>>,
     param_keys: &HashMap<String, Vec<Option<String>>>,
+    param_leaf: &HashMap<String, Vec<Option<String>>>,
     mode: PassMode,
     out: Option<&mut Vec<Finding>>,
     elem_sink: Option<&mut HashMap<String, HashSet<usize>>>,
@@ -604,6 +615,7 @@ fn run_fn(
         .iter()
         .filter_map(|(n, k)| k.as_deref().map(|k| (n.as_str(), k)))
         .collect();
+    let mut moved_in_leaves: Vec<String> = Vec::new();
     for (i, p) in f.params.iter().enumerate() {
         if owned.contains(p) && !borrowed.is_some_and(|s| s.contains(&i)) {
             // an owned heap param is a live resource this fn must free.
@@ -628,6 +640,28 @@ fn run_fn(
                 .cloned()
                 .flatten();
             let moved_in = key.is_some() && !borrowed.is_some_and(|s| s.contains(&i));
+            // A MOVED-IN (not borrowed) parameter of a heap LEAF type (`String`, `Integer`,
+            // `Buffer`) belongs to this function: track it as owned, so moving it twice — storing
+            // one value in two places (`dup$String x = (x, x)`, a generic body specialized at a heap
+            // type) — is a use after move. Leak-exempt: a moved-in String this function neither
+            // returns nor frees is the conservative-leak class, not a corruption.
+            let leaf = param_leaf
+                .get(&f.name)
+                .and_then(|ks| ks.get(i))
+                .cloned()
+                .flatten();
+            if let Some(leaf) = leaf.filter(|_| !borrowed.is_some_and(|s| s.contains(&i))) {
+                st.insert(
+                    p.clone(),
+                    Val {
+                        owned: true,
+                        key: Some(leaf),
+                        ..Default::default()
+                    },
+                );
+                moved_in_leaves.push(p.clone());
+                continue;
+            }
             st.insert(
                 p.clone(),
                 Val {
@@ -651,10 +685,12 @@ fn run_fn(
         mode,
         out: out.unwrap_or(&mut sink),
         children: HashMap::new(),
-        leak_exempt: HashSet::new(),
+        leak_exempt: moved_in_leaves.into_iter().collect(),
         projections: HashMap::new(),
         heap_inside: HashMap::new(),
         arm_con: HashMap::new(),
+        binder_of: HashMap::new(),
+        consumed_slots: HashMap::new(),
         borrowed_params,
         ret_alias,
         frees_heap,
@@ -740,6 +776,13 @@ struct Verifier<'a> {
     /// a slot through it: exactly that slot is cleared from `heap_inside[s]`, and the loaded value
     /// is tracked as an owned child — the same treatment `bind_pattern` gives a named field.
     arm_con: HashMap<String, String>,
+    /// A field binder of the `case` arm being checked → (its scrutinee, slot). Scoped to the arm:
+    /// binder names are unique along a scope path, not across sibling `case`s.
+    binder_of: HashMap<String, (String, usize)>,
+    /// Value → the field slots moved out of it or freed separately. A later DEEP drop of the value
+    /// that does not skip them frees them a second time (a `case` that did not consume its
+    /// scrutinee — it is used after — handing a field to a callee that frees it).
+    consumed_slots: HashMap<String, HashSet<usize>>,
     /// The GENUINELY-borrowed params (in `borrow_args`): the caller retains and drops the
     /// whole structure. Distinct from a MOVED-in param modelled the same way here (a view
     /// like `dropWhile` — not in `borrow_args`). `consume` flags freeing an interior of one
@@ -809,6 +852,11 @@ impl Verifier<'_> {
                             })
                             .filter(|v| {
                                 crate::core::term_mentions_any(body, &HashSet::from([v.clone()]))
+                                    // …or an arg this function does not own at all: a borrowed
+                                    // param or an element of one (`relJoin rel x` with `x` from a
+                                    // borrowed list). Its owner frees it later, so a result that
+                                    // may BE it is a borrow even if `v` is never used again.
+                                    || self.not_owned_here(v, st)
                             })
                             .collect();
                         if !alias.is_empty() {
@@ -874,7 +922,12 @@ impl Verifier<'_> {
         // and will drop it → double free (the partial-consumer-over-a-heap-element class, which
         // the analysis previously missed). `MakeCon`/closures/views embed-or-return the value
         // rather than free it, so only `CallDirect` is a definite free.
-        if let Op::CallDirect(g, args, _) = op {
+        // a generated deep-copier (`axion_copy_T`) only reads its argument (see `op_delta_effect`)
+        let direct = match op {
+            Op::CallDirect(g, args, _) if !g.starts_with("axion_copy_") => Some((g, args)),
+            _ => None,
+        };
+        if let Some((g, args)) = direct {
             let borrowed_pos = self.ba.get(g);
             let alias_ret = self.summaries.get(g);
             let ret_alias_g = self.ret_alias.get(g);
@@ -914,11 +967,34 @@ impl Verifier<'_> {
             }
         }
         // moved operands (and an indirect call's `nonstrict` receiver) escape → mark them dead.
+        // One op moving the same OWNED value twice (`tuple x x`: one String stored in two slots)
+        // hands two owners the same memory — a double free once both are reclaimed.
         let e = op_delta_effect(op, self.ba);
+        let mut moved: HashSet<&str> = HashSet::new();
         for a in e.moves.iter().chain(e.nonstrict.iter()) {
             if let Atom::Var(v) = a {
+                let owned_live = st.get(v).is_some_and(|val| val.owned && val.dead.is_none());
+                if !moved.insert(v.as_str()) && owned_live {
+                    self.finding(Cat::UseAfterFree, v, sp);
+                }
+            }
+        }
+        for a in e.moves.iter().chain(e.nonstrict.iter()) {
+            if let Atom::Var(v) = a {
+                self.note_field_gone(v, st);
                 Self::kill(v, Cat::UseAfterFree, st);
             }
+        }
+    }
+
+    /// `v` (owned, live) leaves: if it is a field binder of the current arm, its slot of the
+    /// scrutinee is no longer the scrutinee's to free.
+    fn note_field_gone(&mut self, v: &str, st: &State) {
+        if !st.get(v).is_some_and(|val| val.owned && val.dead.is_none()) {
+            return;
+        }
+        if let Some((p, i)) = self.binder_of.get(v).cloned() {
+            self.consumed_slots.entry(p).or_default().insert(i);
         }
     }
 
@@ -1054,6 +1130,16 @@ impl Verifier<'_> {
         if self.recinfo.field_drop_slot(&con, fi).is_none() {
             self.leak_exempt.insert(x.to_string());
         }
+    }
+
+    /// `v` is a value this function holds but does not own: a genuinely borrowed parameter, or an
+    /// interior alias (an element / field) of something else.
+    fn not_owned_here(&self, v: &str, st: &State) -> bool {
+        st.get(v).is_some_and(|val| {
+            !val.owned
+                && !val.moved_in
+                && (self.borrowed_params.contains(v) || !val.borrows.is_empty())
+        })
     }
 
     /// The resource classification of an `Op`'s result (NO state mutation): a whole-value
@@ -1218,6 +1304,7 @@ impl Verifier<'_> {
     /// used when the fields were moved out and reused). `skip` lists the slots a deep drop
     /// does NOT free (moved out via a skip-destructor).
     fn do_drop(&mut self, x: &str, key: Option<&String>, skip: &[usize], sp: Span, st: &mut State) {
+        self.note_field_gone(x, st);
         match st.get(x) {
             Some(v) if v.dead == Some(Cat::DoubleFree) || v.dead.is_some() => {
                 let cat = if v.dead == Some(Cat::UseAfterFree) {
@@ -1297,6 +1384,18 @@ impl Verifier<'_> {
                 // (a later `drop` of it would now be a DoubleFree — a strengthening). A SHELL
                 // free (`key = None`) frees only the cell — the fields were moved out and
                 // reused (`append`'s `Cons z zs -> drop xs; …`), so it frees no child.
+                // a DEEP drop of a value whose fields were already moved out or freed (and are not
+                // skipped) frees them again
+                if key.is_some() {
+                    let gone: Vec<usize> = self
+                        .consumed_slots
+                        .get(x)
+                        .map(|s| s.iter().copied().filter(|i| !skip.contains(i)).collect())
+                        .unwrap_or_default();
+                    if !gone.is_empty() {
+                        self.finding(Cat::DoubleFree, x, sp);
+                    }
+                }
                 let kids = key.and(self.children.get(x)).cloned().unwrap_or_default();
                 for (child, slot) in kids {
                     if !skip.contains(&slot) {
@@ -1380,11 +1479,16 @@ impl Verifier<'_> {
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
         let mut rets: Vec<Val> = Vec::new();
+        let before = self.consumed_slots.clone();
+        let mut after = before.clone();
         for a in arms {
             let mut s = st.clone();
+            self.consumed_slots = before.clone();
             rets.push(self.term(a, &mut s, tail));
             exits.push(s);
+            union_slots(&mut after, &self.consumed_slots);
         }
+        self.consumed_slots = after;
         self.merge(&outer, &exits, sp, st);
         merge_vals(&rets)
     }
@@ -1431,9 +1535,22 @@ impl Verifier<'_> {
         let outer: Vec<String> = st.keys().cloned().collect();
         let mut exits: Vec<State> = Vec::new();
         let mut rets: Vec<Val> = Vec::new();
+        let slots_before = self.consumed_slots.clone();
+        let mut slots_after = slots_before.clone();
         for (pat, body) in arms {
             let mut s = st.clone();
+            self.consumed_slots = slots_before.clone();
             self.bind_pattern(pat, scrut_var.as_deref(), scrut_owned, &mut s);
+            // the arm's field binders → (scrutinee, slot), while the arm is checked
+            let mut saved_binders: Vec<(String, Option<(String, usize)>)> = Vec::new();
+            if let (Atom::Var(sv), CPat::Con(_, subs)) = (scrut, pat) {
+                for (i, sp) in subs.iter().enumerate() {
+                    if let CPat::Var(n) = sp {
+                        let old = self.binder_of.insert(n.clone(), (sv.clone(), i));
+                        saved_binders.push((n.clone(), old));
+                    }
+                }
+            }
             // the arm's constructor, for raw field loads of the scrutinee inside it (`raw_slot`).
             let prev = match (scrut, pat) {
                 (Atom::Var(v), CPat::Con(con, _)) => {
@@ -1448,8 +1565,16 @@ impl Verifier<'_> {
                     None => self.arm_con.remove(&v),
                 };
             }
+            for (n, old) in saved_binders {
+                match old {
+                    Some(o) => self.binder_of.insert(n, o),
+                    None => self.binder_of.remove(&n),
+                };
+            }
+            union_slots(&mut slots_after, &self.consumed_slots);
             exits.push(s);
         }
+        self.consumed_slots = slots_after;
         self.merge(&outer, &exits, sp, st);
         merge_vals(&rets)
     }
@@ -1713,6 +1838,7 @@ mod tests {
             borrow_args: BorrowArgs::new(),
             recinfo: RecordInfo::default(),
             param_keys: std::collections::HashMap::new(),
+            param_leaf: std::collections::HashMap::new(),
         })
     }
 
@@ -1895,6 +2021,7 @@ mod tests {
                 param_keys: [("twice".to_string(), vec![Some("List$String".to_string())])]
                     .into_iter()
                     .collect(),
+                param_leaf: std::collections::HashMap::new(),
             })
         };
         let fs = run(2);

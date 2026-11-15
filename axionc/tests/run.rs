@@ -1687,6 +1687,76 @@ fn partial_builtin_closures_and_from_left_defaults_are_freed() {
 }
 
 #[test]
+fn borrowed_values_returned_whole_are_copied_not_double_freed() {
+    // `relJoin rel x` may return `x` itself; with `x` an element of a borrowed list, dropping the
+    // result double-freed the element (the verifier said clean). Now the return is copied.
+    let fx = fixture("borrowed_passthrough_reclaim.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "23\n", "{flags:?}");
+    }
+    // without the copy, the verifier alone must report the borrow being freed
+    let out = axionc()
+        .env("AXION_NO_ALIAS_COPY", "1")
+        .args(["--emit", "verify", &fx])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("DropOfAlias"), "verifier missed it: {text}");
+}
+
+#[test]
+fn a_generic_duplication_at_a_heap_type_is_refused_natively() {
+    // `dup x = (x, x)` at `String` stores one String in two places (the concrete `dupS` is
+    // rejected by AX0001). The verifier now tracks the moved-in String parameter of the
+    // specialized `dup$String` and reports the second move; the interpreter still runs it.
+    let src = "dup :: a -> (a, a)\ndup x = (x, x)\n\
+               main :: Int\nmain = case dup (showInt 99) of\n  (a, b) -> strLen a + strLen b\n";
+    let path = std::env::temp_dir().join(format!("axion_dup_{}.axi", std::process::id()));
+    std::fs::write(&path, src).unwrap();
+    let out = axionc()
+        .args(["--emit", "verify"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("UseAfterFree") && text.contains("dup$String"),
+        "verifier missed the double store: {text}"
+    );
+    let out = axionc()
+        .args(["--backend", "cranelift"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "native must refuse it");
+    let out = axionc().arg(&path).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_returned_record_update_owns_its_fields() {
+    // `rename r n = r { name = n }` shared r's other heap fields with the returned record, and the
+    // caller freed them twice. The new record now gets its own copies.
+    let fx = fixture("record_update_shared_fields.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "21\n", "{flags:?}");
+    }
+}
+
+#[test]
 fn socket_ops_borrow_their_string_arguments() {
     // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
     // but were classified as consuming them, so a session freeing a computed string after the

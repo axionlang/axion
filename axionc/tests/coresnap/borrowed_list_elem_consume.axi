@@ -27,6 +27,7 @@
     drop _t1 : String
     else
     else
+    let $aliascopy0 = rtcall axion_strcat name ""  ; Δ{} · makes String
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
     let _dd4 = == _tag 1  ; Δ{}
@@ -39,13 +40,13 @@
     let _t4 = call mk _t3  ; Δ{_t2} · makes List$String
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
+    ret $aliascopy0  ; Δ{$aliascopy0} · moves{$aliascopy0}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret con Cons _t2 _t4  ; Δ{_t2 _t4} · moves{_t2 _t4} · makes List$String
     ret con Nil  ; Δ{} · makes List$String
-    ret name  ; Δ{}
     ret rtcall axion_strcat "x" "y"  ; Δ{} · makes String
   ; Δ{}
   ; Δ{}

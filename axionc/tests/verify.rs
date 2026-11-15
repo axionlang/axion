@@ -275,9 +275,13 @@ fn verifier_catches_borrowed_list_element_double_free() {
         String::from_utf8_lossy(&ok.stdout).contains("no corruption"),
         "normal build must verify clean (the callee borrows the element)"
     );
+    // `consume` may return its element whole, so Auto-Drop now copies that return (a borrowed
+    // element is passed to it) — which by itself removes the unsound free. AXION_NO_ALIAS_COPY
+    // keeps the raw Core, so the verifier is shown to be the backstop on its own.
     let bad = axionc()
         .args(["--emit", "verify", &path])
         .env("AXION_STRING_RECLAIM", "1")
+        .env("AXION_NO_ALIAS_COPY", "1")
         .output()
         .unwrap();
     let bads = String::from_utf8_lossy(&bad.stdout);

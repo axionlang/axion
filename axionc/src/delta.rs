@@ -1636,6 +1636,7 @@ mod tests {
             borrow_args: l.borrow_args,
             recinfo: l.recinfo,
             param_keys: l.param_keys,
+            param_leaf: std::collections::HashMap::new(),
         };
         crate::verify::verify(&lw)
     }

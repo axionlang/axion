@@ -402,6 +402,7 @@ mod tests {
             borrow_args: HashMap::new(),
             recinfo: RecordInfo::default(),
             param_keys: HashMap::new(),
+            param_leaf: std::collections::HashMap::new(),
         }
     }
 
@@ -466,6 +467,7 @@ mod tests {
             borrow_args: HashMap::new(),
             recinfo: RecordInfo::default(),
             param_keys: HashMap::new(),
+            param_leaf: std::collections::HashMap::new(),
         };
         // destructor IR present → matches
         let ir_ok = "define i64 @\"ax_axion_drop_Foo\"(i64 %_p) {\nentry:\n  call void @axion_free(i64 %_p)\n  ret i64 0\n}\n";
