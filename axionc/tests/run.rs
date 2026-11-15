@@ -1763,6 +1763,28 @@ fn a_returned_record_update_owns_its_fields() {
 }
 
 #[test]
+fn a_specialized_hof_that_only_reads_borrows_its_list() {
+    // `sumWith g v + length v`: the clone `sumWith$$g` used to inherit the generic `sumWith`'s
+    // inferred `%1` on its list, so the reuse was refused (AX0910). The clone's body is now
+    // re-inferred from the written multiplicities; its callers are still checked against the
+    // generic `sumWith` (so batch and the LSP agree).
+    let fx = fixture("hof_clone_borrows_list.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "8\n8\n8\n11\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn socket_ops_borrow_their_string_arguments() {
     // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
     // but were classified as consuming them, so a session freeing a computed string after the

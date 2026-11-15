@@ -23,12 +23,7 @@
       drop xs
       drop xs
       drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop y : Integer
-      let _d1000000 = call addI y _t0  ; Δ{_t0 y} · makes Integer
+      let _d1000000 = call addI y _t0  ; Δ{_t0} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -41,11 +36,11 @@
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_tuple2$Integer$Integer _dd2  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = call foldr$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
-      let _t0 = call fromInt$fn y  ; Δ{y ys} · moves{y} · makes Integer
+      let _t0 = call foldr$$addI z ys  ; Δ{} · makes Integer
+      let _t0 = call fromInt$fn y  ; Δ{} · makes Integer
       let _t0 = call fstT y  ; Δ{y ys} · moves{y} · makes Integer
       let _t0 = call pairUp y  ; Δ{y ys} · moves{y} · makes tuple2$Integer$Integer
-      let _t1 = call map$$fromInt$fn ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
+      let _t1 = call map$$fromInt$fn ys  ; Δ{_t0} · makes List$Integer
       let _t1 = call map$$fstT ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
       let _t1 = call map$$pairUp ys  ; Δ{_t0 ys} · moves{ys} · makes List$tuple2$Integer$Integer
       ret 0  ; Δ{}
@@ -130,6 +125,8 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t1 : List$Int
+  drop _t4 : List$Integer
   drop _t5 : Integer
   drop _t6 : String
   else
@@ -162,10 +159,10 @@
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
   let _t1 = call range 1 5  ; Δ{_t0} · makes List$Int
-  let _t2 = call map$$fromInt$fn _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List$Integer
+  let _t2 = call map$$fromInt$fn _t1  ; Δ{_t0 _t1} · makes List$Integer
   let _t3 = call map$$pairUp _t2  ; Δ{_t0 _t2} · moves{_t2} · makes List$tuple2$Integer$Integer
   let _t4 = call map$$fstT _t3  ; Δ{_t0 _t3} · moves{_t3} · makes List$Integer
-  let _t5 = call foldr$$addI _t0 _t4  ; Δ{_t0 _t4} · moves{_t0 _t4} · makes Integer
+  let _t5 = call foldr$$addI _t0 _t4  ; Δ{_t0 _t4} · moves{_t0} · makes Integer
   let _t6 = rtcall axion_bignum_to_string _t5  ; Δ{_t5} · makes String
   ret 0  ; Δ{}
   ret 0  ; Δ{}

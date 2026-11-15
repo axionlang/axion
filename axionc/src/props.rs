@@ -191,7 +191,7 @@ fn run_props(ty: GTy, seed: u64, n: u32) {
 
         // (1) axionc's typechecker accepts the generated term
         let mut diags = Diagnostics::new();
-        check::check(&module, &mut diags);
+        check::check_with(&module, &mut diags, &std::collections::HashMap::new());
         infer::infer(&module, &mut diags);
         assert!(
             !diags.has_errors(),

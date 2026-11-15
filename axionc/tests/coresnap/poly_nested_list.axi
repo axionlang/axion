@@ -9,11 +9,6 @@
 
 
 
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop y : List$Int
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -22,11 +17,11 @@
       let _dd1 = call axion_drop_List$List$Int _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
-      let _t0 = call range _cap0 y  ; Δ{y ys} · makes List$Int
-      let _t0 = call sum y  ; Δ{y ys}
+      let _t0 = call range _cap0 y  ; Δ{} · makes List$Int
+      let _t0 = call sum y  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
-      let _t1 = call map$$range _cap0 ys  ; Δ{_t0 y ys} · moves{ys} · makes List$List$Int
-      let _t1 = call map$$sum ys  ; Δ{ys} · moves{ys} · makes List$Int
+      let _t1 = call map$$range _cap0 ys  ; Δ{_t0} · makes List$List$Int
+      let _t1 = call map$$sum ys  ; Δ{} · makes List$Int
       ret + y _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -35,7 +30,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret con Cons _t0 _t1  ; Δ{_t0 _t1 y} · moves{_t0 _t1} · makes List$List$Int
+      ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$List$Int
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
       ret con Nil  ; Δ{} · makes List$Int
       ret con Nil  ; Δ{} · makes List$List$Int
@@ -90,6 +85,8 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t0 : List$Int
+  drop _t1 : List$List$Int
   drop _t2 : List$Int
   else
   else
@@ -108,8 +105,8 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = call range 1 3  ; Δ{} · makes List$Int
-  let _t1 = call map$$range 1 _t0  ; Δ{_t0} · moves{_t0} · makes List$List$Int
-  let _t2 = call map$$sum _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
+  let _t1 = call map$$range 1 _t0  ; Δ{_t0} · makes List$List$Int
+  let _t2 = call map$$sum _t1  ; Δ{_t1} · makes List$Int
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

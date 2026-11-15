@@ -11,12 +11,7 @@
 
 
       drop _t0 : Integer
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop y : Integer
-      let _d1000000 = call addI y _t0  ; Δ{_t0 y} · makes Integer
+      let _d1000000 = call addI y _t0  ; Δ{_t0} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -25,9 +20,9 @@
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = call fromInt$fn y  ; Δ{y ys} · moves{y} · makes Integer
-      let _t0 = call reduceWith$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
-      let _t1 = call map$$fromInt$fn ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
+      let _t0 = call fromInt$fn y  ; Δ{} · makes Integer
+      let _t0 = call reduceWith$$addI z ys  ; Δ{} · makes Integer
+      let _t1 = call map$$fromInt$fn ys  ; Δ{_t0} · makes List$Integer
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -86,6 +81,8 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t1 : List$Int
+  drop _t2 : List$Integer
   drop _t3 : Integer
   drop _t4 : String
   else
@@ -106,8 +103,8 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
   let _t1 = call range 1 5  ; Δ{_t0} · makes List$Int
-  let _t2 = call map$$fromInt$fn _t1  ; Δ{_t0 _t1} · moves{_t1} · makes List$Integer
-  let _t3 = call reduceWith$$addI _t0 _t2  ; Δ{_t0 _t2} · moves{_t0 _t2} · makes Integer
+  let _t2 = call map$$fromInt$fn _t1  ; Δ{_t0 _t1} · makes List$Integer
+  let _t3 = call reduceWith$$addI _t0 _t2  ; Δ{_t0 _t2} · moves{_t0} · makes Integer
   let _t4 = rtcall axion_bignum_to_string _t3  ; Δ{_t3} · makes String
   ret 0  ; Δ{}
   ret 0  ; Δ{}

@@ -26,11 +26,12 @@
 
 
 
+                      drop _t32 : List$Int
                       drop _t34 : Maybe$Int
                       drop _t35 : String
                       let _d1000000 = putStrLn _t35  ; Δ{_t35}
                       let _t32 = call range 1 4  ; Δ{} · makes List$Int
-                      let _t33 = call map$$double _t32  ; Δ{_t32} · moves{_t32} · makes List$Int
+                      let _t33 = call map$$double _t32  ; Δ{_t32} · makes List$Int
                       let _t34 = call last$Int _t33  ; Δ{_t33} · moves{_t33} · makes Maybe$Int
                       let _t35 = call show$Maybe$Int _t34  ; Δ{_t34} · makes String
                       ret _d1000000  ; Δ{}
@@ -98,8 +99,6 @@
       drop xs
       drop xs
       drop xs
-      drop xs
-      drop xs
       drop xs : List$Int
       drop xs : List$Int
       drop xs : List$Int
@@ -121,7 +120,7 @@
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_tuple2$Int$List$Int _dd0  ; Δ{}
       let _t0 = < n 1  ; Δ{y ys}
-      let _t0 = call double y  ; Δ{y ys}
+      let _t0 = call double y  ; Δ{}
       let _t0 = call show$Int c0  ; Δ{} · makes String
       let _t0 = call show$Int y  ; Δ{} · makes String
       let _t0 = call show$Int z  ; Δ{} · makes String
@@ -129,7 +128,7 @@
       let _t0 = rtcall axion_strcat "Just" " "  ; Δ{} · makes String
       let _t0 = rtcall axion_strcat "Just" " "  ; Δ{} · makes String
       let _t0 = tuple y ys  ; Δ{y ys} · moves{y ys} · makes heap
-      let _t1 = call map$$double ys  ; Δ{y ys} · moves{ys} · makes List$Int
+      let _t1 = call map$$double ys  ; Δ{} · makes List$Int
       let _t1 = call show$List$Int c1  ; Δ{_t0} · makes String
       let _t1 = call showArg$(Int,List$Int) a0  ; Δ{_t0} · makes String
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
@@ -167,7 +166,7 @@
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret case _t12 of
       ret case ys of
-      ret con Cons _t0 _t1  ; Δ{_t1 y} · moves{_t1} · makes List$Int
+      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
       ret con Just _t0  ; Δ{_t0} · moves{_t0}
       ret con Just y  ; Δ{y} · moves{y}
       ret con Just ys  ; Δ{}

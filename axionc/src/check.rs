@@ -110,9 +110,18 @@ pub struct Analysis {
     pub where_param_tys: HashMap<String, Vec<Option<Type>>>,
 }
 
-/// Runs the checks and returns the Auto-Drop `free`s and the in-place sites.
-pub fn check(module: &Module, diags: &mut Diagnostics) -> Analysis {
-    let env = signature_env(module);
+/// Runs the checks and returns the Auto-Drop `free`s and the in-place sites. `caller_view`
+/// replaces the multiplicities CALLERS of some functions are checked against (a higher-order clone is checked at its call sites as the generic function it
+/// came from, while its own body keeps its own signature; see `lib::make_hof_spec`).
+pub fn check_with(
+    module: &Module,
+    diags: &mut Diagnostics,
+    caller_view: &HashMap<String, Vec<Mult>>,
+) -> Analysis {
+    let mut env = signature_env(module);
+    for (name, mults) in caller_view {
+        env.ctx.consumers.insert(name.clone(), mults.clone());
+    }
     let mut out = Analysis::default();
     for f in &module.funcs {
         check_func(f, &env.globals, &env.ctx, diags, &mut out);

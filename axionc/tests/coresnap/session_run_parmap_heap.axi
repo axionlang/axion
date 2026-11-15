@@ -9,9 +9,6 @@
 
 
 
-      drop xs
-      drop xs
-      drop y : List$Int
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -20,9 +17,9 @@
       let _dd1 = call axion_drop_List$List$Int _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
-      let _t0 = call sum y  ; Δ{y ys}
+      let _t0 = call sum y  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
-      let _t1 = call map$$sum ys  ; Δ{ys} · moves{ys} · makes List$Int
+      let _t1 = call map$$sum ys  ; Δ{} · makes List$Int
       ret + y _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -86,6 +83,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t2 : List$List$Int
   drop _t3 : List$Int
   else
   else
@@ -108,7 +106,7 @@
   let _t0 = call replicate 3 5  ; Δ{} · makes List$Int
   let _t1 = &worker$step  ; Δ{_t0}
   let _t2 = rtcall axion_par_map _t1 48 16 _t0  ; Δ{_t0} · moves{_t0} · makes List
-  let _t3 = call map$$sum _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
+  let _t3 = call map$$sum _t2  ; Δ{_t2} · makes List$Int
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

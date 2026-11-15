@@ -15,12 +15,7 @@
       drop _t0 : Integer
       drop xs
       drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop y : Integer
-      let _d1000000 = call addI y _t0  ; Δ{_t0 y} · makes Integer
+      let _d1000000 = call addI y _t0  ; Δ{_t0} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -29,10 +24,10 @@
       let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = call foldr$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
+      let _t0 = call foldr$$addI z ys  ; Δ{} · makes Integer
       let _t0 = call foldr$$consND z ys  ; Δ{y ys} · moves{ys} · makes List$Integer
-      let _t0 = call fromInt$fn y  ; Δ{y ys} · moves{y} · makes Integer
-      let _t1 = call map$$fromInt$fn ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
+      let _t0 = call fromInt$fn y  ; Δ{} · makes Integer
+      let _t1 = call map$$fromInt$fn ys  ; Δ{_t0} · makes List$Integer
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -96,6 +91,8 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t2 : List$Int
+  drop _t4 : List$Integer
   drop _t5 : Integer
   drop _t6 : String
   else
@@ -117,9 +114,9 @@
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
   let _t1 = con Nil  ; Δ{_t0} · makes List$Integer
   let _t2 = call range 1 5  ; Δ{_t0 _t1} · makes List$Int
-  let _t3 = call map$$fromInt$fn _t2  ; Δ{_t0 _t1 _t2} · moves{_t2} · makes List$Integer
+  let _t3 = call map$$fromInt$fn _t2  ; Δ{_t0 _t1 _t2} · makes List$Integer
   let _t4 = call foldr$$consND _t1 _t3  ; Δ{_t0 _t1 _t3} · moves{_t1 _t3} · makes List$Integer
-  let _t5 = call foldr$$addI _t0 _t4  ; Δ{_t0 _t4} · moves{_t0 _t4} · makes Integer
+  let _t5 = call foldr$$addI _t0 _t4  ; Δ{_t0 _t4} · moves{_t0} · makes Integer
   let _t6 = rtcall axion_bignum_to_string _t5  ; Δ{_t5} · makes String
   ret 0  ; Δ{}
   ret 0  ; Δ{}

@@ -1324,7 +1324,7 @@ pub fn analyze_module(
     // kept only if reachable from user code.
     let mut user_fns: std::collections::HashSet<String> =
         module.funcs.iter().map(|f| f.name.clone()).collect();
-    let (mut module, consume_exempt) = prepare_for_check(module, path, diags);
+    let (mut module, consume_exempt, caller_view) = prepare_for_check(module, path, diags);
     // A user higher-order function that specialization cloned (`keepWith` → `keepWith$$gt2`) is
     // no longer a root by itself: its clones replace it at every call site whose closure was
     // known. It stays only if something still references it (a call with an unknown closure,
@@ -1350,7 +1350,7 @@ pub fn analyze_module(
             user_fns.remove(&f.name);
         }
     }
-    let mut analysis = check::check(&module, diags);
+    let mut analysis = check::check_with(&module, diags, &caller_view);
     analysis.consume_native_exempt = consume_exempt;
     // Inference returns the monomorphic method resolutions (use span →
     // concrete instance implementation). We rewrite them as direct
@@ -1497,16 +1497,25 @@ fn collect_expr_refs(e: &ast::Expr, out: &mut std::collections::HashSet<String>)
     }
 }
 
+/// [`prepare_for_check`]'s result: the module, the consume-native-exempt names, and, for each
+/// higher-order clone, the parameter multiplicities its CALLERS are checked against (the
+/// generic HOF's, so the linearity verdict matches the engine's; see `make_hof_spec`).
+pub type PreparedModule = (
+    ast::Module,
+    std::collections::HashSet<String>,
+    std::collections::HashMap<String, Vec<ast::Mult>>,
+);
+
 /// The stages that turn a freshly-parsed module into the one the checker sees:
 /// imports + prelude + `deriving` + class lowering + consumed-ownership inference.
-/// Diagnostics (import/derive) are pushed into `diags`; the returned set is the
-/// consume-native-exempt names. Shared by [`analyze_module`] and the salsa engine
+/// Diagnostics (import/derive) are pushed into `diags`; also returns the consume-native-exempt
+/// names and the clones' caller views ([`PreparedModule`]). Shared by [`analyze_module`] and the salsa engine
 /// (`crate::db`), which memoizes the derived signature environment on top of it.
 pub fn prepare_for_check(
     module: ast::Module,
     path: &str,
     diags: &mut Diagnostics,
-) -> (ast::Module, std::collections::HashSet<String>) {
+) -> PreparedModule {
     // The batch (codegen) path SPECIALIZES higher-order functions (`foldr addI` → `foldr$$addI`,
     // `filter gt2` → `filter$$gt2`), turning `callclo` into a direct call so the existing
     // per-callee ownership analysis computes per-closure reclamation. DEFAULT-ON: the guards
@@ -1531,7 +1540,7 @@ pub fn prepare_for_check_with(
     diags: &mut Diagnostics,
     resolve: &ImportResolver,
     specialize: bool,
-) -> (ast::Module, std::collections::HashSet<String>) {
+) -> PreparedModule {
     resolve_imports_with(&mut module, path, diags, resolve);
     inject_prelude(&mut module);
     // `foreign struct` → generated constructor + selector functions, and `S { f = e }` record
@@ -1556,6 +1565,13 @@ pub fn prepare_for_check_with(
     // inference so the whole pipeline (owned_meta / Phase-B specialization / borrow analysis /
     // drop insertion / Δ-coherence) treats it as a hand-written `%1` — otherwise the caller
     // deep-drops a list whose elements the callee reused/returned → double-free (heap only).
+    // the multiplicities the user WROTE, before inference adds `%1`s: a HOF clone starts from
+    // these (see `make_hof_spec`), not from the generic HOF's inferred ones.
+    let written_mults: std::collections::HashMap<String, Vec<ast::Mult>> = module
+        .funcs
+        .iter()
+        .filter_map(|f| Some((f.name.clone(), f.sig.as_ref()?.param_mults())))
+        .collect();
     let mut consume_exempt = infer_consumed_ownership(&mut module);
     // Higher-order specialization: clone each HOF per its statically-known top-level-function
     // closure argument (`foldr addI` → `foldr$$addI`), so the dynamic `callclo` becomes a
@@ -1564,12 +1580,24 @@ pub fn prepare_for_check_with(
     // the closures' `%1` marks (a `%1`-consuming closure's direct call MOVES its arg, matching
     // the generic `callclo`'s Route-C move — sound to specialize). A SECOND consume pass then
     // marks the freshly-generated CLONES (ordinary direct-call functions).
+    let mut caller_view = std::collections::HashMap::new();
     if specialize {
         wrap_builtin_closure_args(&mut module);
-        specialize_hofs(&mut module);
+        caller_view = specialize_hofs(&mut module, &written_mults);
         consume_exempt.extend(infer_consumed_ownership(&mut module));
+        // A caller of a clone counts a `%1` wherever the generic HOF had one OR the clone's own
+        // re-inference added one: never laxer than the engine's view of the generic call.
+        for f in &module.funcs {
+            if let (Some(v), Some(sig)) = (caller_view.get_mut(&f.name), &f.sig) {
+                for (slot, m) in v.iter_mut().zip(sig.param_mults()) {
+                    if m == ast::Mult::One {
+                        *slot = ast::Mult::One;
+                    }
+                }
+            }
+        }
     }
-    (module, consume_exempt)
+    (module, consume_exempt, caller_view)
 }
 
 /// Materializes the specialized constrained functions: clones each
@@ -1760,8 +1788,13 @@ fn wrap_builtin_closure_args(module: &mut ast::Module) {
 /// arrow argument is a bare TOP-LEVEL function name. A fixpoint handles recursion (a clone's
 /// self-call redirects to the clone) and nested HOFs (a clone that calls another HOF with a
 /// known closure spawns its demand).
-fn specialize_hofs(module: &mut ast::Module) {
+fn specialize_hofs(
+    module: &mut ast::Module,
+    written_mults: &std::collections::HashMap<String, Vec<ast::Mult>>,
+) -> std::collections::HashMap<String, Vec<ast::Mult>> {
     use std::collections::{HashMap, HashSet};
+    // clone → the multiplicities its CALLERS see (see `make_hof_spec`)
+    let mut caller_view: HashMap<String, Vec<ast::Mult>> = HashMap::new();
     let fn_names: HashSet<String> = module.funcs.iter().map(|f| f.name.clone()).collect();
     // HOF → the single arrow-param index (MVP: exactly one). ANY single-arrow HOF is admitted:
     // monomorphizing it (`filter$$p`, `takeWhile$$p`) makes the drop-insertion reclaim precisely
@@ -1786,7 +1819,7 @@ fn specialize_hofs(module: &mut ast::Module) {
         .map(|(n, ks)| (n.clone(), ks[0]))
         .collect();
     if hof_arrow.is_empty() {
-        return;
+        return caller_view;
     }
     let mut fn_names = fn_names;
     // `let p = \s -> … in keepWith p xs`: the lambda reaches the closure slot through a name.
@@ -1909,7 +1942,18 @@ fn specialize_hofs(module: &mut ast::Module) {
                 let clos_sig = by_name.get(clos).and_then(|f| f.sig.as_ref());
                 span_base += 1;
                 let delta = span_base * diag::CLONE_SPAN_STRIDE;
-                if let Some(clone) = make_hof_spec(src, hof_arrow[hof], clos, clos_sig, delta) {
+                if let Some((clone, view)) = make_hof_spec(
+                    src,
+                    hof_arrow[hof],
+                    clos,
+                    clos_sig,
+                    delta,
+                    written_mults.get(hof).map(Vec::as_slice),
+                    caller_view.get(hof).map(Vec::as_slice),
+                ) {
+                    if let Some(v) = view {
+                        caller_view.insert(clone.name.clone(), v);
+                    }
                     // a clone that still takes a closure is a HOF in its own right
                     if let Some(ks) = arrow_params(&clone) {
                         hof_arrow.insert(clone.name.clone(), ks[0]);
@@ -1924,6 +1968,7 @@ fn specialize_hofs(module: &mut ast::Module) {
             rewrite_func_calls(f, &generated, &hof_arrow, &fn_names, &HashSet::new());
         }
     }
+    caller_view
 }
 
 /// Substitutes a `let`-bound lambda (`let p = \s -> strLen s > n`) into the closure slots of
@@ -2960,8 +3005,11 @@ fn make_hof_spec(
     clos: &str,
     clos_sig: Option<&ast::Type>,
     delta: usize,
-) -> Option<ast::Func> {
+    written: Option<&[ast::Mult]>,
+    src_caller_view: Option<&[ast::Mult]>,
+) -> Option<(ast::Func, Option<Vec<ast::Mult>>)> {
     let mut clone = src.clone();
+    let mut inherited = None;
     clone.name = format!("{}$${clos}", src.name);
     // shift the clone's spans into a unique (deterministic) range so its inference keys don't
     // collide with the source's or another clone's (see `span_base` in `specialize_hofs`).
@@ -3009,7 +3057,39 @@ fn make_hof_spec(
                 dropped = subst_type(&dropped, &subst);
             }
         }
-        clone.sig = Some(prepend_arrows(&cap_tys, dropped));
+        let mut new_sig = prepend_arrows(&cap_tys, dropped);
+        // What a CALLER of the clone sees is what it would see calling the generic HOF (the
+        // inferred `%1`s included), so the linearity check gives the same verdict as the
+        // engine, which never specializes (`db::processed_module`). A clone of a clone chains
+        // through its source's caller view.
+        let mut view = new_sig.param_mults();
+        if let Some(b) = src_caller_view {
+            for (j, m) in b.iter().enumerate() {
+                if j != k {
+                    if let Some(slot) = view.get_mut(captures + if j < k { j } else { j - 1 }) {
+                        *slot = *m;
+                    }
+                }
+            }
+        }
+        inherited = Some(view);
+        // Ownership is re-inferred from the SPECIALIZED body (the second consume pass), so a
+        // param starts from what the user wrote, not from the generic HOF's inferred `%1`. The
+        // generic `sumWith f xs` must own `xs` (an unknown `f` may keep each element), but
+        // `sumWith$$strLen` only reads it; inheriting the `%1` made it consume the list, so a
+        // caller reusing the list afterwards was refused (AX0910). A source that is itself a
+        // clone has no written entry: its multiplicities were already reset this way. Only the
+        // clone's OWN body and its lowering use these; callers use `inherited` above.
+        if let Some(w) = written {
+            for (j, m) in w.iter().enumerate() {
+                if j == k {
+                    continue;
+                }
+                let at = captures + if j < k { j } else { j - 1 };
+                set_param_mult(&mut new_sig, at, *m);
+            }
+        }
+        clone.sig = Some(new_sig);
     }
     clone.clauses[0].pats.remove(k);
     // fresh leading capture parameters, and the closure-param replacement `gt cap0 cap1 …`.
@@ -3049,7 +3129,7 @@ fn make_hof_spec(
     for w in &mut cl.wher {
         for_each_func_expr_mut(w, &mut |e| rw(e));
     }
-    Some(clone)
+    Some((clone, inherited))
 }
 
 /// Removes the `k`-th top-level arrow (parameter) from a function signature.
@@ -3890,6 +3970,20 @@ fn for_each_subexpr(e: &ast::Expr, g: &mut dyn FnMut(&ast::Expr)) {
 /// (`%1`), when the param is heap-shaped (a `data`/tuple — a bare var is an i64 with
 /// no owned payload). Eligibility (concrete Rule A vs generic pure-escape Rule B) is
 /// decided by the caller; this only writes the annotation.
+/// Sets the multiplicity of the `idx`-th parameter of `sig`.
+fn set_param_mult(sig: &mut ast::Type, idx: usize, m: ast::Mult) {
+    let mut cur = sig;
+    let mut i = 0;
+    while let ast::Type::Arrow { mult, to, .. } = cur {
+        if i == idx {
+            *mult = m;
+            return;
+        }
+        i += 1;
+        cur = to;
+    }
+}
+
 fn set_param_mult_one(sig: &mut ast::Type, idx: usize) {
     let mut cur = sig;
     let mut i = 0;

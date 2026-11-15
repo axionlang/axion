@@ -13,13 +13,11 @@
 
 
 
-      drop xs
-      drop xs
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _t0 = call foldr$$hoflam11 z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call foldr$$hoflam11 z ys  ; Δ{}
       let _t0 = call length ys  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
       ret + 1 _t0  ; Δ{}
@@ -32,7 +30,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 1  ; Δ{}
-      ret call hoflam11 y _t0  ; Δ{y}
+      ret call hoflam11 y _t0  ; Δ{}
       ret z  ; Δ{}
     Cons y ys ->
     Cons y ys ->
@@ -85,6 +83,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t2 : List$Int
   drop fuse$0_clo
   drop fuse$1_clo
   drop fuse$2_clo
@@ -113,7 +112,7 @@
   let fuse$0_clo = closure fuse$0  ; Δ{} · makes heap
   let fuse$1_clo = closure fuse$1  ; Δ{} · makes heap
   let fuse$2_clo = closure fuse$2  ; Δ{} · makes heap
-  let g = call foldr$$hoflam11 1 _t2  ; Δ{_t2} · moves{_t2}
+  let g = call foldr$$hoflam11 1 _t2  ; Δ{_t2}
   let h = if _t4 then
   let i = if _t6 then
   ret * x acc  ; Δ{}

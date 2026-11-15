@@ -25,18 +25,15 @@
         ret == c 13  ; Δ{}
         ret call consRight s _t3  ; Δ{_t3 s} · moves{_t3 s} · makes Either$Int$List$String
         ret con Left 403  ; Δ{} · makes Either$Int$List$String
+      drop _t6 : Either$Int$List$String
       drop _t8 : String
-      drop e
-      drop e
       drop r
       drop r
       drop s : String
       drop segs
       drop segs
-      drop y : List$String
       else
       else
-      let _d1000000 = call hoflam12 y  ; Δ{y}
       let _d1000000 = putStrLn _t8  ; Δ{_t8}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -53,7 +50,7 @@
       let _t3 = + i 1  ; Δ{}
       let _t5 = call words "a .. c"  ; Δ{} · makes List$String
       let _t6 = call keepGood _t5  ; Δ{_t5} · moves{_t5} · makes Either$Int$List$String
-      let _t7 = call count _t6  ; Δ{_t6} · moves{_t6}
+      let _t7 = call count _t6  ; Δ{_t6}
       let _t8 = call show$Int _t7  ; Δ{} · makes String
       ret + 1 _t0  ; Δ{}
       ret 0  ; Δ{}
@@ -63,8 +60,8 @@
       ret 0  ; Δ{}
       ret 1  ; Δ{}
       ret _d1000000  ; Δ{}
-      ret _d1000000  ; Δ{}
-      ret call hoflam13 x  ; Δ{x} · moves{x}
+      ret call hoflam12 y  ; Δ{}
+      ret call hoflam13 x  ; Δ{}
       ret call wordEnd s _t3 n  ; Δ{}
       ret con Left e  ; Δ{e} · moves{e} · makes Either$Int$List$String
       ret con Right _t0  ; Δ{_t0} · moves{_t0} · makes Either$Int$List$String
@@ -132,6 +129,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t1 : Either$Int$List$String
   drop _t3 : String
   else
   else
@@ -158,7 +156,7 @@
   let _t1 = call isSpace _t0  ; Δ{}
   let _t1 = call keepGood _t0  ; Δ{_t0} · moves{_t0} · makes Either$Int$List$String
   let _t1 = rtcall axion_substr i _t0 s  ; Δ{} · makes String
-  let _t2 = call count _t1  ; Δ{_t1} · moves{_t1}
+  let _t2 = call count _t1  ; Δ{_t1}
   let _t2 = call wordsFrom s j n  ; Δ{_t1} · makes List$String
   let _t3 = call show$Int _t2  ; Δ{} · makes String
   let _t4 = putStrLn _t3  ; Δ{_t3}

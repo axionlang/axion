@@ -6730,11 +6730,23 @@ pub fn lower_with(
             }
             let mut fed_borrowed =
                 crate::verify::borrowed_elem_params(&out, &borrow_args, &recinfo);
-            for (g, idx) in borrowed_param_args(&out, &borrow_args) {
-                fed_borrowed.entry(g).or_default().extend(idx);
-            }
             for (g, idx) in live_scrutinee_field_args(&out) {
                 fed_borrowed.entry(g).or_default().extend(idx);
+            }
+            // A parameter that receives a borrowed value passes a borrowed value on: `hoflam s =
+            // strLen (idG s)` called on a borrowed element feeds `idG` that element. Least
+            // fixpoint over the call graph (bounded by the finite set of positions).
+            loop {
+                let mut grew = false;
+                for (g, idx) in borrowed_param_args(&out, &borrow_args, &fed_borrowed) {
+                    let e = fed_borrowed.entry(g).or_default();
+                    for i in idx {
+                        grew |= e.insert(i);
+                    }
+                }
+                if !grew {
+                    break;
+                }
             }
             let mut changed = false;
             for f in &mut out {
@@ -10430,8 +10442,13 @@ fn live_scrutinee_field_args(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> 
 }
 
 /// For each callee, the parameter positions some caller fills with one of ITS OWN borrowed
-/// parameters (the caller does not own the value it passes).
-fn borrowed_param_args(fns: &[CoreFn], ba: &BorrowArgs) -> HashMap<String, HashSet<usize>> {
+/// parameters, or with a parameter that itself receives a borrowed value (`fed`, not a `%1`
+/// one): either way the caller does not own the value it passes.
+fn borrowed_param_args(
+    fns: &[CoreFn],
+    ba: &BorrowArgs,
+    fed: &HashMap<String, HashSet<usize>>,
+) -> HashMap<String, HashSet<usize>> {
     fn walk(t: &Term, mine: &HashSet<&str>, out: &mut HashMap<String, HashSet<usize>>) {
         let op = |op: &Op, out: &mut HashMap<String, HashSet<usize>>| {
             if let Op::CallDirect(g, args, _) = op {
@@ -10465,9 +10482,16 @@ fn borrowed_param_args(fns: &[CoreFn], ba: &BorrowArgs) -> HashMap<String, HashS
     }
     let mut out = HashMap::new();
     for f in fns {
-        let Some(b) = ba.get(&f.name) else { continue };
-        let mine: HashSet<&str> = b
-            .iter()
+        let fed_here = fed
+            .get(&f.name)
+            .into_iter()
+            .flatten()
+            .filter(|&&i| f.params.get(i).is_some_and(|p| !f.owned_params.contains(p)));
+        let mine: HashSet<&str> = ba
+            .get(&f.name)
+            .into_iter()
+            .flatten()
+            .chain(fed_here)
             .filter_map(|&i| f.params.get(i).map(String::as_str))
             .collect();
         if !mine.is_empty() {

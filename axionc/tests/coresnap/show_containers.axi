@@ -80,8 +80,6 @@
       drop _t2 : String
       drop _t4 : Maybe$Int
       drop _t5 : String
-      drop xs
-      drop xs
       let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
       let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
       let _d1000000 = rtcall axion_strcat ", " _t2  ; Δ{_t2} · makes String
@@ -101,7 +99,7 @@
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_List$Int _dd2  ; Δ{}
       let _dd3 = call axion_drop_Maybe$Int _dd2  ; Δ{}
-      let _t0 = call double y  ; Δ{y ys}
+      let _t0 = call double y  ; Δ{}
       let _t0 = call show$Int y  ; Δ{} · makes String
       let _t0 = call show$Int z  ; Δ{} · makes String
       let _t0 = call show$List$Int y  ; Δ{} · makes String
@@ -109,7 +107,7 @@
       let _t0 = call show$Maybe$Int y  ; Δ{} · makes String
       let _t0 = call show$Maybe$Int z  ; Δ{} · makes String
       let _t0 = rtcall axion_strcat "Just" " "  ; Δ{} · makes String
-      let _t1 = call map$$double ys  ; Δ{y ys} · moves{ys} · makes List$Int
+      let _t1 = call map$$double ys  ; Δ{} · makes List$Int
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t1 = call showListRest$Int ys  ; Δ{_t0} · makes String
       let _t1 = call showListRest$Int zs  ; Δ{_t0} · makes String
@@ -152,7 +150,7 @@
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret case _t6 of
-      ret con Cons _t0 _t1  ; Δ{_t1 y} · moves{_t1} · makes List$Int
+      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
       ret con Nil  ; Δ{} · makes List$Int
     Cons y ys ->
     Cons y ys ->
@@ -248,6 +246,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t0 : List$Int
   drop _t0 : String
   drop _t0 : String
   drop _t0 : String
@@ -284,7 +283,7 @@
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
   let _t0 = call showListElems$List$Int xs  ; Δ{} · makes String
   let _t0 = call showListElems$Maybe$Int xs  ; Δ{} · makes String
-  let _t1 = call map$$double _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
+  let _t1 = call map$$double _t0  ; Δ{_t0} · makes List$Int
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String

@@ -44,7 +44,6 @@
       drop p
       drop p : tuple2$Int$Int
       drop p : tuple2$Int$Int
-      drop p : tuple2$Int$Int
       else
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -138,6 +137,7 @@
   drop _t23 : List$Int
   drop _t29 : List$Int
   drop _t38 : String
+  drop _t9 : tuple2$Int$Int
   else
   else
   else
@@ -155,7 +155,7 @@
   let _t0 = tuple 10 99  ; Δ{} · makes heap
   let _t0 = tuple x y  ; Δ{} · makes heap
   let _t1 = call fst$Int$Int _t0  ; Δ{_t0} · moves{_t0}
-  let _t10 = call uncurry$$minus _t9  ; Δ{_t9} · moves{_t9}
+  let _t10 = call uncurry$$minus _t9  ; Δ{_t9}
   let _t11 = + _t8 _t10  ; Δ{}
   let _t12 = con Nil  ; Δ{} · makes List$Int
   let _t13 = con Cons 2 _t12  ; Δ{_t12} · moves{_t12} · makes List$Int

@@ -91,26 +91,29 @@
                                           let _t41 = putStrLn _t40  ; Δ{_t40}
                                           ret case _t41 of
                                         _ ->
+                                      drop _t35 : Either$Int$Int
                                       drop _t36 : Either$Int$Int
                                       drop _t37 : String
                                       let _t35 = call l7  ; Δ{} · makes Either$Int$Int
-                                      let _t36 = call mapRight$$hoflam14$Int _t35  ; Δ{_t35} · moves{_t35} · makes Either$Int$Int
+                                      let _t36 = call mapRight$$hoflam14 _t35  ; Δ{_t35} · makes Either$Int$Int
                                       let _t37 = call show$Either$Int$Int _t36  ; Δ{_t36} · makes String
                                       let _t38 = putStrLn _t37  ; Δ{_t37}
                                       ret case _t38 of
                                     _ ->
+                                  drop _t31 : Either$Int$Int
                                   drop _t32 : Either$Int$Int
                                   drop _t33 : String
                                   let _t31 = call r8  ; Δ{} · makes Either$Int$Int
-                                  let _t32 = call mapRight$$hoflam12$Int _t31  ; Δ{_t31} · moves{_t31} · makes Either$Int$Int
+                                  let _t32 = call mapRight$$hoflam12 _t31  ; Δ{_t31} · makes Either$Int$Int
                                   let _t33 = call show$Either$Int$Int _t32  ; Δ{_t32} · makes String
                                   let _t34 = putStrLn _t33  ; Δ{_t33}
                                   ret case _t34 of
                                 _ ->
+                              drop _t27 : Either$Int$Int
                               drop _t28 : Either$Int$Int
                               drop _t29 : String
                               let _t27 = call l7  ; Δ{} · makes Either$Int$Int
-                              let _t28 = call mapLeft$$hoflam10$Int _t27  ; Δ{_t27} · moves{_t27} · makes Either$Int$Int
+                              let _t28 = call mapLeft$$hoflam10 _t27  ; Δ{_t27} · makes Either$Int$Int
                               let _t29 = call show$Either$Int$Int _t28  ; Δ{_t28} · makes String
                               let _t30 = putStrLn _t29  ; Δ{_t29}
                               ret case _t30 of
@@ -204,12 +207,6 @@
       drop _t4 : String
       drop _t6 : String
       drop d : String
-      drop e
-      drop e
-      drop e
-      drop e
-      drop e
-      drop e
       drop p : tuple2$Int$Int
       drop p : tuple2$List$Int$List$Int skip{0 1}
       drop xs
@@ -238,9 +235,9 @@
       let _dd3 = call axion_drop_Either$Int$Int _dd2  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
-      let _t0 = call hoflam10 x  ; Δ{x}
-      let _t0 = call hoflam12 y  ; Δ{y}
-      let _t0 = call hoflam14 y  ; Δ{y}
+      let _t0 = call hoflam10 x  ; Δ{}
+      let _t0 = call hoflam12 y  ; Δ{}
+      let _t0 = call hoflam14 y  ; Δ{}
       let _t0 = call reverse ys  ; Δ{y ys} · moves{ys} · makes List
       let _t0 = call show$Int c0  ; Δ{} · makes String
       let _t0 = call show$Int y  ; Δ{} · makes String
@@ -301,15 +298,15 @@
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
       ret con EQ  ; Δ{}
       ret con LT  ; Δ{}
-      ret con Left _t0  ; Δ{x}
-      ret con Left x  ; Δ{x} · moves{x}
-      ret con Left x  ; Δ{x} · moves{x}
+      ret con Left _t0  ; Δ{}
+      ret con Left x  ; Δ{}
+      ret con Left x  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
-      ret con Right _t0  ; Δ{y}
-      ret con Right _t0  ; Δ{y}
-      ret con Right y  ; Δ{y} · moves{y}
+      ret con Right _t0  ; Δ{}
+      ret con Right _t0  ; Δ{}
+      ret con Right y  ; Δ{}
       ret d  ; Δ{}
       ret d  ; Δ{}
       ret d  ; Δ{}
@@ -591,9 +588,9 @@ le$Int x y  =
 lefts xs  =
 ls  =
 main  =
-mapLeft$$hoflam10$Int e  =
-mapRight$$hoflam12$Int e  =
-mapRight$$hoflam14$Int e  =
+mapLeft$$hoflam10 e  =
+mapRight$$hoflam12 e  =
+mapRight$$hoflam14 e  =
 partitionEithers$Int$Int xs  =
 r8  =
 reverse xs  =

@@ -12,13 +12,6 @@
 
 
 
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop y
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -27,11 +20,11 @@
       let _dd1 = call axion_drop_List$P _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_free _dd2  ; Δ{}
-      let _t0 = call foldr$$add z ys  ; Δ{y ys} · moves{ys}
-      let _t0 = call getA y  ; Δ{y ys}
-      let _t0 = call mkP y  ; Δ{y ys} · moves{y} · makes P
-      let _t1 = call map$$getA ys  ; Δ{ys} · moves{ys} · makes List$Int
-      let _t1 = call map$$mkP ys  ; Δ{_t0 ys} · moves{ys} · makes List$P
+      let _t0 = call foldr$$add z ys  ; Δ{}
+      let _t0 = call getA y  ; Δ{}
+      let _t0 = call mkP y  ; Δ{} · makes P
+      let _t1 = call map$$getA ys  ; Δ{} · makes List$Int
+      let _t1 = call map$$mkP ys  ; Δ{_t0} · makes List$P
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -39,7 +32,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret a  ; Δ{}
-      ret call add y _t0  ; Δ{y}
+      ret call add y _t0  ; Δ{}
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$P
       ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
       ret con Nil  ; Δ{} · makes List$Int
@@ -98,12 +91,16 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t0 : List$Int
+  drop _t1 : List$P
+  drop _t2 : List$Int
   else
   else
   else
   else
   else
   else
+  let _d1000000 = call foldr$$add 0 _t2  ; Δ{_t2}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -114,13 +111,13 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = call range 1 5  ; Δ{} · makes List$Int
-  let _t1 = call map$$mkP _t0  ; Δ{_t0} · moves{_t0} · makes List$P
-  let _t2 = call map$$getA _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
+  let _t1 = call map$$mkP _t0  ; Δ{_t0} · makes List$P
+  let _t2 = call map$$getA _t1  ; Δ{_t1} · makes List$Int
   ret + a b  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call foldr$$add 0 _t2  ; Δ{_t2} · moves{_t2}
+  ret _d1000000  ; Δ{}
   ret case p of
   ret case xs of
   ret case xs of

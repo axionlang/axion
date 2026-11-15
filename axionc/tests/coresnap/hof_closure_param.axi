@@ -41,6 +41,7 @@
 
 
 
+                              drop _t40 : Either$Int$Int
                               drop _t50 : List$Int
                               drop _t51 : List$P
                               drop _t53 : String
@@ -51,11 +52,14 @@
                               let _t53 = call show$Int _t52  ; Δ{} · makes String
                               ret _d1000000  ; Δ{}
                             _ ->
+                          drop _t44 : List$Int
+                          drop _t45 : List$P
+                          drop _t46 : List$Int
                           drop _t48 : String
                           let _t44 = call range 1 5  ; Δ{} · makes List$Int
-                          let _t45 = call map$$mkP _t44  ; Δ{_t44} · moves{_t44} · makes List$P
-                          let _t46 = call map$$getA _t45  ; Δ{_t45} · moves{_t45} · makes List$Int
-                          let _t47 = call foldr$$hoflam23 0 _t46  ; Δ{_t46} · moves{_t46}
+                          let _t45 = call map$$mkP _t44  ; Δ{_t44} · makes List$P
+                          let _t46 = call map$$getA _t45  ; Δ{_t45} · makes List$Int
+                          let _t47 = call foldr$$hoflam23 0 _t46  ; Δ{_t46}
                           let _t48 = call show$Int _t47  ; Δ{} · makes String
                           let _t49 = putStrLn _t48  ; Δ{_t48}
                           ret case _t49 of
@@ -72,7 +76,8 @@
                       ret case _t43 of
                     _ ->
                   drop _t37 : String
-                  let _t36 = call countIf$$big ws  ; Δ{ws} · moves{ws}
+                  drop ws : List$String
+                  let _t36 = call countIf$$big ws  ; Δ{ws}
                   let _t37 = call show$Int _t36  ; Δ{} · makes String
                   let _t38 = putStrLn _t37  ; Δ{_t37}
                   ret case _t38 of
@@ -108,8 +113,8 @@
         let _t1 = call filter$$hoflam14 ys  ; Δ{y ys} · moves{ys} · makes List$String
         let _t1 = call filter$$hoflam15 ys  ; Δ{y ys} · moves{ys} · makes List$String
         let _t1 = call filter$$hoflamcap0 _cap0 ys  ; Δ{y ys} · moves{ys} · makes List$String
-        ret 0  ; Δ{ys}
-        ret 1  ; Δ{ys}
+        ret 0  ; Δ{}
+        ret 1  ; Δ{}
         ret call filter$$gt2 ys  ; Δ{ys} · moves{ys} · makes List$Integer
         ret call filter$$hoflam10 ys  ; Δ{ys} · moves{ys} · makes List$String
         ret call filter$$hoflam14 ys  ; Δ{ys} · moves{ys} · makes List$String
@@ -122,8 +127,6 @@
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$String
       drop _t0 : Integer
       drop _t19 : String
-      drop e
-      drop e
       drop xs
       drop xs
       drop xs
@@ -134,26 +137,13 @@
       drop xs
       drop xs
       drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs : List$String
-      drop y
-      drop y : Integer
-      drop y : String
       else
       else
       else
       else
       else
       else
-      let _d1000000 = call addI y _t0  ; Δ{_t0 y} · makes Integer
+      let _d1000000 = call addI y _t0  ; Δ{_t0} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -170,20 +160,20 @@
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
       let _dd3 = rtcall axion_free _dd2  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
-      let _t0 = call big y  ; Δ{y ys}
-      let _t0 = call foldr$$addI z ys  ; Δ{y ys} · moves{ys} · makes Integer
-      let _t0 = call foldr$$hoflam23 z ys  ; Δ{y ys} · moves{ys}
-      let _t0 = call getA y  ; Δ{y ys}
+      let _t0 = call big y  ; Δ{}
+      let _t0 = call foldr$$addI z ys  ; Δ{} · makes Integer
+      let _t0 = call foldr$$hoflam23 z ys  ; Δ{}
+      let _t0 = call getA y  ; Δ{}
       let _t0 = call gt2 y  ; Δ{y ys}
       let _t0 = call hoflam10 y  ; Δ{y ys}
       let _t0 = call hoflam14 y  ; Δ{y ys}
       let _t0 = call hoflam15 y  ; Δ{y ys}
       let _t0 = call hoflamcap0 _cap0 y  ; Δ{y ys}
       let _t0 = call length ys  ; Δ{}
-      let _t0 = call mkP y  ; Δ{y ys} · moves{y} · makes P
       let _t0 = call mkP y  ; Δ{} · makes P
-      let _t1 = call map$$getA ys  ; Δ{ys} · moves{ys} · makes List$Int
-      let _t1 = call map$$mkP ys  ; Δ{_t0 ys} · moves{ys} · makes List$P
+      let _t0 = call mkP y  ; Δ{} · makes P
+      let _t1 = call map$$getA ys  ; Δ{} · makes List$Int
+      let _t1 = call map$$mkP ys  ; Δ{_t0} · makes List$P
       let _t1 = call mkPs ys  ; Δ{_t0} · makes List$P
       let _t1 = if _t0 then
       let _t14 = con Nil  ; Δ{ws} · makes List$String
@@ -192,7 +182,7 @@
       let _t17 = con Cons "a" _t16  ; Δ{_t16 ws} · moves{_t16} · makes List$String
       let _t18 = call keepWith$$hoflamcap0 k _t17  ; Δ{_t17 ws} · moves{_t17}
       let _t19 = call show$Int _t18  ; Δ{ws} · makes String
-      let _t2 = call countIf$$big ys  ; Δ{ys} · moves{ys}
+      let _t2 = call countIf$$big ys  ; Δ{}
       let _t20 = putStrLn _t19  ; Δ{_t19 ws}
       ret + 1 _t0  ; Δ{}
       ret + _t1 _t2  ; Δ{}
@@ -210,9 +200,9 @@
       ret 0  ; Δ{}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret a  ; Δ{}
-      ret call hoflam19 y  ; Δ{y}
-      ret call hoflam20 x  ; Δ{x} · moves{x}
-      ret call hoflam23 y _t0  ; Δ{y}
+      ret call hoflam19 y  ; Δ{}
+      ret call hoflam20 x  ; Δ{}
+      ret call hoflam23 y _t0  ; Δ{}
       ret case _t20 of
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$P
       ret con Cons _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes List$P
@@ -316,7 +306,7 @@
   ; Δ{y ys}
   ; Δ{y ys}
   ; Δ{y ys}
-  ; Δ{ys}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -351,6 +341,7 @@
   drop _t0 : Integer
   drop _t0 : List$String
   drop _t0 : List$String
+  drop _t1 : List$Integer
   drop _t1 : List$String
   drop _t11 : Integer
   drop _t12 : String
@@ -362,6 +353,7 @@
   else
   else
   else
+  let _d1000000 = call foldr$$addI _t0 _t1  ; Δ{_t0 _t1} · moves{_t0} · makes Integer
   let _d1000000 = call length _t0  ; Δ{_t0}
   let _d1000000 = call length _t0  ; Δ{_t0}
   let _d1000000 = call length _t1  ; Δ{_t1}
@@ -425,11 +417,11 @@
   ret > _t0 1  ; Δ{}
   ret > _t0 1  ; Δ{}
   ret > _t0 k  ; Δ{}
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{}
   ret _d1000000  ; Δ{}
-  ret call foldr$$addI _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes Integer
   ret case _t13 of
   ret case e of
   ret case p of

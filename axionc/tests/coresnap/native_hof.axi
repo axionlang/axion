@@ -13,25 +13,21 @@
         ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Int
       drop xs
       drop xs
-      drop xs
-      drop xs
-      drop xs
-      drop xs
       else
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = call evenN y  ; Δ{y ys}
-      let _t0 = call foldr$$hoflam11 z ys  ; Δ{y ys} · moves{ys}
-      let _t0 = call sq y  ; Δ{y ys}
-      let _t1 = call map$$sq ys  ; Δ{y ys} · moves{ys} · makes List$Int
+      let _t0 = call foldr$$hoflam11 z ys  ; Δ{}
+      let _t0 = call sq y  ; Δ{}
+      let _t1 = call map$$sq ys  ; Δ{} · makes List$Int
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret call hoflam11 y _t0  ; Δ{y}
-      ret con Cons _t0 _t1  ; Δ{_t1 y} · moves{_t1} · makes List$Int
+      ret call hoflam11 y _t0  ; Δ{}
+      ret con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
       ret con Nil  ; Δ{} · makes List$Int
       ret con Nil  ; Δ{} · makes List$Int
       ret if _t0 then
@@ -64,8 +60,11 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t7 : List$Int
+  drop _t8 : List$Int
   else
   else
+  let _d1000000 = call foldr$$hoflam11 0 _t8  ; Δ{_t8}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -79,13 +78,13 @@
   let _t5 = con Cons 2 _t4  ; Δ{_t4} · moves{_t4} · makes List$Int
   let _t6 = con Cons 1 _t5  ; Δ{_t5} · moves{_t5} · makes List$Int
   let _t7 = call filter$$evenN _t6  ; Δ{_t6} · moves{_t6} · makes List$Int
-  let _t8 = call map$$sq _t7  ; Δ{_t7} · moves{_t7} · makes List$Int
+  let _t8 = call map$$sq _t7  ; Δ{_t7} · makes List$Int
   ret * n n  ; Δ{}
   ret + x a  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret == _t0 0  ; Δ{}
-  ret call foldr$$hoflam11 0 _t8  ; Δ{_t8} · moves{_t8}
+  ret _d1000000  ; Δ{}
   ret case xs of
   ret case xs of
   ret case xs of

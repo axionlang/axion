@@ -8,18 +8,16 @@
 
 
 
-      drop xs
-      drop xs
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
-      let _t0 = call foldr$$maxOf z ys  ; Δ{y ys} · moves{ys}
+      let _t0 = call foldr$$maxOf z ys  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret call maxOf y _t0  ; Δ{y} · moves{y}
+      ret call maxOf y _t0  ; Δ{}
       ret z  ; Δ{}
     Cons y ys ->
     Nil ->
@@ -67,6 +65,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t2 : List$Int
   else
   else
   else
@@ -74,6 +73,7 @@
   else
   else
   else
+  let _d1000000 = call foldr$$maxOf 0 _t2  ; Δ{_t2}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -88,7 +88,7 @@
   let _t2 = rtcall axion_par_map _t1 48 16 _t0  ; Δ{_t0} · moves{_t0} · makes List
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call foldr$$maxOf 0 _t2  ; Δ{_t2} · moves{_t2}
+  ret _d1000000  ; Δ{}
   ret case xs of
   ret if _t0 then
   ret if _t0 then

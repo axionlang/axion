@@ -11,10 +11,7 @@
       drop _t0 : Integer
       drop xs
       drop xs
-      drop xs
-      drop xs
       drop y : Integer
-      drop y : tuple2$Integer$Integer
       let _d1000000 = rtcall axion_bignum_add y _t0  ; Δ{_t0 y} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -26,9 +23,9 @@
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_tuple2$Integer$Integer _dd2  ; Δ{}
       let _dd3 = rtcall axion_bignum_free _dd2  ; Δ{}
-      let _t0 = call sndSum y  ; Δ{y ys} · makes Integer
+      let _t0 = call sndSum y  ; Δ{} · makes Integer
       let _t0 = call sumL ys  ; Δ{y ys} · moves{ys} · makes Integer
-      let _t1 = call map$$sndSum ys  ; Δ{_t0 ys} · moves{ys} · makes List$Integer
+      let _t1 = call map$$sndSum ys  ; Δ{_t0} · makes List$Integer
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -79,6 +76,7 @@
   drop _t1 : Integer
   drop _t10 : Integer
   drop _t11 : String
+  drop _t8 : List$tuple2$Integer$Integer
   else
   else
   else
@@ -108,7 +106,7 @@
   let _t6 = con Nil  ; Δ{_t2 _t5} · makes List$tuple2$Integer$Integer
   let _t7 = con Cons _t5 _t6  ; Δ{_t2 _t5 _t6} · moves{_t5 _t6} · makes List$tuple2$Integer$Integer
   let _t8 = con Cons _t2 _t7  ; Δ{_t2 _t7} · moves{_t2 _t7} · makes List$tuple2$Integer$Integer
-  let _t9 = call map$$sndSum _t8  ; Δ{_t8} · moves{_t8} · makes List$Integer
+  let _t9 = call map$$sndSum _t8  ; Δ{_t8} · makes List$Integer
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

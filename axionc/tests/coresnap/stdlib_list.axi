@@ -86,10 +86,11 @@
                           let _t36 = putStrLn _t35  ; Δ{_t35}
                           ret case _t36 of
                         _ ->
+                      drop _t24 : List$Int
                       drop _t25 : List$Int
                       drop _t27 : String
                       let _t24 = call range 1 3  ; Δ{} · makes List$Int
-                      let _t25 = call concatMap$$dup _t24  ; Δ{_t24} · moves{_t24} · makes List$Int
+                      let _t25 = call concatMap$$dup _t24  ; Δ{_t24} · makes List$Int
                       let _t26 = call sum _t25  ; Δ{_t25}
                       let _t27 = call show$Int _t26  ; Δ{} · makes String
                       let _t28 = putStrLn _t27  ; Δ{_t27}
@@ -169,8 +170,6 @@
       drop xs
       drop xs
       drop xs
-      drop xs
-      drop xs
       drop xs : List$List$Int
       else
       else
@@ -196,7 +195,7 @@
       let _t0 = + i 1  ; Δ{}
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call concat$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
-      let _t0 = call dup y  ; Δ{y ys} · moves{y} · makes List$Int
+      let _t0 = call dup y  ; Δ{} · makes List$Int
       let _t0 = call lt5 y  ; Δ{y ys}
       let _t0 = call lt5 y  ; Δ{y ys}
       let _t0 = call lt5 y  ; Δ{}
@@ -207,7 +206,7 @@
       let _t0 = con Cons y a  ; Δ{}
       let _t0 = con Nil  ; Δ{}
       let _t0 = con Nil  ; Δ{} · makes List$Int
-      let _t1 = call map$$dup ys  ; Δ{_t0 ys} · moves{ys} · makes List$List$Int
+      let _t1 = call map$$dup ys  ; Δ{_t0} · makes List$List$Int
       let _t1 = call sum b  ; Δ{}
       let _t1 = con Nil  ; Δ{_t0} · makes List$Int
       let _t1 = con Nil  ; Δ{}
