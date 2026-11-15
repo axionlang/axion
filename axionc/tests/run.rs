@@ -1826,6 +1826,47 @@ fn a_view_consumes_its_list_and_frees_the_skipped_prefix() {
 }
 
 #[test]
+fn closures_are_reclaimed_and_keep_their_captures_alive() {
+    // A closure call borrows the closure (a second call is fine) and the cell is freed after
+    // its last call; a capture is freed only after that, never between building the closure
+    // and calling it (`singleCall` read a freed String and printed garbage).
+    let fx = fixture("closure_reclaim.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "42\n21\n13\n6\n16\n30\n6\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
+fn an_escaping_closure_never_frees_its_captures_early() {
+    // A returned closure carries a pointer to `s` out of `mk`. Auto-Drop used to free `s` before
+    // the return (the caller then read freed memory and printed garbage); now the capture escapes
+    // with the closure. Until escaping closures own a destructor, that is a leak the native gate
+    // refuses (AX0911) — never a wrong answer. The interpreter runs it.
+    let src = "mk :: Int -> (Int -> Int)\n\
+               mk n = let s = show n in \\z -> strLen s + z\n\
+               main :: IO ()\n\
+               main = putStrLn (show (mk 12345 1))\n";
+    let path = std::env::temp_dir().join(format!("axion_escclo_{}.axi", std::process::id()));
+    std::fs::write(&path, src).unwrap();
+    let interp = axionc().arg(&path).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "6\n");
+    let native = axionc().arg("--release").arg(&path).output().unwrap();
+    let err = String::from_utf8_lossy(&native.stderr);
+    assert!(!native.status.success() && err.contains("AX0911"), "{err}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn socket_ops_borrow_their_string_arguments() {
     // `netConnect`/`netSend` only read their host/data strings (the runtime never frees them),
     // but were classified as consuming them, so a session freeing a computed string after the

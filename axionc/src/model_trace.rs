@@ -108,12 +108,19 @@ impl Tr<'_> {
             | Op::ShowInt(_)
             | Op::PutStr(_)
             | Op::PutStrLn(_)
-            // A closure: `op_delta_effect` BORROWS its captures (→ `use`; the enclosing frame keeps
-            // and frees them at their real consumer) and produces the closure cell (→ `alloc`),
-            // which Auto-Drop then `drop`s (local) or which is moved out (escaping) — both balance.
-            // A closure CALL moves its args (→ `moveOut`); the callee (`nonstrict`) is not tracked.
-            | Op::MakeClosure { .. }
+            // A closure CALL moves its args (→ `moveOut`) and BORROWS the closure (→ `use`).
             | Op::CallClosure(..) => {}
+            // A closure produces its cell (→ `alloc`), dropped by Auto-Drop after its last call or
+            // moved out when it escapes. A closure over a TRACKED heap value borrows it until its
+            // last call — an interior borrow the owned-set fragment does not model (AxionAlias).
+            Op::MakeClosure { captures, .. } => {
+                if captures
+                    .iter()
+                    .any(|a| matches!(a, Atom::Var(v) if self.ids.contains_key(v)))
+                {
+                    return Err("closure-borrow (alias)");
+                }
+            }
             Op::Field { .. } => return Err("field-alias (borrow)"),
             Op::UpdateRecord { .. } => return Err("record-update"),
             Op::ArrayNew { .. } => return Err("array"),
@@ -149,8 +156,8 @@ impl Tr<'_> {
             }
         }
         let mut ops = Vec::new();
-        // borrows → `use` (heap operands only)
-        for a in &e.borrows {
+        // borrows (and an indirect call's closure) → `use` (heap operands only)
+        for a in e.borrows.iter().chain(e.nonstrict.iter()) {
             if let Atom::Var(v) = a {
                 if let Some(&id) = self.ids.get(v) {
                     ops.push(MOp::Use(id));
@@ -171,13 +178,8 @@ impl Tr<'_> {
                 }
             }
         }
-        // produced heap result. EXCEPTION: a `MakeClosure` cell is NOT a tracked resource here —
-        // the verifier never reclaims a closure environment (a documented non-reclaimed class), and
-        // its consumption at the `CallClosure` is `nonstrict` (untracked above), so modeling the
-        // cell as an `alloc` would strand it as a phantom leak the verifier does not see (the
-        // `main`-builds-a-closure shape that the whole-corpus widening surfaced). Leaving it
-        // untracked keeps the model's verdict equal to the verifier's.
-        if e.produces.is_some() && !matches!(op, Op::MakeClosure { .. }) {
+        // produced heap result (a closure cell included: it is reclaimed like any allocation).
+        if e.produces.is_some() {
             match bind {
                 Some(x) => {
                     let id = self.fresh();

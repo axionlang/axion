@@ -148,7 +148,7 @@ and well-mitigated this list is.
     rejected programs are in fact safe* (the rebuilders) — an honest expressiveness cost beyond the
     strict minimum, bounded and worked-around, never a safety compromise.
 - **Leaks — no characterized exceptions (2026-11-15).** Clause (4) used to carry a list of known
-  conservative leaks. Each is closed and leak-gated:
+  conservative leaks. Each is closed and leak-gated (escaping closures over heap captures: refused, see below):
   - *`Integer` fields of `data`/record types* are reclaimed by the container's destructor like `String`
     fields (`con_drop_slots`); an extracted field is moved out and the container frees only the rest
     (skip destructors, a shell-free after a `case`). The 2026-10 attempt at this was rejected because
@@ -162,6 +162,17 @@ and well-mitigated this list is.
     ownership table. `verify::leak_gates` no longer whitelists `*$step`: a leak there is AX0911.
   - *A field read out of an owned record that dies* is a move-out (`drop v : T skip{slot}`), so the
     record's shell no longer leaks (`accum_field_alias.axi`, `poly_payload_borrow_return.axi`).
+  - *Closures* are reclaimed: a closure call BORROWS the closure (it may be called again) and the cell
+    is flat-freed after its last call; the cell holds pointers to its captures, so the frame frees a
+    capture only after the closure's last use (Auto-Drop's `borrow_aliases`, the verifier's
+    `Val.borrows`). This also closed a silent use-after-free: Auto-Drop used to free a heap capture
+    right after building the closure, before calling it (or returning it), and neither the verifier
+    nor ASan saw the read (it happens inside the runtime). Regression: `closure_reclaim.axi` and the
+    verifier test `closure_capture_must_outlive_its_calls`.
+    **Open:** a closure that ESCAPES its frame (returned, stored) takes its captures with it, so they
+    are never freed early — but nothing frees them later either, until escaping closures carry a
+    destructor. A heap capture of an escaping closure is therefore refused natively as a leak
+    (AX0911), never miscompiled.
   The remaining gap is one of PROOF, not of reclamation: the verifier's `leak_exempt` set still skips
   leak accounting for polymorphic extracted fields and moved-in leaves (their heap-ness is unresolved
   where it runs). LSan covers it: `scripts/sanitize.sh` leak-gates every native fixture, the

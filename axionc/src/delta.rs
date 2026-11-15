@@ -62,9 +62,10 @@ pub struct DeltaEffect<'a> {
     /// `Op::Atom`'s operand: the value becomes ALIASED (shared) — it leaves Δ
     /// (the reclamation analysis treats it as escaped: never freed by us)
     pub alias: Option<&'a Atom>,
-    /// the `CallClosure` callee: it moves, but it may be a function address
-    /// (session/runtime entry) rather than a variable — the judgment reads it
-    /// non-strictly
+    /// the `CallClosure` callee: BORROWED (a call reads the closure cell, it does not
+    /// consume it — the owner frees the cell once, after its last call), but it may be a
+    /// function address (session/runtime entry) rather than a variable — the judgment
+    /// reads it non-strictly
     pub nonstrict: Option<&'a Atom>,
     /// the op's owned-heap result: `Some` iff the binder owns a heap object
     /// (the Phase A′ annotation, or an always-heap op — `op_produces_heap`)
@@ -113,19 +114,15 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.moves.extend(args.iter());
         }
         Op::MakeClosure { captures, .. } => {
-            // Captures are BORROWED, not moved: a closure's env is never reclaimed (closures are
-            // conservative — they may be called), so capturing a value does NOT consume it. The
-            // enclosing frame keeps ownership and frees each capture exactly once — at its real
-            // consumer (`Cons y`), or, if the closure ESCAPES (returned/stored), Auto-Drop's own
-            // escape analysis already declines to drop a capture reachable through the escaped
-            // closure (the documented conservative closure leak). Marking captures `moves` was
-            // redundant with that escape handling AND coarser: it killed a capture used by a LATER
-            // op (a second closure, or the final consumer), so a var captured by two closures +
-            // consumed once (`sortBy`'s `\z -> leq z y` twice, then `Cons y`) looked consumed
-            // three times → a spurious UAF in the specialized clone. Borrowing keeps it live to its
-            // single real consumer. Validated: no corruption/divergence over the corpus (ASan+LSan,
-            // 113/102) + 300 fuzzed HOF programs; no new leaks (a dead-after capture leaked under
-            // `moves` too — the env is never freed either way).
+            // Captures are BORROWED, not moved: the cell stores their pointers and the lambda
+            // reads them on every call, so the enclosing frame keeps ownership and frees each
+            // capture once — after the closure's LAST use (Auto-Drop's `borrow_aliases` makes a
+            // use of the closure a use of its captures; the verifier's `Val.borrows` checks it).
+            // A closure that ESCAPES takes its captures with it: `droppable_vars` marks them
+            // escaped, so they are never freed under it. Borrowing (not moving) also lets one
+            // var be captured by two closures and consumed once afterwards (`sortBy`'s
+            // `\z -> leq z y` twice, then `Cons y`). The cell itself is owned by the binder and
+            // flat-freed after its last call (a `CallClosure` borrows its callee).
             e.borrows.extend(captures.iter());
             e.produces = Some(Res {
                 key: None,
@@ -1198,9 +1195,9 @@ impl Ck<'_> {
             self.use_atom(a, false, s);
         }
         if let Some(f) = e.nonstrict {
-            // the `CallClosure` callee may be a function address (a
-            // session/runtime entry — not a variable): read non-strictly
-            self.use_atom_in(f, true, false, s);
+            // the `CallClosure` callee is BORROWED (the closure survives the call) and may be
+            // a function address (a session/runtime entry — not a variable): read non-strictly
+            self.use_atom_in(f, false, false, s);
         }
         // (Field·owned) — per-field ownership, F-1: a selector read of a `%1`
         // HEAP field of a live record transfers that slot's ownership. The

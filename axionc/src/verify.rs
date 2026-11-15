@@ -912,7 +912,7 @@ impl Verifier<'_> {
     /// A `let x = op`: check operand liveness, classify the result, then apply the operands'
     /// escapes (moved/aliased operands leave the state). `x` is tracked only if it is a
     /// resource (owns an allocation or holds an interior pointer into one).
-    /// Apply a consuming op's escapes: each moved operand (and an indirect call's `nonstrict`
+    /// Apply a consuming op's escapes: each moved operand (an indirect call only borrows its
     /// closure receiver) leaves the state. CONSUMING an interior alias of a BORROWED
     /// (externally-owned) resource — moving it into a callee's owning argument or embedding it in
     /// a new structure — frees memory the owner still holds, so the owner's later drop
@@ -970,12 +970,13 @@ impl Verifier<'_> {
                 }
             }
         }
-        // moved operands (and an indirect call's `nonstrict` receiver) escape → mark them dead.
-        // One op moving the same OWNED value twice (`tuple x x`: one String stored in two slots)
-        // hands two owners the same memory — a double free once both are reclaimed.
+        // moved operands escape → mark them dead (an indirect call's `nonstrict` closure is
+        // BORROWED: it survives the call). One op moving the same OWNED value twice (`tuple x
+        // x`: one String stored in two slots) hands two owners the same memory — a double free
+        // once both are reclaimed.
         let e = op_delta_effect(op, self.ba);
         let mut moved: HashSet<&str> = HashSet::new();
-        for a in e.moves.iter().chain(e.nonstrict.iter()) {
+        for a in &e.moves {
             if let Atom::Var(v) = a {
                 let owned_live = st.get(v).is_some_and(|val| val.owned && val.dead.is_none());
                 if !moved.insert(v.as_str()) && owned_live {
@@ -983,7 +984,7 @@ impl Verifier<'_> {
                 }
             }
         }
-        for a in e.moves.iter().chain(e.nonstrict.iter()) {
+        for a in &e.moves {
             if let Atom::Var(v) = a {
                 self.note_field_gone(v, st);
                 Self::kill(v, Cat::UseAfterFree, st);
@@ -1063,9 +1064,8 @@ impl Verifier<'_> {
         if let Some(Atom::Var(src)) = e.alias {
             Self::kill(src, Cat::UseAfterFree, st);
         }
-        // moved operands AND the `nonstrict` closure receiver of an indirect call escape
-        // (the call consumes them) — same as `scan_op_escapes` in Auto-Drop; `consume` also
-        // flags consuming an interior alias of a borrowed resource.
+        // moved operands escape (the call consumes them) — same as `scan_op_escapes` in
+        // Auto-Drop; `consume` also flags consuming an interior alias of a borrowed resource.
         self.consume(op, sp, st);
         if val.owned || !val.borrows.is_empty() {
             // record a direct heap field projection's exact slot, so a move-out skip-drop
@@ -1176,6 +1176,29 @@ impl Verifier<'_> {
         let e = op_delta_effect(op, self.ba);
         if let Some(Atom::Var(src)) = e.alias {
             return st.get(src).cloned().unwrap_or_default();
+        }
+        // A closure owns its cell and BORROWS every capture (the cell holds their pointers, the
+        // lambda reads them on each call): freeing a capture while the closure can still be
+        // called — or letting the closure escape past the capture's free — is a use-after-free.
+        if let Op::MakeClosure { captures, .. } = op {
+            let mut borrows = HashSet::new();
+            for a in captures {
+                if let Atom::Var(v) = a {
+                    if let Some(val) = st.get(v) {
+                        borrows.extend(val.borrows.iter().cloned());
+                        if val.owned || val.moved_in || self.borrowed_params.contains(v) {
+                            borrows.insert(v.clone());
+                        }
+                    }
+                }
+            }
+            return Val {
+                owned: true,
+                borrows,
+                dead: None,
+                key: None,
+                moved_in: false,
+            };
         }
         let mut inherited: HashSet<String> = HashSet::new();
         for a in &e.moves {
@@ -1457,7 +1480,7 @@ impl Verifier<'_> {
                     Self::kill(src, Cat::UseAfterFree, st);
                 }
                 // returned/consumed resources escape → mark moved so they aren't leaks: the
-                // moved operands and the `nonstrict` closure receiver of an indirect call.
+                // moved operands (an indirect call only borrows its closure).
                 // `consume` also flags consuming an interior alias of a borrowed resource.
                 self.consume(op, sp, st);
                 // a leak is only meaningful at a real function EXIT — an internal branch-ret
@@ -1909,6 +1932,63 @@ mod tests {
             fs.iter().any(|f| f.cat == Cat::UseAfterFree),
             "expected a UseAfterFree finding, got {fs:?}"
         );
+    }
+
+    /// A closure borrows its captures: freeing one before the closure's call is a
+    /// use-after-free (the old Auto-Drop placement), and freeing it after is clean — as is
+    /// calling the closure twice (a call borrows the closure).
+    #[test]
+    fn closure_capture_must_outlive_its_calls() {
+        let sp = (0, 0);
+        let clo = |rest: Term| {
+            Term::Let(
+                "s".into(),
+                Rhs::Op(Op::ShowInt(Atom::Int(7))),
+                sp,
+                Box::new(Term::Let(
+                    "g".into(),
+                    Rhs::Op(Op::MakeClosure {
+                        func: "lam".into(),
+                        captures: vec![Atom::Var("s".into())],
+                    }),
+                    sp,
+                    Box::new(rest),
+                )),
+            )
+        };
+        let call = |x: &str, rest: Term| {
+            Term::Let(
+                x.into(),
+                Rhs::Op(Op::CallClosure(Atom::Var("g".into()), vec![Atom::Int(1)])),
+                sp,
+                Box::new(rest),
+            )
+        };
+        let drop = |v: &str, key: Option<&str>, rest: Term| {
+            Term::Drop(
+                v.into(),
+                key.map(str::to_string),
+                vec![],
+                sp,
+                Box::new(rest),
+            )
+        };
+        let ret = || Term::Ret(Rhs::Op(Op::Atom(Atom::Var("r".into()))), sp);
+        // drop s; call g  → UAF
+        let early = clo(drop("s", Some("String"), call("r", drop("g", None, ret()))));
+        let fs = one(fn_body(early));
+        assert!(
+            fs.iter()
+                .any(|f| f.cat == Cat::UseAfterFree && f.var == "g"),
+            "expected a UseAfterFree of the closure, got {fs:?}"
+        );
+        // call g twice; drop g; drop s  → clean
+        let ok = clo(call(
+            "q",
+            call("r", drop("g", None, drop("s", Some("String"), ret()))),
+        ));
+        let fs = one(fn_body(ok));
+        assert!(fs.is_empty(), "expected no findings, got {fs:?}");
     }
 
     /// `let s = show 7; let t = (s, 1); <tail on t>; ret 0` — `s` (an owned heap String) is

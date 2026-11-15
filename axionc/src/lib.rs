@@ -5700,8 +5700,7 @@ on g f x y = g (f x) (f y)
 -- `sortBy`: quicksort with a user `<=` predicate (mirrors `sort`, which uses the `Ord` `le`).
 -- The partition predicates capture both the comparator `leq` and the pivot `y`; the
 -- closure-capture borrow (delta.rs) keeps `y` live to its single consumer `Cons y`, so a
--- named comparator is leak-free. (`sortOn` is omitted: it would build a closure comparator,
--- whose env is the documented conservative closure leak.)
+-- named comparator is leak-free.
 -- Comparator quicksort — the `partitionBy` twin of `sort`/`partitionLe` (one-pass, no
 -- capturing lambda), so it too consumes its list once and reclaims heap elements natively.
 sortBy :: (a -> a -> Bool) -> List a %1 -> List a

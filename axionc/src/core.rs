@@ -8638,11 +8638,7 @@ pub fn atom_is(v: &str, a: &Atom) -> bool {
 fn body_moves_var(v: &str, t: &Term, ba: &BorrowArgs) -> bool {
     fn op_moves_v(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         let e = crate::delta::op_delta_effect(op, ba);
-        e.moves
-            .iter()
-            .chain(e.nonstrict.iter())
-            .chain(e.alias.iter())
-            .any(|a| atom_is(v, a))
+        e.moves.iter().chain(e.alias.iter()).any(|a| atom_is(v, a))
     }
     fn in_rhs(v: &str, rhs: &Rhs, ba: &BorrowArgs) -> bool {
         match rhs {
@@ -9489,8 +9485,16 @@ fn fv_op_in(
     // the caller after the call — each counts as a use, so the drop falls
     // AFTER. The remaining positions move (escape) → the droppable doesn't
     // appear there. Prim operates on Ints.
+    // An alias operand (`let h = g`) is a use too: never of a droppable (aliasing one marks
+    // it escaped), but of a BORROWER (`Elab::fv_op` widens `drp` with them) — the rename
+    // reads the same owners, so they must outlive it.
     let e = crate::delta::op_delta_effect(op, ba);
-    for a in &e.borrows {
+    for a in e
+        .borrows
+        .iter()
+        .chain(e.nonstrict.iter())
+        .chain(e.alias.iter())
+    {
         atom_use(a, drp, bound, out);
     }
 }
@@ -9502,7 +9506,121 @@ fn droppable_vars(f: &CoreFn, ba: &BorrowArgs) -> HashSet<String> {
     let mut allocated: HashSet<String> = f.owned_params.iter().cloned().collect();
     let mut escaped = HashSet::new();
     scan_body(&f.body, ba, &mut allocated, &mut escaped);
+    // A closure that ESCAPES (returned, stored, handed to a callee that keeps it) carries
+    // pointers to its captures out of this frame, so none of them may be freed here: they
+    // escape with it (and so does anything they in turn capture or alias).
+    // A rename `let h = g` marks `g` escaped, but when `h` takes over the allocation (R-4) the
+    // value has not left the frame: only `h`'s own escape carries the captures out (the
+    // rename edge `h → g` in `closure_deps`).
+    let deps = closure_deps(&f.body);
+    let transferred = renamed_into_owner(&f.body, &allocated);
+    let mut work: Vec<String> = escaped
+        .iter()
+        .filter(|v| !transferred.contains(*v))
+        .cloned()
+        .collect();
+    work.push(RET_CLOSURE.to_string()); // a closure built in `ret` position escapes
+    let mut seen: HashSet<String> = work.iter().cloned().collect();
+    while let Some(v) = work.pop() {
+        for c in deps.get(&v).into_iter().flatten() {
+            escaped.insert(c.clone());
+            if seen.insert(c.clone()) {
+                work.push(c.clone());
+            }
+        }
+    }
     allocated.difference(&escaped).cloned().collect()
+}
+
+/// Sources of a rename `let x = src` whose target `x` takes over the allocation (R-4).
+fn renamed_into_owner(t: &Term, allocated: &HashSet<String>) -> HashSet<String> {
+    fn walk(t: &Term, allocated: &HashSet<String>, out: &mut HashSet<String>) {
+        match t {
+            Term::Let(x, rhs, _, body) => {
+                match rhs {
+                    Rhs::Op(Op::Atom(Atom::Var(src))) if allocated.contains(x) => {
+                        out.insert(src.clone());
+                    }
+                    Rhs::Op(_) => {}
+                    Rhs::If(_, a, b) => {
+                        walk(a, allocated, out);
+                        walk(b, allocated, out);
+                    }
+                    Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, allocated, out)),
+                }
+                walk(body, allocated, out);
+            }
+            Term::Drop(_, _, _, _, body) => walk(body, allocated, out),
+            Term::Ret(rhs, _) => match rhs {
+                Rhs::Op(_) => {}
+                Rhs::If(_, a, b) => {
+                    walk(a, allocated, out);
+                    walk(b, allocated, out);
+                }
+                Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, allocated, out)),
+            },
+        }
+    }
+    let mut out = HashSet::new();
+    walk(t, allocated, &mut out);
+    out
+}
+
+/// The `closure_deps` key of the closures a function builds directly in `ret` position.
+const RET_CLOSURE: &str = "$ret-closure";
+
+/// Closure binder → the variables it holds pointers to: its captures, and for a rename
+/// `let y = x` of such a binder, `x` (whose captures follow transitively). Closures built in
+/// `ret` position are collected under `RET_CLOSURE`.
+fn closure_deps(t: &Term) -> HashMap<String, Vec<String>> {
+    fn walk(t: &Term, out: &mut HashMap<String, Vec<String>>) {
+        match t {
+            Term::Let(x, rhs, _, body) => {
+                match rhs {
+                    Rhs::Op(Op::MakeClosure { captures, .. }) => {
+                        let cs = captures
+                            .iter()
+                            .filter_map(|a| match a {
+                                Atom::Var(v) => Some(v.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        out.insert(x.clone(), cs);
+                    }
+                    Rhs::Op(Op::Atom(Atom::Var(y))) => {
+                        out.entry(x.clone()).or_default().push(y.clone());
+                    }
+                    Rhs::Op(_) => {}
+                    Rhs::If(_, a, b) => {
+                        walk(a, out);
+                        walk(b, out);
+                    }
+                    Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, out)),
+                }
+                walk(body, out);
+            }
+            Term::Drop(_, _, _, _, body) => walk(body, out),
+            Term::Ret(rhs, _) => match rhs {
+                Rhs::Op(Op::MakeClosure { captures, .. }) => {
+                    out.entry(RET_CLOSURE.to_string()).or_default().extend(
+                        captures.iter().filter_map(|a| match a {
+                            Atom::Var(v) => Some(v.clone()),
+                            _ => None,
+                        }),
+                    );
+                }
+                Rhs::Op(_) => {}
+                Rhs::If(_, a, b) => {
+                    walk(a, out);
+                    walk(b, out);
+                }
+                Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| walk(b, out)),
+            },
+        }
+    }
+    let mut out = HashMap::new();
+    walk(t, &mut out);
+    out
 }
 
 // --- ExtractOp tags (docs/safety-model-spike.md, Option B, Step 1) -------------------------
@@ -11748,7 +11866,6 @@ fn reclaim_cond_escape(
                 .moves
                 .iter()
                 .chain(e.alias.iter())
-                .chain(e.nonstrict.iter())
                 .filter_map(|a| match a {
                     Atom::Var(v) => Some(v.clone()),
                     _ => None,
@@ -11937,9 +12054,6 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     }
     if let Some(a) = e.alias {
         mark(a); // alias directo `let y = x`
-    }
-    if let Some(a) = e.nonstrict {
-        mark(a); // the receiving closure of an indirect call changes hands
     }
     match op {
         // arenas: arena/cell/closure objects are managed by the arena reset —
@@ -12219,7 +12333,23 @@ fn borrow_aliases(
     ) {
         match t {
             Term::Let(x, rhs, _, k) => {
-                if !drp.contains(x) {
+                // A closure BORROWS its captures (the cell stores their pointers; the lambda
+                // reads them on every call): a use of the closure is a use of each capture's
+                // owners, so no capture is dropped before the closure's last call. The closure
+                // itself may be droppable (its own cell) — it is a borrower all the same.
+                if let Rhs::Op(Op::MakeClosure { captures, .. }) = rhs {
+                    let o: HashSet<String> =
+                        captures.iter().flat_map(|a| owners_of(a, m)).collect();
+                    if !o.is_empty() {
+                        m.insert(x.clone(), o);
+                    }
+                } else if let (Rhs::Op(Op::Atom(Atom::Var(y))), true) = (rhs, drp.contains(x)) {
+                    // a droppable rename (`let h = g`, R-4) of a borrower — a closure — keeps
+                    // its owners: `h` reads the same captures.
+                    if let Some(o) = m.get(y).cloned() {
+                        m.insert(x.clone(), o);
+                    }
+                } else if !drp.contains(x) {
                     let owners = match rhs {
                         Rhs::Op(Op::CallDirect(g, args, _)) => br.get(g).map(|ps| {
                             ps.iter()

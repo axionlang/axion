@@ -224,6 +224,7 @@ NATIVE=(
   axionc/tests/fixtures/hof_clone_borrows_list.axi
   axionc/tests/fixtures/integer_field_reclaim.axi
   axionc/tests/fixtures/view_consumes_reclaim.axi
+  axionc/tests/fixtures/closure_reclaim.axi
   axionc/tests/fixtures/file_read_chunks.axi
   axionc/tests/fixtures/not_equal.axi
   axionc/tests/fixtures/field_handoff_consume.axi
