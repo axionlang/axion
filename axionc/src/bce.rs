@@ -778,6 +778,172 @@ mod tests {
         }
     }
 
+    /// The guard Core the pass emits for `sumL` with the given exit test and step.
+    fn guard_of(exit: &str, step: &str) -> crate::core::Term {
+        let src = format!(
+            "sumL :: Array Int -> Int -> Int -> Int -> Int -> Int -> Int\n\
+             sumL a c s j n acc = if {exit} then acc else sumL a c s ({step}) n (acc + getArray a (c + s * j))\n\
+             main :: Int\nmain = let a = newArray 10 1 in sumL a 2 1 0 7 0 + lenArray a\n"
+        );
+        let mut diags = Diagnostics::default();
+        let (module, analysis) = crate::compile_front(&src, ".", &mut diags);
+        let module = module.expect("front-end must compile");
+        let inplace: HashSet<(usize, usize)> = analysis.inplace.iter().map(|ip| ip.span).collect();
+        let l = crate::core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            &analysis.where_param_tys,
+            false,
+        );
+        l.fns
+            .into_iter()
+            .find(|f| f.name == "sumL")
+            .expect("sumL")
+            .body
+    }
+
+    /// Evaluates the guard prefix (`let $bceN = …` up to the dispatching `if`) with 64-bit
+    /// wrapping arithmetic, as the backends compute it.
+    fn eval_guard(
+        t: &crate::core::Term,
+        env: &mut std::collections::HashMap<String, i64>,
+        len: i64,
+    ) -> bool {
+        use crate::core::{Atom, Op, Rhs, Term};
+        let at = |a: &Atom, env: &std::collections::HashMap<String, i64>| match a {
+            Atom::Int(n) => *n,
+            Atom::Var(v) => env[v],
+            _ => panic!("atom"),
+        };
+        let mut t = t;
+        loop {
+            match t {
+                Term::Let(x, Rhs::Op(op), _, b) => {
+                    let v = match op {
+                        Op::Prim(p, a, b2) => {
+                            let (a, b2) = (at(a, env), at(b2, env));
+                            match p.as_str() {
+                                "+" => a.wrapping_add(b2),
+                                "-" => a.wrapping_sub(b2),
+                                "*" => a.wrapping_mul(b2),
+                                "div" => {
+                                    assert!(b2 != 0, "the guard divides by zero");
+                                    a.wrapping_div(b2)
+                                }
+                                ">" => i64::from(a > b2),
+                                "<" => i64::from(a < b2),
+                                "==" => i64::from(a == b2),
+                                "band" => a & b2,
+                                other => panic!("op {other}"),
+                            }
+                        }
+                        Op::RtCall { func, .. } if func == "axion_array_len" => len,
+                        other => panic!("guard op {other:?}"),
+                    };
+                    env.insert(x.clone(), v);
+                    t = b;
+                }
+                Term::Ret(Rhs::If(c, _, _), _) => return at(c, env) != 0,
+                other => panic!("guard shape {other:?}"),
+            }
+        }
+    }
+
+    /// The emitted guard against the model of `metatheory/AxionBce.lean`: whenever it holds, every
+    /// index the loop then computes (64-bit wrapping, as the machine does) is in `[0, len)`.
+    #[test]
+    fn guard_matches_the_model() {
+        let edge = [
+            0i64,
+            1,
+            2,
+            3,
+            -1,
+            -2,
+            5,
+            7,
+            9,
+            40,
+            1 << 62,
+            -(1 << 62),
+            i64::MAX,
+            i64::MIN,
+            i64::MAX - 1,
+            i64::MIN + 1,
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = |m: i64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (m as u64)) as i64
+        };
+        for (exit, step, down) in [
+            ("j > n", "j + 1", false),
+            ("j >= n", "j + 1", false),
+            ("j == n", "j + 1", false),
+            ("j < 0", "j - 1", true),
+        ] {
+            let g = guard_of(exit, step);
+            let mut taken = 0;
+            for _ in 0..20_000 {
+                let mut pick = || {
+                    if rnd(5) == 0 {
+                        edge[rnd(edge.len() as i64) as usize]
+                    } else {
+                        rnd(14) - 3
+                    }
+                };
+                let (c, s, j0, n) = (pick(), pick(), pick(), pick());
+                let len = rnd(41);
+                let mut env = std::collections::HashMap::from([
+                    ("c".to_string(), c),
+                    ("s".to_string(), s),
+                    ("j".to_string(), j0),
+                    ("n".to_string(), n),
+                    ("acc".to_string(), 0),
+                    ("a".to_string(), 0),
+                ]);
+                if !eval_guard(&g, &mut env, len) {
+                    continue;
+                }
+                taken += 1;
+                // run the loop exactly as the clone would
+                let mut j = j0;
+                for _ in 0..1000 {
+                    let stop = match exit {
+                        "j > n" => j > n,
+                        "j >= n" => j >= n,
+                        "j == n" => j == n,
+                        _ => j < 0,
+                    };
+                    if stop {
+                        break;
+                    }
+                    let ix = c.wrapping_add(s.wrapping_mul(j));
+                    assert!(
+                        (0..len).contains(&ix),
+                        "{exit}: guard held for c={c} s={s} j0={j0} n={n} len={len} but j={j} gives {ix}"
+                    );
+                    j = if down {
+                        j.wrapping_sub(1)
+                    } else {
+                        j.wrapping_add(1)
+                    };
+                }
+            }
+            assert!(
+                taken > 500,
+                "{exit}: the guard held only {taken} times — test not exercising it"
+            );
+        }
+    }
+
     #[test]
     fn an_array_replaced_by_another_is_not_trusted() {
         // the recursion passes a DIFFERENT array (a fresh, longer one): its length is not the

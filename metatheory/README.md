@@ -61,7 +61,8 @@ accepted — so the theorems have real bite.
 ```
 
 Exit 0 means every theorem type-checks, no proof uses `sorry`, and `sound` depends only on Lean's
-standard axioms (`propext`, `Quot.sound`). Lean 4 is provisioned on demand via `nix shell
+standard axioms (`propext`, `Quot.sound`; `AxionBce` also `Classical.choice`, which `omega` uses
+for its `Int` reasoning). Lean 4 is provisioned on demand via `nix shell
 nixpkgs#lean4` — no global install required.
 
 ## Interior aliases — `AxionAlias.lean`
@@ -204,6 +205,28 @@ theorems** at the graph/type level: T2 progress, T3 fidelity, T4 deadlock-freedo
 cancellation guarantees — the reachable rungs in stock Lean. §6's full T1/T3/T5 in separation logic
 (Iris/Actris) — value-level subject reduction and the memory-orphan claim — remain the deferred
 medium-term rung.
+
+## Bounds-check elimination — `AxionBce.lean`
+
+`axionc/src/bce.rs` runs a counting loop's check-free clone when an entry guard holds. This file
+proves the guard sufficient, in 64-bit two's-complement arithmetic (`wrap`), with the guard written
+exactly as the pass emits it (every `+ - *` wrapped, `div` by `max(s, 1)`) and the loop modelled as
+`Runs e n j0 j` (the body runs with counter `j`) for the four exit forms (`j > n`, `j >= n`,
+`j == n`, `j < 0` counting down). Inputs are 64-bit values; array lengths are below 2^62.
+
+| Theorem | Statement |
+|---|---|
+| `sound` | if the guard holds at entry, then at every iteration the loop runs, the machine index `wrap (c + wrap (s * j))` lies in `[0, len)` |
+| `sound_const` | a stride-0 access (one index `c`) guarded by `c > -1`, `len - c > 0` is in bounds |
+| `guard_facts` | the wrapped guard implies the plain-integer facts (`0 ≤ c < len`, `s ≥ 1`, the counter's range within `(len - 1 - c) / s`): no guard computation wraps in a way that could make it hold falsely |
+| `runs_inv` | every counter the body runs with is in its range, and stepping never wraps |
+| `index_bounds` | the arithmetic core: `0 ≤ j ≤ (len - 1 - c) / s` gives `0 ≤ s * j ≤ len - 1 - c` |
+
+The code ↔ model link is the Rust test `bce::tests::guard_matches_the_model`. It lowers a real
+counting loop for each exit form, evaluates the guard Core the pass emitted with 64-bit wrapping
+arithmetic on 80 000 random and edge inputs (0, ±1, ±2^62, ±2^63, …), and whenever it holds, runs the
+loop and checks every index. The `gen_bce` fuzzer checks the whole pipeline (interpreter vs native,
+ASan), mostly on out-of-bounds programs.
 
 ## Scope & remaining work
 
