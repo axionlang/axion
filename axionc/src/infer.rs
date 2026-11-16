@@ -1009,13 +1009,23 @@ impl Infer<'_> {
         }
         let mut out: Vec<(Span, String)> = Vec::new();
         let mut seen_vars: HashSet<u32> = HashSet::new();
-        let mut work: Vec<(Ty, Span)> = self.arr_elems.clone();
-        while let Some((t, sp)) = work.pop() {
+        // `direct`: the type at the array operation itself. A fully concrete heap element there
+        // is supported natively (the operation copies elements in and out at that type); one
+        // only reached through a generic function's type variable, or one that still contains
+        // a variable or a function, has no concrete type to copy or free at the operation.
+        let mut work: Vec<(Ty, Span, bool)> = self
+            .arr_elems
+            .iter()
+            .map(|(t, sp)| (t.clone(), *sp, true))
+            .collect();
+        while let Some((t, sp, direct)) = work.pop() {
             let t = self.apply(&t);
             let mut vars = HashSet::new();
             free_vars(&t, &mut vars);
             if !self.is_scalar_elem(&t) && !matches!(t, Ty::Var(_)) {
-                out.push((sp, show_ty(&t)));
+                if !(direct && vars.is_empty() && self.copyable_elem(&t, &mut HashSet::new())) {
+                    out.push((sp, show_ty(&t)));
+                }
                 continue;
             }
             // a bare var: follow it to the uses that instantiate it
@@ -1027,7 +1037,7 @@ impl Infer<'_> {
                 svs.extend(to_scheme.get(&v).cloned().unwrap_or_default());
                 for sv in svs {
                     for (fv, usp) in uses.get(&sv).cloned().unwrap_or_default() {
-                        work.push((Ty::Var(fv), usp));
+                        work.push((Ty::Var(fv), usp, false));
                     }
                 }
             }
@@ -1052,6 +1062,38 @@ impl Infer<'_> {
 
     /// An `Array` element the native backends store as a raw word with nothing to reclaim: a
     /// primitive scalar, or a `data` type whose constructors are all nullary (an immediate tag).
+    /// A heap element type a native `Array` can own: one its generated helpers can copy and free —
+    /// `String`, `Integer`, scalars, tuples of those, and `data` types whose fields (and type
+    /// arguments) are such types. Not a closure, an `Array`/`Buffer`/handle, or anything holding one.
+    fn copyable_elem(&self, t: &Ty, seen: &mut HashSet<String>) -> bool {
+        match t {
+            Ty::Var(_) | Ty::Fun(..) => false,
+            Ty::Tuple(ts) => ts.iter().all(|x| self.copyable_elem(x, seen)),
+            Ty::Con(n, args) => {
+                if matches!(
+                    n.as_str(),
+                    "Int" | "Float" | "Bool" | "Char" | "String" | "Integer"
+                ) {
+                    return true;
+                }
+                if !self.cons.values().any(|(d, _)| d == n) {
+                    return false; // a built-in resource (Array, Buffer, a handle, …)
+                }
+                if !args.iter().all(|a| self.copyable_elem(a, seen)) {
+                    return false;
+                }
+                if !seen.insert(n.clone()) {
+                    return true; // recursive type: its fields are being checked
+                }
+                self.cons
+                    .values()
+                    .filter(|(d, _)| d == n)
+                    .flat_map(|(_, fs)| fs.iter())
+                    .all(|(_, ft)| field_copyable(self, ft, seen))
+            }
+        }
+    }
+
     fn is_scalar_elem(&self, t: &Ty) -> bool {
         match t {
             Ty::Con(n, args) if args.is_empty() => {
@@ -1419,6 +1461,22 @@ fn var_paths(t: &Type) -> Vec<(String, Vec<usize>)> {
 /// substitution): `Ty::Con("P", [])` → `P`, `Ty::Con("Maybe", [P])` →
 /// `Maybe P`. None if any part is unresolved (a var or a function) — the seed
 /// then stays generic.
+/// A `data` field type for [`Infer::copyable_elem`]: a type parameter stands for a type argument,
+/// which is checked separately.
+fn field_copyable(inf: &Infer, t: &Ty, seen: &mut HashSet<String>) -> bool {
+    match t {
+        Ty::Var(_) => true,
+        Ty::Tuple(ts) => ts.iter().all(|x| field_copyable(inf, x, seen)),
+        Ty::Con(n, args) if args.iter().any(|a| matches!(a, Ty::Var(_))) => {
+            // `List a` inside `data Rose a`: the head must be copyable; its args are params
+            inf.copyable_elem(&Ty::Con(n.clone(), Vec::new()), seen)
+                || (inf.cons.values().any(|(d, _)| d == n)
+                    && args.iter().all(|a| field_copyable(inf, a, seen)))
+        }
+        _ => inf.copyable_elem(t, seen),
+    }
+}
+
 fn ty_to_ast(t: &Ty) -> Option<Type> {
     match t {
         Ty::Con(n, args) => {
@@ -4469,6 +4527,14 @@ impl<'a> Infer<'a> {
                         self.arr_elems.push((t, *span));
                     }
                 }
+                // …and one read out of it: a copy is made at the element's concrete type
+                if n == "getArray" {
+                    if let Some(Ty::Con(_, args)) = nth_param(&ty, 0) {
+                        if let Some(t) = args.first() {
+                            self.arr_elems.push((t.clone(), *span));
+                        }
+                    }
+                }
                 if self.record_var_tys {
                     self.var_use_tys.insert(*span, ty.clone());
                 }
@@ -4586,11 +4652,27 @@ impl<'a> Infer<'a> {
                         self.con_ret_tys.insert(*span, r.clone());
                     }
                 }
-                // Phase 2c array: record `newArray` return types for mono
-                // destructor generation (Array$List$P, etc.)
-                if let Expr::Var(n, _) = &**f {
-                    if n == "newArray" {
-                        self.array_ret_tys.insert(*span, r.clone());
+                // The `Array T` of each saturated `newArray`/`getArray`/`setArray` call, by the
+                // WHOLE call's span (the one the lowering sees): at a heap element type `T` the
+                // operation copies elements in and out and frees the ones it replaces.
+                {
+                    let mut head: &Expr = f;
+                    let mut n_args = 1;
+                    while let Expr::App(g, _, _) = head {
+                        head = g;
+                        n_args += 1;
+                    }
+                    if let Expr::Var(n, _) = head {
+                        match (n.as_str(), n_args) {
+                            ("newArray", 2) | ("setArray", 3) => {
+                                self.array_ret_tys.insert(*span, r.clone());
+                            }
+                            ("getArray", 2) => {
+                                self.array_ret_tys
+                                    .insert(*span, Ty::Con("Array".into(), vec![r.clone()]));
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 // Phase 4: record every application's result type; at resolution the

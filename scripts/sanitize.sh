@@ -8,7 +8,10 @@
 #   2. LEAKS (LeakSanitizer, every native fixture): allocs == frees. There is no exempt
 #      subset: a fixture that leaks fails the gate.
 #
-# Run:  AXION_CLANG=<clang> ./scripts/sanitize.sh
+# Run:  AXION_CLANG=<clang> ./scripts/sanitize.sh [fixture.axi …]
+#
+# With arguments, only those files are checked (each must be on the NATIVE list below, so a
+# file that is not leak-gated cannot be passed in by mistake); without, every native fixture.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -228,6 +231,7 @@ NATIVE=(
   axionc/tests/fixtures/tuple_scalar_reader.axi
   axionc/tests/fixtures/eq_constraint_dispatch.axi
   axionc/tests/fixtures/constrained_closures.axi
+  axionc/tests/fixtures/array_heap_elems.axi
   axionc/tests/fixtures/file_read_chunks.axi
   axionc/tests/fixtures/not_equal.axi
   axionc/tests/fixtures/field_handoff_consume.axi
@@ -260,6 +264,16 @@ run_asan() { # <name> <exe> <detect_leaks 0|1> → run under ASan; stderr→$WOR
     ASAN_OPTIONS=detect_leaks=$3 "$2" </dev/null >/dev/null 2>"$WORK/e"
   fi
 }
+
+if [ "$#" -gt 0 ]; then
+  only=()
+  for a in "$@"; do
+    for f in "${NATIVE[@]}"; do
+      if [ "$f" = "$a" ]; then only+=("$f"); fi
+    done
+  done
+  NATIVE=("${only[@]+"${only[@]}"}")
+fi
 
 fail=0; corr=0; leak=0
 for f in "${NATIVE[@]}"; do

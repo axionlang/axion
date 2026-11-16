@@ -562,6 +562,7 @@ pub fn run_cli() -> ExitCode {
             &inplace,
             fuse,
             &analysis.makecon_tys,
+            &analysis.array_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
@@ -573,13 +574,13 @@ pub fn run_cli() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        // Lower with the SAME arguments `emit_ir` uses internally (empty array_tys), so expected and
-        // observed are derived from identical inputs.
+        // Lower with the SAME arguments `emit_ir` uses internally, so expected and observed are
+        // derived from identical inputs.
         let lowered = core::lower_with(
             &module,
             &inplace,
             &analysis.makecon_tys,
-            &std::collections::HashMap::new(),
+            &analysis.array_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
@@ -602,7 +603,7 @@ pub fn run_cli() -> ExitCode {
             &module,
             &inplace,
             &analysis.makecon_tys,
-            &std::collections::HashMap::new(),
+            &analysis.array_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
@@ -892,20 +893,24 @@ pub fn run_cli() -> ExitCode {
             for (span, ty) in &analysis.heap_array_elems {
                 let d = Diagnostic::error(
                     "AX0914",
-                    format!("an `Array` cannot hold `{ty}` in a native build"),
+                    format!("an `Array` of `{ty}` cannot be compiled natively here"),
                 )
                 .label(
                     span.0,
                     span.1,
-                    "this puts a heap value into an Array (here, or through the generic function \
-                     called here)",
+                    "this array operation's element type is not a concrete copyable type here \
+                     (it is generic, fixed only by the function called here, or it holds a \
+                     closure, an Array, a Buffer or a handle)",
                 )
                 .with_help(
-                    "native arrays hold only scalar elements: Int, Float, Bool, Char, or a `data` \
-                     type whose constructors take no fields. Store a heap value in a List or a \
-                     `data` structure instead, or keep the scalars in the array and the heap \
-                     values elsewhere (indexed by position). The interpreter (`axionc <file>`) \
-                     runs this program as is.",
+                    "a native array owns its elements: it copies a value in when it is stored \
+                     and out when it is read, and frees the ones it replaces or drops. That \
+                     needs the element's concrete type at the `newArray`/`getArray`/`setArray` \
+                     itself, and a type that can be copied: scalars, String, Integer, tuples and \
+                     `data` types made of those. Give the function doing the array operation a \
+                     concrete signature (`Array String` rather than `Array a`), or keep \
+                     closures/arrays/handles in a List. The interpreter (`axionc <file>`) runs \
+                     this program as is.",
                 );
                 eprint!("{}", d.render(&path, &src, &lines));
             }
@@ -1084,6 +1089,7 @@ pub fn run_cli() -> ExitCode {
             &inplace,
             fuse,
             &analysis.makecon_tys,
+            &analysis.array_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
@@ -1106,6 +1112,7 @@ pub fn run_cli() -> ExitCode {
             &inplace,
             fuse,
             &analysis.makecon_tys,
+            &analysis.array_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
@@ -1128,6 +1135,7 @@ pub fn run_cli() -> ExitCode {
             &inplace,
             fuse,
             &analysis.makecon_tys,
+            &analysis.array_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
@@ -1151,6 +1159,7 @@ pub fn run_cli() -> ExitCode {
             &inplace,
             fuse,
             &analysis.makecon_tys,
+            &analysis.array_tys,
             &analysis.integer_lits,
             &analysis.consume_native_exempt,
             &analysis.where_ret_tys,
@@ -7281,16 +7290,18 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
              and in order."
         }
         "AX0914" => {
-            "AX0914 — a native build cannot put a heap value into an `Array`. A native\n\
-             Array stores raw words it does not own: `newArray` writes the same value\n\
-             into every slot, `getArray` returns it as a fresh value, and freeing the\n\
-             array frees only its block. A heap element (List, String, Integer, tuple,\n\
-             closure, or a `data` value with fields) would leak, or be freed twice once\n\
-             two reads consume it. Elements may be Int, Float, Bool, Char, or a `data`\n\
-             type whose constructors take no fields. The error points at the\n\
-             newArray/setArray call, or at the call that instantiates a generic function\n\
-             passing its type variable on to one. Keep heap values in a List or `data`\n\
-             structure instead. The interpreter runs the program unchanged."
+            "AX0914 — this `Array` operation cannot be compiled natively. A native\n\
+             Array of heap values (String, Integer, List, tuple, a `data` value with\n\
+             fields) owns its elements: `newArray` and `setArray` store copies,\n\
+             `getArray` returns a copy, `setArray` frees the element it replaces, and\n\
+             dropping the array frees every element. That needs the element's concrete\n\
+             type at the operation itself. It is refused when the type is only known\n\
+             through a generic function (`fill :: Int -> a -> Array a` called at a heap\n\
+             type: the error points at that call), or when the element cannot be copied\n\
+             (a closure, an Array, a Buffer or a handle, or a type holding one). Give the\n\
+             function a concrete signature, or keep such values in a List. Scalar\n\
+             elements (Int, Float, Bool, Char, field-less `data`) are stored as is. The\n\
+             interpreter runs the program unchanged."
         }
         _ => return None,
     };

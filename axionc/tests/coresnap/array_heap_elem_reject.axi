@@ -8,6 +8,7 @@
 
 
 
+
       drop xs
       drop xs
       drop xs
@@ -61,27 +62,30 @@
   drop _t0 : List$Int
   drop _t2 : List$Int
   drop _t5 : List$Int
-  drop a : Array
+  drop a : Array$List$Int
   else
   else
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
+  let _i = - _n 1  ; Δ{}
+  let _n = rtcall axion_array_len _p  ; Δ{}
   let _t0 = + n 1  ; Δ{}
   let _t0 = call mk 1  ; Δ{} · makes List$Int
+  let _t1 = call axion_arrop_get$List$Int a 0  ; Δ{a} · makes List$Int
   let _t1 = con Nil  ; Δ{} · makes List$Int
-  let _t1 = rtcall axion_array_get a 0  ; Δ{a}
-  let _t2 = call reverse$Int _t1  ; Δ{a} · makes List$Int
+  let _t2 = call reverse$Int _t1  ; Δ{_t1 a} · moves{_t1} · makes List$Int
   let _t2 = con Cons _t0 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
   let _t3 = call length _t2  ; Δ{_t2 a}
-  let _t4 = rtcall axion_array_get a 1  ; Δ{a}
-  let _t5 = call reverse$Int _t4  ; Δ{} · makes List$Int
+  let _t4 = call axion_arrop_get$List$Int a 1  ; Δ{a} · makes List$Int
+  let _t5 = call reverse$Int _t4  ; Δ{_t4} · moves{_t4} · makes List$Int
   let _t6 = call length _t5  ; Δ{_t5}
-  let a = call fill$List$Int 3 _t0  ; Δ{_t0} · makes Array
+  let a = call fill$List$Int 3 _t0  ; Δ{_t0} · makes Array$List$Int
   ret + _t3 _t6  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
+  ret call axion_arrop_dropfrom$List$Int _p _i  ; Δ{}
   ret case xs of
   ret case xs of
   ret case xs of
@@ -91,6 +95,7 @@
   ret rtcall axion_array_free _p  ; Δ{}
 append$Int xs ys  =
 axion_drop_Array _p  =
+axion_drop_Array$List$Int _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 fill n x  =

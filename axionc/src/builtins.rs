@@ -69,8 +69,11 @@ use Out::{Owned, OwnedFlat, Scalar};
 const STR: Out = Owned("String");
 const INTEGER: Out = Owned("Integer");
 
-/// Element types the arrays assume: they store raw words and own nothing inside them.
-const SCALAR_ELEMS: &str = "elements are scalars (a heap element is rejected natively, AX0914)";
+/// Element types the raw array calls assume: they store raw words and own nothing inside them.
+/// An array of heap elements goes through the generated `axion_arrop_*` helpers instead, which
+/// copy elements in and out and free replaced ones (core.rs `gen_array_helpers`).
+const SCALAR_ELEMS: &str = "raw elements are scalars: heap elements go through the generated \
+                            axion_arrop_* helpers (copy in/out); the rest is rejected, AX0914";
 const SESSION: &str = "session runtime: payload ownership follows the protocol (SessGen); the \
                        generated steps are verified like any function (corruption and leaks)";
 
@@ -363,7 +366,7 @@ pub const SURFACE: &[(&str, &str)] = &[
     ("pokeU32", "axion_poke_u32"),
     ("pokeU64", "axion_poke_u64"),
     ("pokeF64", "axion_poke_f64"),
-    // arrays (scalar elements natively — AX0914)
+    // arrays (raw scalar elements; heap elements via the axion_arrop_* helpers — AX0914)
     ("newArray", "Op::ArrayNew → axion_array_new"),
     ("getArray", "axion_array_get"),
     ("setArray", "axion_array_set"),

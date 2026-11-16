@@ -1911,6 +1911,27 @@ fn closures_in_constrained_functions_are_specialized_per_type() {
 }
 
 #[test]
+fn native_arrays_own_their_heap_elements() {
+    // An `Array` of String/Integer/List/Maybe/tuple/record elements compiles natively: elements
+    // are copied in and out, replaced ones and the array's own are freed (leak-gated in
+    // sanitize.sh). A `%1` array parameter is reclaimed (it leaked even with Int elements).
+    let fx = fixture("array_heap_elems.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "xhello\n3\n1000007\n36\nqp\n2\n014916\n49\n42\n4\n70\n4\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn an_escaping_closure_never_frees_its_captures_early() {
     // A returned closure carries a pointer to `s` out of `mk`. Auto-Drop used to free `s` before
     // the return (the caller then read freed memory and printed garbage); now the capture escapes

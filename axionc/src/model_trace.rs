@@ -51,7 +51,9 @@ enum MExpr {
 /// Same exclusion the verifier uses: hand-written destructors / deep-copiers are not Auto-Drop
 /// output, so they are never in the fragment.
 fn is_generated(name: &str) -> bool {
-    name.starts_with("axion_drop_") || name.starts_with("axion_copy_")
+    name.starts_with("axion_drop_")
+        || name.starts_with("axion_copy_")
+        || name.starts_with(crate::core::ARROP)
 }
 
 struct Tr<'a> {

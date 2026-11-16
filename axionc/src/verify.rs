@@ -183,7 +183,10 @@ fn is_generated(name: &str) -> bool {
     // `axion_drop_*` destructors and `axion_copy_*` deep-copiers (R-5) both manage
     // memory by hand (raw load/store/alloc), outside the Auto-Drop reclamation the
     // verifier checks — so they are skipped, exactly like the hand-written runtime.
-    name.starts_with("axion_drop_") || name.starts_with("axion_copy_")
+    // …and the helpers of an `Array` with heap elements (`axion_arrop_*`), likewise by hand.
+    name.starts_with("axion_drop_")
+        || name.starts_with("axion_copy_")
+        || name.starts_with(crate::core::ARROP)
 }
 
 /// Per-function: the param indices the function OWNS-AND-FREES — a `Drop(param, Some key, …)` on a

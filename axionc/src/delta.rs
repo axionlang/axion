@@ -472,6 +472,7 @@ pub fn check_drop_coherence(
         if f.name.starts_with("sess$")
             || f.name.ends_with("$step")
             || f.name.starts_with("axion_copy_")
+            || f.name.starts_with(crate::core::ARROP)
         {
             continue;
         }
@@ -535,6 +536,7 @@ pub fn dump_annotated(fns: &[CoreFn], borrow_args: &BorrowArgs, recinfo: &Record
     for f in fns {
         if (f.name.starts_with("sess$") || f.name.ends_with("$step")) && !steps
             || f.name.starts_with("axion_copy_")
+            || f.name.starts_with(crate::core::ARROP)
         {
             continue;
         }
@@ -639,6 +641,7 @@ pub fn dump_delta(
         if f.name.starts_with("sess$")
             || f.name.ends_with("$step")
             || f.name.starts_with("axion_copy_")
+            || f.name.starts_with(crate::core::ARROP)
         {
             n_skipped += 1;
             continue;

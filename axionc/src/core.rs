@@ -305,15 +305,31 @@ pub fn result_type(sig: &Type) -> &Type {
 /// the flat native resources (`Array`/`TritVec`/`I8Array`/`I32Array`) key flat; `String`
 /// and `Integer` key by name; a boxed `data` keys by its mono instantiation. Shared by the
 /// signature-derived map and the `where`-local merge so both classify results identically.
+/// The destructor key of an `Array T`: `Array$K` when `T` is a concrete heap element (the array
+/// owns its elements and `axion_drop_Array$K` frees each one), `Array` otherwise (a flat block).
+fn array_drop_key(t: &Type, boxed: &HashSet<String>) -> String {
+    let (_, a) = ty_head_args(t);
+    let heap = a.first().is_some_and(|el| match el {
+        Type::Tuple(_) => true,
+        _ => {
+            matches!(el.head_con(), Some("String" | "Integer"))
+                || el.head_con().is_some_and(|h| boxed.contains(h))
+        }
+    });
+    match (heap, mono_key(t)) {
+        (true, Some(k)) if !type_has_var_or_fun(t) => k,
+        _ => "Array".to_string(),
+    }
+}
+
 fn ret_ty_key(rt: &Type, boxed: &HashSet<String>) -> Option<String> {
     if matches!(rt, Type::Tuple(_)) {
         return mono_key(rt);
     }
     let h = rt.head_con()?;
     match h {
-        "Array" | "TritVec" | "I8Array" | "I32Array" | "String" | "Integer" | "Buffer" => {
-            Some(h.to_string())
-        }
+        "Array" => Some(array_drop_key(rt, boxed)),
+        "TritVec" | "I8Array" | "I32Array" | "String" | "Integer" | "Buffer" => Some(h.to_string()),
         _ if boxed.contains(h) => Some(mono_key(rt).unwrap_or_else(|| h.to_string())),
         _ => None,
     }
@@ -1667,6 +1683,58 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
 
 type LamMeta = HashMap<Span, (String, Vec<String>)>;
 
+/// Prefix of the generated helpers of an `Array` with heap elements (`axion_arrop_new$String`,
+/// `get$…`, `set$…`, `fill$…`): they copy elements in and out and free replaced ones, managing
+/// memory by hand like the destructors and copiers. Their call-site ownership is fixed by
+/// [`arrop_borrows`].
+pub const ARROP: &str = "axion_arrop_";
+
+/// The argument positions a generated array helper only READS (see [`ARROP`]): `new n x` and
+/// `get a i` borrow everything (the result is fresh), `set a i x` consumes the array and returns
+/// it, and borrows the element (it stores a copy).
+fn arrop_borrows(name: &str) -> Option<HashSet<usize>> {
+    let rest = name.strip_prefix(ARROP)?;
+    if rest.starts_with("new$") || rest.starts_with("get$") {
+        Some(HashSet::from([0, 1]))
+    } else if rest.starts_with("set$") {
+        Some(HashSet::from([1, 2]))
+    } else {
+        None
+    }
+}
+
+/// Calls `g` on every `Op` of a term (let right-hand sides and tail results, all branches).
+fn for_each_op(t: &Term, g: &mut dyn FnMut(&Op)) {
+    fn rhs(r: &Rhs, g: &mut dyn FnMut(&Op)) {
+        match r {
+            Rhs::Op(op) => g(op),
+            Rhs::If(_, a, b) => {
+                for_each_op(a, g);
+                for_each_op(b, g);
+            }
+            Rhs::Case(_, arms) => arms.iter().for_each(|(_, b)| for_each_op(b, g)),
+        }
+    }
+    match t {
+        Term::Let(_, r, _, body) => {
+            rhs(r, g);
+            for_each_op(body, g);
+        }
+        Term::Drop(_, _, _, _, body) => for_each_op(body, g),
+        Term::Ret(r, _) => rhs(r, g),
+    }
+}
+
+/// `true` if an AST type still has a type variable or a function type in it.
+fn type_has_var_or_fun(t: &Type) -> bool {
+    match t {
+        Type::Var(_) | Type::Arrow { .. } => true,
+        Type::App(f, a) => type_has_var_or_fun(f) || type_has_var_or_fun(a),
+        Type::Tuple(ts) => ts.iter().any(type_has_var_or_fun),
+        _ => false,
+    }
+}
+
 /// Lowering context: the global names, the field selectors, the mangling of
 /// `where` of the current function, and the lambdas' meta-information.
 struct Lower<'a> {
@@ -1717,6 +1785,31 @@ struct Lower<'a> {
 }
 
 impl Lower<'_> {
+    /// The element type of the `Array` operation at `span` and its mono key, when it is a
+    /// concrete HEAP type (`String`, `Integer`, a tuple, a `data` type with fields). Such arrays
+    /// own their elements: the operation is a generated `axion_arrop_*$K` helper.
+    fn heap_array_elem(&self, span: Span) -> Option<(Type, String)> {
+        let t = self.array_tys.get(&span)?;
+        let (head, a) = ty_head_args(t);
+        if head != Some("Array") {
+            return None;
+        }
+        let el = (*a.first()?).clone();
+        let heap = match &el {
+            Type::Tuple(_) => true,
+            _ => match el.head_con() {
+                Some("Int" | "Float" | "Bool" | "Char") | None => false,
+                Some("String" | "Integer") => true,
+                Some(h) => self.con_ty.values().any(|d| d.as_deref() == Some(h)),
+            },
+        };
+        if !heap || type_has_var_or_fun(&el) {
+            return None;
+        }
+        let k = mono_key(&el)?;
+        Some((el, k))
+    }
+
     fn fresh(&mut self) -> String {
         let n = format!("_t{}", self.tmp);
         self.tmp += 1;
@@ -2151,25 +2244,45 @@ impl Lower<'_> {
             ("free", 1) => return self.rtcall("axion_buf_free", &args, true, buf),
             ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
             // linear dense Array: imperative operations
+            ("newArray", 2) if self.heap_array_elem(e.span()).is_some() => {
+                // a heap element: every slot gets its own copy of the initial value
+                let k = self
+                    .heap_array_elem(e.span())
+                    .map(|(_, k)| k)
+                    .unwrap_or_default();
+                let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
+                return Op::CallDirect(format!("{ARROP}new${k}"), a, Some(format!("Array${k}")));
+            }
             ("newArray", 2) => {
                 let len = self.atom(args[0], buf);
                 let init = self.atom(args[1], buf);
-                let elem_ty = self
-                    .array_tys
-                    .get(&e.span())
-                    .and_then(|t| {
-                        let (head, a) = ty_head_args(t);
-                        if head == Some("Array") {
-                            a.first().copied()
-                        } else {
-                            None
-                        }
-                    })
-                    .and_then(mono_key);
-                return Op::ArrayNew { len, init, elem_ty };
+                // scalar elements: a flat block (heap elements took the helper path above)
+                return Op::ArrayNew {
+                    len,
+                    init,
+                    elem_ty: None,
+                };
             }
-            ("getArray", 2) => return self.rtcall("axion_array_get", &args, true, buf),
-            ("setArray", 3) => return self.rtcall("axion_array_set", &args, true, buf),
+            ("getArray", 2) => {
+                // a heap element is read out as a fresh copy the caller owns
+                if let Some((_, k)) = self.heap_array_elem(e.span()) {
+                    let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
+                    return Op::CallDirect(format!("{ARROP}get${k}"), a, Some(k));
+                }
+                return self.rtcall("axion_array_get", &args, true, buf);
+            }
+            ("setArray", 3) => {
+                // a heap element: free the replaced one, store a copy of the new one
+                if let Some((_, k)) = self.heap_array_elem(e.span()) {
+                    let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
+                    return Op::CallDirect(
+                        format!("{ARROP}set${k}"),
+                        a,
+                        Some(format!("Array${k}")),
+                    );
+                }
+                return self.rtcall("axion_array_set", &args, true, buf);
+            }
             ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
             // TritVec (§10): base-243 packed ternary array. A flat block (packed
             // bytes inline, no nested heap) → Auto-Drop's flat `axion_free`
@@ -2996,6 +3109,12 @@ fn lower_func(
                       owned: &mut Vec<String>,
                       owned_drop_ty: &mut Vec<(String, Option<String>)>,
                       mono_seeds: &mut Vec<Type>| {
+        // an owned `Array` frees its block (and, with heap elements, each element)
+        if t.head_con() == Some("Array") {
+            owned.push(p.to_string());
+            owned_drop_ty.push((p.to_string(), Some(array_drop_key(t, data_types))));
+            return;
+        }
         if !heap_ty(t, data_types) {
             return;
         }
@@ -3046,6 +3165,13 @@ fn lower_func(
                 continue;
             }
             let Some(t) = ptypes.get(i) else { continue };
+            // an owned `Array` frees its block (and, with heap elements, each element): it was
+            // never reclaimed — a `%1` array a function only read leaked
+            if t.head_con() == Some("Array") {
+                owned.push(p.clone());
+                owned_drop_ty.push((p.clone(), Some(array_drop_key(t, data_types))));
+                continue;
+            }
             if !heap_ty(t, data_types) {
                 continue;
             }
@@ -7114,6 +7240,10 @@ pub fn lower_with(
         skip_seeds.extend(seeds);
         tuple_skip_seeds.extend(tuple_seeds_skip);
     }
+    // the helpers of the arrays with heap elements (`axion_arrop_*$K`), and the `Array T`
+    // types whose element-freeing destructor they need. Seeded here, before the destructors
+    // and copiers below are generated, so each element type gets both.
+    let heap_arrays = gen_array_helpers(&mut result, array_tys, &mut copy_seeds, &mut mono_seeds);
     // generated destructors: added AFTER drop insertion (they manage
     // memory by hand, they don't go through the reclamation analysis)
     result.extend(gen_destructors(&recinfo, &parametric_data, &mut mono_seeds));
@@ -7248,7 +7378,8 @@ pub fn lower_with(
     // Phase 2c array mono destructors: scan for parametric ArrayNew ops and
     // generate per-element deep-drop destructors (axion_drop_Array$List$P, etc.)
     {
-        let array_seeds = collect_array_seeds(&result);
+        let mut array_seeds = collect_array_seeds(&result);
+        array_seeds.extend(heap_arrays);
         result.extend(gen_mono_array_destructors(
             &array_seeds,
             &recinfo,
@@ -8052,6 +8183,164 @@ fn gen_mono_destructors(
     out
 }
 
+/// The helpers behind an `Array` of heap elements (see [`ARROP`]), one set per element type `K`
+/// the lowered code uses: `new$K n x` (every slot a copy of `x`, via the recursive `fill$K`),
+/// `get$K a i` (a copy of the slot), `set$K a i x` (frees the replaced element, stores a copy
+/// of `x`). Seeds the element copiers (`copy_seeds`) and destructors (`mono_seeds`), and returns
+/// the `Array T` types whose element-freeing destructor is needed.
+fn gen_array_helpers(
+    result: &mut Vec<CoreFn>,
+    array_tys: &HashMap<Span, Type>,
+    copy_seeds: &mut Vec<Type>,
+    mono_seeds: &mut Vec<Type>,
+) -> Vec<Type> {
+    let mut used: HashSet<String> = HashSet::new();
+    for f in result.iter() {
+        for_each_op(&f.body, &mut |op| {
+            if let Op::CallDirect(g, _, _) = op {
+                if let Some(rest) = g.strip_prefix(ARROP) {
+                    if let Some((_, k)) = rest.split_once('$') {
+                        used.insert(k.to_string());
+                    }
+                }
+            }
+        });
+    }
+    if used.is_empty() {
+        return Vec::new();
+    }
+    // element key → element type, from the array types inference recorded
+    let mut elem_of: HashMap<String, Type> = HashMap::new();
+    for t in array_tys.values() {
+        let (head, a) = ty_head_args(t);
+        if head == Some("Array") {
+            if let Some(el) = a.first() {
+                if let Some(k) = mono_key(el) {
+                    elem_of.entry(k).or_insert_with(|| (*el).clone());
+                }
+            }
+        }
+    }
+    let mut keys: Vec<String> = used.into_iter().collect();
+    keys.sort();
+    let v = |n: &str| Atom::Var(n.to_string());
+    let rt = |func: &str, args: Vec<Atom>| {
+        Rhs::Op(Op::RtCall {
+            func: func.to_string(),
+            args,
+            returns: true,
+        })
+    };
+    let let_ = |x: &str, r: Rhs, body: Term| Term::Let(x.to_string(), r, NO_SPAN, Box::new(body));
+    let ret = |r: Rhs| Term::Ret(r, NO_SPAN);
+    let mut arrays = Vec::new();
+    for k in keys {
+        let Some(el) = elem_of.get(&k).cloned() else {
+            continue;
+        };
+        let kind = match el.head_con() {
+            Some("String") if !matches!(el, Type::Tuple(_)) => CopyKind::Str,
+            Some("Integer") if !matches!(el, Type::Tuple(_)) => CopyKind::Int,
+            _ => {
+                copy_seeds.push(el.clone());
+                CopyKind::Container(k.clone())
+            }
+        };
+        // a parametric instance or a tuple needs its own destructor generated; a plain `data`
+        // type always has one, and String/Integer use the runtime's
+        if matches!(el, Type::Tuple(_) | Type::App(..)) {
+            mono_seeds.push(el.clone());
+        }
+        arrays.push(Type::App(Box::new(Type::Con("Array".into())), Box::new(el)));
+        let arr_key = Some(format!("Array${k}"));
+        let fill = format!("{ARROP}fill${k}");
+        let mk = |name: String, params: &[&str], body: Term| CoreFn {
+            name,
+            params: params.iter().map(|p| p.to_string()).collect(),
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
+            body,
+        };
+        // new$K n x = fill$K (axion_array_new n 0) 0 n x
+        result.push(mk(
+            format!("{ARROP}new${k}"),
+            &["_n", "_x"],
+            let_(
+                "_a",
+                rt("axion_array_new", vec![v("_n"), Atom::Int(0)]),
+                ret(Rhs::Op(Op::CallDirect(
+                    fill.clone(),
+                    vec![v("_a"), Atom::Int(0), v("_n"), v("_x")],
+                    arr_key.clone(),
+                ))),
+            ),
+        ));
+        // fill$K a i n x = if i < n then fill$K (set a i (copy x)) (i + 1) n x else a
+        result.push(mk(
+            fill.clone(),
+            &["_a", "_i", "_n", "_x"],
+            let_(
+                "_c",
+                Rhs::Op(Op::Prim("<".into(), v("_i"), v("_n"))),
+                ret(Rhs::If(
+                    v("_c"),
+                    Box::new(let_(
+                        "_y",
+                        Rhs::Op(alias_copy_op("_x", &kind)),
+                        let_(
+                            "_b",
+                            rt("axion_array_set", vec![v("_a"), v("_i"), v("_y")]),
+                            let_(
+                                "_j",
+                                Rhs::Op(Op::Prim("+".into(), v("_i"), Atom::Int(1))),
+                                ret(Rhs::Op(Op::CallDirect(
+                                    fill.clone(),
+                                    vec![v("_b"), v("_j"), v("_n"), v("_x")],
+                                    arr_key.clone(),
+                                ))),
+                            ),
+                        ),
+                    )),
+                    Box::new(ret(Rhs::Op(Op::Atom(v("_a"))))),
+                )),
+            ),
+        ));
+        // get$K a i = copy (axion_array_get a i)
+        result.push(mk(
+            format!("{ARROP}get${k}"),
+            &["_a", "_i"],
+            let_(
+                "_w",
+                rt("axion_array_get", vec![v("_a"), v("_i")]),
+                ret(Rhs::Op(alias_copy_op("_w", &kind))),
+            ),
+        ));
+        // set$K a i x = drop (axion_array_get a i); axion_array_set a i (copy x)
+        result.push(mk(
+            format!("{ARROP}set${k}"),
+            &["_a", "_i", "_x"],
+            let_(
+                "_o",
+                rt("axion_array_get", vec![v("_a"), v("_i")]),
+                Term::Drop(
+                    "_o".into(),
+                    Some(k.clone()),
+                    Vec::new(),
+                    NO_SPAN,
+                    Box::new(let_(
+                        "_y",
+                        Rhs::Op(alias_copy_op("_x", &kind)),
+                        ret(rt("axion_array_set", vec![v("_a"), v("_i"), v("_y")])),
+                    )),
+                ),
+            ),
+        ));
+    }
+    arrays
+}
+
 /// Scans the Core IR for `ArrayNew` ops whose `elem_ty` is set, returning
 /// the element types as synthetic `Array (<elem>)` seeds.
 fn collect_array_seeds(fns: &[CoreFn]) -> Vec<Type> {
@@ -8115,21 +8404,92 @@ fn gen_mono_array_destructors(
             continue;
         }
         let dw = drop_way(elem_t, recinfo, parametric_data, &mut Vec::new());
-        let body = match dw {
-            DropWay::Deep(dk) => {
-                let p = "_p".to_string();
-                let mut ctr = 0u32;
-                array_deep_drop_body(&p, &format!("axion_drop_{dk}"), &mut ctr)
-            }
-            _ => Term::Ret(
+        let free_shell = || {
+            Term::Ret(
                 Rhs::Op(Op::RtCall {
                     func: "axion_array_free".into(),
                     args: vec![Atom::Var("_p".into())],
                     returns: false,
                 }),
                 NO_SPAN,
-            ),
+            )
         };
+        let body =
+            if matches!(dw, DropWay::None | DropWay::Flat) && !matches!(elem_t, Type::Tuple(_)) {
+                free_shell()
+            } else {
+                // free every element (last to first), then the block: `axion_arrop_dropfrom$K p i`
+                // loops by recursion (Core has no loops).
+                let go = format!("{ARROP}dropfrom${elem_key}");
+                let v = |n: &str| Atom::Var(n.to_string());
+                out.push(CoreFn {
+                    name: go.clone(),
+                    params: vec!["_p".into(), "_i".into()],
+                    captures: Vec::new(),
+                    is_closure: false,
+                    owned_params: Vec::new(),
+                    owned_drop_ty: Vec::new(),
+                    body: Term::Let(
+                        "_c".into(),
+                        // `i >= 0`, as `-1 < i` (the backends lower `<`)
+                        Rhs::Op(Op::Prim("<".into(), Atom::Int(-1), v("_i"))),
+                        NO_SPAN,
+                        Box::new(Term::Ret(
+                            Rhs::If(
+                                v("_c"),
+                                Box::new(Term::Let(
+                                    "_e".into(),
+                                    Rhs::Op(Op::RtCall {
+                                        func: "axion_array_get".into(),
+                                        args: vec![v("_p"), v("_i")],
+                                        returns: true,
+                                    }),
+                                    NO_SPAN,
+                                    Box::new(Term::Drop(
+                                        "_e".into(),
+                                        Some(elem_key.clone()),
+                                        Vec::new(),
+                                        NO_SPAN,
+                                        Box::new(Term::Let(
+                                            "_j".into(),
+                                            Rhs::Op(Op::Prim("-".into(), v("_i"), Atom::Int(1))),
+                                            NO_SPAN,
+                                            Box::new(Term::Ret(
+                                                Rhs::Op(Op::CallDirect(
+                                                    go.clone(),
+                                                    vec![v("_p"), v("_j")],
+                                                    None,
+                                                )),
+                                                NO_SPAN,
+                                            )),
+                                        )),
+                                    )),
+                                )),
+                                Box::new(free_shell()),
+                            ),
+                            NO_SPAN,
+                        )),
+                    ),
+                });
+                Term::Let(
+                    "_n".into(),
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_array_len".into(),
+                        args: vec![v("_p")],
+                        returns: true,
+                    }),
+                    NO_SPAN,
+                    Box::new(Term::Let(
+                        "_i".into(),
+                        Rhs::Op(Op::Prim("-".into(), v("_n"), Atom::Int(1))),
+                        NO_SPAN,
+                        Box::new(Term::Ret(
+                            Rhs::Op(Op::CallDirect(go, vec![v("_p"), v("_i")], None)),
+                            NO_SPAN,
+                        )),
+                    )),
+                )
+            };
         out.push(CoreFn {
             name: format!("axion_drop_{key}"),
             params: vec!["_p".into()],
@@ -8141,75 +8501,6 @@ fn gen_mono_array_destructors(
         });
     }
     out
-}
-
-/// Loop body for array deep-drop: for i = n-1 down to 0, load elem[i],
-/// drop it via `elem_dtor`, then free the array shell.
-fn array_deep_drop_body(ptr: &str, elem_dtor: &str, ctr: &mut u32) -> Term {
-    let fresh = |ctr: &mut u32| -> String {
-        let n = *ctr;
-        *ctr += 1;
-        format!("_ad{n}")
-    };
-    let n = fresh(ctr);
-    let i = fresh(ctr);
-    let cond = fresh(ctr);
-    let elem = fresh(ctr);
-    let free_shell = || {
-        Term::Ret(
-            Rhs::Op(Op::RtCall {
-                func: "axion_array_free".into(),
-                args: vec![Atom::Var(ptr.into())],
-                returns: false,
-            }),
-            NO_SPAN,
-        )
-    };
-    let loop_body = Term::Let(
-        elem.clone(),
-        Rhs::Op(Op::RtCall {
-            func: "axion_array_get".into(),
-            args: vec![Atom::Var(ptr.into()), Atom::Var(i.clone())],
-            returns: true,
-        }),
-        NO_SPAN,
-        Box::new(Term::Drop(
-            elem,
-            Some(elem_dtor.to_string()),
-            Vec::new(),
-            NO_SPAN,
-            Box::new(Term::Let(
-                i.clone(),
-                Rhs::Op(Op::Prim("-".into(), Atom::Var(i.clone()), Atom::Int(1))),
-                NO_SPAN,
-                Box::new(free_shell()),
-            )),
-        )),
-    );
-    let loop_check = Term::Let(
-        cond.clone(),
-        Rhs::Op(Op::Prim(">=".into(), Atom::Var(i.clone()), Atom::Int(0))),
-        NO_SPAN,
-        Box::new(Term::Ret(
-            Rhs::If(Atom::Var(cond), Box::new(loop_body), Box::new(free_shell())),
-            NO_SPAN,
-        )),
-    );
-    Term::Let(
-        n.clone(),
-        Rhs::Op(Op::RtCall {
-            func: "axion_array_len".into(),
-            args: vec![Atom::Var(ptr.into())],
-            returns: true,
-        }),
-        NO_SPAN,
-        Box::new(Term::Let(
-            i,
-            Rhs::Op(Op::Prim("-".into(), Atom::Var(n), Atom::Int(1))),
-            NO_SPAN,
-            Box::new(loop_check),
-        )),
-    )
 }
 
 /// Tuple-owned %1: generates a destructor for a concrete tuple type whose
@@ -9237,6 +9528,17 @@ fn compute_borrow_args(
     con_recursive: &HashMap<String, Vec<usize>>,
 ) -> BorrowArgs {
     let mut ba: BorrowArgs = HashMap::new();
+    // the generated array helpers (not in `fns` yet: emitted after drop insertion) have fixed
+    // ownership; the fixpoint below only revisits real functions, so these entries stay.
+    for f in fns {
+        for_each_op(&f.body, &mut |op| {
+            if let Op::CallDirect(g, _, _) = op {
+                if let Some(set) = arrop_borrows(g) {
+                    ba.insert(g.clone(), set);
+                }
+            }
+        });
+    }
     for f in fns {
         let Some(mults) = param_mults.get(&f.name) else {
             continue;

@@ -36,28 +36,37 @@ main = imperative $ do
   getArray a 0             -- returns 10
 ```
 
-## Element types: scalars only in native builds (AX0914)
+## Element types
 
-`newArray :: Int -> a -> Array a`, `getArray :: Array a -> Int -> a` and
-`setArray :: Array a -> Int -> a -> Array a` are generic in the element type, so a program
-can put any value into an array. Natively, though, an element is a raw word the array does
-not own: `newArray` writes the same word into every slot, `getArray` returns it as if it were
-a fresh value, and freeing the array frees only its block. With a heap element (a `List`,
-`String`, `Integer`, tuple, closure, or a `data` value with fields) that leaks, or double-frees
-once two reads consume the element. The drop verifier cannot see it, since it treats elements
-as scalars.
+Scalar elements (`Int`, `Float`, `Bool`, `Char`, a `data` type whose constructors take no
+fields) are stored as raw words, exactly as before.
 
-So a native build rejects an array whose element type is heap (`error[AX0914]`), reporting
-the `newArray`/`setArray` call, or the call to a generic function that passes its type
-variable on to one of them (inference traces the variable through every instantiation). The
-allowed elements are `Int`, `Float`, `Bool`, `Char`, and `data` types whose constructors take
-no fields (immediate tags). The interpreter runs any element type. Fixture:
-`array_heap_elem_reject.axi`.
+An array of **heap** elements (`String`, `Integer`, a `List`, a tuple, a `data` value with
+fields, or any type made of those) owns its elements, with value semantics:
 
-Real heap-element arrays would need `newArray` to copy its initial value into each slot,
-`getArray` to return a copy or a borrow, `setArray` to free the element it replaces, and a
-per-element destructor (`axion_drop_Array$List$P`, whose generator already exists in
-`core.rs` but is never triggered: `Op::ArrayNew.elem_ty` stays `None`).
+- `newArray n x` and `setArray a i x` store a **copy** of `x`; the caller keeps its own `x`
+  and frees it as usual.
+- `getArray a i` returns a **copy** of the element, owned by the caller.
+- `setArray` frees the element it replaces, and dropping the array frees every element.
+
+Natively, each operation at a concrete element type `K` calls a generated helper
+(`axion_arrop_new$K`, `axion_arrop_get$K`, `axion_arrop_set$K`; Core has no loops, so `new`
+fills by recursion), and the array is dropped by `axion_drop_Array$K`, which frees each
+element and then the block. The helpers manage memory by hand, like the generated destructors
+and copiers; their call-site ownership is fixed (`new`/`get` borrow everything, `set`
+consumes the array and borrows the element), so the drop verifier checks every user
+function that uses them. Fixture: `array_heap_elems.axi` (3 backends, leak-gated).
+
+A native build still refuses an array operation (`error[AX0914]`) when its element type is not
+a concrete copyable type **at the operation itself**:
+
+- the type is only known through a generic function (`fill :: Int -> a -> Array a` called at
+  `List Int`): the error points at the call that fixes the type. Give the function a concrete
+  signature (`Array String` rather than `Array a`);
+- the element cannot be copied: a closure, an `Array`, a `Buffer` or a handle, or a type
+  holding one.
+
+The interpreter runs any element type. Fixture: `array_heap_elem_reject.axi`.
 
 ## Imperative block
 
@@ -116,5 +125,6 @@ limitation shared with `Buffer` operations.
 - **Interpreter.** Runs Array programs too (any element type), alongside `--dev`/`--release`.
 - **No bulk operations.** No `fill`, `copy`, or `iota` — each element must be
   individually set/read.
-- **Scalar elements only natively.** `Int`, `Float`, `Bool`, `Char` or a field-less `data`
-  type; a heap element type is rejected with AX0914 (see above).
+- **Heap elements are copied.** Reading or storing a heap element copies it (see above):
+  an array of large values pays a copy per access. Generic code over `Array a` instantiated at
+  a heap type, and arrays of closures/arrays/handles, are refused natively (AX0914).
