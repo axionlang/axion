@@ -148,7 +148,7 @@ and well-mitigated this list is.
     rejected programs are in fact safe* (the rebuilders) — an honest expressiveness cost beyond the
     strict minimum, bounded and worked-around, never a safety compromise.
 - **Leaks — no characterized exceptions (2026-11-15).** Clause (4) used to carry a list of known
-  conservative leaks. Each is closed and leak-gated (closures stored in structures: see the open note below):
+  conservative leaks. Each is closed and leak-gated:
   - *`Integer` fields of `data`/record types* are reclaimed by the container's destructor like `String`
     fields (`con_drop_slots`); an extracted field is moved out and the container frees only the rest
     (skip destructors, a shell-free after a `case`). The 2026-10 attempt at this was rejected because
@@ -169,15 +169,18 @@ and well-mitigated this list is.
     right after building the closure, before calling it (or returning it), and neither the verifier
     nor ASan saw the read (it happens inside the runtime). Regression: `closure_reclaim.axi` and the
     verifier test `closure_capture_must_outlive_its_calls`.
-    A closure that is RETURNED from its frame (by a function that returns a fresh closure on every
-    path) owns COPIES of its heap captures: they move into the cell, whose layout is now
-    `{fn_ptr, dtor, captures…}`, and its generated destructor `axion_drop_clo$<lambda>` frees them
-    when the caller drops the closure (key `Closure`, via `axion_closure_drop`, after its last call).
-    The frame frees its own values as for a closure that does not escape. Regression:
-    `closure_escape_owned.axi` (String, List, Integer, record and tuple captures; leak-gated).
-    **Open:** a closure STORED in a structure (`Just (\z -> …)`, a list of closures) has no owner that
-    frees a closure field yet: with a heap capture it is refused natively as a leak (AX0911); without
-    one its cell (and the structure's) leaks unseen by the verifier — LSan shows it (pre-existing).
+    A closure that ESCAPES its frame owns COPIES of its heap captures: they move into the cell,
+    laid out `{fn_ptr, dtor, copier, captures…}`, whose generated destructor/copier
+    (`axion_drop_clo$<lambda>` / `axion_copy_clo$<lambda>`) free/copy them. A function value has the
+    destructor key `Closure` (`axion_closure_drop`, `axion_closure_copy`), also as a field:
+    a `Maybe`/list/tuple of closures frees and copies each one. Ownership is explicit at every
+    hand-off: a closure RETURNED (by a function returning a fresh closure on every path, or one
+    whose clause arity is below its signature's) is owned by the caller; a closure put into a
+    structure is MOVED in only if it is a fresh closure used nowhere else, otherwise a COPY goes
+    in (a borrowed parameter, an element of a borrowed structure, a closure embedded twice — these
+    were double frees while the change was made); a `%1` function-typed parameter is freed by its
+    function; a function-typed parameter returned whole is returned as a copy. Regressions:
+    `closure_escape_owned.axi`, `closure_in_structures.axi` (both leak-gated).
   The remaining gap is one of PROOF, not of reclamation: the verifier's `leak_exempt` set still skips
   leak accounting for polymorphic extracted fields and moved-in leaves (their heap-ness is unresolved
   where it runs). LSan covers it: `scripts/sanitize.sh` leak-gates every native fixture, the

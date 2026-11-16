@@ -912,6 +912,11 @@ impl Infer<'_> {
     /// has no entry or a function type occurs.
     fn subst_to_ast(&self, t: &Ty, m: &HashMap<u32, Type>) -> Option<Type> {
         match self.resolve(t) {
+            Ty::Fun(a, b) => Some(Type::Arrow {
+                mult: Mult::Many,
+                from: Box::new(self.subst_to_ast(&a, m)?),
+                to: Box::new(self.subst_to_ast(&b, m)?),
+            }),
             Ty::Var(id) => m.get(&id).cloned(),
             Ty::Con(n, args) => {
                 let mut x = Type::Con(n);
@@ -925,7 +930,6 @@ impl Infer<'_> {
                     .map(|t| self.subst_to_ast(t, m))
                     .collect::<Option<Vec<_>>>()?,
             )),
-            Ty::Fun(..) => None,
         }
     }
 
@@ -1478,18 +1482,36 @@ fn field_copyable(inf: &Infer, t: &Ty, seen: &mut HashSet<String>) -> bool {
 }
 
 fn ty_to_ast(t: &Ty) -> Option<Type> {
+    // A bare function type at the top is a partial application's (`Cons 3`), whose span the
+    // full application may share: never recorded (the full application's type is the one that
+    // counts). Nested in a type (`Maybe (Int -> Int)`, a tuple element) it is a closure value.
+    match t {
+        Ty::Fun(..) => None,
+        _ => ty_to_ast_nested(t),
+    }
+}
+
+/// [`ty_to_ast`] below the top: a function type is a closure cell (destructor key `Closure`).
+fn ty_to_ast_nested(t: &Ty) -> Option<Type> {
     match t {
         Ty::Con(n, args) => {
             let mut x = Type::Con(n.clone());
             for a in args {
-                x = Type::App(Box::new(x), Box::new(ty_to_ast(a)?));
+                x = Type::App(Box::new(x), Box::new(ty_to_ast_nested(a)?));
             }
             Some(x)
         }
         Ty::Tuple(ts) => Some(Type::Tuple(
-            ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
+            ts.iter()
+                .map(ty_to_ast_nested)
+                .collect::<Option<Vec<_>>>()?,
         )),
-        Ty::Var(_) | Ty::Fun(..) => None,
+        Ty::Fun(from, to) => Some(Type::Arrow {
+            mult: Mult::Many,
+            from: Box::new(ty_to_ast_nested(from)?),
+            to: Box::new(ty_to_ast_nested(to)?),
+        }),
+        Ty::Var(_) => None,
     }
 }
 
@@ -1514,6 +1536,7 @@ fn ty_to_ast_sig(t: &Ty) -> Option<Type> {
 /// names stay readable (`dropList$Maybe$P` ↔ `axion_drop_List$Maybe$P`).
 fn ty_mangle(t: &Type) -> String {
     match t {
+        Type::Arrow { .. } => "Closure".to_string(),
         Type::Con(n) => n.clone(),
         Type::App(f, a) => format!("{}${}", ty_mangle(f), ty_mangle(a)),
         Type::Tuple(ts) => format!(
@@ -3957,6 +3980,21 @@ impl<'a> Infer<'a> {
                     // AST; `mono_key` (core.rs) encodes its arity (`tuple2$K$V`) so the specialized
                     // destructor reclaims the element payloads. `ty_to_ast` still returns `None` on a
                     // residual var/function anywhere inside (e.g. `(a, Int)`) → not fully concrete.
+                    // …and a FUNCTION value: a closure cell the clone owns (`dupL$Closure`). Every
+                    // function type is the same cell at run time and a generic body cannot look
+                    // inside an `a`, so one clone serves them all (mangle and key `Closure`).
+                    // (its argument/result types need not be resolved: they do not matter to
+                    // ownership, so any function type stands for the canonical closure cell)
+                    Ty::Fun(..) => {
+                        // (`Int -> Int`: every component stays a native type)
+                        let cell = Type::Arrow {
+                            mult: Mult::Many,
+                            from: Box::new(Type::Con("Int".into())),
+                            to: Box::new(Type::Con("Int".into())),
+                        };
+                        mangle_parts.push(ty_mangle(&cell));
+                        repls.push(cell);
+                    }
                     resolved @ (Ty::Con(..) | Ty::Tuple(_)) => {
                         if let Some(ast) = ty_to_ast(&resolved) {
                             mangle_parts.push(ty_mangle(&ast));
@@ -3966,7 +4004,7 @@ impl<'a> Infer<'a> {
                             break;
                         }
                     }
-                    Ty::Var(_) | Ty::Fun(..) => {
+                    Ty::Var(_) => {
                         concrete = false;
                         break;
                     }

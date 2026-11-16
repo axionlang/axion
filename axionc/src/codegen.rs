@@ -218,6 +218,8 @@ impl Cg {
             ("axion_str_drop", 1, false),
             // frees a closure cell: its own destructor (owned captures) or a flat free
             ("axion_closure_drop", 1, false),
+            // copies a closure cell: its own copier (owned captures) or a block copy
+            ("axion_closure_copy", 1, true),
             ("axion_eput", 1, false),
             ("axion_eputs", 1, false),
             ("axion_bignum_from_i64", 1, true),
@@ -373,7 +375,7 @@ impl Cg {
                     let v =
                         fx.builder
                             .ins()
-                            .load(types::I64, MemFlags::new(), env, (i as i32 + 2) * 8);
+                            .load(types::I64, MemFlags::new(), env, (i as i32 + 3) * 8);
                     fx.bind_val(cap, v);
                 }
                 for (j, p) in f.params.iter().enumerate() {
@@ -857,9 +859,9 @@ impl Fx<'_, '_> {
                     .ids
                     .get(func)
                     .ok_or_else(|| format!("lambda '{func}' not declared"))?;
-                // `{fn_ptr, dtor, captures…}`: `dtor` is the closure's generated destructor when it
-                // owns its heap captures (`axion_drop_clo$<lambda>`), else 0.
-                let env = self.alloc(2 + captures.len());
+                // `{fn_ptr, dtor, copier, captures…}`: `dtor`/`copier` are the closure's generated
+                // destructor and copier when it owns its heap captures, else 0.
+                let env = self.alloc(3 + captures.len());
                 let fref = self.module.declare_func_in_func(lam_id, self.builder.func);
                 let faddr = self.builder.ins().func_addr(types::I64, fref);
                 self.builder.ins().store(MemFlags::new(), faddr, env, 0);
@@ -871,11 +873,19 @@ impl Fx<'_, '_> {
                     None => self.builder.ins().iconst(types::I64, 0),
                 };
                 self.builder.ins().store(MemFlags::new(), dtor, env, 8);
+                let copier = match self.ids.get(&format!("axion_copy_clo${func}")) {
+                    Some(&(cid, _)) => {
+                        let cref = self.module.declare_func_in_func(cid, self.builder.func);
+                        self.builder.ins().func_addr(types::I64, cref)
+                    }
+                    None => self.builder.ins().iconst(types::I64, 0),
+                };
+                self.builder.ins().store(MemFlags::new(), copier, env, 16);
                 for (i, cap) in captures.iter().enumerate() {
                     let cv = self.atom(cap)?;
                     self.builder
                         .ins()
-                        .store(MemFlags::new(), cv, env, (i as i32 + 2) * 8);
+                        .store(MemFlags::new(), cv, env, (i as i32 + 3) * 8);
                 }
                 Ok(env)
             }

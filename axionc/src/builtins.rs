@@ -86,6 +86,10 @@ pub const RT_TABLE: &[RtEntry] = &[
     e("axion_array_free", M, Scalar),
     // --- copies (generated `axion_copy_*` copiers and session hand-off) ---
     e("axion_block_copy", B, OwnedFlat),
+    // closure cells: dropped/copied through the cell's own destructor/copier when it owns its
+    // captures (a closure stored in a structure or returned), else as a flat block
+    e("axion_closure_drop", M, Scalar),
+    e("axion_closure_copy", B, Owned("Closure")),
     e("axion_buf_copy", B, Owned("Buffer")),
     e("axion_bignum_copy", B, INTEGER),
     // --- strings ---

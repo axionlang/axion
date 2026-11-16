@@ -167,10 +167,10 @@
   let $clocopy0 = rtcall axion_strcat s ""  ; Δ{s} · makes String
   let $clocopy1 = call axion_copy_P p  ; Δ{p} · makes P
   let $clocopy2 = call axion_copy_tuple2$String$Int t  ; Δ{t} · makes tuple2$String$Int
-  let _c0 = loadraw _p+16  ; Δ{}
-  let _c0 = loadraw _p+16  ; Δ{}
-  let _c0 = loadraw _p+16  ; Δ{}
-  let _c1 = loadraw _p+24  ; Δ{}
+  let _c0 = loadraw _p+24  ; Δ{}
+  let _c0 = loadraw _p+24  ; Δ{}
+  let _c0 = loadraw _p+24  ; Δ{}
+  let _c1 = loadraw _p+32  ; Δ{}
   let _d1000000 = call mkL _t3 eta$1  ; Δ{_t3}
   let _d1000000 = callclo _t2 _t1  ; Δ{_t2}
   let _dd0 = loadraw _p+0  ; Δ{}

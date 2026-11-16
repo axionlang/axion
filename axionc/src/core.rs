@@ -899,6 +899,7 @@ impl RecordInfo {
         match el {
             "Integer" => Some(Some("Integer".into())), // bignum → axion_bignum_free
             "String" => Some(Some("String".into())),   // heap string → axion_str_drop
+            "Closure" => Some(Some("Closure".into())), // closure cell → axion_closure_drop
             _ if el.contains('$') => Some(Some(el.to_string())), // nested container → its mono destructor
             _ if self.needs_deep_drop(el) => Some(Some(el.to_string())), // deep data destructor
             _ if self.enum_types.contains(el) => None,           // unboxed enum immediate → no drop
@@ -3120,6 +3121,11 @@ fn lower_func(
             owned_drop_ty.push((p.to_string(), Some(array_drop_key(t, data_types))));
             return;
         }
+        if matches!(t, Type::Arrow { .. }) {
+            owned.push(p.to_string());
+            owned_drop_ty.push((p.to_string(), Some("Closure".into())));
+            return;
+        }
         if !heap_ty(t, data_types) {
             return;
         }
@@ -3175,6 +3181,12 @@ fn lower_func(
             if t.head_con() == Some("Array") {
                 owned.push(p.clone());
                 owned_drop_ty.push((p.clone(), Some(array_drop_key(t, data_types))));
+                continue;
+            }
+            // an owned function value: a closure cell (and the captures it owns)
+            if matches!(t, Type::Arrow { .. }) {
+                owned.push(p.clone());
+                owned_drop_ty.push((p.clone(), Some("Closure".into())));
                 continue;
             }
             if !heap_ty(t, data_types) {
@@ -6275,7 +6287,13 @@ pub fn lower_with(
         .funcs
         .iter()
         .filter_map(|f| {
-            let rt = result_type(f.sig.as_ref()?);
+            let sig = f.sig.as_ref()?;
+            // fewer clause parameters than the signature has: the result is a function value
+            let arity = f.clauses.first().map_or(0, |c| c.pats.len());
+            if arity > 0 && sig.param_types().len() > arity {
+                return Some((f.name.clone(), "Closure".to_string()));
+            }
+            let rt = result_type(sig);
             ret_ty_key(rt, &boxed).map(|k| (f.name.clone(), k))
         })
         .collect();
@@ -6981,6 +6999,7 @@ pub fn lower_with(
             register_type_keys(t, &mut type_by_key);
         }
         let cx = ClosureOwnCx {
+            by_ret: false,
             ba: &pre_ba,
             fn_param_types: &fn_param_types,
             fn_result_types: &fn_result_types,
@@ -6990,6 +7009,7 @@ pub fn lower_with(
         };
         let owning = own_escaping_closures(&mut out, &cx, &mut copy_seeds, &mut mono_seeds);
         key_fresh_closure_calls(&mut out);
+        copy_embedded_closures(&mut out, &recinfo, makecon_tys, &fn_param_types);
         owning
     };
     let mut borrow_args =
@@ -7692,6 +7712,11 @@ fn emit_field_drops(slots: &[(i32, DropWay)], p: &str, ctr: &mut u32, cont: Term
                 args: vec![Atom::Var(fp.clone())],
                 returns: false,
             },
+            DropWay::Closure => Op::RtCall {
+                func: "axion_closure_drop".into(),
+                args: vec![Atom::Var(fp.clone())],
+                returns: false,
+            },
             // non-heap fields are filtered out before this point; skip defensively
             // so a stray `None` never emits a wild `free`.
             DropWay::None => continue,
@@ -7956,6 +7981,11 @@ fn emit_field_copies(
                 args: vec![Atom::Var(child.clone())],
                 returns: true,
             },
+            DropWay::Closure => Op::RtCall {
+                func: "axion_closure_copy".into(),
+                args: vec![Atom::Var(child.clone())],
+                returns: true,
+            },
             DropWay::None => continue,
         };
         term = Term::Let(
@@ -8029,6 +8059,8 @@ fn ty_head_args(t: &Type) -> (Option<&str>, Vec<&Type>) {
 /// `List (Maybe P)` → `"List$Maybe$P"`. `None` if any part is a type variable.
 fn mono_key(t: &Type) -> Option<String> {
     match t {
+        // every function value is a closure cell with the same runtime reclaimer
+        Type::Arrow { .. } => Some("Closure".to_string()),
         Type::Tuple(ts) => {
             let parts: Vec<String> = ts.iter().map(mono_key).collect::<Option<Vec<_>>>()?;
             // Encode the ARITY in the head token (`tuple2$A$B`, `tuple3$A$B$C`) so a NESTED
@@ -8076,6 +8108,7 @@ enum DropWay {
     Str,          // a `String` field → `axion_str_drop` (frees a heap string, skips a literal)
     Bignum,       // an `Integer` field → `axion_bignum_free` (frees the boxed BigNum + limbs)
     Buf,          // a `Buffer a` → `axion_buf_free` (frees the libc-malloc'd header pointer)
+    Closure,      // a function value → `axion_closure_drop` / `axion_closure_copy`
     None,         // not a heap object (Int/function/tuple) → nothing to do
 }
 
@@ -8099,6 +8132,11 @@ fn drop_way(
             }
             None => DropWay::None,
         };
+    }
+    // a function value: a closure cell (`axion_closure_drop` runs its destructor, if it owns
+    // captures, then frees it)
+    if let Type::Arrow { .. } = t {
+        return DropWay::Closure;
     }
     let (head, args) = ty_head_args(t);
     let Some(head) = head else {
@@ -8248,7 +8286,11 @@ fn register_type_keys(t: &Type, out: &mut HashMap<String, Type>) {
 }
 
 /// What [`own_escaping_closures`] reads about the module.
+#[derive(Clone, Copy)]
 struct ClosureOwnCx<'a> {
+    /// the function being rewritten returns a fresh closure on every path (its caller owns what
+    /// it returns), so a closure it returns may own its captures
+    by_ret: bool,
     ba: &'a BorrowArgs,
     fn_param_types: &'a HashMap<String, Vec<Type>>,
     fn_result_types: &'a HashMap<String, Type>,
@@ -8354,14 +8396,22 @@ fn capture_kind(
 /// `true` if the closure bound to `x` can outlive the scope it is made in: it is returned,
 /// stored in a structure or another closure, or handed to a position that keeps it.
 fn closure_escapes(x: &str, t: &Term, ba: &BorrowArgs) -> bool {
-    closure_escapes_by(x, t, ba, true)
+    closure_escapes_by(x, t, ba, true, true)
 }
 
-/// [`closure_escapes`], counting a `ret` of the closure as an escape only if `by_ret`.
-fn closure_escapes_by(x: &str, t: &Term, ba: &BorrowArgs, by_ret: bool) -> bool {
-    fn op_keeps(x: &str, op: &Op, ba: &BorrowArgs) -> bool {
+/// [`closure_escapes`], counting a `ret` of the closure as an escape only if `by_ret`, and a
+/// constructor/tuple/record embedding it only if `by_con`.
+fn closure_escapes_by(x: &str, t: &Term, ba: &BorrowArgs, by_ret: bool, by_con: bool) -> bool {
+    fn op_keeps(x: &str, op: &Op, ba: &BorrowArgs, by_con: bool) -> bool {
         let is = |a: &Atom| matches!(a, Atom::Var(v) if v == x);
         match op {
+            // a structure that frees its closure fields (key `…$Closure…`) owns the closure
+            Op::MakeCon { args, .. } | Op::MakeTuple(args) if !by_con => {
+                !args.iter().any(is) && op_mentions(op, x)
+            }
+            Op::MakeRecord { fields, .. } if !by_con => {
+                !fields.iter().any(|(_, a)| is(a)) && op_mentions(op, x)
+            }
             Op::CallClosure(_, args) => args.iter().any(is),
             Op::CallDirect(g, args, _) => args
                 .iter()
@@ -8377,31 +8427,32 @@ fn closure_escapes_by(x: &str, t: &Term, ba: &BorrowArgs, by_ret: bool) -> bool 
         }
     }
     // `tail`: the rhs is a `ret` (a bare `x` there is the closure being returned)
-    fn rhs_keeps(x: &str, r: &Rhs, ba: &BorrowArgs, by_ret: bool, tail: bool) -> bool {
+    fn rhs_keeps(x: &str, r: &Rhs, ba: &BorrowArgs, by: (bool, bool), tail: bool) -> bool {
         match r {
-            Rhs::Op(Op::Atom(Atom::Var(v))) => v == x && (by_ret || !tail),
-            Rhs::Op(op) => op_keeps(x, op, ba),
+            Rhs::Op(Op::Atom(Atom::Var(v))) => v == x && (by.0 || !tail),
+            Rhs::Op(op) => op_keeps(x, op, ba, by.1),
             Rhs::If(_, a, b) => {
-                closure_escapes_by(x, a, ba, by_ret) || closure_escapes_by(x, b, ba, by_ret)
+                closure_escapes_by(x, a, ba, by.0, by.1) || closure_escapes_by(x, b, ba, by.0, by.1)
             }
             Rhs::Case(_, arms) => arms
                 .iter()
-                .any(|(_, b)| closure_escapes_by(x, b, ba, by_ret)),
+                .any(|(_, b)| closure_escapes_by(x, b, ba, by.0, by.1)),
         }
     }
+    let by = (by_ret, by_con);
     match t {
         Term::Let(y, rhs, _, body) => {
             if let Rhs::Op(Op::Atom(Atom::Var(v))) = rhs {
-                if v == x && closure_escapes_by(y, body, ba, by_ret) {
+                if v == x && closure_escapes_by(y, body, ba, by_ret, by_con) {
                     return true;
                 }
-            } else if rhs_keeps(x, rhs, ba, by_ret, false) {
+            } else if rhs_keeps(x, rhs, ba, by, false) {
                 return true;
             }
-            closure_escapes_by(x, body, ba, by_ret)
+            closure_escapes_by(x, body, ba, by_ret, by_con)
         }
-        Term::Drop(_, _, _, _, body) => closure_escapes_by(x, body, ba, by_ret),
-        Term::Ret(rhs, _) => rhs_keeps(x, rhs, ba, by_ret, true),
+        Term::Drop(_, _, _, _, body) => closure_escapes_by(x, body, ba, by_ret, by_con),
+        Term::Ret(rhs, _) => rhs_keeps(x, rhs, ba, by, true),
     }
 }
 
@@ -8426,15 +8477,17 @@ fn own_escaping_closures(
 ) -> OwningClosures {
     let mut owning: OwningClosures = Vec::new();
     let mut ctr = 0usize;
-    // Only a closure the function RETURNS, from a function that returns a fresh closure on every
-    // path: its caller then owns it (key `Closure`) and frees it with its captures. A closure
-    // stored in a structure or handed to a consuming parameter has no owner that frees a closure
-    // yet, so it is left as is (it keeps its captures alive by escaping with them: AX0911).
+    // A closure that escapes only into a structure (which frees its closure fields: key
+    // `…$Closure…`), or by being RETURNED from a function that returns a fresh closure on every
+    // path (whose caller owns it, key `Closure`). A closure handed to a consuming parameter or to
+    // another closure has no such owner, so it is left as is (it keeps its captures alive by
+    // escaping with them: AX0911).
     let fresh = fresh_closure_fns(out);
     for f in out.iter_mut() {
-        if !fresh.contains(&f.name) {
-            continue;
-        }
+        let cx = &ClosureOwnCx {
+            by_ret: fresh.contains(&f.name),
+            ..*cx
+        };
         let mut lets: HashMap<String, Op> = HashMap::new();
         collect_let_ops(&f.body, &mut lets);
         let snapshot = f.clone();
@@ -8563,7 +8616,9 @@ fn own_in_term(
                 owns: false,
             }) = &rhs
             {
-                if closure_escapes(&x, &body, cx.ba) && !closure_escapes_by(&x, &body, cx.ba, false)
+                // it escapes, and only where an owner frees it with its captures
+                if closure_escapes(&x, &body, cx.ba)
+                    && !closure_escapes_by(&x, &body, cx.ba, !cx.by_ret, false)
                 {
                     if let Some((copies, caps, keys)) =
                         owning_copies(captures, f, lets, cx, ctr, copy_seeds, mono_seeds)
@@ -8590,12 +8645,15 @@ fn own_in_term(
             )),
         ),
         Term::Ret(rhs, sp) => {
-            // a closure made right at the return escapes
-            if let Rhs::Op(Op::MakeClosure {
-                func,
-                captures,
-                owns: false,
-            }) = &rhs
+            // a closure made right at the return escapes (to a caller that owns it)
+            if let (
+                Rhs::Op(Op::MakeClosure {
+                    func,
+                    captures,
+                    owns: false,
+                }),
+                true,
+            ) = (&rhs, cx.by_ret)
             {
                 if let Some((copies, caps, keys)) =
                     owning_copies(captures, f, lets, cx, ctr, copy_seeds, mono_seeds)
@@ -8743,9 +8801,240 @@ fn key_fresh_closure_calls(out: &mut [CoreFn]) {
     }
 }
 
-/// The destructor of each owning closure (`axion_drop_clo$<lambda> p`): frees every heap capture
-/// (at `p + (i+2)*8`, after `fn_ptr` and `dtor`) with its key, then the cell. Called through the
-/// cell's `dtor` word by `axion_closure_drop`.
+/// A structure frees the closures it holds, so it must own each one: a closure put into a
+/// constructor, tuple or record is MOVED in only if it is a fresh closure (a lambda, a call
+/// returning a fresh one, a copy) used nowhere else in the function; any other — a borrowed
+/// parameter, an element of a borrowed structure, one embedded twice (`twice f = Cons f (Cons f
+/// Nil)`) — is embedded as a COPY (`axion_closure_copy`). Otherwise two owners free one cell.
+fn copy_embedded_closures(
+    out: &mut [CoreFn],
+    recinfo: &RecordInfo,
+    makecon_tys: &HashMap<Span, Type>,
+    fn_param_types: &HashMap<String, Vec<Type>>,
+) {
+    for f in out.iter_mut() {
+        let mut lets: HashMap<String, Op> = HashMap::new();
+        collect_let_ops(&f.body, &mut lets);
+        // the variables known to hold a closure: a parameter declared with a function type (a
+        // generic body specialized at one, `dupL$Closure`, has no keyed constructor to tell),
+        // or a value whose key is `Closure`
+        let mut closure_vars: HashSet<String> = HashSet::new();
+        if let Some(tys) = fn_param_types.get(&f.name) {
+            let off = f.params.len().saturating_sub(tys.len());
+            for (i, p) in f.params.iter().enumerate() {
+                if i >= off && matches!(tys.get(i - off), Some(Type::Arrow { .. })) {
+                    closure_vars.insert(p.clone());
+                }
+            }
+        }
+        for (x, op) in &lets {
+            let k = crate::delta::op_delta_effect(op, &HashMap::new())
+                .produces
+                .and_then(|r| r.key);
+            if k.as_deref() == Some("Closure") {
+                closure_vars.insert(x.clone());
+            }
+        }
+        let mut uses: HashMap<String, usize> = HashMap::new();
+        count_var_uses(&f.body, &mut uses);
+        let fresh = |a: &str| {
+            uses.get(a).copied().unwrap_or(0) == 1
+                && lets.get(a).is_some_and(|op| match op {
+                    Op::MakeClosure { .. } => true,
+                    Op::CallDirect(_, _, Some(k)) => k == "Closure",
+                    Op::RtCall { func, .. } => func == "axion_closure_copy",
+                    _ => false,
+                })
+        };
+        let mut ctr = 0usize;
+        let body = std::mem::replace(
+            &mut f.body,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+        );
+        let cx = EmbedCx {
+            recinfo,
+            makecon_tys,
+            closure_vars: &closure_vars,
+            fresh: &fresh,
+        };
+        f.body = copy_closures_in(body, &cx, &mut ctr);
+    }
+}
+
+/// How many times each variable is mentioned in a term (as an operand anywhere).
+fn count_var_uses(t: &Term, out: &mut HashMap<String, usize>) {
+    let mut bump = |a: &Atom| {
+        if let Atom::Var(v) = a {
+            *out.entry(v.clone()).or_default() += 1;
+        }
+    };
+    fn rhs(r: &Rhs, out: &mut HashMap<String, usize>) {
+        match r {
+            Rhs::Op(op) => {
+                let e = crate::delta::op_delta_effect(op, &HashMap::new());
+                for a in e
+                    .borrows
+                    .iter()
+                    .chain(e.moves.iter())
+                    .chain(e.nonstrict.iter())
+                    .chain(e.alias.iter())
+                {
+                    if let Atom::Var(v) = a {
+                        *out.entry(v.clone()).or_default() += 1;
+                    }
+                }
+            }
+            Rhs::If(c, a, b) => {
+                if let Atom::Var(v) = c {
+                    *out.entry(v.clone()).or_default() += 1;
+                }
+                count_var_uses(a, out);
+                count_var_uses(b, out);
+            }
+            Rhs::Case(sc, arms) => {
+                if let Atom::Var(v) = sc {
+                    *out.entry(v.clone()).or_default() += 1;
+                }
+                arms.iter().for_each(|(_, b)| count_var_uses(b, out));
+            }
+        }
+    }
+    match t {
+        Term::Let(_, r, _, body) => {
+            rhs(r, out);
+            count_var_uses(body, out);
+        }
+        Term::Drop(x, _, _, _, body) => {
+            bump(&Atom::Var(x.clone()));
+            count_var_uses(body, out);
+        }
+        Term::Ret(r, _) => rhs(r, out),
+    }
+}
+
+/// What [`copy_closures_in`] reads.
+struct EmbedCx<'a> {
+    recinfo: &'a RecordInfo,
+    makecon_tys: &'a HashMap<Span, Type>,
+    closure_vars: &'a HashSet<String>,
+    fresh: &'a dyn Fn(&str) -> bool,
+}
+
+/// The argument positions of a structure-building op that hold a closure: by the constructor's
+/// key and field, the tuple's recorded type, or the operand being a known closure variable.
+fn closure_slots(op: &Op, sp: Span, cx: &EmbedCx) -> Vec<usize> {
+    let (args, by_type): (&[Atom], Vec<usize>) = match op {
+        Op::MakeCon { con, args, ty } => (
+            args,
+            match ty {
+                Some(k) => (0..args.len())
+                    .filter(|&i| {
+                        cx.recinfo.poly_field_elem_key(con, i, k)
+                            == Some(Some("Closure".to_string()))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            },
+        ),
+        Op::MakeTuple(args) => (
+            args,
+            match cx.makecon_tys.get(&sp) {
+                Some(Type::Tuple(ts)) if ts.len() == args.len() => ts
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| matches!(t, Type::Arrow { .. }))
+                    .map(|(i, _)| i)
+                    .collect(),
+                _ => Vec::new(),
+            },
+        ),
+        _ => return Vec::new(),
+    };
+    (0..args.len())
+        .filter(|i| {
+            by_type.contains(i) || matches!(&args[*i], Atom::Var(v) if cx.closure_vars.contains(v))
+        })
+        .collect()
+}
+
+fn copy_closures_in(t: Term, cx: &EmbedCx, ctr: &mut usize) -> Term {
+    // rewrites the closure operands of `op` that must be copied; returns the copy lets
+    let fix = |op: &mut Op, sp: Span, ctr: &mut usize| -> Vec<(String, Op)> {
+        let slots = closure_slots(op, sp, cx);
+        let mut copies = Vec::new();
+        let args = match op {
+            Op::MakeCon { args, .. } | Op::MakeTuple(args) => args,
+            _ => return copies,
+        };
+        for i in slots {
+            if let Some(Atom::Var(a)) = args.get(i).cloned() {
+                if (cx.fresh)(&a) {
+                    continue;
+                }
+                let c = format!("$clocp{ctr}");
+                *ctr += 1;
+                copies.push((
+                    c.clone(),
+                    Op::RtCall {
+                        func: "axion_closure_copy".into(),
+                        args: vec![Atom::Var(a)],
+                        returns: true,
+                    },
+                ));
+                args[i] = Atom::Var(c);
+            }
+        }
+        copies
+    };
+    let wrap = |copies: Vec<(String, Op)>, sp: Span, inner: Term| {
+        copies.into_iter().rev().fold(inner, |acc, (c, op)| {
+            Term::Let(c, Rhs::Op(op), sp, Box::new(acc))
+        })
+    };
+    let sub = |r: Rhs, ctr: &mut usize| -> Rhs {
+        match r {
+            Rhs::If(c, a, b) => Rhs::If(
+                c,
+                Box::new(copy_closures_in(*a, cx, ctr)),
+                Box::new(copy_closures_in(*b, cx, ctr)),
+            ),
+            Rhs::Case(s, arms) => Rhs::Case(
+                s,
+                arms.into_iter()
+                    .map(|(p, b)| (p, copy_closures_in(b, cx, ctr)))
+                    .collect(),
+            ),
+            other => other,
+        }
+    };
+    match t {
+        Term::Let(x, rhs, sp, body) => {
+            let body = copy_closures_in(*body, cx, ctr);
+            match rhs {
+                Rhs::Op(mut op) => {
+                    let copies = fix(&mut op, sp, ctr);
+                    wrap(copies, sp, Term::Let(x, Rhs::Op(op), sp, Box::new(body)))
+                }
+                other => Term::Let(x, sub(other, ctr), sp, Box::new(body)),
+            }
+        }
+        Term::Drop(x, k, skip, sp, body) => {
+            Term::Drop(x, k, skip, sp, Box::new(copy_closures_in(*body, cx, ctr)))
+        }
+        Term::Ret(rhs, sp) => match rhs {
+            Rhs::Op(mut op) => {
+                let copies = fix(&mut op, sp, ctr);
+                wrap(copies, sp, Term::Ret(Rhs::Op(op), sp))
+            }
+            other => Term::Ret(sub(other, ctr), sp),
+        },
+    }
+}
+
+/// The destructor and copier of each owning closure. `axion_drop_clo$<lambda> p` frees every heap
+/// capture (at `p + (i+3)*8`, after `fn_ptr`, `dtor` and `copier`) with its key, then the cell;
+/// `axion_copy_clo$<lambda> p` copies the cell and each heap capture. Called through the cell's
+/// `dtor`/`copier` words by `axion_closure_drop`/`axion_closure_copy`.
 fn gen_closure_dtors(owning: &OwningClosures) -> Vec<CoreFn> {
     let mut out = Vec::new();
     let mut done = HashSet::new();
@@ -8766,7 +9055,7 @@ fn gen_closure_dtors(owning: &OwningClosures) -> Vec<CoreFn> {
                 let c = format!("_c{i}");
                 body = Term::Let(
                     c.clone(),
-                    Rhs::Op(Op::LoadRaw(Atom::Var("_p".into()), (i as i32 + 2) * 8)),
+                    Rhs::Op(Op::LoadRaw(Atom::Var("_p".into()), (i as i32 + 3) * 8)),
                     NO_SPAN,
                     Box::new(Term::Drop(
                         c,
@@ -8787,8 +9076,34 @@ fn gen_closure_dtors(owning: &OwningClosures) -> Vec<CoreFn> {
             owned_drop_ty: Vec::new(),
             body,
         });
+        let slots: Vec<(i32, DropWay)> = keys
+            .iter()
+            .enumerate()
+            .filter_map(|(i, k)| Some(((i as i32 + 3) * 8, drop_way_of_key(k.as_deref()?))))
+            .collect();
+        let mut ctr = 0u32;
+        out.push(CoreFn {
+            name: format!("axion_copy_clo${func}"),
+            params: vec!["_p".into()],
+            captures: Vec::new(),
+            is_closure: false,
+            owned_params: Vec::new(),
+            owned_drop_ty: Vec::new(),
+            body: copier_body(&[(0, slots)], true, false, "_p", &mut ctr),
+        });
     }
     out
+}
+
+/// How a value with destructor key `k` is freed and copied (see [`DropWay`]).
+fn drop_way_of_key(k: &str) -> DropWay {
+    match k {
+        "String" => DropWay::Str,
+        "Integer" => DropWay::Bignum,
+        "Buffer" => DropWay::Buf,
+        "Closure" => DropWay::Closure,
+        _ => DropWay::Deep(k.to_string()),
+    }
 }
 
 /// The helpers behind an `Array` of heap elements (see [`ARROP`]), one set per element type `K`
@@ -9170,6 +9485,11 @@ fn gen_tuple_destructors(
                     },
                     DropWay::Buf => Op::RtCall {
                         func: "axion_buf_free".into(),
+                        args: vec![Atom::Var(fp.clone())],
+                        returns: false,
+                    },
+                    DropWay::Closure => Op::RtCall {
+                        func: "axion_closure_drop".into(),
                         args: vec![Atom::Var(fp.clone())],
                         returns: false,
                     },
@@ -9657,6 +9977,8 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         // Integer arithmetic/comparison READS its Integer/String operands — borrows,
         // like the String builtins (kept in sync with `op_moves`/delta).
         Op::RtCall { func, .. } if is_bignum_borrower(func) => false,
+        // copying a closure cell only reads it
+        Op::RtCall { func, .. } if func == "axion_closure_copy" => false,
         Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
         Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => atom_is(v, a),
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => atom_is(v, a),
@@ -10277,6 +10599,8 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         // `delta::op_delta_effect`), so a read-only Integer param is a borrow-arg the
         // caller reclaims. Keeps `op_moves` in sync with the bignum borrow effect.
         Op::RtCall { func, .. } if is_bignum_borrower(func) => false,
+        // copying a closure cell only reads it (the built-in table says `Borrow`)
+        Op::RtCall { func, .. } if func == "axion_closure_copy" => false,
         // --- the rest mirrors `occurs_nonborrow`'s `op_nonborrow` exactly ---
         Op::Field { .. }
         | Op::FuncAddr(_)
@@ -11906,6 +12230,8 @@ enum CopyKind {
     /// per-type deep-copier (R-5). The `CallDirect` result is owned (key `k`), the
     /// arg borrowed — see `gen_copiers`.
     Container(String),
+    /// A function value → `axion_closure_copy x` (the cell, and the captures it owns).
+    Closure,
 }
 
 /// The copy op for a target param of the given kind.
@@ -11921,11 +12247,21 @@ fn alias_copy_op(v: &str, kind: &CopyKind) -> Op {
             args: vec![Atom::Var(v.to_string())],
             returns: true,
         },
+        CopyKind::Container(k) if k == "Closure" => Op::RtCall {
+            func: "axion_closure_copy".into(),
+            args: vec![Atom::Var(v.to_string())],
+            returns: true,
+        },
         CopyKind::Container(k) => Op::CallDirect(
             format!("axion_copy_{k}"),
             vec![Atom::Var(v.to_string())],
             Some(k.clone()),
         ),
+        CopyKind::Closure => Op::RtCall {
+            func: "axion_closure_copy".into(),
+            args: vec![Atom::Var(v.to_string())],
+            returns: true,
+        },
     }
 }
 
@@ -12207,6 +12543,10 @@ fn normalize_alias_returns(
             }
             if let Some("Integer") = ty.head_con() {
                 return Some((p.clone(), CopyKind::Int));
+            }
+            // a function value returned whole: a copy of the closure cell
+            if matches!(ty, Type::Arrow { .. }) {
+                return Some((p.clone(), CopyKind::Closure));
             }
             // R-5 TUPLE copier: a reused tuple param-return (`pickT c t = if … else t`, caller
             // reuses `t`) needs a fresh owned copy `axion_copy_tuple$…`. Concrete mono key only

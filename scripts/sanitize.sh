@@ -233,6 +233,7 @@ NATIVE=(
   axionc/tests/fixtures/constrained_closures.axi
   axionc/tests/fixtures/array_heap_elems.axi
   axionc/tests/fixtures/closure_escape_owned.axi
+  axionc/tests/fixtures/closure_in_structures.axi
   axionc/tests/fixtures/file_read_chunks.axi
   axionc/tests/fixtures/not_equal.axi
   axionc/tests/fixtures/field_handoff_consume.axi

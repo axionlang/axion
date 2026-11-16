@@ -1950,6 +1950,27 @@ fn returned_closures_own_their_heap_captures() {
 }
 
 #[test]
+fn closures_stored_in_structures_are_reclaimed() {
+    // A Maybe/list/tuple of closures frees each closure it holds, and owns each one: a closure it
+    // does not own or embeds twice goes in as a copy (these were native double frees mid-change),
+    // a lambda put in owns copies of its heap captures. Leak-gated in sanitize.sh.
+    let fx = fixture("closure_in_structures.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "2\n13\n19\n4\n6\n42\n9\n11\n10\n6\n11\n4\n8\n10\n7\n25\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn an_escaping_closure_never_frees_its_captures_early() {
     // A returned closure carries `s` out of `mk`. Auto-Drop used to free `s` before the return
     // (the caller then read freed memory and printed garbage); later the capture escaped with the

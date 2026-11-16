@@ -101,6 +101,7 @@ declare i64 @axion_alloc(i64)
 declare void @axion_free(i64)
 declare void @axion_str_drop(i64)
 declare void @axion_closure_drop(i64)
+declare i64 @axion_closure_copy(i64)
 declare void @axion_bignum_free(i64)
 declare i64 @axion_arena_new()
 declare i64 @axion_arena_alloc(i64, i64)
@@ -641,10 +642,10 @@ fn emit_fn(
         f.name,
         params.join(", ")
     );
-    // loads the captures from env[(i+2)*8] (after `fn_ptr` and `dtor`)
+    // loads the captures from env[(i+3)*8] (after `fn_ptr`, `dtor` and `copier`)
     if f.is_closure {
         for (i, cap) in f.captures.iter().enumerate() {
-            let v = e.load("%env", (i as i32 + 2) * 8);
+            let v = e.load("%env", (i as i32 + 3) * 8);
             e.scope.insert(cap.clone(), v);
         }
     }
@@ -1186,10 +1187,11 @@ impl Emit<'_> {
                 Ok(r)
             }
             Op::MakeClosure { func, captures, .. } => {
-                // `{fn_ptr, dtor, captures…}`: `dtor` is the closure's generated destructor when it
-                // owns its heap captures (`axion_drop_clo$<lambda>`), else 0.
+                // `{fn_ptr, dtor, copier, captures…}`: `dtor`/`copier` are the closure's generated
+                // destructor and copier when it owns its heap captures (`axion_drop_clo$<lambda>`,
+                // `axion_copy_clo$<lambda>`), else 0.
                 let caps = self.atoms(captures)?;
-                let env = self.alloc(2 + caps.len());
+                let env = self.alloc(3 + caps.len());
                 self.store(&env, 0, &format!("ptrtoint (ptr @\"ax_{func}\" to i64)"));
                 let dtor = if self.drop_keys.contains(&format!("clo${func}")) {
                     format!("ptrtoint (ptr @\"ax_axion_drop_clo${func}\" to i64)")
@@ -1197,8 +1199,14 @@ impl Emit<'_> {
                     "0".to_string()
                 };
                 self.store(&env, 8, &dtor);
+                let copier = if self.drop_keys.contains(&format!("clo${func}")) {
+                    format!("ptrtoint (ptr @\"ax_axion_copy_clo${func}\" to i64)")
+                } else {
+                    "0".to_string()
+                };
+                self.store(&env, 16, &copier);
                 for (i, cv) in caps.iter().enumerate() {
-                    self.store(&env, (i as i32 + 2) * 8, cv);
+                    self.store(&env, (i as i32 + 3) * 8, cv);
                 }
                 Ok(env)
             }
