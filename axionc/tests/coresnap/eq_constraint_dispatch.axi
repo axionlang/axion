@@ -59,7 +59,7 @@
                                           drop _t59
                                           drop _t64 : List$Int
                                           drop _t65 : String
-                                          let _t59 = closure lam$0  ; Δ{} · makes heap
+                                          let _t59 = closure lam$0  ; Δ{} · makes Closure
                                           let _t60 = con Nil  ; Δ{_t59} · makes List$Int
                                           let _t61 = con Cons 3 _t60  ; Δ{_t59 _t60} · moves{_t60} · makes List$Int
                                           let _t62 = con Cons 2 _t61  ; Δ{_t59 _t61} · moves{_t61} · makes List$Int
@@ -338,7 +338,7 @@
   let _dd7 = if _dd6 then
   let _t0 = == x x  ; Δ{}
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
-  let _t0 = closure lam$1  ; Δ{} · makes heap
+  let _t0 = closure lam$1  ; Δ{} · makes Closure
   let _t0 = con P 1 2  ; Δ{} · makes P
   let _t0 = rtcall axion_str_cmp x y  ; Δ{}
   let _t1 = con P 1 3  ; Δ{_t0} · makes P

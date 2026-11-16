@@ -216,6 +216,8 @@ impl Cg {
             ("axion_getarg", 1, true),
             // drops a String: frees a heap string, skips a static literal (§tc)
             ("axion_str_drop", 1, false),
+            // frees a closure cell: its own destructor (owned captures) or a flat free
+            ("axion_closure_drop", 1, false),
             ("axion_eput", 1, false),
             ("axion_eputs", 1, false),
             ("axion_bignum_from_i64", 1, true),
@@ -313,7 +315,12 @@ impl Cg {
             }
         }
         reclaim.insert(self.free_id.as_u32(), "axion_free".to_string());
-        for rt in ["axion_str_drop", "axion_bignum_free", "axion_buf_free"] {
+        for rt in [
+            "axion_str_drop",
+            "axion_bignum_free",
+            "axion_buf_free",
+            "axion_closure_drop",
+        ] {
             if let Some((id, _)) = self.rt_fns.get(rt) {
                 reclaim.insert(id.as_u32(), rt.to_string());
             }
@@ -366,7 +373,7 @@ impl Cg {
                     let v =
                         fx.builder
                             .ins()
-                            .load(types::I64, MemFlags::new(), env, (i as i32 + 1) * 8);
+                            .load(types::I64, MemFlags::new(), env, (i as i32 + 2) * 8);
                     fx.bind_val(cap, v);
                 }
                 for (j, p) in f.params.iter().enumerate() {
@@ -622,6 +629,13 @@ impl Fx<'_, '_> {
             self.builder.ins().call(callee, &[ptr]);
             return Ok(());
         }
+        // a closure cell → `axion_closure_drop` (its own destructor, or a flat free)
+        if ty == Some("Closure") {
+            let (id, _) = self.rt_fns["axion_closure_drop"];
+            let callee = self.module.declare_func_in_func(id, self.builder.func);
+            self.builder.ins().call(callee, &[ptr]);
+            return Ok(());
+        }
         let deep = if skip.is_empty() {
             ty.map(|t| format!("axion_drop_{t}"))
         } else {
@@ -838,20 +852,30 @@ impl Fx<'_, '_> {
                 let vals = self.atoms(args)?;
                 Ok(self.call_closure(c, &vals))
             }
-            Op::MakeClosure { func, captures } => {
+            Op::MakeClosure { func, captures, .. } => {
                 let (lam_id, _) = *self
                     .ids
                     .get(func)
                     .ok_or_else(|| format!("lambda '{func}' not declared"))?;
-                let env = self.alloc(1 + captures.len());
+                // `{fn_ptr, dtor, captures…}`: `dtor` is the closure's generated destructor when it
+                // owns its heap captures (`axion_drop_clo$<lambda>`), else 0.
+                let env = self.alloc(2 + captures.len());
                 let fref = self.module.declare_func_in_func(lam_id, self.builder.func);
                 let faddr = self.builder.ins().func_addr(types::I64, fref);
                 self.builder.ins().store(MemFlags::new(), faddr, env, 0);
+                let dtor = match self.ids.get(&format!("axion_drop_clo${func}")) {
+                    Some(&(did, _)) => {
+                        let dref = self.module.declare_func_in_func(did, self.builder.func);
+                        self.builder.ins().func_addr(types::I64, dref)
+                    }
+                    None => self.builder.ins().iconst(types::I64, 0),
+                };
+                self.builder.ins().store(MemFlags::new(), dtor, env, 8);
                 for (i, cap) in captures.iter().enumerate() {
                     let cv = self.atom(cap)?;
                     self.builder
                         .ins()
-                        .store(MemFlags::new(), cv, env, (i as i32 + 1) * 8);
+                        .store(MemFlags::new(), cv, env, (i as i32 + 2) * 8);
                 }
                 Ok(env)
             }

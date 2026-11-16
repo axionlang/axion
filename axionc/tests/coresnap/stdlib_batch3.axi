@@ -49,7 +49,7 @@
       let _t0 = call lti y d  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
       let _t0 = callclo p y  ; Δ{}
-      let _t0 = closure lam$0 y  ; Δ{y ys} · makes heap
+      let _t0 = closure lam$0 y  ; Δ{y ys} · makes Closure
       let _t1 = call filter _t0 ys  ; Δ{_t0 y ys} · makes List$Int
       let _t2 = call nubBy$$eqi _t1  ; Δ{_t1 y} · moves{_t1} · makes List$Int
       ret + 1 _t0  ; Δ{}

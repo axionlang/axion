@@ -38,7 +38,7 @@
   let _dd1 = if _dd0 then
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = con Just 42  ; Δ{} · makes Maybe$Int
   let _t1 = call fromMaybe 0 _t0  ; Δ{_t0} · moves{_t0}
   let _t2 = con Nothing  ; Δ{} · makes Maybe$Int

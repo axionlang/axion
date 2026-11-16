@@ -95,6 +95,24 @@ pub unsafe extern "C" fn axion_free(ptr: i64) {
     stat_inc!(HEAP_FREES);
 }
 
+/// Frees a closure cell `{fn_ptr, dtor, captures…}`. A closure that OWNS heap captures (one that
+/// escapes the scope it was made in) carries a generated destructor in its second word, which
+/// frees those captures and then the cell; any other closure only borrows its captures, so the
+/// cell alone is freed.
+#[no_mangle]
+pub unsafe extern "C" fn axion_closure_drop(clo: i64) {
+    if clo == 0 || clo & 1 != 0 {
+        return;
+    }
+    let dtor = *((clo + 8) as *const i64);
+    if dtor != 0 {
+        let f: extern "C" fn(i64) -> i64 = std::mem::transmute(dtor);
+        f(clo);
+    } else {
+        axion_free(clo);
+    }
+}
+
 /// Shallow byte-copy of an `axion_alloc`'d block, reading its total size from the −8 header (R-5).
 /// A tagged immediate (low bit) or null is returned as-is.
 #[no_mangle]
@@ -700,7 +718,7 @@ pub unsafe extern "C" fn axion_buf_to_list(buf: i64) -> i64 {
 }
 #[no_mangle]
 pub unsafe extern "C" fn axion_fold_bytes(f: i64, init: i64, buf: i64) -> i64 {
-    // `f` is a closure {fn_ptr, captures…}; its first word is fn_ptr(closure, acc, byte).
+    // `f` is a closure {fn_ptr, dtor, captures…}; its first word is fn_ptr(closure, acc, byte).
     let fn_ptr: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(*(f as *const i64));
     let n = blen(buf);
     let d = (buf as *const u8).add(8);
@@ -2780,6 +2798,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_strcat", axion_strcat as *const u8),
         ("axion_str_cmp", axion_str_cmp as *const u8),
         ("axion_str_drop", axion_str_drop as *const u8),
+        ("axion_closure_drop", axion_closure_drop as *const u8),
         ("axion_str_len", axion_str_len as *const u8),
         ("axion_substr", axion_substr as *const u8),
         ("axion_system", axion_system as *const u8),

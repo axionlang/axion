@@ -23,7 +23,7 @@
   let _d1000000 = call apply g 32  ; Δ{g}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let g = closure lam$0 n  ; Δ{} · makes heap
+  let g = closure lam$0 n  ; Δ{} · makes Closure
   ret + k n  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}

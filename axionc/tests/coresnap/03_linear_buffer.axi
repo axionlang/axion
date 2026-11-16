@@ -23,7 +23,7 @@
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _t0 = call run buf  ; Δ{} · makes Buffer
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t1 = rtcall axion_buf_new 4096  ; Δ{_t0} · makes Buffer
   let buf' = call encrypt buf  ; Δ{} · makes Buffer
   ret 0  ; Δ{}

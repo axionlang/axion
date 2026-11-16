@@ -43,7 +43,8 @@ fn op_free_token(op: &Op) -> Option<String> {
             if func == "axion_free"
                 || func == "axion_str_drop"
                 || func == "axion_bignum_free"
-                || func == "axion_buf_free" =>
+                || func == "axion_buf_free"
+                || func == "axion_closure_drop" =>
         {
             Some(func.clone())
         }
@@ -62,6 +63,7 @@ fn classify(
         Some("String") => "axion_str_drop".to_string(),
         Some("Integer") => "axion_bignum_free".to_string(),
         Some("Buffer") => "axion_buf_free".to_string(),
+        Some("Closure") => "axion_closure_drop".to_string(),
         Some(t) => {
             let key = if skip.is_empty() {
                 t.to_string()
@@ -155,6 +157,7 @@ fn call_token(line: &str) -> Option<String> {
         "axion_str_drop",
         "axion_bignum_free",
         "axion_buf_free",
+        "axion_closure_drop",
         "axion_free",
     ] {
         if line.contains(&format!("@{name}(")) {

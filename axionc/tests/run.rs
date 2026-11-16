@@ -1932,11 +1932,29 @@ fn native_arrays_own_their_heap_elements() {
 }
 
 #[test]
+fn returned_closures_own_their_heap_captures() {
+    let fx = fixture("closure_escape_owned.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "13\n16\n42\n8\n79\n2\n12\n7\n2\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn an_escaping_closure_never_frees_its_captures_early() {
-    // A returned closure carries a pointer to `s` out of `mk`. Auto-Drop used to free `s` before
-    // the return (the caller then read freed memory and printed garbage); now the capture escapes
-    // with the closure. Until escaping closures own a destructor, that is a leak the native gate
-    // refuses (AX0911) — never a wrong answer. The interpreter runs it.
+    // A returned closure carries `s` out of `mk`. Auto-Drop used to free `s` before the return
+    // (the caller then read freed memory and printed garbage); later the capture escaped with the
+    // closure and was never freed (refused, AX0911). Now the closure owns a copy of `s`, freed by
+    // its destructor when the caller drops it: native runs it, leak-free (closure_escape_owned.axi).
     let src = "mk :: Int -> (Int -> Int)\n\
                mk n = let s = show n in \\z -> strLen s + z\n\
                main :: IO ()\n\
@@ -1945,9 +1963,15 @@ fn an_escaping_closure_never_frees_its_captures_early() {
     std::fs::write(&path, src).unwrap();
     let interp = axionc().arg(&path).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&interp.stdout), "6\n");
-    let native = axionc().arg("--release").arg(&path).output().unwrap();
-    let err = String::from_utf8_lossy(&native.stderr);
-    assert!(!native.status.success() && err.contains("AX0911"), "{err}");
+    for flags in [vec!["--release"], vec!["--backend", "cranelift"]] {
+        let native = axionc().args(&flags).arg(&path).output().unwrap();
+        assert!(
+            native.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "6\n", "{flags:?}");
+    }
     let _ = std::fs::remove_file(&path);
 }
 

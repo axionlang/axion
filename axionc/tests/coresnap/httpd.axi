@@ -834,7 +834,7 @@
   let _t0 = call mimeType path  ; Δ{} · makes String
   let _t0 = call startsWithSlash t  ; Δ{} · makes Either$Int$Int
   let _t0 = call statusLine code  ; Δ{} · makes String
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = rtcall axion_getenv "AXHTTPD_MAX"  ; Δ{} · makes String
   let _t0 = rtcall axion_getenv "AXHTTPD_PORT"  ; Δ{} · makes String
   let _t0 = rtcall axion_getenv "AXHTTPD_ROOT"  ; Δ{} · makes String

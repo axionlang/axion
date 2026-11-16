@@ -159,7 +159,7 @@
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = + a b  ; Δ{}
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = tuple 1 2  ; Δ{} · makes heap
   let _t1 = tuple 3 4  ; Δ{_t0} · makes heap
   let _t10 = con Nil  ; Δ{_t9} · makes List$Int

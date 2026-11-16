@@ -21,6 +21,7 @@
     ret 0  ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t5 : Closure
   else
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
@@ -31,8 +32,8 @@
   let _t2 = + _t0 _t1  ; Δ{}
   let _t3 = call mk 1 2 3  ; Δ{}
   let _t4 = + _t2 _t3  ; Δ{}
-  let _t5 = call main$wadd 100  ; Δ{}
-  let _t6 = callclo _t5 8  ; Δ{}
+  let _t5 = call main$wadd 100  ; Δ{} · makes Closure
+  let _t6 = callclo _t5 8  ; Δ{_t5}
   ret + _t0 c  ; Δ{}
   ret + _t4 _t6  ; Δ{}
   ret + a b  ; Δ{}
@@ -41,7 +42,7 @@
   ret + x y  ; Δ{}
   ret 0  ; Δ{}
   ret call inc _t0  ; Δ{}
-  ret closure lam$0 a  ; Δ{} · makes heap
+  ret closure lam$0 a  ; Δ{} · makes Closure
   ret rtcall axion_array_free _p  ; Δ{}
 adder x y  =
 axion_drop_Array _p  =

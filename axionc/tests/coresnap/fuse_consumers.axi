@@ -109,9 +109,9 @@
   let _t9 = + _t8 h  ; Δ{}
   let a = call rangeFusedSum 1 11 0  ; Δ{}
   let c = call rangeFused 1 11 fuse$0_clo 0  ; Δ{fuse$0_clo}
-  let fuse$0_clo = closure fuse$0  ; Δ{} · makes heap
-  let fuse$1_clo = closure fuse$1  ; Δ{} · makes heap
-  let fuse$2_clo = closure fuse$2  ; Δ{} · makes heap
+  let fuse$0_clo = closure fuse$0  ; Δ{} · makes Closure
+  let fuse$1_clo = closure fuse$1  ; Δ{} · makes Closure
+  let fuse$2_clo = closure fuse$2  ; Δ{} · makes Closure
   let g = call foldr$$hoflam11 1 _t2  ; Δ{_t2}
   let h = if _t4 then
   let i = if _t6 then

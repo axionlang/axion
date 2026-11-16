@@ -5295,7 +5295,7 @@
   let _t0 = call words s  ; Δ{} · makes List$String
   let _t0 = call words sz  ; Δ{} · makes List$String
   let _t0 = call writeCapsCmd  ; Δ{} · makes String
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = con Nil  ; Δ{} · makes List$String
   let _t0 = con Nil  ; Δ{} · makes List$String
   let _t0 = con Nil  ; Δ{} · makes List$String

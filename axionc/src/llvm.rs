@@ -100,6 +100,7 @@ declare i64 @axion_bignum_to_string(i64)
 declare i64 @axion_alloc(i64)
 declare void @axion_free(i64)
 declare void @axion_str_drop(i64)
+declare void @axion_closure_drop(i64)
 declare void @axion_bignum_free(i64)
 declare i64 @axion_arena_new()
 declare i64 @axion_arena_alloc(i64, i64)
@@ -640,10 +641,10 @@ fn emit_fn(
         f.name,
         params.join(", ")
     );
-    // loads the captures from env[(i+1)*8]
+    // loads the captures from env[(i+2)*8] (after `fn_ptr` and `dtor`)
     if f.is_closure {
         for (i, cap) in f.captures.iter().enumerate() {
-            let v = e.load("%env", (i as i32 + 1) * 8);
+            let v = e.load("%env", (i as i32 + 2) * 8);
             e.scope.insert(cap.clone(), v);
         }
     }
@@ -851,6 +852,12 @@ impl Emit<'_> {
                 // header directly); never `axion_free` (which assumes an axion_alloc data ptr).
                 if ty.as_deref() == Some("Buffer") {
                     self.rt("axion_buf_free", false, &[v]);
+                    return self.term(body);
+                }
+                // a closure cell → `axion_closure_drop`: its own destructor (an escaping closure
+                // owning its heap captures) or a flat free (one that only borrows them).
+                if ty.as_deref() == Some("Closure") {
+                    self.rt("axion_closure_drop", false, &[v]);
                     return self.term(body);
                 }
                 let key = ty.as_deref().map(|t| {
@@ -1178,12 +1185,20 @@ impl Emit<'_> {
                 self.ins(&format!("{r} = call i64 {f}({})", vals.join(", ")));
                 Ok(r)
             }
-            Op::MakeClosure { func, captures } => {
+            Op::MakeClosure { func, captures, .. } => {
+                // `{fn_ptr, dtor, captures…}`: `dtor` is the closure's generated destructor when it
+                // owns its heap captures (`axion_drop_clo$<lambda>`), else 0.
                 let caps = self.atoms(captures)?;
-                let env = self.alloc(1 + caps.len());
+                let env = self.alloc(2 + caps.len());
                 self.store(&env, 0, &format!("ptrtoint (ptr @\"ax_{func}\" to i64)"));
+                let dtor = if self.drop_keys.contains(&format!("clo${func}")) {
+                    format!("ptrtoint (ptr @\"ax_axion_drop_clo${func}\" to i64)")
+                } else {
+                    "0".to_string()
+                };
+                self.store(&env, 8, &dtor);
                 for (i, cv) in caps.iter().enumerate() {
-                    self.store(&env, (i as i32 + 1) * 8, cv);
+                    self.store(&env, (i as i32 + 2) * 8, cv);
                 }
                 Ok(env)
             }

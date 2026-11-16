@@ -113,6 +113,21 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.nonstrict = Some(f);
             e.moves.extend(args.iter());
         }
+        Op::MakeClosure {
+            captures,
+            owns: true,
+            ..
+        } => {
+            // An OWNING closure (one that escapes its scope): its captures are fresh copies made
+            // for it, MOVED into the cell and freed by its generated destructor when the closure
+            // is dropped (`axion_closure_drop`).
+            e.moves.extend(captures.iter());
+            e.produces = Some(Res {
+                key: Some("Closure".into()),
+                parent: None,
+                slot: None,
+            });
+        }
         Op::MakeClosure { captures, .. } => {
             // Captures are BORROWED, not moved: the cell stores their pointers and the lambda
             // reads them on every call, so the enclosing frame keeps ownership and frees each
@@ -122,10 +137,11 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             // escaped, so they are never freed under it. Borrowing (not moving) also lets one
             // var be captured by two closures and consumed once afterwards (`sortBy`'s
             // `\z -> leq z y` twice, then `Cons y`). The cell itself is owned by the binder and
-            // flat-freed after its last call (a `CallClosure` borrows its callee).
+            // freed after its last call (a `CallClosure` borrows its callee) by
+            // `axion_closure_drop`, which finds no destructor in it and frees the cell.
             e.borrows.extend(captures.iter());
             e.produces = Some(Res {
-                key: None,
+                key: Some("Closure".into()),
                 parent: None,
                 slot: None,
             });

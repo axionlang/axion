@@ -152,7 +152,7 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
-  let _t1 = closure lam$0  ; Δ{_t0} · makes heap
+  let _t1 = closure lam$0  ; Δ{_t0} · makes Closure
   let _t2 = call range 1 5  ; Δ{_t0 _t1} · makes List$Int
   let _t3 = call map$$fromInt$fn _t2  ; Δ{_t0 _t1 _t2} · makes List$Integer
   let _t4 = call map$Integer _t1 _t3  ; Δ{_t0 _t1 _t3} · moves{_t3} · makes List$Box

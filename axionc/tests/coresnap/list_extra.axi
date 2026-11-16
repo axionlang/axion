@@ -160,7 +160,7 @@
   let _dd7 = if _dd6 then
   let _dd7 = if _dd6 then
   let _dfree = rtcall axion_free _p  ; Δ{}
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t1 = con Cons 2 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   let _t10 = call sum _t9  ; Δ{_t9}

@@ -23,7 +23,7 @@
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _t0 = call encrypt buf  ; Δ{} · makes Buffer
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let sig = call checksum buf  ; Δ{}
   ret + _op0 _op1  ; Δ{}
   ret 0  ; Δ{}

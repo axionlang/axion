@@ -432,7 +432,7 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = call map$$dup xs  ; Δ{} · makes List$List$Int
   let _t0 = call range 1 6  ; Δ{} · makes List$Int
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t1 = call product _t0  ; Δ{_t0}
   let _t1 = con Cons n _t0  ; Δ{_t0} · moves{_t0} · makes List$Int

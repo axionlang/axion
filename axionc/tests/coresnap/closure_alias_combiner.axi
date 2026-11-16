@@ -108,7 +108,7 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = rtcall axion_bignum_gt a b  ; Δ{}
   let _t1 = rtcall axion_bignum_from_i64 0  ; Δ{_t0} · makes Integer
   let _t2 = call range 1 5  ; Δ{_t0 _t1} · makes List$Int

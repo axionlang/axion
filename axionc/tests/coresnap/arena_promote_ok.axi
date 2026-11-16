@@ -20,7 +20,7 @@
   let _d1000000 = withSubArena parent _t0  ; Δ{_t0}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let _t0 = closure lam$0 parent  ; Δ{} · makes heap
+  let _t0 = closure lam$0 parent  ; Δ{} · makes Closure
   let node = allocateCell sub  ; Δ{}
   let node2 = promote parent node  ; Δ{}
   ret 0  ; Δ{}

@@ -95,7 +95,7 @@
   let _t0 = > lo hi  ; Δ{}
   let _t0 = > lo hi  ; Δ{}
   let _t0 = call fizzbuzz x  ; Δ{} · makes String
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t1 = call range 1 15  ; Δ{_t0} · makes List$Int
   let _t4 = mod n 15  ; Δ{}
   let _t5 = == _t4 0  ; Δ{}

@@ -31,7 +31,7 @@
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _t0 = == _p1 0  ; Δ{}
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}

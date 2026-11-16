@@ -1192,6 +1192,17 @@ impl Verifier<'_> {
         // A closure owns its cell and BORROWS every capture (the cell holds their pointers, the
         // lambda reads them on each call): freeing a capture while the closure can still be
         // called — or letting the closure escape past the capture's free — is a use-after-free.
+        // An OWNING closure (it escapes its scope) moved fresh copies of its captures in: it is an
+        // owned value that borrows nothing, freed (with them) by its own destructor.
+        if let Op::MakeClosure { owns: true, .. } = op {
+            return Val {
+                owned: true,
+                borrows: HashSet::new(),
+                dead: None,
+                key: Some("Closure".into()),
+                moved_in: false,
+            };
+        }
         if let Op::MakeClosure { captures, .. } = op {
             let mut borrows = HashSet::new();
             for a in captures {
@@ -1208,7 +1219,7 @@ impl Verifier<'_> {
                 owned: true,
                 borrows,
                 dead: None,
-                key: None,
+                key: Some("Closure".into()),
                 moved_in: false,
             };
         }
@@ -1972,6 +1983,7 @@ mod tests {
                     Rhs::Op(Op::MakeClosure {
                         func: "lam".into(),
                         captures: vec![Atom::Var("s".into())],
+                        owns: false,
                     }),
                     sp,
                     Box::new(rest),

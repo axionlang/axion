@@ -129,7 +129,7 @@
   let _dd7 = if _dd6 then
   let _dd7 = if _dd6 then
   let _dfree = rtcall axion_free _p  ; Δ{}
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = rtcall axion_str_cmp "abc" "abc"  ; Δ{}
   let _t0 = rtcall axion_str_cmp x y  ; Δ{}
   let _t0 = tuple "apple" 1  ; Δ{} · makes heap

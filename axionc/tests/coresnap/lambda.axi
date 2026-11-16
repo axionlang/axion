@@ -1384,7 +1384,7 @@
   let _t0 = call wordAt toks p  ; Δ{} · makes String
   let _t0 = call wordAt toks p  ; Δ{} · makes String
   let _t0 = call wordAt toks p  ; Δ{} · makes String
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let _t0 = con Nil  ; Δ{} · makes List$Tok
   let _t0 = con Nil  ; Δ{} · makes List$Tok
   let _t0 = con Nil  ; Δ{} · makes List$tuple2$String$Value

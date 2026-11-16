@@ -21,7 +21,7 @@
   let _d1000000 = rtcall axion_fold_bytes _t0 0 buf  ; Δ{_t0}
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
-  let _t0 = closure lam$0  ; Δ{} · makes heap
+  let _t0 = closure lam$0  ; Δ{} · makes Closure
   let b0 = rtcall axion_buf_new 100  ; Δ{} · makes Buffer
   let b1 = rtcall axion_buf_iota b0  ; Δ{b0} · moves{b0} · makes Buffer
   let done = rtcall axion_buf_free b1  ; Δ{b1} · moves{b1}
