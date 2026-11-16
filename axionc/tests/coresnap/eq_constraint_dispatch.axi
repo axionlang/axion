@@ -30,6 +30,10 @@
 
 
 
+
+
+
+
                                                   drop _t78 : List$Int
                                                   drop _t79 : String
                                                   let _d1000000 = putStrLn _t79  ; Δ{_t79}
@@ -147,12 +151,18 @@
           ret case _t17 of
         P y _ ->
         _ ->
+        let _t1 = call delBy$$hoflamc3 x rest  ; Δ{rest y} · moves{rest} · makes List
+        let _t1 = call delBy$$hoflamc3$Int x rest  ; Δ{rest y} · moves{rest} · makes List$Int
         let _t1 = call delBy$Int f x rest  ; Δ{rest} · moves{rest} · makes List$Int
         ret 0  ; Δ{}
         ret 0  ; Δ{}
         ret 1  ; Δ{}
         ret 1  ; Δ{}
+        ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y}
+        ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y}
         ret con Cons y _t1  ; Δ{_t1} · moves{_t1}
+        ret rest  ; Δ{rest y} · moves{rest}
+        ret rest  ; Δ{rest y} · moves{rest}
         ret rest  ; Δ{rest} · moves{rest}
       drop _t0 : String
       drop _t0 : String
@@ -164,8 +174,14 @@
       drop _t7 : P
       drop ys
       drop ys
+      drop ys
+      drop ys
+      drop ys
       drop ys : List$Int
       drop ys : List$Int
+      drop ys : List$Int
+      else
+      else
       else
       else
       else
@@ -181,6 +197,8 @@
       let _dd3 = rtcall axion_free _dd2  ; Δ{}
       let _t0 = == x y  ; Δ{}
       let _t0 = call eq$P x y  ; Δ{}
+      let _t0 = call hoflamc3 x y  ; Δ{rest y}
+      let _t0 = call hoflamc3$Int x y  ; Δ{rest y}
       let _t0 = call show$Int y  ; Δ{} · makes String
       let _t0 = call show$Int z  ; Δ{} · makes String
       let _t0 = callclo f x y  ; Δ{rest y} · moves{y}
@@ -215,14 +233,22 @@
       ret case b of
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret con Nil  ; Δ{}
+      ret if _t0 then
+      ret if _t0 then
       ret if _t0 then
       ret rest  ; Δ{rest y} · moves{rest}
     Cons y rest ->
     Cons y rest ->
     Cons y rest ->
     Cons y rest ->
+    Cons y rest ->
+    Cons y rest ->
     Cons y ys ->
     Cons z zs ->
+    Nil ->
+    Nil ->
     Nil ->
     Nil ->
     Nil ->
@@ -256,6 +282,8 @@
     ret 1  ; Δ{}
     ret call dropOne$Int x ys  ; Δ{} · makes List$Int
     ret ys  ; Δ{}
+  ; Δ{rest y}
+  ; Δ{rest y}
   ; Δ{rest}
   ; Δ{}
   ; Δ{}
@@ -287,7 +315,8 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t0
+  ; Δ{}
+  ; Δ{}
   drop _t0
   drop _t0 : P
   drop _t0 : String
@@ -300,7 +329,6 @@
   else
   else
   let _d1000000 = call delBy$Int _t0 x ys  ; Δ{_t0} · makes List$Int
-  let _d1000000 = call delBy$Int _t0 x ys  ; Δ{_t0} · makes List$Int
   let _d1000000 = rtcall axion_strcat "[" _t1  ; Δ{_t1} · makes String
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
@@ -311,7 +339,6 @@
   let _t0 = == x x  ; Δ{}
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
   let _t0 = closure lam$1  ; Δ{} · makes heap
-  let _t0 = closure lam$2  ; Δ{} · makes heap
   let _t0 = con P 1 2  ; Δ{} · makes P
   let _t0 = rtcall axion_str_cmp x y  ; Δ{}
   let _t1 = con P 1 3  ; Δ{_t0} · makes P
@@ -326,13 +353,15 @@
   ret 0  ; Δ{}
   ret == _t0 0  ; Δ{}
   ret == p q  ; Δ{}
+  ret == p q  ; Δ{}
   ret == x y  ; Δ{}
   ret == x y  ; Δ{}
   ret == x y  ; Δ{}
   ret ==. x y  ; Δ{}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
-  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
+  ret call delBy$$hoflamc3 x ys  ; Δ{} · makes List
+  ret call delBy$$hoflamc3$Int x ys  ; Δ{} · makes List$Int
   ret call eq$Int eta$1 eta$2  ; Δ{}
   ret call eq$Int eta$4 eta$5  ; Δ{}
   ret call eq$P x y  ; Δ{}
@@ -340,6 +369,8 @@
   ret case _t5 of
   ret case a of
   ret case xs of
+  ret case ys of
+  ret case ys of
   ret case ys of
   ret case ys of
   ret case ys of
@@ -361,17 +392,21 @@ count x ys  =
 count$P x ys  =
 dbl x  =
 dbl$Integer x  =
+delBy$$hoflamc3 x ys  =
+delBy$$hoflamc3$Int x ys  =
 delBy$Int f x ys  =
 delE$Int x ys  =
+delL x ys  =
 delL$Int x ys  =
 dropOne$Int x ys  =
 eq$Int x y  =
 eq$P a b  =
 eq$String x y  =
 firstOut$Int x ys  =
+hoflamc3 p q  =
+hoflamc3$Int p q  =
 lam$0 [env ]eta$1 eta$2  =
 lam$1 [env ]eta$4 eta$5  =
-lam$2 [env ]p q  =
 main  =
 same x y  =
 same$Float x y  =

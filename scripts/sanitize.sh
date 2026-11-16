@@ -227,6 +227,7 @@ NATIVE=(
   axionc/tests/fixtures/closure_reclaim.axi
   axionc/tests/fixtures/tuple_scalar_reader.axi
   axionc/tests/fixtures/eq_constraint_dispatch.axi
+  axionc/tests/fixtures/constrained_closures.axi
   axionc/tests/fixtures/file_read_chunks.axi
   axionc/tests/fixtures/not_equal.axi
   axionc/tests/fixtures/field_handoff_consume.axi

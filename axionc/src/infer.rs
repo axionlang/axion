@@ -332,6 +332,102 @@ pub fn infer_lambda_site_types(module: &Module) -> (HashMap<Span, Type>, HashMap
     (out, vars)
 }
 
+/// A lambda inside a constrained function, typed in that function's constraint variables
+/// (see [`constrained_lambda_sigs`]).
+pub struct ConstrainedLambda {
+    /// the lambda's own type (`a -> a -> Bool`)
+    pub sig: Type,
+    /// the enclosing constraints (class, variable)
+    pub constraints: Vec<(String, String)>,
+    /// the type of every variable the lambda's body mentions whose type is built from the
+    /// constraint variables alone (its captures are looked up here)
+    pub var_tys: HashMap<String, Type>,
+}
+
+/// Each lambda inside a CONSTRAINED function whose type is built only from that function's
+/// constraint variables (`\p q -> p == q` in `delE :: Eq a => …` is `a -> a -> Bool`), with the
+/// enclosing constraints and the types of the variables its body mentions. Lifted to a top-level
+/// function with this signature (captures first), the lambda is specialized per type like any
+/// constrained function: its `==` dispatches at each instantiation and its heap parameters are
+/// owned at their concrete types. A lambda whose type involves anything else is left out.
+pub fn constrained_lambda_sigs(module: &Module) -> HashMap<Span, ConstrainedLambda> {
+    let mut diags = Diagnostics::new();
+    let (mut inf, env) = setup(module, &mut diags);
+    let constrained: Vec<&Func> = module
+        .funcs
+        .iter()
+        .filter(|f| !f.constraints.is_empty())
+        .collect();
+    if constrained.is_empty() {
+        return HashMap::new();
+    }
+    inf.record_var_tys = true;
+    for f in &module.funcs {
+        inf.check_body(&env, f);
+    }
+    fn lambdas(e: &Expr, out: &mut Vec<Expr>) {
+        if matches!(e, Expr::Lam(..)) {
+            out.push(e.clone());
+        }
+        crate::for_each_subexpr(e, &mut |c| lambdas(c, out));
+    }
+    fn var_spans(e: &Expr, out: &mut Vec<(String, Span)>) {
+        if let Expr::Var(n, sp) = e {
+            out.push((n.clone(), *sp));
+        }
+        crate::for_each_subexpr(e, &mut |c| var_spans(c, out));
+    }
+    let mut out = HashMap::new();
+    for f in constrained {
+        let Some(names) = inf.cvar_name_map(&f.name) else {
+            continue;
+        };
+        let mut lams = Vec::new();
+        for c in &f.clauses {
+            match &c.body {
+                Body::Plain(e) => lambdas(e, &mut lams),
+                Body::Guarded(arms) => arms.iter().for_each(|(g, r)| {
+                    lambdas(g, &mut lams);
+                    lambdas(r, &mut lams);
+                }),
+            }
+        }
+        for lam in &lams {
+            let Expr::Lam(_, body, sp) = lam else {
+                continue;
+            };
+            let Some(sig) = inf
+                .lam_full_tys
+                .get(sp)
+                .and_then(|t| inf.ty_to_cvar_ast_sig(t, &names))
+            else {
+                continue;
+            };
+            let mut vs = Vec::new();
+            var_spans(body, &mut vs);
+            let mut var_tys = HashMap::new();
+            for (n, vsp) in vs {
+                if let Some(t) = inf
+                    .var_use_tys
+                    .get(&vsp)
+                    .and_then(|t| inf.ty_to_cvar_ast_sig(t, &names))
+                {
+                    var_tys.entry(n).or_insert(t);
+                }
+            }
+            out.insert(
+                *sp,
+                ConstrainedLambda {
+                    sig,
+                    constraints: f.constraints.clone(),
+                    var_tys,
+                },
+            );
+        }
+    }
+    out
+}
+
 /// Top-level functions WITHOUT a signature. In inference these get a monomorphic
 /// placeholder var shared across the whole module, so any function that references
 /// one has its inference tied to that function's body — the reason such callers are
@@ -874,6 +970,18 @@ impl Infer<'_> {
         }
     }
 
+    /// [`Self::ty_to_cvar_ast`] that also converts function types (a closure's signature).
+    fn ty_to_cvar_ast_sig(&self, ty: &Ty, names: &HashMap<u32, String>) -> Option<Type> {
+        match self.resolve(ty) {
+            Ty::Fun(from, to) => Some(Type::Arrow {
+                mult: Mult::Many,
+                from: Box::new(self.ty_to_cvar_ast_sig(&from, names)?),
+                to: Box::new(self.ty_to_cvar_ast_sig(&to, names)?),
+            }),
+            t => self.ty_to_cvar_ast(&t, names),
+        }
+    }
+
     /// The post-passes: integer-literal defaulting, exhaustiveness, obligation
     /// discharge, and the monomorphization artifacts. Runs over whatever bodies
     /// were checked (all of them for [`infer`], one for a per-decl partial).
@@ -1201,7 +1309,7 @@ fn type_contains_var(t: &Type, var: &str) -> bool {
 }
 
 /// The type variables (by name) occurring in the surface type `t`.
-fn type_vars(t: &Type, out: &mut HashSet<String>) {
+pub fn type_vars(t: &Type, out: &mut HashSet<String>) {
     match t {
         Type::Var(v) => {
             out.insert(v.clone());

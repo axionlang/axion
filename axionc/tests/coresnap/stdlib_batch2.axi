@@ -32,11 +32,11 @@
         Nil ->
         let _t1 = + i 1  ; Δ{}
         let _t1 = + i 1  ; Δ{}
-        let _t2 = call findIndicesFrom p _t1 ys  ; Δ{} · makes List$Int
+        let _t2 = call findIndicesFrom$$hoflamc2$Int _cap0 _t1 ys  ; Δ{} · makes List$Int
         let _t2 = call findIndicesFrom$$isBig _t1 ys  ; Δ{} · makes List$Int
         let _t3 = + i 1  ; Δ{}
         let _t3 = + i 1  ; Δ{}
-        ret call findIndicesFrom p _t3 ys  ; Δ{} · makes List$Int
+        ret call findIndicesFrom$$hoflamc2$Int _cap0 _t3 ys  ; Δ{} · makes List$Int
         ret call findIndicesFrom$$isBig _t3 ys  ; Δ{} · makes List$Int
         ret con Cons i _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
         ret con Cons i _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
@@ -47,9 +47,9 @@
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = call add z y  ; Δ{}
+      let _t0 = call hoflamc2$Int _cap0 y  ; Δ{}
       let _t0 = call isBig y  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
-      let _t0 = callclo p y  ; Δ{}
       ret + y _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -107,7 +107,6 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t0
   drop _t11 : List$Int
   drop _t14 : List$Int
   drop _t15 : List$Int
@@ -123,7 +122,6 @@
   else
   else
   else
-  let _d1000000 = call findIndicesFrom _t0 0 xs  ; Δ{_t0} · makes List$Int
   let _d1000000 = putStrLn _t38  ; Δ{_t38}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
@@ -134,7 +132,6 @@
   let _t0 = call dbl x  ; Δ{}
   let _t0 = call dbl x  ; Δ{}
   let _t0 = call scanlGo$$add z xs  ; Δ{} · makes List$Int
-  let _t0 = closure lam$0 x  ; Δ{} · makes heap
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t1 = call dbl y  ; Δ{}
   let _t1 = call dbl y  ; Δ{}
@@ -183,10 +180,10 @@
   ret 0  ; Δ{}
   ret == x y  ; Δ{}
   ret > n 3  ; Δ{}
-  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{}
   ret call add _t0 _t1  ; Δ{}
   ret call eq$Int x y  ; Δ{}
+  ret call findIndicesFrom$$hoflamc2$Int x 0 xs  ; Δ{} · makes List$Int
   ret call findIndicesFrom$$isBig 0 xs  ; Δ{} · makes List$Int
   ret call le$Int _t0 _t1  ; Δ{}
   ret case xs of
@@ -208,10 +205,10 @@ dbl n  =
 elemIndices$Int x xs  =
 eq$Int x y  =
 findIndices$$isBig xs  =
-findIndicesFrom p i xs  =
+findIndicesFrom$$hoflamc2$Int _cap0 i xs  =
 findIndicesFrom$$isBig i xs  =
+hoflamc2$Int x y  =
 isBig n  =
-lam$0 [env x]y  =
 le$Int x y  =
 main  =
 on$$add$$dbl x y  =

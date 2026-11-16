@@ -6358,10 +6358,13 @@ pub fn lower_with(
         }
     }
 
-    // pre-pass: names + computes captures of all lambdas (by span)
-    let mut lam_meta: LamMeta = HashMap::new();
+    // pre-pass: names + computes captures of all lambdas, per enclosing top-level function (by
+    // span within it). A class-specialized clone (`countEq$P`) keeps its source's spans, so the
+    // same lambda occurs once per clone — each a different function (`==` at `P` vs `Integer`).
+    let mut lam_by_fn: HashMap<String, LamMeta> = HashMap::new();
+    let no_lams: LamMeta = HashMap::new();
     let mut lam_ctr = 0u32;
-    let mut lam_sites: Vec<(&Expr, HashMap<String, String>)> = Vec::new();
+    let mut lam_sites: Vec<(&Expr, HashMap<String, String>, String)> = Vec::new();
     for f in &module.funcs {
         if !native_ok.contains_key(&f.name) {
             continue;
@@ -6404,8 +6407,11 @@ pub fn lower_with(
             captures.sort();
             let name = format!("lam${lam_ctr}");
             lam_ctr += 1;
-            lam_meta.insert(*span, (name, captures));
-            lam_sites.push((lam, locals.clone()));
+            lam_by_fn
+                .entry(f.name.clone())
+                .or_default()
+                .insert(*span, (name, captures));
+            lam_sites.push((lam, locals.clone(), f.name.clone()));
         }
     }
 
@@ -6430,7 +6436,7 @@ pub fn lower_with(
             &locals,
             &globals,
             &fields,
-            &lam_meta,
+            lam_by_fn.get(&f.name).unwrap_or(&no_lams),
             inplace,
             &foreigns,
             &boxed,
@@ -6485,7 +6491,7 @@ pub fn lower_with(
                 &locals,
                 &globals,
                 &fields,
-                &lam_meta,
+                lam_by_fn.get(&f.name).unwrap_or(&no_lams),
                 inplace,
                 &foreigns,
                 &boxed,
@@ -6520,11 +6526,14 @@ pub fn lower_with(
     }
 
     // the lifted lambdas (in the order they were numbered)
-    for (lam, locals) in lam_sites {
+    for (lam, locals, owner) in lam_sites {
         let Expr::Lam(pats, body, span) = lam else {
             continue;
         };
-        let (name, captures) = lam_meta[span].clone();
+        let lam_meta = lam_by_fn.get(&owner).unwrap_or(&no_lams);
+        let Some((name, captures)) = lam_meta.get(span).cloned() else {
+            continue;
+        };
         let params: Vec<String> = pats
             .iter()
             .enumerate()
@@ -6550,7 +6559,7 @@ pub fn lower_with(
         let mut lw = Lower {
             globals: &globals,
             fields: &fields,
-            lam_meta: &lam_meta,
+            lam_meta,
             inplace,
             foreigns: &foreigns,
             con_ty: &con_ty,

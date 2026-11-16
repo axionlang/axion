@@ -10,15 +10,14 @@
 
 
 
-        let _t1 = call filter p ys  ; Δ{} · makes List
-        ret call filter p ys  ; Δ{} · makes List
+        let _t1 = call filter$$hoflamc0$Int _cap0 ys  ; Δ{} · makes List$Int
+        ret call filter$$hoflamc0$Int _cap0 ys  ; Δ{} · makes List$Int
         ret call maxOr$Int d ys  ; Δ{}
         ret call maxOr$Int y ys  ; Δ{}
         ret call minOr$Int d ys  ; Δ{}
         ret call minOr$Int y ys  ; Δ{}
         ret con Cons y _t1  ; Δ{_t1} · moves{_t1}
-      drop _t0
-      drop _t1 : List
+      drop _t0 : List$Int
       else
       else
       else
@@ -26,20 +25,19 @@
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
+      let _t0 = call filter$$hoflamc0$Int y ys  ; Δ{} · makes List$Int
+      let _t0 = call hoflamc0$Int _cap0 y  ; Δ{}
       let _t0 = call le$Int d y  ; Δ{}
       let _t0 = call le$Int y d  ; Δ{}
       let _t0 = call length ys  ; Δ{}
-      let _t0 = callclo p y  ; Δ{}
-      let _t0 = closure lam$0 y  ; Δ{} · makes heap
-      let _t1 = call filter _t0 ys  ; Δ{_t0} · makes List
-      let _t2 = call nub$Int _t1  ; Δ{_t1} · makes List$Int
+      let _t1 = call nub$Int _t0  ; Δ{_t0} · makes List$Int
       ret + 1 _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret con Cons y _t2  ; Δ{_t2} · moves{_t2}
+      ret con Cons y _t1  ; Δ{_t1} · moves{_t1}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{}
       ret d  ; Δ{}
@@ -147,8 +145,8 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
 eq$Int x y  =
-filter p xs  =
-lam$0 [env y]z  =
+filter$$hoflamc0$Int _cap0 xs  =
+hoflamc0$Int y z  =
 le$Int x y  =
 length xs  =
 main  =

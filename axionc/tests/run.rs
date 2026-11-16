@@ -1889,6 +1889,28 @@ fn constrained_functions_dispatch_operators_at_their_specialized_type() {
 }
 
 #[test]
+fn closures_in_constrained_functions_are_specialized_per_type() {
+    // A lambda (or a constrained named function) handed to a higher-order function inside
+    // `Eq a => …` is specialized per type with its enclosing function: `==` dispatches to the
+    // instance (was a pointer compare at `P`: a wrong answer), and the heap elements a closure
+    // call hands over are freed at their concrete type (were leaked, or refused natively).
+    let fx = fixture("constrained_closures.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "1\n1\n2\n2\n1\n2\n1\n2\n2\n12\n10\n2\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn an_escaping_closure_never_frees_its_captures_early() {
     // A returned closure carries a pointer to `s` out of `mk`. Auto-Drop used to free `s` before
     // the return (the caller then read freed memory and printed garbage); now the capture escapes

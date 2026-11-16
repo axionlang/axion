@@ -34,7 +34,7 @@
         Nothing ->
         drop _t1 : Maybe$Int
         let _d1000000 = call incMaybe _t1  ; Δ{_t1} · makes Maybe$Int
-        let _t1 = call findIndex p ys  ; Δ{} · makes Maybe$Int
+        let _t1 = call findIndex$$hoflamc1$Int _cap0 ys  ; Δ{} · makes Maybe$Int
         ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
         ret con Just 0  ; Δ{} · makes Maybe$Int
       drop m
@@ -51,8 +51,8 @@
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = + i 1  ; Δ{}
       let _t0 = call half y  ; Δ{} · makes Maybe$Int
+      let _t0 = call hoflamc1$Int _cap0 y  ; Δ{}
       let _t0 = call length ys  ; Δ{}
-      let _t0 = callclo p y  ; Δ{}
       let _t0 = con Nil  ; Δ{x}
       ret + 1 _t0  ; Δ{}
       ret 0  ; Δ{}
@@ -130,7 +130,6 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t0
   drop _t14 : List$Int
   drop _t15 : List$Int
   drop _t19 : List$Int
@@ -141,7 +140,6 @@
   else
   else
   else
-  let _d1000000 = call findIndex _t0 xs  ; Δ{_t0} · makes Maybe$Int
   let _d1000000 = putStrLn _t38  ; Δ{_t38}
   let _dd0 = band _p 1  ; Δ{}
   let _dd1 = if _dd0 then
@@ -151,7 +149,6 @@
   let _dd5 = if _dd4 then
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = + n n  ; Δ{}
-  let _t0 = closure lam$0 x  ; Δ{} · makes heap
   let _t0 = tuple 10 99  ; Δ{} · makes heap
   let _t0 = tuple x y  ; Δ{} · makes heap
   let _t1 = call fst$Int$Int _t0  ; Δ{_t0} · moves{_t0}
@@ -198,9 +195,9 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret == x y  ; Δ{}
-  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret _d1000000  ; Δ{}
   ret call eq$Int x y  ; Δ{}
+  ret call findIndex$$hoflamc1$Int x xs  ; Δ{} · makes Maybe$Int
   ret call fst _t0  ; Δ{_t0} · moves{_t0}
   ret call minus y x  ; Δ{}
   ret case m of
@@ -228,15 +225,15 @@ const x y  =
 curry$$fst x y  =
 elemIndex$Int x xs  =
 eq$Int x y  =
-findIndex p xs  =
+findIndex$$hoflamc1$Int _cap0 xs  =
 flip$$minus x y  =
 fst p  =
 fst$Int$Int p  =
 half n  =
+hoflamc1$Int x y  =
 id x  =
 idxOr m  =
 incMaybe m  =
-lam$0 [env x]y  =
 length xs  =
 listToMaybe xs  =
 main  =

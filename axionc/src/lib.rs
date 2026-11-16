@@ -1844,8 +1844,28 @@ fn specialize_hofs(
     // closure here would make ONE shared top-level function whose `==`/`eq` is never resolved
     // per type — a pointer compare at a user type (a wrong answer), or an unresolved method
     // that keeps the whole chain non-native.
-    let skip = constrained_method_closures(module);
     let mut fn_names = fn_names;
+    // First, every lambda at a HOF slot of a constrained function whose types are built from the
+    // constraint variables is lifted to a CONSTRAINED top-level function, captures first
+    // (`hoflamc<N> :: Eq a => a -> a -> Bool`): the class specialization clones it per type like
+    // any other, and the HOF clone over it inherits the constraint (`make_hof_spec`). Only the
+    // closures that remain are skipped.
+    let constrained: HashSet<String> = module
+        .funcs
+        .iter()
+        .filter(|f| !f.constraints.is_empty())
+        .map(|f| f.name.clone())
+        .collect();
+    if !constrained.is_empty() {
+        let csigs = infer::constrained_lambda_sigs(module);
+        fn_names.extend(lift_constrained_lambdas(
+            module,
+            &all_arrows,
+            &constrained,
+            &csigs,
+        ));
+    }
+    let skip = constrained_method_closures(module);
     // `let p = \s -> … in keepWith p xs`: the lambda reaches the closure slot through a name.
     // Put it in the slot, so the lifts below see a literal lambda there.
     for f in &mut module.funcs {
@@ -1964,6 +1984,9 @@ fn specialize_hofs(
             generated.insert((hof.clone(), clos.clone()));
             if let Some(src) = clone_src.get(hof) {
                 let clos_sig = by_name.get(clos).and_then(|f| f.sig.as_ref());
+                let clos_cs = by_name
+                    .get(clos)
+                    .map_or(&[][..], |f| f.constraints.as_slice());
                 span_base += 1;
                 let delta = span_base * diag::CLONE_SPAN_STRIDE;
                 if let Some((clone, view)) = make_hof_spec(
@@ -1971,6 +1994,7 @@ fn specialize_hofs(
                     hof_arrow[hof],
                     clos,
                     clos_sig,
+                    clos_cs,
                     delta,
                     written_mults.get(hof).map(Vec::as_slice),
                     caller_view.get(hof).map(Vec::as_slice),
@@ -2504,6 +2528,160 @@ fn build_lambda_candidates(
     }
     module.funcs.extend(new_funcs);
     candidates
+}
+
+/// Lifts each lambda at a HOF arrow slot inside the constrained functions `funcs` to a
+/// top-level function signed with its type in the constraint variables (see
+/// [`infer::constrained_lambda_sigs`]), its captures becoming LEADING parameters
+/// (`countBy (\y -> y == x) xs` → `countBy (hoflamc<N> x) xs`, `hoflamc<N> :: Eq a => a -> a ->
+/// Bool`). Left inline, a lambda is lowered once from its generic types inside every class clone:
+/// its `==` never dispatches per type, and a heap argument the closure call moves into it is
+/// never freed (its parameter type is a variable). A lambda with a capture whose type is not
+/// known is left alone. Returns the new names.
+fn lift_constrained_lambdas(
+    module: &mut ast::Module,
+    hof_arrow: &std::collections::HashMap<String, Vec<usize>>,
+    funcs: &std::collections::HashSet<String>,
+    csigs: &std::collections::HashMap<ast::Span, infer::ConstrainedLambda>,
+) -> std::collections::HashSet<String> {
+    use std::collections::{HashMap, HashSet};
+    type Sigs = HashMap<ast::Span, infer::ConstrainedLambda>;
+    struct Lift {
+        new_funcs: Vec<ast::Func>,
+        // lambda span → (lifted name, captures in order)
+        commit: HashMap<ast::Span, (String, Vec<String>)>,
+    }
+    fn lift_one(
+        pats: &[ast::Pat],
+        body: &ast::Expr,
+        lspan: ast::Span,
+        bound: &HashSet<String>,
+        cl: &infer::ConstrainedLambda,
+        out: &mut Lift,
+    ) {
+        let mut refs = HashSet::new();
+        collect_expr_refs(body, &mut refs);
+        let mut own = HashSet::new();
+        pats.iter().for_each(|p| pat_bound(p, &mut own));
+        let mut caps: Vec<String> = refs
+            .into_iter()
+            .filter(|r| bound.contains(r) && !own.contains(r))
+            .collect();
+        caps.sort();
+        let Some(cap_tys) = caps
+            .iter()
+            .map(|c| cl.var_tys.get(c).cloned())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        let sig = prepend_arrows(&cap_tys, cl.sig.clone());
+        let mut vars = HashSet::new();
+        infer::type_vars(&sig, &mut vars);
+        let constraints: Vec<(String, String)> = cl
+            .constraints
+            .iter()
+            .filter(|(_, v)| vars.contains(v))
+            .cloned()
+            .collect();
+        let name = format!("hoflamc{}", out.new_funcs.len());
+        let mut all_pats: Vec<ast::Pat> = caps
+            .iter()
+            .map(|c| ast::Pat::Var(c.clone(), lspan))
+            .collect();
+        all_pats.extend(pats.iter().cloned());
+        out.new_funcs.push(ast::Func {
+            name: name.clone(),
+            sig: Some(sig),
+            clauses: vec![ast::Clause {
+                pats: all_pats,
+                body: ast::Body::Plain(body.clone()),
+                wher: Vec::new(),
+                span: lspan,
+            }],
+            span: lspan,
+            constraints,
+        });
+        out.commit.insert(lspan, (name, caps));
+    }
+    fn walk_expr(
+        e: &ast::Expr,
+        bound: &HashSet<String>,
+        hof_arrow: &HashMap<String, Vec<usize>>,
+        csigs: &Sigs,
+        out: &mut Lift,
+    ) {
+        if let ast::Expr::App(..) = e {
+            let (head, args) = app_spine(e);
+            if let ast::Expr::Var(h, _) = head {
+                if !bound.contains(h) {
+                    for &k in hof_arrow.get(h).map_or(&[][..], Vec::as_slice) {
+                        if let Some(ast::Expr::Lam(pats, body, lspan)) = args.get(k) {
+                            if let Some(cl) = csigs.get(lspan) {
+                                if !out.commit.contains_key(lspan) {
+                                    lift_one(pats, body, *lspan, bound, cl, out);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for_each_subexpr_scoped(e, bound, &mut |c, b| {
+            walk_expr(c, b, hof_arrow, csigs, out);
+        });
+    }
+    fn rewrite(e: &mut ast::Expr, commit: &HashMap<ast::Span, (String, Vec<String>)>) {
+        if let ast::Expr::Lam(_, _, lspan) = e {
+            if let Some((name, caps)) = commit.get(lspan) {
+                let mut call = ast::Expr::Var(name.clone(), *lspan);
+                for c in caps {
+                    call = ast::Expr::App(
+                        Box::new(call),
+                        Box::new(ast::Expr::Var(c.clone(), *lspan)),
+                        *lspan,
+                    );
+                }
+                *e = call;
+                return;
+            }
+        }
+        for_each_subexpr_mut(e, &mut |c| rewrite(c, commit));
+    }
+    let mut out = Lift {
+        new_funcs: Vec::new(),
+        commit: HashMap::new(),
+    };
+    for f in module.funcs.iter().filter(|f| funcs.contains(&f.name)) {
+        // `where`-locals are left alone: their lambdas may use the local's own bindings.
+        for c in &f.clauses {
+            let mut b = HashSet::new();
+            c.pats.iter().for_each(|p| pat_bound(p, &mut b));
+            match &c.body {
+                ast::Body::Plain(e) => walk_expr(e, &b, hof_arrow, csigs, &mut out),
+                ast::Body::Guarded(arms) => arms.iter().for_each(|(g, r)| {
+                    walk_expr(g, &b, hof_arrow, csigs, &mut out);
+                    walk_expr(r, &b, hof_arrow, csigs, &mut out);
+                }),
+            }
+        }
+    }
+    if out.commit.is_empty() {
+        return HashSet::new();
+    }
+    for f in module.funcs.iter_mut().filter(|f| funcs.contains(&f.name)) {
+        for c in &mut f.clauses {
+            match &mut c.body {
+                ast::Body::Plain(e) => rewrite(e, &out.commit),
+                ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+                    rewrite(g, &out.commit);
+                    rewrite(r, &out.commit);
+                }),
+            }
+        }
+    }
+    module.funcs.extend(out.new_funcs);
+    out.commit.into_values().map(|(n, _)| n).collect()
 }
 
 /// Pass 2 of lambda lifting. For each candidate whose `hoflam` inference resolved to a
@@ -3082,11 +3260,13 @@ fn replace_var_with_expr(e: &mut ast::Expr, from: &str, repl: &ast::Expr) {
 /// args are threaded as LEADING parameters `cap0…` of the clone and `f x…` becomes `gt cap0…
 /// x…`; the call site supplies the captures (`filter$$gt n xs`). Recursive self-calls and
 /// nested HOF calls are redirected by the driver's global `rewrite_hof_calls` pass afterward.
+#[allow(clippy::too_many_arguments)]
 fn make_hof_spec(
     src: &ast::Func,
     k: usize,
     clos: &str,
     clos_sig: Option<&ast::Type>,
+    clos_constraints: &[(String, String)],
     delta: usize,
     written: Option<&[ast::Mult]>,
     src_caller_view: Option<&[ast::Mult]>,
@@ -3131,14 +3311,54 @@ fn make_hof_spec(
     // then prepended so the clone is `cap0_ty -> … -> <dropped hof sig>`.
     if let Some(sig) = &clone.sig {
         let mut dropped = drop_arrow_param(sig, k);
+        let mut subst = std::collections::HashMap::new();
         if let (Some(arrow_ty), Some(cs)) = (
             sig.param_types().get(k).copied(),
             residual_clos_sig.as_ref(),
         ) {
-            let mut subst = std::collections::HashMap::new();
             if match_type(arrow_ty, cs, &mut subst) {
                 dropped = subst_type(&dropped, &subst);
+            } else {
+                subst.clear();
             }
+        }
+        // A CONSTRAINED closure (`myEq :: Eq a => …`) makes the clone constrained too: its body
+        // calls the closure at the clone's own types, so the class specialization must clone it
+        // per type (`delBy$$myEq$P` calling `myEq$P`). The closure's variables reach the clone's
+        // signature through `subst`; a HOF variable the closure does not bind keeps its name, so
+        // one that clashes with a closure variable would conflate the two — give up then (the
+        // generic HOF is used). The source's own constraints follow its variables through `subst`.
+        if !clos_constraints.is_empty() {
+            let mut hof_vars = std::collections::HashSet::new();
+            infer::type_vars(sig, &mut hof_vars);
+            let mut clos_vars = std::collections::HashSet::new();
+            if let Some(cs) = residual_clos_sig.as_ref() {
+                infer::type_vars(cs, &mut clos_vars);
+            }
+            if hof_vars
+                .iter()
+                .any(|v| !subst.contains_key(v) && clos_vars.contains(v))
+            {
+                return None;
+            }
+            let mut cs: Vec<(String, String)> = Vec::new();
+            for (cls, v) in &clone.constraints {
+                match subst.get(v) {
+                    Some(ast::Type::Var(w)) => cs.push((cls.clone(), w.clone())),
+                    Some(_) => {} // now a concrete type: resolved directly in the body
+                    None => cs.push((cls.clone(), v.clone())),
+                }
+            }
+            cs.extend(clos_constraints.iter().cloned());
+            let mut seen = std::collections::HashSet::new();
+            cs.retain(|c| seen.insert(c.clone()));
+            // each constraint must dispatch on a variable the clone's parameters still carry
+            let mut left = std::collections::HashSet::new();
+            infer::type_vars(&dropped, &mut left);
+            if cs.iter().any(|(_, v)| !left.contains(v)) {
+                return None;
+            }
+            clone.constraints = cs;
         }
         let mut new_sig = prepend_arrows(&cap_tys, dropped);
         // What a CALLER of the clone sees is what it would see calling the generic HOF (the
@@ -3177,14 +3397,14 @@ fn make_hof_spec(
     clone.clauses[0].pats.remove(k);
     // fresh leading capture parameters, and the closure-param replacement `gt cap0 cap1 …`.
     let cap_names: Vec<String> = (0..captures).map(|i| format!("_cap{i}")).collect();
+    // Each capture gets its OWN (zero-width) span: rewrites are keyed by span, and the class
+    // specialization renames the closure (`hoflamc7` → `hoflamc7$P`) at `pspan` — a capture
+    // sharing that span would be renamed with it.
     let repl = {
         let mut e = ast::Expr::Var(clos.to_string(), pspan);
-        for c in &cap_names {
-            e = ast::Expr::App(
-                Box::new(e),
-                Box::new(ast::Expr::Var(c.clone(), pspan)),
-                pspan,
-            );
+        for (i, c) in cap_names.iter().enumerate() {
+            let csp = (pspan.0 + i, pspan.0 + i);
+            e = ast::Expr::App(Box::new(e), Box::new(ast::Expr::Var(c.clone(), csp)), pspan);
         }
         e
     };
