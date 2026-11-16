@@ -955,22 +955,39 @@ pub fn run_cli() -> ExitCode {
                     eprint!("{}", d.render(&path, &src, &lines));
                     continue;
                 }
+                let what = match f.cat {
+                    verify::Cat::UseAfterFree => format!("`{}` would be used after it is freed", f.var),
+                    verify::Cat::DoubleFree => format!("`{}` would be freed twice", f.var),
+                    verify::Cat::DropOfAlias => format!(
+                        "`{}` points into a value that another owner frees, yet it would be freed here",
+                        f.var
+                    ),
+                    verify::Cat::Unbalanced => {
+                        "the branches that meet here disagree on what is still alive".to_string()
+                    }
+                    verify::Cat::WrongDropKey => {
+                        format!("`{}` would be freed with the wrong destructor", f.var)
+                    }
+                    _ => format!("the frees of `{}` do not balance here", f.var),
+                };
                 let d = Diagnostic::error(
                     "AX0910",
                     format!(
-                        "unsound reclamation: {:?} of `{}` in `{}`",
+                        "not compiled natively: {:?} of `{}` in `{}`",
                         f.cat, f.var, f.func
                     ),
                 )
-                .label(
-                    f.span.0,
-                    f.span.1,
-                    "the Auto-Drop-inserted `free`s are not balanced here",
-                )
+                .label(f.span.0, f.span.1, what)
                 .with_help(
-                    "the drop-balance verifier proved the emitted native code would \
-                     double-free or use-after-free (a compiler soundness check). This is \
-                     an Auto-Drop bug; pass --no-verify to emit anyway.",
+                    "the program type-checks and the interpreter (`axionc <file>`) runs it, but \
+                     the drop-balance verifier found that the native code for this shape would \
+                     corrupt memory, so nothing was emitted. The usual cause is a heap value \
+                     (String, Integer, list, record, …) that a callee or closure frees or keeps \
+                     while the caller still uses it, or a field read out of a value that is freed \
+                     first. Copying the value before the second use (`strAppend s \"\"` for a \
+                     String) or keeping a tuple element in a named `data` type usually avoids it. \
+                     Otherwise this is a compiler limitation worth reporting with this file. \
+                     `--no-verify` emits the unsafe code anyway.",
                 );
                 eprint!("{}", d.render(&path, &src, &lines));
             }

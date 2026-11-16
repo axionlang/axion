@@ -1861,7 +1861,7 @@ fn a_tuple_reader_returning_a_scalar_borrows_its_tuple() {
         );
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
-            "9\n14\nk7\n3\n",
+            "9\n14\nk7\n3\n8\n5\n",
             "{flags:?}"
         );
     }

@@ -242,8 +242,16 @@ pub fn frees_heap_params(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
 
 /// Verify every function of a lowered module; returns all findings (corruption + leak).
 pub fn verify(lowered: &Lowered) -> Vec<Finding> {
-    let (summaries, elem_aliases) =
-        compute_summaries(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
+    // With the signature keys, a borrowed tuple's fields resolve to their types, so a function
+    // that returns a SCALAR field (`sndof t = case t of (a, b) -> b`) is not summarized as
+    // returning a pointer into its tuple. (The lowering's own summary runs before the keys
+    // exist; the difference is only ever a scalar result, which nothing frees.)
+    let (summaries, elem_aliases) = compute_summaries(
+        &lowered.fns,
+        &lowered.borrow_args,
+        &lowered.recinfo,
+        &lowered.param_keys,
+    );
     // R-1/V-1: the whole-value param-return relation, consumed by the CHECK pass so the
     // verifier catches the conditional-param-return alias on its own (a sound net).
     let ret_alias = ret_alias_summary(&lowered.fns);
@@ -287,7 +295,7 @@ pub fn borrowed_elem_params(
     ba: &BorrowArgs,
     recinfo: &RecordInfo,
 ) -> HashMap<String, HashSet<usize>> {
-    let (summaries, elem_aliases) = compute_summaries(fns, ba, recinfo);
+    let (summaries, elem_aliases) = compute_summaries(fns, ba, recinfo, &HashMap::new());
     let ret_alias = ret_alias_summary(fns);
     let no_fh: HashMap<String, HashSet<usize>> = HashMap::new();
     let no_pk: HashMap<String, Vec<Option<String>>> = HashMap::new();
@@ -324,7 +332,7 @@ pub fn borrowed_elem_params(
 /// so Auto-Drop stops freeing a borrowed result (the `grab w = inner w` class); the
 /// verifier then re-derives its own summary from the emitted Core and CHECKS the outcome.
 pub fn borrow_return_summary(fns: &[CoreFn], ba: &BorrowArgs, recinfo: &RecordInfo) -> Summaries {
-    let (mut sums, _elem) = compute_summaries(fns, ba, recinfo);
+    let (mut sums, _elem) = compute_summaries(fns, ba, recinfo, &HashMap::new());
     sums.retain(|_, params| !params.is_empty());
     sums
 }
@@ -481,6 +489,7 @@ fn compute_summaries(
     fns: &[CoreFn],
     ba: &BorrowArgs,
     recinfo: &RecordInfo,
+    param_keys: &HashMap<String, Vec<Option<String>>>,
 ) -> (Summaries, ElemAliases) {
     let mut sums: Summaries = HashMap::new();
     let mut elem: ElemAliases = HashMap::new();
@@ -533,7 +542,7 @@ fn compute_summaries(
                 poly_elem: true,
             };
             let rve = run_fn(
-                f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, &no_pk, &no_pk, elem_mode, None,
+                f, ba, recinfo, &sums, &elem, &no_ret, &no_fh, param_keys, &no_pk, elem_mode, None,
                 None,
             );
             let elem_full = params_borrowed(&rve, f);
