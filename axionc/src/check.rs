@@ -1818,8 +1818,98 @@ fn check_func(
                 };
                 report_resource(&name, &class, bind_span, &use_, &f.name, diags, out);
             }
+            // An ordinary `let` value is not a linear resource, but handing it to a `%1` HEAP
+            // parameter moves it all the same (the callee frees it): any later use reads freed
+            // memory. Same rule, same error as for a parameter (AX0004).
+            let tracked: HashSet<String> = lets_names(body, &lin, ctx);
+            check_plain_lets(body, &tracked, ctx, diags);
         }
     }
+}
+
+/// The `let` binders `scan_lets` already tracks as linear resources (checked above).
+fn lets_names(body: &Expr, lin: &HashMap<String, Lin>, ctx: &Ctx) -> HashSet<String> {
+    let mut lets = Vec::new();
+    let mut inplace = Vec::new();
+    scan_lets(body, lin, ctx, &mut lets, &mut inplace, "");
+    lets.into_iter().map(|(n, ..)| n).collect()
+}
+
+/// Checks every simple `let x = e` in `e` (a `do`-block `let` included) that is not already a
+/// tracked resource: once moved into a `%1` heap parameter, it may not be used again.
+fn check_plain_lets(e: &Expr, tracked: &HashSet<String>, ctx: &Ctx, diags: &mut Diagnostics) {
+    if let Expr::Let(binds, scope, _) = e {
+        for b in binds {
+            if simple_bind_rhs(b).is_none()
+                || tracked.contains(&b.name)
+                || !moved_into_heap_param(scope, &b.name, ctx)
+            {
+                continue;
+            }
+            if let Some((mv, use_sp)) =
+                walk(scope, &b.name, Mode::Consume, ctx, MoveState::default()).error
+            {
+                diags.push(use_after_move_diag(&b.name, mv, use_sp));
+            }
+        }
+    }
+    crate::for_each_subexpr(e, &mut |sub| check_plain_lets(sub, tracked, ctx, diags));
+}
+
+/// `true` if `x` is passed bare to a `%1` parameter of a known function whose declared type is
+/// a heap type — a position that takes ownership and frees it. A higher-order function (one
+/// taking a closure) and its specialized clones are skipped: whether they take ownership
+/// depends on the clone (one that only reads its list borrows it), and the editor checks the
+/// generic function while the batch compiler checks the clone, so neither may decide here. The
+/// drop verifier still checks those calls natively.
+fn moved_into_heap_param(e: &Expr, x: &str, ctx: &Ctx) -> bool {
+    if let Expr::App(..) = e {
+        let (head, args) = spine(e);
+        if let Expr::Var(f, _) = head {
+            if let Some(sig) = ctx.fn_sigs.get(f).filter(|sig| {
+                !f.contains("$$")
+                    && !sig
+                        .param_types()
+                        .iter()
+                        .any(|t| matches!(t, Type::Arrow { .. }))
+            }) {
+                let mults = sig.param_mults();
+                let tys = sig.param_types();
+                for (i, a) in args.iter().enumerate() {
+                    if matches!(a, Expr::Var(v, _) if v == x)
+                        && mults.get(i) == Some(&Mult::One)
+                        && tys.get(i).is_some_and(|t| owns_heap(t, ctx))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let mut found = false;
+    crate::for_each_subexpr(e, &mut |sub| {
+        found = found || moved_into_heap_param(sub, x, ctx);
+    });
+    found
+}
+
+/// A type whose value is a heap allocation its owner frees: a `data`/tuple, or a
+/// `String`/`Integer`/`Buffer`.
+fn owns_heap(t: &Type, ctx: &Ctx) -> bool {
+    is_heap_ty(t, ctx) || matches!(t.head_con(), Some("String" | "Integer" | "Buffer"))
+}
+
+fn use_after_move_diag(name: &str, mv: Span, use_sp: Span) -> Diagnostic {
+    Diagnostic::error(
+        "AX0004",
+        format!("use of '{name}' after ownership was moved"),
+    )
+    .label(use_sp.0, use_sp.1, format!("'{name}' used here…"))
+    .label(mv.0, mv.1, "…but ownership had already been moved here")
+    .with_help(
+        "after moving a %1 (consuming), you cannot read or consume it \
+             again — ownership has left this scope (§2).",
+    )
 }
 
 /// Rejects CONTRACTION (double consumption) of a heap value bound by a `case`
@@ -2337,18 +2427,7 @@ fn report_resource(
             ),
         );
     } else if let Some((mv, use_sp)) = u.uam {
-        diags.push(
-            Diagnostic::error(
-                "AX0004",
-                format!("use of '{name}' after ownership was moved"),
-            )
-            .label(use_sp.0, use_sp.1, format!("'{name}' used here…"))
-            .label(mv.0, mv.1, "…but ownership had already been moved here")
-            .with_help(
-                "after moving a %1 (consuming), you cannot read or consume it \
-                     again — ownership has left this scope (§2).",
-            ),
-        );
+        diags.push(use_after_move_diag(name, mv, use_sp));
     } else if u.min_consumes == 0 && u.consumes > 0 && class.no_drop {
         diags.push(
             Diagnostic::error(

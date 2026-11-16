@@ -1332,6 +1332,20 @@ impl Verifier<'_> {
     /// does NOT free (moved out via a skip-destructor).
     fn do_drop(&mut self, x: &str, key: Option<&String>, skip: &[usize], sp: Span, st: &mut State) {
         self.note_field_gone(x, st);
+        // V-2 (docs/call-site-ownership.md): a deep-drop key whose type CONSTRUCTOR is a
+        // primitive SCALAR (`Int$Int` → base `Int`) is ALWAYS a bad-free — you never
+        // deep-drop an Int/Float/Bool/Char. This catches the multi-param-sum mis-key
+        // class (`cond_elem_key`'s naive `$`-split turned `Either$Int$Int`'s Right
+        // payload into the bogus container key `Int$Int`, freeing a scalar) INDEPENDENTLY
+        // of the value's tracked key — which was `None` (scalar) there, so the tagged
+        // cross-check below was skipped and the bad-free slipped through. Checked whether or not
+        // `x` is tracked (a field the scrutinee key makes scalar is not bound at all).
+        // 0-false-positive: no legitimate destructor key has a scalar base.
+        if let Some(dk) = key {
+            if matches!(ctor_base(dk), "Int" | "Float" | "Bool" | "Char") {
+                self.finding(Cat::WrongDropKey, x, sp);
+            }
+        }
         match st.get(x) {
             Some(v) if v.dead == Some(Cat::DoubleFree) || v.dead.is_some() => {
                 let cat = if v.dead == Some(Cat::UseAfterFree) {
@@ -1362,19 +1376,6 @@ impl Verifier<'_> {
                     });
                     if dbl {
                         self.finding(Cat::DoubleFree, x, sp);
-                    }
-                }
-                // V-2 (docs/call-site-ownership.md): a deep-drop key whose type CONSTRUCTOR is a
-                // primitive SCALAR (`Int$Int` → base `Int`) is ALWAYS a bad-free — you never
-                // deep-drop an Int/Float/Bool/Char. This catches the multi-param-sum mis-key
-                // class (`cond_elem_key`'s naive `$`-split turned `Either$Int$Int`'s Right
-                // payload into the bogus container key `Int$Int`, freeing a scalar) INDEPENDENTLY
-                // of the value's tracked key — which was `None` (scalar) there, so the tagged
-                // cross-check below was skipped and the bad-free slipped through. 0-false-positive:
-                // no legitimate destructor key has a scalar base.
-                if let Some(dk) = key {
-                    if matches!(ctor_base(dk), "Int" | "Float" | "Bool" | "Char") {
-                        self.finding(Cat::WrongDropKey, x, sp);
                     }
                 }
                 // drop-key cross-check: a value KNOWN to be a boxed `Integer`/`String` must be
@@ -1675,6 +1676,15 @@ impl Verifier<'_> {
                                 self.poly_borrowed.insert(n.clone());
                             }
                         }
+                        continue;
+                    }
+                    // A polymorphic field that the scrutinee's key instantiates to a SCALAR (the
+                    // `Int` element of a `List$Int` in a specialized clone) is a copied value, not a
+                    // resource: moving it (into a closure call) and using it again is fine.
+                    if scrut_key
+                        .as_deref()
+                        .is_some_and(|sk| self.recinfo.field_is_scalar_under(con, i, sk))
+                    {
                         continue;
                     }
                     // OWNED (consumed) scrutinee: the heap field transfers OUT as an owned resource.

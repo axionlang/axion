@@ -36,7 +36,7 @@
           let _t3 = call le$String z pivot  ; Δ{_t2 z}
           let _t3 = con Cons y _t2  ; Δ{_t0 _t1 _t2 y} · moves{_t2 y}
           ret a  ; Δ{a} · moves{a}
-          ret call append _t1 _t3  ; Δ{_t0 _t1} · moves{_t1} · makes List
+          ret call append$String _t1 _t3  ; Δ{_t0 _t1} · moves{_t1} · makes List$String
           ret call ulines$ulBal _t2  ; Δ{_t2} · moves{_t2} · makes String
           ret con Cons _t1 _t2  ; Δ{_t1 _t2} · moves{_t1 _t2} · makes List$String
           ret con Cons a _t0  ; Δ{_t0 a} · moves{_t0 a} · makes List$String
@@ -66,7 +66,7 @@
       let _dd1 = call axion_drop_List$String _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
-      let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
+      let _t0 = call append$String zs ys  ; Δ{z zs} · moves{zs} · makes List$String
       let _t0 = call partitionLe$String y ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$String$List$String
       let _t0 = con Nil  ; Δ{}
       let _t0 = rtcall axion_strcat y "\n"  ; Δ{y yss} · makes String
@@ -165,7 +165,7 @@
   ret case ys of
   ret if _t1 then
   ret rtcall axion_array_free _p  ; Δ{}
-append xs ys  =
+append$String xs ys  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$String _p  =

@@ -812,6 +812,27 @@ impl Infer<'_> {
         }
     }
 
+    /// `t` as an AST type with each inference var replaced by its entry in `m`; `None` if a var
+    /// has no entry or a function type occurs.
+    fn subst_to_ast(&self, t: &Ty, m: &HashMap<u32, Type>) -> Option<Type> {
+        match self.resolve(t) {
+            Ty::Var(id) => m.get(&id).cloned(),
+            Ty::Con(n, args) => {
+                let mut x = Type::Con(n);
+                for a in &args {
+                    x = Type::App(Box::new(x), Box::new(self.subst_to_ast(a, m)?));
+                }
+                Some(x)
+            }
+            Ty::Tuple(ts) => Some(Type::Tuple(
+                ts.iter()
+                    .map(|t| self.subst_to_ast(t, m))
+                    .collect::<Option<Vec<_>>>()?,
+            )),
+            Ty::Fun(..) => None,
+        }
+    }
+
     /// For constrained function `f`, the map from each constraint var's inference-var
     /// id to its source NAME (`a`, `b`) — from `constrained_meta` (names, in order)
     /// and `cvar_ivars` (ivars, in order). `None` if `f` isn't constrained.
@@ -978,9 +999,12 @@ impl Infer<'_> {
         mono.user_lits = user_lits;
         // Phase B (generic-owning corner): the owning-generic specializations
         // (`dropList$P`), merged with the typeclass ones.
-        let owning = inf.discharge_owning();
+        let owning = inf.discharge_owning(&mut mono.specs);
         mono.resolutions.extend(owning.resolutions);
         mono.specs.extend(owning.specs);
+        // Both sources iterate hash maps; a fixed order keeps the emitted clones (and the
+        // numbering of the closures inside them) the same from run to run.
+        mono.specs.sort_by(|a, b| a.name.cmp(&b.name));
         // Phase 4: resolve + convert constructor return types before passing on. A type
         // variable NOTHING constrains (`Left s :: Either String b` in monomorphic code) has no
         // values anywhere in the program, so it defaults to `Int`: the cell then gets a concrete
@@ -3339,7 +3363,11 @@ impl<'a> Infer<'a> {
                 // WHICH constraint it dispatches over (0 unless the enclosing
                 // function is multi-constraint), by matching the dispatch var to the
                 // function's captured `cvar_ivars`.
-                Ty::Var(_) if o.scope.contains(&o.class) => {
+                // (`==` is filed under the synthetic `Ord`, but `Eq a` alone provides it.)
+                Ty::Var(_)
+                    if o.scope.contains(&o.class)
+                        || (o.method == "==" && o.scope.iter().any(|c| c == "Eq")) =>
+                {
                     let ivars = self
                         .cvar_ivars
                         .get(&o.func)
@@ -3638,11 +3666,14 @@ impl<'a> Infer<'a> {
                 // each use rewrites at ITS constraint var's concrete type.
                 let ti = types.get(*ci).map(ty_mangle).unwrap_or_else(|| t.clone());
                 if is_builtin_op_method(m) {
-                    // built-in Num: only Float needs a rewrite (`+` → `+.`); the Int/Integer
-                    // specialization keeps the operator the source already has. A USER type
-                    // dispatches to its instance method (`+$Complex`).
+                    // built-in Num/comparison over a primitive: Float and Integer rewrite to their
+                    // own ops (`+.`, `==#I` — an Integer is a boxed bignum, so the Int operator
+                    // would compare pointers); Int keeps the operator. A USER type dispatches to
+                    // its instance method (`+$Complex`, `eq$P`).
                     if ti == "Float" {
                         rewrites.insert(*sp, builtin_op_float(m).into());
+                    } else if ti == "Integer" {
+                        rewrites.insert(*sp, builtin_op_integer(m).into());
                     } else if !is_primitive_num(&ti) {
                         rewrites.insert(*sp, builtin_op_user_target(m, &ti));
                     }
@@ -3723,7 +3754,7 @@ impl<'a> Infer<'a> {
     /// constrained-function pipeline): `dropList$P` has the concrete parameter
     /// `List P %1`, whose key resolves to the specialized destructor
     /// `axion_drop_List$P`.
-    fn discharge_owning(&mut self) -> Mono {
+    fn discharge_owning(&mut self, class_specs: &mut [SpecPlan]) -> Mono {
         use std::collections::{HashMap as Map, HashSet as Set};
         // per caller: polymorphic owning calls (span → target) — rewritten to
         // `$T` when the caller is specialized.
@@ -3732,6 +3763,7 @@ impl<'a> Infer<'a> {
         // call site.  The combined mangle of all repl types is the spec name.
         let mut seeds: Vec<(String, Span, String, Vec<Type>)> = Vec::new();
         let obls = std::mem::take(&mut self.own_obligations);
+        let mut poly_raw: Vec<OwnObl> = Vec::new();
         for o in obls {
             // resolve each type var along its positional path → concrete Ty
             let mut concrete = true;
@@ -3790,6 +3822,54 @@ impl<'a> Infer<'a> {
                     .entry(o.func.clone())
                     .or_default()
                     .push((o.span, o.target.clone()));
+                poly_raw.push(o);
+            }
+        }
+        // A CLASS specialization (`delE$Int`, from `discharge_obligations`) of a function that
+        // calls a generic-owning function over its constraint var (`dropOne x ys`, `ys : List a`)
+        // makes that call concrete: seed the owning clone at the substituted type and rewrite the
+        // call inside the class clone. Without it the class clone kept calling the generic owning
+        // function, which is not native, so every caller was pruned.
+        let mut class_seeds: Vec<(usize, Span, String, Vec<Type>)> = Vec::new();
+        for (pi, plan) in class_specs.iter().enumerate() {
+            let Some(names) = self.cvar_name_map(&plan.src) else {
+                continue;
+            };
+            let by_id: Map<u32, Type> = names
+                .into_iter()
+                .filter_map(|(id, n)| {
+                    let t = plan.subs.iter().find(|(v, _)| *v == n)?.1.clone();
+                    Some((id, t))
+                })
+                .collect();
+            for o in poly_raw.iter().filter(|o| o.func == plan.src) {
+                let mut repls = Vec::new();
+                for (_var, path) in &o.vars {
+                    let mut sub: Option<Ty> = Some(self.resolve(&o.param_ty));
+                    for idx in path {
+                        sub = match sub {
+                            Some(Ty::Con(_, args)) => args.get(*idx).cloned(),
+                            Some(Ty::Tuple(ts)) => ts.get(*idx).cloned(),
+                            _ => None,
+                        };
+                    }
+                    match sub.and_then(|t| self.subst_to_ast(&t, &by_id)) {
+                        Some(t) => repls.push(t),
+                        None => {
+                            repls.clear();
+                            break;
+                        }
+                    }
+                }
+                // a bare var at a scalar needs no owning clone (nothing to free)
+                let bare = o.vars.len() == 1 && o.vars[0].1.is_empty();
+                let scalar = bare && repls.first().is_some_and(
+                    |t| matches!(t, Type::Con(n) if matches!(n.as_str(), "Int" | "Float" | "Bool")),
+                );
+                if !repls.is_empty() && !scalar {
+                    class_seeds.push((pi, o.span, o.target.clone(), repls.clone()));
+                    seeds.push((plan.name.clone(), o.span, o.target.clone(), repls));
+                }
             }
         }
 
@@ -3844,6 +3924,14 @@ impl<'a> Infer<'a> {
                 subs,
                 rewrites,
             });
+        }
+        for (pi, span, f, repls) in class_seeds {
+            let m = mangled(&repls);
+            if cands.contains(&(f.clone(), m.clone())) {
+                if let Some(plan) = class_specs.get_mut(pi) {
+                    plan.rewrites.insert(span, format!("{f}${m}"));
+                }
+            }
         }
         // rewrites the seed call-sites whose specializations exist.
         for (caller, span, f, repls) in seeds {

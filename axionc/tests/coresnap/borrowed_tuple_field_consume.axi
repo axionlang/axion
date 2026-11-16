@@ -10,9 +10,12 @@
 
 
 
-          ret call sndof h  ; Δ{}
+          drop _t0 : String
+          let _d1000000 = rtcall axion_str_len _t0  ; Δ{_t0}
+          let _t0 = call fstof h  ; Δ{} · makes String
+          ret _d1000000  ; Δ{}
         (h, rest) ->
-      drop t : tuple2$String$Int
+      drop t : tuple2$String$Int skip{0}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+8  ; Δ{}
@@ -28,7 +31,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret b  ; Δ{}
+      ret a  ; Δ{t}
       ret case p of
     (a, b) ->
     Just p ->
@@ -111,8 +114,8 @@ axion_drop_Maybe$tuple2$tuple2$String$Int$List$tuple2$String$Int _p  =
 axion_drop_tuple2$String$Int _p  =
 axion_drop_tuple2$tuple2$String$Int$List$tuple2$String$Int _p  =
 build n  =
+fstof t  =
 main  =
 mk n  =
 pick m  =
 show$Int x  =
-sndof t  =

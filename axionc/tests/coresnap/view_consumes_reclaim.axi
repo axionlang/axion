@@ -45,7 +45,7 @@
         let _t1 = call delete$Int x ys  ; Δ{y ys} · moves{ys} · makes List$Int
         ret call dropShort ys  ; Δ{ys} · moves{ys} · makes List$String
         ret call dropWhile$$short ys  ; Δ{ys} · moves{ys} · makes List$String
-        ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Int
+        ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y}
         ret con Cons y ys  ; Δ{y ys} · moves{y ys} · makes List$String
         ret con Cons y ys  ; Δ{y ys} · moves{y ys} · makes List$String
         ret ys  ; Δ{y ys} · moves{ys}
@@ -64,7 +64,7 @@
       drop xs
       drop xs
       drop xs
-      drop xs
+      drop xs : List$Int
       drop xs : List$String
       drop y : String
       else
@@ -123,7 +123,7 @@
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret case _t17 of
       ret con Just ys  ; Δ{ys} · moves{ys}
-      ret con Nil  ; Δ{} · makes List$Int
+      ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$String
       ret con Nil  ; Δ{} · makes List$String
       ret con Nothing  ; Δ{}

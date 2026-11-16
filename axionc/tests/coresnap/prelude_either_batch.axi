@@ -214,7 +214,7 @@
       drop xs
       drop xs
       drop xs
-      drop xs
+      drop xs : List$String
       let $fieldcopy0 = rtcall axion_strcat x ""  ; Δ{} · makes String
       let _d1000000 = rtcall axion_strcat "(" _t4  ; Δ{_t4} · makes String
       let _d1000000 = rtcall axion_strcat "(" _t4  ; Δ{_t4} · makes String
@@ -234,11 +234,11 @@
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_Either$Int$Int _dd2  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
-      let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
+      let _t0 = call append$String zs ys  ; Δ{z zs} · moves{zs} · makes List$String
       let _t0 = call hoflam10 x  ; Δ{}
       let _t0 = call hoflam12 y  ; Δ{}
       let _t0 = call hoflam14 y  ; Δ{}
-      let _t0 = call reverse ys  ; Δ{y ys} · moves{ys} · makes List
+      let _t0 = call reverse$String ys  ; Δ{y ys} · moves{ys} · makes List$String
       let _t0 = call show$Int c0  ; Δ{} · makes String
       let _t0 = call show$Int y  ; Δ{} · makes String
       let _t0 = call show$Int z  ; Δ{} · makes String
@@ -288,7 +288,7 @@
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
-      ret call append _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List
+      ret call append$String _t0 _t2  ; Δ{_t0} · moves{_t0} · makes List$String
       ret call consEither$Int$Int e _t2  ; Δ{_t2 e} · moves{_t2 e} · makes tuple2$List$Int$List$Int
       ret case _t7 of
       ret case e of
@@ -451,9 +451,9 @@
   ; Δ{}
   ; Δ{}
   drop _t0 : Either$Int$Int
-  drop _t0 : List
+  drop _t0 : List$String
   drop _t0 : String
-  drop _t1 : List
+  drop _t1 : List$String
   drop _t1 : String
   drop _t2 : String
   else
@@ -492,12 +492,12 @@
   let _t0 = < x y  ; Δ{}
   let _t0 = call l7  ; Δ{} · makes Either$Int$Int
   let _t0 = call le$Int x y  ; Δ{}
-  let _t0 = call reverse xs  ; Δ{} · makes List
+  let _t0 = call reverse$String xs  ; Δ{} · makes List$String
   let _t0 = call showListElems$Int xs  ; Δ{} · makes String
   let _t0 = con Left 1  ; Δ{} · makes Either$Int$Int
   let _t0 = rtcall axion_str_cmp x y  ; Δ{}
   let _t1 = call fromLeft 0 _t0  ; Δ{_t0}
-  let _t1 = call reverse ys  ; Δ{_t0} · makes List
+  let _t1 = call reverse$String ys  ; Δ{_t0} · makes List$String
   let _t1 = con Right 2  ; Δ{_t0} · makes Either$Int$Int
   let _t1 = rtcall axion_strcat _t0 "]"  ; Δ{_t0} · makes String
   let _t2 = con Left 3  ; Δ{_t0 _t1} · makes Either$Int$Int
@@ -559,7 +559,7 @@
   ret rtcall axion_array_free _p  ; Δ{}
   ret showInt x  ; Δ{} · makes String
   ret showInt x  ; Δ{} · makes String
-append xs ys  =
+append$String xs ys  =
 axion_drop_Array _p  =
 axion_drop_Either$Int _p  =
 axion_drop_Either$Int$Int _p  =
@@ -593,7 +593,7 @@ mapRight$$hoflam12 e  =
 mapRight$$hoflam14 e  =
 partitionEithers$Int$Int xs  =
 r8  =
-reverse xs  =
+reverse$String xs  =
 rights xs  =
 show$(Int,Int) p  =
 show$(List$Int,List$Int) p  =

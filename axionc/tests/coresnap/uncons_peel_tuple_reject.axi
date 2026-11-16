@@ -10,9 +10,12 @@
 
 
 
-          ret call sndof h  ; Δ{}
+          drop _t0 : String
+          let _d1000000 = rtcall axion_str_len _t0  ; Δ{_t0}
+          let _t0 = call fstof h  ; Δ{} · makes String
+          ret _d1000000  ; Δ{}
         (h, rest) ->
-      drop t : tuple2$String$Int
+      drop t : tuple2$String$Int skip{0}
       drop xs
       drop xs : List$tuple2$String$Int
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -31,7 +34,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret b  ; Δ{}
+      ret a  ; Δ{t}
       ret case p of
       ret con Just _t0  ; Δ{_t0} · moves{_t0}
       ret con Nothing  ; Δ{}
@@ -117,9 +120,9 @@ axion_drop_List$tuple2$String$Int _p  =
 axion_drop_Maybe$tuple2$tuple2$String$Int$List$tuple2$String$Int _p  =
 axion_drop_tuple2$String$Int _p  =
 axion_drop_tuple2$tuple2$String$Int$List$tuple2$String$Int _p  =
+fstof t  =
 main  =
 mkp n  =
 pick m  =
 show$Int x  =
-sndof t  =
 uncons$(String,Int) xs  =

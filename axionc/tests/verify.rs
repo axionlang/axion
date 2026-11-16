@@ -148,7 +148,7 @@ fn element_alias_double_free_is_caught_by_verifier() {
 }
 
 /// The consume-of-borrowed-interior-TUPLE-field class (previously unguarded + verifier-blind): a
-/// borrowed interior tuple `h` passed to a CONSUMING callee (`sndof`, which frees its tuple) is
+/// borrowed interior tuple `h` passed to a CONSUMING callee (`fstof`, which owns its tuple) is
 /// double-freed against the owner's deep-drop. The verifier now tracks borrowed tuple-scrutinee
 /// fields (`bind_pattern`'s `CPat::Tuple` arm + transitive borrows), so it must report
 /// `DropOfAlias`. Reproducible in plain user code (no `uncons`); the interpreter still runs it.

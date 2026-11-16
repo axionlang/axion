@@ -28,9 +28,6 @@
         Cons b bs ->
         Nil ->
         Nil ->
-      drop p : tuple2$Int$Int
-      drop xs
-      drop xs
       drop xs
       drop xs
       drop xs
@@ -52,9 +49,9 @@
       let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
       let _t0 = call append$Int zs ys  ; Δ{z zs} · moves{zs} · makes List$Int
       let _t0 = call concat$Int ys  ; Δ{y ys} · moves{ys} · makes List$Int
-      let _t0 = call snd y  ; Δ{y ys} · moves{y}
+      let _t0 = call snd y  ; Δ{}
       let _t0 = call sum ys  ; Δ{}
-      let _t1 = call map$$snd ys  ; Δ{ys} · moves{ys} · makes List$Int
+      let _t1 = call map$$snd ys  ; Δ{} · makes List$Int
       ret + y _t0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -146,6 +143,7 @@
   drop _t31 : List$Int
   drop _t36 : List$Int
   drop _t39 : List$Int
+  drop _t40 : List$tuple2$Int$Int
   drop _t41 : List$Int
   drop _t9 : List
   else
@@ -199,7 +197,7 @@
   let _t39 = con Cons 5 _t38  ; Δ{_t36 _t38} · moves{_t38} · makes List$Int
   let _t4 = con Cons 4 _t3  ; Δ{_t2 _t3} · moves{_t3} · makes List$Int
   let _t40 = call zip _t36 _t39  ; Δ{_t36 _t39} · makes List$tuple2$Int$Int
-  let _t41 = call map$$snd _t40  ; Δ{_t40} · moves{_t40} · makes List$Int
+  let _t41 = call map$$snd _t40  ; Δ{_t40} · makes List$Int
   let _t42 = call sum _t41  ; Δ{_t41}
   let _t5 = con Cons 3 _t4  ; Δ{_t2 _t4} · moves{_t4} · makes List$Int
   let _t6 = con Nil  ; Δ{_t2 _t5} · makes List$Int

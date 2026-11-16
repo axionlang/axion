@@ -11,7 +11,6 @@
 
 
 
-
             let _t4 = con Cons z les  ; Δ{_t2 z} · moves{z}
             let _t4 = con Cons z les  ; Δ{_t2 z} · moves{z} · makes List$String
             let _t5 = con Cons z gre  ; Δ{_t2 z} · moves{z}
@@ -34,8 +33,8 @@
           let _t3 = call le$String z pivot  ; Δ{_t2 z}
           let _t3 = con Cons y _t2  ; Δ{_t0 _t1 _t2 y} · moves{_t2 y}
           let _t3 = con Cons y _t2  ; Δ{_t0 _t1 _t2 y} · moves{_t2 y} · makes List$String
-          ret call append _t1 _t3  ; Δ{_t0 _t1} · moves{_t1} · makes List
           ret call append$String _t1 _t3  ; Δ{_t0 _t1 _t3} · moves{_t1 _t3} · makes List$String
+          ret call append$String _t1 _t3  ; Δ{_t0 _t1} · moves{_t1} · makes List$String
           ret if _t3 then
           ret if _t3 then
         (les, gre) ->
@@ -46,8 +45,6 @@
       drop _t1 : String
       drop _t13 : List$String
       drop _t14 : String
-      drop xs
-      drop xs
       drop xs
       drop xs
       drop xs
@@ -66,7 +63,6 @@
       let _dd1 = call axion_drop_List$String _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_str_drop _dd2  ; Δ{}
-      let _t0 = call append zs ys  ; Δ{z zs} · moves{zs} · makes List
       let _t0 = call append$String zs ys  ; Δ{z zs} · moves{zs} · makes List$String
       let _t0 = call partitionBy$$byLen y ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$String$List$String
       let _t0 = call partitionLe$String y ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$String$List$String
@@ -97,12 +93,10 @@
       ret case _t2 of
       ret case _t2 of
       ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
-      ret con Cons z _t0  ; Δ{_t0 z} · moves{_t0 z}
       ret con Nil  ; Δ{}
       ret con Nil  ; Δ{} · makes List$String
       ret tuple _t0 _t1  ; Δ{_t0 _t1} · moves{_t0 _t1} · makes heap
       ret tuple _t0 _t1  ; Δ{} · makes heap
-      ret ys  ; Δ{}
       ret ys  ; Δ{}
     Cons s ss ->
     Cons y ys ->
@@ -110,8 +104,6 @@
     Cons z zs ->
     Cons z zs ->
     Cons z zs ->
-    Cons z zs ->
-    Nil ->
     Nil ->
     Nil ->
     Nil ->
@@ -142,7 +134,6 @@
   ; Δ{_t2 z}
   ; Δ{_t2 z}
   ; Δ{_t2 z}
-  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -190,12 +181,10 @@
   ret case xs of
   ret case xs of
   ret case xs of
-  ret case xs of
   ret case ys of
   ret case ys of
   ret if _t1 then
   ret rtcall axion_array_free _p  ; Δ{}
-append xs ys  =
 append$String xs ys  =
 axion_drop_Array _p  =
 axion_drop_List _p  =

@@ -1847,6 +1847,48 @@ fn closures_are_reclaimed_and_keep_their_captures_alive() {
 }
 
 #[test]
+fn a_tuple_reader_returning_a_scalar_borrows_its_tuple() {
+    // `sndof` returns the Int half of a tuple, so it borrows the tuple: `pick` can hand it a
+    // tuple inside its own borrowed argument (was AX0910) and `twiceRead` can call it twice
+    // (was AX0001). `keyOf` returns the String half and still owns its tuple.
+    let fx = fixture("tuple_scalar_reader.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "9\n14\nk7\n3\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
+fn constrained_functions_dispatch_operators_at_their_specialized_type() {
+    // `==` under `Eq a` calls the user instance (`eq$P`), and a specialization at `Integer` uses
+    // the bignum operators (`==#I`, `+#I`) instead of comparing/adding pointers. A constrained
+    // function calling a generic owning function (`dropOne`, `delBy`) compiles natively.
+    let fx = fixture("eq_constraint_dispatch.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "1\n1\n0\n1\n1\n0\n1\n1\n42\n[2, 3]\n[1, 3]\n[1, 2]\n[2, 3]\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn an_escaping_closure_never_frees_its_captures_early() {
     // A returned closure carries a pointer to `s` out of `mk`. Auto-Drop used to free `s` before
     // the return (the caller then read freed memory and printed garbage); now the capture escapes
@@ -2255,7 +2297,7 @@ fn uncons_peel_over_tuple_consume_is_rejected_by_verifier() {
     // `uncons` over a tuple element returns `Maybe ((K,V), List (K,V))`; CONSUMING the peeled head
     // `h` (a borrowed interior) double-frees. This was the special case behind the retired
     // `peel_result_over_tuple` AX0912 guard; the drop-balance verifier now catches the consume-of-
-    // borrowed-tuple-field DIRECTLY (AX0910), so native rejects it and interp still runs (= 5). The
+    // borrowed-tuple-field DIRECTLY (AX0910), so native rejects it and interp still runs (= 1). The
     // verifier — not a type-shaped pre-rejection — is now the single net, so a SAFE `uncons`-of-tuple
     // read (which the old guard over-rejected) compiles; see `uncons_safe_tuple_read_compiles`.
     let fx = fixture("uncons_peel_tuple_reject.axi");
@@ -2275,7 +2317,7 @@ fn uncons_peel_over_tuple_consume_is_rejected_by_verifier() {
         );
     }
     let out = axionc().arg(&fx).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "5");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1");
 }
 
 #[test]
@@ -4053,6 +4095,21 @@ fn use_after_move_is_rejected_ax0004() {
     assert!(!out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("AX0004"), "expected AX0004, output: {text}");
+}
+
+#[test]
+fn let_value_used_after_move_is_rejected_ax0004() {
+    // A `let` (or `do`-block `let`) value handed to a `%1` heap parameter is moved: reading it
+    // afterwards is AX0004 at `--check`, like a parameter (it used to surface only natively, as
+    // AX0910). One report for the `do` block, one for `inLet`; `readFirst` reads before moving.
+    let out = axionc()
+        .args(["--check", &fixture("let_use_after_move.axi")])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.matches("AX0004").count(), 2, "output: {text}");
+    assert!(!text.contains("readFirst"), "output: {text}");
 }
 
 #[test]

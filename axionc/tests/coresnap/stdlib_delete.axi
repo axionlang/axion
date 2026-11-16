@@ -5,10 +5,10 @@
 
 
         let _t1 = call delete$Int x ys  ; Δ{y ys} · moves{ys} · makes List$Int
-        ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y} · makes List$Int
+        ret con Cons y _t1  ; Δ{_t1 y} · moves{_t1 y}
         ret ys  ; Δ{y ys} · moves{ys}
       drop xs
-      drop xs
+      drop xs : List$Int
       else
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -22,7 +22,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret con Nil  ; Δ{} · makes List$Int
+      ret con Nil  ; Δ{}
       ret if _t0 then
     Cons y ys ->
     Cons y ys ->

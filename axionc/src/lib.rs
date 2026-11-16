@@ -1821,6 +1821,13 @@ fn specialize_hofs(
     if hof_arrow.is_empty() {
         return caller_view;
     }
+    // A CONSTRAINED function whose closure arguments use one of its class methods (`delBy eq`,
+    // `\p q -> p == q` under `Eq a`) is left to the class specialization (infer): its clones
+    // (`delE$P`) are made per type, after this pass, with every method resolved. Lifting the
+    // closure here would make ONE shared top-level function whose `==`/`eq` is never resolved
+    // per type — a pointer compare at a user type (a wrong answer), or an unresolved method
+    // that keeps the whole chain non-native.
+    let skip = constrained_method_closures(module);
     let mut fn_names = fn_names;
     // `let p = \s -> … in keepWith p xs`: the lambda reaches the closure slot through a name.
     // Put it in the slot, so the lifts below see a literal lambda there.
@@ -1838,7 +1845,7 @@ fn specialize_hofs(
     // `lift_capturing_lambdas` uses it (with enclosing declared-signature capture types) to sign a
     // lifted capturing lambda up front. Concrete only when the enclosing scope pins the captures.
     let (lam_tys, var_tys) = infer::infer_lambda_site_types(module);
-    let cap_committed = lift_capturing_lambdas(module, &all_arrows, &lam_tys, &var_tys);
+    let cap_committed = lift_capturing_lambdas(module, &all_arrows, &lam_tys, &var_tys, &skip);
     fn_names.extend(cap_committed);
     // A NON-CAPTURING lambda literal at a HOF's arrow slot (`filter (\x -> x > fromInt 2) xs`)
     // is a candidate to lift to a fresh top-level function so the closure becomes a NAME the
@@ -1848,14 +1855,14 @@ fn specialize_hofs(
     // concrete type and is committed; a POLYMORPHIC one (`\x -> x` in `fromMaybe`) would, if
     // lifted to an unsigned fn, become a single monomorphic shared placeholder and
     // over-constrain its callers — so it is dropped and stays inline (the generic HOF).
-    let candidates = build_lambda_candidates(module, &all_arrows);
+    let candidates = build_lambda_candidates(module, &all_arrows, &skip);
     // Recover a CONCRETE signature for every UNSIGNED closure passed to a HOF (a lambda
     // candidate, or an unsigned named fn): `closure_unsafe_to_specialize` and the clone's
     // element-type concretization both need the closure's type. Without it an unsigned/lambda
     // closure is conservatively rejected (no sig → unsafe) → the generic HOF → AX0912 over a
     // heap element type. Only fns whose principal type is fully CONCRETE are signed.
     let mut demand_pairs: HashSet<(String, String)> = HashSet::new();
-    for f in &module.funcs {
+    for f in module.funcs.iter().filter(|f| !skip.contains(&f.name)) {
         collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demand_pairs);
     }
     let unsigned: HashSet<String> = module
@@ -1928,7 +1935,7 @@ fn specialize_hofs(
     let mut span_base: usize = 0;
     loop {
         let mut demands: HashSet<(String, String)> = HashSet::new();
-        for f in &module.funcs {
+        for f in module.funcs.iter().filter(|f| !skip.contains(&f.name)) {
             collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demands);
         }
         demands.retain(|(_, clos)| !unsafe_clos.contains(clos));
@@ -1964,11 +1971,68 @@ fn specialize_hofs(
             }
         }
         // rewrite ALL call sites (generic bodies + clones) to the specialized names.
-        for f in &mut module.funcs {
+        for f in module.funcs.iter_mut().filter(|f| !skip.contains(&f.name)) {
             rewrite_func_calls(f, &generated, &hof_arrow, &fn_names, &HashSet::new());
         }
     }
     caller_view
+}
+
+/// Constrained functions (`Eq a => …`) that hand a closure using one of their class methods to
+/// another function: a lambda whose body uses a method of a constraint class (or, for the built-in
+/// `Eq`/`Ord`/`Num` classes, one of their operators), or a method passed by name (`delBy eq`).
+fn constrained_method_closures(module: &ast::Module) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    fn mentions(e: &ast::Expr, ms: &HashSet<String>) -> bool {
+        let hit = match e {
+            ast::Expr::Var(n, _) => ms.contains(n),
+            ast::Expr::BinOp(op, ..) => ms.contains(op),
+            _ => false,
+        };
+        let mut found = hit;
+        for_each_subexpr(e, &mut |sub| found = found || mentions(sub, ms));
+        found
+    }
+    // a closure position: a lambda that uses a method, or a method name as an argument
+    fn closure_uses(e: &ast::Expr, ms: &HashSet<String>) -> bool {
+        let here = match e {
+            ast::Expr::Lam(_, body, _) => mentions(body, ms),
+            ast::Expr::App(_, a, _) => matches!(a.as_ref(), ast::Expr::Var(n, _) if ms.contains(n)),
+            _ => false,
+        };
+        let mut found = here;
+        for_each_subexpr(e, &mut |sub| found = found || closure_uses(sub, ms));
+        found
+    }
+    let mut out = HashSet::new();
+    for f in &module.funcs {
+        if f.constraints.is_empty() {
+            continue;
+        }
+        let mut ms: HashSet<String> = HashSet::new();
+        for (cls, _) in &f.constraints {
+            if let Some(c) = module.classes.iter().find(|c| &c.name == cls) {
+                ms.extend(c.methods.iter().map(|(m, _)| m.clone()));
+            }
+            let ops: &[&str] = match cls.as_str() {
+                "Eq" => &["==", "/="],
+                "Ord" => &["==", "/=", "<", ">", "<=", ">="],
+                "Num" => &["+", "-", "*"],
+                _ => &[],
+            };
+            ms.extend(ops.iter().map(|o| o.to_string()));
+        }
+        let uses = f.clauses.iter().any(|c| match &c.body {
+            ast::Body::Plain(e) => closure_uses(e, &ms),
+            ast::Body::Guarded(arms) => arms
+                .iter()
+                .any(|(g, r)| closure_uses(g, &ms) || closure_uses(r, &ms)),
+        });
+        if uses {
+            out.insert(f.name.clone());
+        }
+    }
+    out
 }
 
 /// Substitutes a `let`-bound lambda (`let p = \s -> strLen s > n`) into the closure slots of
@@ -2095,6 +2159,7 @@ fn lift_capturing_lambdas(
     hof_arrow: &std::collections::HashMap<String, Vec<usize>>,
     lam_tys: &std::collections::HashMap<ast::Span, ast::Type>,
     var_tys: &std::collections::HashMap<ast::Span, ast::Type>,
+    skip: &std::collections::HashSet<String>,
 ) -> std::collections::HashSet<String> {
     use std::collections::{HashMap, HashSet};
     // The concrete type of capture `c` read from its occurrences in the lambda body: every
@@ -2324,7 +2389,7 @@ fn lift_capturing_lambdas(
         committed: HashSet::new(),
         counter: 0,
     };
-    for f in &mut module.funcs {
+    for f in module.funcs.iter_mut().filter(|f| !skip.contains(&f.name)) {
         walk_func(f, &HashSet::new(), &HashMap::new(), &mut ctx);
     }
     module.funcs.extend(ctx.new_funcs);
@@ -2342,6 +2407,7 @@ fn lift_capturing_lambdas(
 fn build_lambda_candidates(
     module: &mut ast::Module,
     hof_arrow: &std::collections::HashMap<String, Vec<usize>>,
+    skip: &std::collections::HashSet<String>,
 ) -> Vec<(String, ast::Span)> {
     let mut candidates: Vec<(String, ast::Span)> = Vec::new();
     let mut new_funcs: Vec<ast::Func> = Vec::new();
@@ -2409,7 +2475,7 @@ fn build_lambda_candidates(
             walk_expr(c, b, hof_arrow, candidates, new_funcs, counter);
         });
     }
-    for f in &module.funcs {
+    for f in module.funcs.iter().filter(|f| !skip.contains(&f.name)) {
         walk_func(
             f,
             &std::collections::HashSet::new(),
@@ -3964,7 +4030,7 @@ fn embedded_in_ctor(name: &str, e: &ast::Expr) -> bool {
 }
 
 /// Applies `g` to each immediate sub-expression of `e` (one level).
-fn for_each_subexpr(e: &ast::Expr, g: &mut dyn FnMut(&ast::Expr)) {
+pub(crate) fn for_each_subexpr(e: &ast::Expr, g: &mut dyn FnMut(&ast::Expr)) {
     match e {
         ast::Expr::App(a, b, _) | ast::Expr::BinOp(_, a, b, _) => {
             g(a);
@@ -4331,14 +4397,17 @@ fn tuple_binder_genuine(
         return true;
     }
     subs.iter().zip(heap).any(|(sp, &h)| match sp {
-        // Any component returned as the result, scalar or not, keeps the owning treatment: the
-        // verifier treats such a result as possibly pointing into the tuple. A heap component
-        // that is itself taken apart (`case a of (x, y) -> x`) may pass an interior out, so it
-        // does too.
-        ast::Pat::Var(b, _) => bodies.iter().any(|body| {
-            returned_directly(b, body)
-                || (h && (genuine(b, body) || is_rebound(b, body) || is_case_scrutinee(b, body)))
-        }),
+        // A HEAP component returned as the result keeps the owning treatment (the result may
+        // point into the tuple), as does one taken apart (`case a of (x, y) -> x`, which may
+        // pass an interior out). A SCALAR component is a copy — returning it borrows nothing.
+        ast::Pat::Var(b, _) => {
+            h && bodies.iter().any(|body| {
+                returned_directly(b, body)
+                    || genuine(b, body)
+                    || is_rebound(b, body)
+                    || is_case_scrutinee(b, body)
+            })
+        }
         ast::Pat::Wild(_) => false,
         _ => h,
     })

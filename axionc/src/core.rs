@@ -921,6 +921,21 @@ impl RecordInfo {
         self.classify_tuple_elem(elem)
     }
 
+    /// `true` if polymorphic field `fi` of `con` is, under the scrutinee's instantiation
+    /// `scrut_key`, definitely a SCALAR (`Int`/`Float`/`Bool`/`Char` or an unboxed enum): a value
+    /// that is copied, never owned (`Cons y` of a `List$Int`).
+    pub fn field_is_scalar_under(&self, con: &str, fi: usize, scrut_key: &str) -> bool {
+        let Some(&idx) = self.con_field_param.get(con).and_then(|m| m.get(&fi)) else {
+            return false;
+        };
+        self.split_mono_key(scrut_key)
+            .and_then(|(_, args)| args.get(idx).cloned())
+            .is_some_and(|e| {
+                matches!(e.as_str(), "Int" | "Float" | "Bool" | "Char")
+                    || self.enum_types.contains(&e)
+            })
+    }
+
     /// The TAGGED reclaimer (`"Integer"` → `axion_bignum_free`, `"String"` → `axion_str_drop`) a
     /// polymorphic field `fi` of `con` resolves to under the scrutinee's instantiation `scrut_key`,
     /// or `None` if it is not definitely one of those. Used by the drop-balance verifier's
