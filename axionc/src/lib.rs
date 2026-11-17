@@ -1990,7 +1990,10 @@ fn specialize_hofs(
             collect_func_demands(f, &hof_arrow, &fn_names, &HashSet::new(), &mut demands);
         }
         demands.retain(|(_, clos)| !unsafe_clos.contains(clos));
-        let fresh: Vec<(String, String)> = demands.difference(&generated).cloned().collect();
+        // sorted: the clones are appended in this order, and later passes number fresh names
+        // (`eta$N`) in function order — a hash order made the output differ from run to run
+        let mut fresh: Vec<(String, String)> = demands.difference(&generated).cloned().collect();
+        fresh.sort();
         if fresh.is_empty() {
             break;
         }

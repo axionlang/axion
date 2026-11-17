@@ -190,12 +190,20 @@ and well-mitigated this list is.
     is `DoubleFree` (checked in both free orders). `tests/verify.rs`
     `verifier_refuses_shared_closures_without_the_copies` turns Auto-Drop's closure copies off
     (`AXION_NO_CLOSURE_COPIES`) and requires the refusals; per program, every native double free
-    that results is refused. Remaining PROOF gap (as for other heap leaves): a moved-in closure a
-    function neither returns nor frees is leak-exempt in the verifier — LSan covers it.
-  The remaining gap is one of PROOF, not of reclamation: the verifier's `leak_exempt` set still skips
-  leak accounting for polymorphic extracted fields and moved-in leaves (their heap-ness is unresolved
-  where it runs). LSan covers it: `scripts/sanitize.sh` leak-gates every native fixture, the
-  examples included.
+    that results is refused. A moved-in closure (or String/Integer/Buffer) a function neither
+    returns nor frees is a reported leak (AX0911) — no longer exempt (see below).
+  The verifier's leak accounting now covers MOVED-IN parameters: the exemption is gone. It
+  existed because the borrow analysis (`op_moves`/`op_nonborrow`) read three pure reads as moves —
+  a closure capture, an FFI `Borrow` argument, a runtime call the built-in table says borrows —
+  so callers handed over values their callees only read and nobody freed them (latent leaks in
+  `closure_reclaim`, `ffi_effects`, `ffi_own`, `stderr_exit`, and `axfm`'s `bulkRun`, masked by
+  static-literal arguments). It now reads them as `delta::op_delta_effect` does, and a moved-in
+  value a function neither frees nor returns is AX0911 (`verifier_reports_a_moved_in_parameter_
+  never_freed`). ONE narrow exemption remains: a field of a polymorphic constructor whose type
+  stays a bare type variable in a GENERIC body (`delBy$$p`'s dropped `y` before class
+  specialization) — no reclaimer exists for an unknown type there; the specialized clones that
+  actually run at heap types are fully accounted. A field the scrutinee's key resolves to a heap
+  type is no longer exempt. LSan still leak-gates every native fixture (`scripts/sanitize.sh`).
 - **Owned `String` parameters in a tail-recursive accumulator — NOW RECLAIMED, SOUNDLY** (`core.rs`
   seeding of `reclaim_cond_escape`, default-**on**): an owned `String` *parameter* rebuilt each step of a
   tail recursion — `go acc n = … go (strAppend acc …) …`, the shape behind a `cmdLine`/search key

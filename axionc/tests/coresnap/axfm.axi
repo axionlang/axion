@@ -2463,6 +2463,7 @@
     drop _t2 : String
     drop _t2 : String
     drop _t2 : String
+    drop _t2 : String
     drop _t3 : List$String
     drop _t3 : String
     drop _t3 : String
@@ -2681,6 +2682,7 @@
     else
     else
     else
+    let _d1000000 = call bulkRun cwd marked _t2  ; Δ{_t2}
     let _d1000000 = call confirm _t3 rows  ; Δ{_t3}
     let _d1000000 = call doUserCmdTty cwd sel marked prog hidden rows raw _t3  ; Δ{_t3}
     let _d1000000 = call drawLines _t8 1 px pw ph  ; Δ{_t8} · makes String
@@ -3294,6 +3296,7 @@
     ret _d1000000  ; Δ{}
     ret _d1000000  ; Δ{}
     ret _d1000000  ; Δ{}
+    ret _d1000000  ; Δ{}
     ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
     ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
     ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
@@ -3321,7 +3324,6 @@
     ret call >=$Int i n  ; Δ{}
     ret call bottomMatch raw q from  ; Δ{}
     ret call buildInfo "" "" "" "" tabs  ; Δ{} · makes String
-    ret call bulkRun cwd marked _t2  ; Δ{_t2} · moves{_t2}
     ret call catOrBuiltin lsc ext  ; Δ{} · makes String
     ret call catOrBuiltinIcon icfg ext  ; Δ{} · makes String
     ret call clip plain listW  ; Δ{} · makes String

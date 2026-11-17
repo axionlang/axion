@@ -317,8 +317,8 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call hoflam10 eta$3  ; Δ{}
-  ret call hoflam9 eta$1  ; Δ{}
+  ret call hoflam10 eta$1  ; Δ{}
+  ret call hoflam9 eta$3  ; Δ{}
   ret case _t1 of
   ret case bs of
   ret case h of

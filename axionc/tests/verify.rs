@@ -738,3 +738,27 @@ fn verifier_refuses_shared_closures_without_the_copies() {
         );
     }
 }
+
+/// No leak exemption for a MOVED-IN parameter: without the closure copies
+/// (`AXION_NO_CLOSURE_COPIES`), `pick b f g = if b then f else g` takes both closures and
+/// returns one — the other is never freed, and the verifier must report it (it used to be
+/// exempt as a "moved-in leaf"). With the copies, `pick` borrows both and verifies clean.
+#[test]
+fn verifier_reports_a_moved_in_parameter_never_freed() {
+    let path = format!(
+        "{}/tests/fixtures/closure_fuzz_regressions.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let bad = axionc()
+        .args(["--emit", "verify", &path])
+        .env("AXION_NO_CLOSURE_COPIES", "1")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&bad.stdout);
+    assert!(
+        out.contains("Leak: `g` in `pick`") && out.contains("Leak: `f` in `pick`"),
+        "the unchosen moved-in closure must be reported as a leak, got:\n{out}"
+    );
+    let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("no corruption"));
+}

@@ -939,6 +939,13 @@ impl RecordInfo {
     /// whole tail as one element (`Integer$String`), mis-freeing it. Outer `None` = do not make
     /// droppable (unresolved / scalar → never a wrong free); `Some(None)` = flat free; `Some(k)` =
     /// keyed reclaimer.
+    /// `true` if polymorphic field `fi` of `con` is, under the scrutinee's instantiation
+    /// `scrut_key`, definitely a HEAP value (a keyed container, `String`, a boxed `data` value):
+    /// its reclamation is then known, so a missing drop is a leak, not an unresolved type.
+    pub fn field_heap_under(&self, con: &str, fi: usize, scrut_key: &str) -> bool {
+        self.poly_field_elem_key(con, fi, scrut_key).is_some()
+    }
+
     fn poly_field_elem_key(&self, con: &str, fi: usize, scrut_key: &str) -> Option<Option<String>> {
         let param_idx = *self.con_field_param.get(con)?.get(&fi)?;
         let (_, args) = self.split_mono_key(scrut_key)?;
@@ -10023,6 +10030,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
             // copied ones are non-linear (safe aliasing, no double-free).
             (*inplace && atom_is(v, base)) || fields.iter().any(|(_, a)| atom_is(v, a))
         }
+        Op::MakeClosure { owns: false, .. } => false, // borrows its captures
         Op::MakeClosure { captures, .. } => captures.iter().any(|a| atom_is(v, a)),
         Op::WithArena { parent, clos } => parent.iter().any(|a| atom_is(v, a)) || atom_is(v, clos),
         Op::ArenaAlloc(a) | Op::ArenaMark(a) | Op::ArenaRelease(a) => atom_is(v, a),
@@ -10055,7 +10063,18 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::RtCall { func, .. } if is_bignum_borrower(func) => false,
         // copying a closure cell only reads it
         Op::RtCall { func, .. } if func == "axion_closure_copy" => false,
-        Op::RtCall { args, .. } | Op::Ffi { args, .. } => args.iter().any(|a| atom_is(v, a)),
+        // an FFI argument is consumed only if declared `Own`; a runtime call follows the table
+        Op::Ffi {
+            args, arg_kinds, ..
+        } => args
+            .iter()
+            .enumerate()
+            .any(|(i, a)| atom_is(v, a) && arg_kinds.get(i).is_some_and(|k| k.own)),
+        Op::RtCall { func, args, .. } => {
+            crate::builtins::rt_entry(func)
+                .is_none_or(|r| r.args != crate::builtins::ArgOwn::Borrow)
+                && args.iter().any(|a| atom_is(v, a))
+        }
         Op::PutStrLn(a) | Op::PutStr(a) | Op::ShowInt(a) => atom_is(v, a),
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => atom_is(v, a),
         // only in generated destructors (not analyzed) — a read, like `Field`
@@ -10705,11 +10724,25 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         // predicate AND embedded in the output) was flagged as a double-move by the verifier.
         Op::Prim(_, _, _) | Op::PrimF(_, _, _) => false,
         Op::StoreRaw(a, _, b) | Op::Promote(a, b) => atom_is(v, a) || atom_is(v, b),
+        // as `delta::op_delta_effect` reads them: a closure that does not own its captures
+        // BORROWS them; an FFI argument is moved only if declared `Own`; a runtime call follows
+        // the built-in ownership table. (Reading these as moves made the caller hand over a
+        // value the callee only read — and nobody freed it: a leak the verifier exempted.)
+        Op::MakeClosure { owns: false, .. } => false,
+        Op::Ffi {
+            args, arg_kinds, ..
+        } => args
+            .iter()
+            .enumerate()
+            .any(|(i, a)| atom_is(v, a) && arg_kinds.get(i).is_some_and(|k| k.own)),
+        Op::RtCall { func, args, .. } => {
+            crate::builtins::rt_entry(func)
+                .is_none_or(|r| r.args != crate::builtins::ArgOwn::Borrow)
+                && args.iter().any(|a| atom_is(v, a))
+        }
         Op::CallClosure(_, xs)
         | Op::MakeTuple(xs)
         | Op::MakeCon { args: xs, .. }
-        | Op::RtCall { args: xs, .. }
-        | Op::Ffi { args: xs, .. }
         | Op::MakeClosure { captures: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(v, a)),
         Op::UpdateRecord {

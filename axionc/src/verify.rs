@@ -179,6 +179,12 @@ struct PassMode {
     poly_elem: bool,
 }
 
+/// `AXION_LEAK_STRICT=poly` switches off the one remaining leak exemption (a polymorphic field
+/// whose type stays unresolved in a generic body): a measurement hook.
+fn strict_leaks(class: &str) -> bool {
+    std::env::var("AXION_LEAK_STRICT").is_ok_and(|v| v == "all" || v.split(',').any(|c| c == class))
+}
+
 fn is_generated(name: &str) -> bool {
     // `axion_drop_*` destructors and `axion_copy_*` deep-copiers (R-5) both manage
     // memory by hand (raw load/store/alloc), outside the Auto-Drop reclamation the
@@ -631,7 +637,6 @@ fn run_fn(
         .iter()
         .filter_map(|(n, k)| k.as_deref().map(|k| (n.as_str(), k)))
         .collect();
-    let mut moved_in_leaves: Vec<String> = Vec::new();
     for (i, p) in f.params.iter().enumerate() {
         if owned.contains(p) && !borrowed.is_some_and(|s| s.contains(&i)) {
             // an owned heap param is a live resource this fn must free.
@@ -657,10 +662,10 @@ fn run_fn(
                 .flatten();
             let moved_in = key.is_some() && !borrowed.is_some_and(|s| s.contains(&i));
             // A MOVED-IN (not borrowed) parameter of a heap LEAF type (`String`, `Integer`,
-            // `Buffer`) belongs to this function: track it as owned, so moving it twice — storing
-            // one value in two places (`dup$String x = (x, x)`, a generic body specialized at a heap
-            // type) — is a use after move. Leak-exempt: a moved-in String this function neither
-            // returns nor frees is the conservative-leak class, not a corruption.
+            // `Buffer`, a closure) belongs to this function: track it as owned, so moving it twice
+            // — storing one value in two places (`dup$String x = (x, x)`, a generic body
+            // specialized at a heap type) — is a use after move, and neither freeing nor returning
+            // it is a leak.
             let leaf = param_leaf
                 .get(&f.name)
                 .and_then(|ks| ks.get(i))
@@ -675,7 +680,6 @@ fn run_fn(
                         ..Default::default()
                     },
                 );
-                moved_in_leaves.push(p.clone());
                 continue;
             }
             st.insert(
@@ -701,7 +705,11 @@ fn run_fn(
         mode,
         out: out.unwrap_or(&mut sink),
         children: HashMap::new(),
-        leak_exempt: moved_in_leaves.into_iter().collect(),
+        // (A moved-in String/Integer/Buffer/closure parameter is NOT exempt: one the function
+        // neither frees nor returns is a leak like any owned value. It used to be exempt because
+        // the borrow analysis read some pure reads — a closure capture, an FFI `Borrow` argument,
+        // a runtime call the built-in table says borrows — as moves; it now agrees with Auto-Drop.)
+        leak_exempt: HashSet::new(),
         projections: HashMap::new(),
         heap_inside: HashMap::new(),
         arm_con: HashMap::new(),
@@ -1156,6 +1164,12 @@ impl Verifier<'_> {
             .key
             .as_deref()
             .and_then(|sk| self.recinfo.field_tagged_key(&con, fi, sk));
+        // exempt only a field whose type stays UNRESOLVED (a generic body's bare variable): one
+        // the scrutinee's key makes heap is reclaimed like any owned value
+        let resolved = sv
+            .key
+            .as_deref()
+            .is_some_and(|sk| self.recinfo.field_heap_under(&con, fi, sk));
         st.insert(
             x.to_string(),
             Val {
@@ -1168,7 +1182,7 @@ impl Verifier<'_> {
             .entry(src.to_string())
             .or_default()
             .push((x.to_string(), fi));
-        if self.recinfo.field_drop_slot(&con, fi).is_none() {
+        if self.recinfo.field_drop_slot(&con, fi).is_none() && !resolved && !strict_leaks("poly") {
             self.leak_exempt.insert(x.to_string());
         }
     }
@@ -1805,7 +1819,15 @@ impl Verifier<'_> {
                     // a POLYMORPHIC field (transfers heap but has NO concrete drop slot —
                     // a bare type variable) may instantiate to a scalar, so exempt it from
                     // leak reporting (see `leak_exempt`); it stays owned for double-free.
-                    if self.recinfo.field_drop_slot(con, i).is_none() {
+                    // …unless the scrutinee's key resolves it to a HEAP type: then its
+                    // reclamation is known and a missing drop is a plain leak
+                    let resolved = scrut_key
+                        .as_deref()
+                        .is_some_and(|sk| self.recinfo.field_heap_under(con, i, sk));
+                    if self.recinfo.field_drop_slot(con, i).is_none()
+                        && !resolved
+                        && !strict_leaks("poly")
+                    {
                         self.leak_exempt.insert(n.clone());
                     }
                 }
