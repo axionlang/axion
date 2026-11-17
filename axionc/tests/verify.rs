@@ -711,3 +711,30 @@ fn curried_partial_applied_over_arity_agrees_across_backends() {
         );
     }
 }
+
+/// The drop verifier models closure ownership: without Auto-Drop's closure copies
+/// (`AXION_NO_CLOSURE_COPIES`), the closures stored twice / borrowed into a structure
+/// (`closure_in_structures.axi`) and the closure field shared by a returned record update
+/// (`closure_fields.axi`) are native double frees — and the verifier must refuse them. With the
+/// copies, both verify clean.
+#[test]
+fn verifier_refuses_shared_closures_without_the_copies() {
+    for name in ["closure_in_structures.axi", "closure_fields.axi"] {
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&ok.stdout).contains("no corruption"),
+            "{name}: must verify clean with the copies"
+        );
+        let bad = axionc()
+            .args(["--emit", "verify", &path])
+            .env("AXION_NO_CLOSURE_COPIES", "1")
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&bad.stdout);
+        assert!(
+            out.contains("FAIL:"),
+            "{name}: without the closure copies the verifier must refuse it, got:\n{out}"
+        );
+    }
+}

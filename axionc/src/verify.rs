@@ -712,6 +712,7 @@ fn run_fn(
         frees_heap,
         poly_borrowed: HashSet::new(),
         elem_sink,
+        deep_freed: HashSet::new(),
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -750,6 +751,9 @@ fn dropped_vars(t: &Term) -> HashSet<String> {
 }
 
 struct Verifier<'a> {
+    /// values freed by a FULL keyed (deep) drop — not a shell free, not a skip-destructor that
+    /// leaves shared slots alone (see the reverse double-free check in `do_drop`)
+    deep_freed: HashSet<String>,
     f: &'a str,
     ba: &'a BorrowArgs,
     recinfo: &'a RecordInfo,
@@ -982,6 +986,27 @@ impl Verifier<'_> {
                 }
             }
         }
+        // A structure frees the closures it holds, so embedding a closure this function does NOT
+        // own — a borrowed parameter, an element of a borrowed structure — hands that structure
+        // a cell its owner frees too: a double free (`store f = Just f` on a borrowed `f`).
+        let embedded: &[Atom] = match op {
+            Op::MakeCon { args, .. } | Op::MakeTuple(args) => args,
+            _ => &[],
+        };
+        let rec_embedded: Vec<&Atom> = match op {
+            Op::MakeRecord { fields, .. } => fields.iter().map(|(_, a)| a).collect(),
+            _ => Vec::new(),
+        };
+        for a in embedded.iter().chain(rec_embedded) {
+            if let Atom::Var(v) = a {
+                let not_owned_closure = st.get(v).is_some_and(|val| {
+                    !val.owned && !val.moved_in && val.key.as_deref() == Some("Closure")
+                });
+                if not_owned_closure {
+                    self.finding(Cat::DropOfAlias, v, sp);
+                }
+            }
+        }
         // moved operands escape → mark them dead (an indirect call's `nonstrict` closure is
         // BORROWED: it survives the call). One op moving the same OWNED value twice (`tuple x
         // x`: one String stored in two slots) hands two owners the same memory — a double free
@@ -1189,6 +1214,37 @@ impl Verifier<'_> {
         if let Some(Atom::Var(src)) = e.alias {
             return st.get(src).cloned().unwrap_or_default();
         }
+        // A BY-COPY record update shares every heap field it does not set with the record it
+        // copies (`b { label = … }` keeps `b`'s `onClick` cell): the result borrows that record,
+        // so freeing both is a double free. (Auto-Drop sets each such field to a copy.)
+        // Recorded in the ELEMENT-share summary pass only, which callers apply: a function that
+        // RETURNS such an update hands its caller a record sharing the argument's heap fields.
+        // (Within one function Auto-Drop frees the result with a skip-destructor that leaves the
+        // shared slots to the base — checked by the drop balance as usual.)
+        if let (
+            Op::UpdateRecord {
+                base: Atom::Var(b),
+                fields,
+                inplace: false,
+            },
+            true,
+        ) = (op, self.mode.track_fields && self.mode.poly_elem)
+        {
+            let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+            if self.recinfo.update_shares_heap(&names) {
+                let mut borrows: HashSet<String> = HashSet::from([b.clone()]);
+                if let Some(bv) = st.get(b) {
+                    borrows.extend(bv.borrows.iter().cloned());
+                }
+                return Val {
+                    owned: true,
+                    borrows,
+                    dead: None,
+                    key: None,
+                    moved_in: false,
+                };
+            }
+        }
         // A closure owns its cell and BORROWS every capture (the cell holds their pointers, the
         // lambda reads them on each call): freeing a capture while the closure can still be
         // called — or letting the closure escape past the capture's free — is a use-after-free.
@@ -1267,11 +1323,15 @@ impl Verifier<'_> {
             // (`List$Integer` yes, `List$Int` no) — the generic summary is element-agnostic,
             // but the double-free only happens for a heap element, so a scalar `List Int`
             // result stays clean (no false positive, no regression of take-over-List-Int).
+            // (…or a plain record with heap fields: `relabel b = b { label = … }` returns a record
+            // sharing `b`'s unset heap fields.)
             let heap_elem = e
                 .produces
                 .as_ref()
                 .and_then(|r| r.key.as_deref())
-                .is_some_and(key_elem_is_heap);
+                .is_some_and(|k| {
+                    key_elem_is_heap(k) || (!k.contains('$') && self.recinfo.needs_deep_drop(k))
+                });
             if heap_elem {
                 if let Some(params) = self.elem_aliases.get(g) {
                     for &i in params {
@@ -1397,7 +1457,17 @@ impl Verifier<'_> {
                             .iter()
                             .any(|w| st.get(w).is_some_and(|wv| wv.dead.is_some()))
                     });
-                    if dbl {
+                    // …and the other order: an OWNED value sharing `x`'s contents (a by-copy
+                    // record update returned from a call, a `take`-style result) was already
+                    // deep-freed, so freeing `x` deeply frees the shared part a second time.
+                    let dbl_rev = st.iter().any(|(w, wv)| {
+                        w != x
+                            && wv.owned
+                            && wv.dead == Some(Cat::DoubleFree)
+                            && self.deep_freed.contains(w)
+                            && wv.borrows.contains(x)
+                    });
+                    if dbl || dbl_rev {
                         self.finding(Cat::DoubleFree, x, sp);
                     }
                 }
@@ -1425,6 +1495,9 @@ impl Verifier<'_> {
                     if bad {
                         self.finding(Cat::WrongDropKey, x, sp);
                     }
+                }
+                if key.is_some() && skip.is_empty() {
+                    self.deep_freed.insert(x.to_string());
                 }
                 if let Some(v) = st.get_mut(x) {
                     v.dead = Some(Cat::DoubleFree);

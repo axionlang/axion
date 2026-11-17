@@ -1580,11 +1580,31 @@ impl ExprParser<'_> {
     }
 
     /// `name :: btype [%mult]`.
+    /// A field's type: `btype`, continued by `-> type` for a function-typed field (`Int -> Int`,
+    /// `a %1 -> b`). A `%mult` right before `->` belongs to the arrow; one after the type is
+    /// the field's own multiplicity (read by the caller).
+    fn field_type(&mut self) {
+        let cp = self.b.checkpoint();
+        self.btype();
+        let arrow = matches!(self.cur(), Some(Tok::Arrow))
+            || (matches!(self.cur(), Some(Tok::Mult(_)))
+                && matches!(self.peek_tok(1), Some(Tok::Arrow)));
+        if arrow {
+            self.b.start_node_at(cp, TYPE_ARROW.into());
+            if matches!(self.cur(), Some(Tok::Mult(_))) {
+                self.bump(); // %mult
+            }
+            self.bump(); // ->
+            self.type_();
+            self.b.finish_node();
+        }
+    }
+
     fn record_field(&mut self) {
         self.b.start_node(FIELD.into());
         self.var_id(); // field name
         self.expect_tok(&Tok::ColonColon);
-        self.btype();
+        self.field_type();
         if matches!(self.cur(), Some(Tok::Mult(_))) {
             self.bump();
         }
@@ -1596,7 +1616,7 @@ impl ExprParser<'_> {
         self.b.start_node(FIELD.into());
         if matches!(self.cur(), Some(Tok::LParen)) {
             self.bump(); // (
-            self.btype();
+            self.field_type();
             if matches!(self.cur(), Some(Tok::Mult(_))) {
                 self.bump();
             }

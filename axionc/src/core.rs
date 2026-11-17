@@ -767,11 +767,15 @@ impl RecordInfo {
                     // `axion_str_drop`/`axion_bignum_free`). `String` and `Integer` are heap
                     // (`strAppend`/`substr`/bignum arithmetic allocate), so a constructor that
                     // owns one — `Var String`, `R Integer` — must free it; the tagged string
-                    // reclaimer is safe on a static literal too. Bare `Int`, `Buffer`, and
-                    // functions are non-heap and left out. (An extracted field is MOVED out: the
-                    // container then frees only the remainder — skip destructors, a shell-free
-                    // after a `case`, or a copy where the field is read twice.)
-                    if let Some(h) = f.ty.head_con() {
+                    // reclaimer is safe on a static literal too. Bare `Int` and `Buffer` are
+                    // left out. A FUNCTION field (`Handler String (Int -> Int)`) is a closure cell:
+                    // freed through `axion_closure_drop` (its own destructor, when it owns its
+                    // captures). (An extracted field is MOVED out: the container then frees only
+                    // the remainder — skip destructors, a shell-free after a `case`, or a copy
+                    // where the field is read twice.)
+                    if let Type::Arrow { .. } = &f.ty {
+                        slots.push((r.field_offset(&c.name, i), f.ty.clone()));
+                    } else if let Some(h) = f.ty.head_con() {
                         if data_names.contains(h) || h == "String" || h == "Integer" {
                             // store the FULL field type (not just the head), so the
                             // destructor generator can key a parametric field on its
@@ -963,9 +967,18 @@ impl RecordInfo {
     /// drop-key cross-check — freeing such a field with any other key is a bad-free / leak.
     pub fn field_tagged_key(&self, con: &str, fi: usize, scrut_key: &str) -> Option<String> {
         match self.poly_field_elem_key(con, fi, scrut_key) {
-            Some(Some(k)) if k == "Integer" || k == "String" => Some(k),
+            Some(Some(k)) if k == "Integer" || k == "String" || k == "Closure" => Some(k),
             _ => None,
         }
+    }
+
+    /// `true` if field `fi` of constructor `con` is declared with a function type (a closure
+    /// cell the value owns).
+    pub fn field_is_closure(&self, con: &str, fi: usize) -> bool {
+        let off = self.field_offset(con, fi);
+        self.drop_slots(con)
+            .iter()
+            .any(|(o, t)| *o == off && matches!(t, Type::Arrow { .. }))
     }
 
     /// `data`-typed fields a constructor owns: (offset, type name).
@@ -1103,6 +1116,19 @@ impl RecordInfo {
         let fields = self.con_fields.get(con)?;
         let idx = fields.iter().position(|f| f == name)?;
         Some((con.clone(), idx))
+    }
+
+    /// `true` if a by-copy update of a record setting only `updated` (field names) leaves a HEAP
+    /// field of the record unset — a field the result then SHARES with the updated record.
+    pub fn update_shares_heap(&self, updated: &[&str]) -> bool {
+        let Some(con) = updated.first().and_then(|n| self.field_owner.get(*n)) else {
+            return false;
+        };
+        let set: HashSet<i32> = updated
+            .iter()
+            .filter_map(|n| self.field(n).map(|(o, _)| o))
+            .collect();
+        self.drop_slots(con).iter().any(|(o, _)| !set.contains(o))
     }
 
     /// Offset (in bytes) of a named field, and the list of its record's fields.
@@ -2212,6 +2238,22 @@ impl Lower<'_> {
                 name: name.clone(),
                 rec,
             };
+        }
+        // an accessor of a FUNCTION field applied further (`onClick b x`): read the field, then
+        // call the closure it holds with the remaining arguments
+        if self.fields.contains(name) && args.len() > 1 {
+            let rec = self.atom(args[0], buf);
+            let f = self.fresh();
+            buf.push((
+                f.clone(),
+                Rhs::Op(Op::Field {
+                    name: name.clone(),
+                    rec,
+                }),
+                e.span(),
+            ));
+            let rest: Vec<Atom> = args[1..].iter().map(|a| self.atom(a, buf)).collect();
+            return Op::CallClosure(Atom::Var(f), rest);
         }
         // arena builtins (§3)
         match (name.as_str(), args.len()) {
@@ -7009,8 +7051,12 @@ pub fn lower_with(
         };
         let owning = own_escaping_closures(&mut out, &cx, &mut copy_seeds, &mut mono_seeds);
         key_fresh_closure_calls(&mut out);
-        copy_embedded_closures(&mut out, &recinfo, makecon_tys, &fn_param_types);
-        copy_returned_closure_params(&mut out, &fn_param_types);
+        // AXION_NO_CLOSURE_COPIES (test hook): leave out the closure copies below, to check that the
+        // drop verifier refuses the double frees they prevent
+        if std::env::var_os("AXION_NO_CLOSURE_COPIES").is_none() {
+            copy_embedded_closures(&mut out, &recinfo, makecon_tys, &fn_param_types);
+            copy_returned_closure_params(&mut out, &fn_param_types);
+        }
         owning
     };
     let mut borrow_args =
@@ -7505,7 +7551,8 @@ pub fn lower_with(
             let keys = tys
                 .iter()
                 .map(|ty| {
-                    if heap_ty(ty, &data_types) {
+                    // a function-typed param is a closure cell (key `Closure`)
+                    if heap_ty(ty, &data_types) || matches!(ty, Type::Arrow { .. }) {
                         mono_key(ty)
                     } else {
                         None
@@ -7527,6 +7574,8 @@ pub fn lower_with(
                 .iter()
                 .map(|t| match t {
                     Type::Con(h) if matches!(h.as_str(), "String" | "Integer") => Some(h.clone()),
+                    // a moved-in closure is this function's: storing it twice is a duplication
+                    Type::Arrow { .. } => Some("Closure".to_string()),
                     t if t.head_con() == Some("Buffer") => Some("Buffer".to_string()),
                     _ => None,
                 })
@@ -8953,15 +9002,15 @@ fn closure_slots(op: &Op, sp: Span, cx: &EmbedCx) -> Vec<usize> {
     let (args, by_type): (&[Atom], Vec<usize>) = match op {
         Op::MakeCon { con, args, ty } => (
             args,
-            match ty {
-                Some(k) => (0..args.len())
-                    .filter(|&i| {
-                        cx.recinfo.poly_field_elem_key(con, i, k)
-                            == Some(Some("Closure".to_string()))
-                    })
-                    .collect(),
-                None => Vec::new(),
-            },
+            (0..args.len())
+                .filter(|&i| {
+                    cx.recinfo.field_is_closure(con, i)
+                        || ty.as_ref().is_some_and(|k| {
+                            cx.recinfo.poly_field_elem_key(con, i, k)
+                                == Some(Some("Closure".to_string()))
+                        })
+                })
+                .collect(),
         ),
         Op::MakeTuple(args) => (
             args,
@@ -12120,7 +12169,13 @@ fn copy_shared_update_fields(
                     copy_seeds.push(ty.clone());
                     CopyKind::Container(k)
                 }
-                _ => return None, // a type variable, Buffer, function: cannot copy
+                // a function field: its own copy of the closure cell (and owned captures)
+                _ if matches!(ty, Type::Arrow { .. })
+                    && std::env::var_os("AXION_NO_CLOSURE_COPIES").is_none() =>
+                {
+                    CopyKind::Closure
+                }
+                _ => return None, // a type variable, Buffer: cannot copy
             };
             *ctr += 1;
             let fv = format!("$updfield{ctr}");

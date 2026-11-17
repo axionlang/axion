@@ -793,7 +793,7 @@ impl<'a> Parser<'a> {
             while self.starts_atype() && !self.at_kw("deriving") {
                 let (ty, mult) = if self.at(&Tok::LParen) {
                     self.bump(); // (
-                    let t = self.parse_btype()?;
+                    let t = self.parse_field_type()?;
                     let m = if let Some(LTok::Tok(Tok::Mult(mul))) = self.cur() {
                         let m = parse_mult(mul);
                         self.pos += 1;
@@ -882,10 +882,37 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// A field's type: `btype`, continued by `-> type` for a function-typed field (`Int -> Int`,
+    /// `a %1 -> b`). A `%mult` right before `->` belongs to the arrow; one after the type is
+    /// the field's own multiplicity (read by the caller).
+    fn parse_field_type(&mut self) -> PResult<Type> {
+        let t = self.parse_btype()?;
+        let arrow_mult = match (self.cur(), self.toks.get(self.pos + 1).map(|t| &t.tok)) {
+            (Some(LTok::Tok(Tok::Arrow)), _) => Some(Mult::Many),
+            (Some(LTok::Tok(Tok::Mult(mul))), Some(LTok::Tok(Tok::Arrow))) => {
+                Some(parse_mult(mul.as_str()))
+            }
+            _ => None,
+        };
+        let Some(am) = arrow_mult else {
+            return Ok(t);
+        };
+        if !self.at(&Tok::Arrow) {
+            self.pos += 1; // %mult
+        }
+        self.bump(); // ->
+        let rest = self.parse_type()?;
+        Ok(Type::Arrow {
+            mult: am,
+            from: Box::new(t),
+            to: Box::new(rest),
+        })
+    }
+
     fn parse_field(&mut self) -> PResult<Field> {
         let (name, _) = self.var_name("field name")?;
         self.expect(&Tok::ColonColon, "'::' in the field")?;
-        let ty = self.parse_btype()?;
+        let ty = self.parse_field_type()?;
         // field multiplicity: `field :: Buffer U8 %1` marks a linear field
         let mult = if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
             let m = parse_mult(m);

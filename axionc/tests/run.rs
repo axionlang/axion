@@ -1992,6 +1992,26 @@ fn closure_bugs_found_by_the_fuzzer_stay_fixed() {
 }
 
 #[test]
+fn data_types_with_function_fields_compile_natively() {
+    // `data Handler = Handler String (Int -> Int)` and record fields `onClick :: Int -> Int` parse
+    // in both parsers; the record owns, frees and copies the closure; `onClick b x` calls it.
+    let fx = fixture("closure_fields.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "inc\n40\n28\n21\n12\n15\nok*\n16\n17\n8\n13\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn an_escaping_closure_never_frees_its_captures_early() {
     // A returned closure carries `s` out of `mk`. Auto-Drop used to free `s` before the return
     // (the caller then read freed memory and printed garbage); later the capture escaped with the

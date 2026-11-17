@@ -180,7 +180,18 @@ and well-mitigated this list is.
     in (a borrowed parameter, an element of a borrowed structure, a closure embedded twice — these
     were double frees while the change was made); a `%1` function-typed parameter is freed by its
     function; a function-typed parameter returned whole is returned as a copy. Regressions:
-    `closure_escape_owned.axi`, `closure_in_structures.axi` (both leak-gated).
+    `closure_escape_owned.axi`, `closure_in_structures.axi`, `closure_fields.axi` (callback records:
+    `data` types with function fields), `closure_fuzz_regressions.axi` (all leak-gated).
+    The drop verifier CHECKS these hand-offs (it no longer relies on Auto-Drop getting them
+    right): a closure value carries the key `Closure` (also a function-typed parameter); putting
+    a closure the function does not own into a constructor/tuple/record is `DropOfAlias`; a
+    moved-in closure stored twice is `Duplicated`; a call returning a by-copy update of its
+    argument shares that argument's unset heap fields (element-share summary), so freeing both
+    is `DoubleFree` (checked in both free orders). `tests/verify.rs`
+    `verifier_refuses_shared_closures_without_the_copies` turns Auto-Drop's closure copies off
+    (`AXION_NO_CLOSURE_COPIES`) and requires the refusals; per program, every native double free
+    that results is refused. Remaining PROOF gap (as for other heap leaves): a moved-in closure a
+    function neither returns nor frees is leak-exempt in the verifier — LSan covers it.
   The remaining gap is one of PROOF, not of reclamation: the verifier's `leak_exempt` set still skips
   leak accounting for polymorphic extracted fields and moved-in leaves (their heap-ness is unresolved
   where it runs). LSan covers it: `scripts/sanitize.sh` leak-gates every native fixture, the
