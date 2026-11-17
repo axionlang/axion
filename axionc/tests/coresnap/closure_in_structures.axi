@@ -94,13 +94,14 @@
                                                         _ ->
                                                       drop _t69 : tuple2$Closure$Int
                                                       drop _t71 : String
+                                                      drop _t73
                                                       drop _t74 : Closure
                                                       drop _t76 : String
                                                       let _d1000001 = putStrLn _t71  ; Δ{_t69 _t71}
                                                       let _t70 = callclo g k  ; Δ{_t69}
                                                       let _t71 = call show$Int _t70  ; Δ{_t69} · makes String
                                                       let _t73 = closure lam$14  ; Δ{} · makes Closure
-                                                      let _t74 = call idG$Closure _t73  ; Δ{_t73} · moves{_t73} · makes Closure
+                                                      let _t74 = call idG$Closure _t73  ; Δ{_t73} · makes Closure
                                                       let _t75 = callclo _t74 2  ; Δ{_t74}
                                                       let _t76 = call show$Int _t75  ; Δ{} · makes String
                                                       let _t77 = putStrLn _t76  ; Δ{_t76}
@@ -417,6 +418,7 @@
   else
   else
   else
+  let $aliascopy0 = rtcall axion_closure_copy x  ; Δ{} · makes Closure
   let $clocopy0 = rtcall axion_strcat s ""  ; Δ{s} · makes String
   let $clocp0 = rtcall axion_closure_copy f  ; Δ{_t1} · makes Closure
   let $clocp0 = rtcall axion_closure_copy f  ; Δ{} · makes Closure
@@ -468,6 +470,7 @@
   let _t3 = call show$Int _t2  ; Δ{} · makes String
   let _t4 = putStrLn _t3  ; Δ{_t3}
   let s = call show$Int n  ; Δ{} · makes String
+  ret $aliascopy0  ; Δ{$aliascopy0} · moves{$aliascopy0}
   ret * z 2  ; Δ{}
   ret * z 2  ; Δ{}
   ret * z 2  ; Δ{}
@@ -533,7 +536,6 @@
   ret tuple $clocp0 $clocp1  ; Δ{$clocp0 $clocp1} · moves{$clocp0 $clocp1} · makes heap
   ret tuple _t0 n  ; Δ{_t0} · moves{_t0} · makes heap
   ret tuple x y  ; Δ{} · makes heap
-  ret x  ; Δ{}
   ret x  ; Δ{}
   ret z  ; Δ{}
 adders ns  =

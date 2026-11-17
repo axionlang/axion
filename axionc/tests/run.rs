@@ -1971,6 +1971,27 @@ fn closures_stored_in_structures_are_reclaimed() {
 }
 
 #[test]
+fn closure_bugs_found_by_the_fuzzer_stay_fixed() {
+    // `pick` returning an argument closure its caller then owned (use after free / double
+    // free), an over-applied closure-returning call (a pointer printed), and a complete call in
+    // a closure slot specialized as a partial application (a false AX0001). Leak-gated.
+    let fx = fixture("closure_fuzz_regressions.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "2\n12\n2\n27\n5\n4\n23\n",
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
 fn an_escaping_closure_never_frees_its_captures_early() {
     // A returned closure carries `s` out of `mk`. Auto-Drop used to free `s` before the return
     // (the caller then read freed memory and printed garbage); later the capture escaped with the

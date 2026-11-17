@@ -24,6 +24,12 @@ prelude or top-level name (the scope-unaware-lowering class — eta_expand / cal
 filtering), caught by the interp-vs-native differential; `gen_large` builds big pipelines / many
 colliding helpers / deep nesting so an O(N^2) blow-up trips the HANG timeout.
 
+Two generators cover what the drop verifier does NOT model, so the ASan leg is the net there:
+`gen_closure_values` (closures as values — returned, stored in Maybe/lists/tuples, duplicated,
+passed through generic code, read back out, called repeatedly; each cell must have exactly one
+owner) and `gen_heap_array` (arrays of heap elements: copies in and out, frees of replaced and
+dropped elements). Run one alone with `--only closure_values` / `--only heap_array`.
+
 Native LEAKS while interp is clean are REPORTED (info) but not failed — many are known
 conservative leaks. AX0912 (heap-alias guard) and AX0910 (drop-verifier) rejections are
 EXPECTED and counted separately — native soundly refusing a value it cannot reclaim is
@@ -34,7 +40,7 @@ while BORROWED variants must be AX0910-rejected — and any variant the verifier
 and double-frees, which the ASan leg catches as corruption. Failing programs are saved to
 fuzz-fail/ for a deterministic repro (the seed + index reproduce any run).
 
-Run:  AXION_CLANG=clang ./scripts/fuzz.py [--count N] [--seed S] [--keep-going]
+Run:  AXION_CLANG=clang ./scripts/fuzz.py [--count N] [--seed S] [--keep-going] [--only NAME]
 """
 import os, sys, random, subprocess, tempfile, pathlib, argparse
 
@@ -991,8 +997,272 @@ def gen_ownership(rng):
     body += "  putStrLn (showInt (" + " + ".join(terms) + "))\n"
     return OWN_PRE + "main :: IO ()\nmain = do\n" + body
 
+CLOSURE_PRE = """-- fuzz:closures
+sumL :: List Int -> Int
+sumL xs = case xs of
+  Nil -> 0
+  Cons y r -> y + sumL r
+
+call1 :: Maybe (Int -> Int) -> Int -> Int
+call1 m x = case m of
+  Just f -> f x
+  Nothing -> 0
+
+callAll :: List (Int -> Int) -> Int -> Int
+callAll fs x = case fs of
+  Nil -> 0
+  Cons f r -> f x + callAll r x
+
+applyAll :: List (Int -> Int) -> Int -> Int
+applyAll fs x = case fs of
+  Nil -> x
+  Cons f r -> applyAll r (f x)
+
+mkS :: String -> (Int -> Int)
+mkS s = \\z -> strLen s + z
+
+mkSL :: Int -> (Int -> Int)
+mkSL n = let s = show n in \\z -> strLen s + z
+
+mkL :: List Int -> (Int -> Int)
+mkL xs = \\z -> sumL xs + z
+
+mkI :: Integer -> (Integer -> Integer)
+mkI b = \\z -> b + z
+
+mkJ :: Int -> Maybe (Int -> Int)
+mkJ n = let s = show n in Just (\\z -> strLen s + z)
+
+mkT :: String -> Int -> (Int -> Int)
+mkT nm k = let t = (nm, k) in \\z -> case t of
+  (a, b) -> strLen a + b + z
+
+store :: (Int -> Int) -> Maybe (Int -> Int)
+store f = Just f
+
+keepOr :: Maybe (Int -> Int) -> Maybe (Int -> Int) -> Maybe (Int -> Int)
+keepOr a b = case a of
+  Just f -> a
+  Nothing -> b
+
+getF :: Maybe (Int -> Int) -> (Int -> Int)
+getF m = case m of
+  Just f -> f
+  Nothing -> \\z -> z
+
+pick :: Bool -> (Int -> Int) -> (Int -> Int) -> (Int -> Int)
+pick b f g = if b then f else g
+
+idG :: a -> a
+idG x = x
+
+twice :: (Int -> Int) -> List (Int -> Int)
+twice f = Cons f (Cons f Nil)
+
+dupL :: a -> List a
+dupL x = Cons x (Cons x Nil)
+
+both :: (Int -> Int) -> (Int -> Int, Int -> Int)
+both f = (f, f)
+
+useBoth :: (Int -> Int) -> Int
+useBoth f = case both f of
+  (g, h) -> g 1 + h 2
+
+pairWith :: a -> b -> (a, b)
+pairWith x y = (x, y)
+
+usePair :: (Int -> Int) -> Int -> Int
+usePair f k = case pairWith f k of
+  (g, n) -> g n
+
+adders :: List Int -> List (Int -> Int)
+adders ns = case ns of
+  Nil -> Nil
+  Cons n r -> Cons (\\z -> z + n) (adders r)
+
+labels :: List String -> List (Int -> Int)
+labels ss = case ss of
+  Nil -> Nil
+  Cons s r -> let t = strAppend s "!" in Cons (\\z -> strLen t + z) (labels r)
+
+firstOr :: List (Int -> Int) -> Int -> Int
+firstOr fs x = case fs of
+  Cons f _ -> callAll (twice f) x
+  Nil -> x
+
+"""
+
+def gen_closure_values(rng):
+    """Closures as VALUES: capturing heap data (String / Integer / list / tuple), returned from
+    functions, stored in Maybe / lists / tuples, duplicated (`twice`, `both`, generic `dupL`),
+    passed through generic `idG`/`pairWith`, read back out of structures (`getF`), chosen
+    (`pick`) and called repeatedly. Each closure cell is freed through its own destructor, copied
+    through its own copier, and must have exactly one owner at every hand-off — the class whose
+    double frees the drop verifier cannot see (it does not model what a closure owns), so the
+    ASan leg is the net here. Every program prints Ints: interp == native, ASan/LSan-clean."""
+    def S():
+        return rng.choice([f'"{"".join(rng.choice("abc") for _ in range(rng.randint(0, 4)))}"',
+                           f"show {rng.randint(0, 999)}",
+                           f'strAppend "q" (show {rng.randint(0, 99)})'])
+    def L():
+        return "[" + ", ".join(str(rng.randint(0, 9)) for _ in range(rng.randint(0, 4))) + "]"
+    def C(d=0):                                   # an expression of type Int -> Int
+        k = rng.randint(0, 9)
+        opts = [f"(\\z -> z + {k})", f"(\\z -> z * {k})", f"(mkSL {k})", f"(mkS ({S()}))",
+                f"(mkL {L()})", f"(mkT ({S()}) {k})", "cs", "cl"]
+        if d < 2:
+            opts += [f"(pick {rng.choice(['True', 'False'])} {C(d + 1)} {C(d + 1)})",
+                     f"(idG {C(d + 1)})", f"(getF {M(d + 1)})"]
+        return rng.choice(opts)
+    def M(d=0):                                   # Maybe (Int -> Int)
+        opts = [f"(Just {C(d + 1)})", f"(store {C(d + 1)})", f"(mkJ {rng.randint(0, 99)})",
+                "Nothing"]
+        if d < 2:
+            opts.append(f"(keepOr {M(d + 1)} {M(d + 1)})")
+        return rng.choice(opts)
+    def Ls(d=0):                                  # List (Int -> Int)
+        opts = [f"[{C(d + 1)}, {C(d + 1)}]", f"(adders {L()})",
+                f"(labels [{S()}, {S()}])", f"(twice {C(d + 1)})", f"(dupL {C(d + 1)})"]
+        if d < 2:
+            opts.append(f"(Cons {C(d + 1)} {Ls(d + 1)})")
+        return rng.choice(opts)
+    lines = [f"  let cs = mkS ({S()})", f"  let cl = mkL {L()}"]
+    for i in range(rng.randint(2, 6)):
+        x = rng.randint(0, 9)
+        t = rng.randint(0, 9)
+        if t == 0:
+            e = f"{C()} {x}"
+        elif t == 1:
+            e = f"call1 {M()} {x}"
+        elif t == 2:
+            e = f"callAll {Ls()} {x}"
+        elif t == 3:
+            e = f"applyAll {Ls()} {x}"
+        elif t == 4:
+            e = f"useBoth {C()}"
+        elif t == 5:
+            e = f"usePair {C()} {x}"
+        elif t == 6:
+            e = f"firstOr {Ls()} {x}"
+        elif t == 7:                              # a let-bound closure reused
+            lines.append(f"  let f{i} = {C()}")
+            e = f"f{i} {x} + f{i} {x + 1} + callAll [f{i}, f{i}] 1"
+        elif t == 8:                              # a let-bound structure reused
+            lines.append(f"  let m{i} = {M()}")
+            e = f"call1 m{i} {x} + call1 m{i} {x + 2}"
+        else:
+            b = rng.randint(0, 50)
+            e = f"strLen (showInteger (mkI (fromInt {b}) (fromInt {x})))"
+        lines.append(f"  putStrLn (show ({e}))")
+    lines.append("  putStrLn (show (cs 0 + cl 0))")
+    return CLOSURE_PRE + "main :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
+
+HEAP_ARRAY_PRE = """-- fuzz:heap-arrays
+data R = R String Int
+
+sumL :: List Int -> Int
+sumL xs = case xs of
+  Nil -> 0
+  Cons y r -> y + sumL r
+
+mS :: String -> Int
+mS s = strLen s
+
+mI :: Integer -> Int
+mI x = strLen (showInteger x)
+
+mL :: List Int -> Int
+mL xs = sumL xs
+
+mT :: (String, Int) -> Int
+mT t = case t of
+  (a, b) -> strLen a + b
+
+mM :: Maybe String -> Int
+mM m = case m of
+  Just s -> strLen s + 1
+  Nothing -> 0
+
+mR :: R -> Int
+mR r = case r of
+  R s n -> strLen s + n
+
+"""
+
+# per element type: (Axion type, measure fn, literal generator(rng, i-expr or None))
+def _ha_types():
+    return {
+        "S": ("String", "mS", lambda rng, i: rng.choice([f'"{"x" * rng.randint(0, 3)}"',
+                                                         f"show {i}", f'strAppend "a" (show {i})'])),
+        "I": ("Integer", "mI", lambda rng, i: rng.choice([f"fromInt {i}", f"fromInt {i} * fromInt 1000"])),
+        # (no `[]`: a `let`-bound array is generalized before its literals default, so a later
+        # `setArray a i []` gets an element type nothing fixes — natively refused, AX0914)
+        "L": ("List Int", "mL", lambda rng, i: rng.choice([f"[{i}, {i}]", f"[{i}]", f"[1, {i}, 3]"])),
+        "T": ("(String, Int)", "mT", lambda rng, i: f"(show {i}, {i})"),
+        "M": ("Maybe String", "mM", lambda rng, i: rng.choice([f"Just (show {i})", "Nothing"])),
+        "R": ("R", "mR", lambda rng, i: f"R (show {i}) {i}"),
+    }
+
+def gen_heap_array(rng):
+    """Native arrays of HEAP elements (String / Integer / list / tuple / Maybe / record): the
+    array owns its elements — newArray/setArray store copies, getArray returns a copy, setArray
+    frees the replaced element, dropping the array frees every element. Shapes: setArray chains
+    (shadowing and not), repeated reads of one slot, a `%1` fill loop, a borrowed sum loop, an
+    array consumed by a `%1` function, and an array returned by a function. Every program prints
+    Ints: interp == native, ASan/LSan-clean."""
+    key, (T, meas, lit) = rng.choice(sorted(_ha_types().items()))
+    if " " in T and not T.startswith("("):
+        T = f"({T})"                              # `Array (List Int)`
+    n = rng.randint(1, 12)
+    helpers = (
+        f"fillA :: Array {T} %1 -> Int -> Int -> Array {T}\n"
+        f"fillA a i n = if i >= n then a else fillA (setArray a i ({lit(rng, 'i')})) (i + 1) n\n"
+        f"sumA :: Array {T} -> Int -> Int -> Int\n"
+        f"sumA a i n = if i >= n then 0 else {meas} (getArray a i) + sumA a (i + 1) n\n"
+        f"lenC :: Array {T} %1 -> Int\nlenC a = lenArray a\n"
+        f"mkA :: Int -> Array {T}\nmkA k = fillA (newArray k ({lit(rng, 0)})) 0 k\n"
+    )
+    # the initial value must fix the element type: `newArray n []` lets `let` generalize the
+    # binding to `Array (List a)`, which native builds refuse (AX0914, sound) — the later
+    # `setArray`s may store `[]`/`Nothing`, the array's type is fixed by then
+    init = lit(rng, rng.randint(0, 9))
+    while init == "Nothing":
+        init = lit(rng, rng.randint(0, 9))
+    lines = [f"  let a0 = newArray {n} ({init})"]
+    cur = "a0"
+    for j in range(rng.randint(0, 5)):
+        nxt = f"a{j + 1}"
+        lines.append(f"  let {nxt} = setArray {cur} {rng.randint(0, n - 1)} ({lit(rng, rng.randint(0, 99))})")
+        cur = nxt
+    for _ in range(rng.randint(1, 5)):
+        t = rng.randint(0, 5)
+        idx = rng.randint(0, n - 1)
+        if t == 0:
+            e = f"{meas} (getArray {cur} {idx}) + {meas} (getArray {cur} {idx})"
+        elif t == 1:
+            e = f"sumA {cur} 0 {n}"
+        elif t == 2:
+            e = f"lenArray {cur}"
+        elif t == 3:
+            k = rng.randint(0, 8)
+            e = f"sumA (mkA {k}) 0 {k}"
+        elif t == 4:
+            e = f"lenC (fillA (newArray {n} ({lit(rng, 1)})) 0 {n})"
+        else:
+            e = f"{meas} (getArray (mkA {n}) {idx})"
+        lines.append(f"  putStrLn (show ({e}))")
+    if rng.random() < 0.5:
+        lines.append(f"  putStrLn (show (lenC {cur}))")
+    return HEAP_ARRAY_PRE + helpers + "main :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
+    if r < 0.06:
+        return gen_closure_values(rng)  # closures as values: owned, copied, stored, returned
+    if r < 0.10:
+        return gen_heap_array(rng)      # arrays of heap elements: copies in/out, frees
+    r = (r - 0.10) / 0.90               # the rest keep their relative weights
     if r < 0.10:
         return gen_arena(rng)           # native-only
     if r < 0.26:
@@ -1161,7 +1431,10 @@ def main():
     ap.add_argument("--count", type=int, default=200)
     ap.add_argument("--seed", type=int, default=random.randrange(1 << 30))
     ap.add_argument("--keep-going", action="store_true", help="don't stop on first hard failure")
+    ap.add_argument("--only", metavar="NAME",
+                    help="use only the generator gen_NAME (e.g. closure_values, heap_array)")
     a = ap.parse_args()
+    generate = globals()[f"gen_{a.only}"] if a.only else gen
     if not os.path.exists(AXIONC):
         print(f"no axionc at {AXIONC} — build it first"); return 2
     _ensure_rt_a()  # build the Rust runtime staticlib so the ASan link resolves ported symbols
@@ -1172,7 +1445,7 @@ def main():
         work = pathlib.Path(td)
         for i in range(a.count):
             rng = random.Random((a.seed << 20) ^ i)   # per-program seed = reproducible
-            prog = gen(rng)
+            prog = generate(rng)
             verdict, detail = check(prog, work)
             tally[verdict] = tally.get(verdict, 0) + 1
             if verdict in ("corruption", "divergence", "verdict", "hang", "sessleak", "bileak",

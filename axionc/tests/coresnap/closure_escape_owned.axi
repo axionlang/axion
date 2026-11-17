@@ -29,15 +29,19 @@
 
 
                                   drop _t38 : String
+                                  drop satclo1 : Closure
                                   let _d1000000 = putStrLn _t38  ; Δ{_t38}
-                                  let _t37 = call apply2$$mkS 9 0  ; Δ{}
+                                  let _t37 = call apply2 satclo1 0  ; Δ{satclo1}
                                   let _t38 = call show$Int _t37  ; Δ{} · makes String
+                                  let satclo1 = call mkS 9  ; Δ{} · makes Closure
                                   ret _d1000000  ; Δ{}
                                 _ ->
                               drop _t35 : String
-                              let _t34 = call apply2$$adder 3 1  ; Δ{}
+                              drop satclo0
+                              let _t34 = call apply2 satclo0 1  ; Δ{satclo0}
                               let _t35 = call show$Int _t34  ; Δ{} · makes String
                               let _t36 = putStrLn _t35  ; Δ{_t35}
+                              let satclo0 = closure lam$6  ; Δ{} · makes Closure
                               ret case _t36 of
                             _ ->
                           drop _t26 : Closure
@@ -153,8 +157,6 @@
   drop _c0 : String
   drop _c0 : tuple2$String$Int
   drop _c1 : P
-  drop _t0 : Closure
-  drop _t2 : Closure
   drop _t3 : List$Int
   drop _t3 : String
   drop f : Closure
@@ -172,7 +174,6 @@
   let _c0 = loadraw _p+24  ; Δ{}
   let _c1 = loadraw _p+32  ; Δ{}
   let _d1000000 = call mkL _t3 eta$1  ; Δ{_t3}
-  let _d1000000 = callclo _t2 _t1  ; Δ{_t2}
   let _dd0 = loadraw _p+0  ; Δ{}
   let _dd0 = loadraw _p+0  ; Δ{}
   let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
@@ -184,22 +185,19 @@
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = * n 10  ; Δ{}
-  let _t0 = call adder _cap0 x  ; Δ{}
-  let _t0 = call mkS _cap0  ; Δ{} · makes Closure
   let _t0 = call nameOf p  ; Δ{}
   let _t0 = call show$Int n  ; Δ{} · makes String
   let _t0 = call sumL xs  ; Δ{}
   let _t0 = callclo f 1  ; Δ{f}
+  let _t0 = callclo f x  ; Δ{}
   let _t0 = con Nil  ; Δ{} · makes List$Int
   let _t0 = rtcall axion_str_len s  ; Δ{}
   let _t0 = rtcall axion_str_len s  ; Δ{}
-  let _t1 = callclo _t0 x  ; Δ{_t0}
   let _t1 = callclo f 2  ; Δ{f}
   let _t1 = con Cons 3 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   let _t1 = rtcall axion_str_len _t0  ; Δ{}
   let _t2 = + _t0 _t1  ; Δ{}
   let _t2 = + _t1 z  ; Δ{}
-  let _t2 = call mkS _cap0  ; Δ{} · makes Closure
   let _t2 = con Cons 2 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
   let _t3 = call show$Int _t2  ; Δ{} · makes String
   let _t3 = con Cons 1 _t2  ; Δ{_t2} · moves{_t2} · makes List$Int
@@ -219,9 +217,9 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
-  ret _d1000000  ; Δ{}
-  ret call adder _cap0 _t0  ; Δ{}
+  ret call adder 3 eta$3  ; Δ{}
   ret call mkS _t0  ; Δ{} · makes Closure
+  ret callclo f _t0  ; Δ{}
   ret case _t4 of
   ret case p of
   ret case t of
@@ -239,8 +237,7 @@
   ret rtcall axion_free _p  ; Δ{}
   ret showInt x  ; Δ{} · makes String
 adder n z  =
-apply2$$adder _cap0 x  =
-apply2$$mkS _cap0 x  =
+apply2 f x  =
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Int _p  =
@@ -257,6 +254,7 @@ lam$2 [env t]z  =
 lam$3 [env s]z  =
 lam$4 [env ]z  =
 lam$5 [env ]eta$1  =
+lam$6 [env ]eta$3  =
 main  =
 mkI b z  =
 mkL xs z  =

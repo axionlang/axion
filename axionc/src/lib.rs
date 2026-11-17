@@ -1875,6 +1875,11 @@ fn specialize_hofs(
         ));
     }
     let skip = constrained_method_closures(module);
+    // `useBoth (getF m)`: a COMPLETE call in a closure slot (it supplies all of `getF`'s clause
+    // parameters and returns a closure) is not a partial application — specializing it as one
+    // would re-run `getF m` at each use of the closure, consuming `m` again each time (a false
+    // AX0001 on the compiler's own `_cap0`). Bind it once, outside the call.
+    hoist_saturated_closure_args(module, &all_arrows);
     // `let p = \s -> … in keepWith p xs`: the lambda reaches the closure slot through a name.
     // Put it in the slot, so the lifts below see a literal lambda there.
     for f in &mut module.funcs {
@@ -2083,6 +2088,113 @@ fn constrained_method_closures(module: &ast::Module) -> std::collections::HashSe
         }
     }
     out
+}
+
+/// Rewrites `h … (g a₁ … aₖ) …`, where the closure slot of HOF `h` holds a call that supplies at
+/// least all of `g`'s clause parameters, into `let satcloN = g a₁ … aₖ in h … satcloN …`: the
+/// closure is computed once and passed as a value (see `specialize_hofs`).
+fn hoist_saturated_closure_args(
+    module: &mut ast::Module,
+    all_arrows: &std::collections::HashMap<String, Vec<usize>>,
+) {
+    use std::collections::HashMap;
+    let arity: HashMap<String, usize> = module
+        .funcs
+        .iter()
+        .filter_map(|f| Some((f.name.clone(), f.clauses.first()?.pats.len())))
+        .collect();
+    let mut ctr = 0usize;
+    // the `i`-th argument (of `n`) of an application spine, mutably
+    fn arg_mut(e: &mut ast::Expr, n: usize, i: usize) -> Option<&mut ast::Expr> {
+        let mut cur = e;
+        for _ in 0..(n - 1 - i) {
+            match cur {
+                ast::Expr::App(f, _, _) => cur = f,
+                _ => return None,
+            }
+        }
+        match cur {
+            ast::Expr::App(_, a, _) => Some(a),
+            _ => None,
+        }
+    }
+    fn go(
+        e: &mut ast::Expr,
+        arity: &HashMap<String, usize>,
+        all_arrows: &HashMap<String, Vec<usize>>,
+        ctr: &mut usize,
+    ) {
+        // an application spine is ONE unit: recurse into its arguments and head, never into its
+        // partial prefixes (hoisting there would wrap `pick True satclo0` in a `let` and split the
+        // spine of `pick True a b 1`)
+        if let ast::Expr::App(..) = e {
+            let mut cur: &mut ast::Expr = e;
+            loop {
+                match cur {
+                    ast::Expr::App(f, a, _) => {
+                        go(a, arity, all_arrows, ctr);
+                        cur = f;
+                    }
+                    other => {
+                        go(other, arity, all_arrows, ctr);
+                        break;
+                    }
+                }
+            }
+        } else {
+            for_each_subexpr_mut(e, &mut |c| go(c, arity, all_arrows, ctr));
+        }
+        let ast::Expr::App(..) = e else { return };
+        let (slots, n) = {
+            let (head, args) = app_spine(e);
+            let ast::Expr::Var(h, _) = head else { return };
+            let Some(ks) = all_arrows.get(h) else { return };
+            let sat: Vec<usize> = ks
+                .iter()
+                .copied()
+                .filter(|&k| {
+                    args.get(k).is_some_and(|a| {
+                        let (ch, caps) = app_spine(a);
+                        matches!(ch, ast::Expr::Var(g, _)
+                            if !caps.is_empty()
+                                && arity.get(g).is_some_and(|&ar| caps.len() >= ar))
+                    })
+                })
+                .collect();
+            (sat, args.len())
+        };
+        if slots.is_empty() {
+            return;
+        }
+        let span = e.span();
+        let mut binds = Vec::new();
+        for k in slots {
+            let Some(arg) = arg_mut(e, n, k) else {
+                continue;
+            };
+            let name = format!("satclo{ctr}");
+            *ctr += 1;
+            let asp = arg.span();
+            let call = std::mem::replace(arg, ast::Expr::Var(name.clone(), asp));
+            binds.push(ast::Func {
+                name,
+                sig: None,
+                clauses: vec![ast::Clause {
+                    pats: Vec::new(),
+                    body: ast::Body::Plain(call),
+                    wher: Vec::new(),
+                    span: asp,
+                }],
+                span: asp,
+                constraints: Vec::new(),
+            });
+        }
+        let inner = std::mem::replace(e, ast::Expr::Int(0, span));
+        *e = ast::Expr::Let(binds, Box::new(inner), span);
+    }
+    for f in &mut module.funcs {
+        for_each_func_expr_mut(f, &mut |e| go(e, &arity, all_arrows, &mut ctr));
+    }
 }
 
 /// Substitutes a `let`-bound lambda (`let p = \s -> strLen s > n`) into the closure slots of

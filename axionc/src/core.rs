@@ -7010,6 +7010,7 @@ pub fn lower_with(
         let owning = own_escaping_closures(&mut out, &cx, &mut copy_seeds, &mut mono_seeds);
         key_fresh_closure_calls(&mut out);
         copy_embedded_closures(&mut out, &recinfo, makecon_tys, &fn_param_types);
+        copy_returned_closure_params(&mut out, &fn_param_types);
         owning
     };
     let mut borrow_args =
@@ -8858,6 +8859,32 @@ fn copy_embedded_closures(
             fresh: &fresh,
         };
         f.body = copy_closures_in(body, &cx, &mut ctr);
+    }
+}
+
+/// A function returning a closure gives its caller an owned one (key `Closure`), so a function-
+/// typed parameter it does not own, returned whole (`pick b f g = if b then f else g`), is returned
+/// as a COPY: else the caller and the argument's owner both free one cell. (The general
+/// alias-return copy skips these functions: their declared types outnumber their parameters.)
+fn copy_returned_closure_params(out: &mut [CoreFn], fn_param_types: &HashMap<String, Vec<Type>>) {
+    let mut ctr = 0usize;
+    for f in out.iter_mut() {
+        let Some(tys) = fn_param_types.get(&f.name) else {
+            continue;
+        };
+        if tys.len() < f.params.len() {
+            continue; // lifted `where` captures lead: not a signed function's own params
+        }
+        let targets: HashMap<String, CopyKind> = f
+            .params
+            .iter()
+            .zip(tys)
+            .filter(|(p, t)| matches!(t, Type::Arrow { .. }) && !f.owned_params.contains(p))
+            .map(|(p, _)| (p.clone(), CopyKind::Closure))
+            .collect();
+        if !targets.is_empty() {
+            rewrite_alias_tails(&mut f.body, &targets, &mut ctr);
+        }
     }
 }
 
