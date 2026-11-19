@@ -48,6 +48,8 @@ NATIVE=(
   axionc/tests/fixtures/ffi_consumed_handle_scalar_let.axi
   axionc/tests/fixtures/layout_paren_in.axi
   axionc/tests/fixtures/buffer_borrow_one_branch.axi
+  axionc/tests/fixtures/nested_mixed_cond.axi
+  axionc/tests/fixtures/axmpv_m7_regressions.axi
   axionc/tests/fixtures/integer_reclaim.axi
   axionc/tests/fixtures/integer_accumulator.axi
   axionc/tests/fixtures/integer_divmod.axi

@@ -517,8 +517,17 @@ fn op_is_fresh_wrt_args(op: &Op) -> bool {
         // bignum arith → a fresh `Integer`; a String producer → a fresh copy; a scalar
         // reader (strLen/strCmp/…, §pass capability Int-returners) → a fresh Int.
         Op::RtCall { func, .. } => {
-            is_bignum_borrower(func) || is_string_producer(func) || is_scalar_reader(func)
+            is_bignum_borrower(func)
+                || is_string_producer(func)
+                || is_scalar_reader(func)
+                // `ePutStr`/`ePutStrLn`: print to stderr, like `putStr`/`putStrLn` above
+                || func == "axion_eput"
+                || func == "axion_eputs"
         }
+        // A foreign call: C returns a scalar or an opaque handle, never a value Axión owns or a
+        // pointer into one in Axión's model (an `Own` argument is a MOVE, which `rhs_moves` sees
+        // first) — so a borrowed argument (`creat name 420`) stays reclaimable.
+        Op::Ffi { .. } => true,
         _ => false,
     }
 }
@@ -12160,53 +12169,69 @@ fn reused_after_call(
 ) -> HashMap<String, HashSet<usize>> {
     let mut reused: HashMap<String, HashSet<usize>> = HashMap::new();
     for f in fns {
-        scan_reuse(&f.body, ret_alias, &mut reused);
+        scan_reuse(&f.body, ret_alias, &[], &mut reused);
     }
     reused
 }
 
+/// `conts`: what runs after `t` returns — the bodies of the enclosing `let x = if/case …` whose arm
+/// `t` is. A call in an arm's TAIL (`let p2 = if c then g p1 else …; … p1 …`) is not a function
+/// return: its value flows into the `let`, and `p1` is reused if a continuation mentions it.
 fn scan_reuse(
     t: &Term,
     ret_alias: &HashMap<String, HashSet<usize>>,
+    conts: &[&Term],
     reused: &mut HashMap<String, HashSet<usize>>,
 ) {
-    match t {
-        Term::Let(_, Rhs::Op(Op::CallDirect(g, args, _)), _, body) => {
-            if let Some(ra) = ret_alias.get(g) {
-                for &j in ra {
-                    if let Some(Atom::Var(a)) = args.get(j) {
-                        if term_mentions_any(body, &HashSet::from([a.clone()])) {
-                            reused.entry(g.clone()).or_default().insert(j);
-                        }
+    let mut note = |g: &String, args: &[Atom], after: &[&Term]| {
+        if let Some(ra) = ret_alias.get(g) {
+            for &j in ra {
+                if let Some(Atom::Var(a)) = args.get(j) {
+                    let set = HashSet::from([a.clone()]);
+                    if after.iter().any(|c| term_mentions_any(c, &set)) {
+                        reused.entry(g.clone()).or_default().insert(j);
                     }
                 }
             }
-            scan_reuse(body, ret_alias, reused);
+        }
+    };
+    match t {
+        Term::Let(_, Rhs::Op(Op::CallDirect(g, args, _)), _, body) => {
+            let mut after: Vec<&Term> = vec![body.as_ref()];
+            after.extend_from_slice(conts);
+            note(g, args, &after);
+            scan_reuse(body, ret_alias, conts, reused);
         }
         Term::Let(_, Rhs::If(_, a, b), _, body) => {
-            scan_reuse(a, ret_alias, reused);
-            scan_reuse(b, ret_alias, reused);
-            scan_reuse(body, ret_alias, reused);
+            let mut inner: Vec<&Term> = vec![body.as_ref()];
+            inner.extend_from_slice(conts);
+            scan_reuse(a, ret_alias, &inner, reused);
+            scan_reuse(b, ret_alias, &inner, reused);
+            scan_reuse(body, ret_alias, conts, reused);
         }
         Term::Let(_, Rhs::Case(_, arms), _, body) => {
+            let mut inner: Vec<&Term> = vec![body.as_ref()];
+            inner.extend_from_slice(conts);
             for (_, arm) in arms {
-                scan_reuse(arm, ret_alias, reused);
+                scan_reuse(arm, ret_alias, &inner, reused);
             }
-            scan_reuse(body, ret_alias, reused);
+            scan_reuse(body, ret_alias, conts, reused);
         }
         Term::Let(_, Rhs::Op(_), _, body) | Term::Drop(_, _, _, _, body) => {
-            scan_reuse(body, ret_alias, reused);
+            scan_reuse(body, ret_alias, conts, reused);
         }
         Term::Ret(Rhs::If(_, a, b), _) => {
-            scan_reuse(a, ret_alias, reused);
-            scan_reuse(b, ret_alias, reused);
+            scan_reuse(a, ret_alias, conts, reused);
+            scan_reuse(b, ret_alias, conts, reused);
         }
         Term::Ret(Rhs::Case(_, arms), _) => {
             for (_, arm) in arms {
-                scan_reuse(arm, ret_alias, reused);
+                scan_reuse(arm, ret_alias, conts, reused);
             }
         }
-        // a tail `ret op` (incl. a tail call): no continuation → no reuse-after.
+        // a tail call: reused only if a continuation (an enclosing let-bound arm's) mentions it;
+        // a real function return (no continuation) never reuses.
+        Term::Ret(Rhs::Op(Op::CallDirect(g, args, _)), _) => note(g, args, conts),
         Term::Ret(Rhs::Op(_), _) => {}
     }
 }
@@ -13099,8 +13124,11 @@ fn copy_mixed_cond_arms(
         }
     }
     // at least one arm must be a recognized owned heap producer — or the arms' type is known
-    // otherwise (`hint`: a `case` arm returning a String/Integer field it bound)
-    let key = key.or(hint)?;
+    // otherwise (`hint`: a `case` arm returning a String/Integer field it bound), or an owned leaf
+    // of a nested conditional names it (`if a then "x" else if b then s ++ t else ""`)
+    let key = key
+        .or(hint)
+        .or_else(|| arms.iter().find_map(|a| leaf_owned_key(a, br, recinfo)))?;
     if !any_nonowned {
         return None; // all owned → the existing all-heap path handles it
     }
@@ -13117,7 +13145,8 @@ fn copy_mixed_cond_arms(
         if arm_owned_key(&a, br, recinfo).is_some() {
             Some(a) // owned arm: already the key, keep as-is
         } else {
-            wrap_tail_copy(a, &key)
+            // copy each non-owned leaf, through nested conditionals too
+            copy_leaves(a, &key, br, recinfo, &mut HashMap::new())
         }
     };
     let new_rhs = match rhs.clone() {
@@ -13266,6 +13295,82 @@ fn copier_calls(t: &Term, out: &mut HashSet<String>) {
         }
         Term::Drop(_, _, _, _, b) => copier_calls(b, out),
         Term::Ret(r, _) => rhs(r, out),
+    }
+}
+
+/// The owned key of some leaf of `t` (a tail value of it, through nested conditionals).
+fn leaf_owned_key(
+    t: &Term,
+    br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+) -> Option<String> {
+    if let Some(k) = arm_owned_key(t, br, recinfo) {
+        return Some(k);
+    }
+    match t {
+        Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => leaf_owned_key(b, br, recinfo),
+        Term::Ret(Rhs::If(_, a, b), _) => {
+            leaf_owned_key(a, br, recinfo).or_else(|| leaf_owned_key(b, br, recinfo))
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => arms
+            .iter()
+            .find_map(|(_, a)| leaf_owned_key(a, br, recinfo)),
+        Term::Ret(Rhs::Op(_), _) => None,
+    }
+}
+
+/// `t` with every leaf (tail value, through nested conditionals) an owned `key` value: an owned
+/// leaf of that key is kept, a bare atom is copied; anything else gives up (`None`).
+fn copy_leaves(
+    t: Term,
+    key: &str,
+    br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+    env: &mut HashMap<String, Option<String>>,
+) -> Option<Term> {
+    match t {
+        Term::Let(x, r, sp, b) => {
+            let k = match &r {
+                Rhs::Op(op) => op_owned_key(op, br, recinfo),
+                Rhs::If(..) | Rhs::Case(..) => cond_temp_key(&r, br, recinfo),
+            };
+            env.insert(x.clone(), k);
+            Some(Term::Let(
+                x,
+                r,
+                sp,
+                Box::new(copy_leaves(*b, key, br, recinfo, env)?),
+            ))
+        }
+        Term::Drop(v, k, sk, sp, b) => Some(Term::Drop(
+            v,
+            k,
+            sk,
+            sp,
+            Box::new(copy_leaves(*b, key, br, recinfo, env)?),
+        )),
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp)
+            if env.get(&v).cloned().flatten().as_deref() == Some(key) =>
+        {
+            Some(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp))
+        }
+        Term::Ret(Rhs::Op(Op::Atom(a)), sp) => {
+            wrap_tail_copy(Term::Ret(Rhs::Op(Op::Atom(a)), sp), key)
+        }
+        Term::Ret(Rhs::Op(op), sp) => (op_owned_key(&op, br, recinfo).as_deref() == Some(key))
+            .then_some(Term::Ret(Rhs::Op(op), sp)),
+        Term::Ret(Rhs::If(c, a, b), sp) => {
+            let a = copy_leaves(*a, key, br, recinfo, &mut env.clone())?;
+            let b = copy_leaves(*b, key, br, recinfo, &mut env.clone())?;
+            Some(Term::Ret(Rhs::If(c, Box::new(a), Box::new(b)), sp))
+        }
+        Term::Ret(Rhs::Case(sc, arms), sp) => {
+            let arms = arms
+                .into_iter()
+                .map(|(p, a)| copy_leaves(a, key, br, recinfo, &mut env.clone()).map(|a| (p, a)))
+                .collect::<Option<Vec<_>>>()?;
+            Some(Term::Ret(Rhs::Case(sc, arms), sp))
+        }
     }
 }
 
@@ -13436,6 +13541,21 @@ fn reclaim_cond_escape(
                         }) if r == v
                             && (recinfo.named_field_is_scalar(name)
                                 || alias_only_read_fresh(&x, &b)) =>
+                        {
+                            true
+                        }
+                        // a by-copy update of v whose result is freed later on this path with a
+                        // skip-destructor leaving the shared fields to v: v still frees them, so
+                        // it stays owned (dropped at the end of the path, after the result)
+                        Rhs::Op(Op::UpdateRecord {
+                            base: Atom::Var(bv),
+                            fields,
+                            inplace: false,
+                            ..
+                        }) if bv == v && {
+                            let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                            result_skip_dropped(&b, &x, &recinfo.update_shared_fields(&names))
+                        } =>
                         {
                             true
                         }
@@ -14485,6 +14605,19 @@ fn result_may_be_heap(t: &Term, recinfo: &RecordInfo) -> bool {
 /// `true` if any variable in `set` appears as an operand of `op`. Exhaustive
 /// (no wildcard) so a newly-added `Op` variant forces a decision here rather than
 /// silently escaping the payload-alias analysis.
+/// Is `x` freed further down this straight path (not inside a branch) by a keyed drop whose skip
+/// covers `shared` — i.e. it leaves those fields to someone else?
+fn result_skip_dropped(t: &Term, x: &str, shared: &[usize]) -> bool {
+    match t {
+        Term::Drop(y, Some(_), skip, _, b) => {
+            (y == x && !skip.is_empty() && shared.iter().all(|i| skip.contains(i)))
+                || result_skip_dropped(b, x, shared)
+        }
+        Term::Drop(_, _, _, _, b) | Term::Let(_, _, _, b) => result_skip_dropped(b, x, shared),
+        Term::Ret(..) => false,
+    }
+}
+
 /// `true` if every use of `x` in `t` is an operand of an op whose result cannot alias it
 /// (`op_is_fresh_wrt_args`) — `x` is never returned, stored, scrutinized, passed on or dropped.
 fn alias_only_read_fresh(x: &str, t: &Term) -> bool {

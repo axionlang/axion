@@ -7298,6 +7298,7 @@ fn axmpv_regressions_agree_on_every_backend() {
         ),
         ("record_update_base_dies_first.axi", "9\n"),
         ("buffer_borrow_one_branch.axi", "1 9\n"),
+        ("nested_mixed_cond.axi", "x d5x offx\n<neg><zero><one1><many>\n"),
     ];
     for (name, want) in cases {
         let fx = fixture(name);
@@ -7380,5 +7381,32 @@ fn in_inside_a_bracket_does_not_close_the_outer_let() {
     for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
         let out = axionc().args(&flags).arg(&fx).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "130 8\n", "{flags:?}");
+    }
+}
+
+/// axmpv's last milestone (`axmpv_m7_regressions.axi`): a callee returning its argument whole called
+/// in a let-bound arm with the argument reused after the join; a fresh String read by a foreign call
+/// and returned on one path; a mixed conditional printed to stderr. Native backends only (the
+/// interpreter refuses a String FFI argument by design).
+#[test]
+fn axmpv_m7_regressions_agree_natively() {
+    let fx = fixture("axmpv_m7_regressions.axi");
+    for flags in [vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "7 4 12\n[][f42]\n12 3 12\n",
+            "{flags:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "n=3\nnone\n",
+            "{flags:?}"
+        );
     }
 }
