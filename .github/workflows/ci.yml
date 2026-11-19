@@ -184,6 +184,14 @@ jobs:
       # Asserts inferred types + type-error messages agree on every backend.
       - name: typecheck inferencer behavioral test (all backends)
         run: ./scripts/typecheck-test.sh
+      # The mpv-like player (examples/axmpv/): its pure core (CoreTest) must print the same on every
+      # backend and run ASan/LSan-clean; the player itself plays generated test media headless
+      # (SDL's dummy drivers) under ASan/LSan, driven by a --script, and its final status is
+      # asserted. AXMPV_TEST_REQUIRE=1: a missing ffmpeg/SDL2/clang is a failure, not a skip.
+      - name: Install ffmpeg + SDL2
+        run: sudo apt-get install -y ffmpeg libsdl2-dev
+      - name: axmpv player behavioral test (all backends + headless ASan)
+        run: AXMPV_TEST_REQUIRE=1 AXMPV_SDL_LIBS=/usr/lib/x86_64-linux-gnu AXION_CLANG=clang ./scripts/axmpv-test.sh
 
   # METATHEORY (Track 2) — the mechanized soundness proofs AND the faithfulness bridge (the Lean
   # model's verdict == the real verifier's) must hold. Previously run ONLY on developer machines, so
