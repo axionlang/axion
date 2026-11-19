@@ -95,6 +95,8 @@ run_player() {
     -f lavfi -i sine=frequency=440:duration=4 -c:v mpeg4 -q:v 5 -c:a aac -shortest "$WORK/a.mkv" \
     && $ff ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc2=duration=2:size=160x120:rate=10 \
     -c:v mpeg4 -q:v 5 "$WORK/b.mkv" || { echo "✗ could not generate test media"; fail=1; return; }
+  # subtitles beside a.mkv (picked up by name), with markup and UTF-8 to clean
+  printf '1\n00:00:00,300 --> 00:00:03,500\n<i>Olá</i>, legenda — longa o bastante para ser quebrada em várias linhas pelo axmpv\n\n2\n00:00:03,600 --> 00:00:04,000\nfim\n' > "$WORK/a.srt"
   if ! "$AXIONC" --emit llvm "$DIR/axmpv.axi" > "$WORK/axmpv.ll"; then
     echo "✗ axmpv.axi does not compile natively"; fail=1; return
   fi
@@ -106,15 +108,17 @@ run_player() {
        "${lflags[@]}" -l:libSDL2.so -l:libc.so.6 -ldl -lm -o "$WORK/axmpv"; then
     echo "✗ could not build the ASan player"; fail=1; return
   fi
+  # Every run gets a sandboxed HOME: no user config is read, nothing is written under the real one.
+  mkdir -p "$WORK/home"
   # pause/unpause, a seek back, then quit before the end. (Script times are wall time; ffmpeg's start-up
   # after open and seek is not playback time, so the bounds on frames/pos are loose.)
-  printf '600 pause\n1000 pause\n1400 seek_backward\n1900 quit\n' > "$WORK/s1"
+  printf '200 info\n600 pause\n1000 pause\n1400 seek_backward\n1900 quit\n' > "$WORK/s1"
   # play both files through to the end (the playlist ends the program)
   printf '' > "$WORK/s2"
   local out1 out2
-  out1=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  out1=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" HOME="$WORK/home" SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
     timeout 60 ./axmpv --script s1 a.mkv 2> s1.err | tail -1)
-  out2=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  out2=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" HOME="$WORK/home" SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
     timeout 60 ./axmpv --script s2 a.mkv b.mkv 2> s2.err | tail -1)
   check_status() { # name, status line, error file, awk condition on frames/dropped/pos/idx
     if grep -qE "ERROR: (Address|Leak)Sanitizer" "$3"; then
@@ -133,10 +137,10 @@ run_player() {
   check_status "player: pause + seek + quit" "$out1" "$WORK/s1.err" s1
   check_status "player: two-file playlist to the end" "$out2" "$WORK/s2.err" s2
 
-  # config.lua + keys + audio: an option row sets the volume, keys go through the keymap (`9` =
-  # volume_down by default, `m` mute, `gg` a `!command` binding), a speed change respawns the audio
-  # pipe. HOME is sandboxed (the keymap is written under it).
-  mkdir -p "$WORK/home"
+  # config.lua + keys + audio + subtitles: an option row sets the volume, keys go through the keymap
+  # (`9` = volume_down by default, `m` mute, `gg` a `!command` binding, `x x z` = +100 ms subtitle
+  # delay, `v v v` = subtitles off), a speed change respawns the audio pipe; the subtitle is on
+  # screen for most of the run.
   cat > "$WORK/cfg.lua" <<'LUA'
 -- test config
 local config = {
@@ -146,18 +150,66 @@ local config = {
 }
 return config
 LUA
-  printf '300 key:9\n500 key:m\n700 speed_up\n900 key:gg\n1300 quit\n' > "$WORK/s3"
+  printf '300 key:9\n500 key:m\n700 speed_up\n900 key:gg\n1000 key:x\n1050 key:x\n1100 key:z\n1150 key:v\n1200 key:v\n1250 key:v\n1300 quit\n' > "$WORK/s3"
   local out3
   out3=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" HOME="$WORK/home" SDL_VIDEODRIVER=dummy \
     SDL_AUDIODRIVER=dummy timeout 60 ./axmpv --config cfg.lua --script s3 a.mkv 2> s3.err | tail -1)
   if grep -qE "ERROR: (Address|Leak)Sanitizer" "$WORK/s3.err"; then
     echo "✗ player: config + keys + audio: sanitizer report:"; grep -E "ERROR|SUMMARY" "$WORK/s3.err" | head -5; fail=1
-  elif echo "$out3" | grep -q "vol=58 muted=1 speed=110" && [ -s "$WORK/marks.txt" ] \
+  elif echo "$out3" | grep -q "vol=58 muted=1 speed=110 idx=0 sub=0 subdelay=100" && [ -s "$WORK/marks.txt" ] \
        && grep -qE '^[0-9]+$' "$WORK/marks.txt"; then
     echo "✓ player: config + keys + audio: $out3 (mark at $(cat "$WORK/marks.txt") s)"
   else
     echo "✗ player: config + keys + audio: unexpected status '$out3' (marks: $(cat "$WORK/marks.txt" 2>/dev/null))"
     head -5 "$WORK/s3.err"; fail=1
+  fi
+
+  # screenshot + A-B loop: `s` writes axmpv-shot-0001.ppm (a 320x240 binary PPM of the frame), `l l`
+  # sets A and B ~0.4 s apart; at quit (wall 2.2 s) playback must still be inside the loop.
+  printf '300 screenshot\n500 ab_loop\n900 ab_loop\n2200 quit\n' > "$WORK/s4"
+  local out4 shot="$WORK/axmpv-shot-0001.ppm"
+  out4=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" HOME="$WORK/home" SDL_VIDEODRIVER=dummy \
+    SDL_AUDIODRIVER=dummy timeout 60 ./axmpv --script s4 a.mkv 2> s4.err | tail -1)
+  local p4 size nonblack
+  p4=$(echo "$out4" | sed -n 's/.* pos=\([0-9]*\).*/\1/p')
+  size=$(stat -c %s "$shot" 2>/dev/null || echo 0)
+  nonblack=$(tail -c +16 "$shot" 2>/dev/null | od -An -tu1 -v | tr -s ' ' '\n' | grep -vc '^0*$')
+  if grep -qE "ERROR: (Address|Leak)Sanitizer" "$WORK/s4.err"; then
+    echo "✗ player: screenshot + A-B loop: sanitizer report:"; grep -E "ERROR|SUMMARY" "$WORK/s4.err" | head -5; fail=1
+  elif echo "$out4" | grep -q "shots=1" && [ "$(head -c 15 "$shot")" = "$(printf 'P6\n320 240\n255\n')" ] \
+       && [ "$size" = 230415 ] && [ "$nonblack" -gt 100000 ] && [ -n "$p4" ] && [ "$p4" -le 1100 ]; then
+    echo "✓ player: screenshot + A-B loop: $out4 (PPM $size bytes)"
+  else
+    echo "✗ player: screenshot + A-B loop: '$out4' (PPM size $size, non-zero bytes $nonblack)"; head -5 "$WORK/s4.err"; fail=1
+  fi
+
+  # loop-file: `L` early; the 4 s clip must restart at its end instead of ending the run (one file,
+  # so without the loop the player would have quit at ~4 s), still on it at wall 6 s.
+  printf '200 key:L\n6000 quit\n' > "$WORK/s5"
+  local out5 f5
+  out5=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" HOME="$WORK/home" SDL_VIDEODRIVER=dummy \
+    SDL_AUDIODRIVER=dummy timeout 60 ./axmpv --script s5 a.mkv 2> s5.err | tail -1)
+  f5=$(echo "$out5" | sed -n 's/^frames=\([0-9]*\).*/\1/p')
+  if grep -qE "ERROR: (Address|Leak)Sanitizer" "$WORK/s5.err"; then
+    echo "✗ player: loop-file: sanitizer report:"; grep -E "ERROR|SUMMARY" "$WORK/s5.err" | head -5; fail=1
+  elif echo "$out5" | grep -q "idx=0 .*loop=1" && [ -n "$f5" ] && [ "$f5" -gt 100 ]; then
+    echo "✓ player: loop-file: $out5"
+  else
+    echo "✗ player: loop-file: unexpected status '$out5'"; head -5 "$WORK/s5.err"; fail=1
+  fi
+
+  # zoom / pan / rotate: alt++ twice, r, alt+→ (drawn rotated, zoomed and moved for a while), then
+  # alt+backspace = fit: zoom and pan reset, the rotation kept
+  printf '200 key:M-+\n250 key:M-+\n300 key:r\n350 key:M-<Right>\n1200 key:M-<BS>\n1500 quit\n' > "$WORK/s6"
+  local out6
+  out6=$(cd "$WORK" && env -u LD_LIBRARY_PATH LD_LIBRARY_PATH="$libs" HOME="$WORK/home" SDL_VIDEODRIVER=dummy \
+    SDL_AUDIODRIVER=dummy timeout 60 ./axmpv --script s6 a.mkv 2> s6.err | tail -1)
+  if grep -qE "ERROR: (Address|Leak)Sanitizer" "$WORK/s6.err"; then
+    echo "✗ player: zoom/pan/rotate: sanitizer report:"; grep -E "ERROR|SUMMARY" "$WORK/s6.err" | head -5; fail=1
+  elif echo "$out6" | grep -q "zoom=100 pan=0,0 rot=90"; then
+    echo "✓ player: zoom/pan/rotate: $out6"
+  else
+    echo "✗ player: zoom/pan/rotate: unexpected status '$out6'"; head -5 "$WORK/s6.err"; fail=1
   fi
 }
 run_player

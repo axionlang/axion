@@ -113,13 +113,15 @@ data Player = Player
   { pos :: Int, dur :: Int, vol :: Int, muted :: Bool, paused :: Bool, speed :: Int
   , loopA :: Int, loopB :: Int, subOn :: Bool, subDelay :: Int, osdOn :: Bool, osdPing :: Bool
   , infoOn :: Bool, fullscreen :: Bool, idx :: Int, nfiles :: Int, effect :: Int, seekTo :: Int
-  , keys :: String }
+  , keys :: String, loopFile :: Bool, zoom :: Int, panX :: Int, panY :: Int, rot :: Int
+  , zoomStep :: Int, panStep :: Int }
 
 newPlayer :: Int -> Player
 newPlayer n = Player
   { pos = 0, dur = 0, vol = 100, muted = False, paused = False, speed = 100
   , loopA = 0 - 1, loopB = 0 - 1, subOn = True, subDelay = 0, osdOn = False, osdPing = False
-  , infoOn = False, fullscreen = False, idx = 0, nfiles = n, effect = 0, seekTo = 0, keys = "" }
+  , infoOn = False, fullscreen = False, idx = 0, nfiles = n, effect = 0, seekTo = 0, keys = "", loopFile = False
+  , zoom = 100, panX = 0, panY = 0, rot = 0, zoomStep = 10, panStep = 5 }
 
 -- the effect has been performed
 settled :: Player -> Player
@@ -186,6 +188,16 @@ actions =
   , Action "info" (\p -> p { infoOn = not (infoOn p) })
   , Action "screenshot" (\p -> ping (p { effect = effShot }))
   , Action "ab_loop" abLoop
+  , Action "loop_file" (\p -> ping (p { loopFile = not (loopFile p) }))
+  , Action "zoom_in" (\p -> ping (p { zoom = clamp 10 1600 (imax (zoom p + 1) (zoom p * (100 + zoomStep p) / 100)) }))
+  , Action "zoom_out" (\p -> ping (p { zoom = clamp 10 1600 (zoom p * 100 / (100 + zoomStep p)) }))
+  , Action "fit" (\p -> ping (p { zoom = 100, panX = 0, panY = 0 }))
+  , Action "pan_left" (\p -> ping (p { panX = panX p - 1 }))
+  , Action "pan_right" (\p -> ping (p { panX = panX p + 1 }))
+  , Action "pan_up" (\p -> ping (p { panY = panY p - 1 }))
+  , Action "pan_down" (\p -> ping (p { panY = panY p + 1 }))
+  , Action "rotate" (\p -> ping (p { rot = mod (rot p + 90) 360 }))
+  , Action "rotate_ccw" (\p -> ping (p { rot = mod (rot p + 270) 360 }))
   , Action "sub_toggle" (\p -> ping (p { subOn = not (subOn p) }))
   , Action "sub_delay_up" (\p -> ping (p { subDelay = subDelay p + 100 }))
   , Action "sub_delay_down" (\p -> ping (p { subDelay = subDelay p - 100 }))
@@ -291,6 +303,16 @@ defaultAction t =
   else if t == "i" then "info"
   else if t == "s" then "screenshot"
   else if t == "l" then "ab_loop"
+  else if t == "L" then "loop_file"
+  else if t == "M-<Left>" then "pan_left"
+  else if t == "M-<Right>" then "pan_right"
+  else if t == "M-<Up>" then "pan_up"
+  else if t == "M-<Down>" then "pan_down"
+  else if t == "M-+" || t == "M-=" then "zoom_in"
+  else if t == "M--" then "zoom_out"
+  else if t == "M-<BS>" then "fit"
+  else if t == "r" then "rotate"
+  else if t == "R" then "rotate_ccw"
   else if t == "v" then "sub_toggle"
   else if t == "x" then "sub_delay_up"
   else if t == "z" then "sub_delay_down"
@@ -329,10 +351,11 @@ ippGo xs acc = case xs of
     let b = kmKey y in
     if (strLen b > strLen acc) && hasPrefix acc b then True else ippGo ys acc
 
--- an option row's value (`{ option = "volume", value = "70" }` → the line `=volume<TAB>70`)
+-- an option row's value (`{ option = "volume", value = "70" }` → the line `\x01volume<TAB>70`; the
+-- control character keeps option rows apart from key rows — a key may well be `=`)
 optionOr :: String -> String -> String -> String
 optionOr km name dflt =
-  let v = lookupAction km (strAppend "=" name) in
+  let v = lookupAction km (strAppend "\x01" name) in
   if strLen v > 0 then v else dup dflt
 
 -- The action for key token `tok` arriving after the `pending` keys of an unfinished sequence: the
@@ -366,7 +389,7 @@ keymapFile d = envOr "HOME" "." ++ "/.cache/axmpv/keymap"
 
 -- The config: ~/.config/axmpv/config.lua → the keymap file, once at start-up (one `sh`). Each
 -- `{ key = "K", action = "A" }` row becomes a `K<TAB>A` line and each `{ option = "O", value = "V" }`
--- row a `=O<TAB>V` line; `--` comment lines are skipped. No config → an empty keymap.
+-- row a `\x01O<TAB>V` line; `--` comment lines are skipped. No config → an empty keymap.
 keymapCmd :: String -> String -> String
 keymapCmd cfg km =
   "cfg=" ++ shQuote cfg ++ "; km=" ++ shQuote km
@@ -377,17 +400,21 @@ keymapCmd cfg km =
   ++ "[ -n \"$k\" ] && [ -n \"$a\" ] && printf '%s\\t%s\\n' \"$k\" \"$a\" >> \"$km\" ;; "
   ++ "*option*value*) o=$(printf '%s\\n' \"$line\" | sed -n 's/.*option[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); "
   ++ "v=$(printf '%s\\n' \"$line\" | sed -n 's/.*value[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); "
-  ++ "[ -n \"$o\" ] && printf '=%s\\t%s\\n' \"$o\" \"$v\" >> \"$km\" ;; esac; done; true"
+  ++ "[ -n \"$o\" ] && printf '\\001%s\\t%s\\n' \"$o\" \"$v\" >> \"$km\" ;; esac; done; true"
 
 -- The player as the config's options set it up: volume, speed (percent), fullscreen, subtitles,
--- OSD ("yes"/"no").
+-- OSD, loop (the whole file; "yes"/"no"), zoom_step (percent per zoom press), pan_step (percent of
+-- the window per pan press).
 configured :: String -> Player -> Player
 configured km p =
-  p { vol = clamp 0 150 (intOr 100 (optionOr km "volume" "100"))
+  p { vol = clamp 0 130 (intOr 100 (optionOr km "volume" "100"))
     , speed = clamp 25 400 (intOr 100 (optionOr km "speed" "100"))
     , fullscreen = optionOr km "fullscreen" "no" == "yes"
     , subOn = optionOr km "subtitles" "yes" == "yes"
-    , osdOn = optionOr km "osd" "no" == "yes" }
+    , osdOn = optionOr km "osd" "no" == "yes"
+    , loopFile = optionOr km "loop" "no" == "yes"
+    , zoomStep = clamp 1 100 (intOr 10 (optionOr km "zoom_step" "10"))
+    , panStep = clamp 1 50 (intOr 5 (optionOr km "pan_step" "5")) }
 
 -- ─── shell commands (`!cmd` actions): %s → the file, %t → the position in seconds ─────────────────
 shEsc :: String -> Int -> Int -> String
@@ -564,6 +591,22 @@ rh :: Rect -> Int
 rh r = case r of
   Rect _ _ _ d -> d
 
+-- Where the `vw`×`vh` video goes in an `ow`×`oh` output, as the UNROTATED rectangle that SDL then
+-- turns by `rot p` degrees about its centre: fitted with its rotated shape (90°/270° swap the
+-- sides), scaled by `zoom p` percent, its centre moved by the pan steps (`panStep p`% of the output
+-- each).
+viewRect :: Player -> Int -> Int -> Int -> Int -> Rect
+viewRect p vw vh ow oh =
+  let side = rot p == 90 || rot p == 270 in
+  let f = if side then fitRect vh vw ow oh else fitRect vw vh ow oh in
+  let bw = rw f * zoom p / 100 in
+  let bh = rh f * zoom p / 100 in
+  let w = if side then bh else bw in
+  let h = if side then bw else bh in
+  let cx = ow / 2 + panX p * panStep p * ow / 100 in
+  let cy = oh / 2 + panY p * panStep p * oh / 100 in
+  Rect (cx - w / 2) (cy - h / 2) w h
+
 -- the largest `vw`×`vh` rectangle with the video's aspect ratio inside an `ow`×`oh` output,
 -- centred (letterboxed or pillarboxed)
 fitRect :: Int -> Int -> Int -> Int -> Rect
@@ -606,11 +649,14 @@ spaceAt :: String -> Int -> Int
 spaceAt s i = if i >= strLen s then (0 - 1) else if charAt i s == ' ' then i else spaceAt s (i + 1)
 
 -- the final status line (the headless tests assert on it)
-statusLine :: Player -> Int -> Int -> String
-statusLine p shown dropped =
-  "frames=" ++ showInt shown ++ " dropped=" ++ showInt dropped ++ " pos=" ++ showInt (pos p)
+statusLine :: Player -> Int -> Int -> Int -> String
+statusLine p shown dropped shots =
+  "frames=" ++ showInt shown ++ " dropped=" ++ showInt dropped ++ " shots=" ++ showInt shots ++ " pos=" ++ showInt (pos p)
   ++ " vol=" ++ showInt (vol p) ++ " muted=" ++ (if muted p then "1" else "0")
   ++ " speed=" ++ showInt (speed p) ++ " idx=" ++ showInt (idx p)
+  ++ " sub=" ++ (if subOn p then "1" else "0") ++ " subdelay=" ++ showInt (subDelay p)
+  ++ " loop=" ++ (if loopFile p then "1" else "0")
+  ++ " zoom=" ++ showInt (zoom p) ++ " pan=" ++ showInt (panX p) ++ "," ++ showInt (panY p) ++ " rot=" ++ showInt (rot p)
 
 -- ─── audio stream ────────────────────────────────────────────────────────────────────────────────
 -- The PCM the player queues: signed 16-bit little-endian, stereo, 48 kHz → 192 bytes per ms.
@@ -631,3 +677,209 @@ audioCmd f seekMs speed =
 -- `atempo` takes 0.5…100: a slower speed (down to 25%) is two filters in a row
 atempoChain :: Int -> String
 atempoChain s = if s < 50 then "atempo=0.50,atempo=" ++ tempo (s * 2) else "atempo=" ++ tempo s
+
+-- ─── on-screen display ───────────────────────────────────────────────────────────────────────────
+-- axmpv's own 5×7 font for printable ASCII: 7 characters per glyph, one per row, each row's 5 bits
+-- (bit 4 = the leftmost column) stored as the character code 48 + bits.
+osdFont :: String
+osdFont = "00000004444404::00000:O:::O:4?D>5N4HI248C3<BD8EB=44000002488842842224804E>E40044O4400000<48000O00000000<<01248@0>ACEIA>4<4444>>A1248OO2421A>26:BO22O@N11A>68@NAA>O124888>AA>AA>>AA?12<0<<0<<00<<0<48248@84200O0O008421248>A12404>A1=EE>>AAOAAANAANAAN>A@@@A>LBAAABLO@@N@@OO@@N@@@>A@GAA?AAAOAAA>44444>72222B<ABDHDBA@@@@@@OAKEEAAAAAIECAA>AAAAA>NAAN@@@>AAAEB=NAANDBA?@@>11NO444444AAAAAA>AAAAA:4AAAEEE:AA:4:AAAA:4444O1248@O>88888>0@84210>22222>4:A0000000000O840000000>1?A?@@FIAAN00>@@A>11=CAA?00>AO@>698L8880?AA?1>@@FIAAA40<444>20622B<@@BDHDB<44444>00JEEAA00FIAAA00>AAA>00NAN@@00=C?1100FI@@@00?@>1N88L889600AAAC=00AAA:400AAEE:00A:4:A00AA?1>00O248O244844244444448442448008E200"
+
+-- the 5 bits of row `r` (0 = top) of character code `c`; anything else draws as '?'
+glyphRow :: Int -> Int -> Int
+glyphRow c r = let k = if c >= 32 && c <= 126 then c - 32 else 31 in charAt (k * 7 + r) osdFont - 48
+
+pow2 :: Int -> Int
+pow2 n = if n <= 0 then 1 else 2 * pow2 (n - 1)
+
+-- Text at (x, y) in `s`×`s` pixels: one rectangle per horizontal run of set pixels, so a line of
+-- text is a few hundred rectangles drawn in one call. Glyphs advance 6 pixels (1 of spacing).
+textRects :: String -> Int -> Int -> Int -> List Rect
+textRects t x y s = trGo t 0 x y s
+
+trGo :: String -> Int -> Int -> Int -> Int -> List Rect
+trGo t i x y s =
+  if i >= strLen t then Nil
+  else glyphRects (charAt i t) 0 x y s (trGo t (i + 1) (x + 6 * s) y s)
+
+glyphRects :: Int -> Int -> Int -> Int -> Int -> List Rect -> List Rect
+glyphRects c r x y s acc =
+  if r >= 7 then acc
+  else runRects (glyphRow c r) 0 (0 - 1) x (y + r * s) s (glyphRects c (r + 1) x y s acc)
+
+-- the runs of row bits `b` from column `col`; `start` = where the current run began (-1: none)
+runRects :: Int -> Int -> Int -> Int -> Int -> Int -> List Rect -> List Rect
+runRects b col start x y s acc =
+  if col >= 5 then (if start >= 0 then Cons (Rect (x + start * s) y ((5 - start) * s) s) acc else acc)
+  else if mod (b / pow2 (4 - col)) 2 == 1
+    then runRects b (col + 1) (if start >= 0 then start else col) x y s acc
+  else if start >= 0
+    then Cons (Rect (x + start * s) y ((col - start) * s) s) (runRects b (col + 1) (0 - 1) x y s acc)
+  else runRects b (col + 1) start x y s acc
+
+textWidth :: String -> Int -> Int
+textWidth t s = if strLen t == 0 then 0 else strLen t * 6 * s - s
+
+-- the status line: play state, position / duration, volume, speed, the A-B loop
+osdStatus :: Player -> String
+osdStatus p =
+  (if paused p then "||  " else ">   ") ++ fmtTime (pos p) ++ " / " ++ fmtTime (dur p)
+  ++ "   " ++ (if muted p then "mute" else "vol " ++ showInt (vol p) ++ "%")
+  ++ "   " ++ tempo (speed p) ++ "x"
+  ++ (if loopB p >= 0 then "   A-B" else if loopA p >= 0 then "   A-" else "")
+  ++ (if loopFile p then "   loop" else "")
+  ++ (if zoom p /= 100 then "   zoom " ++ showInt (zoom p) ++ "%" else "")
+  ++ (if panX p /= 0 || panY p /= 0 then "   pan" else "")
+  ++ (if rot p /= 0 then "   rot " ++ showInt (rot p) else "")
+  ++ (if not (subOn p) then "   sub off" else if subDelay p /= 0 then "   sub " ++ showInt (subDelay p) ++ "ms" else "")
+
+-- the OSD's layers: a translucent backdrop (text box + bar track), the bar's fill, the text
+-- (record fields: their selectors only read the value, so one Osd feeds all three draws)
+data Osd = Osd { osdBack :: List Rect, osdFill :: List Rect, osdText :: List Rect }
+
+-- The OSD for an `ow`×`oh` output: the status line (and, with `info` on, the `info` lines under
+-- it) in a box at the top left, the progress bar along the bottom. Scaled with the output height.
+osdLayout :: Player -> String -> Int -> Int -> Osd
+osdLayout p info ow oh =
+  let s = imax 2 (oh / 270) in
+  let m = 4 * s in
+  let ls = Cons (osdStatus p) (if infoOn p then lines info else Nil) in
+  let boxW = linesWidth ls s + 2 * m in
+  let boxH = length ls * 9 * s + 2 * m - 2 * s in
+  let bh = 3 * s in
+  let bw = imax 0 (ow - 4 * m) in
+  let by = oh - 2 * m - bh in
+  let fill = if dur p > 0 then clamp 0 bw (pos p * bw / dur p) else 0 in
+  Osd { osdBack = Cons (Rect m m boxW boxH) (Cons (Rect (2 * m) by bw bh) Nil)
+      , osdFill = (if fill > 0 then Cons (Rect (2 * m) by fill bh) Nil else Nil)
+      , osdText = linesRects ls (2 * m) (2 * m) s }
+
+linesWidth :: List String -> Int -> Int
+linesWidth ls s = case ls of
+  Nil -> 0
+  Cons l rest -> imax (textWidth l s) (linesWidth rest s)
+
+linesRects :: List String -> Int -> Int -> Int -> List Rect
+linesRects ls x y s = case ls of
+  Nil -> Nil
+  Cons l rest -> rcat (textRects l x y s) (linesRects rest x (y + 9 * s) s)
+
+rcat :: List Rect -> List Rect -> List Rect
+rcat a b = case a of
+  Nil -> b
+  Cons r rest -> Cons r (rcat rest b)
+
+-- ─── subtitle display ────────────────────────────────────────────────────────────────────────────
+-- The font is ASCII, subtitles are UTF-8 with markup: drop `<i>`/`</b>`/`{\an8}`-style tags, fold the
+-- Latin-1 letters to their base letter (`ação` → `acao`), typographic quotes/dashes/ellipsis to
+-- ASCII, anything else to `?`.
+subClean :: String -> String
+subClean t = scClean t 0 (strLen t)
+
+scClean :: String -> Int -> Int -> String
+scClean t i n =
+  if i >= n then ""
+  else let c = charAt i t in
+       if c == '<' then scClean t (closeAt t (i + 1) n '>' + 1) n
+       else if c == '{' then scClean t (closeAt t (i + 1) n '}' + 1) n
+       else if c == '\r' then scClean t (i + 1) n
+       else if c < 128 then chr c ++ scClean t (i + 1) n
+       else if c == 195 && i + 1 < n then latin1 (charAt (i + 1) t) ++ scClean t (i + 2) n
+       else if c == 194 && i + 1 < n then latinPunct (charAt (i + 1) t) ++ scClean t (i + 2) n
+       else if c == 226 && i + 2 < n then generalPunct (charAt (i + 1) t) (charAt (i + 2) t) ++ scClean t (i + 3) n
+       else if c >= 240 then "?" ++ scClean t (i + 4) n
+       else if c >= 224 then "?" ++ scClean t (i + 3) n
+       else if c >= 192 then "?" ++ scClean t (i + 2) n
+       else scClean t (i + 1) n                                      -- a stray continuation byte
+
+-- the index of the first `close` from `i` (or the end)
+closeAt :: String -> Int -> Int -> Int -> Int
+closeAt t i n close = if i >= n then n else if charAt i t == close then i else closeAt t (i + 1) n close
+
+-- U+00C0..U+00FF (UTF-8 C3 80..BF) → ASCII
+latin1 :: Int -> String
+latin1 b =
+  let k = b - 128 in
+  if k < 0 || k > 63 then "?"
+  else substr k 1 "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty"
+
+-- U+00A0..U+00BF (C2 A0..BF): «» → ", ° → o, a no-break space → space
+latinPunct :: Int -> String
+latinPunct b =
+  if b == 171 || b == 187 then "\"" else if b == 176 then "o" else if b == 160 then " " else "?"
+
+-- U+2013/2014 dashes, U+2018/2019 and U+201C/201D quotes, U+2026 ellipsis (E2 80 xx)
+generalPunct :: Int -> Int -> String
+generalPunct b1 b2 =
+  if b1 /= 128 then "?"
+  else if b2 == 147 || b2 == 148 then "-"
+  else if b2 == 152 || b2 == 153 then "'"
+  else if b2 == 156 || b2 == 157 then "\""
+  else if b2 == 166 then "..."
+  else "?"
+
+-- Lines wrapped at `n` characters, on spaces (a longer single word stays whole).
+wrapAll :: List String -> Int -> List String
+wrapAll ls n = case ls of
+  Nil -> Nil
+  Cons l rest -> rcatS (wrapWords (splitOn ' ' (trim l)) "" n) (wrapAll rest n)
+
+wrapWords :: List String -> String -> Int -> List String
+wrapWords ws cur n = case ws of
+  Nil -> if strLen cur > 0 then Cons cur Nil else Nil
+  Cons w rest ->
+    if strLen w == 0 then wrapWords rest cur n
+    else if strLen cur == 0 then wrapWords rest (dup w) n
+    else if strLen cur + 1 + strLen w <= n then wrapWords rest (cur ++ " " ++ w) n
+    else Cons cur (wrapWords rest (dup w) n)
+
+rcatS :: List String -> List String -> List String
+rcatS a b = case a of
+  Nil -> b
+  Cons s rest -> Cons s (rcatS rest b)
+
+-- The subtitle `text` for an `ow`×`oh` output: its lines wrapped and centred in a translucent box
+-- above the progress bar, larger than the OSD.
+subLayout :: String -> Int -> Int -> Osd
+subLayout text ow oh =
+  let s = imax 2 (oh / 200) in
+  let m = 4 * s in
+  let ls = wrapAll (lines (subClean text)) (imax 8 ((ow - 8 * m) / (6 * s))) in
+  let n = length ls in
+  let lh = 9 * s in
+  let top = oh - 8 * m - n * lh in
+  let wmax = linesWidth ls s in
+  Osd { osdBack = (if n == 0 then Nil else Cons (Rect ((ow - wmax) / 2 - m) (top - m) (wmax + 2 * m) (n * lh + 2 * m - 2 * s)) Nil)
+      , osdFill = Nil
+      , osdText = centredRects ls ow top s }
+
+centredRects :: List String -> Int -> Int -> Int -> List Rect
+centredRects ls ow y s = case ls of
+  Nil -> Nil
+  Cons l rest -> rcat (textRects l ((ow - textWidth l s) / 2) y s) (centredRects rest ow (y + 9 * s) s)
+
+-- the text showing at position `ms` with the player's delay (mpv: a positive delay shows each
+-- subtitle later), "" when subtitles are off
+subtitleNow :: Array Cue -> Player -> String
+subtitleNow cues p = if subOn p then subtitleAt cues (pos p - subDelay p) else ""
+
+-- the `.srt` beside a video: its extension replaced (or appended when it has none)
+srtPathFor :: String -> String
+srtPathFor f =
+  let d = lastDot f (strLen f - 1) in
+  if d < 0 then f ++ ".srt" else substr 0 d f ++ ".srt"
+
+lastDot :: String -> Int -> Int
+lastDot f i = if i < 0 then (0 - 1) else if charAt i f == '/' then (0 - 1) else if charAt i f == '.' then i else lastDot f (i - 1)
+
+-- ─── screenshots ─────────────────────────────────────────────────────────────────────────────────
+-- `axmpv-shot-0001.ppm`, `…0002.ppm`, …: the screenshot files, numbered from 1 in the working
+-- directory (the player takes the first that does not exist yet)
+shotName :: Int -> String
+shotName k = "axmpv-shot-" ++ pad4 k ++ ".ppm"
+
+pad4 :: Int -> String
+pad4 n = if n < 1000 then "0" ++ pad3 n else showInt n
+
+-- the binary PPM header of a `w`×`h` RGB image
+ppmHeader :: Int -> Int -> String
+ppmHeader w h = "P6\n" ++ showInt w ++ " " ++ showInt h ++ "\n255\n"

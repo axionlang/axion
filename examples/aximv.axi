@@ -38,6 +38,9 @@
 --   · a SHELL command `!cmd` — run on the CURRENT image, where `%s` is its path (shell-quoted); or
 --   · a BUILT-IN action NAME, to rebind a default key: zoom_in, zoom_out, fit, rotate, rotate_ccw,
 --     pan_left, pan_right, pan_up, pan_down, next, prev, first, last, quit.
+-- and { option, value } rows (the same options as axmpv's):
+--     { option = "zoom_step", value = "5" },   -- 1–100: percent each zoom press grows/shrinks the image
+--     { option = "pan_step",  value = "1" },   -- 1–50: percent of the window each pan press moves it
 -- A `key` is a sequence of TOKENS: a printable char (`d`), a special key `<Right>`/`<Left>`/`<Up>`/
 -- `<Down>`/`<Home>`/`<End>`/`<Esc>`/`<Space>`, and/or a modifier prefix `C-` (Ctrl) or `M-` (Alt).
 --   local keys = {
@@ -390,6 +393,32 @@ runConfigCmd win ren n idx tex act = do
 
 imin :: Int -> Int -> Int
 imin a b = if a < b then a else b
+imax :: Int -> Int -> Int
+imax a b = if a > b then a else b
+clamp :: Int -> Int -> Int -> Int
+clamp lo hi x = imax lo (imin hi x)
+
+-- An option row's value (`{ option = "zoom_step", value = "5" }` → the keymap line `\x01zoom_step<TAB>5`;
+-- the control character keeps it apart from key rows — `=` is itself a key),
+-- as a number within lo..hi, or `dflt`. Read when needed, like the keymap.
+optionInt :: String -> Int -> Int -> Int -> Int
+optionInt name dflt lo hi =
+  let v = lookupAction (readFile (keymapFile 0)) (strAppend "\x01" name) in
+  clamp lo hi (fromMaybe dflt (readInt (trim v)))
+
+-- the zoom after one press: ×(1 + zoom_step%) in, ÷ out (default 5: ×1.05); 5%..2000%
+zoomedIn :: Int -> Int
+zoomedIn pct = imin 2000 (imax (pct + 1) (pct * (100 + optionInt "zoom_step" 5 1 100) / 100))
+zoomedOut :: Int -> Int
+zoomedOut pct = imax 5 (pct * 100 / (100 + optionInt "zoom_step" 5 1 100))
+
+-- one pan press in pixels: pan_step% (default 1) of the window's width or height
+panPx :: Handle Ren -> Int -> Int
+panPx ren axis =
+  let b = newBuffer 8 in
+  let got = sdlGetOutputSize ren (bufPtrN b 8) (bufPtrN b 8 + 4) in
+  let side = peekU32 b (if axis == 0 then 0 else 4) in
+  imax 1 (side * optionInt "pan_step" 1 1 50 / 100 + got * 0)
 
 -- ─── Config keybindings (axfm-style) ────────────────────────────────────────────────────────────
 -- ~/.config/aximv/config.lua is a Lua table of { key, action } rows. imv has no Lua interpreter, so
@@ -493,7 +522,8 @@ configFile d = envOr "HOME" "." ++ "/.config/aximv/config.lua"
 keymapFile :: Int -> String
 keymapFile d = envOr "HOME" "." ++ "/.cache/aximv/keymap"
 -- Parse config.lua → keymap once at startup (one fork): each `{ key = "K", action = "A" }` row → a
--- `K<TAB>A` line. Comment lines dropped; an empty keymap when there is no config.
+-- `K<TAB>A` line, each `{ option = "O", value = "V" }` row a `=O<TAB>V` line. Comment lines dropped;
+-- an empty keymap when there is no config.
 buildKeymap :: Int -> Int
 buildKeymap d = runStatus
   ("cfg=" ++ shQuote (configFile 0) ++ "; km=" ++ shQuote (keymapFile 0)
@@ -502,7 +532,10 @@ buildKeymap d = runStatus
    ++ "*key*action*) k=$(printf '%s\\n' \"$line\" | sed -n 's/.*key[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); "
    ++ "[ -n \"$k\" ] || continue; "
    ++ "a=$(printf '%s\\n' \"$line\" | sed -n 's/.*action[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); "
-   ++ "[ -n \"$a\" ] || continue; printf '%s\\t%s\\n' \"$k\" \"$a\" >> \"$km\" ;; esac; done; true")
+   ++ "[ -n \"$a\" ] || continue; printf '%s\\t%s\\n' \"$k\" \"$a\" >> \"$km\" ;; "
+   ++ "*option*value*) o=$(printf '%s\\n' \"$line\" | sed -n 's/.*option[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); "
+   ++ "v=$(printf '%s\\n' \"$line\" | sed -n 's/.*value[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p'); "
+   ++ "[ -n \"$o\" ] && printf '\\001%s\\t%s\\n' \"$o\" \"$v\" >> \"$km\" ;; esac; done; true")
 
 -- SDL event types + keycodes as named constants (§18 `foreign enum`): the dispatch below reads as a
 -- `case` over `SDL_QUIT`/`KeyQ`/… instead of raw `256`/`113`. (SDL's keycodes are the actual C
@@ -559,15 +592,15 @@ runNamed win ren n idx tex tw th z px py rot curPct act =
   else if act == "prev"      then reopen win ren tex n ((idx + n - 1) `mod` n)
   else if act == "first"     then reopen win ren tex n 0
   else if act == "last"      then reopen win ren tex n (n - 1)
-  else if act == "zoom_in"   then frame win ren n idx tex tw th (curPct + 5) px py rot ""
-  else if act == "zoom_out"  then frame win ren n idx tex tw th (if curPct - 5 < 5 then 5 else curPct - 5) px py rot ""
+  else if act == "zoom_in"   then frame win ren n idx tex tw th (zoomedIn curPct) px py rot ""
+  else if act == "zoom_out"  then frame win ren n idx tex tw th (zoomedOut curPct) px py rot ""
   else if act == "fit"       then frame win ren n idx tex tw th 0 0 0 rot ""  -- re-fit, keep orientation
   else if act == "rotate"     then frame win ren n idx tex tw th z px py ((rot + 90) `mod` 360) ""
   else if act == "rotate_ccw" then frame win ren n idx tex tw th z px py ((rot + 270) `mod` 360) ""
-  else if act == "pan_left"  then frame win ren n idx tex tw th panZ (px - 10) py rot ""
-  else if act == "pan_right" then frame win ren n idx tex tw th panZ (px + 10) py rot ""
-  else if act == "pan_up"    then frame win ren n idx tex tw th panZ px (py - 10) rot ""
-  else if act == "pan_down"  then frame win ren n idx tex tw th panZ px (py + 10) rot ""
+  else if act == "pan_left"  then frame win ren n idx tex tw th panZ (px - panPx ren 0) py rot ""
+  else if act == "pan_right" then frame win ren n idx tex tw th panZ (px + panPx ren 0) py rot ""
+  else if act == "pan_up"    then frame win ren n idx tex tw th panZ px (py - panPx ren 1) rot ""
+  else if act == "pan_down"  then frame win ren n idx tex tw th panZ px (py + panPx ren 1) rot ""
   else frame win ren n idx tex tw th z px py rot ""                          -- unknown name: redraw
 
 onKey :: Handle Win %1 -> Handle Ren %1 -> Int -> Int -> Handle Tex %1 -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO ()

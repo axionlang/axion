@@ -54,6 +54,26 @@ codes: `axionc --explain AX0001`.
 **New here?** Follow the guided tour [**Axion by Example**](docs/by-example.md)
 — L0→L4, one concept at a time, every step runnable.
 
+### Real programs
+
+Each of these is a complete program written to find compiler bugs the fixtures miss — every
+bug found got a fixture and a fix — and each is gated in CI (behaviour on every backend, and
+AddressSanitizer + LeakSanitizer on the native code):
+
+| Program | What it is | Gate |
+|---------|-----------|------|
+| [`examples/axmpv/`](examples/axmpv/axmpv.axi) | **mpv-like video player**: ffmpeg pipes, SDL2 window + audio, A/V timing, seeking, speed, volume, playlist, `.srt` subtitles, an on-screen display in its own bitmap font, screenshots, A-B loop, key bindings in `~/.config/axmpv/config.lua` | `scripts/axmpv-test.sh` |
+| [`examples/axpass/`](examples/axpass/axpass.axi) | `pass(1)` password store, full upstream parity (gpg, git, clipboard, QR) | `scripts/axpass-test.sh`, `axpass-asan.sh` |
+| [`examples/axfm.axi`](examples/axfm.axi) | `fff`-style terminal file manager with previews and a Lua keymap | `scripts/fff-test.sh` |
+| [`examples/aximv.axi`](examples/aximv.axi) | `imv`-style image viewer (SDL2), animated GIFs, Lua keymap | — |
+| [`examples/httpd.axi`](examples/httpd.axi) | concurrent HTTP/1.1 static file server on sessions | `scripts/httpd-test.sh` |
+| [`examples/lambda.axi`](examples/lambda.axi), [`typecheck.axi`](examples/typecheck.axi) | a λ-calculus interpreter and a Hindley–Milner type inferencer | `scripts/lambda-test.sh`, `typecheck-test.sh` |
+| [`examples/json.axi`](examples/json.axi), [`gauss.axi`](examples/gauss.axi) | a JSON parser/serializer; dense Gaussian elimination over `Array Float` | sanitize corpus |
+
+```sh
+scripts/axmpv-run.sh movie.mkv other.mp4      # SDL2 via nix; space pauses, ←/→ seek, q quits
+```
+
 ## Guarantees, with evidence
 
 Not claims — **measurements**, under CI:
