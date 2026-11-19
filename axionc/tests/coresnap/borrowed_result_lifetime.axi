@@ -15,6 +15,7 @@
 
 
 
+
       drop _t0 : W
       drop _t0 : W
       drop _t3
@@ -92,7 +93,8 @@
   drop _t1 : BoxS
   drop _t2 : BoxS
   drop _t5 : W
-  drop w : W
+  drop i : List$Int
+  drop w : W skip{0}
   else
   else
   else
@@ -100,6 +102,8 @@
   let _d1000000 = rtcall axion_str_len _t2  ; Δ{_t1}
   let _dd0 = loadraw _p+0  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd0 = loadraw _p+8  ; Δ{}
+  let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
   let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
   let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
   let _dd2 = loadraw _p+0  ; Δ{}
@@ -110,6 +114,7 @@
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
+  let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = call direct 888  ; Δ{}
@@ -146,9 +151,10 @@
   let _t7 = call moved 77  ; Δ{}
   let i = field inner w  ; Δ{w}
   let w = call mk n  ; Δ{} · makes W
-  ret + _t0 _t1  ; Δ{}
+  ret + _t0 _t1  ; Δ{w}
   ret + _t4 _t7  ; Δ{}
   ret + _t6 _t7  ; Δ{}
+  ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -169,6 +175,7 @@ axion_drop_List _p  =
 axion_drop_List$Int _p  =
 axion_drop_Maybe$String _p  =
 axion_drop_W _p  =
+axion_drop_W_skip_0 _p  =
 caseOn n  =
 chained n  =
 direct n  =

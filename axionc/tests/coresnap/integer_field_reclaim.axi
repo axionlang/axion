@@ -16,36 +16,37 @@
 
 
 
+                  drop _t13 : Integer
                   drop _t26 : List$R
                   drop _t27 : List$Integer
                   drop _t28 : String
-                  let _d1000000 = putStrLn _t28  ; Δ{_t28}
-                  let _t20 = rtcall axion_bignum_from_i64 1  ; Δ{} · makes Integer
-                  let _t21 = con R _t20 1  ; Δ{_t20} · moves{_t20} · makes R
-                  let _t22 = rtcall axion_bignum_from_i64 22  ; Δ{_t21} · makes Integer
-                  let _t23 = con R _t22 2  ; Δ{_t21 _t22} · moves{_t22} · makes R
-                  let _t24 = con Nil  ; Δ{_t21 _t23} · makes List$R
-                  let _t25 = con Cons _t23 _t24  ; Δ{_t21 _t23 _t24} · moves{_t23 _t24} · makes List$R
-                  let _t26 = con Cons _t21 _t25  ; Δ{_t21 _t25} · moves{_t21 _t25} · makes List$R
-                  let _t27 = call map$$getV _t26  ; Δ{_t26} · makes List$Integer
-                  let _t28 = call show$List$Integer _t27  ; Δ{_t27} · makes String
-                  ret _d1000000  ; Δ{}
+                  let _d1000000 = putStrLn _t28  ; Δ{_t28 p}
+                  let _t20 = rtcall axion_bignum_from_i64 1  ; Δ{p} · makes Integer
+                  let _t21 = con R _t20 1  ; Δ{_t20 p} · moves{_t20} · makes R
+                  let _t22 = rtcall axion_bignum_from_i64 22  ; Δ{_t21 p} · makes Integer
+                  let _t23 = con R _t22 2  ; Δ{_t21 _t22 p} · moves{_t22} · makes R
+                  let _t24 = con Nil  ; Δ{_t21 _t23 p} · makes List$R
+                  let _t25 = con Cons _t23 _t24  ; Δ{_t21 _t23 _t24 p} · moves{_t23 _t24} · makes List$R
+                  let _t26 = con Cons _t21 _t25  ; Δ{_t21 _t25 p} · moves{_t21 _t25} · makes List$R
+                  let _t27 = call map$$getV _t26  ; Δ{_t26 p} · makes List$Integer
+                  let _t28 = call show$List$Integer _t27  ; Δ{_t27 p} · makes String
+                  ret _d1000000  ; Δ{p}
                 _ ->
               drop _t18 : String
               drop q : P
-              let _t16 = rtcall axion_bignum_from_i64 78  ; Δ{} · makes Integer
-              let _t17 = field age q  ; Δ{q}
-              let _t18 = showInt _t17  ; Δ{} · makes String
-              let _t19 = putStrLn _t18  ; Δ{_t18}
-              let q = record P { name = _t16 age = 4}  ; Δ{_t16} · moves{_t16} · makes P
+              let _t16 = rtcall axion_bignum_from_i64 78  ; Δ{p} · makes Integer
+              let _t17 = field age q  ; Δ{p q}
+              let _t18 = showInt _t17  ; Δ{p} · makes String
+              let _t19 = putStrLn _t18  ; Δ{_t18 p}
+              let q = record P { name = _t16 age = 4}  ; Δ{_t16 p} · moves{_t16} · makes P
               ret case _t19 of
             _ ->
           drop _t14 : String
-          drop p : P
+          drop p : P skip{0}
           let _t12 = rtcall axion_bignum_from_i64 77  ; Δ{} · makes Integer
           let _t13 = field name p  ; Δ{p}
           let _t14 = rtcall axion_bignum_to_string _t13  ; Δ{p} · makes String
-          let _t15 = putStrLn _t14  ; Δ{_t14}
+          let _t15 = putStrLn _t14  ; Δ{_t14 p}
           let p = record P { name = _t12 age = 3}  ; Δ{_t12} · moves{_t12} · makes P
           ret case _t15 of
         _ ->
@@ -128,8 +129,8 @@
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
-  ; Δ{}
-  ; Δ{}
+  ; Δ{p}
+  ; Δ{p}
   ; Δ{}
   ; Δ{}
   ; Δ{}

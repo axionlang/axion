@@ -30,6 +30,11 @@ passed through generic code, read back out, called repeatedly; each cell must ha
 owner) and `gen_heap_array` (arrays of heap elements: copies in and out, frees of replaced and
 dropped elements). Run one alone with `--only closure_values` / `--only heap_array`.
 
+`gen_sharing` (`--only sharing`) builds the ownership shapes the axmpv flagship broke: record
+updates sharing heap fields with their base, conditional temps, callees that may return their
+argument, closure tables, nested mixed conditionals, FFI with borrowed arguments. Its programs are
+all safe, so a native AX0910/AX0911 refusal there is a hard `gap` finding, not a sound rejection.
+
 Native LEAKS while interp is clean are REPORTED (info) but not failed — many are known
 conservative leaks. AX0912 (heap-alias guard) and AX0910 (drop-verifier) rejections are
 EXPECTED and counted separately — native soundly refusing a value it cannot reclaim is
@@ -1158,6 +1163,129 @@ def gen_closure_values(rng):
     lines.append("  putStrLn (show (cs 0 + cl 0))")
     return CLOSURE_PRE + "main :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
 
+SHARING_PRE = """-- fuzz:sharing
+data P = P { n :: Int, s :: String, xs :: List Int, t :: String }
+data Act = Act String (P -> P)
+
+sumL :: List Int -> Int
+sumL l = case l of
+  Nil -> 0
+  Cons y r -> y + sumL r
+
+m :: P -> Int
+m p = n p + strLen (s p) + sumL (xs p) + strLen (t p)
+
+mk :: Int -> P
+mk k = P { n = k, s = "s" ++ showInt k, xs = [k, k + 1], t = "t" }
+
+setN :: Int -> P -> P
+setN k p = p { n = k }
+
+setS :: P -> P
+setS p = p { s = "z" ++ s p }
+
+tag :: P -> P
+tag p = p { n = 1 }
+
+-- may return its argument whole: callers that keep using theirs must get a copy
+bumpIf :: P -> P
+bumpIf p = if n p > 3 then p { n = 0 } else p
+
+acts :: List Act
+acts = [ Act "a" (\\p -> setN 7 p), Act "b" (\\p -> tag (p { n = 9 })), Act "c" (\\p -> p { s = s p ++ "!" })
+       , Act "d" (\\p -> p { xs = Cons 5 (xs p) }) ]
+
+run :: String -> P -> P
+run name p = goRun acts name p
+
+goRun :: List Act -> String -> P -> P
+goRun as2 name p = case as2 of
+  Nil -> p
+  Cons a rest -> case a of
+    Act nm f -> if nm == name then f p else goRun rest name p
+
+lbl :: Int -> String
+lbl k = if k > 5 then "big" else if k > 2 then "n" ++ showInt k else ""
+
+say :: Int -> IO ()
+say k = ePutStrLn (if k > 4 then "k=" ++ showInt k else "small")
+
+"""
+
+SHARING_FFI = """foreign "libc.so.6" cStrlen = "strlen" :: String -> Int
+
+"""
+
+def gen_sharing(rng):
+    """The ownership shapes the axmpv flagship broke (docs/memory: axion-axmpv-flagship): by-copy
+    record updates SHARING heap fields with their base (base dying first, chains, results handed
+    on, inside closures, on one branch of a conditional temp), a callee that may return its
+    argument whole called in a let-bound arm with the argument reused after the join, closures
+    in a `List Act` table called on borrowed records, nested mixed literal/built conditionals,
+    fresh values moved on one branch only or returned on one path, ePutStrLn of a mixed
+    conditional, and (native-only programs) borrowed arguments to a foreign call. Every program
+    is SAFE value-semantics code, so a native AX0910/AX0911 refusal is a reclamation GAP (hard
+    finding `gap`), and the instrumented ASan/LSan run is the soundness net."""
+    ffi = rng.random() < 0.2
+    F = ["n", "s", "xs", "t"]
+    def val(f, k):
+        return {"n": str(k), "s": rng.choice(['"w"', f"showInt {k}", '"x" ++ "y"']),
+                "xs": rng.choice(["[1, 2]", f"Cons {k} Nil", "Nil"]), "t": rng.choice(['"t2"', '""'])}[f]
+    def upd(base, k):
+        fs = rng.sample(F, rng.randint(1, 2))
+        return base + " { " + ", ".join(f"{f} = {val(f, k)}" for f in fs) + " }"
+    def pe(d=0):                                  # an expression of type P
+        k = rng.randint(0, 9)
+        opts = [f"(mk {k})"]
+        if d < 2:
+            inner = pe(d + 1)
+            opts += [f"(setN {k} {inner})", f"(setS {inner})", f"(bumpIf {inner})", f"(tag {inner})",
+                     f"(run \"{rng.choice('abcdx')}\" {inner})", f"({upd(inner, k)})"]
+        return rng.choice(opts)
+    K = lambda: rng.randint(0, 6)
+    funs, calls = [], []
+    for i in range(rng.randint(3, 6)):
+        f1, f2 = rng.choice(F), rng.choice(F)
+        c, c2 = K(), K()
+        tmpl = rng.randint(0, 9 if ffi else 8)
+        name = f"f{i}"
+        if tmpl == 0:     # G: owning callee in a let-bound arm, argument reused after the join
+            body = f"let p2 = if k > {c} then {rng.choice(['bumpIf p0', 'tag p0', 'setS p0', f'run \"{rng.choice("abcd")}\" p0'])} else p0 in m p2 + m p0"
+        elif tmpl == 1:   # J: conditional temp, updated by copy on one branch and handed on
+            body = (f"let p = if k > {c} then {upd('p0', c)} else p0 in "
+                    f"if n p > {c2} then m ({rng.choice(['tag', 'setS', 'bumpIf'])} ({upd('p', c2)})) else m p")
+        elif tmpl == 2:   # base-dies-first / chains: uses in random order
+            uses = ["m b0", "m b1", "m b2", "strLen (s b1)", "sumL (xs b2)"]
+            rng.shuffle(uses)
+            body = (f"let b0 = mk k in let b1 = {upd('b0', c)} in let b2 = {upd('b1', c2)} in "
+                    + " + ".join(uses[:rng.randint(2, 5)]))
+        elif tmpl == 3:   # C: closure table on a borrowed record, the record used again
+            body = f"m (run \"{rng.choice('abcdx')}\" p0) + m (run \"{rng.choice('abcd')}\" p0) + m p0"
+        elif tmpl == 4:   # F: nested mixed conditional strings
+            body = (f"strLen (lbl k) + strLen (\"x\" ++ (if k > {c} then \"a\" else if k > {c2} "
+                    f"then showInt k ++ s p0 else \"\"))")
+        elif tmpl == 5:   # B: a fresh call result returned on one path, dead on the other
+            body = f"strLen (let v = s (setS p0) in if k > {c} then v else \"\")"
+        elif tmpl == 6:   # a fresh update moved on one branch, only read on the other
+            body = (f"let p1 = {upd('p0', c)} in if k > {c2} then m (run \"{rng.choice('abcd')}\" p1) "
+                    f"else n p1 + strLen (s p1)")
+        elif tmpl == 7:   # update of a record field read back, both live
+            body = f"let q = {upd('p0', c)} in m q + m p0 + strLen ({f1 if f1 in ('s', 't') else 's'} q)"
+        elif tmpl == 8:   # value threaded through a loop of updates
+            body = f"m (loopU k p0)"
+        else:             # H (native-only): borrowed arg to a foreign call, returned on one path
+            body = f"strLen (let nm = \"f\" ++ showInt k ++ s p0 in let l = cStrlen nm in if l > {c + 3} then nm else \"\")"
+        funs.append(f"{name} :: P -> Int -> Int\n{name} p0 k = {body}\n")
+        for _ in range(rng.randint(1, 2)):
+            calls.append(f"{name} {pe()} {rng.randint(0, 9)}")
+    loop_fn = ("loopU :: Int -> P -> P\nloopU k p = if k <= 0 then p else loopU (k - 1) "
+               + "(" + rng.choice(["setN k p", "p { n = n p + k }", "setS p", "tag (p { xs = Cons k Nil })"]) + ")\n")
+    lines = [f"  putStrLn (showInt ({c}))" for c in calls]
+    lines.insert(rng.randint(0, len(lines)), f"  say {rng.randint(0, 9)}")
+    pre = SHARING_PRE + (SHARING_FFI if ffi else "")
+    return (pre + loop_fn + "\n" + "\n".join(funs) + "\nmain :: IO ()\nmain = do\n"
+            + "\n".join(lines) + "\n")
+
 HEAP_ARRAY_PRE = """-- fuzz:heap-arrays
 data R = R String Int
 
@@ -1258,6 +1386,9 @@ def gen_heap_array(rng):
 
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
+    if r < 0.08:
+        return gen_sharing(rng)         # axmpv's shapes: shared-field updates, branch ownership
+    r = (r - 0.08) / 0.92
     if r < 0.06:
         return gen_closure_values(rng)  # closures as values: owned, copied, stored, returned
     if r < 0.10:
@@ -1389,11 +1520,13 @@ def check(prog, work):
     # found") have no interp oracle, so ASan-check the native build for corruption/leak only. Array
     # programs no longer land here — the interpreter runs them, so they take the full-differential
     # path below.
-    if "name not found at runtime" in (oi + ei):
+    if "name not found at runtime" in (oi + ei) or "is native-only" in (oi + ei):
         rc, oc, ec = run([AXIONC, "--backend", "cranelift", str(src)])
         if rc == HANG_RC:
             return ("hang", f"cranelift exceeded {HANG_SECS}s:\n{prog[:500]}")
         if rc != 0:
+            if "fuzz:sharing" in prog and ("AX0910" in ec or "AX0911" in ec):
+                return ("gap", ec[-600:])
             return ("ax0912", None) if "AX0912" in ec else ("verdict", f"native-only prog rejected:\n{ec[-400:]}")
         return asan_run(src, work, None)
     rc, oc, ec = run([AXIONC, "--backend", "cranelift", str(src)])
@@ -1403,6 +1536,10 @@ def check(prog, work):
     if ri == 0 and rc != 0:
         if "AX0914" in ec:
             return ("ax0914", None)            # expected: a heap Array element, rejected natively
+        if "fuzz:sharing" in prog and ("AX0910" in ec or "AX0911" in ec):
+            # every sharing program is safe value-semantics code: a refusal is a reclamation gap
+            # in Auto-Drop (the class axmpv kept hitting), not a sound rejection
+            return ("gap", ec[-600:])
         if "fuzz:builtins" in prog and "AX0910" in ec:
             # every built-in program is safe: the verifier rejecting one means a built-in is
             # classified as consuming an argument the runtime only reads (the netSend class)
@@ -1449,7 +1586,7 @@ def main():
             verdict, detail = check(prog, work)
             tally[verdict] = tally.get(verdict, 0) + 1
             if verdict in ("corruption", "divergence", "verdict", "hang", "sessleak", "bileak",
-                           "biax0910"):
+                           "biax0910", "gap"):
                 hard += 1
                 FAILDIR.mkdir(exist_ok=True)
                 f = FAILDIR / f"seed{a.seed}_i{i}_{verdict}.axi"

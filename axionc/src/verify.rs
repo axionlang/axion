@@ -250,13 +250,14 @@ pub fn frees_heap_params(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
 }
 
 /// The borrow name of the heap fields a by-copy update shares with its base `b`.
-fn shared_name(b: &str) -> String {
-    format!("{b}#shared")
+fn shared_name(b: &str, slot: usize) -> String {
+    format!("{b}#shared{slot}")
 }
 
-/// Is borrow `w` dangling? A `b#shared` borrow (not yet released) lives exactly as long as `b`.
+/// Is borrow `w` dangling? A `b#sharedI` borrow (field slot I of `b`, not yet released) lives
+/// exactly as long as `b`.
 fn borrow_dead(st: &State, w: &str) -> bool {
-    let target = w.strip_suffix("#shared").unwrap_or(w);
+    let target = w.split_once("#shared").map_or(w, |(b, _)| b);
     st.get(target).is_some_and(|v| v.dead.is_some())
 }
 
@@ -1093,7 +1094,8 @@ impl Verifier<'_> {
             ..
         } = op
         {
-            if !self.mode.poly_elem && val.borrows.contains(&shared_name(b)) {
+            let prefix = format!("{b}#shared");
+            if !self.mode.poly_elem && val.borrows.iter().any(|w| w.starts_with(&prefix)) {
                 let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
                 let shared = self.recinfo.update_shared_fields(&names);
                 self.shares.insert(x.to_string(), (b.clone(), shared));
@@ -1149,6 +1151,16 @@ impl Verifier<'_> {
         // moved operands escape (the call consumes them) — same as `scan_op_escapes` in
         // Auto-Drop; `consume` also flags consuming an interior alias of a borrowed resource.
         self.consume(op, sp, st);
+        // a field projection MOVED into a new value (`Cons 5 (xs p)`, a constructor, an update)
+        // travels with it: a later skip-drop of its record leaves that field to the new value,
+        // not to the projection (promoting the projection would report a false leak)
+        for a in &e.moves {
+            if let Atom::Var(v) = a {
+                if v != x {
+                    self.projections.remove(v);
+                }
+            }
+        }
         if val.owned || !val.borrows.is_empty() {
             // record a direct heap field projection's exact slot, so a move-out skip-drop
             // of the source can transfer that slot's ownership to `x` (§move-out).
@@ -1294,16 +1306,28 @@ impl Verifier<'_> {
         ) {
             let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
             if self.recinfo.update_shares_heap(&names) {
-                // the check pass borrows `b#shared` — `b`'s shared fields, alive while `b` is,
-                // until a skip-drop of `b` leaves them to the holders (`do_drop`)
-                let name = if self.mode.poly_elem {
-                    b.clone()
+                // the check pass borrows `b#sharedI` for each field slot I the result shares with
+                // `b` — alive while `b` is, until a skip-drop of `b` leaving slot I releases it
+                // (`do_drop`). Of `b`'s own slot borrows (`b` = an update of `b0`) only the slots
+                // this update shares too are inherited: `b2 = b1 { t = … }` keeps nothing of `t`.
+                let now = self.recinfo.update_shared_fields(&names);
+                let mut borrows: HashSet<String> = if self.mode.poly_elem {
+                    HashSet::from([b.clone()])
                 } else {
-                    shared_name(b)
+                    now.iter().map(|&i| shared_name(b, i)).collect()
                 };
-                let mut borrows: HashSet<String> = HashSet::from([name]);
                 if let Some(bv) = st.get(b) {
-                    borrows.extend(bv.borrows.iter().cloned());
+                    borrows.extend(
+                        bv.borrows
+                            .iter()
+                            .filter(|w| match w.split_once("#shared") {
+                                Some((_, i)) if !self.mode.poly_elem => {
+                                    i.parse::<usize>().is_ok_and(|i| now.contains(&i))
+                                }
+                                _ => true,
+                            })
+                            .cloned(),
+                    );
                 }
                 return Val {
                     owned: true,
@@ -1484,29 +1508,26 @@ impl Verifier<'_> {
     /// does NOT free (moved out via a skip-destructor).
     fn do_drop(&mut self, x: &str, key: Option<&String>, skip: &[usize], sp: Span, st: &mut State) {
         self.note_field_gone(x, st);
-        // a base freed with a skip-destructor that leaves every field it shares with a by-copy
-        // update's result to that result: the result no longer borrows it
-        let covers = |idxs: &[usize]| idxs.iter().all(|i| skip.contains(i));
-        let all_shared: Vec<usize> = self
-            .shares
-            .values()
-            .filter(|(b, _)| b == x)
-            .flat_map(|(_, idxs)| idxs.iter().copied())
-            .collect();
-        if !all_shared.is_empty() && !skip.is_empty() && covers(&all_shared) {
-            // every holder — the results and whatever they moved into — now owns them
-            let name = shared_name(x);
+        // a base freed with a skip-destructor leaves each skipped slot to whoever shares it (a
+        // by-copy update's result, and whatever that moved into): those slot borrows are released
+        for &i in skip {
+            let name = shared_name(x, i);
             for v in st.values_mut() {
                 v.borrows.remove(&name);
             }
         }
-        // …and a RESULT freed with a skip-destructor leaving the shared fields to its base does
-        // not free them twice, whatever happened to the base
-        let own_skip_base: Option<String> = self
+        // …and a RESULT freed with a skip-destructor leaving a shared slot to its base does not
+        // free that field twice, whatever happened to the base
+        let own_skip: HashSet<String> = self
             .shares
             .get(x)
-            .filter(|(_, idxs)| !skip.is_empty() && covers(idxs))
-            .map(|(b, _)| shared_name(b));
+            .map(|(b, idxs)| {
+                idxs.iter()
+                    .filter(|i| skip.contains(i))
+                    .map(|&i| shared_name(b, i))
+                    .collect()
+            })
+            .unwrap_or_default();
         // V-2 (docs/call-site-ownership.md): a deep-drop key whose type CONSTRUCTOR is a
         // primitive SCALAR (`Int$Int` → base `Int`) is ALWAYS a bad-free — you never
         // deep-drop an Int/Float/Bool/Char. This catches the multi-param-sum mis-key
@@ -1545,9 +1566,9 @@ impl Verifier<'_> {
                 // touches just the cell, not the shared element.
                 if key.is_some() {
                     let dbl = st.get(x).is_some_and(|v| {
-                        v.borrows.iter().any(|w| {
-                            own_skip_base.as_deref() != Some(w.as_str()) && borrow_dead(st, w)
-                        })
+                        v.borrows
+                            .iter()
+                            .any(|w| !own_skip.contains(w.as_str()) && borrow_dead(st, w))
                     });
                     // …and the other order: an OWNED value sharing `x`'s contents (a by-copy
                     // record update returned from a call, a `take`-style result) was already
@@ -1557,7 +1578,11 @@ impl Verifier<'_> {
                             && wv.owned
                             && wv.dead == Some(Cat::DoubleFree)
                             && self.deep_freed.contains(w)
-                            && (wv.borrows.contains(x) || wv.borrows.contains(&shared_name(x)))
+                            && (wv.borrows.contains(x)
+                                || wv
+                                    .borrows
+                                    .iter()
+                                    .any(|w| w.starts_with(&format!("{x}#shared"))))
                     });
                     if dbl || dbl_rev {
                         self.finding(Cat::DoubleFree, x, sp);
@@ -1627,10 +1652,21 @@ impl Verifier<'_> {
                 // longer borrows the now-freed cell; it owns the moved field). Without this
                 // the projection would dangle on `x`'s death (a false UseAfterFree).
                 if !skip.is_empty() {
+                    // (a slot skipped because it is SHARED with a by-copy update's base stays
+                    // with that base — it is not moved out to a projection)
+                    // (as an update's result, or as the base of one)
+                    let shared_slots: Vec<usize> = self
+                        .shares
+                        .iter()
+                        .filter(|(r, (b, _))| r.as_str() == x || b == x)
+                        .flat_map(|(_, (_, idxs))| idxs.iter().copied())
+                        .collect();
                     let promote: Vec<String> = self
                         .projections
                         .iter()
-                        .filter(|(_, (src, slot))| src == x && skip.contains(slot))
+                        .filter(|(_, (src, slot))| {
+                            src == x && skip.contains(slot) && !shared_slots.contains(slot)
+                        })
                         .map(|(pv, _)| pv.clone())
                         .collect();
                     for pv in promote {

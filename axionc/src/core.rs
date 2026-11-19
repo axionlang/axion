@@ -524,6 +524,8 @@ fn op_is_fresh_wrt_args(op: &Op) -> bool {
                 || func == "axion_eput"
                 || func == "axion_eputs"
         }
+        // a generated deep copier (`axion_copy_T`) reads its argument and returns a fresh copy
+        Op::CallDirect(g, _, _) if g.starts_with("axion_copy_") => true,
         // A foreign call: C returns a scalar or an opaque handle, never a value Axión owns or a
         // pointer into one in Axión's model (an `Own` argument is a MOVE, which `rhs_moves` sees
         // first) — so a borrowed argument (`creat name 420`) stays reclaimable.
@@ -7033,6 +7035,12 @@ pub fn lower_with(
         for f in &mut out {
             let mut lets = HashSet::new();
             let_bound_names(&f.body, &mut lets);
+            // a base bound to a CONDITIONAL (`let p = if c then p0 { … } else p0`) is a temp that
+            // no skip-destructor handles: an update of it that is moved away (`bumpIf (p { s = … })`)
+            // would share fields `p` also frees — give the update its own copies instead
+            let mut conds = HashSet::new();
+            cond_bound_names(&f.body, &mut conds);
+            lets.retain(|n| !conds.contains(n));
             let owned: HashSet<String> = f.owned_params.iter().cloned().collect();
             let mut ctr = 0usize;
             copy_shared_update_fields(
@@ -12389,6 +12397,29 @@ fn record_field_types(module: &ast::Module) -> HashMap<String, Vec<(String, Type
     out
 }
 
+/// The names bound by `let x = if/case …`.
+fn cond_bound_names(t: &Term, out: &mut HashSet<String>) {
+    let sub = |r: &Rhs, out: &mut HashSet<String>| match r {
+        Rhs::If(_, a, c) => {
+            cond_bound_names(a, out);
+            cond_bound_names(c, out);
+        }
+        Rhs::Case(_, arms) => arms.iter().for_each(|(_, a)| cond_bound_names(a, out)),
+        Rhs::Op(_) => {}
+    };
+    match t {
+        Term::Let(x, rhs, _, b) => {
+            if matches!(rhs, Rhs::If(..) | Rhs::Case(..)) {
+                out.insert(x.clone());
+            }
+            sub(rhs, out);
+            cond_bound_names(b, out);
+        }
+        Term::Drop(_, _, _, _, b) => cond_bound_names(b, out),
+        Term::Ret(r, _) => sub(r, out),
+    }
+}
+
 fn let_bound_names(t: &Term, out: &mut HashSet<String>) {
     match t {
         Term::Let(x, rhs, _, b) => {
@@ -13475,6 +13506,17 @@ fn reclaim_cond_escape(
 ) -> Term {
     match body {
         Term::Let(x, rhs, sp, b) => {
+            // an owned String/Integer handed out by some arms of a let-bound conditional and dead
+            // on the others (`let r = if c then v else ""`): freed on those arms, their literal
+            // values copied, and the conditional's result owned from here on
+            let (rhs, absorbed) = match rhs {
+                Rhs::If(..) | Rhs::Case(..) => absorb_owned_escape(rhs, &b, &owned, br, recinfo),
+                other => (other, None),
+            };
+            let owned: Vec<(String, Option<String>)> = match &absorbed {
+                Some((v, _)) => owned.into_iter().filter(|(n, _)| n != v).collect(),
+                None => owned,
+            };
             // pure alias `let x = ownedParam`, source unused afterwards → transfer to `x`.
             let alias_key = if let Rhs::Op(Op::Atom(Atom::Var(src))) = &rhs {
                 (x != *src && !term_mentions_any(&b, &HashSet::from([src.clone()])))
@@ -13491,11 +13533,20 @@ fn reclaim_cond_escape(
             // left the owned set (a `Field` may alias) and its shell leaked — the accumulator
             // `build (k - 1) (Box { items = Cons k (items acc) })`. Single-constructor,
             // non-parametric records only (the skip destructor is keyed by the plain type name).
+            // (…or mentioned again only by the drops `insert_drops` placed for it — skip-drops
+            // leaving at most this slot, `let v = s (mk k) in if c then v else ""`: those are
+            // replaced by the move-out's own drop, and `v` is reclaimed where it is dead)
             let field_moveout = match &rhs {
-                Rhs::Op(op) => field_moveout(op, &owned, recinfo).filter(|(src, ..)| {
-                    x != *src && !term_mentions_any(&b, &HashSet::from([src.clone()]))
+                Rhs::Op(op) => field_moveout(op, &owned, recinfo).filter(|(src, _, slot, _)| {
+                    x != *src
+                        && (!term_mentions_any(&b, &HashSet::from([src.clone()]))
+                            || only_dropped(&b, src, *slot))
                 }),
                 _ => None,
+            };
+            let b = match &field_moveout {
+                Some((src, ..)) => Box::new(strip_drops(*b, src)),
+                None => b,
             };
             if let Some((src, ty, slot, fkey)) = field_moveout {
                 let owned: Vec<_> = owned
@@ -13569,7 +13620,9 @@ fn reclaim_cond_escape(
                     }
                 })
                 .collect();
-            if let Some(key) = alias_key {
+            if let Some((_, key)) = &absorbed {
+                owned.push((x.clone(), Some(key.clone()))); // the conditional now yields an owned value
+            } else if let Some(key) = alias_key {
                 owned.push((x.clone(), key));
             } else if let Rhs::Op(op) = &rhs {
                 // A fresh let-bound heap producer (`let s = getEnv…`) that CONDITIONALLY
@@ -14003,15 +14056,24 @@ fn swap_update_skip_owner(t: &mut Term, recinfo: &RecordInfo) {
             .collect();
         // (a skipped SCALAR field is a no-op — Auto-Drop skips every non-updated field — so only
         // the heap entries of a skip have to come from the sharing)
-        let applicable = slots_of.iter().all(|(x, slots)| {
-            let heap = heap_of.get(*x);
-            drops.iter().filter(|(d, _, _)| d == x).count() == 1
-                && drop_at.contains_key(x)
-                && drops[drop_at[x]]
-                    .2
-                    .iter()
-                    .all(|i| slots.contains(i) || heap.is_some_and(|h| !h.contains(i)))
-        });
+        // A holder not dropped on this path escapes (moved into a call, a structure, returned):
+        // whoever receives it frees all it holds, so for every field it shares it is the LAST
+        // holder. Holders dropped here must be dropped once, keyed, skipping only shared slots.
+        let applicable = drop_at.keys().any(|x| slots_of.contains_key(x))
+            && slots_of.iter().all(|(x, slots)| {
+                let heap = heap_of.get(*x);
+                match drops.iter().filter(|(d, _, _)| d == x).count() {
+                    0 => true,
+                    1 => {
+                        drop_at.contains_key(x)
+                            && drops[drop_at[x]]
+                                .2
+                                .iter()
+                                .all(|i| slots.contains(i) || heap.is_some_and(|h| !h.contains(i)))
+                    }
+                    _ => false,
+                }
+            });
         if applicable {
             // union-find over (holder, slot): a slot is the same pointer across an update
             let mut parent: HashMap<(String, usize), (String, usize)> = HashMap::new();
@@ -14043,7 +14105,7 @@ fn swap_update_skip_owner(t: &mut Term, recinfo: &RecordInfo) {
             for (x, slots) in &slots_of {
                 for &i in slots {
                     let root = find(&mut parent, (x.to_string(), i));
-                    let at = drop_at[x];
+                    let at = drop_at.get(x).copied().unwrap_or(usize::MAX);
                     let e = owner.entry(root).or_insert((at, x.to_string()));
                     if at > e.0 {
                         *e = (at, x.to_string());
@@ -14051,6 +14113,9 @@ fn swap_update_skip_owner(t: &mut Term, recinfo: &RecordInfo) {
                 }
             }
             for (x, slots) in &slots_of {
+                if !drop_at.contains_key(x) {
+                    continue; // an escaping holder: no drop here to rewrite
+                }
                 let mut skip: Vec<usize> = slots
                     .iter()
                     .copied()
@@ -14605,6 +14670,143 @@ fn result_may_be_heap(t: &Term, recinfo: &RecordInfo) -> bool {
 /// `true` if any variable in `set` appears as an operand of `op`. Exhaustive
 /// (no wildcard) so a newly-added `Op` variant forces a decision here rather than
 /// silently escaping the payload-alias analysis.
+/// `absorb` for a let-bound conditional (see `reclaim_cond_escape`): an owned String/Integer `v`
+/// that some arms RETURN (directly, or through a plain alias) and the others do not mention, and
+/// that the continuation `b` never mentions. Those other arms get `drop v` and — when their value
+/// is a literal — a copy of it, so every arm yields an owned value of `v`'s key. Returns the new
+/// conditional and `(v, key)`; the conditional unchanged and `None` when the shape is not this.
+fn absorb_owned_escape(
+    rhs: Rhs,
+    b: &Term,
+    owned: &[(String, Option<String>)],
+    br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+) -> (Rhs, Option<(String, String)>) {
+    fn returns_var(t: &Term, aliases: &mut HashSet<String>) -> bool {
+        match t {
+            Term::Let(y, Rhs::Op(Op::Atom(Atom::Var(z))), _, body) if aliases.contains(z) => {
+                aliases.insert(y.clone());
+                returns_var(body, aliases)
+            }
+            Term::Let(_, Rhs::Op(_), _, body) | Term::Drop(_, _, _, _, body) => {
+                returns_var(body, aliases)
+            }
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Var(w))), _) => aliases.contains(w),
+            _ => false,
+        }
+    }
+    let arms: Vec<&Term> = match &rhs {
+        Rhs::If(_, a, c) => vec![a, c],
+        Rhs::Case(_, arms) => arms.iter().map(|(_, a)| a).collect(),
+        Rhs::Op(_) => return (rhs, None),
+    };
+    let found = owned.iter().find_map(|(v, key)| {
+        let key = key.as_deref()?;
+        if key != "String" && key != "Integer" {
+            return None;
+        }
+        let set = HashSet::from([v.clone()]);
+        if term_mentions_any(b, &set) {
+            return None;
+        }
+        let ret: Vec<bool> = arms
+            .iter()
+            .map(|a| returns_var(a, &mut HashSet::from([v.clone()])))
+            .collect();
+        let ok = ret.iter().any(|r| *r)
+            && arms
+                .iter()
+                .zip(&ret)
+                .all(|(a, r)| *r || !term_mentions_any(a, &set));
+        ok.then(|| (v.clone(), key.to_string()))
+    });
+    let Some((v, key)) = found else {
+        return (rhs, None);
+    };
+    let set = HashSet::from([v.clone()]);
+    let fix = |a: Term| -> Option<Term> {
+        if term_mentions_any(&a, &set) {
+            return Some(a); // the arm that hands `v` out
+        }
+        let a = if arm_owned_key(&a, br, recinfo).as_deref() == Some(key.as_str()) {
+            a
+        } else {
+            wrap_tail_copy(a, &key)?
+        };
+        Some(Term::Drop(
+            v.clone(),
+            Some(key.clone()),
+            Vec::new(),
+            NO_SPAN,
+            Box::new(a),
+        ))
+    };
+    let new = match rhs.clone() {
+        Rhs::If(c, a, e) => match (fix(*a), fix(*e)) {
+            (Some(a), Some(e)) => Some(Rhs::If(c, Box::new(a), Box::new(e))),
+            _ => None,
+        },
+        Rhs::Case(sc, arms) => arms
+            .into_iter()
+            .map(|(p, a)| fix(a).map(|a| (p, a)))
+            .collect::<Option<Vec<_>>>()
+            .map(|arms| Rhs::Case(sc, arms)),
+        Rhs::Op(_) => None,
+    };
+    match new {
+        Some(r) => (r, Some((v, key))),
+        None => (rhs, None),
+    }
+}
+
+/// Is every mention of `v` in `t` a keyed drop of it whose skip is at most `{slot}`?
+fn only_dropped(t: &Term, v: &str, slot: usize) -> bool {
+    let set = HashSet::from([v.to_string()]);
+    let rhs_ok = |r: &Rhs| match r {
+        Rhs::Op(op) => !op_mentions_any(op, &set),
+        Rhs::If(c, a, b) => {
+            !matches!(c, Atom::Var(n) if n == v)
+                && only_dropped(a, v, slot)
+                && only_dropped(b, v, slot)
+        }
+        Rhs::Case(sc, arms) => {
+            !matches!(sc, Atom::Var(n) if n == v)
+                && arms.iter().all(|(_, a)| only_dropped(a, v, slot))
+        }
+    };
+    match t {
+        Term::Let(_, r, _, b) => rhs_ok(r) && only_dropped(b, v, slot),
+        Term::Drop(y, k, skip, _, b) => {
+            (y != v || (k.is_some() && skip.iter().all(|i| *i == slot))) && only_dropped(b, v, slot)
+        }
+        Term::Ret(r, _) => rhs_ok(r),
+    }
+}
+
+/// `t` without its drops of `v`.
+fn strip_drops(t: Term, v: &str) -> Term {
+    let sub = |r: Rhs| match r {
+        Rhs::If(c, a, b) => Rhs::If(
+            c,
+            Box::new(strip_drops(*a, v)),
+            Box::new(strip_drops(*b, v)),
+        ),
+        Rhs::Case(sc, arms) => Rhs::Case(
+            sc,
+            arms.into_iter()
+                .map(|(p, a)| (p, strip_drops(a, v)))
+                .collect(),
+        ),
+        other => other,
+    };
+    match t {
+        Term::Let(x, r, sp, b) => Term::Let(x, sub(r), sp, Box::new(strip_drops(*b, v))),
+        Term::Drop(y, _, _, _, b) if y == v => strip_drops(*b, v),
+        Term::Drop(y, k, sk, sp, b) => Term::Drop(y, k, sk, sp, Box::new(strip_drops(*b, v))),
+        Term::Ret(r, sp) => Term::Ret(sub(r), sp),
+    }
+}
+
 /// Is `x` freed further down this straight path (not inside a branch) by a keyed drop whose skip
 /// covers `shared` — i.e. it leaves those fields to someone else?
 fn result_skip_dropped(t: &Term, x: &str, shared: &[usize]) -> bool {

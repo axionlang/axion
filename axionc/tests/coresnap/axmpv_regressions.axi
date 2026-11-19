@@ -228,8 +228,8 @@
   drop _t8 : String
   drop _t8 : String
   drop _t9 : String
-  drop p : P skip{0 2}
-  drop p : P skip{1 2}
+  drop p : P skip{2}
+  drop p : P skip{2}
   drop p : P skip{2}
   drop p : P skip{2}
   else

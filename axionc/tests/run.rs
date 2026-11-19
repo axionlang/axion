@@ -7299,6 +7299,7 @@ fn axmpv_regressions_agree_on_every_backend() {
         ("record_update_base_dies_first.axi", "9\n"),
         ("buffer_borrow_one_branch.axi", "1 9\n"),
         ("nested_mixed_cond.axi", "x d5x offx\n<neg><zero><one1><many>\n"),
+        ("sharing_regressions.axi", "15 3 0\n7 10 18 21\n22 10 9\n"),
     ];
     for (name, want) in cases {
         let fx = fixture(name);

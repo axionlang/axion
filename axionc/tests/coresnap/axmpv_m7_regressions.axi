@@ -60,7 +60,7 @@
       ret case _t20 of
     _ ->
     drop _t1 : String
-    drop _t3 : P skip{1}
+    drop _t3 : P
     drop _t4 : String
     drop name : String
     drop p : P
@@ -71,6 +71,8 @@
     let $updfield1 = field s p0  ; Δ{}
     let $updfield1c0 = rtcall axion_strcat $updfield1 ""  ; Δ{} · makes String
     let $updfield1c0 = rtcall axion_strcat $updfield1 ""  ; Δ{} · makes String
+    let $updfield2 = field s p  ; Δ{}
+    let $updfield2c0 = rtcall axion_strcat $updfield2 ""  ; Δ{} · makes String
     let _d1000000 = call use _t3  ; Δ{_t3}
     let _d1000000 = rtcall axion_strcat "n=" _t1  ; Δ{_t1} · makes String
     let _dd2 = == _tag 1  ; Δ{}
@@ -78,7 +80,7 @@
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _rcl2000001 = rtcall axion_str_len _t4  ; Δ{}
     let _t1 = showInt k  ; Δ{} · makes String
-    let _t3 = update p { v = 9}  ; Δ{} · makes heap
+    let _t3 = update p { v = 9 s = $updfield2c0}  ; Δ{$updfield2c0} · moves{$updfield2c0} · makes heap
     let _t4 = field s p  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     ret ""  ; Δ{}
@@ -86,7 +88,7 @@
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
-    ret _d1000000  ; Δ{_t3}
+    ret _d1000000  ; Δ{}
     ret _rcl2000001  ; Δ{}
     ret call axion_copy_P p0  ; Δ{} · makes P
     ret call axion_copy_P p1  ; Δ{} · makes P
