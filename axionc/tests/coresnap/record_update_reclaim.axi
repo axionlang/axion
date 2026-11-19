@@ -38,8 +38,8 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop b0 : Box
-  drop b1 : Box skip{1}
+  drop b0 : Box skip{1}
+  drop b1 : Box
   else
   else
   let _dd0 = loadraw _p+0  ; Δ{}
@@ -60,7 +60,7 @@
   let _t10 = con Cons 8 _t9  ; Δ{_t9 b0} · moves{_t9} · makes List$Int
   let _t11 = con Cons 7 _t10  ; Δ{_t10 b0} · moves{_t10} · makes List$Int
   let _t12 = call lenXs b0  ; Δ{b0 b1}
-  let _t13 = call lenXs b1  ; Δ{b1}
+  let _t13 = call lenXs b1  ; Δ{b0 b1}
   let _t2 = con Cons 1 _t1  ; Δ{_t1} · moves{_t1} · makes List$Int
   let _t3 = con Nil  ; Δ{_t2} · makes List$Int
   let _t4 = con Cons 5 _t3  ; Δ{_t2 _t3} · moves{_t3} · makes List$Int
@@ -71,7 +71,7 @@
   let _t9 = con Cons 9 _t8  ; Δ{_t8 b0} · moves{_t8} · makes List$Int
   let b0 = record Box { xs = _t2 ys = _t6}  ; Δ{_t2 _t6} · moves{_t2 _t6} · makes Box
   let b1 = update b0 { xs = _t11}  ; Δ{_t11 b0} · moves{_t11} · makes heap
-  ret + _t12 _t13  ; Δ{b1}
+  ret + _t12 _t13  ; Δ{b0}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

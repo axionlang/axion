@@ -5347,6 +5347,25 @@ fn desugar_ops_in_expr(e: &mut ast::Expr, funcs: &std::collections::HashSet<Stri
         }
         Lam(_, body, _) => desugar_ops_in_expr(body, funcs),
     }
+    // …and the reverse for the built-in Integral methods: `div a b` / `mod a b` called as ordinary
+    // functions are the infix `a `div` b` — the only form the backends know (as a function they
+    // type-checked, then failed: "no instance of method 'mod'" in the interpreter, and natively
+    // the caller dropped out of the native set). Not when the program defines its own `div`/`mod`.
+    if let App(f, _, _) = e {
+        if let App(g, _, _) = f.as_ref() {
+            if let Var(name, _) = g.as_ref() {
+                if matches!(name.as_str(), "div" | "mod") && !funcs.contains(name) {
+                    if let App(f, r, sp) = std::mem::replace(e, Int(0, (0, 0))) {
+                        if let App(g, l, _) = *f {
+                            if let Var(name, _) = *g {
+                                *e = BinOp(name, l, r, sp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     // With children handled, turn a user-operator `BinOp` into `(op) l r`.
     if let BinOp(op, _, _, _) = e {
         if funcs.contains(op) && !core::is_builtin_op(op) && !core::is_float_op(op) {
@@ -6688,6 +6707,7 @@ fn resolve_imports_rec(
         };
         // each imported module in its own span band, after the prelude's (see `band_module_spans`)
         band_module_spans(&mut imported, diag::PRELUDE_SPAN_BAND + resolved.len());
+        diag::register_import_band(diag::PRELUDE_SPAN_BAND + resolved.len(), &resolved_path);
         resolve_imports_rec(&mut imported, &resolved_path, diags, resolve, resolved);
         // prepend imported definitions, skipping those already defined locally.
         // qualified imports: prefix names with the alias (or last module component).

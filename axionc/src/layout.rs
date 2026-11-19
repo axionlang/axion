@@ -87,9 +87,11 @@ pub fn layout(tokens: &[Spanned], lines: &LineMap) -> Vec<LSpanned> {
             bracket_depth = bracket_depth.saturating_sub(1);
         }
 
-        // `in` closes the nearest `let` block — but only if it is still open
-        // (on a dedented `in`, the offside rule already closed it).
-        if t.tok == Tok::In && matches!(ctx.last(), Some((_, true, _))) {
+        // `in` closes the nearest `let` block — but only if it is still open (on a dedented
+        // `in`, the offside rule already closed it) and was opened at this bracket depth: an `in`
+        // inside a bracket opened after the `let` belongs to that bracket's own construct
+        // (`let q = a + (borrow b as p in f p) in …`).
+        if t.tok == Tok::In && matches!(ctx.last(), Some(&(_, true, d)) if d == bracket_depth) {
             push(&mut out, LTok::VRBrace, t);
             ctx.pop();
         }

@@ -762,3 +762,31 @@ fn verifier_reports_a_moved_in_parameter_never_freed() {
     let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
     assert!(String::from_utf8_lossy(&ok.stdout).contains("no corruption"));
 }
+
+/// A by-copy record update shares the base's non-updated heap fields with its result, and the
+/// verifier models that sharing WITHIN a function too: without the two update-skip fixes
+/// (`AXION_NO_UPDATE_SKIP_FIX`) a base freed whole while its result still lives — the base dying
+/// first (`record_update_base_dies_first.axi`), or a closure body returning `p { v = … }` and then
+/// freeing `p` (`axmpv_regressions.axi`) — is refused. With the fixes, both verify clean.
+#[test]
+fn verifier_refuses_a_base_freed_before_its_update_result() {
+    for name in ["record_update_base_dies_first.axi", "axmpv_regressions.axi"] {
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        let ok = axionc().args(["--emit", "verify", &path]).output().unwrap();
+        let oks = String::from_utf8_lossy(&ok.stdout);
+        assert!(
+            oks.contains("no corruption"),
+            "{name}: must verify clean with the fixes, got:\n{oks}"
+        );
+        let bad = axionc()
+            .args(["--emit", "verify", &path])
+            .env("AXION_NO_UPDATE_SKIP_FIX", "1")
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&bad.stdout);
+        assert!(
+            out.contains("FAIL:") && out.contains("UseAfterFree"),
+            "{name}: without the fixes the verifier must refuse it, got:\n{out}"
+        );
+    }
+}

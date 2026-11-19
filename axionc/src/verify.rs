@@ -249,6 +249,27 @@ pub fn frees_heap_params(fns: &[CoreFn]) -> HashMap<String, HashSet<usize>> {
     out
 }
 
+/// The borrow name of the heap fields a by-copy update shares with its base `b`.
+fn shared_name(b: &str) -> String {
+    format!("{b}#shared")
+}
+
+/// Is borrow `w` dangling? A `b#shared` borrow (not yet released) lives exactly as long as `b`.
+fn borrow_dead(st: &State, w: &str) -> bool {
+    let target = w.strip_suffix("#shared").unwrap_or(w);
+    st.get(target).is_some_and(|v| v.dead.is_some())
+}
+
+/// The base variable of a record update (empty for anything else).
+fn b_of(op: &Op) -> &str {
+    match op {
+        Op::UpdateRecord {
+            base: Atom::Var(b), ..
+        } => b,
+        _ => "",
+    }
+}
+
 /// Verify every function of a lowered module; returns all findings (corruption + leak).
 pub fn verify(lowered: &Lowered) -> Vec<Finding> {
     // With the signature keys, a borrowed tuple's fields resolve to their types, so a function
@@ -721,6 +742,7 @@ fn run_fn(
         poly_borrowed: HashSet::new(),
         elem_sink,
         deep_freed: HashSet::new(),
+        shares: HashMap::new(),
     };
     // the whole body is in function-EXIT (tail) position: a `ret` reached here is a real
     // return, so a leak check applies; a `ret` reached inside a let-bound `if`/`case` is a
@@ -762,6 +784,8 @@ struct Verifier<'a> {
     /// values freed by a FULL keyed (deep) drop — not a shell free, not a skip-destructor that
     /// leaves shared slots alone (see the reverse double-free check in `do_drop`)
     deep_freed: HashSet<String>,
+    /// by-copy update result → (its base, the field indices they share) — CHECK pass only
+    shares: HashMap<String, (String, Vec<usize>)>,
     f: &'a str,
     ba: &'a BorrowArgs,
     recinfo: &'a RecordInfo,
@@ -1062,6 +1086,19 @@ impl Verifier<'_> {
             self.use_atom(a, sp, st);
         }
         let val = self.classify(op, st);
+        if let Op::UpdateRecord {
+            base: Atom::Var(b),
+            fields,
+            inplace: false,
+            ..
+        } = op
+        {
+            if !self.mode.poly_elem && val.borrows.contains(&shared_name(b)) {
+                let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                let shared = self.recinfo.update_shared_fields(&names);
+                self.shares.insert(x.to_string(), (b.clone(), shared));
+            }
+        }
         // which slots of `x` take ownership of a heap resource moved into them (`heap_inside`)?
         let owns = |a: &Atom| {
             matches!(a, Atom::Var(v) if e.moves.iter().any(|m| matches!(m, Atom::Var(w) if w == v))
@@ -1235,18 +1272,36 @@ impl Verifier<'_> {
         // RETURNS such an update hands its caller a record sharing the argument's heap fields.
         // (Within one function Auto-Drop frees the result with a skip-destructor that leaves the
         // shared slots to the base — checked by the drop balance as usual.)
+        // The CHECK pass applies the same sharing to an update of a record OWNED here: the result
+        // borrows it until the base is freed with a skip-destructor that leaves the shared fields
+        // to the result (`do_drop`) — so a full free of the base while the result lives or escapes
+        // (`ret r` after `drop p : P`) is a use-after-free, and a full free of the result followed
+        // by one of the base a double free (`dbl_rev`).
+        let base_owned_here = |b: &str| {
+            !self.mode.poly_elem && st.get(b).is_some_and(|v| v.owned && v.dead.is_none())
+        };
         if let (
             Op::UpdateRecord {
                 base: Atom::Var(b),
                 fields,
                 inplace: false,
+                ..
             },
             true,
-        ) = (op, self.mode.track_fields && self.mode.poly_elem)
-        {
+        ) = (
+            op,
+            self.mode.track_fields && (self.mode.poly_elem || base_owned_here(b_of(op))),
+        ) {
             let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
             if self.recinfo.update_shares_heap(&names) {
-                let mut borrows: HashSet<String> = HashSet::from([b.clone()]);
+                // the check pass borrows `b#shared` — `b`'s shared fields, alive while `b` is,
+                // until a skip-drop of `b` leaves them to the holders (`do_drop`)
+                let name = if self.mode.poly_elem {
+                    b.clone()
+                } else {
+                    shared_name(b)
+                };
+                let mut borrows: HashSet<String> = HashSet::from([name]);
                 if let Some(bv) = st.get(b) {
                     borrows.extend(bv.borrows.iter().cloned());
                 }
@@ -1429,6 +1484,29 @@ impl Verifier<'_> {
     /// does NOT free (moved out via a skip-destructor).
     fn do_drop(&mut self, x: &str, key: Option<&String>, skip: &[usize], sp: Span, st: &mut State) {
         self.note_field_gone(x, st);
+        // a base freed with a skip-destructor that leaves every field it shares with a by-copy
+        // update's result to that result: the result no longer borrows it
+        let covers = |idxs: &[usize]| idxs.iter().all(|i| skip.contains(i));
+        let all_shared: Vec<usize> = self
+            .shares
+            .values()
+            .filter(|(b, _)| b == x)
+            .flat_map(|(_, idxs)| idxs.iter().copied())
+            .collect();
+        if !all_shared.is_empty() && !skip.is_empty() && covers(&all_shared) {
+            // every holder — the results and whatever they moved into — now owns them
+            let name = shared_name(x);
+            for v in st.values_mut() {
+                v.borrows.remove(&name);
+            }
+        }
+        // …and a RESULT freed with a skip-destructor leaving the shared fields to its base does
+        // not free them twice, whatever happened to the base
+        let own_skip_base: Option<String> = self
+            .shares
+            .get(x)
+            .filter(|(_, idxs)| !skip.is_empty() && covers(idxs))
+            .map(|(b, _)| shared_name(b));
         // V-2 (docs/call-site-ownership.md): a deep-drop key whose type CONSTRUCTOR is a
         // primitive SCALAR (`Int$Int` → base `Int`) is ALWAYS a bad-free — you never
         // deep-drop an Int/Float/Bool/Char. This catches the multi-param-sum mis-key
@@ -1467,9 +1545,9 @@ impl Verifier<'_> {
                 // touches just the cell, not the shared element.
                 if key.is_some() {
                     let dbl = st.get(x).is_some_and(|v| {
-                        v.borrows
-                            .iter()
-                            .any(|w| st.get(w).is_some_and(|wv| wv.dead.is_some()))
+                        v.borrows.iter().any(|w| {
+                            own_skip_base.as_deref() != Some(w.as_str()) && borrow_dead(st, w)
+                        })
                     });
                     // …and the other order: an OWNED value sharing `x`'s contents (a by-copy
                     // record update returned from a call, a `take`-style result) was already
@@ -1479,7 +1557,7 @@ impl Verifier<'_> {
                             && wv.owned
                             && wv.dead == Some(Cat::DoubleFree)
                             && self.deep_freed.contains(w)
-                            && wv.borrows.contains(x)
+                            && (wv.borrows.contains(x) || wv.borrows.contains(&shared_name(x)))
                     });
                     if dbl || dbl_rev {
                         self.finding(Cat::DoubleFree, x, sp);
@@ -1964,7 +2042,7 @@ impl Verifier<'_> {
             self.finding(Cat::UseAfterFree, v, sp);
         }
         for w in &borrows {
-            if st.get(w).is_some_and(|wv| wv.dead.is_some()) {
+            if borrow_dead(st, w) {
                 self.finding(Cat::UseAfterFree, v, sp); // dangling interior alias
             }
         }

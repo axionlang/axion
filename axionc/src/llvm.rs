@@ -282,6 +282,11 @@ pub fn emit_ir(
     let mut ffi_sorted: Vec<(&String, &(Vec<bool>, bool))> = ffi.iter().collect();
     ffi_sorted.sort();
     for (name, (arg_floats, ret_float)) in ffi_sorted {
+        // a runtime symbol called directly (`ax_net_accept` in examples/echo.axi) is already
+        // declared above: a second `declare` is an IR error
+        if RT_DECLS.contains(&format!("@{name}(")) {
+            continue;
+        }
         let params = arg_floats
             .iter()
             .map(|&f| if f { "double" } else { "i64" })
@@ -348,6 +353,7 @@ pub fn emit_ir(
     }
     out.push_str("  ret i32 0\n}\n");
     out.push_str(TBAA_METADATA);
+    out.push_str("attributes #0 = { sanitize_address }\n");
     Ok(out)
 }
 
@@ -637,8 +643,12 @@ fn emit_fn(
         e.scope.insert(p.clone(), name.clone());
         params.push(format!("i64 {name}"));
     }
+    // `#0` = `sanitize_address`: clang instruments only the functions that carry it, and IR
+    // compiled from a `.ll` file has no frontend to add it — without it an ASan build checked no
+    // load or store of generated code (only the runtime's `free`/`memcpy` interceptors and LSan
+    // saw anything). Inert unless the ASan pass runs.
     let header = format!(
-        "define i64 @\"ax_{}\"({}) {{\nentry:\n",
+        "define i64 @\"ax_{}\"({}) #0 {{\nentry:\n",
         f.name,
         params.join(", ")
     );
@@ -1050,14 +1060,10 @@ impl Emit<'_> {
                     "-" => (format!("sub i64 {x}, {y}"), false),
                     "*" => (format!("mul i64 {x}, {y}"), false),
                     "div" => (format!("sdiv i64 {x}, {y}"), false),
-                    "mod" => {
-                        let op = if matches!(b, Atom::Int(d) if *d > 0 && *d < 0x4000_0000) {
-                            "urem"
-                        } else {
-                            "srem"
-                        };
-                        (format!("{op} i64 {x}, {y}"), false)
-                    }
+                    // the remainder of the truncated `div` (sign of the dividend). `urem` was used for
+                    // a positive constant divisor, which is wrong for a negative dividend (-7 mod 3
+                    // gave 0); LLVM strength-reduces a constant `srem` itself.
+                    "mod" => (format!("srem i64 {x}, {y}"), false),
                     "band" => (format!("and i64 {x}, {y}"), false),
                     "==" => (format!("icmp eq i64 {x}, {y}"), true),
                     "<" => (format!("icmp slt i64 {x}, {y}"), true),
@@ -1262,6 +1268,7 @@ impl Emit<'_> {
                 base,
                 fields,
                 inplace,
+                ..
             } => {
                 let base_ptr = self.atom(base)?;
                 // Linear Elision (§2): in-place mutates the base's block; otherwise allocates

@@ -948,6 +948,7 @@ impl Fx<'_, '_> {
                 base,
                 fields,
                 inplace,
+                ..
             } => {
                 let base_ptr = self.atom(base)?;
                 // Linear Elision (§2): in-place mutates the base's block and returns it;

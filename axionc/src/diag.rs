@@ -114,6 +114,15 @@ impl Diagnostic {
         let mut out = format!("{sev}[{}]: {}\n", self.code, self.message);
         for (i, lbl) in self.labels.iter().enumerate() {
             let (start, end) = (lbl.start % CLONE_SPAN_STRIDE, lbl.end % CLONE_SPAN_STRIDE);
+            // a span inside an IMPORTED module is rendered against that module's own file
+            let imported = imported_file(lbl.start / CLONE_SPAN_STRIDE);
+            let other = imported
+                .as_ref()
+                .map(|(p, s)| (p.as_str(), s.as_str(), LineMap::new(s)));
+            let (path, src, lines) = match &other {
+                Some((p, s, l)) => (*p, *s, l),
+                None => (path, src, lines),
+            };
             let (line, col) = lines.pos(start);
             let (_, end_col) = lines.pos(end.max(start));
             let width = (end_col.saturating_sub(col)).max(1);
@@ -157,6 +166,47 @@ pub const CLONE_SPAN_STRIDE: usize = 10_000_000;
 /// playground).
 pub const PRELUDE_SPAN_BAND: usize = if usize::BITS >= 64 { 1 << 24 } else { 300 };
 
+/// The file each imported module's span band came from (`register_import_band`), so a diagnostic
+/// inside an imported module names that file and its line instead of the importer's.
+static IMPORT_BANDS: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Records that span band `band` (a multiple of `CLONE_SPAN_STRIDE`, above the prelude's) holds the
+/// module parsed from `path`.
+pub fn register_import_band(band: usize, path: &str) {
+    if let Ok(mut b) = IMPORT_BANDS.lock() {
+        b.retain(|(k, _)| *k != band);
+        b.push((band, path.to_string()));
+    }
+}
+
+/// A clone's span mapped back to its source span; an imported module's span keeps its band.
+fn unclone_span(x: usize) -> usize {
+    let band = x / CLONE_SPAN_STRIDE;
+    let imported = band > PRELUDE_SPAN_BAND
+        && IMPORT_BANDS
+            .lock()
+            .is_ok_and(|b| b.iter().any(|(k, _)| *k == band));
+    if imported {
+        x
+    } else {
+        x % CLONE_SPAN_STRIDE
+    }
+}
+
+fn imported_file(band: usize) -> Option<(String, String)> {
+    if band <= PRELUDE_SPAN_BAND {
+        return None;
+    }
+    let path = IMPORT_BANDS
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(k, _)| *k == band)
+        .map(|(_, p)| p.clone())?;
+    let src = std::fs::read_to_string(&path).ok()?;
+    Some((path, src))
+}
+
 /// `keepWith$$hoflamcap0` → `keepWith`: the user-facing name of a specialization clone.
 fn unclone_names(s: &str) -> String {
     let mut parts = s.split("$$");
@@ -186,14 +236,15 @@ impl Diagnostics {
         // reported on the user's source: the clone's spans map back to the original ones, and
         // its name to the function it was cloned from. Once mapped, the same error reported for
         // two clones of one function is shown once.
+        // (An IMPORTED module's band is kept: `render` shows such a span in that module's file.)
         for l in &mut d.labels {
-            l.start %= CLONE_SPAN_STRIDE;
-            l.end %= CLONE_SPAN_STRIDE;
+            l.start = unclone_span(l.start);
+            l.end = unclone_span(l.end);
             l.message = unclone_names(&l.message);
         }
         if let Some(fix) = &mut d.fix {
-            fix.start %= CLONE_SPAN_STRIDE;
-            fix.end %= CLONE_SPAN_STRIDE;
+            fix.start = unclone_span(fix.start);
+            fix.end = unclone_span(fix.end);
         }
         d.message = unclone_names(&d.message);
         let same = |o: &Diagnostic| {

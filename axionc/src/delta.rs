@@ -174,6 +174,7 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             base,
             fields,
             inplace,
+            ..
         } => {
             // IN-PLACE: the base's block BECOMES the result — its resources move into
             // the returned record (no separate free). BY-COPY: the base is READ to

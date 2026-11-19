@@ -38,8 +38,8 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop q0 : Q
-  drop q1 : Q skip{0 2}
+  drop q0 : Q skip{0 2}
+  drop q1 : Q
   else
   else
   let _dd0 = loadraw _p+24  ; Δ{}
@@ -70,7 +70,7 @@
   let _t14 = con Nil  ; Δ{_t13 q0} · makes List$Int
   let _t15 = con Cons 7 _t14  ; Δ{_t13 _t14 q0} · moves{_t14} · makes List$Int
   let _t16 = call lenA q0  ; Δ{q0 q1}
-  let _t17 = call lenA q1  ; Δ{q1}
+  let _t17 = call lenA q1  ; Δ{q0 q1}
   let _t2 = con Nil  ; Δ{_t1} · makes List$Int
   let _t3 = con Cons 2 _t2  ; Δ{_t1 _t2} · moves{_t2} · makes List$Int
   let _t4 = con Cons 2 _t3  ; Δ{_t1 _t3} · moves{_t3} · makes List$Int
@@ -81,7 +81,7 @@
   let _t9 = con Cons 4 _t8  ; Δ{_t1 _t4 _t6 _t8} · moves{_t8} · makes List$Int
   let q0 = record Q { a = _t1 b = _t4 c = _t6 d = _t9}  ; Δ{_t1 _t4 _t6 _t9} · moves{_t1 _t4 _t6 _t9} · makes Q
   let q1 = update q0 { b = _t13 d = _t15}  ; Δ{_t13 _t15 q0} · moves{_t13 _t15} · makes heap
-  ret + _t16 _t17  ; Δ{q1}
+  ret + _t16 _t17  ; Δ{q0}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}

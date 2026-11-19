@@ -113,6 +113,9 @@ pub enum Op {
         base: Atom,
         fields: Vec<(String, Atom)>,
         inplace: bool,
+        /// the record's type name (non-parametric records; `None` otherwise) — a by-copy update
+        /// makes a fresh value of it, like `MakeRecord { ty }`
+        ty: Option<String>,
     },
     /// field selector `field rec`
     Field {
@@ -490,6 +493,8 @@ fn fresh_let_producer_key(op: &Op) -> Option<String> {
         Op::ShowInt(_) => Some("String".into()),
         Op::RtCall { func, .. } if is_string_producer(func) => Some("String".into()),
         Op::RtCall { func, .. } if is_bignum_producer(func) => Some("Integer".into()),
+        // a fresh `newBuffer` (freed by `axion_buf_free` under the `Buffer` key)
+        Op::RtCall { func, .. } if func == "axion_buf_new" => Some("Buffer".into()),
         _ => None,
     }
 }
@@ -713,6 +718,9 @@ pub struct RecordInfo {
     /// docs/per-field-ownership.md): each such slot owns its own linear resource,
     /// so a remainder drop may skip the moved-out ones (`Term::Drop` skip set).
     con_owned_fields: HashMap<String, HashSet<usize>>,
+    /// constructor → field indices declared with a plain scalar type (`Int`/`Float`/`Bool`/
+    /// `Char`): immediates, never a pointer into the value.
+    con_scalar_fields: HashMap<String, HashSet<usize>>,
 }
 
 impl RecordInfo {
@@ -761,6 +769,14 @@ impl RecordInfo {
                 let mut owned = HashSet::new();
                 let mut field_param: HashMap<usize, usize> = HashMap::new();
                 for (i, f) in c.fields.iter().enumerate() {
+                    if matches!(f.ty.head_con(), Some("Int" | "Float" | "Bool" | "Char"))
+                        && !matches!(f.ty, Type::Arrow { .. } | Type::Tuple(_))
+                    {
+                        r.con_scalar_fields
+                            .entry(c.name.clone())
+                            .or_default()
+                            .insert(i);
+                    }
                     // A heap-owning field is a separate allocation a flat `free` would leave
                     // behind → it must be reclaimed when the record dies (its `drop_way`
                     // picks the right reclaimer: a `data` destructor or the tagged
@@ -1067,6 +1083,43 @@ impl RecordInfo {
 
     /// `true` if field `i` of `con` is a separately-allocated heap object (a
     /// `data`/tuple the value owns) — i.e. one the deep-drop destructor would free.
+    /// `true` if a BY-COPY record update with these assignments returns a block that holds no
+    /// pointer of its base: every field it does not overwrite is a plain scalar. The base may
+    /// then be freed right after the update (it is only read).
+    pub fn update_is_fresh(&self, fields: &[(String, Atom)]) -> bool {
+        let Some(con) = fields.first().and_then(|(n, _)| self.field_owner.get(n)) else {
+            return false;
+        };
+        let (Some(names), Some(arity)) = (self.con_fields.get(con), self.con_arity(con)) else {
+            return false;
+        };
+        let scalar = self.con_scalar_fields.get(con);
+        (0..arity).all(|i| {
+            names
+                .get(i)
+                .is_some_and(|n| fields.iter().any(|(f, _)| f == n))
+                || scalar.is_some_and(|s| s.contains(&i))
+        })
+    }
+
+    /// `true` if the named record field is declared with a plain scalar type: reading it
+    /// yields an immediate, never a pointer into the record.
+    pub fn named_field_is_scalar(&self, name: &str) -> bool {
+        let Some(con) = self.field_owner.get(name) else {
+            return false;
+        };
+        let Some(i) = self
+            .con_fields
+            .get(con)
+            .and_then(|ns| ns.iter().position(|n| n == name))
+        else {
+            return false;
+        };
+        self.con_scalar_fields
+            .get(con)
+            .is_some_and(|s| s.contains(&i))
+    }
+
     pub fn field_is_heap(&self, con: &str, i: usize) -> bool {
         let off = self.field_offset(con, i);
         self.drop_slots(con).iter().any(|(o, _)| *o == off)
@@ -1136,6 +1189,32 @@ impl RecordInfo {
             .filter_map(|n| self.field(n).map(|(o, _)| o))
             .collect();
         self.drop_slots(con).iter().any(|(o, _)| !set.contains(o))
+    }
+
+    /// The field indices a BY-COPY update with these assignments SHARES with its base: every
+    /// heap (or type-variable) field it does not overwrite.
+    pub fn update_shared_fields(&self, updated: &[&str]) -> Vec<usize> {
+        let Some(con) = updated.first().and_then(|n| self.field_owner.get(*n)) else {
+            return Vec::new();
+        };
+        let Some(names) = self.con_fields.get(con) else {
+            return Vec::new();
+        };
+        (0..names.len())
+            .filter(|&i| !updated.contains(&names[i].as_str()))
+            .filter(|&i| self.field_transfers_heap(con, i))
+            .collect()
+    }
+
+    /// The indices of the heap (or type-variable) fields of the record these fields belong to.
+    pub fn record_heap_fields(&self, some_field: &str) -> HashSet<usize> {
+        let Some(con) = self.field_owner.get(some_field) else {
+            return HashSet::new();
+        };
+        let n = self.con_fields.get(con).map_or(0, Vec::len);
+        (0..n)
+            .filter(|&i| self.field_transfers_heap(con, i))
+            .collect()
     }
 
     /// Offset (in bytes) of a named field, and the list of its record's fields.
@@ -1788,6 +1867,8 @@ struct Lower<'a> {
     /// Phase A′: constructor → `data`-type name of its value (None for unboxed
     /// enum constructors — immediate tags, never dropped). Attached to `Make*`.
     con_ty: &'a HashMap<String, Option<String>>,
+    /// record field → its (non-parametric) record type's name. Attached to `UpdateRecord`.
+    field_ty: &'a HashMap<String, String>,
     /// Phase A′: function → `data`-type name of its result (boxed only). Attached
     /// to `CallDirect`.
     fn_ret_ty: &'a HashMap<String, String>,
@@ -2027,6 +2108,9 @@ impl Lower<'_> {
                         .map(|(f, x)| (f.clone(), self.atom(x, buf)))
                         .collect(),
                     inplace: self.inplace.contains(span),
+                    ty: assigns
+                        .first()
+                        .and_then(|(f, _)| self.field_ty.get(f).cloned()),
                 }
             }
             Expr::Lam(_, _, span) => match self.lam_meta.get(span) {
@@ -3027,6 +3111,7 @@ fn lower_func(
     data_types: &HashSet<String>,
     single_con: &HashSet<String>,
     con_ty: &HashMap<String, Option<String>>,
+    field_ty: &HashMap<String, String>,
     fn_ret_ty: &HashMap<String, String>,
     parametric_data: &HashSet<String>,
     makecon_tys: &HashMap<Span, Type>,
@@ -3053,6 +3138,7 @@ fn lower_func(
         inplace,
         foreigns,
         con_ty,
+        field_ty,
         fn_ret_ty,
         locals: locals.clone(),
         tmp: 0,
@@ -6317,6 +6403,19 @@ pub fn lower_with(
     // constructors — immediate tags, never dropped). Attached to `MakeCon`/`MakeRecord`
     // at lowering so the drop machinery reads the type off the node instead of
     // reconstructing it.
+    let field_ty: HashMap<String, String> = module
+        .datas
+        .iter()
+        .filter(|d| d.params.is_empty() && !is_enum_data(d))
+        .flat_map(|d| {
+            d.cons.iter().flat_map(move |c| {
+                c.fields
+                    .iter()
+                    .filter(|f| !f.name.is_empty())
+                    .map(move |f| (f.name.clone(), d.name.clone()))
+            })
+        })
+        .collect();
     let con_ty: HashMap<String, Option<String>> = module
         .datas
         .iter()
@@ -6641,6 +6740,7 @@ pub fn lower_with(
             &boxed,
             &single_con,
             &con_ty,
+            &field_ty,
             &fn_ret_ty,
             &parametric_data,
             makecon_tys,
@@ -6696,6 +6796,7 @@ pub fn lower_with(
                 &boxed,
                 &single_con,
                 &con_ty,
+                &field_ty,
                 &fn_ret_ty,
                 &parametric_data,
                 makecon_tys,
@@ -6763,6 +6864,7 @@ pub fn lower_with(
             inplace,
             foreigns: &foreigns,
             con_ty: &con_ty,
+            field_ty: &field_ty,
             fn_ret_ty: &fn_ret_ty,
             locals,
             tmp: 0,
@@ -7011,6 +7113,10 @@ pub fn lower_with(
             Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
         );
         f.body = normalize_mixed_cond_lets(body, &recinfo, &mut HashMap::new());
+        // the record copiers it called (`axion_copy_T` for an arm copied to a `T`) are generated
+        let mut called = HashSet::new();
+        copier_calls(&f.body, &mut called);
+        copy_seeds.extend(called.into_iter().map(Type::Con));
         // Clause-form functions bind patterns as `let buf = _p1`. Removing that alias BEFORE borrow
         // analysis lets every pass see the parameter itself: otherwise it read as a move, so the
         // caller gave up ownership while the callee never freed (a leak), and a later use by the
@@ -7057,6 +7163,7 @@ pub fn lower_with(
             type_by_key: &type_by_key,
         };
         let owning = own_escaping_closures(&mut out, &cx, &mut copy_seeds, &mut mono_seeds);
+        copy_closure_call_params(&mut out, &cx, &mut copy_seeds, &mut mono_seeds);
         key_fresh_closure_calls(&mut out);
         // AXION_NO_CLOSURE_COPIES (test hook): leave out the closure copies below, to check that the
         // drop verifier refuses the double frees they prevent
@@ -7269,6 +7376,11 @@ pub fn lower_with(
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
         let (mut f, seeds, tuple_seeds_skip) =
             insert_drops(f, &borrow_args, dty, &recinfo, &borrow_ret);
+        // AXION_NO_UPDATE_SKIP_FIX (test hook): leave both update-skip fixes out, to check that
+        // the verifier refuses the Core they correct
+        if std::env::var_os("AXION_NO_UPDATE_SKIP_FIX").is_none() {
+            swap_update_skip_owner(&mut f.body, &recinfo);
+        }
         // A2: reclaim a conditionally-escaping owned heap param in a tail case/if.
         // Guard: only when the Core params line up 1:1 with the signature arrows
         // (a captured/synthetic param would otherwise pick the WRONG destructor key
@@ -7828,7 +7940,13 @@ fn gen_copiers(
                 .filter_map(
                     |(i, el)| match drop_way(el, recinfo, parametric_data, &mut work) {
                         DropWay::None => None,
-                        way => Some((i as i32 * 8, way)),
+                        way => {
+                            // a plain `data` element needs its own copier too (see below)
+                            if matches!(way, DropWay::Deep(_)) && matches!(el, Type::Con(_)) {
+                                work.push(el.clone());
+                            }
+                            Some((i as i32 * 8, way))
+                        }
                     },
                 )
                 .collect();
@@ -7870,7 +7988,15 @@ fn gen_copiers(
                         let rty = subst_ty(&f.ty, &subst);
                         match drop_way(&rty, recinfo, parametric_data, &mut work) {
                             DropWay::None => None,
-                            way => Some((recinfo.field_offset(&con.name, i), way)),
+                            way => {
+                                // `drop_way` queues parametric/tuple types only (plain `data`
+                                // DESTRUCTORS always exist); a plain `data` field needs its own
+                                // COPIER generated too (`axion_copy_Act` for a `List Act`)
+                                if matches!(way, DropWay::Deep(_)) && matches!(rty, Type::Con(_)) {
+                                    work.push(rty.clone());
+                                }
+                                Some((recinfo.field_offset(&con.name, i), way))
+                            }
                         }
                     })
                     .collect()
@@ -8768,6 +8894,125 @@ fn own_in_rhs(
     }
 }
 
+/// A closure call CONSUMES its arguments (the closure ABI: the lambda owns and frees them). A
+/// parameter the function does not own (`run name p = … f p …`, `p :: Player`) handed to one is
+/// therefore passed as a COPY, so the function only borrows it and its caller may keep using the
+/// value — as for a parameter returned whole (`normalize_alias_returns`). Without it the function
+/// silently consumed the parameter: the type checker (which sees `Player`, not `%1`) accepted
+/// a second use the native verifier then refused. Only declared, copyable heap types.
+fn copy_closure_call_params(
+    out: &mut [CoreFn],
+    cx: &ClosureOwnCx,
+    copy_seeds: &mut Vec<Type>,
+    mono_seeds: &mut Vec<Type>,
+) {
+    let mut ctr = 0usize;
+    for f in out.iter_mut() {
+        let Some(tys) = cx.fn_param_types.get(&f.name) else {
+            continue;
+        };
+        if tys.len() < f.params.len() {
+            continue; // lifted `where` captures lead the params
+        }
+        // param → how to copy it
+        let mut kinds: HashMap<String, CopyKind> = HashMap::new();
+        for (p, t) in f.params.iter().zip(tys) {
+            if f.owned_params.contains(p) {
+                continue;
+            }
+            let Some(Some(k)) = capture_kind_of_type(t, cx) else {
+                continue;
+            };
+            let kind = match k.as_str() {
+                "String" => CopyKind::Str,
+                "Integer" => CopyKind::Int,
+                _ => {
+                    if matches!(t, Type::Tuple(_) | Type::App(..)) {
+                        mono_seeds.push(t.clone());
+                    }
+                    copy_seeds.push(t.clone());
+                    CopyKind::Container(k)
+                }
+            };
+            kinds.insert(p.clone(), kind);
+        }
+        if kinds.is_empty() {
+            continue;
+        }
+        let body = std::mem::replace(
+            &mut f.body,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+        );
+        f.body = copy_callclo_args(body, &kinds, &mut ctr);
+    }
+}
+
+fn copy_callclo_args(t: Term, kinds: &HashMap<String, CopyKind>, ctr: &mut usize) -> Term {
+    let fix = |op: &mut Op, ctr: &mut usize| -> Vec<(String, Op)> {
+        let mut copies = Vec::new();
+        if let Op::CallClosure(_, args) = op {
+            for a in args.iter_mut() {
+                if let Atom::Var(v) = a {
+                    if let Some(kind) = kinds.get(v) {
+                        let c = format!("$clargcopy{ctr}");
+                        *ctr += 1;
+                        copies.push((c.clone(), alias_copy_op(v, kind)));
+                        *a = Atom::Var(c);
+                    }
+                }
+            }
+        }
+        copies
+    };
+    let wrap = |copies: Vec<(String, Op)>, sp: Span, inner: Term| {
+        copies.into_iter().rev().fold(inner, |acc, (c, op)| {
+            Term::Let(c, Rhs::Op(op), sp, Box::new(acc))
+        })
+    };
+    let sub = |r: Rhs, ctr: &mut usize| -> Rhs {
+        match r {
+            Rhs::If(c, a, b) => Rhs::If(
+                c,
+                Box::new(copy_callclo_args(*a, kinds, ctr)),
+                Box::new(copy_callclo_args(*b, kinds, ctr)),
+            ),
+            Rhs::Case(s, arms) => Rhs::Case(
+                s,
+                arms.into_iter()
+                    .map(|(p, b)| (p, copy_callclo_args(b, kinds, ctr)))
+                    .collect(),
+            ),
+            other => other,
+        }
+    };
+    match t {
+        Term::Let(x, rhs, sp, body) => {
+            let body = copy_callclo_args(*body, kinds, ctr);
+            match rhs {
+                Rhs::Op(mut op) => {
+                    let copies = fix(&mut op, ctr);
+                    wrap(copies, sp, Term::Let(x, Rhs::Op(op), sp, Box::new(body)))
+                }
+                other => Term::Let(x, sub(other, ctr), sp, Box::new(body)),
+            }
+        }
+        Term::Drop(x, k, skip, sp, body) => Term::Drop(
+            x,
+            k,
+            skip,
+            sp,
+            Box::new(copy_callclo_args(*body, kinds, ctr)),
+        ),
+        Term::Ret(rhs, sp) => match rhs {
+            Rhs::Op(mut op) => {
+                let copies = fix(&mut op, ctr);
+                wrap(copies, sp, Term::Ret(Rhs::Op(op), sp))
+            }
+            other => Term::Ret(sub(other, ctr), sp),
+        },
+    }
+}
+
 /// The functions that return a FRESH closure on every path (`mk n = … \z -> …`), directly or
 /// through a call to another such function.
 fn fresh_closure_fns(out: &[CoreFn]) -> HashSet<String> {
@@ -8939,7 +9184,7 @@ fn copy_returned_closure_params(out: &mut [CoreFn], fn_param_types: &HashMap<Str
             .map(|(p, _)| (p.clone(), CopyKind::Closure))
             .collect();
         if !targets.is_empty() {
-            rewrite_alias_tails(&mut f.body, &targets, &mut ctr);
+            rewrite_alias_tails(&mut f.body, &targets, false, &mut ctr);
         }
     }
 }
@@ -10023,6 +10268,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
             base,
             fields,
             inplace,
+            ..
         } => {
             // by-copy update reads the base (borrow) and allocates a new record with
             // copies of the fields; in-place mutates the base and returns it (escape). Copying
@@ -10749,6 +10995,7 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
             base,
             fields,
             inplace,
+            ..
         } => (*inplace && atom_is(v, base)) || fields.iter().any(|(_, a)| atom_is(v, a)),
         Op::WithArena { parent, clos } => parent.iter().any(|a| atom_is(v, a)) || atom_is(v, clos),
     }
@@ -12172,6 +12419,7 @@ fn copy_shared_update_fields(
             base: Atom::Var(b),
             fields,
             inplace: false,
+            ..
         } = op
         else {
             return None;
@@ -12383,7 +12631,12 @@ fn alias_copy_op(v: &str, kind: &CopyKind) -> Op {
 /// Replace each TAIL `ret <targetParam>` with `let t = <copy param>; ret t` (a fresh copy —
 /// String via strAppend, Integer via axion_bignum_copy), so the return is owned and the param
 /// is borrowed. See [`normalize_alias_returns`].
-fn rewrite_alias_tails(t: &mut Term, targets: &HashMap<String, CopyKind>, ctr: &mut usize) {
+fn rewrite_alias_tails(
+    t: &mut Term,
+    targets: &HashMap<String, CopyKind>,
+    through_calls: bool,
+    ctr: &mut usize,
+) {
     match t {
         Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), sp) if targets.contains_key(v) => {
             let (sp, kind) = (*sp, targets[v].clone());
@@ -12398,18 +12651,46 @@ fn rewrite_alias_tails(t: &mut Term, targets: &HashMap<String, CopyKind>, ctr: &
                 Box::new(Term::Ret(Rhs::Op(Op::Atom(Atom::Var(tmp))), sp)),
             );
         }
+        // …and a tail CALL that may return the target whole (`run name p = go acts name p`, `go`
+        // returning `p` on a path): a target is one this function may return and its caller
+        // reuses, so the callee gets a copy and this function only reads the parameter.
+        Term::Ret(Rhs::Op(Op::CallDirect(_, args, _)), sp)
+            if through_calls
+                && args
+                    .iter()
+                    .any(|a| matches!(a, Atom::Var(v) if targets.contains_key(v))) =>
+        {
+            let sp = *sp;
+            let mut copies = Vec::new();
+            if let Term::Ret(Rhs::Op(Op::CallDirect(_, args, _)), _) = t {
+                for a in args.iter_mut() {
+                    if let Atom::Var(v) = a {
+                        if let Some(kind) = targets.get(v) {
+                            let tmp = format!("$aliascopy{ctr}");
+                            *ctr += 1;
+                            copies.push((tmp.clone(), alias_copy_op(v, kind)));
+                            *a = Atom::Var(tmp);
+                        }
+                    }
+                }
+            }
+            let inner = std::mem::replace(t, Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), sp));
+            *t = copies.into_iter().rev().fold(inner, |acc, (c, op)| {
+                Term::Let(c, Rhs::Op(op), sp, Box::new(acc))
+            });
+        }
         Term::Ret(Rhs::If(_, a, b), _) => {
-            rewrite_alias_tails(a, targets, ctr);
-            rewrite_alias_tails(b, targets, ctr);
+            rewrite_alias_tails(a, targets, through_calls, ctr);
+            rewrite_alias_tails(b, targets, through_calls, ctr);
         }
         Term::Ret(Rhs::Case(_, arms), _) => {
             for (_, arm) in arms {
-                rewrite_alias_tails(arm, targets, ctr);
+                rewrite_alias_tails(arm, targets, through_calls, ctr);
             }
         }
         Term::Ret(Rhs::Op(_), _) => {}
         Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => {
-            rewrite_alias_tails(body, targets, ctr);
+            rewrite_alias_tails(body, targets, through_calls, ctr);
         }
     }
 }
@@ -12692,7 +12973,7 @@ fn normalize_alias_returns(
         })
         .collect();
     if !targets.is_empty() {
-        rewrite_alias_tails(&mut f.body, &targets, ctr);
+        rewrite_alias_tails(&mut f.body, &targets, true, ctr);
     }
 }
 
@@ -12701,7 +12982,11 @@ fn normalize_alias_returns(
 /// alias of its args (`g ∉ br`) carrying a known heap return key. `None` for scalars, literals
 /// (`Atom(Str/Int)`), bare var returns (a possible param alias), `Field`/getters, and alias-
 /// returning calls — so an arm that could alias an owned value never gets reclaimed here.
-fn op_owned_key(op: &Op, br: &HashMap<String, HashSet<usize>>) -> Option<String> {
+fn op_owned_key(
+    op: &Op,
+    br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+) -> Option<String> {
     match op {
         Op::CallDirect(g, _, Some(k)) if !br.contains_key(g) => Some(k.clone()),
         Op::ShowInt(_) => Some("String".into()),
@@ -12710,6 +12995,16 @@ fn op_owned_key(op: &Op, br: &HashMap<String, HashSet<usize>>) -> Option<String>
         // conditional whose arms are `con …` be recognized as an owned temp (so a `let x = if …`
         // producing a `List`/`data`/… is reclaimed instead of leaking the spine).
         Op::MakeCon { ty: Some(k), .. } => Some(k.clone()),
+        // …and so do a record literal and a BY-COPY record update (an in-place one reuses its base)
+        Op::MakeRecord { ty: Some(k), .. } => Some(k.clone()),
+        // (only when it shares no heap field with its base — a base's shared fields are copied
+        // first unless the base is owned here)
+        Op::UpdateRecord {
+            inplace: false,
+            ty: Some(k),
+            fields,
+            ..
+        } if recinfo.update_is_fresh(fields) => Some(k.clone()),
         _ => None,
     }
 }
@@ -12718,27 +13013,32 @@ fn op_owned_key(op: &Op, br: &HashMap<String, HashSet<usize>>) -> Option<String>
 /// `let`s ending in `ret <var>` — so we thread a binding→key env: at `ret v` the key is whatever
 /// `v` was bound with (`None` for a borrowed param / non-producer). A direct `ret <op>` or a nested
 /// conditional tail resolves inline. `None` unless the arm provably yields a fresh owned heap value.
-fn arm_owned_key(t: &Term, br: &HashMap<String, HashSet<usize>>) -> Option<String> {
-    arm_owned_key_env(t, br, &mut HashMap::new())
+fn arm_owned_key(
+    t: &Term,
+    br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+) -> Option<String> {
+    arm_owned_key_env(t, br, recinfo, &mut HashMap::new())
 }
 fn arm_owned_key_env(
     t: &Term,
     br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
     env: &mut HashMap<String, Option<String>>,
 ) -> Option<String> {
     match t {
         Term::Let(x, rhs, _, b) => {
             let k = match rhs {
-                Rhs::Op(op) => op_owned_key(op, br),
-                Rhs::If(..) | Rhs::Case(..) => cond_temp_key(rhs, br),
+                Rhs::Op(op) => op_owned_key(op, br, recinfo),
+                Rhs::If(..) | Rhs::Case(..) => cond_temp_key(rhs, br, recinfo),
             };
             env.insert(x.clone(), k);
-            arm_owned_key_env(b, br, env)
+            arm_owned_key_env(b, br, recinfo, env)
         }
-        Term::Drop(_, _, _, _, b) => arm_owned_key_env(b, br, env),
+        Term::Drop(_, _, _, _, b) => arm_owned_key_env(b, br, recinfo, env),
         Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => env.get(v).cloned().flatten(),
-        Term::Ret(Rhs::Op(op), _) => op_owned_key(op, br),
-        Term::Ret(rhs @ (Rhs::If(..) | Rhs::Case(..)), _) => cond_temp_key(rhs, br),
+        Term::Ret(Rhs::Op(op), _) => op_owned_key(op, br, recinfo),
+        Term::Ret(rhs @ (Rhs::If(..) | Rhs::Case(..)), _) => cond_temp_key(rhs, br, recinfo),
     }
 }
 
@@ -12747,16 +13047,20 @@ fn arm_owned_key_env(
 /// reclaimed at its (unconditional) death point, exactly as the verifier already scores it. Returns
 /// `None` when any arm is a literal/scalar/alias (the MIXED case needs branch-sensitive handling and
 /// is left to the tail-position idiom), so this never introduces a double-free.
-fn cond_temp_key(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Option<String> {
+fn cond_temp_key(
+    rhs: &Rhs,
+    br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
+) -> Option<String> {
     match rhs {
         Rhs::If(_, th, el) => {
-            let k = arm_owned_key(th, br)?;
-            (arm_owned_key(el, br) == Some(k.clone())).then_some(k)
+            let k = arm_owned_key(th, br, recinfo)?;
+            (arm_owned_key(el, br, recinfo) == Some(k.clone())).then_some(k)
         }
         Rhs::Case(_, arms) => {
             let mut it = arms.iter();
-            let first = arm_owned_key(&it.next()?.1, br)?;
-            it.all(|(_, a)| arm_owned_key(a, br) == Some(first.clone()))
+            let first = arm_owned_key(&it.next()?.1, br, recinfo)?;
+            it.all(|(_, a)| arm_owned_key(a, br, recinfo) == Some(first.clone()))
                 .then_some(first)
         }
         Rhs::Op(_) => None,
@@ -12774,6 +13078,7 @@ fn cond_temp_key(rhs: &Rhs, br: &HashMap<String, HashSet<usize>>) -> Option<Stri
 fn copy_mixed_cond_arms(
     rhs: &Rhs,
     br: &HashMap<String, HashSet<usize>>,
+    recinfo: &RecordInfo,
     hint: Option<String>,
 ) -> Option<(Rhs, String)> {
     let arms: Vec<&Term> = match rhs {
@@ -12784,7 +13089,7 @@ fn copy_mixed_cond_arms(
     let mut key: Option<String> = None;
     let mut any_nonowned = false;
     for a in &arms {
-        match arm_owned_key(a, br) {
+        match arm_owned_key(a, br, recinfo) {
             Some(k) => {
                 if key.get_or_insert_with(|| k.clone()) != &k {
                     return None; // arms yield different owned keys — not uniform
@@ -12799,11 +13104,17 @@ fn copy_mixed_cond_arms(
     if !any_nonowned {
         return None; // all owned → the existing all-heap path handles it
     }
-    if key != "String" && key != "Integer" {
-        return None; // only these heap primitives have a stock 1-value copier
+    // the heap primitives' stock copiers, or a plain (non-parametric, boxed) `data` type's
+    // generated deep copier `axion_copy_T` (requested by `copier_calls` after this pass)
+    let plain_data = !key.contains('$')
+        && recinfo.type_cons(&key).is_some()
+        && !recinfo.is_enum_type(&key)
+        && !recinfo.is_mixed_type(&key);
+    if key != "String" && key != "Integer" && !plain_data {
+        return None;
     }
     let rewrite = |a: Term, br: &HashMap<String, HashSet<usize>>| -> Option<Term> {
-        if arm_owned_key(&a, br).is_some() {
+        if arm_owned_key(&a, br, recinfo).is_some() {
             Some(a) // owned arm: already the key, keep as-is
         } else {
             wrap_tail_copy(a, &key)
@@ -12854,10 +13165,10 @@ fn normalize_mixed_cond_lets(
     match t {
         Term::Let(x, rhs, sp, b) => {
             let rhs = if matches!(&rhs, Rhs::If(..) | Rhs::Case(..))
-                && cond_temp_key(&rhs, &empty).is_none()
+                && cond_temp_key(&rhs, &empty, recinfo).is_none()
             {
                 let hint = case_field_ret_key(&rhs, recinfo, env);
-                copy_mixed_cond_arms(&rhs, &empty, hint)
+                copy_mixed_cond_arms(&rhs, &empty, recinfo, hint)
                     .map(|(r, _)| r)
                     .unwrap_or(rhs)
             } else {
@@ -12866,8 +13177,8 @@ fn normalize_mixed_cond_lets(
             // the mono key of a fresh owned value (a constructor, a keyed call, a conditional of
             // them), for a later `case` on it
             let k = match &rhs {
-                Rhs::Op(op) => op_owned_key(op, &empty),
-                _ => cond_temp_key(&rhs, &empty),
+                Rhs::Op(op) => op_owned_key(op, &empty, recinfo),
+                _ => cond_temp_key(&rhs, &empty, recinfo),
             };
             if let Some(k) = k {
                 env.insert(x.clone(), k);
@@ -12929,6 +13240,35 @@ fn tail_ret_var(t: &Term) -> Option<&String> {
 /// Descend to the TAIL `ret <atom>` of an arm and wrap the atom in a copy so the arm yields an
 /// OWNED heap value (`strAppend a ""` for a `String`, `axion_bignum_copy a` for an `Integer`).
 /// `None` if the tail is not a simple atom return (a nested conditional / op) — left conservative.
+/// The plain `data` types whose generated copier `axion_copy_T` a body calls.
+fn copier_calls(t: &Term, out: &mut HashSet<String>) {
+    let op = |op: &Op, out: &mut HashSet<String>| {
+        if let Op::CallDirect(g, _, _) = op {
+            if let Some(k) = g.strip_prefix("axion_copy_") {
+                if !k.contains('$') && !k.starts_with("clo") {
+                    out.insert(k.to_string());
+                }
+            }
+        }
+    };
+    let rhs = |r: &Rhs, out: &mut HashSet<String>| match r {
+        Rhs::Op(o) => op(o, out),
+        Rhs::If(_, a, b) => {
+            copier_calls(a, out);
+            copier_calls(b, out);
+        }
+        Rhs::Case(_, arms) => arms.iter().for_each(|(_, a)| copier_calls(a, out)),
+    };
+    match t {
+        Term::Let(_, r, _, b) => {
+            rhs(r, out);
+            copier_calls(b, out);
+        }
+        Term::Drop(_, _, _, _, b) => copier_calls(b, out),
+        Term::Ret(r, _) => rhs(r, out),
+    }
+}
+
 fn wrap_tail_copy(t: Term, key: &str) -> Option<Term> {
     match t {
         Term::Let(x, r, sp, b) => Some(Term::Let(x, r, sp, Box::new(wrap_tail_copy(*b, key)?))),
@@ -12936,7 +13276,9 @@ fn wrap_tail_copy(t: Term, key: &str) -> Option<Term> {
             Some(Term::Drop(v, k, sk, sp, Box::new(wrap_tail_copy(*b, key)?)))
         }
         Term::Ret(Rhs::Op(Op::Atom(a)), sp) => {
-            let op = if key == "Integer" {
+            let op = if key != "Integer" && key != "String" {
+                Op::CallDirect(format!("axion_copy_{key}"), vec![a], Some(key.to_string()))
+            } else if key == "Integer" {
                 Op::RtCall {
                     func: "axion_bignum_copy".into(),
                     args: vec![a],
@@ -13085,9 +13427,23 @@ fn reclaim_cond_escape(
                     // its death point: the `foldl` accumulator `addI z y` where `addI` returns a
                     // fresh `Integer`.
                     match &rhs {
+                        // a field read whose alias is only ever READ by fresh producers (the
+                        // by-copy record update's `$updfield = field s p` → `strcat $updfield ""`)
+                        // never outlives v's use as a pointer: v stays reclaimable
+                        Rhs::Op(Op::Field {
+                            rec: Atom::Var(r),
+                            name,
+                        }) if r == v
+                            && (recinfo.named_field_is_scalar(name)
+                                || alias_only_read_fresh(&x, &b)) =>
+                        {
+                            true
+                        }
                         Rhs::Op(op) if op_mentions_any(op, &HashSet::from([v.clone()])) => {
                             op_is_fresh_wrt_args(op)
                                 || matches!(op, Op::CallDirect(g, _, _) if !br.contains_key(g))
+                                || matches!(op, Op::UpdateRecord { inplace: false, fields, .. }
+                                    if recinfo.update_is_fresh(fields))
                         }
                         _ => true,
                     }
@@ -13103,7 +13459,14 @@ fn reclaim_cond_escape(
                 // let the branch-sensitive tail logic reclaim it. Fresh-producer-only, so
                 // the result never aliases an arg; if it is consumed/dropped downstream the
                 // `Drop`/move handling removes it before any second free.
-                if let Some(key) = fresh_let_producer_key(op) {
+                // …and a direct call to a user function whose result is keyed and holds no
+                // interior alias of its arguments (absent from `br`): a fresh owned value too
+                // (`let v = lookupAction km k in if … then v else dflt` left `v` unfreed on the
+                // `else` path — refused AX0910 Unbalanced).
+                // …and a constructor, a record literal, and a by-copy record update that shares
+                // nothing with its base (`let p1 = p { keys = … }`, moved on one path, only read
+                // on the other): `op_owned_key` names every such fresh producer.
+                if let Some(key) = op_owned_key(op, br, recinfo) {
                     if !owned.iter().any(|(v, _)| v == &x) {
                         owned.push((x.clone(), Some(key)));
                     }
@@ -13116,7 +13479,7 @@ fn reclaim_cond_escape(
                 // removing the tail-position workaround for all-heap-arm conditionals (fff's rows).
                 // MIXED arms are uniformized to all-owned by `normalize_mixed_cond_lets` (a pre-pass
                 // before borrow analysis), so by here they reach `cond_temp_key` as all-heap.
-                if let Some(key) = cond_temp_key(&rhs, br) {
+                if let Some(key) = cond_temp_key(&rhs, br, recinfo) {
                     if !owned.iter().any(|(v, _)| v == &x) {
                         owned.push((x.clone(), Some(key)));
                     }
@@ -13263,7 +13626,9 @@ fn reclaim_cond_escape(
                     _ => None,
                 })
                 .collect();
-            let fresh = op_is_fresh_wrt_args(&op);
+            let fresh = op_is_fresh_wrt_args(&op)
+                || matches!(&op, Op::UpdateRecord { inplace: false, fields, .. }
+                    if recinfo.update_is_fresh(fields));
             let mut before = Vec::new();
             let mut after = Vec::new();
             for (v, key) in owned {
@@ -13460,6 +13825,159 @@ fn scan_op_escapes(op: &Op, ba: &BorrowArgs, esc: &mut HashSet<String>) {
     }
 }
 
+/// A by-copy update `let r = update b {…}` shares b's non-updated heap fields with `r`; the
+/// skip-destructors (`collect_update_skips`) make exactly one holder free each. That holder must be
+/// the one freed LAST: when `b` is fully freed BEFORE `r`'s skip-drop on the same path
+/// (`drop b : Box` … `lenYs r` … `drop r : Box skip{1}`), `r` reads fields `b` already freed. So per
+/// shared field slot (linked across a chain of updates — `b1 = b0 {xs}`, `b2 = b1 {ys}`), the
+/// holder dropped last frees it and every other holder skips it. Applied only when every holder
+/// is dropped (keyed) on this straight path and skips nothing else; otherwise the drops are left as
+/// they are (and the verifier, which models the sharing, refuses a wrong order).
+fn swap_update_skip_owner(t: &mut Term, recinfo: &RecordInfo) {
+    // the chain's updates (result, base, shared field indices) and its drops, in order
+    let mut updates: Vec<(String, String, Vec<usize>)> = Vec::new();
+    let mut heap_of: HashMap<String, HashSet<usize>> = HashMap::new(); // holder → its heap fields
+    let mut drops: Vec<(String, bool, Vec<usize>)> = Vec::new(); // (name, keyed, skip)
+    let mut cur: &Term = t;
+    loop {
+        match cur {
+            Term::Let(r, rhs, _, body) => {
+                if let Rhs::Op(Op::UpdateRecord {
+                    base: Atom::Var(b),
+                    fields,
+                    inplace: false,
+                    ..
+                }) = rhs
+                {
+                    let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                    let shared = recinfo.update_shared_fields(&names);
+                    if !shared.is_empty() {
+                        let heap = recinfo.record_heap_fields(names[0]);
+                        heap_of.insert(r.clone(), heap.clone());
+                        heap_of.insert(b.clone(), heap);
+                        updates.push((r.clone(), b.clone(), shared));
+                    }
+                }
+                cur = body;
+            }
+            Term::Drop(x, k, skip, _, body) => {
+                drops.push((x.clone(), k.is_some(), skip.clone()));
+                cur = body;
+            }
+            Term::Ret(..) => break,
+        }
+    }
+    let mut new_skips: HashMap<String, Vec<usize>> = HashMap::new();
+    if !updates.is_empty() {
+        // every holder: its shared slots, and its (single, keyed) drop on this path
+        let mut slots_of: HashMap<&str, HashSet<usize>> = HashMap::new();
+        for (r, b, idxs) in &updates {
+            slots_of.entry(r).or_default().extend(idxs);
+            slots_of.entry(b).or_default().extend(idxs);
+        }
+        let drop_at: HashMap<&str, usize> = drops
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, keyed, _))| *keyed)
+            .map(|(i, (x, _, _))| (x.as_str(), i))
+            .collect();
+        // (a skipped SCALAR field is a no-op — Auto-Drop skips every non-updated field — so only
+        // the heap entries of a skip have to come from the sharing)
+        let applicable = slots_of.iter().all(|(x, slots)| {
+            let heap = heap_of.get(*x);
+            drops.iter().filter(|(d, _, _)| d == x).count() == 1
+                && drop_at.contains_key(x)
+                && drops[drop_at[x]]
+                    .2
+                    .iter()
+                    .all(|i| slots.contains(i) || heap.is_some_and(|h| !h.contains(i)))
+        });
+        if applicable {
+            // union-find over (holder, slot): a slot is the same pointer across an update
+            let mut parent: HashMap<(String, usize), (String, usize)> = HashMap::new();
+            fn find(
+                p: &mut HashMap<(String, usize), (String, usize)>,
+                k: (String, usize),
+            ) -> (String, usize) {
+                let next = p.get(&k).cloned().unwrap_or_else(|| k.clone());
+                if next == k {
+                    return k;
+                }
+                let root = find(p, next);
+                p.insert(k, root.clone());
+                root
+            }
+            for (r, b, idxs) in &updates {
+                for &i in idxs {
+                    let (ra, rb) = (
+                        find(&mut parent, (r.clone(), i)),
+                        find(&mut parent, (b.clone(), i)),
+                    );
+                    if ra != rb {
+                        parent.insert(ra, rb);
+                    }
+                }
+            }
+            // each class's owner: the holder dropped last
+            let mut owner: HashMap<(String, usize), (usize, String)> = HashMap::new();
+            for (x, slots) in &slots_of {
+                for &i in slots {
+                    let root = find(&mut parent, (x.to_string(), i));
+                    let at = drop_at[x];
+                    let e = owner.entry(root).or_insert((at, x.to_string()));
+                    if at > e.0 {
+                        *e = (at, x.to_string());
+                    }
+                }
+            }
+            for (x, slots) in &slots_of {
+                let mut skip: Vec<usize> = slots
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        let root = find(&mut parent, (x.to_string(), i));
+                        owner.get(&root).is_some_and(|(_, o)| o != x)
+                    })
+                    .collect();
+                skip.sort_unstable();
+                new_skips.insert(x.to_string(), skip);
+            }
+        }
+    }
+    // apply, and recurse into the nested chains of the branches
+    let recurse = |rhs: &mut Rhs| match rhs {
+        Rhs::If(_, a, b) => {
+            swap_update_skip_owner(a, recinfo);
+            swap_update_skip_owner(b, recinfo);
+        }
+        Rhs::Case(_, arms) => {
+            for (_, a) in arms {
+                swap_update_skip_owner(a, recinfo);
+            }
+        }
+        Rhs::Op(_) => {}
+    };
+    let mut cur: &mut Term = t;
+    loop {
+        match cur {
+            Term::Let(_, rhs, _, body) => {
+                recurse(rhs);
+                cur = body;
+            }
+            Term::Drop(x, _, skip, _, body) => {
+                if let Some(new) = new_skips.get(x.as_str()) {
+                    *skip = new.clone();
+                }
+                cur = body;
+            }
+            Term::Ret(rhs, _) => {
+                recurse(rhs);
+                break;
+            }
+        }
+    }
+}
+
 /// Inserts the `drop`s into a function (structural Drop + cross-function reclamation).
 /// `drop_ty` maps each droppable to its `data`-type name (for the deep-drop).
 /// Maps a variable to the `(type, non-updated field indices)` skip-destructor that
@@ -13495,6 +14013,7 @@ fn collect_update_skips(
                     base,
                     fields,
                     inplace: false,
+                    ..
                 }),
                 _,
                 body,
@@ -13533,6 +14052,31 @@ fn collect_update_skips(
                 walk(body, recinfo, drp, out);
             }
             Term::Drop(_, _, _, _, body) => walk(body, recinfo, drp, out),
+            // a TAIL by-copy update (`ret p { v = … }`, a closure body owning `p`): the result
+            // escapes, so the base — freed after the `ret` — skips the fields it shares with it
+            Term::Ret(
+                Rhs::Op(Op::UpdateRecord {
+                    base: Atom::Var(b),
+                    fields,
+                    inplace: false,
+                    ..
+                }),
+                _,
+            ) if drp.contains(b) && std::env::var_os("AXION_NO_UPDATE_SKIP_FIX").is_none() => {
+                if let Some((name0, _)) = fields.first() {
+                    if let (Some((_, all_fields)), Some((con, _))) =
+                        (recinfo.field(name0), recinfo.named_field_slot(name0))
+                    {
+                        if let Some(ty) = recinfo.con_type_name(&con) {
+                            let mut non_updated: Vec<usize> = (0..all_fields.len())
+                                .filter(|i| !fields.iter().any(|(n, _)| &all_fields[*i] == n))
+                                .collect();
+                            non_updated.sort_unstable();
+                            out.insert(b.clone(), (ty.to_string(), non_updated));
+                        }
+                    }
+                }
+            }
             Term::Ret(rhs, _) => walk_rhs(rhs, recinfo, drp, out),
         }
     }
@@ -13941,6 +14485,30 @@ fn result_may_be_heap(t: &Term, recinfo: &RecordInfo) -> bool {
 /// `true` if any variable in `set` appears as an operand of `op`. Exhaustive
 /// (no wildcard) so a newly-added `Op` variant forces a decision here rather than
 /// silently escaping the payload-alias analysis.
+/// `true` if every use of `x` in `t` is an operand of an op whose result cannot alias it
+/// (`op_is_fresh_wrt_args`) — `x` is never returned, stored, scrutinized, passed on or dropped.
+fn alias_only_read_fresh(x: &str, t: &Term) -> bool {
+    let set = HashSet::from([x.to_string()]);
+    let op_ok = |op: &Op| !op_mentions_any(op, &set) || op_is_fresh_wrt_args(op);
+    let rhs_ok = |r: &Rhs| match r {
+        Rhs::Op(op) => op_ok(op),
+        Rhs::If(c, a, b) => {
+            !matches!(c, Atom::Var(n) if n == x)
+                && alias_only_read_fresh(x, a)
+                && alias_only_read_fresh(x, b)
+        }
+        Rhs::Case(sc, arms) => {
+            !matches!(sc, Atom::Var(n) if n == x)
+                && arms.iter().all(|(_, a)| alias_only_read_fresh(x, a))
+        }
+    };
+    match t {
+        Term::Let(y, r, _, b) => rhs_ok(r) && (y == x || alias_only_read_fresh(x, b)),
+        Term::Drop(y, _, _, _, b) => y != x && alias_only_read_fresh(x, b),
+        Term::Ret(r, _) => rhs_ok(r),
+    }
+}
+
 fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
     let hit = |at: &Atom| matches!(at, Atom::Var(v) if set.contains(v));
     match op {
@@ -15113,6 +15681,7 @@ pub fn dump_op(op: &Op) -> String {
             base,
             fields,
             inplace,
+            ..
         } => format!(
             "{} {} {{{}}}",
             if *inplace { "update!" } else { "update" },

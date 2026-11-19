@@ -43,6 +43,11 @@ NATIVE=(
   axionc/tests/fixtures/record_update_chain.axi
   axionc/tests/fixtures/record_update_escape.axi
   axionc/tests/fixtures/record_update_escape_read.axi
+  axionc/tests/fixtures/record_update_base_dies_first.axi
+  axionc/tests/fixtures/axmpv_regressions.axi
+  axionc/tests/fixtures/ffi_consumed_handle_scalar_let.axi
+  axionc/tests/fixtures/layout_paren_in.axi
+  axionc/tests/fixtures/buffer_borrow_one_branch.axi
   axionc/tests/fixtures/integer_reclaim.axi
   axionc/tests/fixtures/integer_accumulator.axi
   axionc/tests/fixtures/integer_divmod.axi

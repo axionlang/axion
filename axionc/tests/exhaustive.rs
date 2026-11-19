@@ -22,7 +22,9 @@
 use std::process::Command;
 
 /// The largest number of heap locals to enumerate. Branch programs are `(2^k)^2` per k, so the
-/// family size is `Σ_k (2^k + 4^k)`; k=3 ⇒ 98 programs (28 accepted, compiled under ASan).
+/// family size is `Σ_k (2^k + 4^k)`; k=3 ⇒ 98 programs. Since Auto-Drop reclaims a fresh call
+/// result branch-sensitively (2026-11-19), every one is accepted and compiled under ASan — the
+/// arms that dispose locals differently used to be refused as Unbalanced (70 of them).
 const K_MAX: usize = 3;
 
 const PREAMBLE: &str = "\
@@ -166,11 +168,13 @@ fn verifier_accept_is_sanitizer_sound_over_the_bounded_family() {
 
     drop(std::fs::remove_dir_all(&dir));
 
-    // Sanity: the family is non-trivial and exercised BOTH sides of the decision boundary.
+    // Sanity: the family is non-trivial and its accepted programs were really checked. (The
+    // verifier's REJECT side over the same shapes is checked against the Lean model by
+    // `metatheory/exhaustive.sh`, on Core built directly.)
     assert_eq!(accepted + rejected, total);
     assert!(
-        accepted > 0 && rejected > 0,
-        "family must span accept AND reject: {accepted} acc / {rejected} rej"
+        accepted > 0,
+        "family must have accepted programs: {accepted} acc / {rejected} rej"
     );
     if have_clang {
         assert_eq!(

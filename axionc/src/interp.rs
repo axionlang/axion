@@ -1724,7 +1724,9 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         ("+", Int(x), Int(y)) => Ok(Int(x.wrapping_add(y))),
         ("-", Int(x), Int(y)) => Ok(Int(x.wrapping_sub(y))),
         ("*", Int(x), Int(y)) => Ok(Int(x.wrapping_mul(y))),
-        ("mod", Int(x), Int(y)) if y != 0 => Ok(Int(x.rem_euclid(y))),
+        // `mod` (Integral): the remainder of the truncated `div` — the sign of the dividend, as
+        // native `srem` and `Integer`'s `divmod` (so `a == (a `div` b) * b + a `mod` b`).
+        ("mod", Int(x), Int(y)) if y != 0 => Ok(Int(x.wrapping_rem(y))),
         ("mod", Int(_), Int(_)) => Err("mod by zero".to_string()),
         // `div` (Integral): truncated toward zero, matching native sdiv.
         ("div", Int(x), Int(y)) if y != 0 => Ok(Int(x.wrapping_div(y))),

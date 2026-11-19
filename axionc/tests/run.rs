@@ -7283,3 +7283,102 @@ fn shortcircuit_bool_ops_on_all_backends() {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n", "{backend:?}");
     }
 }
+
+/// Shapes the axmpv flagship hit (`axmpv_regressions.axi`): `div`/`mod` applied as functions and
+/// truncated (C) `mod` semantics; a non-owned param passed to a closure from a `List` of callback
+/// records; a user call's result returned on one branch only; an owned record updated by copy on
+/// one branch. And a by-copy update whose base dies before its result
+/// (`record_update_base_dies_first.axi`). Same answers on every backend.
+#[test]
+fn axmpv_regressions_agree_on_every_backend() {
+    let cases = [
+        (
+            "axmpv_regressions.axi",
+            "2,1,1 -2,-1,-1 -2,1,1 2,-1,-1\n1/6/x 2/3/x 1/3/x\nad\n7/2/y 9/2/z\n12 4\n0/1/kept 2 6\n",
+        ),
+        ("record_update_base_dies_first.axi", "9\n"),
+        ("buffer_borrow_one_branch.axi", "1 9\n"),
+    ];
+    for (name, want) in cases {
+        let fx = fixture(name);
+        for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+            let out = axionc().args(&flags).arg(&fx).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{name} {flags:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                want,
+                "{name} {flags:?}"
+            );
+        }
+    }
+}
+
+/// A diagnostic inside an IMPORTED module names that module's file and line — it used to be
+/// rendered against the importing file (`Main.axi:2:…` with a column past the end of the line).
+#[test]
+fn diagnostics_in_an_imported_module_name_its_own_file() {
+    let dir = std::env::temp_dir().join(format!("axion_moddiag_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Lib.axi"),
+        "-- a library\n\nok :: Int -> Int\nok n = n + 1\n\nbad :: Int -> Int\nbad n = n + \"x\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Main.axi"),
+        "import Lib\nmain :: Int\nmain = ok 1\n",
+    )
+    .unwrap();
+    let out = axionc()
+        .args(["--check", dir.join("Main.axi").to_str().unwrap()])
+        .output()
+        .unwrap();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "the type error must be reported:\n{all}"
+    );
+    assert!(
+        all.contains("Lib.axi:7:") && all.contains("bad n = n + \"x\""),
+        "the error must point into Lib.axi line 7, got:\n{all}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A scalar `let` that consumes a linear handle (`let c = closeFd h + 1`) is not itself must-use
+/// (`ffi_consumed_handle_scalar_let.axi`): it type-checks and runs natively (`close` returns 0).
+#[test]
+fn scalar_let_consuming_a_handle_is_not_must_use() {
+    let fx = fixture("ffi_consumed_handle_scalar_let.axi");
+    let chk = axionc().arg("--check").arg(&fx).output().unwrap();
+    assert!(
+        chk.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&chk.stdout),
+        String::from_utf8_lossy(&chk.stderr)
+    );
+    for flags in [vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n", "{flags:?}");
+    }
+}
+
+/// An `in` inside a bracket opened after a `let` (`let q = a + (borrow b as p in f p) in …`) belongs
+/// to the bracketed construct, not to the outer `let` block (`layout_paren_in.axi`).
+#[test]
+fn in_inside_a_bracket_does_not_close_the_outer_let() {
+    let fx = fixture("layout_paren_in.axi");
+    for flags in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc().args(&flags).arg(&fx).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "130 8\n", "{flags:?}");
+    }
+}

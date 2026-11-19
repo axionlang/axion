@@ -2728,6 +2728,9 @@ struct Ctx {
     fn_ret_must_use: HashMap<String, String>,
     /// must-use types with no destructor at all (see [`build_no_drop_types`])
     no_drop_types: HashSet<String>,
+    /// user and foreign functions whose declared RESULT is a plain scalar (`Int`, `Float`, `Bool`,
+    /// `Char`, `()`): a value that cannot carry a linear resource it consumed (`pclose h` → Int).
+    fn_ret_scalar: HashSet<String>,
 }
 
 /// A value of this type is a HEAP allocation that gets deep-dropped, so moving it
@@ -2938,6 +2941,15 @@ fn build_ctx(module: &Module) -> Ctx {
                 .iter()
                 .map(|fo| (fo.name.clone(), fo.sig.strip_ffi_wrappers())),
         );
+    let fn_ret_scalar: HashSet<String> = sigs
+        .clone()
+        .filter(|(_, sig)| {
+            let rt = crate::core::result_type(sig);
+            matches!(rt, Type::Unit)
+                || matches!(rt.head_con(), Some("Int" | "Float" | "Bool" | "Char"))
+        })
+        .map(|(name, _)| name)
+        .collect();
     let user_names: HashSet<&str> = module
         .funcs
         .iter()
@@ -2969,6 +2981,7 @@ fn build_ctx(module: &Module) -> Ctx {
         fn_ret_heap,
         fn_ret_must_use,
         no_drop_types,
+        fn_ret_scalar,
     }
 }
 
@@ -3430,6 +3443,52 @@ fn simple_bind_rhs(f: &Func) -> Option<&Expr> {
     }
 }
 
+/// The number of arguments a signature takes (its top-level arrows).
+fn sig_arity(t: &Type) -> usize {
+    match t {
+        Type::Arrow { to, .. } => 1 + sig_arity(to),
+        _ => 0,
+    }
+}
+
+/// Is `e` certainly a plain scalar — arithmetic/comparison, or a saturated call of a function
+/// whose declared result is one (`fn_ret_scalar`)?
+fn scalar_valued(e: &Expr, ctx: &Ctx) -> bool {
+    match e {
+        Expr::Int(..) | Expr::Float(..) => true,
+        Expr::BinOp(op, _, _, _) => matches!(
+            op.as_str(),
+            "+" | "-"
+                | "*"
+                | "/"
+                | "div"
+                | "mod"
+                | "+."
+                | "-."
+                | "*."
+                | "/."
+                | "=="
+                | "/="
+                | "<"
+                | ">"
+                | "<="
+                | ">="
+                | "&&"
+                | "||"
+        ),
+        _ => match spine(e) {
+            (Expr::Var(f, _), args) => {
+                ctx.fn_ret_scalar.contains(f)
+                    && ctx
+                        .fn_sigs
+                        .get(f)
+                        .is_none_or(|s| sig_arity(s) == args.len())
+            }
+            _ => false,
+        },
+    }
+}
+
 /// Walks the body collecting (1) the `let`s that take ownership of a linear
 /// linear — which become linear resources in their scope — and (2) the sites
 /// of in-place update (RecordUpd whose base is a live linear resource).
@@ -3448,9 +3507,12 @@ fn scan_lets<'a>(
                 if let Some(rhs) = simple_bind_rhs(b) {
                     scan_lets(rhs, &cur, ctx, lets, inplace, func);
                     // a bind whose RHS consumes a linear resource inherits ownership
+                    // …unless the value is a plain scalar, which cannot carry the resource on (the
+                    // callee consumed it: `let c = pclose h + 1`)
                     let consumed = cur
                         .keys()
                         .find(|w| analyze(rhs, w, Mode::Consume, ctx).0 > 0)
+                        .filter(|_| !scalar_valued(rhs, ctx))
                         .cloned();
                     if let Some(w) = consumed {
                         let class = cur[&w].clone();
