@@ -257,6 +257,34 @@ pub fn ownership_hints(path: &str, src: &str) -> Vec<OwnershipHint> {
             ),
         });
     }
+    // the FINAL Core's decisions the front-end drop points cannot show: the copies the compiler
+    // inserted (and why), and frees that leave a moved-out or shared field alone
+    let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::ownership_report(src, path)
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+    for sec in &report.sections {
+        for l in sec.lines.iter().filter(|l| l.copy || l.partial_free) {
+            let Some(at) = l.at.filter(|a| *a <= src.len()) else {
+                continue;
+            };
+            let (label, kind) = if l.copy {
+                (format!("⧉ {}", l.who.replace('`', "")), "Compiler copy")
+            } else {
+                (
+                    format!("⌫ {} (part)", l.who.replace('`', "")),
+                    "Partial free",
+                )
+            };
+            hints.push(OwnershipHint {
+                range: span_range((at, at)),
+                label,
+                tooltip: format!("{kind} — {} {}.", l.who, l.what),
+            });
+        }
+    }
     for a in &analysis.arenas {
         if !user_funcs.contains(&a.func) || !in_src(a.span) {
             continue;
@@ -272,6 +300,53 @@ pub fn ownership_hints(path: &str, src: &str) -> Vec<OwnershipHint> {
         });
     }
     hints
+}
+
+/// The identifier around byte `at` in `src`.
+fn word_at(src: &str, at: usize) -> Option<&str> {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '\'';
+    let at = at.min(src.len());
+    let start = src
+        .get(..at)?
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| word(*c))
+        .last()
+        .map_or(at, |(i, _)| i);
+    let end = src
+        .get(at..)?
+        .char_indices()
+        .find(|(_, c)| !word(*c))
+        .map_or(src.len(), |(i, _)| at + i);
+    src.get(start..end).filter(|w| !w.is_empty())
+}
+
+/// The hover text for the variable at byte `offset`: its ownership story in the function around
+/// it (created, lent, moved, copied and why, freed), from the final Core. `None` when the word
+/// is not a heap value there (or the program does not compile).
+pub fn ownership_hover(path: &str, src: &str, offset: usize) -> Option<String> {
+    let name = word_at(src, offset)?;
+    let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::ownership_report(src, path)
+    }))
+    .ok()
+    .flatten()?;
+    let (sec, lines) = report.story(name, offset)?;
+    let lm = crate::lexer::LineMap::new(src);
+    let mut out = format!("**`{name}`** in `{}`: ownership\n\n", sec.head.trim());
+    for l in lines {
+        let at = l.at.map_or(String::new(), |o| {
+            let (ln, c) = lm.pos(o);
+            format!("{ln}:{c} ")
+        });
+        let branch = if l.branch.is_empty() {
+            String::new()
+        } else {
+            format!("[{}] ", l.branch.join(" › "))
+        };
+        out.push_str(&format!("- {at}{branch}{} — {}\n", l.who, l.what));
+    }
+    Some(out)
 }
 
 /// Per-document state: the current text and its last analysis.
@@ -451,7 +526,18 @@ impl LanguageServer for Backend {
                 }));
             }
         }
-        Ok(None)
+        // no diagnostic here: the ownership story of the variable under the cursor
+        let offset = Positions::new(&doc.text).byte(pos.line, pos.character);
+        let path = uri_to_path(&uri);
+        Ok(
+            ownership_hover(&path, &doc.text, offset).map(|value| Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }),
+                range: None,
+            }),
+        )
     }
 
     async fn code_action(&self, params: CodeActionParams) -> RpcResult<Option<CodeActionResponse>> {

@@ -6,7 +6,7 @@
 
 use axionc::lsp::{
     analyze, completions, definition, definition_at, folds, outline, ownership_hints,
-    references_at, references_of, selection, signature_help,
+    ownership_hover, references_at, references_of, selection, signature_help,
 };
 use tower_lsp::lsp_types::{DiagnosticSeverity, NumberOrString};
 
@@ -404,6 +404,41 @@ fn ownership_hints_draw_the_auto_drop_topology() {
 
     // A syntactically broken buffer degrades to no hints rather than panicking.
     assert!(ownership_hints("test.axi", "main = = =").is_empty());
+}
+
+#[test]
+fn ownership_copies_and_hover_story() {
+    // The final Core's decisions: a closure given away while still used is passed as a COPY.
+    // The overlay marks the copy inline; hovering the variable tells its whole story.
+    let src = std::fs::read_to_string(fixture("closure_live_moves.axi")).unwrap();
+    let hints = ownership_hints("closure_live_moves.axi", &src);
+    let copy = hints
+        .iter()
+        .find(|h| h.label == "⧉ a copy of cs")
+        .unwrap_or_else(|| panic!("expected a copy hint for `cs`: {hints:?}"));
+    assert!(
+        copy.tooltip
+            .contains("given away here but used again later"),
+        "{}",
+        copy.tooltip
+    );
+
+    // hover on the `cs` of `usePair cs 1` (line 25)
+    let at = src.find("usePair cs 1").unwrap() + "usePair ".len();
+    let story = ownership_hover("closure_live_moves.axi", &src, at).expect("a story for `cs`");
+    assert!(story.starts_with("**`cs`** in `main`"), "{story}");
+    for part in [
+        "23:7 `cs` — new Closure, owned here",
+        "25:22 a copy of `cs` — made by the compiler: given away here but used again later",
+        "26:28 `cs` — lent to `pick` (still owned here)",
+        "29:30 `cs` — freed",
+    ] {
+        assert!(story.contains(part), "missing `{part}` in:\n{story}");
+    }
+    // a scalar has no ownership story; nor does a broken buffer
+    let k = src.find("usePair f k").unwrap() + "usePair f ".len();
+    assert!(ownership_hover("closure_live_moves.axi", &src, k).is_none());
+    assert!(ownership_hover("t.axi", "main = = =", 3).is_none());
 }
 
 #[test]

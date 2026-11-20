@@ -1064,7 +1064,16 @@ impl Emit<'_> {
                     // a positive constant divisor, which is wrong for a negative dividend (-7 mod 3
                     // gave 0); LLVM strength-reduces a constant `srem` itself.
                     "mod" => (format!("srem i64 {x}, {y}"), false),
-                    "band" => (format!("and i64 {x}, {y}"), false),
+                    "band" | ".&." => (format!("and i64 {x}, {y}"), false),
+                    ".|." => (format!("or i64 {x}, {y}"), false),
+                    "xor" => (format!("xor i64 {x}, {y}"), false),
+                    // an LLVM shift by >= 64 is poison: the amount is taken mod 64, as the others
+                    "shiftL" | "shiftR" => {
+                        let m = self.val();
+                        self.ins(&format!("{m} = and i64 {y}, 63"));
+                        let ins = if o == "shiftL" { "shl" } else { "ashr" };
+                        (format!("{ins} i64 {x}, {m}"), false)
+                    }
                     "==" => (format!("icmp eq i64 {x}, {y}"), true),
                     "<" => (format!("icmp slt i64 {x}, {y}"), true),
                     ">" => (format!("icmp sgt i64 {x}, {y}"), true),

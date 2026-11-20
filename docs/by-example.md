@@ -82,6 +82,22 @@ $AX axionc/tests/fixtures/parametric_data.axi        # → 49
 Constructors generalize (`Some :: forall a. a -> Maybe a`). Runs on all three
 executors: `$AX --backend cranelift …` (Cranelift), `$AX --release …` (LLVM).
 
+Patterns nest, natively too: `Just (Rect w h)`, `Cons a (Cons b _)`, `Just (0, y)`, `Just 0`.
+Arms are tried top to bottom, so a specific arm can come before a general one for the same
+constructor:
+
+```haskell
+classify :: List Int -> String
+classify xs = case xs of
+  Cons 0 (Cons 0 _) -> "two zeros"
+  Cons 0 _          -> "zero first"
+  Cons a Nil        -> "one " ++ showInt a
+  ys                -> "other " ++ showInt (length ys)
+```
+```sh
+$AX --release axionc/tests/fixtures/nested_patterns_native.axi
+```
+
 ---
 
 ### 4b. Floating point — `Float` and the `Num` class

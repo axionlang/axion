@@ -88,7 +88,7 @@
                   drop _t26 : String
                   drop acc : List$tuple2$String$Json
                   drop kv
-                  drop kv
+                  drop kv : Json
                   else
                   let _t10 = == _t9 58  ; Δ{kp}
                   let _t24 = + i 1  ; Δ{}
@@ -102,6 +102,7 @@
                   ret con Left _t27  ; Δ{_t27} · moves{_t27} · makes Either$String$tuple2$Json$Int
                   ret if _t10 then
                 JStr key ->
+                _ ->
                 drop acc : List$Json
                 else
                 let _t11 = con Cons v acc  ; Δ{pr} · makes List$Json
@@ -112,7 +113,6 @@
                 let _t21 = + i 1  ; Δ{}
                 let _t22 = con Nil  ; Δ{} · makes List$Json
                 let _t23 = == c 123  ; Δ{}
-                other ->
                 ret call parseArr s _t21 _t22  ; Δ{_t22} · moves{_t22} · makes Either$String$tuple2$Json$Int
                 ret con Left "expected , or ] in array"  ; Δ{pr} · makes Either$String$tuple2$Json$Int
                 ret con Right _t15  ; Δ{_t15 pr} · moves{_t15} · makes Either$String$tuple2$Json$Int
@@ -195,6 +195,7 @@
         Left e ->
         Nil ->
         Right kp ->
+        _ ->
         drop _t6
         drop _t6
         drop acc : List$Json
@@ -208,7 +209,6 @@
         let _t7 = 1  ; Δ{}
         let _t8 = con JBool _t7  ; Δ{} · makes Json
         let _t9 = + i 4  ; Δ{_t8}
-        other ->
         ret "false"  ; Δ{}
         ret "has-ok"  ; Δ{_t1 _t2 v}
         ret "no-ok"  ; Δ{_t1 _t2 v}
@@ -455,6 +455,9 @@
     Right v ->
     Right v ->
     _ ->
+    _ ->
+    _ ->
+    _ ->
     else
     else
     else
@@ -541,9 +544,6 @@
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
-    other ->
-    other ->
-    other ->
     ret + i 1  ; Δ{}
     ret -. 0f mag  ; Δ{}
     ret 0  ; Δ{}

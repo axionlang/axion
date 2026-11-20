@@ -364,11 +364,17 @@ pub fn is_bool(t: &Type) -> bool {
     matches!(t.head_con(), Some("Bool"))
 }
 
-/// BUILT-IN infix operators (`Int` arithmetic/comparison), which lower to
-/// `Op::Prim`. The rest is a user infix operator — a named function
+/// BUILT-IN infix operators (`Int` arithmetic/comparison, and the bitwise `.&. .|. xor shiftL
+/// shiftR`), which lower to `Op::Prim`. The rest is a user infix operator — a named function
 /// applied to two arguments. Matches `interp::is_builtin_op`.
 pub fn is_builtin_op(op: &str) -> bool {
-    matches!(op, "+" | "-" | "*" | "div" | "mod" | "==" | "<" | ">")
+    matches!(op, "+" | "-" | "*" | "div" | "mod" | "==" | "<" | ">") || is_bitwise_op(op)
+}
+
+/// The bitwise `Int` operators: `.&.` `.|.` `xor` `shiftL` `shiftR` (Haskell's `Data.Bits`
+/// names). A shift amount is taken modulo 64 on every backend (`shiftR` is arithmetic).
+pub fn is_bitwise_op(op: &str) -> bool {
+    matches!(op, ".&." | ".|." | "xor" | "shiftL" | "shiftR")
 }
 
 /// FLOAT infix operators — arithmetic (`+. -. *. /.`) and comparisons
@@ -6913,6 +6919,15 @@ pub fn lower_with(
         uniquify_fn(f);
     }
 
+    // Nested patterns (`Just (Rect w h)`, `Cons a (Cons b _)`, `Just 0`) become nested
+    // single-level cases, so every later pass and both backends see only the flat shapes they
+    // handle; the duplicated fall-through rows are re-uniquified.
+    for f in &mut out {
+        if flatten_nested_patterns(f) {
+            uniquify_fn(f);
+        }
+    }
+
     // Collapse trivial single-var `case` bindings (`case s of a -> body`, from the
     // `imperative do` `a <- …` desugaring) into a substitution `a := s`. The
     // scrutinee is an already-forced value, so this is a pure rebinding; keeping
@@ -7331,7 +7346,7 @@ pub fn lower_with(
         }
     }
 
-    let mut all_dty = build_all_drop_ty(&out, makecon_tys);
+    let mut all_dty = build_all_drop_ty(&out, makecon_tys, &recinfo);
     let empty = HashMap::new();
 
     // Concrete heap parameter types (from signatures), for reclaiming a
@@ -10192,14 +10207,61 @@ fn gen_skip_destructors(
 fn build_all_drop_ty(
     fns: &[CoreFn],
     makecon_tys: &HashMap<Span, Type>,
+    recinfo: &RecordInfo,
 ) -> HashMap<String, HashMap<String, Option<String>>> {
     let mut out = HashMap::new();
     for f in fns {
         let mut dty: HashMap<String, Option<String>> = f.owned_drop_ty.iter().cloned().collect();
         collect_drop_types(&f.body, makecon_tys, &mut dty);
+        tuple_binder_keys(&f.body, recinfo, &mut dty);
         out.insert(f.name.clone(), dty);
     }
     out
+}
+
+/// The drop key of each heap field a `case` binds out of a TUPLE whose key is known
+/// (`tuple2$Maybe$String$Int` → its first binder is a `Maybe$String`), so the field can be reclaimed
+/// like any keyed value — in particular a payload it holds that one branch moves out and another
+/// drops (`(m, k) -> case m of Just s -> if k == 1 then "a" else s`: without the key `s` leaked
+/// on the `"a"` path). Forward walk, so keys chain through nested tuples.
+fn tuple_binder_keys(t: &Term, recinfo: &RecordInfo, out: &mut HashMap<String, Option<String>>) {
+    fn rhs_keys(rhs: &Rhs, recinfo: &RecordInfo, out: &mut HashMap<String, Option<String>>) {
+        match rhs {
+            Rhs::Op(_) => {}
+            Rhs::If(_, a, b) => {
+                tuple_binder_keys(a, recinfo, out);
+                tuple_binder_keys(b, recinfo, out);
+            }
+            Rhs::Case(sc, arms) => {
+                let key = match sc {
+                    Atom::Var(s) => out.get(s).cloned().flatten(),
+                    _ => None,
+                };
+                for (p, b) in arms {
+                    if let (CPat::Tuple(subs), Some(k)) = (p, key.as_deref()) {
+                        if let Some(elems) = recinfo.split_tuple_key(k, subs.len()) {
+                            for (sp, el) in subs.iter().zip(elems) {
+                                if let (CPat::Var(n), Some(Some(ek))) =
+                                    (sp, recinfo.classify_tuple_elem(&el))
+                                {
+                                    out.entry(n.clone()).or_insert(Some(ek));
+                                }
+                            }
+                        }
+                    }
+                    tuple_binder_keys(b, recinfo, out);
+                }
+            }
+        }
+    }
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            rhs_keys(rhs, recinfo, out);
+            tuple_binder_keys(body, recinfo, out);
+        }
+        Term::Drop(_, _, _, _, body) => tuple_binder_keys(body, recinfo, out),
+        Term::Ret(rhs, _) => rhs_keys(rhs, recinfo, out),
+    }
 }
 
 /// The Phase A′ drop-type annotation of a value-producing `Op`: the `data`-type
@@ -10946,6 +11008,397 @@ fn rename_rhs(rhs: &mut Rhs, env: &HashMap<String, String>) {
             }
         }
     }
+}
+
+// --- nested patterns → nested single-level cases (match compilation) ---
+
+/// Is `p` a sub-pattern the backends destructure directly (a variable or `_`)?
+fn flat_sub(p: &CPat) -> bool {
+    matches!(p, CPat::Var(_) | CPat::Wild)
+}
+
+/// Does `p` (an arm's pattern) nest a refutable or destructuring pattern under a constructor or
+/// tuple — the shape the native backends do not compile?
+fn nests(p: &CPat) -> bool {
+    match p {
+        CPat::Con(_, ps) | CPat::Tuple(ps) => ps.iter().any(|q| !flat_sub(q)),
+        _ => false,
+    }
+}
+
+/// One row of a pattern matrix: the patterns for the current columns, and the arm body.
+struct MRow {
+    pats: Vec<CPat>,
+    body: Term,
+}
+
+/// `p` with every variable replaced by `_` (a pattern that only tests the shape).
+fn strip_vars(p: &CPat) -> CPat {
+    match p {
+        CPat::Var(_) => CPat::Wild,
+        CPat::Con(c, ps) => CPat::Con(c.clone(), ps.iter().map(strip_vars).collect()),
+        CPat::Tuple(ps) => CPat::Tuple(ps.iter().map(strip_vars).collect()),
+        q => q.clone(),
+    }
+}
+
+/// Compiles nested patterns into nested single-level `case`s — the code a programmer writes by
+/// hand (`Cons a rest -> case rest of …`), which the backends, Auto-Drop and the drop-balance
+/// verifier already handle. Classic match compilation over a pattern matrix: pick the first
+/// refutable column of the first row, group the rows by its constructor (or literal), expand
+/// sub-patterns into new columns, and send rows with a variable there to every group and to the
+/// default arm. Order is preserved within each group, so the first matching arm still wins; a
+/// row reachable from several groups is duplicated (in disjoint branches). Returns whether
+/// anything changed (the caller re-runs `uniquify_fn`).
+fn flatten_nested_patterns(f: &mut CoreFn) -> bool {
+    fn term(t: Term, ctr: &mut u32, changed: &mut bool) -> Term {
+        match t {
+            Term::Let(x, Rhs::Case(Atom::Var(sc), arms), sp, body)
+                if arms.iter().any(|(p, _)| nests(p)) =>
+            {
+                *changed = true;
+                let compiled = term(compile_case(&sc, arms, sp, ctr), ctr, changed);
+                splice_value(compiled, x, sp, term(*body, ctr, changed))
+            }
+            Term::Ret(Rhs::Case(Atom::Var(sc), arms), sp) if arms.iter().any(|(p, _)| nests(p)) => {
+                *changed = true;
+                term(compile_case(&sc, arms, sp, ctr), ctr, changed)
+            }
+            Term::Let(x, rhs, sp, body) => Term::Let(
+                x,
+                rhs_(rhs, ctr, changed),
+                sp,
+                Box::new(term(*body, ctr, changed)),
+            ),
+            Term::Drop(v, ty, skip, sp, body) => {
+                Term::Drop(v, ty, skip, sp, Box::new(term(*body, ctr, changed)))
+            }
+            Term::Ret(rhs, sp) => Term::Ret(rhs_(rhs, ctr, changed), sp),
+        }
+    }
+    fn rhs_(rhs: Rhs, ctr: &mut u32, changed: &mut bool) -> Rhs {
+        // a variable arm beside other arms (`Nil -> ""; ys -> render ys`) names the scrutinee
+        // itself: read it as the scrutinee, under a `_` arm, so Auto-Drop sees one value (an arm
+        // reading its scrutinee whole is a view arm) instead of an alias of it
+        let rhs = match rhs {
+            Rhs::Case(Atom::Var(sc), arms)
+                if arms.len() > 1 && arms.iter().any(|(p, _)| matches!(p, CPat::Var(_))) =>
+            {
+                *changed = true;
+                Rhs::Case(
+                    Atom::Var(sc.clone()),
+                    arms.into_iter()
+                        .map(|(p, b)| match p {
+                            CPat::Var(v) => (CPat::Wild, renamed(b, &v, &sc)),
+                            p => (p, b),
+                        })
+                        .collect(),
+                )
+            }
+            rhs => rhs,
+        };
+        match rhs {
+            Rhs::If(c, a, b) => Rhs::If(
+                c,
+                Box::new(term(*a, ctr, changed)),
+                Box::new(term(*b, ctr, changed)),
+            ),
+            Rhs::Case(s, arms) => Rhs::Case(
+                s,
+                arms.into_iter()
+                    .map(|(p, b)| (p, term(b, ctr, changed)))
+                    .collect(),
+            ),
+            op => op,
+        }
+    }
+    let mut ctr = 0;
+    let mut changed = false;
+    let body = std::mem::replace(
+        &mut f.body,
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+    );
+    f.body = term(body, &mut ctr, &mut changed);
+    changed
+}
+
+fn compile_case(sc: &str, arms: Vec<(CPat, Term)>, sp: Span, ctr: &mut u32) -> Term {
+    let rows = arms
+        .iter()
+        .map(|(p, body)| MRow {
+            pats: vec![p.clone()],
+            body: body.clone(),
+        })
+        .collect();
+    let mut viewed = false;
+    let direct = compile_matrix(sc, vec![sc.to_string()], rows, sp, ctr, &mut viewed);
+    if !viewed {
+        return direct;
+    }
+    // A row reached by falling through reads the matched value WHOLE (its catch-all variable,
+    // or the scrutinee itself) inside an arm that has already taken the value apart — a shape
+    // that cannot both move a payload out and keep the value. Match row by row instead: test
+    // each row's SHAPE without binding anything (a scalar result; the scrutinee stays owned,
+    // since both branches use it), then re-match the row that matched to bind its variables in
+    // an ordinary consuming case.
+    sequential(sc, &arms, sp, ctr)
+}
+
+/// `if <arm 0 matches> then <arm 0> else if <arm 1 matches> … else <the first catch-all arm>`.
+fn sequential(sc: &str, arms: &[(CPat, Term)], sp: Span, ctr: &mut u32) -> Term {
+    let Some(((pat, body), rest)) = arms.split_first() else {
+        return Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), sp);
+    };
+    let bind = |ctr: &mut u32| {
+        let row = MRow {
+            pats: vec![pat.clone()],
+            body: body.clone(),
+        };
+        compile_matrix(sc, vec![sc.to_string()], vec![row], sp, ctr, &mut false)
+    };
+    if flat_sub(pat) || rest.is_empty() {
+        return bind(ctr);
+    }
+    // the shape test: 1 when `pat` (variables stripped) matches, else 0
+    let test_rows = vec![
+        MRow {
+            pats: vec![strip_vars(pat)],
+            body: Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1))), sp),
+        },
+        MRow {
+            pats: vec![CPat::Wild],
+            body: Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), sp),
+        },
+    ];
+    let test = compile_matrix(sc, vec![sc.to_string()], test_rows, sp, ctr, &mut false);
+    *ctr += 1;
+    let ok = format!("$nfok{ctr}");
+    let then = bind(ctr);
+    let other = sequential(sc, rest, sp, ctr);
+    let branch = Term::Ret(
+        Rhs::If(Atom::Var(ok.clone()), Box::new(then), Box::new(other)),
+        sp,
+    );
+    splice_value(test, ok, sp, branch)
+}
+
+fn compile_matrix(
+    top: &str,
+    cols: Vec<String>,
+    rows: Vec<MRow>,
+    sp: Span,
+    ctr: &mut u32,
+    viewed: &mut bool,
+) -> Term {
+    let Some(first) = rows.first() else {
+        // unreachable for an exhaustive `case` (AX0202 guarantees one): no group is built for a
+        // constructor no row names, and the default arm exists only with catch-all rows
+        return Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), sp);
+    };
+    let Some(j) = first.pats.iter().position(|p| !flat_sub(p)) else {
+        // the first row matches: bind its variables to their columns
+        let Some(MRow { pats, mut body, .. }) = rows.into_iter().next() else {
+            return Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), sp);
+        };
+        for (p, c) in pats.iter().zip(&cols) {
+            if let CPat::Var(v) = p {
+                body = renamed(body, v, c);
+            }
+        }
+        return body;
+    };
+    let col = cols[j].clone();
+    let rest_cols = |extra: &[String]| -> Vec<String> {
+        let mut c: Vec<String> = cols
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != j)
+            .map(|(_, c)| c.clone())
+            .collect();
+        c.extend_from_slice(extra);
+        c
+    };
+    // a row whose column-j pattern is a variable or `_`, with that column removed (the variable
+    // renamed to the column) and `width` `_`s appended for the group's new columns
+    let catch_all = |r: &MRow, width: usize| -> Option<MRow> {
+        let body = match &r.pats[j] {
+            CPat::Var(v) => renamed(r.body.clone(), v, &col),
+            CPat::Wild => r.body.clone(),
+            _ => return None,
+        };
+        let mut pats: Vec<CPat> = r
+            .pats
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != j)
+            .map(|(_, p)| p.clone())
+            .collect();
+        pats.extend(std::iter::repeat_n(CPat::Wild, width));
+        Some(MRow { pats, body })
+    };
+    // the arm's binders for a constructor/tuple group whose rows give `subs` (one sub-pattern
+    // vector per row that names the constructor; `None` for a catch-all row): a field every row
+    // binds with the same variable keeps it (no rename, no new column); one nobody uses is `_`;
+    // anything else gets a fresh binder and becomes a new column
+    let group = |subs: &[Option<Vec<CPat>>],
+                 arity: usize,
+                 ctr: &mut u32|
+     -> (Vec<CPat>, Vec<usize>, Vec<String>) {
+        let mut binders = Vec::new();
+        let mut new_cols_at = Vec::new();
+        let mut new_cols = Vec::new();
+        for i in 0..arity {
+            let at_i: Vec<&CPat> = subs.iter().flatten().map(|ps| &ps[i]).collect();
+            let names: HashSet<&str> = at_i
+                .iter()
+                .filter_map(|p| match p {
+                    CPat::Var(v) => Some(v.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let all_flat = at_i.iter().all(|p| flat_sub(p));
+            if all_flat && names.is_empty() {
+                binders.push(CPat::Wild);
+            } else if let (true, [only]) = (all_flat, names.iter().collect::<Vec<_>>().as_slice()) {
+                binders.push(CPat::Var(only.to_string()));
+            } else {
+                *ctr += 1;
+                let b = format!("$nf{ctr}");
+                binders.push(CPat::Var(b.clone()));
+                new_cols_at.push(i);
+                new_cols.push(b);
+            }
+        }
+        (binders, new_cols_at, new_cols)
+    };
+    let mut arms: Vec<(CPat, Term)> = Vec::new();
+    match &first.pats[j] {
+        CPat::Con(..) | CPat::Tuple(_) => {
+            // the constructors in order of first appearance (a tuple is its one "constructor")
+            let mut heads: Vec<(Option<String>, usize)> = Vec::new();
+            for r in &rows {
+                let h = match &r.pats[j] {
+                    CPat::Con(k, ps) => (Some(k.clone()), ps.len()),
+                    CPat::Tuple(ps) => (None, ps.len()),
+                    _ => continue,
+                };
+                if !heads.iter().any(|(k, _)| *k == h.0) {
+                    heads.push(h);
+                }
+            }
+            for (k, arity) in heads {
+                // a catch-all row of this group reads the matched value whole (its variable, the
+                // original scrutinee or a column) after the arm took it apart: `compile_case`
+                // then matches row by row instead (`sequential`)
+                let mut watched: HashSet<String> = cols.iter().cloned().collect();
+                watched.insert(top.to_string());
+                let view = rows.iter().any(|r| match &r.pats[j] {
+                    CPat::Var(v) => {
+                        let mut w = watched.clone();
+                        w.insert(v.clone());
+                        term_mentions_any(&r.body, &w)
+                    }
+                    CPat::Wild => term_mentions_any(&r.body, &watched),
+                    _ => false,
+                });
+                if view {
+                    *viewed = true;
+                }
+                let subs: Vec<Option<Vec<CPat>>> = rows
+                    .iter()
+                    .filter_map(|r| match (&r.pats[j], &k) {
+                        (CPat::Con(c, ps), Some(k)) if c == k => Some(Some(ps.clone())),
+                        (CPat::Tuple(ps), None) => Some(Some(ps.clone())),
+                        (CPat::Var(_) | CPat::Wild, _) => Some(None),
+                        _ => None,
+                    })
+                    .collect();
+                let (binders, at, new_cols) = group(&subs, arity, ctr);
+                let mut grows = Vec::new();
+                for r in &rows {
+                    let ps = match (&r.pats[j], &k) {
+                        (CPat::Con(c, ps), Some(k)) if c == k => ps,
+                        (CPat::Tuple(ps), None) => ps,
+                        (CPat::Var(_) | CPat::Wild, _) => {
+                            grows.extend(catch_all(r, at.len()));
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    // a field kept as the group's shared variable needs no rename; a variable at
+                    // a fresh-binder field is renamed when its column is matched
+                    let body = r.body.clone();
+                    let mut pats: Vec<CPat> = r
+                        .pats
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != j)
+                        .map(|(_, p)| p.clone())
+                        .collect();
+                    for &i in &at {
+                        pats.push(ps[i].clone());
+                    }
+                    grows.push(MRow { pats, body });
+                }
+                let pat = match &k {
+                    Some(k) => CPat::Con(k.clone(), binders),
+                    None => CPat::Tuple(binders),
+                };
+                arms.push((
+                    pat,
+                    compile_matrix(top, rest_cols(&new_cols), grows, sp, ctr, viewed),
+                ));
+            }
+        }
+        CPat::Int(_) => {
+            let mut lits: Vec<i64> = Vec::new();
+            for r in &rows {
+                if let CPat::Int(n) = r.pats[j] {
+                    if !lits.contains(&n) {
+                        lits.push(n);
+                    }
+                }
+            }
+            for n in lits {
+                let mut grows = Vec::new();
+                for r in &rows {
+                    match &r.pats[j] {
+                        CPat::Int(m) if *m == n => {
+                            let mut pats = r.pats.clone();
+                            pats[j] = CPat::Wild;
+                            let lit = MRow {
+                                pats,
+                                body: r.body.clone(),
+                            };
+                            grows.extend(catch_all(&lit, 0));
+                        }
+                        CPat::Var(_) | CPat::Wild => grows.extend(catch_all(r, 0)),
+                        _ => {}
+                    }
+                }
+                arms.push((
+                    CPat::Int(n),
+                    compile_matrix(top, rest_cols(&[]), grows, sp, ctr, viewed),
+                ));
+            }
+        }
+        CPat::Var(_) | CPat::Wild => unreachable!("column j is refutable"),
+    }
+    // the default arm: the rows with a variable or `_` in column j (for a tuple there is none
+    // needed: the tuple arm matches everything)
+    let tuple = matches!(first.pats[j], CPat::Tuple(_));
+    let defaults: Vec<MRow> = rows.iter().filter_map(|r| catch_all(r, 0)).collect();
+    if !tuple && !defaults.is_empty() {
+        arms.push((
+            CPat::Wild,
+            compile_matrix(top, rest_cols(&[]), defaults, sp, ctr, viewed),
+        ));
+    } else if let Some((p @ CPat::Int(_), _)) = arms.last_mut() {
+        // literals with no catch-all row: reached only when one of them matches (a re-match of
+        // a row known to match, or exhaustiveness), and the backends need a final catch-all
+        *p = CPat::Wild;
+    }
+    Term::Ret(Rhs::Case(Atom::Var(col), arms), sp)
 }
 
 /// Splices `inner` (a Term producing a value) so its result is bound to `x`,
@@ -13068,11 +13521,13 @@ fn case_param_binders(
     fields: &mut HashSet<String>,
 ) -> Vec<String> {
     let Atom::Var(s) = sc else { return Vec::new() };
-    if !borrowed.contains(s) {
+    // a case on a borrowed param, or on a binder one brought out (`Just p -> case p of (k, s)`,
+    // the nested patterns' inner cases): every level is an interior of the borrowed param
+    if !borrowed.contains(s) && !fields.contains(s) {
         return Vec::new();
     }
     let mut bs = Vec::new();
-    if let CPat::Con(_, subs) = p {
+    if let CPat::Con(_, subs) | CPat::Tuple(subs) = p {
         for sp in subs {
             if let CPat::Var(n) = sp {
                 if fields.insert(n.clone()) {
@@ -15576,10 +16031,17 @@ impl Elab<'_> {
         let mut out = Vec::with_capacity(arms.len());
         for (i, (pat, body)) in arms.into_iter().enumerate() {
             let info = &infos[i];
+            // A VIEW arm: one that reads its scrutinee again as a whole value (a fall-through to a
+            // catch-all row of a compiled nested pattern, or `Cons s rest -> … length xs`). It
+            // must not consume the scrutinee at its head, so its pattern binders are views of the
+            // scrutinee (never freed or made droppable here) and the scrutinee stays an ordinary
+            // live value that `go` frees where it dies in the arm. Moving a view out would be
+            // caught by the drop-balance verifier.
+            let view_arm = scrut_drop.as_ref().is_some_and(|s| fvs[i].contains(s));
 
             // make %1-heap binders droppable; collect unused ones for pre-drop
             let mut unused = Vec::new();
-            if let CPat::Con(con, subs) = &pat {
+            if let (CPat::Con(con, subs), false) = (&pat, view_arm) {
                 for (fi, sp) in subs.iter().enumerate() {
                     if let CPat::Var(n) = sp {
                         if self.recinfo.field_is_owned(con, fi)
@@ -15617,8 +16079,8 @@ impl Elab<'_> {
             // ignored → whole-list deep drop). The non-deep paths (a spine escapes, or a heap
             // result) shell-free the scrutinee and leave the element for us.
             let deep_safe0 = !info.non_owning && !result_may_be_heap(&body, self.recinfo);
-            if let (false, Some(_), CPat::Con(con, subs), Atom::Var(sname)) =
-                (deep_safe0, &scrut_drop, &pat, scrut)
+            if let (false, false, Some(_), CPat::Con(con, subs), Atom::Var(sname)) =
+                (deep_safe0, view_arm, &scrut_drop, &pat, scrut)
             {
                 for (fi, sp) in subs.iter().enumerate() {
                     if let CPat::Var(n) = sp {
@@ -15651,8 +16113,8 @@ impl Elab<'_> {
             // droppable with its element key from the tuple mono-key so `go` frees it at its
             // death point. Same guards as the `Con` case: only non-`deep_safe`, borrowed (not
             // moved out), not a heap-field interior alias; scalar/poly fields resolve to no-drop.
-            if let (false, Some(_), CPat::Tuple(subs), Atom::Var(sname)) =
-                (deep_safe0, &scrut_drop, &pat, scrut)
+            if let (false, false, Some(_), CPat::Tuple(subs), Atom::Var(sname)) =
+                (deep_safe0, view_arm, &scrut_drop, &pat, scrut)
             {
                 if let Some(keys) = self
                     .dty(sname)
@@ -15721,7 +16183,7 @@ impl Elab<'_> {
                 b = Term::Drop(n, key, Vec::new(), term_span(&b), Box::new(b));
             }
 
-            if let Some(s) = &scrut_drop {
+            if let (Some(s), false) = (&scrut_drop, view_arm) {
                 let deep_safe = !info.non_owning && !result_heap;
                 // MOVED-OUT heap TUPLE field over an OWNED tuple whose arm result is NON-heap
                 // (`deep_safe`, so the fallthrough would `Deep`-drop the WHOLE tuple, freeing the
@@ -15918,6 +16380,13 @@ impl Elab<'_> {
                                     Box::new(b),
                                 );
                                 b = Self::emit_per_field_drops(b, con, subs, s, &skip, self);
+                            } else if matches!(pat, CPat::Wild | CPat::Int(_)) {
+                                // an arm that binds nothing (and, not being a view arm, does
+                                // not read the scrutinee): no part of it escaped, so free it
+                                // WHOLE with its key — a shell free leaked its payloads (the
+                                // `String` of a `Maybe String` in a `_ -> "z"` arm)
+                                let ty = self.dty(s);
+                                b = self.place_deep_drop(b, s, &ty, &alias);
                             } else {
                                 b = Term::Drop(
                                     s.clone(),
@@ -15933,7 +16402,9 @@ impl Elab<'_> {
             }
 
             for v in union.difference(&fvs[i]) {
-                if !live_out.contains(v) {
+                // the scrutinee is reclaimed by this arm's scrutinee drop above (another arm reading
+                // it whole — a view arm — does not make it a plain droppable to free here too)
+                if !live_out.contains(v) && scrut_drop.as_ref() != Some(v) {
                     let sp = term_span(&b);
                     let (ty, skip) = self.drop_target(v);
                     b = Term::Drop(v.clone(), ty, skip, sp, Box::new(b));

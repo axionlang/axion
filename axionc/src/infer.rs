@@ -2439,6 +2439,10 @@ impl<'a> Infer<'a> {
                 },
             );
         }
+        // bitwise (`Data.Bits`): `.&. .|. xor shiftL shiftR` :: Int -> Int -> Int
+        for op in [".&.", ".|.", "xor", "shiftL", "shiftR"] {
+            env.insert(op.into(), mono(bin(int())));
+        }
         // float arithmetic (§4): `+. -. *. /.` :: Float -> Float -> Float
         let float = || Ty::Con("Float".into(), vec![]);
         for op in ["+.", "-.", "*.", "/."] {

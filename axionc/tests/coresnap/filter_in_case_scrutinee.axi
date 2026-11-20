@@ -51,6 +51,7 @@
     Cons y ys ->
     JObj ms ->
     Nil ->
+    _ ->
     else
     else
     let _dd0 = loadraw _p+8  ; Δ{}
@@ -63,7 +64,6 @@
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
-    other ->
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}

@@ -2596,7 +2596,8 @@ fn resolve_expr(
             // always valid and skipped here. (`:`/`.`/`$` never reach `BinOp` — the
             // parser desugars them to `Cons`/`compose`/application.)
             const BUILTIN_OPS: &[&str] = &[
-                "+", "-", "*", "/", "==", "<", ">", "++", "+.", "-.", "*.", "/.", "==.", "<.", ">.",
+                "+", "-", "*", "/", "==", "<", ">", "++", "+.", "-.", "*.", "/.", "==.", "<.",
+                ">.", ".&.", ".|.",
             ];
             // Only SYMBOLIC operators (`<+>`) are resolved: an alphabetic backtick name
             // (`` `mod` ``, `` `div` ``) may be a builtin that lives outside `globals`, so
@@ -3475,6 +3476,11 @@ fn scalar_valued(e: &Expr, ctx: &Ctx) -> bool {
                 | ">="
                 | "&&"
                 | "||"
+                | ".&."
+                | ".|."
+                | "xor"
+                | "shiftL"
+                | "shiftR"
         ),
         _ => match spine(e) {
             (Expr::Var(f, _), args) => {

@@ -50,6 +50,7 @@ mod codegen_tv;
 mod core;
 mod delta;
 mod model_trace;
+pub mod ownership;
 mod verify;
 // `Diagnostic` is re-exported (public API of the engine); its fields carry inline
 // comments rather than rustdoc, and its builder methods are used fluently, so waive
@@ -104,6 +105,7 @@ enum Emit {
     Arenas,
     Core,
     Delta,
+    Ownership,
     Verify,
     ModelTrace,
     CodegenTv,
@@ -266,6 +268,7 @@ pub fn run_cli() -> ExitCode {
                     Some("arenas") => emit = Emit::Arenas,
                     Some("core") => emit = Emit::Core,
                     Some("delta") => emit = Emit::Delta,
+                    Some("ownership") => emit = Emit::Ownership,
                     Some("verify") => emit = Emit::Verify,
                     Some("model-trace") => emit = Emit::ModelTrace,
                     Some("codegen-tv") => emit = Emit::CodegenTv,
@@ -279,7 +282,7 @@ pub fn run_cli() -> ExitCode {
                     Some("llvm") => emit = Emit::Llvm,
                     _ => {
                         eprintln!(
-                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'delta', 'verify', 'ret-alias', 'extract-tags', 'ffi', 'clif' or 'llvm'"
+                            "--emit expects 'json', 'drops', 'inplace', 'arenas', 'core', 'delta', 'ownership', 'verify', 'ret-alias', 'extract-tags', 'ffi', 'clif' or 'llvm'"
                         );
                         return ExitCode::from(2);
                     }
@@ -371,6 +374,12 @@ pub fn run_cli() -> ExitCode {
             "{}",
             serde_json::to_string_pretty(&diags.items).unwrap_or_default()
         );
+    } else if matches!(emit, Emit::Llvm | Emit::Clif) {
+        // the output is IR another tool reads (`--emit llvm > p.ll`): a warning on stdout would
+        // corrupt it, so the diagnostics go to stderr
+        for d in &diags.items {
+            eprint!("{}", d.render(&path, &src, &lines));
+        }
     } else {
         for d in &diags.items {
             print!("{}", d.render(&path, &src, &lines));
@@ -801,6 +810,32 @@ pub fn run_cli() -> ExitCode {
             );
         }
         println!("tag-lower-check: {} divergence(s)", div.len());
+        return ExitCode::SUCCESS;
+    }
+
+    if emit == Emit::Ownership {
+        // What the compiler decided about each heap value of the user's functions — created,
+        // lent, moved, copied (and why), returned, freed — read off the FINAL Core through the
+        // Δ judgment (report-only).
+        let lowered = core::lower_with(
+            &module,
+            &inplace,
+            &analysis.makecon_tys,
+            &analysis.array_tys,
+            &analysis.integer_lits,
+            &analysis.consume_native_exempt,
+            &analysis.where_ret_tys,
+            &analysis.where_param_tys,
+            fuse,
+        );
+        let trace = delta::ownership_trace(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
+        let spans: Vec<ast::Span> = lowered
+            .fns
+            .iter()
+            .map(|f| delta::first_span(&f.body))
+            .collect();
+        let rep = ownership::report(&trace, &spans, &src);
+        print!("{}", ownership::render(&rep, &lines));
         return ExitCode::SUCCESS;
     }
 
@@ -1279,6 +1314,37 @@ pub fn compile_front(
         }
         None => (None, check::Analysis::default()),
     }
+}
+
+/// The ownership report of `src` (`--emit ownership`; the editor's copy hints and variable
+/// hovers): `None` when the program does not compile.
+pub fn ownership_report(src: &str, path: &str) -> Option<ownership::Report> {
+    let mut diags = Diagnostics::default();
+    let (module, analysis) = compile_front(src, path, &mut diags);
+    if diags.has_errors() {
+        return None;
+    }
+    let module = module?;
+    let inplace: std::collections::HashSet<(usize, usize)> =
+        analysis.inplace.iter().map(|ip| ip.span).collect();
+    let lowered = core::lower_with(
+        &module,
+        &inplace,
+        &analysis.makecon_tys,
+        &analysis.array_tys,
+        &analysis.integer_lits,
+        &analysis.consume_native_exempt,
+        &analysis.where_ret_tys,
+        &analysis.where_param_tys,
+        false,
+    );
+    let trace = delta::ownership_trace(&lowered.fns, &lowered.borrow_args, &lowered.recinfo);
+    let spans: Vec<ast::Span> = lowered
+        .fns
+        .iter()
+        .map(|f| delta::first_span(&f.body))
+        .collect();
+    Some(ownership::report(&trace, &spans, src))
 }
 
 /// Stage 1 — the pure, single-file front: lex → layout → parse → `{-# LEVEL #-}`
@@ -5354,7 +5420,9 @@ fn desugar_ops_in_expr(e: &mut ast::Expr, funcs: &std::collections::HashSet<Stri
     if let App(f, _, _) = e {
         if let App(g, _, _) = f.as_ref() {
             if let Var(name, _) = g.as_ref() {
-                if matches!(name.as_str(), "div" | "mod") && !funcs.contains(name) {
+                if matches!(name.as_str(), "div" | "mod" | "xor" | "shiftL" | "shiftR")
+                    && !funcs.contains(name)
+                {
                     if let App(f, r, sp) = std::mem::replace(e, Int(0, (0, 0))) {
                         if let App(g, l, _) = *f {
                             if let Var(name, _) = *g {
@@ -5368,7 +5436,11 @@ fn desugar_ops_in_expr(e: &mut ast::Expr, funcs: &std::collections::HashSet<Stri
     }
     // With children handled, turn a user-operator `BinOp` into `(op) l r`.
     if let BinOp(op, _, _, _) = e {
-        if funcs.contains(op) && !core::is_builtin_op(op) && !core::is_float_op(op) {
+        // (the program's own `xor`/`shiftL`/… wins over the built-in bitwise one)
+        if funcs.contains(op)
+            && (!core::is_builtin_op(op) || core::is_bitwise_op(op))
+            && !core::is_float_op(op)
+        {
             if let BinOp(op, l, r, sp) = std::mem::replace(e, Int(0, (0, 0))) {
                 *e = App(Box::new(App(Box::new(Var(op, sp)), l, sp)), r, sp);
             }
@@ -7453,6 +7525,7 @@ fn print_usage() {
          axionc --emit drops <file>     'free's inserted by Auto-Drop\n  \
          axionc --emit inplace <file>   in-place updates (Linear Elision)\n  \
          axionc --emit arenas <file>    NLL reset points of sub-arenas (static)\n  \
+         axionc --emit ownership <file> each heap value: created, lent, moved, copied (why), freed\n  \
          axionc --emit core <file>      Axion Core IR (ANF) — the shared lowering\n  \
          axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
          axionc --emit extract-tags <f> ownership tags on heap-field case-extractions (report)\n  \

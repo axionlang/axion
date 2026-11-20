@@ -32,6 +32,22 @@ function that returns or embeds part of its argument (`fstS (a, _) = a`) takes o
 only reads it (`lenK`) borrows it, so the caller keeps it. Passing the same value into two owned
 positions (`Pair xs xs`) is **AX0001**, since both owners would free it.
 
+To see what the compiler decided, run `axionc --emit ownership file.axi`. It lists, for each
+of your functions, where every heap value is created, lent, moved, copied (with the reason), returned
+and freed, read from the final lowered program:
+
+```
+main
+  23:7    `cs` — new Closure, owned here
+  25:22   a copy of `cs` — made by the compiler: given away here but used again later
+  25:22   a copy of `cs` — moved into `usePair` (it frees it now)
+  26:28   `cs` — lent to `pick` (still owned here)
+  29:30   `cs` — freed
+```
+
+In an editor, `axion-lsp` shows the same story when you hover a variable, and marks each
+compiler-inserted copy inline.
+
 ### Resources
 
 ```haskell

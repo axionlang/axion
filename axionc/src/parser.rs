@@ -38,6 +38,10 @@ pub type FixityTable = HashMap<String, (u8, Assoc)>;
 pub fn op_fixity(op: &str, user: &FixityTable) -> (u8, Assoc) {
     match op {
         "." => (9, Assoc::Right),
+        "shiftL" | "shiftR" => (8, Assoc::Left),
+        ".&." => (7, Assoc::Left),
+        "xor" => (6, Assoc::Left),
+        ".|." => (5, Assoc::Left),
         "*" | "*." | "/" | "/." => (7, Assoc::Left),
         "+" | "-" | "+." | "-." => (6, Assoc::Left),
         ":" | "++" => (5, Assoc::Right),

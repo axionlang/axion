@@ -1713,7 +1713,7 @@ fn is_builtin_op(op: &str) -> bool {
             | "==#I"
             | "<#I"
             | ">#I"
-    )
+    ) || crate::core::is_bitwise_op(op)
 }
 
 fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
@@ -1731,6 +1731,13 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         // `div` (Integral): truncated toward zero, matching native sdiv.
         ("div", Int(x), Int(y)) if y != 0 => Ok(Int(x.wrapping_div(y))),
         ("div", Int(_), Int(_)) => Err("div by zero".to_string()),
+        // bitwise (`Data.Bits`): a shift amount is taken mod 64, as natively (`wrapping_sh*`
+        // masks it; `shiftR` is arithmetic)
+        (".&.", Int(x), Int(y)) => Ok(Int(x & y)),
+        (".|.", Int(x), Int(y)) => Ok(Int(x | y)),
+        ("xor", Int(x), Int(y)) => Ok(Int(x ^ y)),
+        ("shiftL", Int(x), Int(y)) => Ok(Int(x.wrapping_shl(y as u32))),
+        ("shiftR", Int(x), Int(y)) => Ok(Int(x.wrapping_shr(y as u32))),
         ("==", Int(x), Int(y)) => Ok(Bool(x == y)),
         ("<", Int(x), Int(y)) => Ok(Bool(x < y)),
         (">", Int(x), Int(y)) => Ok(Bool(x > y)),

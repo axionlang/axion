@@ -1287,6 +1287,180 @@ def gen_sharing(rng):
     return (pre + loop_fn + "\n" + "\n".join(funs) + "\nmain :: IO ()\nmain = do\n"
             + "\n".join(lines) + "\n")
 
+NESTED_PRE = """-- fuzz:nested
+data Sh = Dot | Box Int Int | Tag String Sh
+
+rLS :: List String -> String
+rLS xs = case xs of
+  Cons a rest -> a ++ "," ++ rLS rest
+  Nil -> "."
+
+rLI :: List Int -> String
+rLI xs = case xs of
+  Cons a rest -> showInt a ++ "," ++ rLI rest
+  Nil -> "."
+
+rSh :: Sh -> String
+rSh s = case s of
+  Dot -> "dot"
+  Box w h -> "box" ++ showInt w ++ "x" ++ showInt h
+  Tag t inner -> t ++ "<" ++ rSh inner ++ ">"
+
+rMS :: Maybe String -> String
+rMS m = case m of
+  Just t -> "J" ++ t
+  Nothing -> "N"
+
+rMSh :: Maybe Sh -> String
+rMSh m = case m of
+  Just t -> "J" ++ rSh t
+  Nothing -> "N"
+
+rMIS :: Maybe (Int, String) -> String
+rMIS m = case m of
+  Just p -> case p of
+    (k, t) -> "J" ++ showInt k ++ t
+  Nothing -> "N"
+
+rP :: (Maybe String, Int) -> String
+rP p = case p of
+  (m, k) -> rMS m ++ "/" ++ showInt k
+
+"""
+
+def gen_nested_patterns(rng):
+    """Nested patterns (compiled to nested single-level cases before Auto-Drop): random EXHAUSTIVE
+    `case`s with constructor, tuple and literal sub-patterns at several depths over lists, Maybe,
+    tuples and a sum type with String payloads; arm bodies move a String payload out, combine or
+    drop payloads; the final catch-all binds the scrutinee (or names it) and reads it whole — the
+    row-by-row (`sequential`) path. Every program is SAFE value-semantics code: a native refusal is
+    a gap, and the interpreter (which matches the AST directly) is the oracle for first-match."""
+    # types: leaves "Int"/"String"; ("L", t) list; ("M", t) Maybe; ("T", [a, b]) tuple; "Sh"
+    TYPES = [("L", "String"), ("L", "Int"), "Sh", ("M", "Sh"), ("M", ("T", ["Int", "String"])),
+             ("T", [("M", "String"), "Int"])]
+    def tname(t):
+        if t in ("Int", "String", "Sh"):
+            return t
+        if t[0] == "L":
+            return f"List {tname(t[1])}"
+        if t[0] == "M":
+            inner = tname(t[1])
+            return f"Maybe ({inner})" if " " in inner or t[1][0] == "T" else f"Maybe {inner}"
+        return "(" + ", ".join(tname(x) for x in t[1]) + ")"
+    def render(v, t):
+        r = {"String": v, "Int": f"showInt {v}", "Sh": f"rSh {v}"}.get(t if isinstance(t, str) else None)
+        if r:
+            return r
+        key = {("L", "String"): "rLS", ("L", "Int"): "rLI", ("M", "Sh"): "rMSh",
+               ("M", "String"): "rMS"}.get(t if t[0] != "T" and not isinstance(t[1], tuple) else None)
+        if key:
+            return f"{key} {v}"
+        if t == ("M", ("T", ["Int", "String"])):
+            return f"rMIS {v}"
+        if t == ("T", [("M", "String"), "Int"]):
+            return f"rP {v}"
+        return '"?"'
+    ctr = [0]
+    def fresh():
+        ctr[0] += 1
+        return f"v{ctr[0]}"
+    def pat(t, depth, binds):
+        """a pattern of type `t`; appends (var, type) to `binds`. Returns (text, atomic)."""
+        r = rng.random()
+        if depth <= 0 or r < 0.25:
+            if rng.random() < 0.6:
+                v = fresh()
+                binds.append((v, t))
+                return v, True
+            return "_", True
+        if t == "Int":
+            return str(rng.randint(0, 2)), True
+        if t == "String":
+            v = fresh()
+            binds.append((v, t))
+            return v, True
+        def sub(t2):
+            txt, atomic = pat(t2, depth - 1, binds)
+            return txt if atomic else f"({txt})"
+        if t == "Sh":
+            c = rng.choice(["Dot", "Box", "Tag"])
+            if c == "Dot":
+                return "Dot", True
+            if c == "Box":
+                return f"Box {sub('Int')} {sub('Int')}", False
+            return f"Tag {sub('String')} {sub('Sh')}", False
+        if t[0] == "L":
+            if rng.random() < 0.3:
+                return "Nil", True
+            return f"Cons {sub(t[1])} {sub(t)}", False
+        if t[0] == "M":
+            if rng.random() < 0.25:
+                return "Nothing", True
+            return f"Just {sub(t[1])}", False
+        parts = [pat(x, depth - 1, binds)[0] for x in t[1]]
+        return "(" + ", ".join(parts) + ")", True
+    def value(t, depth=2):
+        if t == "Int":
+            return str(rng.randint(0, 2))
+        if t == "String":
+            return rng.choice(['"a"', '"bc"', 'showInt 7', '"d" ++ "e"'])
+        if t == "Sh":
+            c = rng.choice(["Dot", "Box", "Tag"] if depth > 0 else ["Dot", "Box"])
+            if c == "Dot":
+                return "Dot"
+            if c == "Box":
+                return f"(Box {value('Int')} {value('Int')})"
+            return f"(Tag ({value('String')}) {value('Sh', depth - 1)})"
+        if t[0] == "L":
+            n = rng.randint(0, 3)
+            out = "Nil"
+            for _ in range(n):
+                out = f"(Cons ({value(t[1], depth - 1)}) {out})"
+            return out
+        if t[0] == "M":
+            return "Nothing" if rng.random() < 0.3 else f"(Just ({value(t[1], depth - 1)}))"
+        return "(" + ", ".join(value(x, depth - 1) for x in t[1]) + ")"
+    funcs, calls = [], []
+    for fi in range(rng.randint(1, 3)):
+        t = rng.choice(TYPES)
+        name = f"f{fi}"
+        arms = []
+        def refutable(txt):
+            # an arm before the final catch-all must be able to fail, or every later arm is
+            # unreachable (AX0203, a warning the interpreter prints on stdout)
+            return any(c[0].isupper() or c[0].isdigit() for c in txt.replace("(", " ").replace(")", " ").replace(",", " ").split())
+        for ai in range(rng.randint(1, 4)):
+            for _ in range(20):
+                binds = []
+                ptxt, _ = pat(t, rng.randint(1, 3), binds)
+                if refutable(ptxt):
+                    break
+            else:
+                continue
+            heap = [(v, bt) for v, bt in binds if bt == "String"]
+            mode = rng.random()
+            if heap and mode < 0.35:
+                body = heap[0][0]                                   # move a payload out
+            elif binds and mode < 0.8:
+                pick = rng.sample(binds, min(len(binds), rng.randint(1, 2)))
+                body = f'"a{ai}:" ++ ' + ' ++ "|" ++ '.join(f"({render(v, bt)})" for v, bt in pick)
+            else:
+                body = f'"a{ai}"'                                   # drop every payload
+            arms.append(f"  {ptxt} -> {body}")
+        # the final catch-all: binds the scrutinee, names the parameter, or ignores it
+        c = rng.random()
+        if c < 0.4:
+            w = fresh()
+            arms.append(f'  {w} -> "d:" ++ {render(w, t)}')
+        elif c < 0.7:
+            arms.append(f'  _ -> "e:" ++ {render("x", t)}')
+        else:
+            arms.append('  _ -> "z"')
+        funcs.append(f"{name} :: {tname(t)} -> String\n{name} x = case x of\n" + "\n".join(arms) + "\n")
+        for _ in range(rng.randint(2, 4)):
+            calls.append(f"  putStrLn ({name} {value(t)})")
+    return NESTED_PRE + "\n".join(funcs) + "\nmain :: IO ()\nmain = do\n" + "\n".join(calls) + "\n"
+
 HEAP_ARRAY_PRE = """-- fuzz:heap-arrays
 data R = R String Int
 
@@ -1394,7 +1568,9 @@ def gen(rng):
         return gen_closure_values(rng)  # closures as values: owned, copied, stored, returned
     if r < 0.10:
         return gen_heap_array(rng)      # arrays of heap elements: copies in/out, frees
-    r = (r - 0.10) / 0.90               # the rest keep their relative weights
+    if r < 0.15:
+        return gen_nested_patterns(rng) # nested patterns → nested cases (match compilation)
+    r = (r - 0.15) / 0.85               # the rest keep their relative weights
     if r < 0.10:
         return gen_arena(rng)           # native-only
     if r < 0.26:
@@ -1465,8 +1641,9 @@ HANG_RC = 124           # subprocess timeout → this return code (checked by `c
 
 def _safe_by_construction(prog):
     """Generators whose every program is safe value-semantics code: a native AX0910/AX0911 on one is
-    a reclamation GAP (hard finding), not a sound rejection — `gen_sharing`, `gen_closure_values`."""
-    return "fuzz:sharing" in prog or "fuzz:closures" in prog
+    a reclamation GAP (hard finding), not a sound rejection — `gen_sharing`, `gen_closure_values`,
+    `gen_nested_patterns`."""
+    return "fuzz:sharing" in prog or "fuzz:closures" in prog or "fuzz:nested" in prog
 
 def run(args, want_bin=None, timeout=HANG_SECS):
     try:
@@ -1558,7 +1735,7 @@ def check(prog, work):
             # still runs). Not a divergence: native refusing a value it cannot reclaim soundly is
             # correct-by-design, exactly like AX0912. A verifier FALSE POSITIVE (rejecting SAFE code)
             # is caught by the dedicated 0-FP corpus sweep (tests/verify.rs), not here.
-            return ("ax0910", None)
+            return ("ax0910", ec[-1500:])
         return ("verdict", f"interp ran but cranelift rejected:\n{ec[-400:]}")
     if ri != 0 and rc == 0:
         return ("verdict", f"cranelift ran but interp rejected:\n{ei[-400:]}")
@@ -1576,6 +1753,8 @@ def main():
     ap.add_argument("--keep-going", action="store_true", help="don't stop on first hard failure")
     ap.add_argument("--only", metavar="NAME",
                     help="use only the generator gen_NAME (e.g. closure_values, heap_array)")
+    ap.add_argument("--save-refusals", metavar="DIR",
+                    help="also save each sound AX0910 refusal (program + error) to DIR, for triage")
     a = ap.parse_args()
     generate = globals()[f"gen_{a.only}"] if a.only else gen
     if not os.path.exists(AXIONC):
@@ -1600,7 +1779,13 @@ def main():
                 print(f"\n[{verdict.upper()}] i={i} saved {f}\n{detail}\n")
                 if not a.keep_going:
                     break
-            elif i % 25 == 0:
+            elif verdict == "ax0910" and a.save_refusals:
+                d = pathlib.Path(a.save_refusals)
+                d.mkdir(parents=True, exist_ok=True)
+                (d / f"seed{a.seed}_i{i}.axi").write_text(prog)
+                (d / f"seed{a.seed}_i{i}.err").write_text(detail or "")
+            if verdict not in ("corruption", "divergence", "verdict", "hang", "sessleak", "bileak",
+                               "biax0910", "gap") and i % 25 == 0:
                 print(f"  {i}/{a.count} … {dict(tally)}")
     print(f"\nsummary (seed {a.seed}): {dict(tally)}")
     if hard:

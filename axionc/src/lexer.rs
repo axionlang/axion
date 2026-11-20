@@ -148,6 +148,10 @@ pub enum Tok {
     // `<$>` is an `Op`). (`--…` is a comment, so operators may not start with `--`.)
     // Lowered like a backtick-infix call: `a <+> b` ≡ `(<+>) a b`.
     #[regex(r"[<>=+\-*/&|!?^~$]+", |lex| lex.slice().to_string(), priority = 1)]
+    // the bitwise `.&.` / `.|.` (`Data.Bits`): they start with `.`, which no other operator run
+    // contains (it is `compose`), so they are spelled out
+    #[token(".&.", |_| ".&.".to_string())]
+    #[token(".|.", |_| ".|.".to_string())]
     Op(String),
 
     // literals (decimal and hexadecimal `0x…`; logos picks the longest

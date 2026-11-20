@@ -1700,7 +1700,12 @@ impl Verifier<'_> {
                 if let Some(a) = e.alias {
                     self.use_atom(a, sp, st);
                 }
-                let ret_val = self.classify(op, st);
+                let mut ret_val = self.classify(op, st);
+                // a String literal returned from the function is a FRESH heap string the caller
+                // owns (and frees) — what `mixed_exit` compares an interior-alias path against
+                if tail && matches!(op, Op::Atom(Atom::Str(_))) {
+                    ret_val.owned = true;
+                }
                 if let Some(Atom::Var(src)) = e.alias {
                     Self::kill(src, Cat::UseAfterFree, st);
                 }
@@ -1742,7 +1747,30 @@ impl Verifier<'_> {
         }
         self.consumed_slots = after;
         self.merge(&outer, &exits, sp, st);
+        self.mixed_exit(&rets, sp, tail);
         merge_vals(&rets)
+    }
+
+    /// A function EXIT whose paths disagree on what they hand back: one returns an interior of a
+    /// value the function does not own (a field of a borrowed parameter — `owned == false` with
+    /// borrows), another a fresh value it owns. No caller can reclaim that result correctly: as an
+    /// owned value it frees memory the argument's owner frees again (a double free); as a borrow
+    /// it leaks the fresh one. The all-interior return (`grab w = inner w`) is a pure borrow
+    /// return, summarised for the callers (`borrow_return_summary`); an owned value that shares
+    /// fields with a parameter (a record update) is `owned` with borrows, not this.
+    fn mixed_exit(&mut self, rets: &[Val], sp: Span, tail: bool) {
+        if !tail || !rets.iter().any(|v| v.owned) {
+            return;
+        }
+        let interior = rets
+            .iter()
+            .filter(|v| !v.owned)
+            .flat_map(|v| v.borrows.iter())
+            .min()
+            .cloned();
+        if let Some(root) = interior {
+            self.finding(Cat::DoubleFree, &root, sp);
+        }
     }
 
     fn case(
@@ -1828,6 +1856,7 @@ impl Verifier<'_> {
         }
         self.consumed_slots = slots_after;
         self.merge(&outer, &exits, sp, st);
+        self.mixed_exit(&rets, sp, tail);
         merge_vals(&rets)
     }
 

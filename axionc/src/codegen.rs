@@ -763,7 +763,12 @@ impl Fx<'_, '_> {
                     "*" => self.builder.ins().imul(a, b),
                     "div" => self.builder.ins().sdiv(a, b),
                     "mod" => self.builder.ins().srem(a, b),
-                    "band" => self.builder.ins().band(a, b),
+                    "band" | ".&." => self.builder.ins().band(a, b),
+                    ".|." => self.builder.ins().bor(a, b),
+                    "xor" => self.builder.ins().bxor(a, b),
+                    // Cranelift masks the shift amount to the type width: mod 64, as the others
+                    "shiftL" => self.builder.ins().ishl(a, b),
+                    "shiftR" => self.builder.ins().sshr(a, b),
                     "==" => cmp(self, IntCC::Equal),
                     "<" => cmp(self, IntCC::SignedLessThan),
                     ">" => cmp(self, IntCC::SignedGreaterThan),

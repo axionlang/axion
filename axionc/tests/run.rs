@@ -422,6 +422,52 @@ fn borrowed_resource_parameter_cannot_be_consumed() {
 }
 
 #[test]
+fn ownership_report_shows_the_final_decisions() {
+    // `--emit ownership` reads the FINAL Core (after Auto-Drop and the copy passes): each heap
+    // value's creation, lends, moves, compiler copies with their reason, branch-only frees and
+    // frees that skip a shared field, at source positions.
+    let out = axionc()
+        .args(["--emit", "ownership", &fixture("closure_live_moves.axi")])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "23:7    `cs` — new Closure, owned here",
+        "25:22   a copy of `cs` — made by the compiler: given away here but used again later",
+        "25:22   a copy of `cs` — moved into `usePair` (it frees it now)",
+        "26:28   `cs` — lent to `pick` (still owned here)",
+        "27:23   `cs` — lent to `idG` (still owned here)",
+        "28:12   a copy of `cs` — now called `f0`",
+        "29:30   `cs` — freed",
+        "[then] a copy of `f` — made by the compiler: a borrowed value is returned: the caller gets its own",
+        "the result of `pairWith` — freed, except field 0 (moved out, or shared with another value)",
+        "idG x   (specialized for Closure)",
+    ] {
+        assert!(text.contains(line), "missing `{line}` in:\n{text}");
+    }
+    // the prelude and generated code stay out; scalar parameters are not listed as borrowed
+    assert!(
+        !text.contains("`map`") && !text.contains("axion_drop"),
+        "{text}"
+    );
+    assert!(!text.contains("`k` — parameter"), "{text}");
+
+    let out = axionc()
+        .args(["--emit", "ownership", &fixture("sharing_regressions.axi")])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "[then] a copy of field `xs` of `p` — made by the compiler: a record update copies the field it keeps",
+        "[Cons a rest › then] a copy of `p` — made by the compiler: a closure call takes ownership of its argument",
+        "`b2` — freed, except fields 2, 3 (moved out, or shared with another value)",
+    ] {
+        assert!(text.contains(line), "missing `{line}` in:\n{text}");
+    }
+}
+
+#[test]
 fn ffi_linear_handle_lifecycle_enforced() {
     // §18 linear handles: `Handle a` is must-use when threaded as a `%1` parameter. The correct
     // threaded pattern compiles (ffi_handle.axi); forgetting to destroy is AX0002, double-destroy
@@ -7301,6 +7347,15 @@ fn axmpv_regressions_agree_on_every_backend() {
         ("nested_mixed_cond.axi", "x d5x offx\n<neg><zero><one1><many>\n"),
         ("sharing_regressions.axi", "15 3 0\n7 10 18 21\n22 10 9\n"),
         ("closure_live_moves.axi", "4\n15\n23\n41\n"),
+        (
+            "bitwise.axi",
+            "1193046\n18\n86\n6\n14\n-4\n2\n-9223372036854775808\n-6\n",
+        ),
+        ("bitwise_user_xor.axi", "yes\nno\n"),
+        (
+            "nested_patterns_native.axi",
+            "24\ntwo zeros\nzero first\nzero second\none 9\nother 3\nother 0\nab+cd\nsolo\nnone\ny=5\n4x\n-\ncircle sun\nbox\n?\nonly\n2\n104\n",
+        ),
     ];
     for (name, want) in cases {
         let fx = fixture(name);

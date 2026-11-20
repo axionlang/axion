@@ -1497,6 +1497,585 @@ impl Ck<'_> {
     }
 }
 
+// --- `--emit ownership`: the final Core's ownership decisions, per source variable ---
+
+/// Who an ownership event is about, as the programmer would name it.
+#[derive(Clone, Debug)]
+pub enum Who {
+    /// a source variable (or parameter)
+    Name(String),
+    /// an unnamed intermediate value: the source expression at this span (the `u32` numbers the
+    /// temporaries: several share a statement's span, and only the last one IS that expression)
+    Expr(Span, u32),
+    /// a copy the compiler made of another value
+    CopyOf(Box<Who>),
+    /// an unnamed value described by what made it: `the result of `g``, `a new tuple`
+    Made(String),
+}
+
+/// What happened to a heap value at one point of a function.
+#[derive(Clone, Debug)]
+pub enum OwnKind {
+    /// a parameter: `owned` = the function receives it and must free it (or pass it on);
+    /// otherwise it is borrowed (the caller keeps it and frees it)
+    Param { owned: bool },
+    /// a new heap value, owned here (its drop key, when known)
+    New { ty: Option<String> },
+    /// a copy made by the compiler, with the reason
+    Copy { why: &'static str },
+    /// ownership leaves: given to a function, a closure call, stored in a new value, renamed
+    Moved { to: MoveTo },
+    /// read by a function that does not keep it (the owner still frees it)
+    Lent { to: String },
+    /// returned to the caller (the caller now owns it)
+    Returned,
+    /// taken out of a value's field, owned on its own from here (`slot` = the field)
+    FieldOut { from: Who, slot: usize },
+    /// freed; `skip` = fields left alone (moved out or shared with another value)
+    Freed {
+        ty: Option<String>,
+        skip: Vec<usize>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum MoveTo {
+    Callee(String),
+    ClosureCall,
+    StoredIn(Who),
+    Renamed(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct OwnEvent {
+    /// the source span the event happens at (`NO_SPAN` only when the whole function has none)
+    pub span: Span,
+    /// the branches it sits in, outermost first: `then`, `else`, or a `case` pattern
+    pub branch: Vec<String>,
+    pub who: Who,
+    pub kind: OwnKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct OwnFn {
+    pub name: String,
+    pub params: Vec<String>,
+    pub events: Vec<OwnEvent>,
+}
+
+/// Why the compiler made a copy, from the name the pass gave it (`core.rs`).
+fn copy_reason(name: &str) -> Option<&'static str> {
+    let reasons: [(&str, &'static str); 8] = [
+        ("$clomv", "given away here but used again later"),
+        (
+            "$clargcopy",
+            "a closure call takes ownership of its argument",
+        ),
+        ("$clocopy", "stored in a value that owns its own copy"),
+        ("$clocp", "stored in a value that owns its own copy"),
+        (
+            "$aliascopy",
+            "a borrowed value is returned: the caller gets its own",
+        ),
+        (
+            "$fieldcopy",
+            "a field is returned while its record stays with its owner",
+        ),
+        ("$borrowcopy", "a borrowed value is stored or given away"),
+        ("$updfield", "a record update copies the field it keeps"),
+    ];
+    reasons
+        .iter()
+        .find(|(p, _)| name.starts_with(p))
+        .map(|(_, r)| *r)
+}
+
+/// The value a copy op copies, if `op` is one: a runtime copier or a generated deep copier.
+fn copy_source(op: &Op) -> Option<&str> {
+    match op {
+        Op::RtCall { func, args, .. } if func.ends_with("_copy") => match args.first() {
+            Some(Atom::Var(v)) => Some(v),
+            _ => None,
+        },
+        // a String copy: `strcat s ""`
+        Op::RtCall { func, args, .. } if func == "axion_strcat" => match args.as_slice() {
+            [Atom::Var(v), Atom::Str(e)] if e.is_empty() => Some(v),
+            _ => None,
+        },
+        Op::CallDirect(g, args, _) if g.starts_with("axion_copy_") => match args.first() {
+            Some(Atom::Var(v)) => Some(v),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The ownership trace of every function in `fns` (in order), from the same Δ judgment the
+/// verifier cross-checks: what each heap value is, where it moves, is lent, copied, returned and
+/// freed. Report-only; the caller filters to the user's functions and renders spans.
+pub fn ownership_trace(
+    fns: &[CoreFn],
+    borrow_args: &BorrowArgs,
+    recinfo: &RecordInfo,
+) -> Vec<OwnFn> {
+    let mut out = Vec::new();
+    for f in fns {
+        let mut ck = Ck {
+            borrow_args,
+            recinfo,
+            errs: Vec::new(),
+            transfers: HashSet::new(),
+        };
+        let mut s = Scope::default();
+        for p in &f.params {
+            s.bound.insert(p.clone());
+        }
+        for c in &f.captures {
+            s.bound.insert(c.clone());
+        }
+        s.owned = f.owned_drop_ty.iter().cloned().collect();
+        let borrowed: HashSet<String> = borrow_args
+            .get(&f.name)
+            .map(|set| {
+                set.iter()
+                    .filter_map(|i| f.params.get(*i).cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut tr = Tracer {
+            who: HashMap::new(),
+            borrowed,
+            at: first_span(&f.body),
+            branch: Vec::new(),
+            events: Vec::new(),
+            let_located: true,
+            temps: 0,
+            outer: HashMap::new(),
+        };
+        for p in &f.params {
+            let owned = f.owned_params.contains(p);
+            if owned || tr.borrowed.contains(p) {
+                tr.push(Who::Name(p.clone()), OwnKind::Param { owned });
+            }
+        }
+        ck.trace_term(&f.body, &s, &mut tr);
+        // a borrowed parameter is listed only if the body treats it as a heap value (the borrow
+        // set also holds scalars)
+        let mut used: HashSet<String> = HashSet::new();
+        for e in &tr.events {
+            if !matches!(e.kind, OwnKind::Param { .. }) {
+                who_names(&e.who, &mut used);
+                if let OwnKind::FieldOut { from, .. } = &e.kind {
+                    who_names(from, &mut used);
+                }
+            }
+        }
+        // a temporary that is not its statement's outermost value has no source text of its own
+        let outer = std::mem::take(&mut tr.outer);
+        let inner = |w: &mut Who| {
+            if let Who::Expr(sp, id) = w {
+                if outer.get(sp) != Some(id) {
+                    *w = Who::Made("an intermediate value".into());
+                }
+            }
+        };
+        for e in &mut tr.events {
+            inner(&mut e.who);
+            if let OwnKind::Moved {
+                to: MoveTo::StoredIn(w),
+            } = &mut e.kind
+            {
+                inner(w);
+            }
+        }
+        tr.events.retain(|e| match (&e.kind, &e.who) {
+            (OwnKind::Param { owned: false }, Who::Name(n)) => used.contains(n),
+            _ => true,
+        });
+        out.push(OwnFn {
+            name: f.name.clone(),
+            params: f.params.clone(),
+            events: tr.events,
+        });
+    }
+    out
+}
+
+/// A span that locates real source text: not `NO_SPAN`, and not the zero-length span of a
+/// synthesized name (an eta-expansion's lambda).
+pub fn usable_span(sp: Span) -> bool {
+    sp != NO_SPAN && sp.0 < sp.1
+}
+
+fn who_names(w: &Who, out: &mut HashSet<String>) {
+    match w {
+        Who::Name(n) => {
+            out.insert(n.clone());
+        }
+        Who::CopyOf(inner) => who_names(inner, out),
+        Who::Expr(..) | Who::Made(_) => {}
+    }
+}
+
+/// The first usable source span in a body (`NO_SPAN` if it has none).
+pub fn first_span(t: &Term) -> Span {
+    let sp = crate::core::term_span(t);
+    if usable_span(sp) {
+        return sp;
+    }
+    match t {
+        Term::Let(_, rhs, _, body) => {
+            let inner = match rhs {
+                Rhs::If(_, th, el) => [first_span(th), first_span(el)]
+                    .into_iter()
+                    .find(|s| usable_span(*s)),
+                Rhs::Case(_, arms) => arms
+                    .iter()
+                    .map(|(_, b)| first_span(b))
+                    .find(|s| usable_span(*s)),
+                Rhs::Op(_) => None,
+            };
+            inner.unwrap_or_else(|| first_span(body))
+        }
+        Term::Drop(_, _, _, _, body) => first_span(body),
+        Term::Ret(rhs, _) => match rhs {
+            Rhs::If(_, th, el) => {
+                let a = first_span(th);
+                if usable_span(a) {
+                    a
+                } else {
+                    first_span(el)
+                }
+            }
+            Rhs::Case(_, arms) => arms
+                .iter()
+                .map(|(_, b)| first_span(b))
+                .find(|s| usable_span(*s))
+                .unwrap_or(NO_SPAN),
+            Rhs::Op(_) => NO_SPAN,
+        },
+    }
+}
+
+struct Tracer {
+    /// how each Core name reads in the source
+    who: HashMap<String, Who>,
+    /// the function's borrowed parameters (heap values it reads but does not own)
+    borrowed: HashSet<String>,
+    /// the current source span (a node without one inherits the previous)
+    at: Span,
+    branch: Vec<String>,
+    events: Vec<OwnEvent>,
+    /// did the current `let` carry a usable span of its own?
+    let_located: bool,
+    /// numbers the temporaries
+    temps: u32,
+    /// per span, the last temporary numbered at it: the one that IS that span's expression
+    outer: HashMap<Span, u32>,
+}
+
+/// `idG$Closure` → `` `idG` ``, `axion_str_copy` → `the runtime`, `lam$2` → `a lambda`.
+pub fn fn_label(g: &str) -> String {
+    if g.starts_with("lam$") {
+        return "a lambda".into();
+    }
+    if g.starts_with("axion_") {
+        return "the runtime".into();
+    }
+    format!("`{}`", g.split('$').next().unwrap_or(g))
+}
+
+impl Tracer {
+    fn name(&self, v: &str) -> Who {
+        self.who.get(v).cloned().unwrap_or_else(|| {
+            if Self::is_temp(v) {
+                Who::Made("an intermediate value".into())
+            } else {
+                Who::Name(v.to_string())
+            }
+        })
+    }
+
+    /// How the binder of `op` reads in the source, when it is a compiler temporary.
+    fn temp_who(&mut self, op: &Op) -> Who {
+        self.temps += 1;
+        self.outer.insert(self.at, self.temps);
+        match op {
+            Op::CallDirect(g, ..) => Who::Made(format!("the result of {}", fn_label(g))),
+            Op::CallClosure(..) => Who::Made("the result of a closure call".into()),
+            Op::MakeTuple(_) => Who::Made("a new tuple".into()),
+            Op::MakeCon { con, .. } => Who::Made(format!("a new `{con}`")),
+            Op::MakeRecord { .. } | Op::UpdateRecord { .. } => Who::Made("a new record".into()),
+            Op::MakeClosure { .. } => Who::Made("a closure".into()),
+            Op::Field {
+                name,
+                rec: Atom::Var(r),
+            } => {
+                let rec = match self.name(r) {
+                    Who::Name(n) => format!("`{n}`"),
+                    _ => "a record".into(),
+                };
+                Who::Made(format!("field `{name}` of {rec}"))
+            }
+            _ => Who::Expr(self.at, self.temps),
+        }
+    }
+    fn push(&mut self, who: Who, kind: OwnKind) {
+        self.events.push(OwnEvent {
+            span: self.at,
+            branch: self.branch.clone(),
+            who,
+            kind,
+        });
+    }
+    fn locate(&mut self, sp: Span) {
+        if usable_span(sp) {
+            self.at = sp;
+        }
+    }
+    /// is `x` a compiler temporary (shown as its source expression)?
+    fn is_temp(x: &str) -> bool {
+        x.starts_with('_') || x.contains('$') || x.starts_with("satclo")
+    }
+}
+
+impl Ck<'_> {
+    /// The ownership events of one `let x = op` / `ret op` (`x` = `None` for a `ret`).
+    fn trace_op(
+        &mut self,
+        x: Option<&str>,
+        op: &Op,
+        s: &mut Scope,
+        tr: &mut Tracer,
+    ) -> Option<Res> {
+        let heap = |s: &Scope, n: &str| s.res.contains_key(n) || s.owned.contains_key(n);
+        let e = op_delta_effect(op, self.borrow_args);
+        // the moves and lends, judged on the scope BEFORE the op
+        let mut evs: Vec<(Who, OwnKind)> = Vec::new();
+        let copy_of = copy_source(op);
+        // how the binder reads: a copy, an alias of a temp, a temp described by its op, a name
+        let xwho: Option<Who> = x.map(|x| {
+            if let Some(src) = copy_of {
+                Who::CopyOf(Box::new(tr.name(src)))
+            } else if !Tracer::is_temp(x) {
+                Who::Name(x.to_string())
+            } else if let Some(Atom::Var(n)) = e.alias {
+                tr.name(n)
+            } else {
+                tr.temp_who(op)
+            }
+        });
+        if let (Some(x), Some(w)) = (x, &xwho) {
+            if Tracer::is_temp(x) {
+                tr.who.insert(x.to_string(), w.clone());
+            }
+        }
+        if copy_of.is_none() {
+            let to = match (op, &xwho) {
+                (Op::CallDirect(g, ..), _) => Some(MoveTo::Callee(g.clone())),
+                (Op::RtCall { func, .. }, _) => Some(MoveTo::Callee(func.clone())),
+                (Op::CallClosure(..), _) => Some(MoveTo::ClosureCall),
+                (_, Some(w)) => Some(MoveTo::StoredIn(w.clone())),
+                (_, None) => None,
+            };
+            for a in &e.moves {
+                if let (Atom::Var(n), Some(to)) = (a, &to) {
+                    if heap(s, n) {
+                        evs.push((tr.name(n), OwnKind::Moved { to: to.clone() }));
+                    }
+                }
+            }
+            if let Op::CallDirect(g, ..) = op {
+                for a in &e.borrows {
+                    if let Atom::Var(n) = a {
+                        if heap(s, n) || tr.borrowed.contains(n) {
+                            evs.push((tr.name(n), OwnKind::Lent { to: g.clone() }));
+                        }
+                    }
+                }
+            }
+            if let (Some(Atom::Var(n)), Some(x)) = (e.alias, x) {
+                if heap(s, n) && !Tracer::is_temp(x) {
+                    evs.push((
+                        tr.name(n),
+                        OwnKind::Moved {
+                            to: MoveTo::Renamed(x.to_string()),
+                        },
+                    ));
+                }
+            }
+        }
+        let produced = self.op(op, s);
+        for (w, k) in evs {
+            tr.push(w, k);
+        }
+        if let (Some(x), Some(who)) = (x, xwho) {
+            if copy_of.is_some() {
+                let why = copy_reason(x).unwrap_or("needs its own value");
+                tr.push(who, OwnKind::Copy { why });
+            } else if let Some(r) = &produced {
+                // a named binding whose own span is synthetic: the renderer finds `x`'s binding
+                let at = tr.at;
+                if !Tracer::is_temp(x) && !tr.let_located {
+                    tr.at = NO_SPAN;
+                }
+                let kind = match (&r.parent, r.slot) {
+                    (Some(p), Some(slot)) => OwnKind::FieldOut {
+                        from: tr.name(p),
+                        slot,
+                    },
+                    _ => OwnKind::New { ty: r.key.clone() },
+                };
+                tr.push(who, kind);
+                tr.at = at;
+            }
+        }
+        produced
+    }
+
+    fn trace_term(&mut self, t: &Term, s: &Scope, tr: &mut Tracer) -> Scope {
+        let mut s1 = s.clone();
+        match t {
+            Term::Let(x, rhs, sp, body) => {
+                tr.locate(*sp);
+                tr.let_located = usable_span(*sp);
+                match rhs {
+                    Rhs::Op(op) => {
+                        if let Some(res) = self.trace_op(Some(x), op, &mut s1, tr) {
+                            s1.res.insert(x.clone(), res);
+                        }
+                    }
+                    Rhs::If(c, th, el) => {
+                        self.use_atom(c, false, &mut s1);
+                        s1 = self.trace_if(th, el, &s1, tr);
+                    }
+                    Rhs::Case(sc, arms) => self.trace_case(sc, arms, &mut s1, tr),
+                }
+                s1.bound.insert(x.clone());
+                self.trace_term(body, &s1, tr)
+            }
+            Term::Drop(v, ty, skip, sp, body) => {
+                // a free sits right after the value's last use: keep that use's position (the
+                // drop's own anchor is the next node, often a whole `do` block)
+                let mut sk = skip.clone();
+                sk.sort_unstable();
+                tr.push(
+                    tr.name(v),
+                    OwnKind::Freed {
+                        ty: ty.clone(),
+                        skip: sk,
+                    },
+                );
+                self.do_drop(v, ty, skip, Some(*sp), &mut s1);
+                self.trace_term(body, &s1, tr)
+            }
+            Term::Ret(rhs, sp) => {
+                tr.locate(*sp);
+                match rhs {
+                    Rhs::Op(Op::Atom(Atom::Var(n)))
+                        if s1.res.contains_key(n) || s1.owned.contains_key(n) =>
+                    {
+                        tr.push(tr.name(n), OwnKind::Returned);
+                        self.op(&Op::Atom(Atom::Var(n.clone())), &mut s1);
+                    }
+                    Rhs::Op(op) => {
+                        self.trace_op(None, op, &mut s1, tr);
+                    }
+                    Rhs::If(c, th, el) => {
+                        self.use_atom(c, false, &mut s1);
+                        s1 = self.trace_if(th, el, &s1, tr);
+                    }
+                    Rhs::Case(sc, arms) => self.trace_case(sc, arms, &mut s1, tr),
+                }
+                s1
+            }
+        }
+    }
+
+    fn trace_if(&mut self, th: &Term, el: &Term, s: &Scope, tr: &mut Tracer) -> Scope {
+        let at = tr.at;
+        tr.branch.push("then".into());
+        let sth = self.trace_term(th, s, tr);
+        tr.branch.pop();
+        tr.at = at;
+        tr.branch.push("else".into());
+        self.trace_term(el, s, tr);
+        tr.branch.pop();
+        tr.at = at;
+        sth
+    }
+
+    fn trace_case(&mut self, sc: &Atom, arms: &[(CPat, Term)], s: &mut Scope, tr: &mut Tracer) {
+        let sv = match sc {
+            Atom::Var(n) => Some(n.clone()),
+            _ => None,
+        };
+        if let Some(n) = &sv {
+            if !s.res.contains_key(n) {
+                if let Some(k) = s.owned.remove(n) {
+                    s.res.insert(
+                        n.clone(),
+                        Res {
+                            key: k,
+                            parent: None,
+                            slot: None,
+                        },
+                    );
+                }
+            }
+        }
+        let scrut_res = sv.as_ref().and_then(|n| s.res.get(n).cloned());
+        let at = tr.at;
+        let mut first: Option<Scope> = None;
+        for (pat, body) in arms {
+            let mut sa = s.clone();
+            let mut binds = Vec::new();
+            self.pat_binds(pat, &mut binds);
+            let branchy = arms.len() > 1;
+            if branchy {
+                tr.branch.push(crate::core::cpat(pat));
+            }
+            for (n, payload) in binds {
+                sa.bound.insert(n.clone());
+                let Some(pl) = payload else { continue };
+                if scrut_res.is_none() {
+                    continue;
+                }
+                let owned = pl.key.is_some();
+                sa.res.insert(
+                    n.clone(),
+                    Res {
+                        key: pl.key,
+                        parent: sv.clone(),
+                        slot: Some(pl.slot),
+                    },
+                );
+                if owned {
+                    if let Some(p) = &sv {
+                        sa.split.entry(p.clone()).or_default().insert(pl.slot);
+                        tr.push(
+                            Who::Name(n.clone()),
+                            OwnKind::FieldOut {
+                                from: tr.name(p),
+                                slot: pl.slot,
+                            },
+                        );
+                    }
+                }
+            }
+            let fin = self.trace_term(body, &sa, tr);
+            if branchy {
+                tr.branch.pop();
+                tr.at = at;
+            }
+            first.get_or_insert(fin);
+        }
+        if let Some(f) = first {
+            *s = f;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

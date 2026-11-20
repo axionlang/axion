@@ -12,10 +12,11 @@
       ret 0  ; Δ{}
       ret 100  ; Δ{}
       ret 200  ; Δ{}
-      ret x  ; Δ{}
+      ret k  ; Δ{}
     (a, b) ->
     0 ->
     1 ->
+    _ ->
     else
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then
@@ -23,7 +24,6 @@
     let _tag = loadraw _p+0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
-    x ->
   ; Δ{_t1}
   ; Δ{}
   ; Δ{}

@@ -84,10 +84,17 @@ binop       = "+" | "-" | "*"                (* Num  (Int/Float): arithmetic    
             | "==" | "<" | ">"              (* Ord  (Int/Float): comparisons    *)
             | "." | "<>"                    (* compose / mappend                *)
             | "/."                          (* Float-only division (§4)         *)
+            | ".&." | ".|."                 (* bitwise and / or (Int)           *)
             | "+." | "-." | "*."            (* dotted forms (internal rewrite)  *)
             | "<." | ">." | "==."           (* dotted comparisons (internal)    *)
             | "`" varName "`" ;             (* infix function: `mod`        *)
 ```
+
+The bitwise `Int` operations use Haskell's `Data.Bits` names and fixities: `shiftL`/`shiftR`
+(`infixl 8`), `.&.` (`infixl 7`), `xor` (`infixl 6`), `.|.` (`infixl 5`). The named ones work
+prefix (`shiftL x 4`) or infix (`` x `shiftL` 4 ``); a program's own definition of one of those
+names wins. A shift amount is taken modulo 64 on every backend, `shiftR` is arithmetic, and
+`xor x (-1)` is the complement.
 
 ## Level notes (progressive disclosure L0–L3, §8)
 
