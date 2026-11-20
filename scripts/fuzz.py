@@ -30,7 +30,8 @@ passed through generic code, read back out, called repeatedly; each cell must ha
 owner) and `gen_heap_array` (arrays of heap elements: copies in and out, frees of replaced and
 dropped elements). Run one alone with `--only closure_values` / `--only heap_array`.
 
-`gen_sharing` (`--only sharing`) builds the ownership shapes the axmpv flagship broke: record
+`gen_closure_values` and `gen_sharing` (`--only sharing`) programs are safe by construction (see
+`_safe_by_construction`). `gen_sharing` builds the ownership shapes the axmpv flagship broke: record
 updates sharing heap fields with their base, conditional temps, callees that may return their
 argument, closure tables, nested mixed conditionals, FFI with borrowed arguments. Its programs are
 all safe, so a native AX0910/AX0911 refusal there is a hard `gap` finding, not a sound rejection.
@@ -1462,6 +1463,11 @@ def gen(rng):
 HANG_SECS = 30
 HANG_RC = 124           # subprocess timeout → this return code (checked by `check`/`asan_run`)
 
+def _safe_by_construction(prog):
+    """Generators whose every program is safe value-semantics code: a native AX0910/AX0911 on one is
+    a reclamation GAP (hard finding), not a sound rejection — `gen_sharing`, `gen_closure_values`."""
+    return "fuzz:sharing" in prog or "fuzz:closures" in prog
+
 def run(args, want_bin=None, timeout=HANG_SECS):
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
@@ -1525,7 +1531,7 @@ def check(prog, work):
         if rc == HANG_RC:
             return ("hang", f"cranelift exceeded {HANG_SECS}s:\n{prog[:500]}")
         if rc != 0:
-            if "fuzz:sharing" in prog and ("AX0910" in ec or "AX0911" in ec):
+            if _safe_by_construction(prog) and ("AX0910" in ec or "AX0911" in ec):
                 return ("gap", ec[-600:])
             return ("ax0912", None) if "AX0912" in ec else ("verdict", f"native-only prog rejected:\n{ec[-400:]}")
         return asan_run(src, work, None)
@@ -1536,9 +1542,9 @@ def check(prog, work):
     if ri == 0 and rc != 0:
         if "AX0914" in ec:
             return ("ax0914", None)            # expected: a heap Array element, rejected natively
-        if "fuzz:sharing" in prog and ("AX0910" in ec or "AX0911" in ec):
-            # every sharing program is safe value-semantics code: a refusal is a reclamation gap
-            # in Auto-Drop (the class axmpv kept hitting), not a sound rejection
+        if _safe_by_construction(prog) and ("AX0910" in ec or "AX0911" in ec):
+            # every sharing / closure-value program is safe value-semantics code: a refusal is a
+            # reclamation gap in Auto-Drop (the classes axmpv kept hitting), not a sound rejection
             return ("gap", ec[-600:])
         if "fuzz:builtins" in prog and "AX0910" in ec:
             # every built-in program is safe: the verifier rejecting one means a built-in is

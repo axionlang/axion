@@ -51,6 +51,7 @@ NATIVE=(
   axionc/tests/fixtures/nested_mixed_cond.axi
   axionc/tests/fixtures/axmpv_m7_regressions.axi
   axionc/tests/fixtures/sharing_regressions.axi
+  axionc/tests/fixtures/closure_live_moves.axi
   axionc/tests/fixtures/integer_reclaim.axi
   axionc/tests/fixtures/integer_accumulator.axi
   axionc/tests/fixtures/integer_divmod.axi

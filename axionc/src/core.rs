@@ -7389,6 +7389,7 @@ pub fn lower_with(
     // `verifier_catches_borrowed_list_element_double_free` to prove the verifier is the backstop —
     // with the exclusion off, `work` frees a borrowed list element and the verifier must AX0910 it.
     let force_unsafe_string_reclaim = std::env::var_os("AXION_STRING_RECLAIM").is_some();
+    copy_live_closure_moves(&mut out, &borrow_args, &param_types);
     for f in out {
         let dty = all_dty.get(&f.name).unwrap_or(&empty);
         let (mut f, seeds, tuple_seeds_skip) =
@@ -9372,6 +9373,166 @@ fn copy_closures_in(t: Term, cx: &EmbedCx, ctr: &mut usize) -> Term {
                 wrap(copies, sp, Term::Ret(Rhs::Op(op), sp))
             }
             other => Term::Ret(sub(other, ctr), sp),
+        },
+    }
+}
+
+/// A closure is a value: giving one away — to a call parameter the callee does not only borrow,
+/// to a closure call, or under a new name (`let f0 = cs`) — while the original is still used
+/// afterwards (`usePair cs 0` … `cs 0`) gives away a COPY (`axion_closure_copy`). Otherwise the
+/// receiver frees the cell the caller still calls (the type checker allows the reuse: closures
+/// are not linear). "Afterwards" is the rest of the function after the op, including the
+/// continuation of every enclosing `let x = if/case`.
+fn copy_live_closure_moves(
+    out: &mut [CoreFn],
+    ba: &BorrowArgs,
+    fn_param_types: &HashMap<String, Vec<Type>>,
+) {
+    for f in out.iter_mut() {
+        let mut lets: HashMap<String, Op> = HashMap::new();
+        collect_let_ops(&f.body, &mut lets);
+        let mut closure_vars: HashSet<String> = HashSet::new();
+        if let Some(tys) = fn_param_types.get(&f.name) {
+            let off = f.params.len().saturating_sub(tys.len());
+            for (i, p) in f.params.iter().enumerate() {
+                if i >= off && matches!(tys.get(i - off), Some(Type::Arrow { .. })) {
+                    closure_vars.insert(p.clone());
+                }
+            }
+        }
+        for (x, op) in &lets {
+            let k = crate::delta::op_delta_effect(op, &HashMap::new())
+                .produces
+                .and_then(|r| r.key);
+            if k.as_deref() == Some("Closure") {
+                closure_vars.insert(x.clone());
+            }
+        }
+        if closure_vars.is_empty() {
+            continue;
+        }
+        let mut ctr = 0usize;
+        let body = std::mem::replace(
+            &mut f.body,
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+        );
+        f.body = clo_moves(body, &closure_vars, ba, &[], &mut ctr);
+    }
+}
+
+fn clo_moves(
+    t: Term,
+    cv: &HashSet<String>,
+    ba: &BorrowArgs,
+    conts: &[&Term],
+    ctr: &mut usize,
+) -> Term {
+    // the positions of `op` that take ownership of a closure variable still live in `after`
+    let fix = |op: &mut Op, after: &[&Term], ctr: &mut usize| -> Vec<(String, Op)> {
+        let live = |v: &str| {
+            let set = HashSet::from([v.to_string()]);
+            after.iter().any(|t| term_mentions_any(t, &set))
+        };
+        let mut copies = Vec::new();
+        let mut copy = |a: &mut Atom, ctr: &mut usize| {
+            if let Atom::Var(v) = a {
+                if cv.contains(v.as_str()) && live(v) {
+                    let c = format!("$clomv{ctr}");
+                    *ctr += 1;
+                    copies.push((
+                        c.clone(),
+                        Op::RtCall {
+                            func: "axion_closure_copy".into(),
+                            args: vec![Atom::Var(v.clone())],
+                            returns: true,
+                        },
+                    ));
+                    *a = Atom::Var(c);
+                }
+            }
+        };
+        match op {
+            Op::CallDirect(g, args, _) if !g.starts_with("axion_") => {
+                let borrowed = ba.get(g.as_str());
+                for (j, a) in args.iter_mut().enumerate() {
+                    if !borrowed.is_some_and(|s| s.contains(&j)) {
+                        copy(a, ctr);
+                    }
+                }
+            }
+            Op::CallClosure(_, args) => args.iter_mut().for_each(|a| copy(a, ctr)),
+            Op::Atom(a) => copy(a, ctr),
+            _ => {}
+        }
+        copies
+    };
+    let wrap = |copies: Vec<(String, Op)>, sp: Span, inner: Term| {
+        copies.into_iter().rev().fold(inner, |acc, (c, op)| {
+            Term::Let(c, Rhs::Op(op), sp, Box::new(acc))
+        })
+    };
+    match t {
+        Term::Let(x, rhs, sp, body) => match rhs {
+            Rhs::Op(mut op) => {
+                let mut after: Vec<&Term> = vec![body.as_ref()];
+                after.extend_from_slice(conts);
+                let copies = fix(&mut op, &after, ctr);
+                let body = clo_moves(*body, cv, ba, conts, ctr);
+                wrap(copies, sp, Term::Let(x, Rhs::Op(op), sp, Box::new(body)))
+            }
+            Rhs::If(c, a, e) => {
+                let rhs = {
+                    let mut inner: Vec<&Term> = vec![body.as_ref()];
+                    inner.extend_from_slice(conts);
+                    Rhs::If(
+                        c,
+                        Box::new(clo_moves(*a, cv, ba, &inner, ctr)),
+                        Box::new(clo_moves(*e, cv, ba, &inner, ctr)),
+                    )
+                };
+                let body = clo_moves(*body, cv, ba, conts, ctr);
+                Term::Let(x, rhs, sp, Box::new(body))
+            }
+            Rhs::Case(sc, arms) => {
+                let rhs = {
+                    let mut inner: Vec<&Term> = vec![body.as_ref()];
+                    inner.extend_from_slice(conts);
+                    Rhs::Case(
+                        sc,
+                        arms.into_iter()
+                            .map(|(p, a)| (p, clo_moves(a, cv, ba, &inner, ctr)))
+                            .collect(),
+                    )
+                };
+                let body = clo_moves(*body, cv, ba, conts, ctr);
+                Term::Let(x, rhs, sp, Box::new(body))
+            }
+        },
+        Term::Drop(x, k, sk, sp, body) => {
+            Term::Drop(x, k, sk, sp, Box::new(clo_moves(*body, cv, ba, conts, ctr)))
+        }
+        Term::Ret(rhs, sp) => match rhs {
+            Rhs::Op(mut op) => {
+                let copies = fix(&mut op, conts, ctr);
+                wrap(copies, sp, Term::Ret(Rhs::Op(op), sp))
+            }
+            Rhs::If(c, a, e) => Term::Ret(
+                Rhs::If(
+                    c,
+                    Box::new(clo_moves(*a, cv, ba, conts, ctr)),
+                    Box::new(clo_moves(*e, cv, ba, conts, ctr)),
+                ),
+                sp,
+            ),
+            Rhs::Case(sc, arms) => Term::Ret(
+                Rhs::Case(
+                    sc,
+                    arms.into_iter()
+                        .map(|(p, a)| (p, clo_moves(a, cv, ba, conts, ctr)))
+                        .collect(),
+                ),
+                sp,
+            ),
         },
     }
 }
