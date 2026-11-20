@@ -704,11 +704,21 @@ fn run_fn(
                 );
                 continue;
             }
+            // A moved-in CONTAINER (a `data`/tuple value with heap) is this function's too, as
+            // Auto-Drop treats it: owned, so one it neither frees nor hands on is a leak, a second
+            // hand-over a use after move, and its drop key is cross-checked. (Tracking it only as
+            // `moved_in` missed a use after free once the copies were off: `condUpd` in
+            // sharing_regressions.) An unboxed enum is an immediate: nothing to own.
+            let imm = key
+                .as_deref()
+                .is_some_and(|k| recinfo.is_enum_type(k.split('$').next().unwrap_or(k)));
+            let own = moved_in && !imm;
             st.insert(
                 p.clone(),
                 Val {
                     key,
-                    moved_in,
+                    moved_in: moved_in && !own,
+                    owned: own,
                     ..Default::default()
                 },
             );
@@ -1057,7 +1067,7 @@ impl Verifier<'_> {
         for a in &e.moves {
             if let Atom::Var(v) = a {
                 self.note_field_gone(v, st);
-                Self::kill(v, Cat::UseAfterFree, st);
+                self.kill_whole(v, Cat::UseAfterFree, st);
             }
         }
     }
@@ -1146,7 +1156,7 @@ impl Verifier<'_> {
             self.heap_inside.insert(x.to_string(), slots);
         }
         if let Some(Atom::Var(src)) = e.alias {
-            Self::kill(src, Cat::UseAfterFree, st);
+            self.kill_whole(src, Cat::UseAfterFree, st);
         }
         // moved operands escape (the call consumes them) — same as `scan_op_escapes` in
         // Auto-Drop; `consume` also flags consuming an interior alias of a borrowed resource.
@@ -1707,7 +1717,7 @@ impl Verifier<'_> {
                     ret_val.owned = true;
                 }
                 if let Some(Atom::Var(src)) = e.alias {
-                    Self::kill(src, Cat::UseAfterFree, st);
+                    self.kill_whole(src, Cat::UseAfterFree, st);
                 }
                 // returned/consumed resources escape → mark moved so they aren't leaks: the
                 // moved operands (an indirect call only borrows its closure).
@@ -2111,6 +2121,21 @@ impl Verifier<'_> {
                 self.finding(Cat::UseAfterFree, v, sp); // dangling interior alias
             }
         }
+    }
+
+    /// `v` leaves WHOLE (moved, returned, aliased into a result): the fields a `case` bound out
+    /// of it and never moved travel with it (`Just s -> a` hands `s` on inside `a`), so they
+    /// stop being separate owned values here — as a deep `drop` of `v` retires them.
+    fn kill_whole(&mut self, v: &str, cat: Cat, st: &mut State) {
+        if st.get(v).is_some_and(|val| val.owned && val.dead.is_none()) {
+            let gone = self.consumed_slots.get(v).cloned().unwrap_or_default();
+            for (child, slot) in self.children.get(v).cloned().unwrap_or_default() {
+                if !gone.contains(&slot) {
+                    Self::kill(&child, Cat::UseAfterFree, st);
+                }
+            }
+        }
+        Self::kill(v, cat, st);
     }
 
     /// Mark `v` moved-out/consumed. Only an OWNED resource dies on a move — a scalar is

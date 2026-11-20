@@ -258,7 +258,7 @@
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t1 ")"  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t1 ")"  ; Δ{_t0 _t1} · makes String
-      let _t3 = call showArg$Int a0  ; Δ{_t2} · makes String
+      let _t3 = call showArg$Int a0$1  ; Δ{_t2} · makes String
       let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
       let _t4 = call r8  ; Δ{} · makes Either$Int$Int
@@ -347,7 +347,7 @@
     Nil ->
     Right _ ->
     Right _ ->
-    Right a0 ->
+    Right a0$1 ->
     Right y ->
     Right y ->
     Right y ->

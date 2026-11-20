@@ -76,8 +76,8 @@
                         drop acc : List$tuple2$String$Json
                         drop key : String
                         ret case vp of
-                        ret con Left e  ; Δ{e kp} · moves{e} · makes Either$String$tuple2$Json$Int
-                      Left e ->
+                        ret con Left e$1  ; Δ{e$1 kp} · moves{e$1} · makes Either$String$tuple2$Json$Int
+                      Left e$1 ->
                       Right vp ->
                     drop acc : List$tuple2$String$Json
                     drop key : String

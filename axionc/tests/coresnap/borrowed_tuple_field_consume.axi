@@ -11,8 +11,9 @@
 
 
           drop _t0 : String
+          let $borrowcopy0 = call axion_copy_tuple2$String$Int h  ; Δ{} · makes tuple2$String$Int
           let _d1000000 = rtcall axion_str_len _t0  ; Δ{_t0}
-          let _t0 = call fstof h  ; Δ{} · makes String
+          let _t0 = call fstof $borrowcopy0  ; Δ{$borrowcopy0} · moves{$borrowcopy0} · makes String
           ret _d1000000  ; Δ{}
         (h, rest) ->
       drop t : tuple2$String$Int skip{0}

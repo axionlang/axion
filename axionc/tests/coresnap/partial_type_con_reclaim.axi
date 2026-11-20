@@ -11,11 +11,11 @@
 
           drop e
           drop e : Either$String$Int
-          drop s : String
-          let _d1000000 = rtcall axion_str_len s  ; Δ{c s}
+          drop s$1 : String
+          let _d1000000 = rtcall axion_str_len s$1  ; Δ{c s$1}
           ret 0  ; Δ{c}
           ret _d1000000  ; Δ{c}
-        Left s ->
+        Left s$1 ->
         Right _ ->
       drop a
       drop a : Either$String$Int
@@ -24,7 +24,7 @@
       drop c
       drop rest : List
       drop s : String
-      drop s : String
+      drop s$2 : String
       let _d1000001 = rtcall axion_str_len s  ; Δ{b c s}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -33,7 +33,7 @@
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Int _dd0  ; Δ{}
       let _t0 = call length ys  ; Δ{}
-      let _t8 = rtcall axion_str_len s  ; Δ{rest s}
+      let _t8 = rtcall axion_str_len s$2  ; Δ{rest s$2}
       let _t9 = call length rest  ; Δ{rest}
       ret + 1 _t0  ; Δ{}
       ret + _t8 _t9  ; Δ{}
@@ -48,7 +48,7 @@
       ret 0  ; Δ{}
       ret _d1000001  ; Δ{b c}
       ret case e of
-    Box s rest ->
+    Box s$2 rest ->
     Cons y ys ->
     Just e ->
     Left s ->

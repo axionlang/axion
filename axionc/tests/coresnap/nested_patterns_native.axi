@@ -156,11 +156,11 @@
                   drop _t28 : List$Int
                   drop _t29 : String
                   let _d1000000 = rtcall axion_strcat "one " _t0  ; Δ{_t0} · makes String
-                  let _d1000000 = rtcall axion_strcat s _t0  ; Δ{_t0} · makes String
-                  let _d1000001 = rtcall axion_strcat _t1 s  ; Δ{_t1} · makes String
+                  let _d1000000 = rtcall axion_strcat s$1003 _t0  ; Δ{_t0} · makes String
+                  let _d1000001 = rtcall axion_strcat _t1 s$1003  ; Δ{_t1} · makes String
                   let _t0 = showInt a  ; Δ{} · makes String
                   let _t0 = showInt y  ; Δ{} · makes String
-                  let _t1 = showInt $nf3  ; Δ{} · makes String
+                  let _t1 = showInt x$1004  ; Δ{} · makes String
                   let _t27 = con Nil  ; Δ{} · makes List$Int
                   let _t28 = con Cons 9 _t27  ; Δ{_t27} · moves{_t27} · makes List$Int
                   let _t29 = call classify _t28  ; Δ{_t28} · makes String
@@ -191,7 +191,7 @@
               _ ->
               drop _t24 : List$Int
               drop _t25 : String
-              let $fieldcopy0 = rtcall axion_strcat l ""  ; Δ{} · makes String
+              let $fieldcopy0 = rtcall axion_strcat l$1002 ""  ; Δ{} · makes String
               let _t22 = con Nil  ; Δ{} · makes List$Int
               let _t23 = con Cons 0 _t22  ; Δ{_t22} · moves{_t22} · makes List$Int
               let _t24 = con Cons 7 _t23  ; Δ{_t23} · moves{_t23} · makes List$Int
@@ -199,17 +199,17 @@
               let _t26 = putStrLn _t25  ; Δ{_t25}
               ret "zero first"  ; Δ{}
               ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
-              ret $nf2  ; Δ{}
               ret 0  ; Δ{}
               ret 0  ; Δ{}
               ret 100  ; Δ{}
               ret case $nf16 of
               ret case $nf22 of
-              ret case $nf3 of
               ret case $nf7 of
               ret case _t26 of
-              ret rtcall axion_strcat "circle " l  ; Δ{} · makes String
-            ($nf3, y) ->
+              ret case x$1004 of
+              ret n$1002  ; Δ{}
+              ret rtcall axion_strcat "circle " l$1002  ; Δ{} · makes String
+            (x$1004, y) ->
             0 ->
             Circle _ ->
             Cons $nf16 _ ->
@@ -236,20 +236,20 @@
           _ ->
           _ ->
           _ ->
-          drop $nf1
-          drop $nf1
+          drop $nf2
+          drop $nf2
           drop _d1000001 : List$String
           drop _t0 : String
           drop _t19 : List$Int
           drop _t2 : String
           drop _t20 : String
-          drop a : String
+          drop a$1001 : String
           drop b : String
-          let _d1000000 = rtcall axion_strcat a _t0  ; Δ{_t0 a} · makes String
-          let _d1000001 = loadraw $nf1+16  ; Δ{$nf1 a b}
+          let _d1000000 = rtcall axion_strcat a$1001 _t0  ; Δ{_t0 a$1001} · makes String
+          let _d1000001 = loadraw $nf2+16  ; Δ{$nf2 a$1001 b}
           let _d1000001 = rtcall axion_strcat "other " _t2  ; Δ{_t2} · makes String
           let _t0 = * 3 r  ; Δ{}
-          let _t0 = rtcall axion_strcat "+" b  ; Δ{a b} · makes String
+          let _t0 = rtcall axion_strcat "+" b  ; Δ{a$1001 b} · makes String
           let _t1 = call length xs  ; Δ{}
           let _t17 = con Nil  ; Δ{} · makes List$Int
           let _t18 = con Cons 5 _t17  ; Δ{_t17} · moves{_t17} · makes List$Int
@@ -266,23 +266,23 @@
           ret 1  ; Δ{$nf2 xs}
           ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
           ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
-          ret a  ; Δ{a} · moves{a}
+          ret a$1001  ; Δ{a$1001} · moves{a$1001}
           ret case $nf14 of
           ret case $nf15 of
           ret case $nf2 of
-          ret case $nf2 of
-          ret case $nf2 of
+          ret case $nf3 of
           ret case $nf6 of
           ret case _t21 of
+          ret case n$1002 of
           ret case xs of
-        ($nf2, s) ->
+        ($nf2, s$1003) ->
         0 ->
         Circle r ->
         Cons $nf14 _ ->
         Cons _ $nf15 ->
         Cons b _ ->
-        Just $nf2 ->
-        Named l $nf2 ->
+        Just n$1002 ->
+        Named l$1002 $nf3 ->
         Nil ->
         Nil ->
         Nothing ->
@@ -359,7 +359,7 @@
       ret case $nf1 of
       ret case $nf1 of
       ret case $nf1 of
-      ret case $nf1 of
+      ret case $nf2 of
       ret case $nf2 of
       ret case $nf5 of
       ret case _t16 of
@@ -367,7 +367,7 @@
       ret if $nfok17 then
     Cons $nf5 $nf6 ->
     Cons _ $nf2 ->
-    Cons a $nf1 ->
+    Cons a$1001 $nf2 ->
     Cons y ys ->
     Just $nf1 ->
     Just $nf1 ->
@@ -443,8 +443,8 @@
     ret case xs of
     ret if $nfok13 then
     ret showInt _t0  ; Δ{} · makes String
-  ; Δ{$nf1 a}
   ; Δ{$nf2 $nf4 s}
+  ; Δ{$nf2 a$1001}
   ; Δ{$nf2 xs}
   ; Δ{$nf2 xs}
   ; Δ{$nf2 xs}

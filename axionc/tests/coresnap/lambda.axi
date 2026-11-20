@@ -127,8 +127,8 @@
               let _t7 = putStrLn _t6  ; Δ{_t6}
               ret case _t3 of
               ret case _t7 of
-              ret con Left $bindErr  ; Δ{$bindErr na} · moves{$bindErr} · makes Either$String$Value
-            Left $bindErr ->
+              ret con Left $bindErr$1  ; Δ{$bindErr$1 na} · moves{$bindErr$1} · makes Either$String$Value
+            Left $bindErr$1 ->
             Right vb ->
             _ ->
             let _t3 = call copyValue val  ; Δ{} · makes Value
@@ -185,7 +185,7 @@
           let _t1 = con Let nm rhs body  ; Δ{$bind13717} · makes Expr
           let _t1 = rtcall axion_str_cmp key k  ; Δ{}
           let _t1 = tuple p arg  ; Δ{arg body cenv p} · moves{arg p} · makes heap
-          let _t11 = - j i  ; Δ{}
+          let _t11 = - j$1 i  ; Δ{}
           let _t12 = rtcall axion_substr i _t11 s  ; Δ{} · makes String
           let _t13 = con TName _t12  ; Δ{_t12} · moves{_t12} · makes Tok
           let _t14 = con Cons _t13 acc  ; Δ{_t13} · moves{_t13} · makes List$Tok
@@ -208,7 +208,7 @@
           let _t5 = < x y  ; Δ{}
           let _t5 = putStrLn _t4  ; Δ{_t4}
           let _t8 = rtcall axion_str_cmp x "else"  ; Δ{}
-          let j = call scanWhile s i 1  ; Δ{}
+          let j$1 = call scanWhile s i 1  ; Δ{}
           ret 1  ; Δ{}
           ret == _t8 0  ; Δ{}
           ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
@@ -223,7 +223,7 @@
           ret call pLetIn toks nm rhs p1  ; Δ{$bind13356} · makes Either$String$tuple2$Expr$Int
           ret call pMulLoop toks _t2 p2  ; Δ{$bind10005 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
           ret call pMulLoop toks l p1  ; Δ{$bind9690} · makes Either$String$tuple2$Expr$Int
-          ret call tokLoop s j _t14  ; Δ{_t14} · moves{_t14} · makes List$Tok
+          ret call tokLoop s j$1 _t14  ; Δ{_t14} · moves{_t14} · makes List$Tok
           ret call tokSym s i c acc  ; Δ{} · makes List$Tok
           ret case _t2 of
           ret case _t5 of
@@ -231,7 +231,7 @@
           ret con Eq l r  ; Δ{} · makes Expr
           ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
           ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
-          ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
+          ret con Left $bindErr$2  ; Δ{$bindErr$2} · moves{$bindErr$2} · makes Either$String$Value
           ret con Lt l r  ; Δ{} · makes Expr
           ret con Right _t2  ; Δ{$bind12776 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
           ret con Right _t2  ; Δ{$bind13717 _t2} · moves{_t2} · makes Either$String$tuple2$Expr$Int
@@ -262,7 +262,7 @@
         (tb, p1) ->
         Left $bindErr ->
         Left $bindErr ->
-        Left $bindErr ->
+        Left $bindErr$2 ->
         Right arg ->
         Right na ->
         Right nc ->
@@ -426,18 +426,18 @@
       let _t1 = call copyStr p  ; Δ{} · makes String
       let _t1 = call copyStr x  ; Δ{v} · makes String
       let _t10 = + p 1  ; Δ{_t9}
-      let _t10 = call copyExpr b  ; Δ{_t9} · makes Expr
-      let _t11 = call copyStr x  ; Δ{} · makes String
+      let _t10 = call copyExpr b$8  ; Δ{_t9} · makes Expr
+      let _t11 = call copyStr x$9  ; Δ{} · makes String
       let _t11 = tuple _t9 _t10  ; Δ{_t9} · moves{_t9} · makes heap
       let _t12 = + i 1  ; Δ{}
-      let _t12 = call copyExpr b  ; Δ{_t11} · makes Expr
+      let _t12 = call copyExpr b$10  ; Δ{_t11} · makes Expr
       let _t13 = call copyExpr f  ; Δ{} · makes Expr
       let _t13 = rtcall axion_str_len s  ; Δ{}
       let _t14 = < _t12 _t13  ; Δ{}
-      let _t14 = call copyExpr a  ; Δ{_t13} · makes Expr
-      let _t15 = call copyStr x  ; Δ{} · makes String
-      let _t16 = call copyExpr a  ; Δ{_t15} · makes Expr
-      let _t17 = call copyExpr b  ; Δ{_t15 _t16} · makes Expr
+      let _t14 = call copyExpr a$11  ; Δ{_t13} · makes Expr
+      let _t15 = call copyStr x$12  ; Δ{} · makes String
+      let _t16 = call copyExpr a$13  ; Δ{_t15} · makes Expr
+      let _t17 = call copyExpr b$14  ; Δ{_t15 _t16} · makes Expr
       let _t18 = + i 2  ; Δ{}
       let _t18 = call copyExpr c  ; Δ{} · makes Expr
       let _t19 = call copyExpr t  ; Δ{_t18} · makes Expr
@@ -462,13 +462,13 @@
       let _t3 = + i 1  ; Δ{}
       let _t3 = call copyEnv env  ; Δ{_t1 _t2} · makes List$tuple2$String$Value
       let _t3 = call copyEnv env  ; Δ{_t2} · makes List$tuple2$String$Value
-      let _t3 = call copyExpr a  ; Δ{} · makes Expr
+      let _t3 = call copyExpr a$1  ; Δ{} · makes Expr
       let _t3 = call isKeyword _t2  ; Δ{_t2}
       let _t3 = putStrLn _t2  ; Δ{_t2}
       let _t4 = + i 1  ; Δ{}
       let _t4 = + i 1  ; Δ{}
       let _t4 = == k 2  ; Δ{}
-      let _t4 = call copyExpr b  ; Δ{_t3} · makes Expr
+      let _t4 = call copyExpr b$2  ; Δ{_t3} · makes Expr
       let _t4 = call isDigitCh c  ; Δ{}
       let _t4 = con CloV _t1 _t2 _t3  ; Δ{_t1 _t2 _t3} · moves{_t1 _t2 _t3} · makes Value
       let _t4 = con Cons _t2 _t3  ; Δ{_t2 _t3} · moves{_t2 _t3} · makes List$tuple2$String$Value
@@ -477,20 +477,20 @@
       let _t4 = tuple l p  ; Δ{} · makes heap
       let _t5 = * acc 10  ; Δ{}
       let _t5 = == _t4 0  ; Δ{}
-      let _t5 = call copyExpr a  ; Δ{} · makes Expr
+      let _t5 = call copyExpr a$3  ; Δ{} · makes Expr
       let _t5 = rtcall axion_str_at _t4 s  ; Δ{}
       let _t6 = == k 2  ; Δ{}
-      let _t6 = call copyExpr b  ; Δ{_t5} · makes Expr
+      let _t6 = call copyExpr b$4  ; Δ{_t5} · makes Expr
       let _t6 = rtcall axion_str_at i s  ; Δ{}
       let _t7 = + p 1  ; Δ{}
       let _t7 = + p 1  ; Δ{}
       let _t7 = - _t6 48  ; Δ{}
-      let _t7 = call copyExpr a  ; Δ{} · makes Expr
+      let _t7 = call copyExpr a$5  ; Δ{} · makes Expr
       let _t8 = + _t5 _t7  ; Δ{}
-      let _t8 = call copyExpr b  ; Δ{_t7} · makes Expr
+      let _t8 = call copyExpr b$6  ; Δ{_t7} · makes Expr
       let _t8 = call wordAt toks p  ; Δ{} · makes String
       let _t8 = call wordAt toks p  ; Δ{} · makes String
-      let _t9 = call copyExpr a  ; Δ{} · makes Expr
+      let _t9 = call copyExpr a$7  ; Δ{} · makes Expr
       let _t9 = con Var _t8  ; Δ{_t8} · moves{_t8} · makes Expr
       let _t9 = rtcall axion_strcat "unexpected symbol: " _t8  ; Δ{_t8} · makes String
       ret ""  ; Δ{}
@@ -527,16 +527,16 @@
       ret call <=$Int c 90  ; Δ{}
       ret call applyClo fv env a  ; Δ{fv} · moves{fv} · makes Either$String$Value
       ret call copyStr x  ; Δ{} · makes String
-      ret call copyStr x  ; Δ{} · makes String
+      ret call copyStr x$1  ; Δ{} · makes String
       ret call envLookup x env  ; Δ{} · makes Either$String$Value
-      ret call evalApp env f a  ; Δ{} · makes Either$String$Value
+      ret call evalApp env f a$9  ; Δ{} · makes Either$String$Value
       ret call evalArith env a b 0  ; Δ{} · makes Either$String$Value
-      ret call evalArith env a b 1  ; Δ{} · makes Either$String$Value
-      ret call evalArith env a b 2  ; Δ{} · makes Either$String$Value
-      ret call evalArith env a b 3  ; Δ{} · makes Either$String$Value
-      ret call evalArith env a b 4  ; Δ{} · makes Either$String$Value
+      ret call evalArith env a$1 b$2 1  ; Δ{} · makes Either$String$Value
+      ret call evalArith env a$3 b$4 2  ; Δ{} · makes Either$String$Value
+      ret call evalArith env a$5 b$6 3  ; Δ{} · makes Either$String$Value
+      ret call evalArith env a$7 b$8 4  ; Δ{} · makes Either$String$Value
       ret call evalIf env c t el  ; Δ{} · makes Either$String$Value
-      ret call evalLet env x rhs body  ; Δ{} · makes Either$String$Value
+      ret call evalLet env x$10 rhs body$11  ; Δ{} · makes Either$String$Value
       ret call isAlnumCh c  ; Δ{}
       ret call isDigitCh c  ; Δ{}
       ret call not _t3  ; Δ{}
@@ -586,8 +586,6 @@
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Expr
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Value
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
@@ -603,6 +601,8 @@
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$Expr$Int
+      ret con Left $bindErr$1  ; Δ{$bindErr$1} · moves{$bindErr$1} · makes Either$String$Value
+      ret con Left $bindErr$3  ; Δ{$bindErr$3} · moves{$bindErr$3} · makes Either$String$Value
       ret con Left _t0  ; Δ{_t0} · moves{_t0} · makes Either$String$Value
       ret con Left _t9  ; Δ{_t9} · moves{_t9} · makes Either$String$tuple2$Expr$Int
       ret con Let _t15 _t16 _t17  ; Δ{_t15 _t16 _t17} · moves{_t15 _t16 _t17} · makes Expr
@@ -637,8 +637,8 @@
       ret showInt n  ; Δ{} · makes String
     Add a b ->
     Add a b ->
-    App f a ->
-    App f a ->
+    App f a$11 ->
+    App f a$9 ->
     CloV p b env ->
     CloV p b env ->
     CloV p b env ->
@@ -649,8 +649,8 @@
     Cons t rest ->
     Cons t rest ->
     Cons t rest ->
-    Eq a b ->
-    Eq a b ->
+    Eq a$5 b$6 ->
+    Eq a$5 b$6 ->
     If c t el ->
     If c t el ->
     IntV n ->
@@ -659,7 +659,7 @@
     IntV n ->
     Just x ->
     Lam p body ->
-    Lam x b ->
+    Lam x$9 b$10 ->
     Left $bindErr ->
     Left $bindErr ->
     Left $bindErr ->
@@ -678,16 +678,16 @@
     Left $bindErr ->
     Left $bindErr ->
     Left $bindErr ->
-    Left $bindErr ->
-    Left $bindErr ->
+    Left $bindErr$1 ->
+    Left $bindErr$3 ->
     Left msg ->
     Left msg ->
-    Let x a b ->
-    Let x rhs body ->
-    Lt a b ->
-    Lt a b ->
-    Mul a b ->
-    Mul a b ->
+    Let x$10 rhs body$11 ->
+    Let x$12 a$13 b$14 ->
+    Lt a$7 b$8 ->
+    Lt a$7 b$8 ->
+    Mul a$3 b$4 ->
+    Mul a$3 b$4 ->
     Nil ->
     Nil ->
     Nil ->
@@ -719,17 +719,17 @@
     Right v ->
     Right va ->
     Right vc ->
-    Sub a b ->
-    Sub a b ->
+    Sub a$1 b$2 ->
+    Sub a$1 b$2 ->
     TName x ->
     TName x ->
     TName x ->
     TNum n ->
     TNum n ->
     TNum n ->
-    TSym x ->
-    TSym x ->
-    TSym x ->
+    TSym x$1 ->
+    TSym x$1 ->
+    TSym x$1 ->
     Var x ->
     Var x ->
     _ ->

@@ -18,7 +18,7 @@
           let _t11 = rtcall axion_strcat _t10 " bytes, sum "  ; Δ{_t10} · makes String
           let _t12 = showInt s  ; Δ{_t11} · makes String
           let _t5 = call report "."  ; Δ{} · makes String
-          let _t8 = showInt e  ; Δ{} · makes String
+          let _t8 = showInt e$1  ; Δ{} · makes String
           ret _d1000000  ; Δ{}
           ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
           ret _d1000002  ; Δ{_d1000002} · moves{_d1000002}
@@ -38,7 +38,7 @@
       let _t6 = rtcall axion_file_size f  ; Δ{}
       let _t7 = rtcall axion_file_close f  ; Δ{}
       let _t9 = rtcall axion_file_close f  ; Δ{}
-      let e = - 0 _t6  ; Δ{}
+      let e$1 = - 0 _t6  ; Δ{}
       let n = rtcall axion_file_size f  ; Δ{}
       let s = call sumChunks f 0  ; Δ{}
       ret 0  ; Δ{}

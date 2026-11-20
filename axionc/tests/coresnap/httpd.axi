@@ -155,11 +155,11 @@
               ret "text/plain; charset=utf-8"  ; Δ{}
               ret case _t9 of
               ret con Left $bindErr  ; Δ{$bindErr slash} · moves{$bindErr} · makes Either$Int$String
-              ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$Int$Req
+              ret con Left $bindErr$1  ; Δ{$bindErr$1} · moves{$bindErr$1} · makes Either$Int$Req
               ret con Right _t5  ; Δ{_t5 slash} · moves{_t5} · makes Either$Int$String
               ret if _t14 then
             Left $bindErr ->
-            Left $bindErr ->
+            Left $bindErr$1 ->
             Right segs ->
             Right v ->
             drop _t0 : String
@@ -191,11 +191,11 @@
           ret call safeSegments rest  ; Δ{rest} · moves{rest} · makes Either$Int$List$String
           ret case _t3 of
           ret case _t6 of
-          ret con Left $bindErr  ; Δ{$bindErr slash} · moves{$bindErr} · makes Either$Int$String
-          ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$Int$Req
+          ret con Left $bindErr$1  ; Δ{$bindErr$1 slash} · moves{$bindErr$1} · makes Either$Int$String
+          ret con Left $bindErr$2  ; Δ{$bindErr$2} · moves{$bindErr$2} · makes Either$Int$Req
           ret if _t10 then
-        Left $bindErr ->
-        Left $bindErr ->
+        Left $bindErr$1 ->
+        Left $bindErr$2 ->
         Right d ->
         Right m ->
         drop _t0 : String
@@ -363,8 +363,8 @@
       ret callclo f x  ; Δ{x} · moves{x}
       ret case _t1 of
       ret case _t4 of
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$Int$Req
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$Int$String
+      ret con Left $bindErr$2  ; Δ{$bindErr$2} · moves{$bindErr$2} · makes Either$Int$String
+      ret con Left $bindErr$3  ; Δ{$bindErr$3} · moves{$bindErr$3} · makes Either$Int$Req
       ret con Left 400  ; Δ{} · makes Either$Int$String
       ret con Left e  ; Δ{e} · moves{e} · makes Either$Int$List$String
       ret con Nothing  ; Δ{} · makes Maybe$Int
@@ -394,8 +394,8 @@
     Cons y ys ->
     Cons y ys ->
     Just x ->
-    Left $bindErr ->
-    Left $bindErr ->
+    Left $bindErr$2 ->
+    Left $bindErr$3 ->
     Left e ->
     Nil ->
     Nil ->

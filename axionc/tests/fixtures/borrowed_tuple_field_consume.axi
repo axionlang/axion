@@ -1,4 +1,4 @@
--- GENUINELY UNSAFE, drop-verifier-caught (AX0910 `DropOfAlias`): consuming a BORROWED INTERIOR
+-- WAS UNSAFE, now copied (verifier-caught AX0910 `DropOfAlias` without the copy): consuming a BORROWED INTERIOR
 -- TUPLE field. `fstof` CONSUMES its tuple (it returns the heap half `a`, so the result points into
 -- the tuple and the function owns it). `pick` BORROWS `m`, extracts the interior tuple `h` (through
 -- the nested `Just p` / `(h, rest)` cases), and passes `h` to the consuming `fstof` — so `h` is freed
@@ -6,7 +6,8 @@
 -- SCALAR half borrows its tuple instead and is safe: `tuple_scalar_reader.axi`.) This was a PRE-EXISTING,
 -- unguarded, verifier-blind hole (plain user code, no `uncons`, no AX0912 trigger) until the verifier
 -- learned to track borrowed TUPLE-scrutinee fields as interior aliases (the `CPat::Tuple` arm in
--- `bind_pattern`). The verifier now rejects it; the interpreter still runs it (= 1). Contrast the
+-- `bind_pattern`). Auto-Drop now COPIES `h` before the consuming call, so native runs it too (= 1);
+-- with `AXION_NO_ALIAS_COPY` the verifier still rejects the uncopied shape. Contrast the
 -- OWNED-tuple fixtures (tuple_owned / nested_tuple_extract_escape / tuple_elem_discard), which stay
 -- clean because they destructure tuples they OWN.
 mk :: Int -> (String, Int)

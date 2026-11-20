@@ -6,13 +6,13 @@
             ret 0  ; Δ{}
             ret call eq$Int a1 b1  ; Δ{}
           else
-          let _t0 = call eq$Int a0 b0  ; Δ{}
+          let _t0 = call eq$Int a0$1 b0$2  ; Δ{}
           ret 0  ; Δ{}
           ret 0  ; Δ{}
           ret call eq$Int a0 b0  ; Δ{}
           ret if _t0 then
         Circle b0 ->
-        Rect b0 b1 ->
+        Rect b0$2 b1 ->
         _ ->
         _ ->
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -22,7 +22,7 @@
       ret case y of
       ret case y of
     Circle a0 ->
-    Rect a0 a1 ->
+    Rect a0$1 a1 ->
     drop _t3 : Shape
     drop _t4 : Shape
     else

@@ -73,9 +73,9 @@
           ret 1  ; Δ{}
           ret 1  ; Δ{}
           ret 1  ; Δ{}
-          ret call eq$Bool a0 b0  ; Δ{}
+          ret call eq$Bool a0$1 b0$2  ; Δ{}
           ret call eq$Int a0 b0  ; Δ{}
-          ret call le$Bool a0 b0  ; Δ{}
+          ret call le$Bool a0$1 b0$2  ; Δ{}
           ret call le$Int a0 b0  ; Δ{}
           ret case _t14 of
           ret if _t0 then
@@ -87,8 +87,8 @@
         Pair b0 b1 ->
         Pair b0 b1 ->
         Pair b0 b1 ->
-        Rgt b0 ->
-        Rgt b0 ->
+        Rgt b0$2 ->
+        Rgt b0$2 ->
         _ ->
         _ ->
         _ ->
@@ -122,8 +122,8 @@
     Pair a0 a1 ->
     Pair a0 a1 ->
     Pair a0 a1 ->
-    Rgt a0 ->
-    Rgt a0 ->
+    Rgt a0$1 ->
+    Rgt a0$1 ->
     _ ->
     else
     else

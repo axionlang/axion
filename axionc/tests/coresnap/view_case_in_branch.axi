@@ -64,18 +64,18 @@
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let p = _p1  ; Δ{}
-    let p = _p1  ; Δ{}
+    let p$1 = _p1  ; Δ{}
     let xs = _p1  ; Δ{}
-    let xs = _p1  ; Δ{}
+    let xs$1 = _p1  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
-    ret call bumpClause _t2 xs  ; Δ{} · makes List$Int
+    ret call bumpClause _t2 xs$1  ; Δ{} · makes List$Int
     ret call bumpIf _t2 xs  ; Δ{} · makes List$Int
-    ret call rest _t1 p  ; Δ{} · makes List$String
+    ret call rest _t1 p$1  ; Δ{} · makes List$String
     ret case p of
     ret case xs of
     ret case xs of

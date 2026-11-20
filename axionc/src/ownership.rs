@@ -157,7 +157,7 @@ struct Ctx<'a> {
 
 fn who_names(w: &Who, out: &mut Vec<String>) {
     match w {
-        Who::Name(n) => out.push(n.clone()),
+        Who::Name(n) => out.push(crate::core::source_name(n).to_string()),
         Who::CopyOf(inner) => who_names(inner, out),
         Who::Expr(..) | Who::Made(_) => {}
     }
@@ -187,7 +187,7 @@ impl Ctx<'_> {
 
     fn who(&self, w: &Who) -> String {
         match w {
-            Who::Name(n) => format!("`{n}`"),
+            Who::Name(n) => format!("`{}`", crate::core::source_name(n)),
             Who::Expr(sp, _) if user_span(*sp) => self.snippet(*sp),
             Who::Expr(..) => "an intermediate value".into(),
             Who::CopyOf(inner) => format!("a copy of {}", self.who(inner)),
@@ -238,6 +238,7 @@ impl Ctx<'_> {
     fn place(&mut self, e: &OwnEvent) -> Span {
         let mut span = match &e.who {
             Who::Name(n) if e.span == crate::core::NO_SPAN => {
+                let n = crate::core::source_name(n);
                 find_binding(self.src, n, self.fn_start).map_or(e.span, |a| (a, a + n.len()))
             }
             _ => e.span,

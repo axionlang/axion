@@ -91,11 +91,11 @@
                                   ret case $bind7001$3 of
                                   ret case $bind8331$3 of
                                   ret case _t4 of
-                                  ret con Left $bindErr  ; Δ{$bind7001 $bind7001$1 $bind7001$2 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-                                  ret con Left $bindErr  ; Δ{$bind8331 $bind8331$1 $bind8331$2 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
+                                  ret con Left $bindErr$4  ; Δ{$bind7001 $bind7001$1 $bind7001$2 $bindErr$4} · moves{$bindErr$4} · makes Either$String$tuple2$St$Int
+                                  ret con Left $bindErr$4  ; Δ{$bind8331 $bind8331$1 $bind8331$2 $bindErr$4} · moves{$bindErr$4} · makes Either$String$tuple2$St$Int
                                 (st4, tfun) ->
-                                Left $bindErr ->
-                                Left $bindErr ->
+                                Left $bindErr$4 ->
+                                Left $bindErr$4 ->
                                 Right $bind7001$3 ->
                                 Right $bind8331$3 ->
                               drop $bind7001$2 : tuple2$St$Int skip{0}
@@ -107,10 +107,10 @@
                               ret case $bind7647$3 of
                               ret case _t4 of
                               ret case _t4 of
-                              ret con Left $bindErr  ; Δ{$bind7647 $bind7647$1 $bind7647$2 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
+                              ret con Left $bindErr$4  ; Δ{$bind7647 $bind7647$1 $bind7647$2 $bindErr$4} · moves{$bindErr$4} · makes Either$String$tuple2$St$Int
                             (st4, tb) ->
                             (st4, tt) ->
-                            Left $bindErr ->
+                            Left $bindErr$4 ->
                             Right $bind7647$3 ->
                           drop $bind7647$2 : tuple2$St$Int skip{0}
                           drop _t3
@@ -121,11 +121,11 @@
                           ret case $bind7001$2 of
                           ret case $bind8331$2 of
                           ret case _t3 of
-                          ret con Left $bindErr  ; Δ{$bind7001 $bind7001$1 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-                          ret con Left $bindErr  ; Δ{$bind8331 $bind8331$1 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
+                          ret con Left $bindErr$5  ; Δ{$bind7001 $bind7001$1 $bindErr$5} · moves{$bindErr$5} · makes Either$String$tuple2$St$Int
+                          ret con Left $bindErr$5  ; Δ{$bind8331 $bind8331$1 $bindErr$5} · moves{$bindErr$5} · makes Either$String$tuple2$St$Int
                         (st3, tr) ->
-                        Left $bindErr ->
-                        Left $bindErr ->
+                        Left $bindErr$5 ->
+                        Left $bindErr$5 ->
                         Right $bind7001$2 ->
                         Right $bind8331$2 ->
                       drop _t15 : Expr
@@ -145,12 +145,12 @@
                       ret case $bind7647$2 of
                       ret case _t3 of
                       ret case _t3 of
-                      ret con Left $bindErr  ; Δ{$bind7001 $bind7001$1 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-                      ret con Left $bindErr  ; Δ{$bind7647 $bind7647$1 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-                      ret con Left $bindErr  ; Δ{$bind8331 $bind8331$1 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-                    Left $bindErr ->
-                    Left $bindErr ->
-                    Left $bindErr ->
+                      ret con Left $bindErr$5  ; Δ{$bind7647 $bind7647$1 $bindErr$5} · moves{$bindErr$5} · makes Either$String$tuple2$St$Int
+                      ret con Left $bindErr$6  ; Δ{$bind7001 $bind7001$1 $bindErr$6} · moves{$bindErr$6} · makes Either$String$tuple2$St$Int
+                      ret con Left $bindErr$6  ; Δ{$bind8331 $bind8331$1 $bindErr$6} · moves{$bindErr$6} · makes Either$String$tuple2$St$Int
+                    Left $bindErr$5 ->
+                    Left $bindErr$6 ->
+                    Left $bindErr$6 ->
                     Right $bind7647$2 ->
                     Right st3 ->
                     Right st3 ->
@@ -197,14 +197,14 @@
               ret case $bind7647$1 of
               ret case $bind8331$1 of
               ret case _t11 of
-              ret con Left $bindErr  ; Δ{$bind7001 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-              ret con Left $bindErr  ; Δ{$bind7647 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-              ret con Left $bindErr  ; Δ{$bind8331 $bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
+              ret con Left $bindErr$6  ; Δ{$bind7647 $bindErr$6} · moves{$bindErr$6} · makes Either$String$tuple2$St$Int
+              ret con Left $bindErr$7  ; Δ{$bind7001 $bindErr$7} · moves{$bindErr$7} · makes Either$String$tuple2$St$Int
+              ret con Left $bindErr$7  ; Δ{$bind8331 $bindErr$7} · moves{$bindErr$7} · makes Either$String$tuple2$St$Int
               ret con Right _t7  ; Δ{$bind7428 _t0 _t7} · moves{_t7} · makes Either$String$tuple2$St$Int
             (st2, tbody) ->
-            Left $bindErr ->
-            Left $bindErr ->
-            Left $bindErr ->
+            Left $bindErr$6 ->
+            Left $bindErr$7 ->
+            Left $bindErr$7 ->
             Right $bind7001$1 ->
             Right $bind7647$1 ->
             Right $bind8331$1 ->
@@ -405,13 +405,13 @@
       ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
       ret call bindV store sub v afun  ; Δ{} · makes Either$String$List$tuple2$Int$Int
       ret call bindV store sub v b  ; Δ{} · makes Either$String$List$tuple2$Int$Int
-      ret call inferApp st env f a  ; Δ{} · makes Either$String$tuple2$St$Int
+      ret call inferApp st env f a$6  ; Δ{} · makes Either$String$tuple2$St$Int
       ret call inferArith st env a b  ; Δ{} · makes Either$String$tuple2$St$Int
-      ret call inferArith st env a b  ; Δ{} · makes Either$String$tuple2$St$Int
-      ret call inferArith st env a b  ; Δ{} · makes Either$String$tuple2$St$Int
+      ret call inferArith st env a$1 b$2  ; Δ{} · makes Either$String$tuple2$St$Int
+      ret call inferArith st env a$3 b$4  ; Δ{} · makes Either$String$tuple2$St$Int
       ret call inferIf st env c t el  ; Δ{} · makes Either$String$tuple2$St$Int
-      ret call inferLam st env x body  ; Δ{} · makes Either$String$tuple2$St$Int
-      ret call inferLet st env x rhs body  ; Δ{} · makes Either$String$tuple2$St$Int
+      ret call inferLam st env x$5 body  ; Δ{} · makes Either$String$tuple2$St$Int
+      ret call inferLet st env x$7 rhs body$8  ; Δ{} · makes Either$String$tuple2$St$Int
       ret call inferVar st env x  ; Δ{} · makes Either$String$tuple2$St$Int
       ret call resolve store sub j  ; Δ{j} · moves{j}
       ret call resolveVar store sub i v  ; Δ{}
@@ -433,9 +433,9 @@
       ret con Left "cannot unify Int with a function type"  ; Δ{} · makes Either$String$List$tuple2$Int$Int
       ret con Left "cannot unify a function type with Int"  ; Δ{} · makes Either$String$List$tuple2$Int$Int
       ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$tuple2$St$Int
+      ret con Left $bindErr$7  ; Δ{$bindErr$7} · moves{$bindErr$7} · makes Either$String$tuple2$St$Int
+      ret con Left $bindErr$8  ; Δ{$bindErr$8} · moves{$bindErr$8} · makes Either$String$tuple2$St$Int
+      ret con Left $bindErr$8  ; Δ{$bindErr$8} · moves{$bindErr$8} · makes Either$String$tuple2$St$Int
       ret con Left _t0  ; Δ{_t0} · moves{_t0} · makes Either$String$Int
       ret con Left m  ; Δ{m} · moves{m} · makes Either$String$tuple2$St$Int
       ret con NFun a b  ; Δ{} · makes Node
@@ -457,23 +457,23 @@
       ret tuple _t4 c  ; Δ{_t4} · moves{_t4} · makes heap
     (st1, tx) ->
     Add a b ->
-    App f a ->
+    App f a$6 ->
     Cons kv rest ->
     Cons kv rest ->
     Cons kv rest ->
     Cons kv rest ->
-    Eq a b ->
+    Eq a$3 b$4 ->
     If c t el ->
     Just j ->
-    Lam x body ->
+    Lam x$5 body ->
     Left $bindErr ->
-    Left $bindErr ->
-    Left $bindErr ->
-    Left $bindErr ->
+    Left $bindErr$7 ->
+    Left $bindErr$8 ->
+    Left $bindErr$8 ->
     Left m ->
     Left m ->
-    Let x rhs body ->
-    Mul a b ->
+    Let x$7 rhs body$8 ->
+    Mul a$1 b$2 ->
     NFun a b ->
     NFun a b ->
     NFun a b ->

@@ -4794,9 +4794,12 @@ impl<'a> Infer<'a> {
             }
             Expr::Tuple(es, span) => {
                 let t = Ty::Tuple(es.iter().map(|e| self.infer_expr(env, e)).collect());
-                // Recorded like a call result: the lowering keys a tuple temporary's drop by
-                // it, so a caller that owns the tuple deep-drops its heap components.
-                self.call_ret_tys.insert(*span, t.clone());
+                // Recorded like a constructor's result: the lowering keys a tuple temporary's
+                // drop by it, so a caller that owns the tuple deep-drops its heap components. A
+                // component variable nothing constrains (`let y = (Nothing, 1)`, generalized to
+                // `(Maybe a, Int)`) has no values, so it defaults like a constructor's: without
+                // a concrete key the tuple was freed as a bare shell and refused as a leak.
+                self.con_ret_tys.insert(*span, t.clone());
                 t
             }
             Expr::RecordCon(con, assigns, span) => {

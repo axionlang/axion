@@ -24,9 +24,9 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret case _t4 of
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Int
+      ret con Left $bindErr$1  ; Δ{$bindErr$1} · moves{$bindErr$1} · makes Either$String$Int
       ret r  ; Δ{r} · moves{r}
-    Left $bindErr ->
+    Left $bindErr$1 ->
     Right x ->
     _ ->
     else

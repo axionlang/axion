@@ -89,9 +89,11 @@ fn certified_build_mode_enforces_verification() {
     );
 
     // 4. A program the verifier REJECTS cannot be certified: the build fails (AX0910 — the
-    //    drop-balance verifier catches consuming a borrowed interior tuple field) and is NOT
-    //    stamped. The whole point — a certified artifact provably went through the gate.
+    //    drop-balance verifier catches consuming a borrowed interior tuple field; Auto-Drop
+    //    copies that field unless `AXION_NO_ALIAS_COPY` is set) and is NOT stamped. The whole
+    //    point — a certified artifact provably went through the gate.
     let bad = axionc()
+        .env("AXION_NO_ALIAS_COPY", "1")
         .args([
             "--certified",
             "--backend",
@@ -2468,13 +2470,12 @@ fn tuple_element_extraction_reclaims_on_all_backends() {
 }
 
 #[test]
-fn uncons_peel_over_tuple_consume_is_rejected_by_verifier() {
+fn uncons_peel_over_tuple_consume_is_copied() {
     // `uncons` over a tuple element returns `Maybe ((K,V), List (K,V))`; CONSUMING the peeled head
-    // `h` (a borrowed interior) double-frees. This was the special case behind the retired
-    // `peel_result_over_tuple` AX0912 guard; the drop-balance verifier now catches the consume-of-
-    // borrowed-tuple-field DIRECTLY (AX0910), so native rejects it and interp still runs (= 1). The
-    // verifier — not a type-shaped pre-rejection — is now the single net, so a SAFE `uncons`-of-tuple
-    // read (which the old guard over-rejected) compiles; see `uncons_safe_tuple_read_compiles`.
+    // `h` (a borrowed interior) would double-free. Auto-Drop COPIES a part of a borrowed parameter
+    // that is moved into a consuming call or a new value, so native compiles it and agrees with
+    // the interpreter (= 1). Without the copy (`AXION_NO_ALIAS_COPY`) the drop-balance verifier
+    // still refuses it (AX0910) — it, not a type-shaped pre-rejection, is the net.
     let fx = fixture("uncons_peel_tuple_reject.axi");
     for backend in [
         vec!["--release".into(), fx.clone()],
@@ -2482,13 +2483,20 @@ fn uncons_peel_over_tuple_consume_is_rejected_by_verifier() {
     ] {
         let out = axionc().args(&backend).output().unwrap();
         assert!(
-            !out.status.success(),
-            "{backend:?}: consuming the borrowed peel head must be rejected, not miscompiled"
-        );
-        assert!(
-            String::from_utf8_lossy(&out.stderr).contains("AX0910"),
-            "{backend:?}: expected AX0910, got {}",
+            out.status.success(),
+            "{backend:?}: the copied peel head must compile, got {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1", "{backend:?}");
+        let raw = axionc()
+            .env("AXION_NO_ALIAS_COPY", "1")
+            .args(&backend)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&raw.stderr).contains("AX0910"),
+            "{backend:?}: without the copy, expected AX0910, got {}",
+            String::from_utf8_lossy(&raw.stderr)
         );
     }
     let out = axionc().arg(&fx).output().unwrap();
@@ -7352,6 +7360,11 @@ fn axmpv_regressions_agree_on_every_backend() {
             "1193046\n18\n86\n6\n14\n-4\n2\n-9223372036854775808\n-6\n",
         ),
         ("bitwise_user_xor.axi", "yes\nno\n"),
+        (
+            "nested_borrowed_embed.axi",
+            "1\n3\nn5<dot>\nn4<n5<dot>>\n2\nn88\n",
+        ),
+        ("view_arm_owned_scrutinee.axi", "3\n"),
         (
             "nested_patterns_native.axi",
             "24\ntwo zeros\nzero first\nzero second\none 9\nother 3\nother 0\nab+cd\nsolo\nnone\ny=5\n4x\n-\ncircle sun\nbox\n?\nonly\n2\n104\n",

@@ -20,10 +20,10 @@
       drop v : String
       drop v : String
       drop v : String
-      drop v : String
+      drop v$1 : String
       let _d1000000 = rtcall axion_strcat v ""  ; Δ{v} · makes String
       let _d1000000 = rtcall axion_strcat v ""  ; Δ{v} · makes String
-      let _d1000000 = rtcall axion_strcat v ""  ; Δ{v} · makes String
+      let _d1000000 = rtcall axion_strcat v$1 ""  ; Δ{v$1} · makes String
       let _d1000001 = rtcall axion_strcat v ""  ; Δ{v} · makes String
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+8  ; Δ{}
@@ -49,7 +49,7 @@
       ret rtcall axion_strcat v ""  ; Δ{} · makes String
     Just v ->
     Just v ->
-    Just v ->
+    Just v$1 ->
     Left v ->
     Nothing ->
     Nothing ->

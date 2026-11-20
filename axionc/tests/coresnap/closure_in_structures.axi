@@ -98,7 +98,7 @@
                                                       drop _t74 : Closure
                                                       drop _t76 : String
                                                       let _d1000001 = putStrLn _t71  ; Δ{_t69 _t71}
-                                                      let _t70 = callclo g k  ; Δ{_t69}
+                                                      let _t70 = callclo g k$1  ; Δ{_t69}
                                                       let _t71 = call show$Int _t70  ; Δ{_t69} · makes String
                                                       let _t73 = closure lam$14  ; Δ{} · makes Closure
                                                       let _t74 = call idG$Closure _t73  ; Δ{_t73} · makes Closure
@@ -107,7 +107,7 @@
                                                       let _t77 = putStrLn _t76  ; Δ{_t76}
                                                       ret _d1000001  ; Δ{}
                                                       ret case _t77 of
-                                                    (g, k) ->
+                                                    (g, k$1) ->
                                                     _ ->
                                                   let _t68 = closure lam$13  ; Δ{} · makes Closure
                                                   let _t69 = call pairWith _t68 9  ; Δ{_t68} · moves{_t68} · makes tuple2$Closure$Int

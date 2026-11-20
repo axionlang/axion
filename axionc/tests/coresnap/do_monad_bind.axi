@@ -65,12 +65,12 @@
       ret case _t1 of
       ret case _t1 of
       ret case _t5 of
-      ret con Left $bindErr  ; Δ{$bindErr} · moves{$bindErr} · makes Either$String$Int
+      ret con Left $bindErr$1  ; Δ{$bindErr$1} · moves{$bindErr$1} · makes Either$String$Int
       ret con Nothing  ; Δ{} · makes Maybe$Int
       ret rtcall axion_strcat "Left " s  ; Δ{} · makes String
     Just v ->
     Just x ->
-    Left $bindErr ->
+    Left $bindErr$1 ->
     Left s ->
     Nothing ->
     Nothing ->

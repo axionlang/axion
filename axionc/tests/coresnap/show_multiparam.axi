@@ -168,8 +168,8 @@
       let _t2 = rtcall axion_strcat _t0 _t1  ; Δ{_t0 _t1} · makes String
       let _t2 = rtcall axion_strcat _t1 ")"  ; Δ{_t0 _t1} · makes String
       let _t3 = call inList  ; Δ{} · makes List$Either$Int$Bool
-      let _t3 = call showArg$Bool a0  ; Δ{_t2} · makes String
-      let _t3 = call showArg$Bool a0  ; Δ{_t2} · makes String
+      let _t3 = call showArg$Bool a0$1  ; Δ{_t2} · makes String
+      let _t3 = call showArg$Bool a0$1  ; Δ{_t2} · makes String
       let _t3 = rtcall axion_strcat "(" _t2  ; Δ{_t2} · makes String
       let _t3 = rtcall axion_strcat "(" _t2  ; Δ{_t2} · makes String
       let _t3 = rtcall axion_strcat ", " _t2  ; Δ{_t0 _t2} · makes String
@@ -183,8 +183,8 @@
       let _t4 = rtcall axion_strcat "Both" " "  ; Δ{} · makes String
       let _t4 = rtcall axion_strcat "Right" " "  ; Δ{} · makes String
       let _t4 = rtcall axion_strcat _t0 _t3  ; Δ{_t0 _t3} · makes String
-      let _t5 = call showArg$Bool a0  ; Δ{_t4} · makes String
-      let _t5 = call showArg$Int a0  ; Δ{_t4} · makes String
+      let _t5 = call showArg$Bool a0$1  ; Δ{_t4} · makes String
+      let _t5 = call showArg$Int a0$2  ; Δ{_t4} · makes String
       let _t5 = putStrLn _t4  ; Δ{_t4}
       let _t5 = rtcall axion_strcat _t3 _t4  ; Δ{_t3 _t4} · makes String
       let _t6 = rtcall axion_strcat _t4 _t5  ; Δ{_t4 _t5} · makes String
@@ -217,7 +217,7 @@
       ret _d1000002  ; Δ{_d1000002} · moves{_d1000002}
       ret case _t5 of
     (c0, c1) ->
-    Both a0 a1 ->
+    Both a0$2 a1 ->
     Cons y ys ->
     Cons z zs ->
     Just a0 ->
@@ -228,9 +228,9 @@
     Nothing ->
     Pair a0 a1 ->
     Pair a0 a1 ->
-    Right a0 ->
-    Right a0 ->
-    That a0 ->
+    Right a0$1 ->
+    Right a0$1 ->
+    That a0$1 ->
     This a0 ->
     Tri a0 a1 a2 ->
     _ ->

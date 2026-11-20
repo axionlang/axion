@@ -4,8 +4,9 @@
 -- borrowed-interior-tuple-field class (NOT a monomorphizer/lowering bug — `uncons$(K,V)` itself
 -- lowers fine; a safe read of the tail is clean, see `uncons_safe_tuple_read.axi`). The drop-
 -- balance verifier now catches it DIRECTLY (AX0910, `bind_pattern`'s `CPat::Tuple` arm), so the
--- former `peel_result_over_tuple` AX0912 guard is RETIRED. Native rejects (AX0910); the interpreter
--- reclaims via Rust Drop and runs it → 1.
+-- former `peel_result_over_tuple` AX0912 guard is RETIRED. Auto-Drop now COPIES `h` before the
+-- consuming call (a part of a borrowed parameter moved into a new owner), so native runs it too (→ 1);
+-- with `AXION_NO_ALIAS_COPY` the verifier still refuses the uncopied shape (AX0910).
 mkp :: Int -> (String, Int)
 mkp n = ("k", n)
 fstof :: (String, Int) -> String

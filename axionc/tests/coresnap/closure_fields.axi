@@ -155,7 +155,7 @@
       let _t0 = rtcall axion_str_len s  ; Δ{}
       let _t1 = call pressAll r x  ; Δ{}
       let _t1 = call runAll r x  ; Δ{}
-      let _t1 = callclo f x  ; Δ{}
+      let _t1 = callclo f$1 x  ; Δ{}
       let _t2 = call runH h 10  ; Δ{h}
       let _t3 = call runH h 20  ; Δ{h}
       let _t4 = + _t2 _t3  ; Δ{h}
@@ -182,7 +182,7 @@
     Cons h r ->
     Handler _ f ->
     Handler n _ ->
-    Named s f ->
+    Named s f$1 ->
     Nil ->
     Nil ->
     Unary f ->

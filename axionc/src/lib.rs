@@ -996,19 +996,30 @@ pub fn run_cli() -> ExitCode {
                     continue;
                 }
                 let what = match f.cat {
-                    verify::Cat::UseAfterFree => format!("`{}` would be used after it is freed", f.var),
-                    verify::Cat::DoubleFree => format!("`{}` would be freed twice", f.var),
+                    verify::Cat::UseAfterFree => format!(
+                        "`{}` would be used after it is freed",
+                        core::source_name(&f.var)
+                    ),
+                    verify::Cat::DoubleFree => {
+                        format!("`{}` would be freed twice", core::source_name(&f.var))
+                    }
                     verify::Cat::DropOfAlias => format!(
                         "`{}` points into a value that another owner frees, yet it would be freed here",
-                        f.var
+                        core::source_name(&f.var)
                     ),
                     verify::Cat::Unbalanced => {
                         "the branches that meet here disagree on what is still alive".to_string()
                     }
                     verify::Cat::WrongDropKey => {
-                        format!("`{}` would be freed with the wrong destructor", f.var)
+                        format!(
+                            "`{}` would be freed with the wrong destructor",
+                            core::source_name(&f.var)
+                        )
                     }
-                    _ => format!("the frees of `{}` do not balance here", f.var),
+                    _ => format!(
+                        "the frees of `{}` do not balance here",
+                        core::source_name(&f.var)
+                    ),
                 };
                 let d = Diagnostic::error(
                     "AX0910",
@@ -1081,7 +1092,11 @@ pub fn run_cli() -> ExitCode {
             for f in &leaks {
                 let d = Diagnostic::error(
                     "AX0911",
-                    format!("memory leak: `{}` in `{}` is never freed", f.var, f.func),
+                    format!(
+                        "memory leak: `{}` in `{}` is never freed",
+                        core::source_name(&f.var),
+                        f.func
+                    ),
                 )
                 .label(
                     f.span.0,

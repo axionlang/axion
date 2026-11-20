@@ -5,7 +5,8 @@ name: fuzz-nightly
 # across all generators (interpreter vs Cranelift vs LLVM under ASan/LSan). A failing program is
 # saved in `fuzz-fail/` (named seed<S>_i<I>_<verdict>.axi) and uploaded as an artifact; reproduce
 # it by running the saved file through `axionc` (interpreter) and `axionc --release` / the ASan
-# build (`scripts/fuzz.py`'s `check` does both).
+# build (`scripts/fuzz.py`'s `check` does both). A native refusal (AX0910) also fails the night:
+# it lands in `fuzz-fail/refusals/` with the verifier's message beside it.
 
 on:
   schedule:
@@ -45,7 +46,10 @@ jobs:
         run: |
           seed=$(( ${{ github.run_number }} * 16 + ${{ matrix.shard }} ))
           echo "seed=$seed count=$COUNT"
-          python3 scripts/fuzz.py --count "$COUNT" --seed "$seed" --keep-going
+          # --max-refusals 0: every generated shape compiles natively today, so a program the
+          # verifier refuses (AX0910) is a regression; it is saved next to the failing programs
+          python3 scripts/fuzz.py --count "$COUNT" --seed "$seed" --keep-going \
+            --max-refusals 0 --save-refusals fuzz-fail/refusals
       - name: Upload failing programs
         if: failure()
         uses: actions/upload-artifact@v4

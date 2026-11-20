@@ -7296,6 +7296,7 @@ pub fn lower_with(
     // drop-independent); the verifier then re-derives it from the emitted Core and checks
     // the drops. Idempotent + a no-op for programs with no borrow-returning function.
     let borrow_ret = crate::verify::borrow_return_summary(&out, &borrow_args, &recinfo);
+    let mut borrow_kinds: HashMap<String, CopyKind> = HashMap::new();
     if !borrow_ret.is_empty() {
         // A borrow MOVED into a new owned value (`Just (unboxS b)`, a consuming call) would end
         // up with two owners: copy it there (its type is the callee's declared result).
@@ -7331,21 +7332,67 @@ pub fn lower_with(
             }
         }
         for f in &mut out {
-            // per function: the generated names must not depend on the order functions come in
-            let mut ctr = 0usize;
             null_borrow_result_keys(&mut f.body, &borrow_ret);
-            if !kinds.is_empty() {
-                copy_moved_borrows(
-                    &mut f.body,
-                    &kinds,
-                    &borrow_args,
-                    &mut HashMap::new(),
-                    &mut ctr,
-                );
+        }
+        borrow_kinds = kinds;
+    }
+    // A part of a BORROWED parameter that a pattern brings out (`case xs of Cons _ (Cons s _)`)
+    // belongs to the caller too: moved into a new value or a consuming call it would have two
+    // owners. Copy it there, like a borrow handed back by a call (one walk does both).
+    // `AXION_NO_ALIAS_COPY` turns it off (the verifier's tests see the uncopied shape).
+    let no_alias_copy = std::env::var_os("AXION_NO_ALIAS_COPY").is_some();
+    let mut copied_interior = false;
+    for f in &mut out {
+        // per function: the generated names must not depend on the order functions come in
+        let mut ctr = 0usize;
+        let mut bv = HashMap::new();
+        let mut pending: HashMap<String, Type> = HashMap::new();
+        if let Some(ptys) = fn_param_types
+            .get(&f.name)
+            .filter(|p| p.len() == f.params.len() && !no_alias_copy)
+        {
+            let mut tys: HashMap<String, Type> = f
+                .params
+                .iter()
+                .zip(ptys)
+                .filter(|(p, _)| !f.owned_params.contains(p))
+                .map(|(p, t)| (p.clone(), t.clone()))
+                .collect();
+            let borrowed: HashSet<String> = tys.keys().cloned().collect();
+            interior_binder_types(&f.body, &module.datas, &mut tys);
+            for (n, t) in tys {
+                if borrowed.contains(&n) {
+                    continue;
+                }
+                if let Some(k) = copy_kind_of(&t, &module.datas) {
+                    if let CopyKind::Container(key) = &k {
+                        pending.entry(key.clone()).or_insert(t);
+                    }
+                    bv.insert(n, k);
+                }
             }
         }
+        if !borrow_kinds.is_empty() || !bv.is_empty() {
+            copy_moved_borrows(&mut f.body, &borrow_kinds, &borrow_args, &mut bv, &mut ctr);
+            copied_interior |= ctr > 0;
+        }
+        // a copier is generated only for the types actually copied
+        if ctr > 0 && !pending.is_empty() {
+            let mut called = HashSet::new();
+            direct_callees(&f.body, &mut called);
+            for (key, t) in pending.drain() {
+                if called.contains(&format!("axion_copy_{key}")) {
+                    copy_seeds.push(t);
+                }
+            }
+        }
+        pending.clear();
     }
-
+    // a parameter whose part was moved (`Just v3`) read as consumed; with a copy moved instead
+    // it is only read, and its callers keep (and free) their argument
+    if copied_interior {
+        borrow_args = compute_borrow_args(&out, &param_mults, &con_recursive_fields(&module.datas));
+    }
     let mut all_dty = build_all_drop_ty(&out, makecon_tys, &recinfo);
     let empty = HashMap::new();
 
@@ -10744,19 +10791,54 @@ fn uniquify_fn(f: &mut CoreFn) {
     for c in &f.captures {
         env.insert(c.clone(), c.clone());
     }
-    let mut ctr = 0u32;
+    let mut ctr = Uq {
+        n: 0,
+        seen: env.keys().cloned().collect(),
+    };
     uq_term(&mut f.body, &mut env, &mut ctr);
 }
 
-/// Renames the binder `x` (in place) to a fresh `x$N` iff it shadows a name
-/// already in scope, and records the mapping so later uses resolve to it.
-fn uq_bind(x: &mut String, env: &mut HashMap<String, String>, ctr: &mut u32) {
-    let x2 = if env.contains_key(x.as_str()) {
-        *ctr += 1;
-        format!("{x}${ctr}")
+/// The source name of a binder: `s$3` (a renamed `s`, see [`uq_bind`]) → `s`; any other name
+/// as is (compiler temporaries such as `$nf1`, `_t3` keep theirs).
+pub fn source_name(x: &str) -> &str {
+    match x.rsplit_once('$') {
+        Some((base, n))
+            if !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+                && base.chars().next().is_some_and(|c| c.is_alphabetic())
+                && !base.contains('$') =>
+        {
+            base
+        }
+        _ => x,
+    }
+}
+
+/// The renaming state of one function: a counter for fresh names, and every name bound so far.
+struct Uq {
+    n: u32,
+    seen: HashSet<String>,
+}
+
+/// Renames the binder `x` (in place) to a fresh `x$N` iff the function already binds that name —
+/// in scope (shadowing) or in a sibling scope (`Just s` in two `case`s) — and records the mapping
+/// so later uses resolve to it. Every binder of a function ends up with its own name: the
+/// drop types and the verifier key values by name, and two binders of different types sharing
+/// one would be freed with the wrong destructor.
+fn uq_bind(x: &mut String, env: &mut HashMap<String, String>, ctr: &mut Uq) {
+    let x2 = if env.contains_key(x.as_str()) || ctr.seen.contains(x.as_str()) {
+        loop {
+            ctr.n += 1;
+            let c = format!("{x}${}", ctr.n);
+            if !ctr.seen.contains(&c) {
+                break c;
+            }
+        }
     } else {
         x.clone()
     };
+    ctr.seen.insert(x.clone());
+    ctr.seen.insert(x2.clone());
     env.insert(x.clone(), x2.clone());
     *x = x2;
 }
@@ -10769,7 +10851,7 @@ fn uq_atom(a: &mut Atom, env: &HashMap<String, String>) {
     }
 }
 
-fn uq_term(t: &mut Term, env: &mut HashMap<String, String>, ctr: &mut u32) {
+fn uq_term(t: &mut Term, env: &mut HashMap<String, String>, ctr: &mut Uq) {
     match t {
         Term::Let(x, rhs, _, body) => {
             // the rhs is evaluated BEFORE `x` is bound (ANF), so rename its uses
@@ -10789,7 +10871,7 @@ fn uq_term(t: &mut Term, env: &mut HashMap<String, String>, ctr: &mut u32) {
     }
 }
 
-fn uq_rhs(rhs: &mut Rhs, env: &mut HashMap<String, String>, ctr: &mut u32) {
+fn uq_rhs(rhs: &mut Rhs, env: &mut HashMap<String, String>, ctr: &mut Uq) {
     match rhs {
         Rhs::Op(op) => uq_op(op, env),
         Rhs::If(c, t, e) => {
@@ -10810,7 +10892,7 @@ fn uq_rhs(rhs: &mut Rhs, env: &mut HashMap<String, String>, ctr: &mut u32) {
     }
 }
 
-fn uq_pat(pat: &mut CPat, env: &mut HashMap<String, String>, ctr: &mut u32) {
+fn uq_pat(pat: &mut CPat, env: &mut HashMap<String, String>, ctr: &mut Uq) {
     match pat {
         CPat::Var(x) => uq_bind(x, env, ctr),
         CPat::Con(_, subs) | CPat::Tuple(subs) => {
@@ -11263,7 +11345,15 @@ fn compile_matrix(
                 binders.push(CPat::Var(only.to_string()));
             } else {
                 *ctr += 1;
-                let b = format!("$nf{ctr}");
+                // rows that bind the same source name (`a`, `a$1` after renaming) keep it for the
+                // reports; a fresh `a$N` (renamed again later if it clashes) still reads as `a`
+                let bases: HashSet<&str> = names.iter().map(|n| source_name(n)).collect();
+                let b = match bases.iter().next() {
+                    Some(base) if bases.len() == 1 && source_name(base) == *base => {
+                        format!("{base}${}", 1000 + *ctr)
+                    }
+                    _ => format!("$nf{ctr}"),
+                };
                 binders.push(CPat::Var(b.clone()));
                 new_cols_at.push(i);
                 new_cols.push(b);
@@ -13365,6 +13455,142 @@ fn rewrite_alias_tails(
     }
 }
 
+/// The types of the binders that `case`s on a borrowed parameter (or on a binder brought out of
+/// one) bring into scope, at every depth, derived from the parameter's declared type. `tys`
+/// starts with the borrowed parameters and gains each binder whose type is known; a binder
+/// under a constructor of an unknown data type, or of a type that is not concrete, is skipped
+/// (no copy: the verifier still guards it).
+fn interior_binder_types(t: &Term, datas: &[ast::DataDecl], tys: &mut HashMap<String, Type>) {
+    match t {
+        Term::Let(_, rhs, _, b) => {
+            interior_rhs(rhs, datas, tys);
+            interior_binder_types(b, datas, tys);
+        }
+        Term::Drop(_, _, _, _, b) => interior_binder_types(b, datas, tys),
+        Term::Ret(rhs, _) => interior_rhs(rhs, datas, tys),
+    }
+    fn interior_rhs(rhs: &Rhs, datas: &[ast::DataDecl], tys: &mut HashMap<String, Type>) {
+        match rhs {
+            Rhs::Op(_) => {}
+            Rhs::If(_, a, b) => {
+                interior_binder_types(a, datas, tys);
+                interior_binder_types(b, datas, tys);
+            }
+            Rhs::Case(sc, arms) => {
+                let st = match sc {
+                    Atom::Var(s) => tys.get(s).cloned(),
+                    _ => None,
+                };
+                for (p, b) in arms {
+                    if let Some(st) = &st {
+                        for (n, ft) in pattern_field_types(p, st, datas) {
+                            tys.insert(n, ft);
+                        }
+                    }
+                    interior_binder_types(b, datas, tys);
+                }
+            }
+        }
+    }
+}
+
+/// The `Var` sub-patterns of a one-level pattern on a value of type `st`, with their types.
+fn pattern_field_types(p: &CPat, st: &Type, datas: &[ast::DataDecl]) -> Vec<(String, Type)> {
+    let mut out = Vec::new();
+    match p {
+        CPat::Tuple(subs) => {
+            if let Type::Tuple(ts) = st {
+                for (sp, t) in subs.iter().zip(ts) {
+                    if let CPat::Var(n) = sp {
+                        out.push((n.clone(), t.clone()));
+                    }
+                }
+            }
+        }
+        CPat::Con(c, subs) => {
+            let Some(head) = st.head_con() else {
+                return out;
+            };
+            let Some(d) = datas.iter().find(|d| d.name == head) else {
+                return out;
+            };
+            let Some(con) = d.cons.iter().find(|k| &k.name == c) else {
+                return out;
+            };
+            // the type arguments of `st` (`D a1 … an`), left to right
+            let mut args = Vec::new();
+            let mut cur = st;
+            while let Type::App(f, a) = cur {
+                args.push((**a).clone());
+                cur = f;
+            }
+            args.reverse();
+            if args.len() != d.params.len() {
+                return out;
+            }
+            let subst: HashMap<String, Type> = d.params.iter().cloned().zip(args).collect();
+            for (sp, fl) in subs.iter().zip(&con.fields) {
+                if let CPat::Var(n) = sp {
+                    out.push((n.clone(), subst_ty(&fl.ty, &subst)));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// The names of the functions `t` calls directly.
+fn direct_callees(t: &Term, out: &mut HashSet<String>) {
+    fn rhs(r: &Rhs, out: &mut HashSet<String>) {
+        match r {
+            Rhs::Op(Op::CallDirect(g, _, _)) => {
+                out.insert(g.clone());
+            }
+            Rhs::Op(_) => {}
+            Rhs::If(_, a, b) => {
+                direct_callees(a, out);
+                direct_callees(b, out);
+            }
+            Rhs::Case(_, arms) => {
+                for (_, b) in arms {
+                    direct_callees(b, out);
+                }
+            }
+        }
+    }
+    match t {
+        Term::Let(_, r, _, b) => {
+            rhs(r, out);
+            direct_callees(b, out);
+        }
+        Term::Drop(_, _, _, _, b) => direct_callees(b, out),
+        Term::Ret(r, _) => rhs(r, out),
+    }
+}
+
+/// How to copy a value of type `t` (`None` = not a heap value, or no copier for it).
+fn copy_kind_of(t: &Type, datas: &[ast::DataDecl]) -> Option<CopyKind> {
+    match t.head_con() {
+        Some("String") => return Some(CopyKind::Str),
+        Some("Integer") => return Some(CopyKind::Int),
+        _ => {}
+    }
+    if matches!(t, Type::Arrow { .. }) {
+        return Some(CopyKind::Closure);
+    }
+    let container = matches!(t, Type::Tuple(_))
+        || t.head_con().is_some_and(|h| {
+            datas
+                .iter()
+                .any(|d| d.name == h && d.cons.iter().any(|c| !c.fields.is_empty()))
+        });
+    if !container {
+        return None;
+    }
+    mono_key(t).map(CopyKind::Container)
+}
+
 /// Copies a borrow (the result of a borrow-returning call, or an alias of one) at each op that
 /// MOVES it into something new — a constructor, a tuple, a consuming call — so the new value
 /// owns a copy instead of sharing memory with the borrow's owner (who frees it). A `ret` of the
@@ -14482,7 +14708,20 @@ fn free_owned_scrutinee(
             Term::Ret(_, _) => false,
         }
     }
-    if frees(s, &arm) {
+    // the arm hands the scrutinee on WHOLE (`Just v -> m`): it is the result's, not freed here
+    fn returns_whole(s: &str, t: &Term) -> bool {
+        let only = HashSet::from([s.to_string()]);
+        match t {
+            Term::Drop(v, _, _, _, b) => v != s && returns_whole(s, b),
+            Term::Let(x, rhs, _, b) => {
+                x != s && !rhs_mentions_any(rhs, &only) && returns_whole(s, b)
+            }
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => v == s,
+            Term::Ret(Rhs::If(_, x, y), _) => returns_whole(s, x) && returns_whole(s, y),
+            Term::Ret(..) => false,
+        }
+    }
+    if frees(s, &arm) || returns_whole(s, &arm) {
         return Some(arm);
     }
     if term_mentions_any(&arm, &HashSet::from([s.to_string()])) {

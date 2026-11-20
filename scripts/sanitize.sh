@@ -55,6 +55,10 @@ NATIVE=(
   axionc/tests/fixtures/bitwise.axi
   axionc/tests/fixtures/bitwise_user_xor.axi
   axionc/tests/fixtures/nested_patterns_native.axi
+  axionc/tests/fixtures/nested_borrowed_embed.axi
+  axionc/tests/fixtures/view_arm_owned_scrutinee.axi
+  axionc/tests/fixtures/borrowed_tuple_field_consume.axi
+  axionc/tests/fixtures/uncons_peel_tuple_reject.axi
   axionc/tests/fixtures/integer_reclaim.axi
   axionc/tests/fixtures/integer_accumulator.axi
   axionc/tests/fixtures/integer_divmod.axi

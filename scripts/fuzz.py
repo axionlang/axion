@@ -34,12 +34,14 @@ dropped elements). Run one alone with `--only closure_values` / `--only heap_arr
 `_safe_by_construction`). `gen_sharing` builds the ownership shapes the axmpv flagship broke: record
 updates sharing heap fields with their base, conditional temps, callees that may return their
 argument, closure tables, nested mixed conditionals, FFI with borrowed arguments. Its programs are
-all safe, so a native AX0910/AX0911 refusal there is a hard `gap` finding, not a sound rejection.
+all safe, so a native AX0910/AX0911 refusal there is a hard `gap` finding, not a sound rejection,
+and so is a native leak (`safeleak`). `gen_nested_patterns` is safe by construction too.
 
-Native LEAKS while interp is clean are REPORTED (info) but not failed — many are known
-conservative leaks. AX0912 (heap-alias guard) and AX0910 (drop-verifier) rejections are
-EXPECTED and counted separately — native soundly refusing a value it cannot reclaim is
-correct-by-design; a verifier FALSE POSITIVE (rejecting safe code) is caught by the dedicated
+Native LEAKS while interp is clean are REPORTED (info) but not failed for the other generators.
+AX0912 (heap-alias guard) and AX0910 (drop-verifier) rejections are counted separately — native
+soundly refusing a value it cannot reclaim is correct-by-design. Every generated shape compiles
+natively today, though, so `--max-refusals 0` (the nightly job) fails a run with any AX0910 refusal,
+and `--save-refusals DIR` keeps each refused program with the verifier's message for triage; a verifier FALSE POSITIVE (rejecting safe code) is caught by the dedicated
 0-FP corpus sweep in tests/verify.rs, not here. The `gen_tuple_consume` generator stresses the
 consume-of-borrowed-interior-tuple-field class: OWNED variants must RUN + agree + be ASan-clean,
 while BORROWED variants must be AX0910-rejected — and any variant the verifier MISSES compiles
@@ -1438,8 +1440,17 @@ def gen_nested_patterns(rng):
             else:
                 continue
             heap = [(v, bt) for v, bt in binds if bt == "String"]
+            embed = [(v, bt) for v, bt in binds if bt in ("String", "Sh", ("L", "String"))]
             mode = rng.random()
-            if heap and mode < 0.35:
+            if embed and mode < 0.2:
+                # store a payload in a NEW value (`Cons v Nil`, `Just v`): when the caller keeps
+                # the scrutinee (below) the payload is a part of a borrowed value — the compiler
+                # copies it rather than give it two owners
+                v, bt = rng.choice(embed)
+                new_val = {"String": f'rLS (Cons {v} Nil)', "Sh": f"rMSh (Just {v})",
+                           ("L", "String"): f'rLS (Cons "k" {v})'}[bt]
+                body = f'"b{ai}:" ++ {new_val}'
+            elif heap and mode < 0.45:
                 body = heap[0][0]                                   # move a payload out
             elif binds and mode < 0.8:
                 pick = rng.sample(binds, min(len(binds), rng.randint(1, 2)))
@@ -1457,8 +1468,17 @@ def gen_nested_patterns(rng):
         else:
             arms.append('  _ -> "z"')
         funcs.append(f"{name} :: {tname(t)} -> String\n{name} x = case x of\n" + "\n".join(arms) + "\n")
-        for _ in range(rng.randint(2, 4)):
-            calls.append(f"  putStrLn ({name} {value(t)})")
+        if rng.random() < 0.5:
+            # the caller keeps its value: the parameter is only read (borrowed) unless an arm
+            # moves a top-level payload out (then the front end rejects the reuse — consistently)
+            y = f"y{fi}"
+            calls.append(f"  let {y} = {value(t)}")
+            for _ in range(rng.randint(1, 2)):
+                calls.append(f"  putStrLn ({name} {y})")
+            calls.append(f"  putStrLn ({render(y, t)})")
+        else:
+            for _ in range(rng.randint(2, 4)):
+                calls.append(f"  putStrLn ({name} {value(t)})")
     return NESTED_PRE + "\n".join(funcs) + "\nmain :: IO ()\nmain = do\n" + "\n".join(calls) + "\n"
 
 HEAP_ARRAY_PRE = """-- fuzz:heap-arrays
@@ -1686,6 +1706,9 @@ def asan_run(src, work, oracle_out):
         # built-in programs reclaim everything: a leak means a wrong ownership entry
         if "fuzz:builtins" in src.read_text():
             return ("bileak", err[-600:])
+        # safe-by-construction programs reclaim everything too: a leak is a reclamation gap
+        if _safe_by_construction(src.read_text()):
+            return ("safeleak", err[-600:])
         return ("leak", None)              # LSan `_exit`s without flushing stdout
     if oracle_out is not None and rr == 0 and orr.strip() != oracle_out.strip():
         return ("divergence", f"interp={oracle_out!r} llvm+asan={orr!r}\n{err[-300:]}")
@@ -1755,6 +1778,10 @@ def main():
                     help="use only the generator gen_NAME (e.g. closure_values, heap_array)")
     ap.add_argument("--save-refusals", metavar="DIR",
                     help="also save each sound AX0910 refusal (program + error) to DIR, for triage")
+    ap.add_argument("--max-refusals", type=int, metavar="N",
+                    help="fail when more than N programs are refused natively (AX0910): the "
+                         "generators' shapes are all compiled today, so a new refusal is a "
+                         "regression in what native code accepts (nightly runs with 0)")
     a = ap.parse_args()
     generate = globals()[f"gen_{a.only}"] if a.only else gen
     if not os.path.exists(AXIONC):
@@ -1771,7 +1798,7 @@ def main():
             verdict, detail = check(prog, work)
             tally[verdict] = tally.get(verdict, 0) + 1
             if verdict in ("corruption", "divergence", "verdict", "hang", "sessleak", "bileak",
-                           "biax0910", "gap"):
+                           "biax0910", "gap", "safeleak"):
                 hard += 1
                 FAILDIR.mkdir(exist_ok=True)
                 f = FAILDIR / f"seed{a.seed}_i{i}_{verdict}.axi"
@@ -1785,11 +1812,17 @@ def main():
                 (d / f"seed{a.seed}_i{i}.axi").write_text(prog)
                 (d / f"seed{a.seed}_i{i}.err").write_text(detail or "")
             if verdict not in ("corruption", "divergence", "verdict", "hang", "sessleak", "bileak",
-                               "biax0910", "gap") and i % 25 == 0:
+                               "biax0910", "gap", "safeleak") and i % 25 == 0:
                 print(f"  {i}/{a.count} … {dict(tally)}")
     print(f"\nsummary (seed {a.seed}): {dict(tally)}")
     if hard:
         print(f"FAIL: {hard} hard finding(s) — repros in {FAILDIR}/")
+        return 1
+    refused = tally.get("ax0910", 0)
+    if a.max_refusals is not None and refused > a.max_refusals:
+        where = f" — programs in {a.save_refusals}/" if a.save_refusals else ""
+        print(f"FAIL: {refused} native refusal(s) (AX0910), more than --max-refusals "
+              f"{a.max_refusals}{where}")
         return 1
     print("OK: no corruption / divergence / verdict-mismatch")
     return 0

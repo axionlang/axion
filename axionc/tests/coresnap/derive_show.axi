@@ -17,7 +17,7 @@
       let _t0 = rtcall axion_strcat "Circle" " "  ; Δ{} · makes String
       let _t1 = call showArg$Int a0  ; Δ{_t0} · makes String
       let _t2 = rtcall axion_strcat "Rect" " "  ; Δ{} · makes String
-      let _t3 = call showArg$Int a0  ; Δ{_t2} · makes String
+      let _t3 = call showArg$Int a0$1  ; Δ{_t2} · makes String
       let _t4 = rtcall axion_strcat _t2 _t3  ; Δ{_t2 _t3} · makes String
       let _t5 = rtcall axion_strcat _t4 " "  ; Δ{_t4} · makes String
       let _t6 = call showArg$Int a1  ; Δ{_t5} · makes String
@@ -26,7 +26,7 @@
       ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
       ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
     Circle a0 ->
-    Rect a0 a1 ->
+    Rect a0$1 a1 ->
     else
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then

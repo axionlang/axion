@@ -1652,15 +1652,20 @@ pub fn ownership_trace(
             temps: 0,
             outer: HashMap::new(),
         };
+        // every parameter the caller does not keep is this function's: a `%1` one, and one the
+        // caller moves in because the body hands it on (not in `borrow_args`) — both read
+        // "owned", as the verifier tracks them
+        let mut moved_in: HashSet<String> = HashSet::new();
         for p in &f.params {
-            let owned = f.owned_params.contains(p);
-            if owned || tr.borrowed.contains(p) {
-                tr.push(Who::Name(p.clone()), OwnKind::Param { owned });
+            let owned = !tr.borrowed.contains(p);
+            if owned && !f.owned_params.contains(p) {
+                moved_in.insert(p.clone());
             }
+            tr.push(Who::Name(p.clone()), OwnKind::Param { owned });
         }
         ck.trace_term(&f.body, &s, &mut tr);
-        // a borrowed parameter is listed only if the body treats it as a heap value (the borrow
-        // set also holds scalars)
+        // a borrowed or moved-in parameter is listed only if the body treats it as a heap value
+        // (both sets also hold scalars)
         let mut used: HashSet<String> = HashSet::new();
         for e in &tr.events {
             if !matches!(e.kind, OwnKind::Param { .. }) {
@@ -1690,6 +1695,9 @@ pub fn ownership_trace(
         }
         tr.events.retain(|e| match (&e.kind, &e.who) {
             (OwnKind::Param { owned: false }, Who::Name(n)) => used.contains(n),
+            (OwnKind::Param { owned: true }, Who::Name(n)) if moved_in.contains(n) => {
+                used.contains(n)
+            }
             _ => true,
         });
         out.push(OwnFn {
@@ -1835,7 +1843,9 @@ impl Tracer {
     }
     /// is `x` a compiler temporary (shown as its source expression)?
     fn is_temp(x: &str) -> bool {
-        x.starts_with('_') || x.contains('$') || x.starts_with("satclo")
+        x.starts_with('_')
+            || (x.contains('$') && crate::core::source_name(x) == x)
+            || x.starts_with("satclo")
     }
 }
 

@@ -32,16 +32,16 @@
               let _t12 = call show$Rose$Int _t11  ; Δ{_t11} · makes String
               ret 0  ; Δ{}
               ret _d1000000  ; Δ{}
-              ret call eq$Bin$Int r1 r2  ; Δ{}
+              ret call eq$Bin$Int r1 r2$3  ; Δ{}
             _ ->
             else
-            let _t1 = call eq$Bin$Int l1 l2  ; Δ{}
+            let _t1 = call eq$Bin$Int l1 l2$1  ; Δ{}
             ret 0  ; Δ{}
             ret if _t1 then
           drop _t8 : Two$Int$Bool
           drop _t9 : String
           else
-          let _t0 = call eq$Int v1 v2  ; Δ{}
+          let _t0 = call eq$Int v1 v2$2  ; Δ{}
           let _t10 = putStrLn _t9  ; Δ{_t9}
           let _t8 = call two  ; Δ{} · makes Two$Int$Bool
           let _t9 = call show$Two$Int$Bool _t8  ; Δ{_t8} · makes String
@@ -51,7 +51,7 @@
           ret case _t10 of
           ret if _t0 then
         Node l2 v2 r2 ->
-        Node l2 v2 r2 ->
+        Node l2$1 v2$2 r2$3 ->
         Tip ->
         Tip ->
         _ ->

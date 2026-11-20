@@ -32,6 +32,16 @@ function that returns or embeds part of its argument (`fstS (a, _) = a`) takes o
 only reads it (`lenK`) borrows it, so the caller keeps it. Passing the same value into two owned
 positions (`Pair xs xs`) is **AX0001**, since both owners would free it.
 
+A part of a borrowed argument that a pattern brings out and the function then stores in a new
+value is copied there, so the caller's value and the new one each own their own:
+
+```haskell
+second :: List String -> List String
+second xs = case xs of
+  Cons _ (Cons s _) -> Cons s Nil   -- `s` is copied into the new list; the caller keeps `xs`
+  _ -> Nil
+```
+
 To see what the compiler decided, run `axionc --emit ownership file.axi`. It lists, for each
 of your functions, where every heap value is created, lent, moved, copied (with the reason), returned
 and freed, read from the final lowered program:
@@ -44,6 +54,11 @@ main
   26:28   `cs` — lent to `pick` (still owned here)
   29:30   `cs` — freed
 ```
+
+A parameter reads *owned* when the function frees it or hands it on: a `%1` parameter, and a
+data parameter the body passes on whole (stores it, returns it, gives it to a call that keeps it).
+The caller then gives the value up, copying it first if it uses it again. A parameter the body
+only reads reads *borrowed*: the caller keeps it and frees it.
 
 In an editor, `axion-lsp` shows the same story when you hover a variable, and marks each
 compiler-inserted copy inline.

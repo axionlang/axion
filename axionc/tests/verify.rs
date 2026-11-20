@@ -53,13 +53,9 @@ fn verifier_reports_no_corruption_over_all_fixtures() {
             // now tracks borrowed tuple-scrutinee fields (the `CPat::Tuple` arm in `bind_pattern`),
             // so it reports `DropOfAlias` here — the soundness win (this double-free was previously
             // unguarded + verifier-blind). `uncons_peel_tuple_reject.axi` is the `uncons`-vehicle
-            // special case of the same class. Both are EXPECTED to flag; asserted in dedicated tests.
-            if matches!(
-                path.file_name().unwrap().to_str(),
-                Some("borrowed_tuple_field_consume.axi" | "uncons_peel_tuple_reject.axi")
-            ) {
-                continue;
-            }
+            // special case of the same class. Auto-Drop now copies the field, so both verify clean
+            // here; without the copy (`AXION_NO_ALIAS_COPY`) the verifier must flag them —
+            // asserted in a dedicated test.
             let out = axionc()
                 .args(["--emit", "verify", path.to_str().unwrap()])
                 .output()
@@ -152,6 +148,8 @@ fn element_alias_double_free_is_caught_by_verifier() {
 /// double-freed against the owner's deep-drop. The verifier now tracks borrowed tuple-scrutinee
 /// fields (`bind_pattern`'s `CPat::Tuple` arm + transitive borrows), so it must report
 /// `DropOfAlias`. Reproducible in plain user code (no `uncons`); the interpreter still runs it.
+/// Auto-Drop now COPIES such a field before the consuming call (so the programs compile and
+/// verify clean — asserted too); `AXION_NO_ALIAS_COPY` shows the verifier the uncopied shape.
 #[test]
 fn borrowed_tuple_field_consume_is_caught_by_verifier() {
     for fx in [
@@ -159,13 +157,52 @@ fn borrowed_tuple_field_consume_is_caught_by_verifier() {
         "uncons_peel_tuple_reject.axi",
     ] {
         let path = format!("{}/tests/fixtures/{fx}", env!("CARGO_MANIFEST_DIR"));
-        let verify = axionc().args(["--emit", "verify", &path]).output().unwrap();
+        let verify = axionc()
+            .env("AXION_NO_ALIAS_COPY", "1")
+            .args(["--emit", "verify", &path])
+            .output()
+            .unwrap();
         let vstdout = String::from_utf8_lossy(&verify.stdout);
         assert!(
             vstdout.contains("FAIL:") && vstdout.contains("DropOfAlias"),
             "the verifier must catch the borrowed-tuple-field consume in {fx}, got:\n{vstdout}"
         );
+        let copied = axionc().args(["--emit", "verify", &path]).output().unwrap();
+        let cstdout = String::from_utf8_lossy(&copied.stdout);
+        assert!(
+            !cstdout.contains("FAIL:"),
+            "with the copy, {fx} must verify clean, got:\n{cstdout}"
+        );
     }
+}
+
+/// A parameter the caller MOVES in (neither `%1` nor borrowed: the body hands it on) is owned
+/// by the function, container types included. With the alias copies off, `condUpd` in
+/// sharing_regressions frees a moved-in record its caller still uses (ASan: heap use after
+/// free); when the verifier tracked a moved-in container only as "may be handed on once" it
+/// passed that Core with leak notes alone.
+#[test]
+fn moved_in_container_param_is_owned_by_verifier() {
+    let path = format!(
+        "{}/tests/fixtures/sharing_regressions.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let raw = axionc()
+        .env("AXION_NO_ALIAS_COPY", "1")
+        .args(["--emit", "verify", &path])
+        .output()
+        .unwrap();
+    let rs = String::from_utf8_lossy(&raw.stdout);
+    assert!(
+        rs.contains("FAIL:"),
+        "the verifier must catch the uncopied sharing_regressions, got:\n{rs}"
+    );
+    let copied = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    let cs = String::from_utf8_lossy(&copied.stdout);
+    assert!(
+        cs.contains("ok:") && !cs.contains("FAIL:"),
+        "with the copies, sharing_regressions must verify clean, got:\n{cs}"
+    );
 }
 
 /// R-1 (docs/call-site-ownership.md): the `ret_alias` whole-value param-return relation.
