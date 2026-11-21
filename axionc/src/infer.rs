@@ -34,6 +34,8 @@ struct Scheme {
 }
 
 type Env = HashMap<String, Scheme>;
+/// The arms an or-pattern expanded to: their shared body span and the names they bind.
+type OrArmKey = (Span, Vec<String>);
 
 struct Infer<'a> {
     subst: HashMap<u32, Ty>,
@@ -4725,9 +4727,21 @@ impl<'a> Infer<'a> {
                 r
             }
             Expr::BinOp(op, l, r, span) => {
-                let top = match env.get(op) {
-                    Some(s) => self.instantiate(s),
-                    None => self.fresh(),
+                // in the prelude a bitwise operator is the built-in one, whatever the program
+                // defines under that name (`desugar_user_operators` leaves it a `BinOp` there)
+                let in_prelude =
+                    span.0 / crate::diag::CLONE_SPAN_STRIDE == crate::diag::PRELUDE_SPAN_BAND;
+                let top = if in_prelude && crate::core::is_bitwise_op(op) {
+                    let int = || Ty::Con("Int".into(), vec![]);
+                    Ty::Fun(
+                        Box::new(int()),
+                        Box::new(Ty::Fun(Box::new(int()), Box::new(int()))),
+                    )
+                } else {
+                    match env.get(op) {
+                        Some(s) => self.instantiate(s),
+                        None => self.fresh(),
+                    }
                 };
                 // method use (built-in `Num` operator, or a user infix method):
                 // collect the instance obligation over the dispatch operand type,
@@ -4775,10 +4789,34 @@ impl<'a> Infer<'a> {
             Expr::Case(scrut, arms, span) => {
                 let ts = self.infer_expr(env, scrut);
                 let mut rty: Option<Ty> = None;
+                // the arms an or-pattern expanded to share one body (the same span) and bind the
+                // same names: a variable has ONE type across them, or the body's span-keyed types
+                // would disagree. (Desugared code reuses a span too — `<-!`'s `Right x -> rest` and
+                // `Left $bindErr -> Left $bindErr` — but never with the same variables.)
+                let mut or_binders: HashMap<OrArmKey, Vec<(String, Ty)>> = HashMap::new();
                 for (pat, body) in arms {
                     let mut local = env.clone();
                     let tp = self.infer_pat(&mut local, pat);
                     self.unify(&tp, &ts, *span);
+                    let mut names = std::collections::BTreeSet::new();
+                    crate::ast::pat_vars(pat, &mut names);
+                    let bound: Vec<(String, Ty)> = names
+                        .into_iter()
+                        .filter_map(|n| local.get(&n).map(|sc| (n, sc.ty.clone())))
+                        .collect();
+                    let key = (body.span(), bound.iter().map(|(n, _)| n.clone()).collect());
+                    match or_binders.get(&key) {
+                        // (both lists are sorted by name: `pat_vars` collects into a BTreeSet)
+                        Some(first) => {
+                            for ((_, a), (_, b)) in first.clone().iter().zip(&bound) {
+                                self.unify(a, b, pat.span());
+                            }
+                        }
+                        None if !bound.is_empty() => {
+                            or_binders.insert(key, bound);
+                        }
+                        None => {}
+                    }
                     let tb = self.infer_expr(&local, body);
                     match &rty {
                         None => rty = Some(tb),

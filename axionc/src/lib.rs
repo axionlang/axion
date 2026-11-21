@@ -5253,7 +5253,8 @@ fn desugar_strpat_in_expr(e: &mut ast::Expr, diags: &mut Diagnostics) {
         }
         Case(scrut, arms, _) => {
             desugar_strpat_in_expr(scrut, diags);
-            for (_, body) in arms.iter_mut() {
+            for (p, body) in arms.iter_mut() {
+                nested_strpat_error(p, true, diags);
                 desugar_strpat_in_expr(body, diags);
             }
         }
@@ -5306,6 +5307,34 @@ fn desugar_strpat_in_expr(e: &mut ast::Expr, diags: &mut Diagnostics) {
             report_strpat_error(diags, sp, true);
         }
         rebuild_str_case(e, binder, lits, default, sp);
+    }
+}
+
+/// A string-literal pattern INSIDE another pattern (`Just ("a" | "b")`): only a whole arm's
+/// pattern is desugared to a comparison, so report it (it reached the native lowering as an
+/// internal error) and leave a `_` in its place.
+fn nested_strpat_error(p: &mut ast::Pat, top: bool, diags: &mut Diagnostics) {
+    match p {
+        ast::Pat::Str(_, sp) if !top => {
+            diags.push(
+                Diagnostic::error(
+                    "AX0204",
+                    "a string-literal pattern must be a whole `case` arm's pattern",
+                )
+                .label(sp.0, sp.1, "inside another pattern here")
+                .with_help(
+                    "bind the field to a variable and compare it in a nested `case` \
+                     (`Just s -> case s of \"a\" -> …`)",
+                ),
+            );
+            *p = ast::Pat::Wild(*sp);
+        }
+        ast::Pat::Con(_, ps, _) | ast::Pat::Tuple(ps, _) => {
+            for q in ps {
+                nested_strpat_error(q, false, diags);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -5365,8 +5394,20 @@ fn rebuild_str_case(
 fn desugar_user_operators(module: &mut ast::Module) {
     let funcs: std::collections::HashSet<String> =
         module.funcs.iter().map(|f| f.name.clone()).collect();
+    // inside the prelude, the built-in operators and Integral names keep their built-in meaning:
+    // a program's own `xor` or `.&.` must not reach into `popCount` (the prelude is type-checked
+    // even where it is unused, so that would break every program defining one)
+    let prelude_funcs: std::collections::HashSet<String> = funcs
+        .iter()
+        .filter(|n| {
+            !core::is_bitwise_op(n)
+                && !matches!(n.as_str(), "div" | "mod" | "xor" | "shiftL" | "shiftR")
+        })
+        .cloned()
+        .collect();
     for f in &mut module.funcs {
-        desugar_ops_in_func(f, &funcs);
+        let in_prelude = f.span.0 / diag::CLONE_SPAN_STRIDE == diag::PRELUDE_SPAN_BAND;
+        desugar_ops_in_func(f, if in_prelude { &prelude_funcs } else { &funcs });
     }
 }
 
@@ -5589,6 +5630,12 @@ foreign pure axion_buf_to_list :: Int -> List Int
 
 compose :: (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
+-- Data.Bits. Only operators a program cannot redefine (`-` `.&.`): a program's own `xor`
+-- replaces the built-in one, and the prelude is type-checked even where it is unused.
+complement :: Int -> Int
+complement x = (-1) - x
+popCount :: Int -> Int
+popCount x = if x == 0 then 0 else 1 + popCount (x .&. (x - 1))
 range :: Int -> Int -> List Int
 range lo hi = if lo > hi then Nil else Cons lo (range (lo + 1) hi)
 replicate :: Int -> a -> List a

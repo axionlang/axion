@@ -145,6 +145,77 @@ pub enum BindKind {
     Either,
 }
 
+/// Or-patterns (`Red | Green -> 1`, `Just (1 | 2) -> …`): a `case` arm whose pattern has
+/// alternatives becomes one arm per combination, each with (a copy of) the same body, before
+/// anything else sees it. Both parsers expand through these helpers, so they agree.
+///
+/// The most arms one or-pattern may expand to (nested alternatives multiply).
+pub const MAX_OR_ALTS: usize = 64;
+
+/// Every combination of per-position alternatives (`[[A, B], [C]]` → `[[A, C], [B, C]]`), or
+/// `None` past [`MAX_OR_ALTS`].
+pub fn pat_product(parts: Vec<Vec<Pat>>) -> Option<Vec<Vec<Pat>>> {
+    let mut out: Vec<Vec<Pat>> = vec![Vec::new()];
+    for alts in parts {
+        if out.len().saturating_mul(alts.len()) > MAX_OR_ALTS {
+            return None;
+        }
+        out = out
+            .iter()
+            .flat_map(|pre| {
+                alts.iter().map(move |a| {
+                    let mut v = pre.clone();
+                    v.push(a.clone());
+                    v
+                })
+            })
+            .collect();
+    }
+    Some(out)
+}
+
+impl Pat {
+    pub fn span(&self) -> Span {
+        match self {
+            Pat::Wild(s)
+            | Pat::Var(_, s)
+            | Pat::Int(_, s)
+            | Pat::Str(_, s)
+            | Pat::Con(_, _, s)
+            | Pat::Tuple(_, s) => *s,
+        }
+    }
+}
+
+/// The variables a pattern binds.
+pub fn pat_vars(p: &Pat, out: &mut std::collections::BTreeSet<String>) {
+    match p {
+        Pat::Var(n, _) => {
+            out.insert(n.clone());
+        }
+        Pat::Con(_, ps, _) | Pat::Tuple(ps, _) => ps.iter().for_each(|q| pat_vars(q, out)),
+        Pat::Wild(_) | Pat::Int(..) | Pat::Str(..) => {}
+    }
+}
+
+/// `true` if every alternative binds the same variables (the body is shared, so each name it
+/// uses must come from whichever alternative matched).
+pub fn or_binders_agree(alts: &[Pat]) -> bool {
+    let sets: Vec<_> = alts
+        .iter()
+        .map(|p| {
+            let mut s = std::collections::BTreeSet::new();
+            pat_vars(p, &mut s);
+            s
+        })
+        .collect();
+    sets.windows(2).all(|w| w[0] == w[1])
+}
+
+/// The message for alternatives that bind different variables.
+pub const OR_BINDERS_MSG: &str = "every alternative of an or-pattern (`|`) must bind the same \
+                                  variables";
+
 /// Desugar one `do` statement `pat <arrow> scrut` with continuation `cont` into a
 /// `case`. IO binds the whole value (`case scrut of pat -> cont`); Maybe/Either add a
 /// short-circuit arm (`Nothing -> Nothing` / `Left e -> Left e`). Shared by both

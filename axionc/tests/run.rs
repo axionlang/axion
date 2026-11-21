@@ -6491,6 +6491,30 @@ fn string_case_without_catchall_is_rejected() {
 }
 
 #[test]
+fn or_pattern_misuse_is_rejected() {
+    for (fx, code) in [
+        ("or_pattern_binders_reject.axi", "AX0100"),
+        ("or_pattern_binder_type_reject.axi", "AX0200"),
+        ("or_pattern_param_reject.axi", "AX0100"),
+        ("nested_string_pattern_reject.axi", "AX0204"),
+    ] {
+        for args in [vec!["--check"], vec!["--release"]] {
+            let path = fixture(fx);
+            let out = axionc().args(&args).arg(&path).output().unwrap();
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(
+                text.contains(code) && !out.status.success() && !text.contains("panicked"),
+                "{fx} {args:?}: expected {code}, got: {text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn comparison_operators_le_and_ge() {
     // `<=`/`>=` are defined in the prelude via the `Ord` method `le` and reach it
     // through the user-operator→application desugaring, so they are polymorphic over
@@ -7361,10 +7385,20 @@ fn axmpv_regressions_agree_on_every_backend() {
         ),
         ("bitwise_user_xor.axi", "yes\nno\n"),
         (
+            "bits_complement_popcount.axi",
+            "-1\n-6\n5\n0\n3\n1\n64\n1\n56\n4\n",
+        ),
+        ("bits_user_complement.axi", "99\n3\n"),
+        ("bits_user_ops_prelude.axi", "n\ny\n2\n"),
+        (
             "nested_borrowed_embed.axi",
             "1\n3\nn5<dot>\nn4<n5<dot>>\n2\nn88\n",
         ),
         ("view_arm_owned_scrutinee.axi", "3\n"),
+        (
+            "or_patterns.axi",
+            "2\n17\nsmall\nother\nother\nab\nzz\nbo\nal\nanon\ncorner\nfar\n35\n77\n",
+        ),
         (
             "nested_patterns_native.axi",
             "24\ntwo zeros\nzero first\nzero second\none 9\nother 3\nother 0\nab+cd\nsolo\nnone\ny=5\n4x\n-\ncircle sun\nbox\n?\nonly\n2\n104\n",

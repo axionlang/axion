@@ -1336,7 +1336,8 @@ def gen_nested_patterns(rng):
     tuples and a sum type with String payloads; arm bodies move a String payload out, combine or
     drop payloads; the final catch-all binds the scrutinee (or names it) and reads it whole — the
     row-by-row (`sequential`) path. Every program is SAFE value-semantics code: a native refusal is
-    a gap, and the interpreter (which matches the AST directly) is the oracle for first-match."""
+    a gap, and the interpreter (which matches the AST directly) is the oracle for first-match.
+    Some sub-patterns are or-patterns `(p1 | p2)` (binder-free, distinct heads)."""
     # types: leaves "Int"/"String"; ("L", t) list; ("M", t) Maybe; ("T", [a, b]) tuple; "Sh"
     TYPES = [("L", "String"), ("L", "Int"), "Sh", ("M", "Sh"), ("M", ("T", ["Int", "String"])),
              ("T", [("M", "String"), "Int"])]
@@ -1368,6 +1369,19 @@ def gen_nested_patterns(rng):
         return f"v{ctr[0]}"
     def pat(t, depth, binds):
         """a pattern of type `t`; appends (var, type) to `binds`. Returns (text, atomic)."""
+        # an or-pattern `(p1 | p2)`: two binder-free alternatives with different head
+        # constructors/literals (so neither makes the other redundant)
+        if depth > 0 and t != "String" and (t in ("Int", "Sh") or t[0] in ("L", "M")) \
+                and rng.random() < 0.15:
+            b1, b2 = [], []
+            p1, _ = pat_one(t, depth, b1)
+            p2, _ = pat_one(t, depth, b2)
+            h1, h2 = p1.split()[0], p2.split()[0]
+            if not b1 and not b2 and h1 != h2 and "_" not in (h1, h2) \
+                    and not h1[0].islower() and not h2[0].islower():
+                return f"({p1} | {p2})", True
+        return pat_one(t, depth, binds)
+    def pat_one(t, depth, binds):
         r = rng.random()
         if depth <= 0 or r < 0.25:
             if rng.random() < 0.6:

@@ -370,10 +370,18 @@ fn shift_expr(e: &mut ast::Expr, d: i64) {
     }
 }
 
+/// The part of a declaration's start that normalization removes: its offset WITHIN its span band
+/// (`diag::CLONE_SPAN_STRIDE`). The band itself stays, so inference still sees that a prelude
+/// declaration is in the prelude band (`infer`'s built-in bitwise operators there); a program's
+/// own declarations are band 0, where this is the whole start.
+fn rel_base(start: usize) -> usize {
+    start % crate::diag::CLONE_SPAN_STRIDE
+}
+
 /// A copy of `f` with every span shifted so the declaration's base (`f.span.0`)
-/// becomes 0 — position-independent.
+/// becomes the start of its span band — position-independent.
 fn normalized(f: &Func) -> Func {
-    let base = f.span.0 as i64;
+    let base = rel_base(f.span.0) as i64;
     let mut g = f.clone();
     shift_func(&mut g, -base);
     g
@@ -577,7 +585,7 @@ pub fn diagnostics_of(db: &dyn salsa::Database, file: SourceFile) -> Vec<Diagnos
         .map(|m| m.funcs.iter().map(|f| (f.name.clone(), f.span.0)).collect())
         .unwrap_or_default();
     for item in decl_items(db, file).clone() {
-        let base = bases.get(item.name(db)).copied().unwrap_or(0);
+        let base = rel_base(bases.get(item.name(db)).copied().unwrap_or(0));
         out.extend(rebased(check_decl(db, item), base));
         out.extend(rebased(infer_decl(db, item), base));
     }

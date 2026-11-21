@@ -104,6 +104,9 @@ pub enum SyntaxKind {
     // sees alternative boundaries (the layout tokens that delimited them are consumed during the
     // parse). Lowered inside the `CASE_EXPR` arm, never on its own. Appended last (stable discriminants).
     CASE_ALT,
+    // an or-pattern `p1 | p2 | …` (a `case` arm, or inside parentheses there): expanded by the
+    // lowering into one arm per alternative. Appended last (stable discriminants).
+    OR_PAT,
 }
 
 use SyntaxKind::{
@@ -111,9 +114,9 @@ use SyntaxKind::{
     CONSTRAINT, CON_DECL, CON_PAT, DATA_DECL, DECL, DO_EXPR, ERROR, EXPR_STMT, FIELD, FIXITY_DECL,
     FOREIGN_DECL, FOREIGN_ENUM, FOREIGN_STRUCT, FUN_CLAUSE, GUARD, IDENT, IF_EXPR, IMPORT_DECL,
     INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR, LET_STMT, LIST_EXPR, LITERAL, LITERAL_EXPR,
-    LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER, PAREN_EXPR, PUNCT, RECORD_EXPR,
-    SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON, TYPE_TUPLE,
-    TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
+    LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER, OR_PAT, PAREN_EXPR, PUNCT,
+    RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON,
+    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -191,6 +194,7 @@ impl Language for AxionLang {
             FOREIGN_STRUCT,
             FOREIGN_ENUM,
             CASE_ALT,
+            OR_PAT,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -307,7 +311,13 @@ fn expr_outline(e: &Expr) -> Outline {
         }
         Expr::Case(scrut, arms, _) => {
             let mut kids = vec![expr_outline(scrut)];
+            let mut prev: Option<Span> = None;
             for (p, e) in arms {
+                // the arms an or-pattern expanded to share one body (same span): outline it once
+                if prev == Some(e.span()) {
+                    continue;
+                }
+                prev = Some(e.span());
                 kids.push(pat_outline(p));
                 kids.push(expr_outline(e));
             }
@@ -933,7 +943,7 @@ impl ExprParser<'_> {
         self.expect(&Tok::Of);
         self.block(|p| {
             p.b.start_node(CASE_ALT.into());
-            p.pat();
+            p.or_pat();
             p.expect(&Tok::Arrow);
             p.expr();
             p.b.finish_node();
@@ -1248,6 +1258,20 @@ impl ExprParser<'_> {
         )
     }
 
+    /// A pattern with or-pattern alternatives: `pat (| pat)*`.
+    fn or_pat(&mut self) {
+        let cp = self.b.checkpoint();
+        self.pat();
+        if matches!(self.cur(), Some(Tok::Bar)) {
+            self.b.start_node_at(cp, OR_PAT.into());
+            while matches!(self.cur(), Some(Tok::Bar)) {
+                self.bump(); // '|'
+                self.pat();
+            }
+            self.b.finish_node();
+        }
+    }
+
     /// Pattern: applied constructor `Con apat*`, else an atomic pattern.
     fn pat(&mut self) {
         if matches!(self.cur(), Some(Tok::ConId(_))) {
@@ -1294,10 +1318,10 @@ impl ExprParser<'_> {
             Some(Tok::LParen) => {
                 let cp = self.b.checkpoint();
                 self.bump(); // '('
-                self.pat();
+                self.or_pat();
                 while matches!(self.cur(), Some(Tok::Comma)) {
                     self.bump();
-                    self.pat();
+                    self.or_pat();
                 }
                 if matches!(self.cur(), Some(Tok::RParen)) {
                     self.bump();
@@ -2166,7 +2190,10 @@ fn lower_expr(node: &SyntaxNode) -> Option<Expr> {
                 let mut ac = alt.children();
                 let pnode = ac.next()?;
                 let enode = ac.next()?;
-                arms.push((lower_pat(&pnode)?, lower_expr(&enode)?));
+                let body = lower_expr(&enode)?;
+                for pat in lower_pat_alts(&pnode)? {
+                    arms.push((pat, body.clone()));
+                }
             }
             Some(Expr::Case(Box::new(scrut), arms, sp))
         }
@@ -2231,12 +2258,22 @@ fn lower_stmt(node: &SyntaxNode) -> Option<DoStmt> {
     }
 }
 
-/// Lower a CST pattern node to `ast::Pat`.
+/// Lower a CST pattern node to `ast::Pat` (one pattern: no or-pattern alternatives).
 fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
+    let mut alts = lower_pat_alts(node)?;
+    if alts.len() == 1 {
+        alts.pop()
+    } else {
+        None
+    }
+}
+
+/// Lower a CST pattern node to its or-pattern alternatives (`parser::parse_or_pat`).
+fn lower_pat_alts(node: &SyntaxNode) -> Option<Vec<Pat>> {
     let sp = node_span(node);
     match node.kind() {
-        WILD_PAT => Some(Pat::Wild(sp)),
-        VAR_PAT => Some(Pat::Var(head_token(node)?.text().to_string(), sp)),
+        WILD_PAT => Some(vec![Pat::Wild(sp)]),
+        VAR_PAT => Some(vec![Pat::Var(head_token(node)?.text().to_string(), sp)]),
         LIT_PAT => {
             // a negative integer pattern groups two tokens (`-` then the integer); negate
             // when the leading token is `-` (mirrors the LITERAL_EXPR lowering).
@@ -2248,40 +2285,59 @@ fn lower_pat(node: &SyntaxNode) -> Option<Pat> {
             let neg = toks.first().is_some_and(|t| t.text() == "-");
             let tok = if neg { toks.get(1)? } else { toks.first()? };
             match lex(tok.text()).ok()?.first()?.tok.clone() {
-                Tok::Int(IntLit::Small(n)) => Some(Pat::Int(if neg { -n } else { n }, sp)),
-                Tok::Str(s) => Some(Pat::Str(s, sp)),
+                Tok::Int(IntLit::Small(n)) => Some(vec![Pat::Int(if neg { -n } else { n }, sp)]),
+                Tok::Str(s) => Some(vec![Pat::Str(s, sp)]),
                 _ => None,
             }
         }
         CON_PAT => {
             let name = head_token(node)?.text().to_string();
-            let args: Vec<Pat> = node
+            let args: Vec<Vec<Pat>> = node
                 .children()
-                .map(|c| lower_pat(&c))
+                .map(|c| lower_pat_alts(&c))
                 .collect::<Option<_>>()?;
             // `parser.rs`: an APPLIED constructor (only produced by `parse_pat`) spans to
             // the next token. A NULLARY constructor spans to the next token only in
-            // *pattern* position (a `case` arm or a tuple element, both `parse_pat`); as a
-            // clause/lambda parameter or a constructor argument (`parse_apat`) it is just
-            // its token.
-            let pattern_pos = matches!(node.parent().map(|p| p.kind()), Some(CASE_ALT | TUPLE_PAT));
+            // *pattern* position (a `case` arm, a tuple element or an or-pattern alternative,
+            // all `parse_pat`); as a clause/lambda parameter or a constructor argument
+            // (`parse_apat`) it is just its token.
+            let pattern_pos = matches!(
+                node.parent().map(|p| p.kind()),
+                Some(CASE_ALT | TUPLE_PAT | OR_PAT)
+            );
             let sp = if args.is_empty() && !pattern_pos {
                 node_span(node)
             } else {
                 span_to_next_token(node)
             };
-            Some(Pat::Con(name, args, sp))
+            let combos = crate::ast::pat_product(args)?;
+            Some(
+                combos
+                    .into_iter()
+                    .map(|a| Pat::Con(name.clone(), a, sp))
+                    .collect(),
+            )
         }
         TUPLE_PAT => {
-            let mut ps: Vec<Pat> = node
+            let mut ps: Vec<Vec<Pat>> = node
                 .children()
-                .map(|c| lower_pat(&c))
+                .map(|c| lower_pat_alts(&c))
                 .collect::<Option<_>>()?;
             if ps.len() == 1 {
                 ps.pop()
             } else {
-                Some(Pat::Tuple(ps, span_to_next_token(node)))
+                let sp = span_to_next_token(node);
+                let combos = crate::ast::pat_product(ps)?;
+                Some(combos.into_iter().map(|c| Pat::Tuple(c, sp)).collect())
             }
+        }
+        OR_PAT => {
+            let mut alts = Vec::new();
+            for c in node.children() {
+                alts.extend(lower_pat_alts(&c)?);
+            }
+            (alts.len() <= crate::ast::MAX_OR_ALTS && crate::ast::or_binders_agree(&alts))
+                .then_some(alts)
         }
         _ => None,
     }

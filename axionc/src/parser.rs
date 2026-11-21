@@ -1072,28 +1072,39 @@ impl<'a> Parser<'a> {
                 Ok(Pat::Con(name, Vec::new(), (s, e)))
             }
             Some(LTok::Tok(Tok::LParen)) => {
-                let (s, _) = self.span_here();
-                self.pos += 1;
-                let mut ps = vec![self.parse_pat()?];
-                while self.eat(&Tok::Comma) {
-                    ps.push(self.parse_pat()?);
-                }
-                self.expect(&Tok::RParen, "')' in the pattern")?;
-                let end = self.span_here().0;
-                if ps.len() == 1 {
-                    Ok(ps
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| self.syntax_err("empty"))?)
-                } else {
-                    Ok(Pat::Tuple(ps, (s, end)))
-                }
+                let alts = self.parse_apat_alts()?;
+                self.single_pat(alts)
             }
             _ => Err(self.syntax_err("a pattern")),
         }
     }
 
-    fn parse_pat(&mut self) -> PResult<Pat> {
+    /// An atomic pattern with its or-pattern alternatives: a parenthesized pattern may hold
+    /// `|` (`(1 | 2)`, `(A | B, x)`); anything else is one alternative.
+    fn parse_apat_alts(&mut self) -> PResult<Vec<Pat>> {
+        if !matches!(self.cur(), Some(LTok::Tok(Tok::LParen))) {
+            return Ok(vec![self.parse_apat()?]);
+        }
+        let (s, _) = self.span_here();
+        self.pos += 1;
+        let mut ps = vec![self.parse_or_pat()?];
+        while self.eat(&Tok::Comma) {
+            ps.push(self.parse_or_pat()?);
+        }
+        self.expect(&Tok::RParen, "')' in the pattern")?;
+        let end = self.span_here().0;
+        if ps.len() == 1 {
+            return ps.pop().ok_or_else(|| self.syntax_err("empty"));
+        }
+        let combos = crate::ast::pat_product(ps).ok_or_else(|| self.or_too_many())?;
+        Ok(combos
+            .into_iter()
+            .map(|c| Pat::Tuple(c, (s, end)))
+            .collect())
+    }
+
+    /// A pattern with its or-pattern alternatives (`Con apat*` or an atomic pattern).
+    fn parse_pat_alts(&mut self) -> PResult<Vec<Pat>> {
         // applied constructor: Con apat*
         if let Some(LTok::Tok(Tok::ConId(name))) = self.cur() {
             let name = name.clone();
@@ -1106,13 +1117,56 @@ impl<'a> Parser<'a> {
                     Tok::Int(_) | Tok::VarId(_) | Tok::ConId(_) | Tok::LParen
                 ))
             ) {
-                args.push(self.parse_apat()?);
+                args.push(self.parse_apat_alts()?);
             }
             let e = self.span_here().0;
-            Ok(Pat::Con(name, args, (s, e)))
+            let combos = crate::ast::pat_product(args).ok_or_else(|| self.or_too_many())?;
+            Ok(combos
+                .into_iter()
+                .map(|a| Pat::Con(name.clone(), a, (s, e)))
+                .collect())
         } else {
-            self.parse_apat()
+            self.parse_apat_alts()
         }
+    }
+
+    /// `p1 | p2 | …`: the alternatives of an or-pattern, each binding the same variables.
+    fn parse_or_pat(&mut self) -> PResult<Vec<Pat>> {
+        let mut alts = self.parse_pat_alts()?;
+        while self.eat(&Tok::Bar) {
+            alts.extend(self.parse_pat_alts()?);
+            if alts.len() > crate::ast::MAX_OR_ALTS {
+                return Err(self.or_too_many());
+            }
+        }
+        if !crate::ast::or_binders_agree(&alts) {
+            let (s, e) = self.span_here();
+            return Err(
+                Diagnostic::error("AX0100", crate::ast::OR_BINDERS_MSG).label(
+                    s,
+                    e,
+                    "the or-pattern ends here",
+                ),
+            );
+        }
+        Ok(alts)
+    }
+
+    fn or_too_many(&self) -> Diagnostic {
+        self.syntax_err(&format!(
+            "an or-pattern with at most {} combinations",
+            crate::ast::MAX_OR_ALTS
+        ))
+    }
+
+    /// One pattern where or-patterns are not allowed (parameters, lambdas, `<-` binds).
+    fn single_pat(&self, mut alts: Vec<Pat>) -> PResult<Pat> {
+        if alts.len() == 1 {
+            return alts.pop().ok_or_else(|| self.syntax_err("a pattern"));
+        }
+        Err(self.syntax_err(
+            "one pattern (an or-pattern `|` is allowed only in a `case` arm; write a `case` here)",
+        ))
     }
 
     // --- expressions ---
@@ -1269,11 +1323,15 @@ impl<'a> Parser<'a> {
         let scrut = self.parse_expr()?;
         self.expect(&Tok::Of, "'of' in the case")?;
         let arms = self.block(|p| {
-            let pat = p.parse_pat()?;
+            let alts = p.parse_or_pat()?;
             p.expect(&Tok::Arrow, "'->' in the case arm")?;
             let body = p.parse_expr()?;
-            Ok((pat, body))
+            Ok(alts
+                .into_iter()
+                .map(|pat| (pat, body.clone()))
+                .collect::<Vec<_>>())
         })?;
+        let arms = arms.into_iter().flatten().collect();
         let end = self.span_here().0;
         Ok(Expr::Case(Box::new(scrut), arms, (s, end)))
     }

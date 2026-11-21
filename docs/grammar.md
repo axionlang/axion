@@ -52,7 +52,8 @@ guards      = { "|" expr "=" expr } [ "where" "{" { funDef } "}" ] ;
 
 pat         = varName | "_" | literal
             | conName { pat }
-            | "(" pat { "," pat } ")" ;      (* parentheses or tuple pattern *)
+            | "(" orPat { "," orPat } ")" ;  (* parentheses or tuple pattern *)
+orPat       = pat { "|" pat } ;               (* alternatives: case arms only  *)
 
 (* --- Expressions --- *)
 expr        = "let" { funDef } "in" expr
@@ -73,7 +74,7 @@ fieldAssign  = varName "=" expr ;
 (* expr    recordFields  → update: p { status = "Running" } (Listing 2.1)    *)
 recordUpd   = atom "{" varName "=" expr { "," varName "=" expr } "}" ;
 
-alt         = pat "->" expr ;
+alt         = orPat "->" expr ;
 stmt        = pat "<-" expr | expr | "let" { funDef } ;
 
 (* --- Lexical --- *)
@@ -90,11 +91,20 @@ binop       = "+" | "-" | "*"                (* Num  (Int/Float): arithmetic    
             | "`" varName "`" ;             (* infix function: `mod`        *)
 ```
 
+An or-pattern `p1 | p2` matches when either alternative does: `Red | Green -> 1`,
+`Circle n | Square n -> n`, `Just (1 | 2 | 3) -> "small"`. It is allowed in a `case` arm, at the
+top or inside parentheses there; a function's parameters take one pattern each (match with a
+`case` instead). Every alternative binds the same variables, at the same type. The compiler gives
+each alternative its own arm sharing the one body, so nested alternatives multiply out (at most
+64 arms per or-pattern). A string literal can be a whole arm's alternative (`"a" | "b" -> …`)
+but not a part of another pattern.
+
 The bitwise `Int` operations use Haskell's `Data.Bits` names and fixities: `shiftL`/`shiftR`
 (`infixl 8`), `.&.` (`infixl 7`), `xor` (`infixl 6`), `.|.` (`infixl 5`). The named ones work
 prefix (`shiftL x 4`) or infix (`` x `shiftL` 4 ``); a program's own definition of one of those
 names wins. A shift amount is taken modulo 64 on every backend, `shiftR` is arithmetic, and
-`xor x (-1)` is the complement.
+`complement x` (= `xor x (-1)`) flips every bit, and `popCount x` counts the set bits of the 64-bit
+two's-complement value (`popCount (-1)` is 64); both are prelude functions a program may redefine.
 
 ## Level notes (progressive disclosure L0–L3, §8)
 

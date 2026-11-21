@@ -2043,7 +2043,7 @@ impl Ck<'_> {
             self.pat_binds(pat, &mut binds);
             let branchy = arms.len() > 1;
             if branchy {
-                tr.branch.push(crate::core::cpat(pat));
+                tr.branch.push(crate::core::cpat_source(pat));
             }
             for (n, payload) in binds {
                 sa.bound.insert(n.clone());

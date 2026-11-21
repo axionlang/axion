@@ -6713,6 +6713,11 @@ pub fn lower_with(
         let shadow = func_bound_names(f);
         for lam in nodes {
             let Expr::Lam(_, _, span) = lam else { continue };
+            // the copies of one body an or-pattern expanded to (`A k | B k -> \y -> y + k`)
+            // hold the same lambda at the same span: lift it once, every copy calls it
+            if lam_by_fn.get(&f.name).is_some_and(|m| m.contains_key(span)) {
+                continue;
+            }
             let mut fv = HashSet::new();
             free_vars(lam, &HashSet::new(), &mut fv);
             let mut captures: Vec<String> = fv
@@ -16962,16 +16967,26 @@ pub fn atom(a: &Atom) -> String {
 }
 
 pub fn cpat(p: &CPat) -> String {
+    cpat_with(p, &|n| n.to_string())
+}
+
+/// [`cpat`] with the source names of renamed binders (`n$1` → `n`), for reports.
+pub fn cpat_source(p: &CPat) -> String {
+    cpat_with(p, &|n| source_name(n).to_string())
+}
+
+fn cpat_with(p: &CPat, name: &dyn Fn(&str) -> String) -> String {
+    let sub = |ps: &[CPat]| ps.iter().map(|q| cpat_with(q, name)).collect::<Vec<_>>();
     match p {
         CPat::Int(n) => n.to_string(),
-        CPat::Var(n) => n.clone(),
+        CPat::Var(n) => name(n),
         CPat::Wild => "_".into(),
-        CPat::Tuple(ps) => format!("({})", ps.iter().map(cpat).collect::<Vec<_>>().join(", ")),
+        CPat::Tuple(ps) => format!("({})", sub(ps).join(", ")),
         CPat::Con(n, ps) => {
             if ps.is_empty() {
                 n.clone()
             } else {
-                format!("{n} {}", ps.iter().map(cpat).collect::<Vec<_>>().join(" "))
+                format!("{n} {}", sub(ps).join(" "))
             }
         }
     }

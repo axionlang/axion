@@ -98,6 +98,24 @@ classify xs = case xs of
 $AX --release axionc/tests/fixtures/nested_patterns_native.axi
 ```
 
+An or-pattern lets alternatives share one arm; each binds the same variables:
+
+```haskell
+size :: Shape -> Int
+size s = case s of
+  Circle n | Square n -> n
+  Rect w h            -> w * h
+  Dot                 -> 0
+
+small :: Maybe Int -> String
+small m = case m of
+  Just (1 | 2 | 3) -> "small"
+  _                -> "other"
+```
+```sh
+$AX --release axionc/tests/fixtures/or_patterns.axi
+```
+
 ---
 
 ### 4b. Floating point — `Float` and the `Num` class

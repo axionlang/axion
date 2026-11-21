@@ -298,8 +298,13 @@ fn token_driven_module_matches_over_all_fixtures() {
                 continue;
             }
             // `recover_partial.axi` is deliberately malformed; the two parsers recover
-            // differently by design, so byte-identical ASTs aren't expected there.
-            if path.file_name().unwrap() == "recover_partial.axi" {
+            // differently by design, so byte-identical ASTs aren't expected there. Likewise the
+            // or-pattern syntax-error fixtures (their errors are tested in `tests/run.rs`).
+            let name = path.file_name().unwrap();
+            if name == "recover_partial.axi"
+                || name == "or_pattern_binders_reject.axi"
+                || name == "or_pattern_param_reject.axi"
+            {
                 continue;
             }
             let src = std::fs::read_to_string(&path).unwrap();
