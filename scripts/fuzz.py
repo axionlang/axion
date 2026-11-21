@@ -1690,6 +1690,64 @@ def gen_local_fns(rng):
         lines[at:at] = [f"  let tw j = j * {a} + j", f"  putStrLn (showInt (tw {b} + tw {a}))"]
     return LOCALS_PRE + "\n".join(funs) + "\nmain :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
 
+TUPLES_PRE = """-- fuzz:tuples
+catL :: List String -> String
+catL xs = case xs of
+  Nil -> "."
+  Cons a rest -> a ++ "," ++ catL rest
+
+mkPs :: Int -> List (String, Int)
+mkPs k = [(showInt k ++ "a", k + 1), ("bb", k + 2), (showInt k, k + 3)]
+
+pairK :: Int -> (String, Int)
+pairK n = (showInt n ++ "p", n)
+
+"""
+
+def gen_tuple_acc(rng):
+    """`fst`/`snd` and parts of tuples: on a variable they only read it (an inline `case`), so the
+    tuple stays usable — read twice, read then stored whole on one branch, a part stored in a new
+    list while the caller keeps the list, a predicate reading the pair, a part returned from a
+    search; on a temporary they go to the prelude functions, which free it; and a part moved out
+    of a temporary tuple, bound and used. Only shapes that compile natively are generated, so every
+    program is SAFE: a native refusal, a leak or a front-end rejection is a finding.
+    Known limits left out (refused natively, never miscompiled): a tuple stored on one branch of a
+    non-tail `if`; a `where`-local owning a list its caller reuses; `map fst ps` / a lambda over
+    `ps` with `ps` used again; `snd (tag, …)` on a tuple holding a borrowed String; a part or a
+    captured String chosen by an `if`; a pair of Strings stored after its parts are read."""
+    W = ["ab", "cde", "f", ""]
+    lit = lambda: '"' + rng.choice(W) + '"'
+    C = lambda: rng.randint(0, 5)
+    funs, lines = [], []
+    pair = "(String, Int) -> String -> Int -> String"
+    for i in range(rng.randint(2, 5)):
+        n, c = f"t{i}", C()
+        tmpl = rng.randint(0, 5)
+        sig, call = "List (String, Int) -> String -> Int -> String", f"{n} (mkPs {C()}) {lit()} {C()}"
+        if tmpl == 0:     # predicate reading the pair; the kept parts read
+            body = f" catL (map fst (filter (\\p -> snd p > {c} + k) ps))"
+        elif tmpl == 1:   # parts read twice from one tuple
+            sig, call = pair, f"{n} (pairK {C()}) {lit()} {C()}"
+            body = f" fst ps ++ tag ++ showInt (snd ps + k) ++ fst ps"
+        elif tmpl == 2:   # read, then stored whole on one branch (in tail position)
+            sig, call = pair, f"{n} (pairK {C()}) {lit()} {C()}"
+            funs.append(f"keep{i} :: (String, Int) -> List (String, Int)\n"
+                        f"keep{i} y = if snd y > {c} then Cons y Nil else Nil\n")
+            body = f" catL (map fst (keep{i} ps)) ++ tag"
+        elif tmpl == 3:   # a part stored in a new list over a borrowed list, the list used again
+            funs.append(f"firsts{i} :: List (String, Int) -> String -> List String\n"
+                        f"firsts{i} xs tag = case xs of\n  Nil -> Nil\n"
+                        f"  Cons y ys -> Cons (fst y ++ tag) (firsts{i} ys tag)\n")
+            body = f" catL (firsts{i} ps tag) ++ showInt (length ps + k)"
+        elif tmpl == 4:   # a part moved out of a temporary tuple, bound and used
+            body = f"\n  let s = (case pairK (k + {c}) of (a, _) -> a)\n  in s ++ tag ++ fst (pairK k)"
+        else:             # the matching element's part, returned from a search over the list
+            body = (f" look{i} ps\n  where\n    look{i} xs = case xs of\n      Nil -> tag\n"
+                    f"      Cons y ys -> if snd y == k + {c} then fst y else look{i} ys")
+        funs.append(f"{n} :: {sig}\n{n} ps tag k ={body}\n")
+        lines.append(f"  putStrLn ({call})")
+    return TUPLES_PRE + "\n".join(funs) + "\nmain :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.08:
@@ -1773,9 +1831,9 @@ HANG_RC = 124           # subprocess timeout → this return code (checked by `c
 def _safe_by_construction(prog):
     """Generators whose every program is safe value-semantics code: a native AX0910/AX0911 on one is
     a reclamation GAP (hard finding), not a sound rejection — `gen_sharing`, `gen_closure_values`,
-    `gen_nested_patterns`, `gen_local_fns`."""
+    `gen_nested_patterns`, `gen_local_fns`, `gen_tuple_acc`."""
     return ("fuzz:sharing" in prog or "fuzz:closures" in prog or "fuzz:nested" in prog
-            or "fuzz:locals" in prog)
+            or "fuzz:locals" in prog or "fuzz:tuples" in prog)
 
 def run(args, want_bin=None, timeout=HANG_SECS):
     try:

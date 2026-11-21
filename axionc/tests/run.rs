@@ -7410,6 +7410,10 @@ fn axmpv_regressions_agree_on_every_backend() {
             "36\n36\n18\n306\n101\nt1:a,t1:bb,t1:c,.\n<u2a>,<u2bb>,<u2c>,.\nv3,bb,v3,.\n2056\na<q>q<q>\n",
         ),
         (
+            "tuple_accessors_borrow.axi",
+            "bb,ccc,.\na!,bb!,ccc!,.\n6\nxy:4xy\n1\n7vw\n42\n9!\n",
+        ),
+        (
             "accessor_keeps_arg.axi",
             "5\n6\n18\nalpha\nalpha!\n2\nhi\nhi?\nq\nqzero\n",
         ),

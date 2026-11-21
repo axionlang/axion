@@ -1667,6 +1667,10 @@ pub fn prepare_for_check_with(
     // over String `==`, so no downstream stage (check/infer/core/interp/backends) needs a
     // string-pattern kind — they run on the desugared form.
     desugar_string_patterns(&mut module, diags);
+    // `fst x` / `snd x` on a variable → an inline `case`, which only reads the tuple: the
+    // prelude functions take theirs (they are generic, so their result could not be copied
+    // where it is stored), and `x` could not be used again.
+    inline_tuple_accessors(&mut module);
     // A binder shadowing a parameter that a `where`-local captures gets a fresh name (the
     // lowering passes captures by name). Before `let` lifting: the functions it lifts take
     // their captures as parameters of the same name, which hold the captured value.
@@ -5266,6 +5270,151 @@ fn rw_int_lits_expr(
 /// The scrutinee is bound once (the single-var `case` arm is a strict `let`), and the
 /// catch-all's variable becomes that binder so its body needs no rewrite. A malformed
 /// case (a string pattern mixed with constructors, or no catch-all) reports AX0204.
+/// Rewrites each saturated `fst x` / `snd x` whose argument is a variable into
+/// `case x of (v, _) -> v` (`(_, v) -> v`). The prelude `fst`/`snd` own their argument (they
+/// hand a part of it back, and being generic they cannot copy it), so `x` could not be used
+/// afterwards (AX0001); the inline `case` only reads it, like a hand-written one. A temporary
+/// argument (`fst (mk n)`) still goes to the prelude function, which frees it. Functions that
+/// bind a name `fst` or `snd` themselves, and a program that defines its own, are left alone.
+fn inline_tuple_accessors(module: &mut ast::Module) {
+    let prelude_only = ["fst", "snd"].iter().all(|n| {
+        module
+            .funcs
+            .iter()
+            .filter(|f| f.name == *n)
+            .all(|f| f.span.0 / diag::CLONE_SPAN_STRIDE == diag::PRELUDE_SPAN_BAND)
+    });
+    if !prelude_only {
+        return;
+    }
+    fn binds_accessor(f: &ast::Func) -> bool {
+        fn pats(ps: &[ast::Pat]) -> bool {
+            let mut vs = std::collections::BTreeSet::new();
+            ps.iter().for_each(|p| ast::pat_vars(p, &mut vs));
+            vs.contains("fst") || vs.contains("snd")
+        }
+        fn expr(e: &ast::Expr) -> bool {
+            use ast::Expr::{
+                App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple,
+                Var,
+            };
+            match e {
+                Int(..) | Float(..) | Str(..) | Var(..) | Con(..) => false,
+                App(a, b, _) | BinOp(_, a, b, _) => expr(a) || expr(b),
+                If(c, t, el, _) => expr(c) || expr(t) || expr(el),
+                Tuple(es, _) => es.iter().any(expr),
+                RecordCon(_, fs, _) => fs.iter().any(|(_, x)| expr(x)),
+                RecordUpd(b, fs, _) => expr(b) || fs.iter().any(|(_, x)| expr(x)),
+                Lam(ps, b, _) => pats(ps) || expr(b),
+                Case(sc, arms, _) => {
+                    expr(sc)
+                        || arms
+                            .iter()
+                            .any(|(p, b)| pats(std::slice::from_ref(p)) || expr(b))
+                }
+                Let(fs, b, _) => fs.iter().any(func) || expr(b),
+            }
+        }
+        fn func(f: &ast::Func) -> bool {
+            f.name == "fst"
+                || f.name == "snd"
+                || f.clauses.iter().any(|c| {
+                    pats(&c.pats)
+                        || c.wher.iter().any(func)
+                        || match &c.body {
+                            ast::Body::Plain(e) => expr(e),
+                            ast::Body::Guarded(arms) => {
+                                arms.iter().any(|(g, r)| expr(g) || expr(r))
+                            }
+                        }
+                })
+        }
+        func(f)
+    }
+    fn rewrite(e: &mut ast::Expr, ctr: &mut usize) {
+        use ast::Expr::{
+            App, BinOp, Case, Con, Float, If, Int, Lam, Let, RecordCon, RecordUpd, Str, Tuple, Var,
+        };
+        match e {
+            Int(..) | Float(..) | Str(..) | Var(..) | Con(..) => {}
+            App(a, b, sp) => {
+                let hit = match (&**a, &**b) {
+                    (Var(n, vs), Var(..)) if n == "fst" || n == "snd" => Some((n == "fst", *vs)),
+                    _ => None,
+                };
+                if let Some((first, vs)) = hit {
+                    let v = format!("$tup{ctr}");
+                    *ctr += 1;
+                    let slots = if first {
+                        vec![ast::Pat::Var(v.clone(), vs), ast::Pat::Wild(vs)]
+                    } else {
+                        vec![ast::Pat::Wild(vs), ast::Pat::Var(v.clone(), vs)]
+                    };
+                    let arg = std::mem::replace(&mut **b, Int(0, *sp));
+                    *e = Case(
+                        Box::new(arg),
+                        vec![(ast::Pat::Tuple(slots, vs), Var(v, vs))],
+                        *sp,
+                    );
+                } else {
+                    rewrite(a, ctr);
+                    rewrite(b, ctr);
+                }
+            }
+            BinOp(_, a, b, _) => {
+                rewrite(a, ctr);
+                rewrite(b, ctr);
+            }
+            If(c, t, el, _) => {
+                rewrite(c, ctr);
+                rewrite(t, ctr);
+                rewrite(el, ctr);
+            }
+            Tuple(es, _) => es.iter_mut().for_each(|x| rewrite(x, ctr)),
+            RecordCon(_, fs, _) => fs.iter_mut().for_each(|(_, x)| rewrite(x, ctr)),
+            RecordUpd(b, fs, _) => {
+                rewrite(b, ctr);
+                fs.iter_mut().for_each(|(_, x)| rewrite(x, ctr));
+            }
+            Lam(_, b, _) => rewrite(b, ctr),
+            Case(sc, arms, _) => {
+                rewrite(sc, ctr);
+                arms.iter_mut().for_each(|(_, b)| rewrite(b, ctr));
+            }
+            Let(fs, b, _) => {
+                fs.iter_mut().for_each(|f| rewrite_func(f, ctr));
+                rewrite(b, ctr);
+            }
+        }
+    }
+    fn rewrite_func(f: &mut ast::Func, ctr: &mut usize) {
+        for c in &mut f.clauses {
+            match &mut c.body {
+                ast::Body::Plain(e) => rewrite(e, ctr),
+                ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+                    rewrite(g, ctr);
+                    rewrite(r, ctr);
+                }),
+            }
+            c.wher.iter_mut().for_each(|w| rewrite_func(w, ctr));
+        }
+    }
+    let mut ctr = 0usize;
+    for f in &mut module.funcs {
+        let in_prelude = f.span.0 / diag::CLONE_SPAN_STRIDE == diag::PRELUDE_SPAN_BAND;
+        if !in_prelude && !binds_accessor(f) {
+            rewrite_func(f, &mut ctr);
+        }
+    }
+    for i in &mut module.instances {
+        for f in &mut i.methods {
+            if !binds_accessor(f) {
+                rewrite_func(f, &mut ctr);
+            }
+        }
+    }
+}
+
 fn desugar_string_patterns(module: &mut ast::Module, diags: &mut Diagnostics) {
     for f in &mut module.funcs {
         desugar_strpat_in_func(f, diags);

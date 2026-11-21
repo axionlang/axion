@@ -150,6 +150,33 @@ fn element_alias_double_free_is_caught_by_verifier() {
 /// `DropOfAlias`. Reproducible in plain user code (no `uncons`); the interpreter still runs it.
 /// Auto-Drop now COPIES such a field before the consuming call (so the programs compile and
 /// verify clean — asserted too); `AXION_NO_ALIAS_COPY` shows the verifier the uncopied shape.
+/// A borrow handed back by a getter call and stored in a new value shares its owner's memory
+/// through the call: the verifier follows the borrow through the argument (`nameOf y`, `y` out of
+/// the borrowed list) to the list. It used to stop at `y`, so the double free was not reported.
+#[test]
+fn getter_result_stored_is_caught_by_verifier() {
+    let path = format!(
+        "{}/tests/fixtures/getter_result_embedded.axi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let verify = axionc()
+        .env("AXION_NO_ALIAS_COPY", "1")
+        .args(["--emit", "verify", &path])
+        .output()
+        .unwrap();
+    let vstdout = String::from_utf8_lossy(&verify.stdout);
+    assert!(
+        vstdout.contains("FAIL:"),
+        "the verifier must catch the stored getter result, got:\n{vstdout}"
+    );
+    let copied = axionc().args(["--emit", "verify", &path]).output().unwrap();
+    let cstdout = String::from_utf8_lossy(&copied.stdout);
+    assert!(
+        cstdout.contains("ok:") && !cstdout.contains("FAIL:"),
+        "with the copy it must verify clean, got:\n{cstdout}"
+    );
+}
+
 #[test]
 fn borrowed_tuple_field_consume_is_caught_by_verifier() {
     for fx in [

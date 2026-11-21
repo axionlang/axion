@@ -1266,12 +1266,19 @@ impl Verifier<'_> {
         // some parameters: the result borrows those arguments' interiors (the `grab` class).
         if let Op::CallDirect(g, args, _) = op {
             if let Some(params) = self.summaries.get(g).filter(|p| !p.is_empty()) {
+                // transitively: an argument that is itself a borrow (`y` out of a borrowed
+                // list, in `fst y`) hands on what IT borrows, so a constructor embedding the
+                // result is seen to share the list's element
                 let borrows: HashSet<String> = params
                     .iter()
                     .filter_map(|&i| args.get(i))
                     .filter_map(|a| match a {
-                        Atom::Var(v) => Some(v.clone()),
+                        Atom::Var(v) => Some(v),
                         _ => None,
+                    })
+                    .flat_map(|v| {
+                        let inner = st.get(v).map(|val| val.borrows.clone()).unwrap_or_default();
+                        inner.into_iter().chain(std::iter::once(v.clone()))
                     })
                     .collect();
                 return Val {
@@ -1653,6 +1660,8 @@ impl Verifier<'_> {
                         if let Some(cv) = st.get_mut(&child) {
                             if cv.owned && cv.dead.is_none() {
                                 cv.dead = Some(Cat::DoubleFree);
+                                // a nested field (`case p of (c, n)` under `(a, p)`) goes too
+                                self.kill_descendants(&child, Cat::DoubleFree, st);
                             }
                         }
                     }
@@ -1995,6 +2004,39 @@ impl Verifier<'_> {
             // tracked: an OWNED tuple's fields already reclaim soundly via the Core skip-destructors
             // (the tuple_owned / nested_tuple_extract_escape / tuple_elem_discard fixtures are
             // LSan leak-gated), and tracking them here would risk a scalar-field leak false-positive.
+            // …except that a skip-destructor leaves its slot to the binder, which must then be
+            // freed or handed on (`let s = case t of (a, _) -> a` once leaked `a` unseen). So an
+            // OWNED tuple's heap fields are tracked like a constructor's — owned, children of the
+            // scrutinee — when its key segments (a scalar field then is not heap, so no false
+            // positive); an unsegmented key leaves them untracked as before.
+            if scrut_owned {
+                let field_keys = scrut_key
+                    .as_deref()
+                    .and_then(|k| self.recinfo.split_tuple_key(k, subs.len()));
+                if let Some(ks) = field_keys {
+                    for (i, sp) in subs.iter().enumerate() {
+                        let CPat::Var(n) = sp else { continue };
+                        let Some(cls) = ks
+                            .get(i)
+                            .and_then(|el| self.recinfo.classify_tuple_elem(el))
+                        else {
+                            continue;
+                        };
+                        st.insert(
+                            n.clone(),
+                            Val {
+                                owned: true,
+                                key: cls,
+                                ..Default::default()
+                            },
+                        );
+                        self.children
+                            .entry(scrut.to_string())
+                            .or_default()
+                            .push((n.clone(), i));
+                    }
+                }
+            }
             if !scrut_owned && self.mode.track_fields {
                 // segment the tuple key into per-field keys; `None` ⇒ unknown (no scrut key / arity
                 // mismatch) ⇒ fields are tracked CONSERVATIVELY (see `track` below).
@@ -2130,12 +2172,26 @@ impl Verifier<'_> {
         if st.get(v).is_some_and(|val| val.owned && val.dead.is_none()) {
             let gone = self.consumed_slots.get(v).cloned().unwrap_or_default();
             for (child, slot) in self.children.get(v).cloned().unwrap_or_default() {
-                if !gone.contains(&slot) {
+                if !gone.contains(&slot) && st.get(&child).is_some_and(|c| c.dead.is_none()) {
                     Self::kill(&child, Cat::UseAfterFree, st);
+                    self.kill_descendants(&child, Cat::UseAfterFree, st);
                 }
             }
         }
         Self::kill(v, cat, st);
+    }
+
+    /// The live fields bound out of `v` (and out of those, transitively) that were not moved
+    /// on: they die with `v`, which a deep free or a whole move just retired.
+    fn kill_descendants(&self, v: &str, cat: Cat, st: &mut State) {
+        let gone = self.consumed_slots.get(v).cloned().unwrap_or_default();
+        for (child, slot) in self.children.get(v).cloned().unwrap_or_default() {
+            if !gone.contains(&slot) && st.get(&child).is_some_and(|c| c.owned && c.dead.is_none())
+            {
+                Self::kill(&child, cat, st);
+                self.kill_descendants(&child, cat, st);
+            }
+        }
     }
 
     /// Mark `v` moved-out/consumed. Only an OWNED resource dies on a move — a scalar is

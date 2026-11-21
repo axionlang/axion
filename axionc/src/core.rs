@@ -7489,7 +7489,7 @@ pub fn lower_with(
     // A part of a BORROWED parameter that a pattern brings out (`case xs of Cons _ (Cons s _)`)
     // belongs to the caller too: moved into a new value or a consuming call it would have two
     // owners. Copy it there, like a borrow handed back by a call (one walk does both).
-    // `AXION_NO_ALIAS_COPY` turns it off (the verifier's tests see the uncopied shape).
+    // `AXION_NO_ALIAS_COPY` turns both off (the verifier's tests see the uncopied shape).
     let no_alias_copy = std::env::var_os("AXION_NO_ALIAS_COPY").is_some();
     let mut copied_interior = false;
     for f in &mut out {
@@ -7522,8 +7522,13 @@ pub fn lower_with(
                 }
             }
         }
-        if !borrow_kinds.is_empty() || !bv.is_empty() {
-            copy_moved_borrows(&mut f.body, &borrow_kinds, &borrow_args, &mut bv, &mut ctr);
+        let kinds_here = if no_alias_copy {
+            HashMap::new()
+        } else {
+            borrow_kinds.clone()
+        };
+        if !kinds_here.is_empty() || !bv.is_empty() {
+            copy_moved_borrows(&mut f.body, &kinds_here, &borrow_args, &mut bv, &mut ctr);
             copied_interior |= ctr > 0;
         }
         // a copier is generated only for the types actually copied
@@ -13493,7 +13498,7 @@ fn copy_shared_update_fields(
 }
 
 /// How to copy a bare-returned heap param so its return is owned, not an alias.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum CopyKind {
     /// `String` → `strAppend x ""` (a fresh `axion_strcat` copy).
     Str,
@@ -13748,6 +13753,24 @@ fn copy_kind_of(t: &Type, datas: &[ast::DataDecl]) -> Option<CopyKind> {
     mono_key(t).map(CopyKind::Container)
 }
 
+/// The kind of borrow `t` returns on every path (`ret a` with `a` a known borrow), if one.
+fn tail_borrow_kind(t: &Term, bv: &HashMap<String, CopyKind>) -> Option<CopyKind> {
+    match t {
+        Term::Let(_, _, _, b) | Term::Drop(_, _, _, _, b) => tail_borrow_kind(b, bv),
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(v))), _) => bv.get(v).cloned(),
+        Term::Ret(Rhs::Op(_), _) => None,
+        Term::Ret(Rhs::If(_, a, b), _) => {
+            let k = tail_borrow_kind(a, bv)?;
+            (tail_borrow_kind(b, bv)? == k).then_some(k)
+        }
+        Term::Ret(Rhs::Case(_, arms), _) => {
+            let mut ks = arms.iter().map(|(_, b)| tail_borrow_kind(b, bv));
+            let k = ks.next()??;
+            ks.all(|o| o.as_ref() == Some(&k)).then_some(k)
+        }
+    }
+}
+
 /// Copies a borrow (the result of a borrow-returning call, or an alias of one) at each op that
 /// MOVES it into something new — a constructor, a tuple, a consuming call — so the new value
 /// owns a copy instead of sharing memory with the borrow's owner (who frees it). A `ret` of the
@@ -13819,6 +13842,20 @@ fn copy_moved_borrows(
                 }
             } else {
                 copy_rhs(rhs, kinds, ba, bv, ctr);
+                // a `let`-bound `case`/`if` whose every branch hands back the same kind of
+                // borrow (`let s = case p of (a, _) -> a`) is that borrow too
+                let tails = match &*rhs {
+                    Rhs::If(_, a, b) => vec![tail_borrow_kind(a, bv), tail_borrow_kind(b, bv)],
+                    Rhs::Case(_, arms) => {
+                        arms.iter().map(|(_, b)| tail_borrow_kind(b, bv)).collect()
+                    }
+                    Rhs::Op(_) => Vec::new(),
+                };
+                if let Some(Some(k)) = tails.first() {
+                    if tails.iter().all(|t| t.as_ref() == Some(k)) {
+                        bv.insert(x.clone(), k.clone());
+                    }
+                }
             }
             copy_moved_borrows(body, kinds, ba, bv, ctr);
         }
@@ -14095,6 +14132,52 @@ fn arm_owned_key_env(
         Term::Ret(Rhs::Op(op), _) => op_owned_key(op, br, recinfo),
         Term::Ret(rhs @ (Rhs::If(..) | Rhs::Case(..)), _) => cond_temp_key(rhs, br, recinfo),
     }
+}
+
+/// A `case` whose every arm frees its scrutinee except one slot and returns that slot's binder
+/// (`case t of (a, _) -> drop t skip{0}; ret a`): the field was moved out, so the result owns it.
+/// Its key, when the arms agree on one (the binders' drop types).
+fn moveout_case_key(rhs: &Rhs, dty: &HashMap<String, Option<String>>) -> Option<String> {
+    fn skip_of(s: &str, t: &Term) -> Option<usize> {
+        match t {
+            Term::Drop(v, _, skip, _, _) if v == s => match skip.as_slice() {
+                [i] => Some(*i),
+                _ => None,
+            },
+            Term::Drop(_, _, _, _, b) | Term::Let(_, Rhs::Op(_), _, b) => skip_of(s, b),
+            _ => None,
+        }
+    }
+    fn returns(v: &str, t: &Term) -> bool {
+        match t {
+            Term::Drop(w, _, _, _, b) => w != v && returns(v, b),
+            Term::Let(y, Rhs::Op(_), _, b) => y != v && returns(v, b),
+            Term::Ret(Rhs::Op(Op::Atom(Atom::Var(w))), _) => w == v,
+            _ => false,
+        }
+    }
+    let Rhs::Case(Atom::Var(s), arms) = rhs else {
+        return None;
+    };
+    let mut key: Option<String> = None;
+    for (pat, arm) in arms {
+        let subs = match pat {
+            CPat::Tuple(subs) | CPat::Con(_, subs) => subs,
+            _ => return None,
+        };
+        let i = skip_of(s, arm)?;
+        let CPat::Var(v) = subs.get(i)? else {
+            return None;
+        };
+        if !returns(v, arm) {
+            return None;
+        }
+        let k = dty.get(v).cloned().flatten()?;
+        if key.get_or_insert_with(|| k.clone()) != &k {
+            return None;
+        }
+    }
+    key
 }
 
 /// If `rhs` is a conditional whose EVERY arm yields a fresh owned heap value of the SAME key, that
@@ -14612,6 +14695,11 @@ fn reclaim_cond_escape(
                         Rhs::Op(op) if op_mentions_any(op, &HashSet::from([v.clone()])) => {
                             op_is_fresh_wrt_args(op)
                                 || matches!(op, Op::CallDirect(g, _, _) if !br.contains_key(g))
+                                // a call that may return a pointer into v, whose result is only
+                                // read by fresh producers right away (`snd p > 0`) while v is
+                                // still used after: v outlives every read, so it stays owned
+                                || matches!(op, Op::CallDirect(..)
+                                    if borrow_read_then_dead(&x, v, &b))
                                 || matches!(op, Op::UpdateRecord { inplace: false, fields, .. }
                                     if recinfo.update_is_fresh(fields))
                         }
@@ -14651,7 +14739,9 @@ fn reclaim_cond_escape(
                 // removing the tail-position workaround for all-heap-arm conditionals (fff's rows).
                 // MIXED arms are uniformized to all-owned by `normalize_mixed_cond_lets` (a pre-pass
                 // before borrow analysis), so by here they reach `cond_temp_key` as all-heap.
-                if let Some(key) = cond_temp_key(&rhs, br, recinfo) {
+                if let Some(key) =
+                    cond_temp_key(&rhs, br, recinfo).or_else(|| moveout_case_key(&rhs, dty))
+                {
                     if !owned.iter().any(|(v, _)| v == &x) {
                         owned.push((x.clone(), Some(key)));
                     }
@@ -15834,6 +15924,29 @@ fn result_skip_dropped(t: &Term, x: &str, shared: &[usize]) -> bool {
 
 /// `true` if every use of `x` in `t` is an operand of an op whose result cannot alias it
 /// (`op_is_fresh_wrt_args`) — `x` is never returned, stored, scrutinized, passed on or dropped.
+/// `x` (a value that may point into `v`) is read only by fresh-producing ops in the straight-line
+/// `let` prefix of `t`, and `v` is still mentioned after `x`'s last read: whatever frees `v` does
+/// so after every read of `x`.
+fn borrow_read_then_dead(x: &str, v: &str, t: &Term) -> bool {
+    let xs = HashSet::from([x.to_string()]);
+    let vs = HashSet::from([v.to_string()]);
+    match t {
+        _ if !term_mentions_any(t, &xs) => true,
+        Term::Let(y, Rhs::Op(op), _, b) => {
+            if y == x || y == v || (op_mentions_any(op, &xs) && !op_is_fresh_wrt_args(op)) {
+                return false;
+            }
+            if term_mentions_any(b, &xs) {
+                borrow_read_then_dead(x, v, b)
+            } else {
+                term_mentions_any(b, &vs)
+            }
+        }
+        Term::Drop(y, _, _, _, b) => y != x && y != v && borrow_read_then_dead(x, v, b),
+        _ => false,
+    }
+}
+
 fn alias_only_read_fresh(x: &str, t: &Term) -> bool {
     let set = HashSet::from([x.to_string()]);
     let op_ok = |op: &Op| !op_mentions_any(op, &set) || op_is_fresh_wrt_args(op);
