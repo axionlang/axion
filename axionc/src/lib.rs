@@ -1667,6 +1667,10 @@ pub fn prepare_for_check_with(
     // over String `==`, so no downstream stage (check/infer/core/interp/backends) needs a
     // string-pattern kind — they run on the desugared form.
     desugar_string_patterns(&mut module, diags);
+    // A binder shadowing a parameter that a `where`-local captures gets a fresh name (the
+    // lowering passes captures by name). Before `let` lifting: the functions it lifts take
+    // their captures as parameters of the same name, which hold the captured value.
+    letlift::rename_capture_shadows(&mut module);
     // Local functions in `let` → `where`-locals taking their captured variables, so the native
     // backends compile them (see `letlift`).
     letlift::lift_let_functions(&mut module);
@@ -2464,6 +2468,9 @@ fn lift_capturing_lambdas(
         new_funcs: Vec<ast::Func>,
         committed: HashSet<String>,
         counter: usize,
+        /// the `where` functions in scope: a lambda calling one is left to the closure
+        /// conversion in Core, which passes it what the local captures
+        local_fns: HashSet<String>,
     }
     fn walk(
         e: &mut ast::Expr,
@@ -2522,6 +2529,9 @@ fn lift_capturing_lambdas(
                 .collect();
             if caps.is_empty() {
                 return; // non-capturing → left for `build_lambda_candidates`.
+            }
+            if caps.iter().any(|c| ctx.local_fns.contains(c)) {
+                return;
             }
             caps.sort();
             caps.dedup();
@@ -2619,6 +2629,15 @@ fn lift_capturing_lambdas(
         for c in &mut f.clauses {
             let mut b = outer_bound.clone();
             c.pats.iter().for_each(|p| pat_bound(p, &mut b));
+            // a lambda naming a `where` binding captures it, like a parameter
+            b.extend(c.wher.iter().map(|w| w.name.clone()));
+            let saved = ctx.local_fns.clone();
+            ctx.local_fns.extend(
+                c.wher
+                    .iter()
+                    .filter(|w| w.clauses.iter().any(|wc| !wc.pats.is_empty()))
+                    .map(|w| w.name.clone()),
+            );
             match &mut c.body {
                 ast::Body::Plain(e) => walk(e, &b, &binders, ctx),
                 ast::Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
@@ -2629,6 +2648,7 @@ fn lift_capturing_lambdas(
             for w in &mut c.wher {
                 walk_func(w, &b, &binders, ctx);
             }
+            ctx.local_fns = saved;
         }
     }
     let mut ctx = Ctx {
@@ -2638,6 +2658,7 @@ fn lift_capturing_lambdas(
         new_funcs: Vec::new(),
         committed: HashSet::new(),
         counter: 0,
+        local_fns: HashSet::new(),
     };
     for f in module.funcs.iter_mut().filter(|f| !skip.contains(&f.name)) {
         walk_func(f, &HashSet::new(), &HashMap::new(), &mut ctx);
@@ -2673,6 +2694,8 @@ fn build_lambda_candidates(
         for c in &f.clauses {
             let mut b = outer_bound.clone();
             c.pats.iter().for_each(|p| pat_bound(p, &mut b));
+            // a lambda naming a `where` binding captures it, like a parameter
+            b.extend(c.wher.iter().map(|w| w.name.clone()));
             match &c.body {
                 ast::Body::Plain(e) => walk_expr(e, &b, hof_arrow, candidates, new_funcs, counter),
                 ast::Body::Guarded(arms) => arms.iter().for_each(|(g, r)| {
@@ -6575,9 +6598,10 @@ fn derive_instances(module: &mut ast::Module, diags: &mut Diagnostics) {
         return;
     };
     let ltokens = layout::layout(&tokens, &lines);
-    let Ok(parsed) = parser::parse_module(&ltokens) else {
+    let Ok(mut parsed) = parser::parse_module(&ltokens) else {
         return;
     };
+    band_module_spans(&mut parsed, diag::DERIVED_SPAN_BAND);
     module.instances.extend(parsed.instances);
 }
 
@@ -7088,9 +7112,10 @@ fn expand_foreign_structs(module: &mut ast::Module, diags: &mut Diagnostics) {
         return;
     };
     let lt = layout::layout(&tokens, &lines);
-    let Ok(generated) = parser::parse_module(&lt) else {
+    let Ok(mut generated) = parser::parse_module(&lt) else {
         return;
     };
+    band_module_spans(&mut generated, diag::STRUCT_SPAN_BAND);
     let has_func: std::collections::HashSet<String> =
         module.funcs.iter().map(|f| f.name.clone()).collect();
     for f in generated.funcs {
@@ -7672,5 +7697,29 @@ mod span_band_tests {
             matches!(prel, Some(ast::Type::Con(n)) if n == "Int"),
             "prelude `length ys`: {prel:?}"
         );
+    }
+    /// Derived instances are parsed from generated source at offset 0; in the user's band a
+    /// derived method's call shared its span-keyed result type with the user call at the same
+    /// offsets (a `map` over Strings was then dropped as a bare list, leaking its elements).
+    #[test]
+    fn derived_instance_spans_have_their_own_band() {
+        let src =
+            "data Color = Red | Green deriving (Eq, Show)\nmain :: IO ()\nmain = putStrLn \"x\"\n";
+        let lines = LineMap::new(src);
+        let tokens = lexer::lex(src).expect("lex");
+        let mut module = parser::parse_module(&layout::layout(&tokens, &lines)).expect("parse");
+        let mut diags = Diagnostics::default();
+        derive_instances(&mut module, &mut diags);
+        assert!(!module.instances.is_empty(), "{diags:?}");
+        for i in &module.instances {
+            for f in &i.methods {
+                assert_eq!(
+                    f.span.0 / diag::CLONE_SPAN_STRIDE,
+                    diag::DERIVED_SPAN_BAND,
+                    "{}",
+                    f.name
+                );
+            }
+        }
     }
 }

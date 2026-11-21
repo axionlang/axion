@@ -5,20 +5,18 @@
 
 
       drop _t5
-      drop rest : List$Box
-      drop ys
-      drop ys
+      let $fieldcopy1000 = call axion_copy_Box b  ; Δ{} · makes Box
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$Box _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_free _dd2  ; Δ{}
+      ret $fieldcopy1000  ; Δ{$fieldcopy1000} · moves{$fieldcopy1000}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret b  ; Δ{b} · moves{b}
       ret con Box 0  ; Δ{} · makes Box
       ret n  ; Δ{}
     Box n ->
@@ -44,8 +42,10 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop xs : List$Box
   else
   else
+  let _d1000000 = call headBox$go xs  ; Δ{} · makes Box
   let _dd4 = band _p 1  ; Δ{}
   let _dd5 = if _dd4 then
   let _dd6 = band _p 1  ; Δ{}
@@ -58,7 +58,7 @@
   let _t5 = call headBox _t4  ; Δ{_t4} · moves{_t4} · makes Box
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret call headBox$go xs  ; Δ{} · makes Box
+  ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
   ret case _t5 of
   ret case ys of
   ret rtcall axion_array_free _p  ; Δ{}

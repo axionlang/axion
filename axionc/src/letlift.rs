@@ -11,8 +11,7 @@
 //! The rewrite runs before type inference and the checks, for every backend: the interpreter
 //! runs the same lifted program. A group is left as it was (still interpreter-only) when it
 //! cannot be lifted faithfully: a capture name rebound where the function is used, or by the
-//! function's own parameters; a `where` inside the local function; a lambda around the `let`
-//! or around a use (a lambda body cannot call a `where`-local); or a use as a value or with
+//! function's own parameters; a `where` inside the local function; or a use as a value or with
 //! too few arguments (native code cannot partially apply a `where`-local yet).
 
 use crate::ast::{self, Body, Expr, Func, Pat, Span};
@@ -88,9 +87,12 @@ fn lift_expr(e: &mut Expr, scope: &BTreeSet<String>, cx: &mut Cx) {
             lift_expr(b, scope, cx);
             fs.iter_mut().for_each(|(_, x)| lift_expr(x, scope, cx));
         }
-        // a lambda body cannot call a `where`-local (it is lifted out of the clause on its
-        // own), so a `let` inside one stays as it is
-        Expr::Lam(..) => {}
+        // a lambda's parameters are captures of a `let` function inside it
+        Expr::Lam(ps, body, _) => {
+            let mut s = scope.clone();
+            ps.iter().for_each(|p| ast::pat_vars(p, &mut s));
+            lift_expr(body, &s, cx);
+        }
         Expr::Case(scrut, arms, _) => {
             lift_expr(scrut, scope, cx);
             for (p, body) in arms {
@@ -291,11 +293,10 @@ fn subst(e: &mut Expr, names: &HashMap<String, String>, caps: &[String]) -> bool
             fs.iter_mut()
                 .fold(ok, |ok, (_, x)| subst(x, names, caps) & ok)
         }
-        // used inside a lambda, which cannot call the `where`-local it would become
         Expr::Lam(ps, body, _) => {
             let mut bound = BTreeSet::new();
             ps.iter().for_each(|p| ast::pat_vars(p, &mut bound));
-            !uses_any(body, &narrowed(names, &bound))
+            under_binders(body, &bound, names, caps)
         }
         Expr::Case(scrut, arms, _) => {
             let mut ok = subst(scrut, names, caps);
@@ -518,5 +519,152 @@ fn body_saturated(b: &Body, ar: &HashMap<String, usize>) -> bool {
         Body::Guarded(arms) => arms
             .iter()
             .all(|(g, r)| saturated(g, ar) && saturated(r, ar)),
+    }
+}
+
+/// Renames every binder that shadows a parameter a `where`-local captures, inside the clause's
+/// body and its `where`s: `bump y = y + k` captures `k`, and a native call to it passes the
+/// variable named `k` at the call site, which a `case` binder or lambda parameter `k` there
+/// would otherwise be. Only names change (spans stay), so every backend runs the same program.
+pub fn rename_capture_shadows(module: &mut ast::Module) {
+    let mut ctr = 0usize;
+    for f in &mut module.funcs {
+        for clause in &mut f.clauses {
+            if clause.wher.is_empty() {
+                continue;
+            }
+            let mut params = BTreeSet::new();
+            clause
+                .pats
+                .iter()
+                .for_each(|p| ast::pat_vars(p, &mut params));
+            let mut captured = BTreeSet::new();
+            for w in &clause.wher {
+                let mut fv = BTreeSet::new();
+                for c in &w.clauses {
+                    let mut own = BTreeSet::new();
+                    c.pats.iter().for_each(|p| ast::pat_vars(p, &mut own));
+                    body_free_vars(&c.body, &own, &mut fv);
+                }
+                captured.extend(fv.into_iter().filter(|n| params.contains(n)));
+            }
+            if captured.is_empty() {
+                continue;
+            }
+            let ren = HashMap::new();
+            let mut cx = Shadow {
+                captured: &captured,
+                ctr: &mut ctr,
+            };
+            rename_body(&mut clause.body, &ren, &mut cx);
+            for w in &mut clause.wher {
+                for c in &mut w.clauses {
+                    let r = cx.bind_pats(&mut c.pats, &ren);
+                    rename_body(&mut c.body, &r, &mut cx);
+                }
+            }
+        }
+    }
+}
+
+struct Shadow<'a> {
+    captured: &'a BTreeSet<String>,
+    ctr: &'a mut usize,
+}
+
+impl Shadow<'_> {
+    /// Renames the captured names `pats` bind; returns the scope inside them.
+    fn bind_pats(
+        &mut self,
+        pats: &mut [Pat],
+        ren: &HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut r = ren.clone();
+        pats.iter_mut().for_each(|p| self.bind_pat(p, &mut r));
+        r
+    }
+    fn bind_pat(&mut self, p: &mut Pat, r: &mut HashMap<String, String>) {
+        match p {
+            Pat::Var(n, _) => {
+                if self.captured.contains(n.as_str()) {
+                    // `k$N`: reads back as `k` in messages (`core::source_name`)
+                    let fresh = format!("{n}${}", 90_000 + *self.ctr);
+                    *self.ctr += 1;
+                    r.insert(n.clone(), fresh.clone());
+                    *n = fresh;
+                } else {
+                    r.remove(n.as_str());
+                }
+            }
+            Pat::Con(_, ps, _) | Pat::Tuple(ps, _) => {
+                ps.iter_mut().for_each(|q| self.bind_pat(q, r));
+            }
+            Pat::Wild(_) | Pat::Int(..) | Pat::Str(..) => {}
+        }
+    }
+}
+
+fn rename_body(b: &mut Body, ren: &HashMap<String, String>, cx: &mut Shadow) {
+    match b {
+        Body::Plain(e) => rename_expr(e, ren, cx),
+        Body::Guarded(arms) => arms.iter_mut().for_each(|(g, r)| {
+            rename_expr(g, ren, cx);
+            rename_expr(r, ren, cx);
+        }),
+    }
+}
+
+fn rename_expr(e: &mut Expr, ren: &HashMap<String, String>, cx: &mut Shadow) {
+    match e {
+        Expr::Var(n, _) => {
+            if let Some(to) = ren.get(n.as_str()) {
+                *n = to.clone();
+            }
+        }
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => {}
+        Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+            rename_expr(a, ren, cx);
+            rename_expr(b, ren, cx);
+        }
+        Expr::If(c, t, el, _) => {
+            rename_expr(c, ren, cx);
+            rename_expr(t, ren, cx);
+            rename_expr(el, ren, cx);
+        }
+        Expr::Tuple(es, _) => es.iter_mut().for_each(|x| rename_expr(x, ren, cx)),
+        Expr::RecordCon(_, fs, _) => fs.iter_mut().for_each(|(_, x)| rename_expr(x, ren, cx)),
+        Expr::RecordUpd(b, fs, _) => {
+            rename_expr(b, ren, cx);
+            fs.iter_mut().for_each(|(_, x)| rename_expr(x, ren, cx));
+        }
+        Expr::Lam(ps, body, _) => {
+            let r = cx.bind_pats(ps, ren);
+            rename_expr(body, &r, cx);
+        }
+        Expr::Case(scrut, arms, _) => {
+            rename_expr(scrut, ren, cx);
+            for (p, body) in arms {
+                let r = cx.bind_pats(std::slice::from_mut(p), ren);
+                rename_expr(body, &r, cx);
+            }
+        }
+        Expr::Let(binds, body, _) => {
+            // the binds of one `let` see each other
+            let mut r = ren.clone();
+            for b in binds.iter_mut() {
+                let mut p = Pat::Var(b.name.clone(), b.span);
+                cx.bind_pat(&mut p, &mut r);
+                if let Pat::Var(n, _) = p {
+                    b.name = n;
+                }
+            }
+            for b in binds.iter_mut() {
+                for c in &mut b.clauses {
+                    let inner = cx.bind_pats(&mut c.pats, &r);
+                    rename_body(&mut c.body, &inner, cx);
+                }
+            }
+            rename_expr(body, &r, cx);
+        }
     }
 }

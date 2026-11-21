@@ -7402,6 +7402,14 @@ fn axmpv_regressions_agree_on_every_backend() {
             "13\n13\np:odd\nq:even\nzero,small,big\n36\n30\n47\n13\n11 12 \n9\n42\n",
         ),
         (
+            "local_function_ownership.axi",
+            "4\nx/x,y,.\nnone/.\nzerotgtg!\nzeroqrqr!\nzap,q,.\n",
+        ),
+        (
+            "lambda_local_functions.axi",
+            "36\n36\n18\n306\n101\nt1:a,t1:bb,t1:c,.\n<u2a>,<u2bb>,<u2c>,.\nv3,bb,v3,.\n2056\na<q>q<q>\n",
+        ),
+        (
             "accessor_keeps_arg.axi",
             "5\n6\n18\nalpha\nalpha!\n2\nhi\nhi?\nq\nqzero\n",
         ),

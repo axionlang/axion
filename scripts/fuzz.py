@@ -1593,6 +1593,103 @@ def gen_heap_array(rng):
         lines.append(f"  putStrLn (show (lenC {cur}))")
     return HEAP_ARRAY_PRE + helpers + "main :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
 
+LOCALS_PRE = """-- fuzz:locals
+lenL :: List String -> Int
+lenL xs = case xs of
+  Nil -> 0
+  Cons _ rest -> 1 + lenL rest
+
+catL :: List String -> String
+catL xs = case xs of
+  Nil -> "."
+  Cons a rest -> a ++ "," ++ catL rest
+
+"""
+
+def gen_local_fns(rng):
+    """Local functions: `let`-bound ones (lifted to `where`-locals by axionc/src/letlift.rs, with
+    the variables they use passed as extra parameters) and `where`-locals — recursive, mutually
+    recursive, with guards and several clauses, using a `case` binder, nested, inside a
+    `where`-local, in a `do` block, reading / returning / storing parts of heap parameters (the two
+    pre-existing `where` bugs: a read-only parameter owned by the local, `otherwise` in a guard),
+    and called from a lambda (also a lambda parameter named like a captured variable).
+    Only shapes that compile natively are generated, so every program is SAFE: a native refusal,
+    a leak or a front-end rejection is a finding."""
+    W = ["ab", "cde", "f", "ghij", "", "kl"]
+    lit = lambda: '"' + rng.choice(W) + '"'
+    C = lambda: rng.randint(0, 5)
+    funs, lines = [], []
+    for i in range(rng.randint(2, 5)):
+        n, c, c2 = f"t{i}", C(), C()
+        tmpl = rng.randint(0, 14)
+        ret = "Int"
+        if tmpl == 0:     # recursive let function using a parameter
+            extra = rng.choice(["lenL xs", "strLen tag", "0"])
+            body = (f"\n  let go acc ys = case ys of\n        Nil -> acc + strLen tag\n"
+                    f"        Cons y rest -> go (acc + strLen y + {c}) rest\n  in go k xs + {extra}")
+        elif tmpl == 1:   # mutually recursive, String results
+            ret = "String"
+            body = (f"\n  let ev j = if j <= 0 then tag ++ \":e\" else od (j - 1)\n"
+                    f"      od j = if j <= 0 then catL xs else ev (j - 1)\n  in ev (k + {c})")
+        elif tmpl == 2:   # guards + several clauses; returns the captured String on one path
+            ret = "String"
+            alt = rng.choice(["tag ++ \"!\"", lit(), "catL xs"])
+            body = (f"\n  let kind 0 = {lit()}\n      kind j\n        | j < {c2} = tag\n"
+                    f"        | otherwise = {alt}\n  in kind 0 ++ kind {c} ++ kind (k + 1)")
+        elif tmpl == 3:   # captures `case` binders (an element and the rest of the list)
+            body = (f" case xs of\n  Nil -> k\n  Cons h rest ->\n"
+                    f"    let f j = strLen h + j + lenL rest\n    in f {c} + f k")
+        elif tmpl == 4:   # where-local only READS a list parameter, called twice
+            body = (f" h xs + h xs + lenL xs\n  where\n    h ys = case ys of\n"
+                    f"      Nil -> k\n      Cons y _ -> strLen y + k + {c}")
+        elif tmpl == 5:   # where-local RETURNS an element (or the captured tag / a literal)
+            ret = "String"
+            dflt = rng.choice(["tag", lit()])
+            body = (f" pickW xs ++ \"/\" ++ catL xs\n  where\n    pickW ys = case ys of\n"
+                    f"      Nil -> {dflt}\n      Cons y _ -> y")
+        elif tmpl == 6:   # where-local STORES elements in a new list (owns its argument)
+            body = (f" lenL (cp xs) + k\n  where\n    cp ys = case ys of\n      Nil -> Nil\n"
+                    f"      Cons y rest -> Cons y (cp rest)")
+        elif tmpl == 7:   # let function inside a where-local's guard, `otherwise`
+            body = (f" helper k\n  where\n    helper m\n"
+                    f"      | m > {c} = let twice j = j + j + lenL xs in twice m\n"
+                    f"      | otherwise = strLen tag + {c2}")
+        elif tmpl == 8:   # nested lets: the inner function uses the outer one's parameter
+            body = (f"\n  let outer a = (let inner b = a * {c} + b + strLen tag in inner k)\n"
+                    f"  in outer (lenL xs)")
+        elif tmpl == 9:   # let function storing its argument and a captured String in a new list
+            body = (f"\n  let wrap s = Cons s (Cons tag Nil)\n  in lenL (wrap {lit()}) + lenL xs")
+        elif tmpl == 10:  # a lambda calling a where-local that captures a String
+            ret = "String"
+            body = (f" catL (map (\\s -> tagIt s) xs)\n  where\n"
+                    f"    tagIt s = tag ++ \":\" ++ s ++ showInt (k + {c})")
+        elif tmpl == 11:  # a lambda calling a let function
+            ret = "String"
+            body = (f"\n  let wrap s = s ++ tag ++ showInt {c}\n  in catL (map (\\s -> wrap s) xs)")
+        elif tmpl == 12:  # a let function inside a lambda, capturing the lambda's parameter
+            ret = "String"
+            body = (f" catL (map (\\s -> let dup j = s ++ showInt j in dup k ++ dup {c}) xs)")
+        elif tmpl == 13:  # the lambda's parameter has the name of a variable the local captures
+            ret = "String"
+            body = (f" catL (map (\\tag -> tagIt tag) xs)\n  where\n"
+                    f"    tagIt s = tag ++ \"/\" ++ s")
+        else:             # a lambda calling a local that returns its argument or a captured String
+            ret = "String"
+            body = (f" catL (map (\\s -> pickW s) xs)\n  where\n"
+                    f"    pickW s = if strLen s > {c2 % 3} then s else tag")
+        funs.append(f"{n} :: List String -> String -> Int -> {ret}\n{n} xs tag k ={body}\n")
+        for _ in range(rng.randint(1, 2)):
+            xs = rng.choice([f'(words "{rng.choice(W)} {rng.choice(W)} {rng.choice(W)}")', "Nil",
+                             f"(Cons {lit()} Nil)"])
+            tag = rng.choice([lit(), f'("t" ++ showInt {C()})'])
+            call = f"{n} {xs} {tag} {C()}"
+            lines.append(f"  putStrLn ({call})" if ret == "String" else f"  putStrLn (showInt ({call}))")
+    if rng.random() < 0.5:        # a let function in a do block
+        a, b = C(), C()
+        at = rng.randint(0, len(lines))
+        lines[at:at] = [f"  let tw j = j * {a} + j", f"  putStrLn (showInt (tw {b} + tw {a}))"]
+    return LOCALS_PRE + "\n".join(funs) + "\nmain :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.08:
@@ -1676,8 +1773,9 @@ HANG_RC = 124           # subprocess timeout → this return code (checked by `c
 def _safe_by_construction(prog):
     """Generators whose every program is safe value-semantics code: a native AX0910/AX0911 on one is
     a reclamation GAP (hard finding), not a sound rejection — `gen_sharing`, `gen_closure_values`,
-    `gen_nested_patterns`."""
-    return "fuzz:sharing" in prog or "fuzz:closures" in prog or "fuzz:nested" in prog
+    `gen_nested_patterns`, `gen_local_fns`."""
+    return ("fuzz:sharing" in prog or "fuzz:closures" in prog or "fuzz:nested" in prog
+            or "fuzz:locals" in prog)
 
 def run(args, want_bin=None, timeout=HANG_SECS):
     try:
@@ -1777,6 +1875,8 @@ def check(prog, work):
     if ri != 0 and rc == 0:
         return ("verdict", f"cranelift ran but interp rejected:\n{ei[-400:]}")
     if ri != 0 and rc != 0:
+        if "fuzz:locals" in prog:              # every local-function program is well-typed + linear
+            return ("gap", f"front end rejected a generated program:\n{(oi + ei)[-600:]}")
         return ("reject", None)                # both reject (type error / guard) — consistent
     # both ran: output divergence (cranelift has no sanitizer-flush hazard)
     if oi != oc:

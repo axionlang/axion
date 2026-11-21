@@ -323,8 +323,10 @@ lambdas (capturing ones too, including captures of `let`/`do` locals), a lambda 
 once every call has been specialized (`tests/fixtures/hof_closure_param.axi`).
 
 What remains rejected is a predicate that is **not known at any call site**: one pulled
-out of a data structure, a function stored and passed around as a value, or a `let`-bound
-lambda whose captured variable is re-bound before the call. There specialization cannot
+out of a data structure, a function stored and passed around as a value, a `let`-bound
+lambda whose captured variable is re-bound before the call, or a lambda that calls a
+`where`/`let` local function (it compiles as an ordinary closure, which `map` and the like
+accept, but is not specialized into `filter`). There specialization cannot
 fire, so the generic `filter` stays an alias-borrower. Marking its list parameter `%1`
 is not enough on its own: the element `y` is handed to the predicate as `p y` through
 the generic closure call (`callclo`), whose calling convention **moves** its

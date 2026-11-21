@@ -62,3 +62,30 @@ val s = case s of
       (case_alternative
         (constructor_pattern (constructor) (variable))
         (application (variable))))))
+
+================================================================================
+or-patterns
+================================================================================
+
+size s = case s of
+  Circle n | Square n -> n
+  Just (1 | 2) -> 0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_equation
+    name: (variable)
+    (variable)
+    (case_expression
+      (application (variable))
+      (case_alternative
+        (or_pattern
+          (constructor_pattern (constructor) (variable))
+          (constructor_pattern (constructor) (variable)))
+        (application (variable)))
+      (case_alternative
+        (constructor_pattern
+          (constructor)
+          (or_pattern (integer) (integer)))
+        (application (integer))))))

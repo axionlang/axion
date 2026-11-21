@@ -3108,7 +3108,13 @@ fn lifted_lambda_owned(
         else {
             continue;
         };
-        if let Some(key) = heap_drop_key(t, data_types, parametric_data, mono_seeds) {
+        // a String is moved in like any heap value (`callclo` hands it over)
+        let key = if t.head_con() == Some("String") {
+            Some("String".to_string())
+        } else {
+            heap_drop_key(t, data_types, parametric_data, mono_seeds)
+        };
+        if let Some(key) = key {
             owned.push(n.clone());
             owned_drop_ty.push((n.clone(), Some(key)));
         }
@@ -6726,6 +6732,17 @@ pub fn lower_with(
             }
             let mut fv = HashSet::new();
             free_vars(lam, &HashSet::new(), &mut fv);
+            // a `where` function the lambda calls takes the enclosing variables it captures
+            // as leading arguments, so the lambda captures those in its place
+            let via_locals: Vec<String> = fv
+                .iter()
+                .filter(|n| !shadow.contains(*n))
+                .filter_map(|n| locals.get(n))
+                .filter_map(|m| where_captures.get(m))
+                .flatten()
+                .cloned()
+                .collect();
+            fv.extend(via_locals);
             let mut captures: Vec<String> = fv
                 .into_iter()
                 .filter(|n| !globals.contains(n) || shadow.contains(n))
@@ -6875,10 +6892,24 @@ pub fn lower_with(
         collect_bound_names(body, &mut local_names);
         // Phase B: the lambda owns its heap params (consume-ABI); Auto-Drop reclaims
         // those the body does not move out. Keys from the wrapped callable's signature.
+        // a body calling a `where` function: that local's own (inferred) parameter types
+        let local_tys: Option<HashMap<String, Vec<Type>>> = match spine(body).0 {
+            Expr::Var(h, _) => locals
+                .get(h)
+                .and_then(|m| where_param_tys.get(m))
+                .map(|tys| {
+                    let tys = tys
+                        .iter()
+                        .map(|t| t.clone().unwrap_or_else(|| Type::Var("_".into())))
+                        .collect();
+                    HashMap::from([(h.clone(), tys)])
+                }),
+            _ => None,
+        };
         let (lam_owned, lam_owned_dty) = lifted_lambda_owned(
             pats,
             body,
-            &fn_param_types,
+            local_tys.as_ref().unwrap_or(&fn_param_types),
             makecon_tys,
             &data_types,
             &parametric_data,
@@ -7018,47 +7049,7 @@ pub fn lower_with(
     // such fields is a pure accessor (a borrow-returning function) and is left alone.
     if std::env::var_os("AXION_NO_ALIAS_COPY").is_none() {
         for f in &mut out {
-            // per function: the generated names must not depend on the order functions come in
-            let mut ctr = 0usize;
-            let mut container_ret: Option<Type> = None;
-            let kind = match fn_ret_ty.get(&f.name).map(String::as_str) {
-                Some("String") => CopyKind::Str,
-                Some("Integer") => CopyKind::Int,
-                // a concrete container result (`firstBox :: List Box -> Box`), copied by its
-                // generated deep copier
-                _ => match module
-                    .funcs
-                    .iter()
-                    .find(|g| g.name == f.name)
-                    .and_then(|g| g.sig.as_ref())
-                    .map(result_type)
-                    .and_then(|t| copy_kind_of(t, &module.datas).map(|k| (t, k)))
-                {
-                    Some((t, k @ CopyKind::Container(_))) => {
-                        container_ret = Some(t.clone());
-                        k
-                    }
-                    _ => continue,
-                },
-            };
-            let borrowed: HashSet<String> = f
-                .params
-                .iter()
-                .filter(|p| !f.owned_params.contains(p))
-                .cloned()
-                .collect();
-            let (mut alias, mut other) = (0usize, 0usize);
-            count_field_tails(
-                &f.body,
-                &borrowed,
-                &mut HashSet::new(),
-                &mut alias,
-                &mut other,
-            );
-            if alias > 0 && other > 0 {
-                copy_field_tails(&mut f.body, &borrowed, &mut HashSet::new(), &kind, &mut ctr);
-                copy_seeds.extend(container_ret);
-            }
+            copy_mixed_returns(f, &fn_ret_ty, module, where_ret_tys, &mut copy_seeds, 0);
         }
     }
 
@@ -7141,37 +7132,129 @@ pub fn lower_with(
     // call free the caller's value — a use after free the verifier refused. The local still
     // owns the params it moves, as below.
     {
-        let mut trial = param_mults.clone();
-        for f in &out {
-            if where_names.contains(&f.name) {
-                trial
-                    .entry(f.name.clone())
-                    .or_insert_with(|| vec![ast::Mult::Many; f.params.len()]);
-            }
+        // Fixpoint: start with every local's params borrowable, then mark `One` those a local
+        // keeps (a part stored) — a local storing a part of what another local hands it (`ulBal`
+        // passing its tail to the consuming `ulPairs`) only sees that once `ulPairs` is `One`.
+        let where_captures_ref = &where_captures;
+        let mut kept: HashMap<String, HashSet<usize>> = HashMap::new();
+        // analyzed with each clause binder of a parameter (`let ys = _p0`) collapsed into it, as
+        // the borrowed ones are below — the alias would read as a move
+        let mut tout = out.clone();
+        for f in tout.iter_mut().filter(|f| where_names.contains(&f.name)) {
+            let all: HashSet<String> = f.params.iter().cloned().collect();
+            let body = std::mem::replace(
+                &mut f.body,
+                Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN),
+            );
+            f.body = collapse_param_aliases(body, &all);
         }
-        let ba0 = compute_borrow_args(&out, &trial, &con_recursive_fields(&module.datas));
-        for f in &mut out {
-            let Some(set) = ba0.get(&f.name).filter(|_| where_names.contains(&f.name)) else {
-                continue;
-            };
-            // one with a part the local returns or moves (into a new value, a consuming call)
-            // stays owned: destructuring an owned container moves the part out, where a borrowed
-            // one would give away part of the caller's value (Auto-Drop copies such a part only
-            // for a function with declared types)
-            let read_only: HashSet<String> = set
-                .iter()
-                .filter_map(|&i| f.params.get(i).cloned())
-                .filter(|p| {
-                    let (mut alias, mut other) = (0usize, 0usize);
-                    let one: HashSet<String> = std::iter::once(p.clone()).collect();
-                    count_field_tails(&f.body, &one, &mut HashSet::new(), &mut alias, &mut other);
+        let ba0 = loop {
+            let mut trial = param_mults.clone();
+            for f in &tout {
+                if where_names.contains(&f.name) {
+                    let k = kept.get(&f.name);
+                    trial.entry(f.name.clone()).or_insert_with(|| {
+                        (0..f.params.len())
+                            .map(|i| {
+                                if k.is_some_and(|k| k.contains(&i)) {
+                                    ast::Mult::One
+                                } else {
+                                    ast::Mult::Many
+                                }
+                            })
+                            .collect()
+                    });
+                }
+            }
+            let ba0 = compute_borrow_args(&tout, &trial, &con_recursive_fields(&module.datas));
+            let mut changed = false;
+            for f in &tout {
+                let Some(set) = ba0.get(&f.name).filter(|_| where_names.contains(&f.name)) else {
+                    continue;
+                };
+                // one with a part the local moves (into a new value, a consuming call) stays
+                // owned, like a top-level function that stores a part of its argument (front-end
+                // Rule A): destructuring an owned container moves the part out, where a borrowed
+                // one would give away part of the caller's value. A RETURNED part is a borrow,
+                // copied on the paths that also return a fresh value (the mixed-return pass).
+                for &i in set {
+                    let Some(p) = f.params.get(i) else { continue };
                     let mut parts = HashSet::new();
                     interior_binders(&f.body, p, &mut parts);
-                    alias == 0 && !parts.iter().any(|b| body_moves(b, &f.body, &ba0))
-                })
+                    if f.owned_params.contains(p)
+                        && parts.iter().any(|b| body_stores(b, &f.body, &ba0))
+                        && kept.entry(f.name.clone()).or_default().insert(i)
+                    {
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break ba0;
+            }
+        };
+        // a parameter the local returns whole (`kind j | j < 2 = tag | otherwise = tag ++ "!"`)
+        // while a caller reuses the argument: copied there, as for a top-level function
+        let ret_alias = crate::verify::ret_alias_summary(&out);
+        let reused = reused_after_call(&out, &ret_alias);
+        let enum_types: HashSet<String> = module
+            .datas
+            .iter()
+            .filter(|d| d.cons.iter().all(|c| c.fields.is_empty()))
+            .map(|d| d.name.clone())
+            .collect();
+        let none = HashSet::new();
+        for f in out.iter_mut().filter(|f| where_names.contains(&f.name)) {
+            let set = ba0.get(&f.name).unwrap_or(&none);
+            let k = kept.get(&f.name);
+            let read_only: HashSet<String> = set
+                .iter()
+                .filter(|i| !k.is_some_and(|k| k.contains(i)))
+                .filter_map(|&i| f.params.get(i).cloned())
                 .collect();
             f.owned_params.retain(|p| !read_only.contains(p));
             f.owned_drop_ty.retain(|(p, _)| !read_only.contains(p));
+            if std::env::var_os("AXION_NO_ALIAS_COPY").is_some() {
+                continue;
+            }
+            // a borrowed parameter returned whole: the first copy pass skipped `where`-locals
+            // (no declared types) and saw these still owned
+            let ptys = where_local_param_types(f, module, where_captures_ref, where_param_tys);
+            // a String param is never owned by a local, so returning it on one exit and a
+            // fresh value on another leaks it unless it is copied (an Integer one is owned
+            // later and dropped on the other exits instead)
+            let is_str = |i: usize| {
+                ptys.as_ref()
+                    .and_then(|p| p.get(i))
+                    .is_some_and(|t| ty_head_args(t).0 == Some("String"))
+            };
+            let returned: HashSet<usize> = ret_alias
+                .get(&f.name)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&i| f.params.get(i).is_some_and(|p| !f.owned_params.contains(p)))
+                .filter(|&i| {
+                    reused.get(&f.name).is_some_and(|r| r.contains(&i))
+                        || (is_str(i) && returns_other(&f.body, &f.params[i]))
+                })
+                .collect();
+            if let Some(ptys) = ptys.filter(|p| p.len() == f.params.len() && !returned.is_empty()) {
+                let mut ctr = 2000usize;
+                normalize_alias_returns(
+                    f,
+                    &ptys,
+                    &returned,
+                    &mut ctr,
+                    &data_types,
+                    &enum_types,
+                    &mut copy_seeds,
+                );
+            }
+            // the mixed-return copy ran while these were still owned
+            if !read_only.is_empty() {
+                copy_mixed_returns(f, &fn_ret_ty, module, where_ret_tys, &mut copy_seeds, 1000);
+            }
         }
     }
     for f in &out {
@@ -13516,6 +13599,13 @@ fn rewrite_alias_tails(
             }
         }
         Term::Ret(Rhs::Op(_), _) => {}
+        // a clause binder naming a target (`tag$1 = _p0`, a multi-clause function's parameter)
+        // is that target too
+        Term::Let(x, Rhs::Op(Op::Atom(Atom::Var(v))), _, body) if targets.contains_key(v) => {
+            let mut more = targets.clone();
+            more.insert(x.clone(), targets[v].clone());
+            rewrite_alias_tails(body, &more, through_calls, ctr);
+        }
         Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => {
             rewrite_alias_tails(body, targets, through_calls, ctr);
         }
@@ -17051,6 +17141,119 @@ fn cpat_with(p: &CPat, name: &dyn Fn(&str) -> String) -> String {
                 format!("{n} {}", sub(ps).join(" "))
             }
         }
+    }
+}
+
+/// A function returning a field of a BORROWED param on some paths and an owned value on others:
+/// copy the field on those paths (see the call site).
+fn copy_mixed_returns(
+    f: &mut CoreFn,
+    fn_ret_ty: &HashMap<String, String>,
+    module: &ast::Module,
+    where_ret_tys: &HashMap<String, Type>,
+    copy_seeds: &mut Vec<Type>,
+    first: usize,
+) {
+    // per function: the generated names must not depend on the order functions come in
+    // (`first` keeps a second run's names apart from the first's)
+    let mut ctr = first;
+    let mut container_ret: Option<Type> = None;
+    let kind = match fn_ret_ty.get(&f.name).map(String::as_str) {
+        Some("String") => CopyKind::Str,
+        Some("Integer") => CopyKind::Int,
+        // a concrete container result (`firstBox :: List Box -> Box`, or a `where`-local's
+        // inferred one), copied by its generated deep copier
+        _ => match module
+            .funcs
+            .iter()
+            .find(|g| g.name == f.name)
+            .and_then(|g| g.sig.as_ref())
+            .map(result_type)
+            .or_else(|| where_ret_tys.get(&f.name))
+            .and_then(|t| copy_kind_of(t, &module.datas).map(|k| (t, k)))
+        {
+            Some((t, k @ CopyKind::Container(_))) => {
+                container_ret = Some(t.clone());
+                k
+            }
+            _ => return,
+        },
+    };
+    let borrowed: HashSet<String> = f
+        .params
+        .iter()
+        .filter(|p| !f.owned_params.contains(p))
+        .cloned()
+        .collect();
+    let (mut alias, mut other) = (0usize, 0usize);
+    count_field_tails(
+        &f.body,
+        &borrowed,
+        &mut HashSet::new(),
+        &mut alias,
+        &mut other,
+    );
+    if alias > 0 && other > 0 {
+        copy_field_tails(&mut f.body, &borrowed, &mut HashSet::new(), &kind, &mut ctr);
+        copy_seeds.extend(container_ret);
+    }
+}
+
+/// A `where`-local's parameter types as Core has them: its captures first (typed when each is a
+/// parameter of the parent with a signature), then its own (inferred). `None` when one is unknown.
+fn where_local_param_types(
+    f: &CoreFn,
+    module: &ast::Module,
+    where_captures: &HashMap<String, Vec<String>>,
+    where_param_tys: &HashMap<String, Vec<Option<Type>>>,
+) -> Option<Vec<Type>> {
+    let caps = where_captures
+        .get(&f.name)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut out = Vec::new();
+    if !caps.is_empty() {
+        let parent_name = f.name.split_once('$')?.0;
+        let parent = module.funcs.iter().find(|g| g.name == parent_name)?;
+        let ptys = parent.sig.as_ref()?.param_types();
+        for cap in caps {
+            let i = parent.clauses.iter().find_map(|c| {
+                c.pats
+                    .iter()
+                    .position(|p| matches!(p, ast::Pat::Var(n, _) if n == cap))
+            })?;
+            out.push((*ptys.get(i)?).clone());
+        }
+    }
+    for t in where_param_tys.get(&f.name)? {
+        out.push(t.clone()?);
+    }
+    (out.len() == f.params.len()).then_some(out)
+}
+
+/// `body_moves`, except that returning `v` itself (in tail position) is not counted: `true` when
+/// `v` is STORED — put in a new value, handed to a consuming call, bound and moved on.
+fn body_stores(v: &str, t: &Term, ba: &BorrowArgs) -> bool {
+    match t {
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(x))), _) if x == v => false,
+        Term::Ret(Rhs::If(_, a, b), _) => body_stores(v, a, ba) || body_stores(v, b, ba),
+        Term::Ret(Rhs::Case(_, arms), _) => arms.iter().any(|(_, b)| body_stores(v, b, ba)),
+        Term::Let(_, rhs, _, body) => rhs_moves(v, rhs, ba) || body_stores(v, body, ba),
+        Term::Drop(_, _, _, _, body) => body_stores(v, body, ba),
+        Term::Ret(rhs, _) => rhs_moves(v, rhs, ba),
+    }
+}
+
+/// Whether some exit of `t` returns something other than `v` itself: a local that returns `v`
+/// on one path and another value on the next has to copy `v`, since it does not own it and
+/// the caller cannot tell which one came back.
+fn returns_other(t: &Term, v: &str) -> bool {
+    match t {
+        Term::Ret(Rhs::Op(Op::Atom(Atom::Var(x))), _) => x != v,
+        Term::Ret(Rhs::If(_, a, b), _) => returns_other(a, v) || returns_other(b, v),
+        Term::Ret(Rhs::Case(_, arms), _) => arms.iter().any(|(_, b)| returns_other(b, v)),
+        Term::Ret(_, _) => true,
+        Term::Let(_, _, _, body) | Term::Drop(_, _, _, _, body) => returns_other(body, v),
     }
 }
 

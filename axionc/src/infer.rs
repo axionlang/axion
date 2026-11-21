@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 /// — the dispatch is `(param index, nested?)` or `None` if no param carries the var.
 type ConstraintMeta = HashMap<String, Vec<(String, Option<(usize, bool)>)>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Ty {
     Var(u32),
     Con(String, Vec<Ty>),
@@ -142,6 +142,13 @@ struct Infer<'a> {
     /// false-negative). Recorded here (the full arrow type; the RESULT is reified in
     /// `finish`) so the lowering can key those calls like any signed function's.
     where_ret_tys: HashMap<String, Ty>,
+    /// A generic `where`-local's quantified vars (sorted; fresh per generalization, so they
+    /// identify it) → its lifted `parent$local` name.
+    where_poly: HashMap<Vec<u32>, String>,
+    /// Each use of a generic `where`-local: its lifted name and the instantiation. The lowering
+    /// needs the local's CONCRETE parameter types (to own, free and copy heap parts); a local
+    /// used at one type gets that type (`finish`).
+    where_insts: Vec<(String, HashMap<u32, u32>)>,
 }
 
 /// An obligation `class C over type T`, collected at a method use and
@@ -533,6 +540,8 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         int_lit_vars: Vec::new(),
         int_lit_pat_spans: std::collections::HashSet::new(),
         where_ret_tys: HashMap::new(),
+        where_poly: HashMap::new(),
+        where_insts: Vec::new(),
     };
     let mut env: Env = inf.base_env();
 
@@ -1193,7 +1202,22 @@ impl Infer<'_> {
         // ground result types survive `ty_to_ast` (a polymorphic local returning a bare
         // type var has no concrete drop key anyway — it stays unkeyed, as before).
         let where_tys = std::mem::take(&mut inf.where_ret_tys);
+        let mut insts: HashMap<String, Vec<Ty>> = HashMap::new();
+        for (name, map) in std::mem::take(&mut inf.where_insts) {
+            if let Some(ty) = where_tys.get(&name) {
+                let t = inf.apply(&rename_vars(&inf.apply(ty), &map));
+                insts.entry(name).or_default().push(t);
+            }
+        }
         for (name, ty) in where_tys {
+            // A generic local used at ONE type is lowered at that type (its uses agree once
+            // resolved): `cp ys = … Cons y (cp rest) …` applied to a `List String` owns, frees
+            // and copies Strings. Used at several types it keeps its generic type (parameters
+            // with a type variable are `None`).
+            let ty = match insts.get(&name).map(|v| v.as_slice()) {
+                Some([first, rest @ ..]) if rest.iter().all(|t| t == first) => first.clone(),
+                _ => ty,
+            };
             // Walk the inferred arrow once: collect each PARAM type (position-indexed, `None` when
             // non-ground/unrepresentable → the lowering treats it as not-owned), then the RESULT.
             let mut resolved = inf.apply(&ty);
@@ -4528,11 +4552,16 @@ impl<'a> Infer<'a> {
             // function throughout where-inference (only set per top-level decl), matching the
             // lowering's single-level `f.name${w.name}` key. `let`-groups (`is_where=false`)
             // are not lifted this way, so they are skipped.
-            if is_where {
-                self.where_ret_tys
-                    .insert(format!("{}${}", self.cur_fn, f.name), t.clone());
-            }
             let scheme = self.generalize(env, &t);
+            if is_where {
+                let mangled = format!("{}${}", self.cur_fn, f.name);
+                self.where_ret_tys.insert(mangled.clone(), t.clone());
+                if !scheme.vars.is_empty() {
+                    let mut key = scheme.vars.clone();
+                    key.sort_unstable();
+                    self.where_poly.insert(key, mangled);
+                }
+            }
             out.insert(f.name.clone(), scheme);
         }
         out
@@ -4554,6 +4583,11 @@ impl<'a> Infer<'a> {
                     Some(s) => {
                         let (ty, map) = self.instantiate_map(s);
                         if !map.is_empty() {
+                            let mut key = s.vars.clone();
+                            key.sort_unstable();
+                            if let Some(w) = self.where_poly.get(&key) {
+                                self.where_insts.push((w.clone(), map.clone()));
+                            }
                             self.inst_uses.push((map, *span));
                         }
                         ty

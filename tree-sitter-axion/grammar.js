@@ -139,9 +139,11 @@ module.exports = grammar({
       $.wildcard,
       $._literal,
       $.constructor,
-      seq('(', optional(sep1($._pattern, ',')), ')'),
+      seq('(', optional(sep1(choice($._pattern, $.or_pattern), ',')), ')'),
     ),
     _pattern: $ => choice($.constructor_pattern, $._apattern),
+    // `Red | Green -> …` in a `case` arm, and nested in parentheses (`Just (1 | 2)`)
+    or_pattern: $ => prec.left(seq($._pattern, repeat1(seq('|', $._pattern)))),
     constructor_pattern: $ => prec.left(seq($.constructor, repeat1($._apattern))),
     wildcard: $ => '_',
 
@@ -158,7 +160,7 @@ module.exports = grammar({
     let_expression: $ => prec.right(seq('let', repeat($.function_equation), 'in', $._expression)),
     if_expression: $ => seq('if', $._expression, 'then', $._expression, 'else', $._expression),
     case_expression: $ => prec.right(seq('case', $._expression, 'of', repeat($.case_alternative))),
-    case_alternative: $ => prec.dynamic(1, prec.right(seq($._pattern, '->', $._expression))),
+    case_alternative: $ => prec.dynamic(1, prec.right(seq(choice($._pattern, $.or_pattern), '->', $._expression))),
     lambda: $ => prec.right(seq('\\', repeat1($._apattern), '->', $._expression)),
     do_expression: $ => prec.right(seq('do', repeat($._statement))),
     _statement: $ => choice(

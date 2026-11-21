@@ -166,6 +166,17 @@ pub const CLONE_SPAN_STRIDE: usize = 10_000_000;
 /// playground).
 pub const PRELUDE_SPAN_BAND: usize = if usize::BITS >= 64 { 1 << 24 } else { 300 };
 
+/// Span band of the instances `deriving` generates. They are parsed from generated source starting
+/// at offset 0, so in the user's band a derived method's expression would share span-keyed
+/// inference facts with the user expression at the same offsets (a call's result type, which
+/// keys its drop). Just below the prelude band: far above any clone band, and still classified
+/// like the user's band everywhere a band is tested.
+pub const DERIVED_SPAN_BAND: usize = PRELUDE_SPAN_BAND - 1;
+
+/// Span band of the functions generated for a `foreign struct` (constructor and field selectors),
+/// parsed from offset 0 like derived instances, for the same reason.
+pub const STRUCT_SPAN_BAND: usize = PRELUDE_SPAN_BAND - 2;
+
 /// The file each imported module's span band came from (`register_import_band`), so a diagnostic
 /// inside an imported module names that file and its line instead of the importer's.
 static IMPORT_BANDS: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
