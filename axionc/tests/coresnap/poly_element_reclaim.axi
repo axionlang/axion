@@ -7,9 +7,7 @@
 
 
       drop dflt : Box
-      drop xs
-      drop xs
-      drop ys : Lst$Box
+      let $fieldcopy0 = call axion_copy_Box y  ; Δ{} · makes Box
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -18,6 +16,7 @@
       let _dd1 = call axion_drop_Lst$Box _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = rtcall axion_free _dd2  ; Δ{}
+      ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -26,7 +25,6 @@
       ret 0  ; Δ{}
       ret dflt  ; Δ{}
       ret n  ; Δ{}
-      ret y  ; Δ{y} · moves{y}
     Box n ->
     LCons y ys ->
     LNil ->
@@ -59,6 +57,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t5 : Lst$Box
   drop _t6 : Box
   drop _t8 : String
   else
@@ -77,7 +76,7 @@
   let _t3 = con LNil  ; Δ{_t0 _t1 _t2} · makes Lst$Box
   let _t4 = con LCons _t2 _t3  ; Δ{_t0 _t1 _t2 _t3} · moves{_t2 _t3} · makes Lst$Box
   let _t5 = con LCons _t1 _t4  ; Δ{_t0 _t1 _t4} · moves{_t1 _t4} · makes Lst$Box
-  let _t6 = call headOr _t0 _t5  ; Δ{_t0 _t5} · moves{_t0 _t5} · makes Box
+  let _t6 = call headOr _t0 _t5  ; Δ{_t0 _t5} · moves{_t0} · makes Box
   let _t7 = call val _t6  ; Δ{_t6}
   let _t8 = call show$Int _t7  ; Δ{} · makes String
   ret 0  ; Δ{}

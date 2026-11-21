@@ -99,6 +99,14 @@ each alternative its own arm sharing the one body, so nested alternatives multip
 64 arms per or-pattern). A string literal can be a whole arm's alternative (`"a" | "b" -> …`)
 but not a part of another pattern.
 
+A `let` may define functions as well as values: `let go k = if k == 0 then h else go (k - 1)
+in go 3`. They can be recursive, call each other, have several clauses or guards, and use any
+variable in scope (a parameter, a `case` binder). The compiler turns each into a `where`-local
+that takes the variables it uses as extra parameters, so it compiles natively like one. Three
+uses are still interpreter-only: a local function used as a value or given fewer arguments than
+it takes (`map addN xs`), a `let` function inside a lambda or used inside one, and a variable it
+uses rebound by a pattern around a call to it.
+
 The bitwise `Int` operations use Haskell's `Data.Bits` names and fixities: `shiftL`/`shiftR`
 (`infixl 8`), `.&.` (`infixl 7`), `xor` (`infixl 6`), `.|.` (`infixl 5`). The named ones work
 prefix (`shiftL x 4`) or infix (`` x `shiftL` 4 ``); a program's own definition of one of those

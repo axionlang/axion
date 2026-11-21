@@ -7,20 +7,16 @@
 
       drop d : Integer
       drop d : Integer
-      drop e
-      drop e
-      drop e
-      drop e
-      drop x : Integer
-      drop y : Integer
+      let $fieldcopy0 = rtcall axion_bignum_copy x  ; Δ{} · makes Integer
+      let $fieldcopy0 = rtcall axion_bignum_copy y  ; Δ{} · makes Integer
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
+      ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
+      ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret d  ; Δ{}
       ret d  ; Δ{}
-      ret x  ; Δ{x} · moves{x}
-      ret y  ; Δ{y} · moves{y}
     Left x ->
     Left x ->
     Right y ->
@@ -51,7 +47,9 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t2 : Either$Integer$Integer
   drop _t3 : Integer
+  drop _t6 : Either$Integer$Integer
   drop _t7 : Integer
   drop _t8 : Integer
   drop _t9 : String
@@ -73,11 +71,11 @@
   let _t0 = rtcall axion_bignum_from_i64 0  ; Δ{} · makes Integer
   let _t1 = rtcall axion_bignum_from_i64 8  ; Δ{_t0} · makes Integer
   let _t2 = con Left _t1  ; Δ{_t0 _t1} · moves{_t1} · makes Either$Integer$Integer
-  let _t3 = call fromLeftI _t0 _t2  ; Δ{_t0 _t2} · moves{_t0 _t2} · makes Integer
+  let _t3 = call fromLeftI _t0 _t2  ; Δ{_t0 _t2} · moves{_t0} · makes Integer
   let _t4 = rtcall axion_bignum_from_i64 0  ; Δ{_t3} · makes Integer
   let _t5 = rtcall axion_bignum_from_i64 5  ; Δ{_t3 _t4} · makes Integer
   let _t6 = con Left _t5  ; Δ{_t3 _t4 _t5} · moves{_t5} · makes Either$Integer$Integer
-  let _t7 = call fromRightI _t4 _t6  ; Δ{_t3 _t4 _t6} · moves{_t4 _t6} · makes Integer
+  let _t7 = call fromRightI _t4 _t6  ; Δ{_t3 _t4 _t6} · moves{_t4} · makes Integer
   let _t8 = rtcall axion_bignum_add _t3 _t7  ; Δ{_t3 _t7} · makes Integer
   let _t9 = rtcall axion_bignum_to_string _t8  ; Δ{_t8} · makes String
   let _tag = loadraw _p+0  ; Δ{}

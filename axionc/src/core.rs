@@ -1438,7 +1438,13 @@ fn where_free_vars(
     // reference is to that lexical local, not the global — dropping it resolved the global
     // instead (a silent miscompile, `where h = g + 1` capturing a param `g` that shadows a
     // global CAF `g`). Same shadow rule as `atom`/`call_named`/the lambda-lift captures.
-    out.retain(|n| (!globals.contains(n) || shadow.contains(n)) && sess_builtin_rt(n).is_none());
+    // `otherwise` (a guard's catch-all, a built-in constant) is never captured either, unless a
+    // local of that name shadows it.
+    out.retain(|n| {
+        (!globals.contains(n) || shadow.contains(n))
+            && sess_builtin_rt(n).is_none()
+            && (n != "otherwise" || shadow.contains(n))
+    });
     out
 }
 
@@ -7014,10 +7020,26 @@ pub fn lower_with(
         for f in &mut out {
             // per function: the generated names must not depend on the order functions come in
             let mut ctr = 0usize;
+            let mut container_ret: Option<Type> = None;
             let kind = match fn_ret_ty.get(&f.name).map(String::as_str) {
                 Some("String") => CopyKind::Str,
                 Some("Integer") => CopyKind::Int,
-                _ => continue,
+                // a concrete container result (`firstBox :: List Box -> Box`), copied by its
+                // generated deep copier
+                _ => match module
+                    .funcs
+                    .iter()
+                    .find(|g| g.name == f.name)
+                    .and_then(|g| g.sig.as_ref())
+                    .map(result_type)
+                    .and_then(|t| copy_kind_of(t, &module.datas).map(|k| (t, k)))
+                {
+                    Some((t, k @ CopyKind::Container(_))) => {
+                        container_ret = Some(t.clone());
+                        k
+                    }
+                    _ => continue,
+                },
             };
             let borrowed: HashSet<String> = f
                 .params
@@ -7035,6 +7057,7 @@ pub fn lower_with(
             );
             if alias > 0 && other > 0 {
                 copy_field_tails(&mut f.body, &borrowed, &mut HashSet::new(), &kind, &mut ctr);
+                copy_seeds.extend(container_ret);
             }
         }
     }
@@ -7112,6 +7135,45 @@ pub fn lower_with(
                 .map(move |w| format!("{fname}${}", w.name))
         })
         .collect();
+    // A parameter a `where`-local only READS (the borrow analysis keeps it borrowable with every
+    // local's params unmarked) is borrowed, like a top-level function's: the caller keeps and
+    // frees its argument, and may pass it again (`scale s 1 + scale s 2`). Owning it made each
+    // call free the caller's value — a use after free the verifier refused. The local still
+    // owns the params it moves, as below.
+    {
+        let mut trial = param_mults.clone();
+        for f in &out {
+            if where_names.contains(&f.name) {
+                trial
+                    .entry(f.name.clone())
+                    .or_insert_with(|| vec![ast::Mult::Many; f.params.len()]);
+            }
+        }
+        let ba0 = compute_borrow_args(&out, &trial, &con_recursive_fields(&module.datas));
+        for f in &mut out {
+            let Some(set) = ba0.get(&f.name).filter(|_| where_names.contains(&f.name)) else {
+                continue;
+            };
+            // one with a part the local returns or moves (into a new value, a consuming call)
+            // stays owned: destructuring an owned container moves the part out, where a borrowed
+            // one would give away part of the caller's value (Auto-Drop copies such a part only
+            // for a function with declared types)
+            let read_only: HashSet<String> = set
+                .iter()
+                .filter_map(|&i| f.params.get(i).cloned())
+                .filter(|p| {
+                    let (mut alias, mut other) = (0usize, 0usize);
+                    let one: HashSet<String> = std::iter::once(p.clone()).collect();
+                    count_field_tails(&f.body, &one, &mut HashSet::new(), &mut alias, &mut other);
+                    let mut parts = HashSet::new();
+                    interior_binders(&f.body, p, &mut parts);
+                    alias == 0 && !parts.iter().any(|b| body_moves(b, &f.body, &ba0))
+                })
+                .collect();
+            f.owned_params.retain(|p| !read_only.contains(p));
+            f.owned_drop_ty.retain(|(p, _)| !read_only.contains(p));
+        }
+    }
     for f in &out {
         if where_names.contains(&f.name) {
             // A `where`-local now owns its heap params exactly like a signed top-level `%1` fn
@@ -16989,5 +17051,42 @@ fn cpat_with(p: &CPat, name: &dyn Fn(&str) -> String) -> String {
                 format!("{n} {}", sub(ps).join(" "))
             }
         }
+    }
+}
+
+/// The binders that `case`s on `p` (or on a binder one of them brought out) bring into scope,
+/// at every depth: the parts of `p` a function body can reach.
+fn interior_binders(t: &Term, p: &str, out: &mut HashSet<String>) {
+    fn rhs(r: &Rhs, p: &str, out: &mut HashSet<String>) {
+        match r {
+            Rhs::Op(_) => {}
+            Rhs::If(_, a, b) => {
+                interior_binders(a, p, out);
+                interior_binders(b, p, out);
+            }
+            Rhs::Case(sc, arms) => {
+                let of_p = matches!(sc, Atom::Var(s) if s == p || out.contains(s));
+                for (pat, body) in arms {
+                    if of_p {
+                        if let CPat::Con(_, subs) | CPat::Tuple(subs) = pat {
+                            for sp in subs {
+                                if let CPat::Var(n) = sp {
+                                    out.insert(n.clone());
+                                }
+                            }
+                        }
+                    }
+                    interior_binders(body, p, out);
+                }
+            }
+        }
+    }
+    match t {
+        Term::Let(_, r, _, b) => {
+            rhs(r, p, out);
+            interior_binders(b, p, out);
+        }
+        Term::Drop(_, _, _, _, b) => interior_binders(b, p, out),
+        Term::Ret(r, _) => rhs(r, p, out),
     }
 }

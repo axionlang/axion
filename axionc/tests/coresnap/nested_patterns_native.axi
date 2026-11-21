@@ -42,18 +42,20 @@
                                                                           let _t99 = con Nothing  ; Δ{} · makes Maybe$Maybe$Int
                                                                           ret _d1000000  ; Δ{}
                                                                         _ ->
+                                                                      drop _t85 : List$String
                                                                       drop _t86 : String
                                                                       let _t83 = con Nil  ; Δ{} · makes List$String
                                                                       let _t84 = con Cons "b" _t83  ; Δ{_t83} · moves{_t83} · makes List$String
                                                                       let _t85 = con Cons "a" _t84  ; Δ{_t84} · moves{_t84} · makes List$String
-                                                                      let _t86 = call firstOr _t85  ; Δ{_t85} · moves{_t85} · makes String
+                                                                      let _t86 = call firstOr _t85  ; Δ{_t85} · makes String
                                                                       let _t87 = putStrLn _t86  ; Δ{_t86}
                                                                       ret case _t87 of
                                                                     _ ->
+                                                                  drop _t80 : List$String
                                                                   drop _t81 : String
                                                                   let _t79 = con Nil  ; Δ{} · makes List$String
                                                                   let _t80 = con Cons "only" _t79  ; Δ{_t79} · moves{_t79} · makes List$String
-                                                                  let _t81 = call firstOr _t80  ; Δ{_t80} · moves{_t80} · makes String
+                                                                  let _t81 = call firstOr _t80  ; Δ{_t80} · makes String
                                                                   let _t82 = putStrLn _t81  ; Δ{_t81}
                                                                   ret case _t82 of
                                                                 _ ->
@@ -107,25 +109,28 @@
                                           let _t57 = putStrLn _t56  ; Δ{_t56}
                                           ret case _t57 of
                                         _ ->
+                                      drop _t50 : List$String
                                       drop _t51 : String
                                       let _t50 = con Nil  ; Δ{} · makes List$String
-                                      let _t51 = call names _t50  ; Δ{_t50} · moves{_t50} · makes String
+                                      let _t51 = call names _t50  ; Δ{_t50} · makes String
                                       let _t52 = putStrLn _t51  ; Δ{_t51}
                                       ret case _t52 of
                                     _ ->
+                                  drop _t47 : List$String
                                   drop _t48 : String
                                   let _t46 = con Nil  ; Δ{} · makes List$String
                                   let _t47 = con Cons "solo" _t46  ; Δ{_t46} · moves{_t46} · makes List$String
-                                  let _t48 = call names _t47  ; Δ{_t47} · moves{_t47} · makes String
+                                  let _t48 = call names _t47  ; Δ{_t47} · makes String
                                   let _t49 = putStrLn _t48  ; Δ{_t48}
                                   ret case _t49 of
                                 _ ->
+                              drop _t43 : List$String
                               drop _t44 : String
                               let _t40 = con Nil  ; Δ{} · makes List$String
                               let _t41 = con Cons "ef" _t40  ; Δ{_t40} · moves{_t40} · makes List$String
                               let _t42 = con Cons "cd" _t41  ; Δ{_t41} · moves{_t41} · makes List$String
                               let _t43 = con Cons "ab" _t42  ; Δ{_t42} · moves{_t42} · makes List$String
-                              let _t44 = call names _t43  ; Δ{_t43} · moves{_t43} · makes String
+                              let _t44 = call names _t43  ; Δ{_t43} · makes String
                               let _t45 = putStrLn _t44  ; Δ{_t44}
                               ret case _t45 of
                             _ ->
@@ -221,14 +226,14 @@
             _ ->
             _ ->
             _ ->
-            drop $nf4
+            let $fieldcopy0 = rtcall axion_strcat s ""  ; Δ{} · makes String
+            ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
             ret 0  ; Δ{}
             ret 0  ; Δ{}
             ret 1  ; Δ{}
             ret case $nf10 of
             ret case $nf18 of
             ret case $nf20 of
-            ret s  ; Δ{$nf2 s} · moves{s}
           0 ->
           Cons _ $nf18 ->
           Cons _ $nf20 ->
@@ -236,20 +241,15 @@
           _ ->
           _ ->
           _ ->
-          drop $nf2
-          drop $nf2
-          drop _d1000001 : List$String
           drop _t0 : String
           drop _t19 : List$Int
           drop _t2 : String
           drop _t20 : String
-          drop a$1001 : String
-          drop b : String
-          let _d1000000 = rtcall axion_strcat a$1001 _t0  ; Δ{_t0 a$1001} · makes String
-          let _d1000001 = loadraw $nf2+16  ; Δ{$nf2 a$1001 b}
+          let $fieldcopy0 = rtcall axion_strcat a$1001 ""  ; Δ{} · makes String
+          let _d1000000 = rtcall axion_strcat a$1001 _t0  ; Δ{_t0} · makes String
           let _d1000001 = rtcall axion_strcat "other " _t2  ; Δ{_t2} · makes String
           let _t0 = * 3 r  ; Δ{}
-          let _t0 = rtcall axion_strcat "+" b  ; Δ{a$1001 b} · makes String
+          let _t0 = rtcall axion_strcat "+" b  ; Δ{} · makes String
           let _t1 = call length xs  ; Δ{}
           let _t17 = con Nil  ; Δ{} · makes List$Int
           let _t18 = con Cons 5 _t17  ; Δ{_t17} · moves{_t17} · makes List$Int
@@ -257,16 +257,16 @@
           let _t2 = showInt _t1  ; Δ{} · makes String
           let _t20 = call classify _t19  ; Δ{_t19} · makes String
           let _t21 = putStrLn _t20  ; Δ{_t20}
+          ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
           ret * _t0 r  ; Δ{}
           ret * w h  ; Δ{}
           ret - 0 1  ; Δ{}
-          ret 0  ; Δ{$nf2 xs}
           ret 0  ; Δ{}
           ret 0  ; Δ{}
-          ret 1  ; Δ{$nf2 xs}
+          ret 0  ; Δ{}
+          ret 1  ; Δ{}
           ret _d1000000  ; Δ{_d1000000} · moves{_d1000000}
           ret _d1000001  ; Δ{_d1000001} · moves{_d1000001}
-          ret a$1001  ; Δ{a$1001} · moves{a$1001}
           ret case $nf14 of
           ret case $nf15 of
           ret case $nf2 of
@@ -291,7 +291,6 @@
         _ ->
         _ ->
         _ ->
-        drop xs
         else
         let $nfok21 = case xs of
         ret 0  ; Δ{}
@@ -306,8 +305,6 @@
       _ ->
       drop _t14 : List$Int
       drop _t15 : String
-      drop xs
-      drop xs
       else
       let $nfok17 = case xs of
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -337,7 +334,7 @@
       ret "none"  ; Δ{}
       ret + 1 _t0  ; Δ{}
       ret - 0 2  ; Δ{}
-      ret 0  ; Δ{xs}
+      ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -382,7 +379,6 @@
     _ ->
     _ ->
     _ ->
-    drop xs : List$String
     else
     else
     else
@@ -414,7 +410,7 @@
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
-    let _t0 = call length xs  ; Δ{$nf2 xs}
+    let _t0 = call length xs  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -443,11 +439,11 @@
     ret case xs of
     ret if $nfok13 then
     ret showInt _t0  ; Δ{} · makes String
-  ; Δ{$nf2 $nf4 s}
-  ; Δ{$nf2 a$1001}
-  ; Δ{$nf2 xs}
-  ; Δ{$nf2 xs}
-  ; Δ{$nf2 xs}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

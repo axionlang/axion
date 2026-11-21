@@ -10,19 +10,23 @@
 
 
 
-          drop _t0 : String
+
+
+          drop _t0 : Maybe$String
           let $borrowcopy0 = call axion_copy_tuple2$String$Int h  ; Δ{} · makes tuple2$String$Int
-          let _d1000000 = rtcall axion_str_len _t0  ; Δ{_t0}
-          let _t0 = call fstof $borrowcopy0  ; Δ{$borrowcopy0} · moves{$borrowcopy0} · makes String
+          let _d1000000 = call mlen _t0  ; Δ{_t0}
+          let _t0 = call fstof $borrowcopy0  ; Δ{$borrowcopy0} · moves{$borrowcopy0} · makes Maybe$String
           ret _d1000000  ; Δ{}
         (h, rest) ->
       drop t : tuple2$String$Int skip{0}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+8  ; Δ{}
+      let _dd0 = loadraw _p+8  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
       let _dd1 = call axion_drop_List$tuple2$String$Int _dd0  ; Δ{}
       let _dd1 = call axion_drop_tuple2$tuple2$String$Int$List$tuple2$String$Int _dd0  ; Δ{}
+      let _dd1 = rtcall axion_str_drop _dd0  ; Δ{}
       let _dd2 = loadraw _p+8  ; Δ{}
       let _dd3 = call axion_drop_tuple2$String$Int _dd2  ; Δ{}
       ret 0  ; Δ{}
@@ -32,16 +36,25 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret a  ; Δ{t}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
       ret case p of
+      ret con Just a  ; Δ{t} · makes Maybe$String
+      ret rtcall axion_str_len s  ; Δ{}
     (a, b) ->
     Just p ->
+    Just s ->
+    Nothing ->
     Nothing ->
     else
     else
     else
+    else
     let _dd2 = == _tag 1  ; Δ{}
     let _dd2 = == _tag 1  ; Δ{}
+    let _dd2 = == _tag 1  ; Δ{}
+    let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
     let _dd3 = if _dd2 then
     let _dd4 = == _tag 1  ; Δ{}
@@ -49,15 +62,22 @@
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+    let _dfree = rtcall axion_free _p  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
+    let _tag = loadraw _p+0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret 0  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -72,6 +92,7 @@
   else
   else
   else
+  else
   let _d1000000 = putStr _t2  ; Δ{_t2}
   let _dd0 = loadraw _p+0  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
@@ -81,6 +102,8 @@
   let _dd3 = call axion_drop_tuple2$String$Int _dd2  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
   let _dd4 = band _p 1  ; Δ{}
+  let _dd4 = band _p 1  ; Δ{}
+  let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd5 = if _dd4 then
   let _dd6 = band _p 1  ; Δ{}
@@ -101,7 +124,9 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
+  ret 0  ; Δ{}
   ret _d1000000  ; Δ{}
+  ret case m of
   ret case m of
   ret case t of
   ret con Just _t5  ; Δ{_t5} · moves{_t5} · makes Maybe$tuple2$tuple2$String$Int$List$tuple2$String$Int
@@ -111,6 +136,7 @@
 axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$tuple2$String$Int _p  =
+axion_drop_Maybe$String _p  =
 axion_drop_Maybe$tuple2$tuple2$String$Int$List$tuple2$String$Int _p  =
 axion_drop_tuple2$String$Int _p  =
 axion_drop_tuple2$tuple2$String$Int$List$tuple2$String$Int _p  =
@@ -118,5 +144,6 @@ build n  =
 fstof t  =
 main  =
 mk n  =
+mlen m  =
 pick m  =
 show$Int x  =

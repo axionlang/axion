@@ -334,9 +334,7 @@
       drop st
       drop st
       drop st
-      drop st
       drop st : St
-      drop sub : List$tuple2$Int$Int
       drop sub : List$tuple2$Int$Int
       drop sub : List$tuple2$Int$Int
       else
@@ -452,7 +450,7 @@
       ret i  ; Δ{}
       ret i  ; Δ{}
       ret if _t1 then
-      ret store  ; Δ{store} · moves{store}
+      ret store  ; Δ{}
       ret tuple _t3 c  ; Δ{_t3} · moves{_t3} · makes heap
       ret tuple _t4 c  ; Δ{_t4} · moves{_t4} · makes heap
     (st1, tx) ->

@@ -82,7 +82,6 @@
       drop m : tuple2$String$J skip{1}
       drop t
       drop t : tuple2$String$Int
-      drop t : tuple2$String$Int skip{0}
       drop xs
       drop xs
       drop xs
@@ -146,7 +145,7 @@
       ret > b 1  ; Δ{}
       ret > b 1  ; Δ{}
       ret > b 2  ; Δ{}
-      ret a  ; Δ{t}
+      ret a  ; Δ{}
       ret b  ; Δ{}
       ret b  ; Δ{}
       ret call foldl$$hoflam15 _t0 ys  ; Δ{ys} · moves{ys}
@@ -278,7 +277,7 @@
   drop _t25 : tuple2$String$Int
   drop _t29 : tuple2$String$Int
   drop _t4 : List$tuple2$String$Int
-  drop _t42 : String
+  drop _t41 : tuple2$String$Int
   drop _t8 : List$tuple2$String$Int
   else
   else
@@ -354,8 +353,8 @@
   let _t4 = tuple _t3 2  ; Δ{_t1 _t3} · moves{_t3} · makes heap
   let _t40 = call show$Int 123  ; Δ{} · makes String
   let _t41 = tuple _t40 4  ; Δ{_t40} · moves{_t40} · makes heap
-  let _t42 = call fstS _t41  ; Δ{_t41} · moves{_t41} · makes String
-  let _t43 = rtcall axion_str_len _t42  ; Δ{_t42}
+  let _t42 = call fstS _t41  ; Δ{_t41}
+  let _t43 = rtcall axion_str_len _t42  ; Δ{_t41}
   let _t44 = + _t39 _t43  ; Δ{}
   let _t45 = call show$Int 1  ; Δ{} · makes String
   let _t46 = call show$Int 22  ; Δ{_t45} · makes String

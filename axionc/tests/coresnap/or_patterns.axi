@@ -58,27 +58,30 @@
                                           let _t55 = putStrLn _t54  ; Δ{_t54}
                                           ret case _t55 of
                                         _ ->
+                                      drop _t50 : tuple2$Maybe$String$Maybe$String
                                       drop _t51 : String
                                       let _t48 = con Nothing  ; Δ{} · makes Maybe$String
                                       let _t49 = con Nothing  ; Δ{_t48} · makes Maybe$String
                                       let _t50 = tuple _t48 _t49  ; Δ{_t48 _t49} · moves{_t48 _t49} · makes heap
-                                      let _t51 = call firstName _t50  ; Δ{_t50} · moves{_t50} · makes String
+                                      let _t51 = call firstName _t50  ; Δ{_t50} · makes String
                                       let _t52 = putStrLn _t51  ; Δ{_t51}
                                       ret case _t52 of
                                     _ ->
+                                  drop _t45 : tuple2$Maybe$String$Maybe$String
                                   drop _t46 : String
                                   let _t43 = con Just "al"  ; Δ{} · makes Maybe$String
                                   let _t44 = con Just "x"  ; Δ{_t43} · makes Maybe$String
                                   let _t45 = tuple _t43 _t44  ; Δ{_t43 _t44} · moves{_t43 _t44} · makes heap
-                                  let _t46 = call firstName _t45  ; Δ{_t45} · moves{_t45} · makes String
+                                  let _t46 = call firstName _t45  ; Δ{_t45} · makes String
                                   let _t47 = putStrLn _t46  ; Δ{_t46}
                                   ret case _t47 of
                                 _ ->
+                              drop _t40 : tuple2$Maybe$String$Maybe$String
                               drop _t41 : String
                               let _t38 = con Nothing  ; Δ{} · makes Maybe$String
                               let _t39 = con Just "bo"  ; Δ{_t38} · makes Maybe$String
                               let _t40 = tuple _t38 _t39  ; Δ{_t38 _t39} · moves{_t38 _t39} · makes heap
-                              let _t41 = call firstName _t40  ; Δ{_t40} · moves{_t40} · makes String
+                              let _t41 = call firstName _t40  ; Δ{_t40} · makes String
                               let _t42 = putStrLn _t41  ; Δ{_t41}
                               ret case _t42 of
                             _ ->
@@ -103,22 +106,21 @@
                   let _t31 = putStrLn _t30  ; Δ{_t30}
                   ret case _t31 of
                 _ ->
-              drop $nf2
-              drop $nf2
               drop _t26 : Maybe$Int
               drop _t27 : String
+              let $fieldcopy1 = rtcall axion_strcat n$1 ""  ; Δ{} · makes String
               let _t26 = con Just 9  ; Δ{} · makes Maybe$Int
               let _t27 = call small _t26  ; Δ{_t26} · makes String
               let _t28 = putStrLn _t27  ; Δ{_t27}
-              ret "anon"  ; Δ{p}
+              ret "anon"  ; Δ{}
               ret "corner"  ; Δ{}
               ret "corner"  ; Δ{}
               ret "corner"  ; Δ{}
               ret "corner"  ; Δ{}
               ret "far"  ; Δ{}
               ret "far"  ; Δ{}
+              ret $fieldcopy1  ; Δ{$fieldcopy1} · moves{$fieldcopy1}
               ret case _t28 of
-              ret n$1  ; Δ{p}
             0 ->
             0 ->
             1 ->
@@ -128,11 +130,9 @@
             _ ->
             _ ->
             _ ->
-          drop $nf1
-          drop $nf1
-          drop $nf2 : Maybe$String
           drop _t23 : Maybe$Int
           drop _t24 : String
+          let $fieldcopy0 = rtcall axion_strcat n ""  ; Δ{} · makes String
           let $fieldcopy0 = rtcall axion_strcat s ""  ; Δ{} · makes String
           let _t23 = con Just 2  ; Δ{} · makes Maybe$Int
           let _t24 = call small _t23  ; Δ{_t23} · makes String
@@ -144,11 +144,11 @@
           ret "small"  ; Δ{}
           ret "small"  ; Δ{}
           ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
+          ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
           ret case $nf2 of
           ret case $nf2 of
           ret case $nf2 of
           ret case _t25 of
-          ret n  ; Δ{p}
         0 ->
         1 ->
         1 ->
@@ -171,7 +171,6 @@
       drop _t15 : Shape
       drop _t18 : Shape
       drop _t21 : String
-      drop p : tuple2$Maybe$String$Maybe$String skip{0 1}
       else
       let _d1000000 = callclo _t0 v  ; Δ{_t0}
       let _d1000001 = callclo _t1 v  ; Δ{_t1}
@@ -262,8 +261,8 @@
     ret 0  ; Δ{}
     ret 0  ; Δ{}
   ; Δ{_t70}
-  ; Δ{p}
-  ; Δ{p}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}

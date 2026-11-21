@@ -12,9 +12,7 @@
       drop a : Box
       drop b : Box
       drop dflt : Box
-      drop xs
-      drop xs
-      drop ys : V
+      let $fieldcopy0 = call axion_copy_Box y  ; Δ{} · makes Box
       let _d1000000 = putStrLn _t17  ; Δ{_t17}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -30,6 +28,7 @@
       let _t15 = call pick _t10 _t11 _t14  ; Δ{_t10 _t11 _t14} · moves{_t10 _t11} · makes Box
       let _t16 = call val _t15  ; Δ{_t15}
       let _t17 = call show$Int _t16  ; Δ{} · makes String
+      ret $fieldcopy0  ; Δ{$fieldcopy0} · moves{$fieldcopy0}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
@@ -39,7 +38,6 @@
       ret b  ; Δ{}
       ret dflt  ; Δ{}
       ret n  ; Δ{}
-      ret y  ; Δ{y} · moves{y}
     Box n ->
     Vc y ys ->
     Vc y ys ->
@@ -68,6 +66,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t5 : V
   drop _t6 : Box
   drop _t8 : String
   else
@@ -82,7 +81,7 @@
   let _t3 = con Vn  ; Δ{_t0 _t1 _t2} · makes V
   let _t4 = con Vc _t2 _t3  ; Δ{_t0 _t1 _t2 _t3} · moves{_t2 _t3} · makes V
   let _t5 = con Vc _t1 _t4  ; Δ{_t0 _t1 _t4} · moves{_t1 _t4} · makes V
-  let _t6 = call headOr _t0 _t5  ; Δ{_t0 _t5} · moves{_t0 _t5} · makes Box
+  let _t6 = call headOr _t0 _t5  ; Δ{_t0 _t5} · moves{_t0} · makes Box
   let _t7 = call val _t6  ; Δ{_t6}
   let _t8 = call show$Int _t7  ; Δ{} · makes String
   let _t9 = putStrLn _t8  ; Δ{_t8}

@@ -63,6 +63,7 @@ mod ffi_audit;
 mod infer;
 mod interp;
 mod layout;
+mod letlift;
 mod levels;
 mod lexer;
 #[cfg(feature = "native")]
@@ -1666,6 +1667,9 @@ pub fn prepare_for_check_with(
     // over String `==`, so no downstream stage (check/infer/core/interp/backends) needs a
     // string-pattern kind — they run on the desugared form.
     desugar_string_patterns(&mut module, diags);
+    // Local functions in `let` → `where`-locals taking their captured variables, so the native
+    // backends compile them (see `letlift`).
+    letlift::lift_let_functions(&mut module);
     // Infer `%1` (consumed) ownership for a signature param whose extracted heap
     // element escapes via the result (`head`/`append`/`reverse`) or whose whole heap value
     // is embedded into the result (`pairUp`, Rule A′). Runs BEFORE the linear checker and
@@ -3923,7 +3927,12 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
     }
     // (func idx, param idx) pairs to force `%1`.
     let mut apply: Vec<(usize, usize)> = Vec::new();
-    // Rule A — CONCRETE consumers: SOME extracted heap field escapes via the result.
+    // Rule A — CONCRETE consumers: SOME extracted heap field is EMBEDDED in the result
+    // (`Cons y (keep ys)`), so moving the elements beats copying each one. A field only
+    // RETURNED (`firstBox xs = case xs of Cons b _ -> b; …`) does not make the param `%1`:
+    // the param stays borrowed, and Auto-Drop hands the field back as a borrow (a pure
+    // accessor) or copies it on the paths that mix it with a fresh value — so a caller may
+    // keep using its list after the call.
     // Concrete because a var-carrying `%1` becomes an owning-generic (handled by B);
     // a concrete `%1` deep-drops the non-escaping fields via its resolved key.
     for (idx, f) in module.funcs.iter().enumerate() {
@@ -3932,7 +3941,7 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
             continue;
         }
         let ptypes = sig.param_types();
-        for i in consumed_params(f, &con_field_heap) {
+        for i in consumed_params(f, &con_field_heap, true) {
             if ptypes
                 .get(i)
                 .is_some_and(|t| core::is_heap_shaped(t) && !core::ty_has_var(t))
@@ -4002,7 +4011,7 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
             continue;
         }
         let ptypes = sig.param_types();
-        for i in consumed_params(f, &con_spine) {
+        for i in consumed_params(f, &con_spine, false) {
             if consuming.get(&f.name).is_some_and(|s| s.contains(&i)) {
                 continue;
             }
@@ -4249,7 +4258,7 @@ fn alias_borrowers(module: &ast::Module) -> std::collections::HashSet<String> {
         // tuple field directly (AX0910, `bind_pattern`'s `CPat::Tuple` arm), which subsumes the peel
         // residual; a `%1` extracting consumer over a tuple element lowers soundly and is no longer
         // pre-rejected (the guard used to OVER-reject safe `uncons`-of-tuple reads).
-        for i in consumed_params(f, &con_field_elem_heap) {
+        for i in consumed_params(f, &con_field_elem_heap, false) {
             if mults.get(i) != Some(&ast::Mult::One) {
                 borrowers.insert(f.name.clone());
             }
@@ -4363,6 +4372,7 @@ fn is_heap_field_ty(ty: &ast::Type, data_names: &std::collections::HashSet<Strin
 fn consumed_params(
     f: &ast::Func,
     con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+    embed_only: bool,
 ) -> std::collections::HashSet<usize> {
     use std::collections::HashSet;
     let mut out = HashSet::new();
@@ -4374,7 +4384,7 @@ fn consumed_params(
         // scrutinee variable names consumed by a `case <var> of` inside the bodies
         let mut names: HashSet<String> = HashSet::new();
         for body in &bodies {
-            collect_consuming_cases(body, con_field_heap, &mut names);
+            collect_consuming_cases(body, con_field_heap, embed_only, &mut names);
         }
         for (i, p) in clause.pats.iter().enumerate() {
             match p {
@@ -4383,7 +4393,7 @@ fn consumed_params(
                 }
                 // direct destructuring in the clause head: `f (Cons b ..) = <b>`
                 ast::Pat::Con(con, subs, _)
-                    if arm_field_escapes(con, subs, &bodies, con_field_heap) =>
+                    if arm_field_escapes(con, subs, &bodies, con_field_heap, embed_only) =>
                 {
                     out.insert(i);
                 }
@@ -4399,13 +4409,14 @@ fn consumed_params(
 fn collect_consuming_cases(
     e: &ast::Expr,
     con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+    embed_only: bool,
     names: &mut std::collections::HashSet<String>,
 ) {
     if let ast::Expr::Case(scrut, arms, _) = e {
         if let ast::Expr::Var(s, _) = scrut.as_ref() {
             for (pat, body) in arms {
                 if let ast::Pat::Con(con, subs, _) = pat {
-                    if arm_field_escapes(con, subs, &[body], con_field_heap) {
+                    if arm_field_escapes(con, subs, &[body], con_field_heap, embed_only) {
                         names.insert(s.clone());
                     }
                 }
@@ -4413,7 +4424,7 @@ fn collect_consuming_cases(
         }
     }
     for_each_subexpr(e, &mut |sub| {
-        collect_consuming_cases(sub, con_field_heap, names);
+        collect_consuming_cases(sub, con_field_heap, embed_only, names);
     });
 }
 
@@ -4424,13 +4435,21 @@ fn arm_field_escapes(
     subs: &[ast::Pat],
     bodies: &[&ast::Expr],
     con_field_heap: &std::collections::HashMap<String, Vec<bool>>,
+    embed_only: bool,
 ) -> bool {
     let Some(heaps) = con_field_heap.get(con) else {
         return false;
     };
+    let escapes = |b: &str, body: &ast::Expr| {
+        if embed_only {
+            embedded_in_ctor(b, body)
+        } else {
+            escapes_via_result(b, body)
+        }
+    };
     subs.iter().enumerate().any(|(fi, sp)| {
         matches!(sp, ast::Pat::Var(b, _) if heaps.get(fi).copied().unwrap_or(false)
-            && bodies.iter().any(|body| escapes_via_result(b, body)))
+            && bodies.iter().any(|body| escapes(b, body)))
     })
 }
 
@@ -4751,6 +4770,13 @@ fn param_has_genuine_escape(
             || moved_into_closure(b, body, closures)
             || moved_into_consuming(b, body, &wo_self)
     };
+    // `genuine` short of being returned: a tuple component only returned is handed back as a
+    // borrow or copied (see `tuple_binder_genuine`)
+    let stored = |b: &str, body: &ast::Expr| {
+        embedded_in_ctor(b, body)
+            || moved_into_closure(b, body, closures)
+            || moved_into_consuming(b, body, &wo_self)
+    };
     // Which components of a CONCRETE tuple-typed param hold heap memory. `None` when the param
     // is not a tuple, or its type has a variable: a polymorphic tuple reader keeps the old
     // owning treatment, since nothing can prove its result does not point into the tuple.
@@ -4777,7 +4803,7 @@ fn param_has_genuine_escape(
             // components (`big t = case t of (a, b) -> b > 1`) borrows, so a caller can keep
             // the tuple — `filter big` over a tuple list no longer frees the kept element.
             Some(ast::Pat::Tuple(subs, _))
-                if tuple_binder_genuine(subs, tuple_heap.as_deref(), &bodies, &genuine) =>
+                if tuple_binder_genuine(subs, tuple_heap.as_deref(), &bodies, &stored) =>
             {
                 return true
             }
@@ -4794,7 +4820,7 @@ fn param_has_genuine_escape(
                     // `data`), or the whole tuple does.
                     // (A tuple-typed param has no constructor arms, so `case_field_genuine`,
                     // which anchors on any tuple arm, only applies to other types.)
-                    if tuple_case_genuine(p, body, tuple_heap.as_deref(), &genuine)
+                    if tuple_case_genuine(p, body, tuple_heap.as_deref(), &genuine, &stored)
                         || (tuple_heap.is_none() && case_field_genuine(p, body, cfh, &genuine))
                     {
                         return true;
@@ -4825,33 +4851,42 @@ fn arm_field_genuine(
 }
 
 /// `true` if a TUPLE destructure `subs` must own its tuple: some heap component (per
-/// `heap`) escapes genuinely in one of `bodies`. Unknown component types (`heap` is `None`)
-/// and nested patterns over a heap component are treated as escaping — owning is the
-/// conservative choice, the treatment every tuple had before.
+/// `heap`) is stored, moved on or taken apart in one of `bodies` (for a nested pattern over a
+/// heap component: some variable it binds is). Unknown component types (`heap` is `None`) are treated as
+/// escaping — owning is the conservative choice, the treatment every tuple had before.
 fn tuple_binder_genuine(
     subs: &[ast::Pat],
     heap: Option<&[bool]>,
     bodies: &[&ast::Expr],
-    genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+    stored: &dyn Fn(&str, &ast::Expr) -> bool,
 ) -> bool {
     let Some(heap) = heap else { return true };
     if heap.len() != subs.len() {
         return true;
     }
+    // A HEAP component stored in a new value or moved into a consuming call keeps the owning
+    // treatment, as does one taken apart (`case a of (x, y) -> x`, which may pass an interior
+    // out). One only RETURNED does not: Auto-Drop hands it back as a borrow, or copies it on
+    // the paths that mix it with a fresh value. A SCALAR component is a copy anyway.
+    let escapes = |b: &str| {
+        bodies
+            .iter()
+            .any(|body| stored(b, body) || is_rebound(b, body) || is_case_scrutinee(b, body))
+    };
     subs.iter().zip(heap).any(|(sp, &h)| match sp {
-        // A HEAP component returned as the result keeps the owning treatment (the result may
-        // point into the tuple), as does one taken apart (`case a of (x, y) -> x`, which may
-        // pass an interior out). A SCALAR component is a copy — returning it borrows nothing.
-        ast::Pat::Var(b, _) => {
-            h && bodies.iter().any(|body| {
-                returned_directly(b, body)
-                    || genuine(b, body)
-                    || is_rebound(b, body)
-                    || is_case_scrutinee(b, body)
-            })
-        }
+        ast::Pat::Var(b, _) => h && escapes(b),
         ast::Pat::Wild(_) => false,
-        _ => h,
+        // a nested pattern over a heap component (`(Just s, 0)`) owns the tuple only when a
+        // variable it binds, at any depth, escapes like that; one that only tests the shape or
+        // reads what it binds borrows (Auto-Drop copies an interior it moves, and the
+        // verifier checks the rest)
+        _ => {
+            h && {
+                let mut vs = std::collections::BTreeSet::new();
+                ast::pat_vars(sp, &mut vs);
+                vs.iter().any(|b| escapes(b))
+            }
+        }
     })
 }
 
@@ -4876,24 +4911,25 @@ fn tuple_case_genuine(
     e: &ast::Expr,
     heap: Option<&[bool]>,
     genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+    stored: &dyn Fn(&str, &ast::Expr) -> bool,
 ) -> bool {
     if heap.is_some() && genuine(p, e) {
         return true;
     }
-    tuple_case_genuine_rec(p, e, heap, genuine)
+    tuple_case_genuine_rec(p, e, heap, stored)
 }
 
 fn tuple_case_genuine_rec(
     p: &str,
     e: &ast::Expr,
     heap: Option<&[bool]>,
-    genuine: &dyn Fn(&str, &ast::Expr) -> bool,
+    stored: &dyn Fn(&str, &ast::Expr) -> bool,
 ) -> bool {
     if let ast::Expr::Case(scrut, arms, _) = e {
         if is_var_named(scrut, p) {
             for (pat, body) in arms {
                 if let ast::Pat::Tuple(subs, _) = pat {
-                    if tuple_binder_genuine(subs, heap, &[body], genuine) {
+                    if tuple_binder_genuine(subs, heap, &[body], stored) {
                         return true;
                     }
                 }
@@ -4902,7 +4938,7 @@ fn tuple_case_genuine_rec(
     }
     let mut found = false;
     for_each_subexpr(e, &mut |sub| {
-        found = found || tuple_case_genuine_rec(p, sub, heap, genuine);
+        found = found || tuple_case_genuine_rec(p, sub, heap, stored);
     });
     found
 }

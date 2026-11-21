@@ -58,6 +58,8 @@ NATIVE=(
   axionc/tests/fixtures/nested_borrowed_embed.axi
   axionc/tests/fixtures/view_arm_owned_scrutinee.axi
   axionc/tests/fixtures/or_patterns.axi
+  axionc/tests/fixtures/accessor_keeps_arg.axi
+  axionc/tests/fixtures/let_local_functions.axi
   axionc/tests/fixtures/bits_complement_popcount.axi
   axionc/tests/fixtures/bits_user_complement.axi
   axionc/tests/fixtures/bits_user_ops_prelude.axi

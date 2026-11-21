@@ -1,6 +1,6 @@
 -- WAS UNSAFE, now copied (verifier-caught AX0910 `DropOfAlias` without the copy): consuming a BORROWED INTERIOR
--- TUPLE field. `fstof` CONSUMES its tuple (it returns the heap half `a`, so the result points into
--- the tuple and the function owns it). `pick` BORROWS `m`, extracts the interior tuple `h` (through
+-- TUPLE field. `fstof` CONSUMES its tuple (it stores the heap half `a` in a new `Just`, so the result keeps part
+-- of the tuple and the function owns it; a function that only RETURNS `a` borrows instead). `pick` BORROWS `m`, extracts the interior tuple `h` (through
 -- the nested `Just p` / `(h, rest)` cases), and passes `h` to the consuming `fstof` — so `h` is freed
 -- by `fstof` AND by the caller's deep-drop of the `Maybe` → double-free. (A reader returning the
 -- SCALAR half borrows its tuple instead and is safe: `tuple_scalar_reader.axi`.) This was a PRE-EXISTING,
@@ -12,13 +12,17 @@
 -- clean because they destructure tuples they OWN.
 mk :: Int -> (String, Int)
 mk n = ("k", n)
-fstof :: (String, Int) -> String
+fstof :: (String, Int) -> Maybe String
 fstof t = case t of
-  (a, b) -> a
+  (a, b) -> Just a
+mlen :: Maybe String -> Int
+mlen m = case m of
+  Just s -> strLen s
+  Nothing -> 0
 pick :: Maybe ((String, Int), List (String, Int)) -> Int
 pick m = case m of
   Just p -> case p of
-    (h, rest) -> strLen (fstof h)
+    (h, rest) -> mlen (fstof h)
   Nothing -> 0
 build :: Int -> Maybe ((String, Int), List (String, Int))
 build n = Just (mk n, Cons (mk (n + 1)) Nil)

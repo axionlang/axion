@@ -53,19 +53,18 @@
             _ ->
           drop _t10 : String
           drop _t11 : String
-          drop _t9 : String
-          let _t10 = call show$Int 7  ; Δ{_t9} · makes String
-          let _t11 = rtcall axion_strcat _t9 _t10  ; Δ{_t10 _t9} · makes String
+          drop _t8 : tuple2$String$Int
+          let _t10 = call show$Int 7  ; Δ{_t8} · makes String
+          let _t11 = rtcall axion_strcat _t9 _t10  ; Δ{_t10 _t8} · makes String
           let _t12 = putStrLn _t11  ; Δ{_t11}
           let _t8 = call mkp 7  ; Δ{} · makes tuple2$String$Int
-          let _t9 = call keyOf _t8  ; Δ{_t8} · moves{_t8} · makes String
+          let _t9 = call keyOf _t8  ; Δ{_t8}
           ret call sndof h  ; Δ{}
           ret case _t12 of
         (h, rest) ->
         _ ->
       drop _t4 : tuple2$String$Int
       drop _t6 : String
-      drop t : tuple2$String$Int skip{0}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -94,7 +93,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret a  ; Δ{t}
+      ret a  ; Δ{}
       ret b  ; Δ{}
       ret b  ; Δ{}
       ret case _t7 of

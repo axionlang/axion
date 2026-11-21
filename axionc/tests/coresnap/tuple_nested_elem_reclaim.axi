@@ -4,8 +4,6 @@
 
 
 
-
-      drop t : tuple2$List$Integer$Integer skip{1}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd1 = call axion_drop_List _dd0  ; Δ{}
@@ -16,7 +14,7 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
-      ret n  ; Δ{t}
+      ret n  ; Δ{}
     (xs, n) ->
     else
     else
@@ -37,14 +35,12 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
-  drop _t7 : Integer
+  drop _t6 : tuple2$List$Integer$Integer
   drop _t8 : String
   else
   else
   let _d1000000 = putStrLn _t8  ; Δ{_t8}
-  let _dd0 = loadraw _p+0  ; Δ{}
   let _dd0 = loadraw _p+8  ; Δ{}
-  let _dd1 = call axion_drop_List$Integer _dd0  ; Δ{}
   let _dd1 = rtcall axion_bignum_free _dd0  ; Δ{}
   let _dd2 = loadraw _p+0  ; Δ{}
   let _dd3 = call axion_drop_List$Integer _dd2  ; Δ{}
@@ -53,7 +49,6 @@
   let _dd6 = band _p 1  ; Δ{}
   let _dd7 = if _dd6 then
   let _dfree = rtcall axion_free _p  ; Δ{}
-  let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = rtcall axion_bignum_from_i64 1  ; Δ{} · makes Integer
   let _t1 = rtcall axion_bignum_from_i64 2  ; Δ{_t0} · makes Integer
   let _t2 = con Nil  ; Δ{_t0 _t1} · makes List$Integer
@@ -61,9 +56,8 @@
   let _t4 = con Cons _t0 _t3  ; Δ{_t0 _t3} · moves{_t0 _t3} · makes List$Integer
   let _t5 = rtcall axion_bignum_from_i64 7  ; Δ{_t4} · makes Integer
   let _t6 = tuple _t4 _t5  ; Δ{_t4 _t5} · moves{_t4 _t5} · makes heap
-  let _t7 = call sndOf _t6  ; Δ{_t6} · moves{_t6} · makes Integer
-  let _t8 = rtcall axion_bignum_to_string _t7  ; Δ{_t7} · makes String
-  ret 0  ; Δ{}
+  let _t7 = call sndOf _t6  ; Δ{_t6}
+  let _t8 = rtcall axion_bignum_to_string _t7  ; Δ{_t6} · makes String
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
@@ -74,6 +68,5 @@ axion_drop_Array _p  =
 axion_drop_List _p  =
 axion_drop_List$Integer _p  =
 axion_drop_tuple2$List$Integer$Integer _p  =
-axion_drop_tuple2$List$Integer$Integer_skip_1 _p  =
 main  =
 sndOf t  =

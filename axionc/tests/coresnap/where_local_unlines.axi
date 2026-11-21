@@ -51,9 +51,6 @@
       drop xs
       drop xs
       drop xs : List$String
-      drop y : String
-      drop ys
-      drop ys
       drop ys
       drop ys
       drop ys
@@ -69,8 +66,8 @@
       let _t0 = call append$String zs ys  ; Δ{z zs} · moves{zs} · makes List$String
       let _t0 = call partitionLe$String y ys  ; Δ{y ys} · moves{ys} · makes tuple2$List$String$List$String
       let _t0 = con Nil  ; Δ{}
-      let _t0 = rtcall axion_strcat y "\n"  ; Δ{y yss} · makes String
-      let _t1 = call ulines$ulTag yss  ; Δ{_t0 yss} · moves{yss} · makes List$String
+      let _t0 = rtcall axion_strcat y "\n"  ; Δ{} · makes String
+      let _t1 = call ulines$ulTag yss  ; Δ{_t0} · makes List$String
       let _t1 = con Nil  ; Δ{}
       let _t2 = call partitionLe$String pivot zs  ; Δ{z zs} · moves{zs} · makes tuple2$List$String$List$String
       ret ""  ; Δ{}
@@ -134,6 +131,7 @@
   ; Δ{}
   ; Δ{}
   ; Δ{}
+  drop _t5 : List$String
   drop _t6 : String
   else
   else
@@ -152,7 +150,7 @@
   let _t3 = con Cons "cc" _t2  ; Δ{_t2} · moves{_t2} · makes List$String
   let _t4 = con Cons "dd" _t3  ; Δ{_t3} · moves{_t3} · makes List$String
   let _t5 = call sort$String _t4  ; Δ{_t4} · moves{_t4} · makes List$String
-  let _t6 = call ulines _t5  ; Δ{_t5} · moves{_t5} · makes String
+  let _t6 = call ulines _t5  ; Δ{_t5} · makes String
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret _d1000000  ; Δ{}

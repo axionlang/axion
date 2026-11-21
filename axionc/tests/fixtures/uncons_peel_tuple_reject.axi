@@ -1,5 +1,5 @@
 -- `uncons` over a TUPLE element returns `Maybe ((K,V), List (K,V))`; `pick` BORROWS that result,
--- peels the interior tuple head `h`, and CONSUMES it via `fstof` (which owns and frees the tuple) while the
+-- peels the interior tuple head `h`, and CONSUMES it via `fstof` (which owns the tuple: it stores `a` in a new `Just`) while the
 -- owner still deep-drops the `Maybe` → double-free. The real cause is the general consume-of-a-
 -- borrowed-interior-tuple-field class (NOT a monomorphizer/lowering bug — `uncons$(K,V)` itself
 -- lowers fine; a safe read of the tail is clean, see `uncons_safe_tuple_read.axi`). The drop-
@@ -9,13 +9,17 @@
 -- with `AXION_NO_ALIAS_COPY` the verifier still refuses the uncopied shape (AX0910).
 mkp :: Int -> (String, Int)
 mkp n = ("k", n)
-fstof :: (String, Int) -> String
+fstof :: (String, Int) -> Maybe String
 fstof t = case t of
-  (a, b) -> a
+  (a, b) -> Just a
+mlen :: Maybe String -> Int
+mlen m = case m of
+  Just s -> strLen s
+  Nothing -> 0
 pick :: Maybe ((String, Int), List (String, Int)) -> Int
 pick m = case m of
   Just p -> case p of
-    (h, rest) -> strLen (fstof h)
+    (h, rest) -> mlen (fstof h)
   Nothing -> 0
 main :: IO ()
 main = putStr (show (pick (uncons (Cons (mkp 5) (Cons (mkp 6) Nil)))))

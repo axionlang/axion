@@ -2339,11 +2339,13 @@ fn an_owned_value_freed_in_both_branches_is_not_freed_again() {
 fn a_case_bound_value_of_a_polymorphic_field_cannot_be_given_away_twice() {
     // `Right parts` binds a `List String` through `Either`'s type parameter. The contraction
     // check read only the declared field type (`b`), so a double hand-off was accepted and
-    // double-freed natively (AX0910). It is now AX0001, naming both sites.
-    let src = "pick :: Int -> List String -> String\n\
-               pick n xs = case xs of\n  Nil -> \"\"\n  Cons y ys -> if n == 0 then y else pick (n - 1) ys\n\
+    // double-freed natively (AX0910). It is now AX0001, naming both sites. (`wrap` stores its
+    // argument, so it owns it; a function that only returns a part of it would borrow.)
+    let src = "wrap :: List String -> Maybe (List String)\nwrap xs = Just xs\n\
+               mlen :: Maybe (List String) -> Int\n\
+               mlen m = case m of\n  Just xs -> length xs\n  Nothing -> 0\n\
                both :: Either Int (List String) -> Int\n\
-               both e = case e of\n  Left c -> c\n  Right parts -> strLen (pick 0 parts) + strLen (pick 1 parts)\n\
+               both e = case e of\n  Left c -> c\n  Right parts -> mlen (wrap parts) + mlen (wrap parts)\n\
                main :: IO ()\nmain = putStrLn (show (both (Right (words \"ab cde\"))))\n";
     let p = std::env::temp_dir().join(format!("axion_case_contract_{}.axi", std::process::id()));
     std::fs::write(&p, src).unwrap();
@@ -2351,7 +2353,7 @@ fn a_case_bound_value_of_a_polymorphic_field_cannot_be_given_away_twice() {
     let _ = std::fs::remove_file(&p);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(!out.status.success() && text.contains("AX0001"), "{text}");
-    assert_eq!(text.matches("given to `pick` here").count(), 2, "{text}");
+    assert_eq!(text.matches("given to `wrap` here").count(), 2, "{text}");
     assert!(!text.contains("AX0910"), "{text}");
 }
 
@@ -7395,6 +7397,14 @@ fn axmpv_regressions_agree_on_every_backend() {
             "1\n3\nn5<dot>\nn4<n5<dot>>\n2\nn88\n",
         ),
         ("view_arm_owned_scrutinee.axi", "3\n"),
+        (
+            "let_local_functions.axi",
+            "13\n13\np:odd\nq:even\nzero,small,big\n36\n30\n47\n13\n11 12 \n9\n42\n",
+        ),
+        (
+            "accessor_keeps_arg.axi",
+            "5\n6\n18\nalpha\nalpha!\n2\nhi\nhi?\nq\nqzero\n",
+        ),
         (
             "or_patterns.axi",
             "2\n17\nsmall\nother\nother\nab\nzz\nbo\nal\nanon\ncorner\nfar\n35\n77\n",

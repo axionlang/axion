@@ -28,8 +28,10 @@ both t = lenK t + lenK t        -- fine: `lenK` only reads its tuple, so it borr
 ```
 
 Parameters are borrowed unless the function needs to own them. The compiler infers that: a
-function that returns or embeds part of its argument (`fstS (a, _) = a`) takes ownership; one that
-only reads it (`lenK`) borrows it, so the caller keeps it. Passing the same value into two owned
+function that stores part of its argument in a new value (`keep (Cons y ys) = Cons y …`) takes
+ownership; one that only reads it (`lenK`) or returns a part of it (`fstS (a, _) = a`) borrows it,
+so the caller keeps it. A returned part is handed back as a borrow, or copied when other paths
+of the function return a fresh value. Passing the same value into two owned
 positions (`Pair xs xs`) is **AX0001**, since both owners would free it.
 
 A part of a borrowed argument that a pattern brings out and the function then stores in a new
