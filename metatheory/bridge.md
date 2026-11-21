@@ -78,9 +78,9 @@ enforces the N-way `merge_vals`). A `Con`/`Var`/`Tuple` pattern binds vars that 
 extracted from the scrutinee (an owned move OR a borrowed alias — AxionKey/AxionAlias territory) and
 stays out of fragment.
 
-Current coverage: **909 of 1219 corpus functions in-fragment, 926 machine-checked agreement
-examples, zero disagreements.** Three widenings got here from the original 447/464, each reusing the
-existing `alloc`/`use`/`drop`/`moveOut` vocabulary (no new Lean):
+Current coverage: **2655 of 3059 corpus functions in-fragment (86.8%), zero disagreements**
+(`model-trace.sh` fails below a floor of 85%, so coverage cannot shrink unnoticed). The widenings,
+each reusing the existing `alloc`/`use`/`drop`/`moveOut`/`brn` vocabulary (no new Lean):
 1. heap-extracting `case` (owned + borrowed peel, `AxionExtract.lean`);
 2. **capability/string rtcalls** — a `strcat`/`getEnv`/`readFile`/`exec`/… call has a clean
    heap-drop effect (`op_delta_effect`, the same authority `verify.rs` uses: borrow the String args,
@@ -89,21 +89,31 @@ existing `alloc`/`use`/`drop`/`moveOut` vocabulary (no new Lean):
    heap ownership) stay out;
 3. **closures** — `op_delta_effect` BORROWS the captures (→ `use`; the frame frees each at its real
    consumer) and produces the closure cell (→ `alloc`), which Auto-Drop then `drop`s (a local
-   closure) or which is moved out (an escaping one) — both balance; a closure CALL moves its args.
+   closure) or which is moved out (an escaping one) — both balance; a closure CALL moves its args;
+4. **`let`-bound `if`/`case`** — each arm ends in one shared result cell (`alloc rid` in place of
+   the escaping `alloc k; moveOut k`, or after the `moveOut` of an owned variable it hands on), the
+   arms join at a `brn` whose continuation is the rest of the function (`AxionDrop.seq`); arms
+   with a heap result on one path and a scalar on another stay out;
+5. **functions without a signature** (lifted lambdas, generated workers): params are seeded exactly
+   as `verify.rs` seeds them without a key — owned iff `%1` or freed in the body and not lent by the
+   caller, otherwise untracked (owning and borrowing nothing);
+6. **generic and tuple scrutinees** — a `case` on a param that owns nothing (`length`'s `List a`)
+   binds interior aliases like a borrowed scrutinee; a borrowed tuple's fields are B cells (heap
+   fields only when its key segments, every field when it does not), as `bind_pattern` does.
 
-The largest remaining exclusions are the non-owned/polymorphic-scrutinee `case` variants (61+32) and
-the interior-alias slice (field-alias 28 + borrowed-param escape 22 — AxionAlias); "no param-key
-info" (73) and "raw/unsupported" (19) are dominated by generated session/step machines that are out
-regardless. The alias slice is the next real lever (needs the `AxionAlias` interior-alias model
-given an executable checker and merged in).
+The largest remaining exclusions (`--emit model-trace` lists each excluded function and why):
+"raw/unsupported" (84, the hand-managed session/worker state machines — out regardless), `case` on
+the result of a call that may alias an argument (74), field aliases (54) and borrowed-param escapes
+(49) — the interior-alias slice, which needs the `AxionAlias` model given an executable checker —
+and owned-tuple patterns (24), whose fields the tuple's deep drop frees.
 
 ## Scope & honesty
 
 - **Conservative fragment, not mistranslation.** The translator (`axionc/src/model_trace.rs`) is
   conservative: any construct outside the `alloc`/`use`/`drop`/`moveOut` vocabulary — an
   interior-`Field` alias, an array/arena/**session or socket** op, a record update, a non-owned
-  heap-extracting `case`, a borrowed heap param that escapes, or a conditional bound in a `let` —
-  puts the function OUT of fragment (skipped and counted in the coverage report), never
+  heap-extracting `case` on a call result, an owned-tuple pattern, or a borrowed heap param that
+  escapes — puts the function OUT of fragment (skipped and counted in the coverage report), never
   mistranslated. (Capability/string rtcalls AND closures ARE in-fragment — see above.) A shrinking in-model fraction is a visible finding. Interior aliases and reclaimer
   keys (the `AxionAlias`/`AxionKey` slices) are not yet given executable checkers, so functions
   using them are out of this fragment.

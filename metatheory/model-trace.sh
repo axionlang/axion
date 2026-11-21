@@ -67,4 +67,11 @@ if [ -n "$errs" ]; then
   printf '%s\n' "$errs" | head >&2
   exit 1
 fi
+# Coverage floor: the in-model share may not shrink unnoticed (a translator change that drops
+# functions out of fragment fails here instead of passing with less proven).
+min_pct="${MODEL_TRACE_MIN_PCT:-85}"
+if [ "$tot" -gt 0 ] && [ $((inm * 100)) -lt $((tot * min_pct)) ]; then
+  echo "FAIL: model coverage $inm/$tot is below the ${min_pct}% floor" >&2
+  exit 1
+fi
 echo "OK: executable model agrees with the verifier on all $n in-fragment functions"

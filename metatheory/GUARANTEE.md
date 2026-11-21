@@ -266,7 +266,7 @@ The trusted base of §4 and the deferrals of §5 are the frontier. In descending
 - **M2 — whole-fragment bridge** (`--emit model-trace`): **DONE.** The executable `AxionDrop.acceptsL`
   (proven == `accepts` by `AxionDrop.chk_correct`, hence memory-safe + leak-free by `AxionDrop.sound`) is
   machine-checked (Lean `by rfl`) to equal `verify.rs`'s verdict on every function in the
-  `alloc/use/drop/moveOut/branch` fragment — **426 of 1220 corpus functions, zero disagreements**
+  `alloc/use/drop/moveOut/branch` fragment — **2655 of 3059 corpus functions (86.8%), zero disagreements**
   (`metatheory/model-trace.sh`, wired into `bridge.sh`; translator `axionc/src/model_trace.rs`). This
   replaces "proved a toy + spot-checked 8 cases" with corpus-wide agreement over the modeled fragment.
   Remaining widening: executable checkers for the interior-alias (`AxionAlias`) and reclaimer-key

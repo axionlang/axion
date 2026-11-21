@@ -25,8 +25,8 @@
 //!
 //! SOUNDNESS OF THE BRIDGE rests on the fragment classification being HONEST: the translator is
 //! CONSERVATIVE — any construct outside its vocabulary (a closure, an interior-`Field` alias, an
-//! array/arena/session op, a record update, a borrowed-value ESCAPE (move-out of a borrow), or a
-//! conditional/case bound in a `let`) makes the function OUT of fragment (skipped and counted), never
+//! array/arena/session op, a record update, a borrowed-value ESCAPE (move-out of a borrow), or an
+//! owned-tuple pattern) makes the function OUT of fragment (skipped and counted), never
 //! mistranslated. A shrinking in-model fraction is a visible finding, not a silent pass.
 
 use crate::core::{Atom, BorrowArgs, CPat, CoreFn, Lowered, Op, RecordInfo, Rhs, Term};
@@ -81,13 +81,88 @@ struct Tr<'a> {
     /// field (`emit_per_field_drops`): it extracts that one slot, exactly as a pattern variable
     /// would (`verify.rs::bind_raw_field`), so it translates to the same `alloc` of an owned child.
     arm_con: HashMap<String, String>,
+    /// the highest owned id handed out so far, so the code after a join never reuses an id an arm
+    /// allocated (arms each restart `next` from the same point).
+    hi: u32,
+    /// while translating the arms of a `let x = if …`/`let x = case …`: where each arm's result
+    /// goes (see `ResultSink`).
+    result: Option<ResultSink>,
+    /// params the verifier seeds as owning nothing (not `%1`, never freed, no heap key: a generic
+    /// `List a` param): a `case` on one binds its heap fields as interior aliases, exactly as a
+    /// borrowed scrutinee — so it becomes a borrowed (B) cell when first scrutinized.
+    lent_params: HashSet<String>,
+    /// each param's container key (`tuple2$String$Int`), as the verifier seeds it.
+    keys: HashMap<String, String>,
+}
+
+/// The arms of a `let`-bound conditional each end in a result. A heap result is the cell `rid`
+/// in every arm, so the join compares like for like and the code after it owns `x` = `rid`.
+/// `heap` records, per arm leaf, whether that leaf's result is heap; mixed arms are out of
+/// fragment (a scalar arm and a heap arm cannot both be modeled as one cell).
+struct ResultSink {
+    rid: u32,
+    heap: Vec<bool>,
+    /// some arm's result came from a call (a possible interprocedural alias, as for a `let`).
+    suspect: bool,
 }
 
 impl Tr<'_> {
     fn fresh(&mut self) -> u32 {
         let n = self.next;
         self.next += 1;
+        self.hi = self.hi.max(self.next);
         n
+    }
+
+    /// The result of a `let`-bound conditional's arm, in place of a return: a produced heap value,
+    /// or an owned variable handed on as the result (`if c then y else …`), becomes the shared
+    /// result cell; a scalar result becomes nothing.
+    fn tr_result_leaf(&mut self, op: &Op) -> Result<MExpr, &'static str> {
+        let e = op_delta_effect(op, self.ba);
+        let produced = e.produces.is_some();
+        let owned_alias = matches!(e.alias, Some(Atom::Var(v))
+            if self.ids.get(v).is_some_and(|id| !self.borrowed.contains(id)));
+        let mut ops = self.tr_op(op, None)?;
+        let sink = self.result.as_mut().ok_or("result outside a branch")?;
+        if produced {
+            // `tr_op` emitted `alloc k; moveOut k` for an escaping result: it is `rid` instead.
+            match (ops.pop(), ops.pop()) {
+                (Some(MOp::MoveOut(a)), Some(MOp::Alloc(b))) if a == b => {}
+                _ => return Err("let-bound branch result"),
+            }
+            ops.push(MOp::Alloc(sink.rid));
+            sink.suspect |= matches!(op, Op::CallDirect(..) | Op::CallClosure(..));
+        } else if owned_alias {
+            ops.push(MOp::Alloc(sink.rid)); // after `tr_op`'s `moveOut` of the variable
+        }
+        sink.heap.push(produced || owned_alias);
+        Ok(prepend(ops, MExpr::Done))
+    }
+
+    /// `let x = <if/case> in k`: the arms, each ending in the result cell, joined, then `k`.
+    fn tr_let_branch(&mut self, x: &str, rhs: &Rhs, k: &Term) -> Result<MExpr, &'static str> {
+        let rid = self.fresh();
+        let outer = self.result.replace(ResultSink {
+            rid,
+            heap: Vec::new(),
+            suspect: false,
+        });
+        let branch = self.tr_branch(rhs);
+        let sink = std::mem::replace(&mut self.result, outer).ok_or("let-bound branch")?;
+        let branch = branch?;
+        self.next = self.hi;
+        match (sink.heap.iter().all(|h| *h), sink.heap.iter().any(|h| *h)) {
+            (true, true) => {
+                self.ids.insert(x.to_string(), rid);
+                if sink.suspect {
+                    self.alias_suspect.insert(rid);
+                }
+            }
+            (_, false) => {}
+            _ => return Err("let-bound branch with mixed results"),
+        }
+        let rest = self.tr_term(k)?;
+        Ok(seq(branch, rest))
     }
 
     /// Translate one leaf op. `bind = Some(x)` if the result is `let`-bound to `x`; `None` if it is
@@ -230,21 +305,30 @@ impl Tr<'_> {
                 let rest = self.tr_term(k)?;
                 Ok(prepend(ops, rest))
             }
-            // A conditional/case bound in a `let` needs result-threading the model does not do here.
-            Term::Let(_, Rhs::If(..), _, _) => Err("let-bound if"),
-            Term::Let(_, Rhs::Case(..), _, _) => Err("case"),
+            // A conditional/case bound in a `let`: its arms deliver one result cell (`ResultSink`).
+            Term::Let(x, rhs @ (Rhs::If(..) | Rhs::Case(..)), _, k) => {
+                self.tr_let_branch(x, rhs, k)
+            }
             Term::Drop(x, _, _, _, k) => {
                 let id = self.ids.remove(x).ok_or("drop of untracked var")?;
                 let rest = self.tr_term(k)?;
                 Ok(MExpr::Op(MOp::Drop(id), Box::new(rest)))
             }
+            Term::Ret(Rhs::Op(op), _) if self.result.is_some() => self.tr_result_leaf(op),
             Term::Ret(Rhs::Op(op), _) => {
                 let ops = self.tr_op(op, None)?;
                 Ok(prepend(ops, MExpr::Done))
             }
+            Term::Ret(rhs, _) => self.tr_branch(rhs),
+        }
+    }
+
+    fn tr_branch(&mut self, rhs: &Rhs) -> Result<MExpr, &'static str> {
+        match rhs {
+            Rhs::Op(_) => Err("not a branch"),
             // Tail branch: both arms run from the SAME incoming state (clone the id map per arm);
             // the join continuation is `done`, so post-branch state is irrelevant.
-            Term::Ret(Rhs::If(_, tt, ee), _) => {
+            Rhs::If(_, tt, ee) => {
                 let saved = self.ids.clone();
                 let saved_next = self.next;
                 let at = self.tr_term(tt)?;
@@ -269,7 +353,7 @@ impl Tr<'_> {
             //       untracked (matching the verifier). A BORROWED-scrutinee peel makes the fields
             //       interior aliases (`bref`) — that needs `AxionExtract` and stays out of THIS
             //       (AxionDrop owned-set) fragment.
-            Term::Ret(Rhs::Case(scrut, arms), _) => {
+            Rhs::Case(scrut, arms) => {
                 if arms.iter().all(|(p, _)| is_trivial_pat(p)) {
                     let saved = self.ids.clone();
                     let saved_next = self.next;
@@ -291,10 +375,17 @@ impl Tr<'_> {
                 // never a leak — sound because a borrowed PARAM's owner is never freed in-frame, so
                 // there is no dangling-alias hazard that `bref` would otherwise guard).
                 let sid = match scrut {
-                    Atom::Var(s) => *self
-                        .ids
-                        .get(s)
-                        .ok_or("case scrutinee not an owned heap value")?,
+                    Atom::Var(s) => match self.ids.get(s) {
+                        Some(id) => *id,
+                        None if self.lent_params.contains(s) => {
+                            let id = self.borrow_next;
+                            self.borrow_next += 1;
+                            self.ids.insert(s.clone(), id);
+                            self.borrowed.insert(id);
+                            id
+                        }
+                        None => return Err("case scrutinee not an owned heap value"),
+                    },
                     _ => return Err("case scrutinee not a var"),
                 };
                 // An alias-carrying scrutinee (from a ret-alias call): its extracted fields are
@@ -344,6 +435,38 @@ impl Tr<'_> {
                                     }
                                     // scalar field / unconsumed poly: untracked, like the verifier.
                                     CPat::Wild | CPat::Int(_) => {}
+                                    _ => return Err("nested extraction pattern"),
+                                }
+                            }
+                        }
+                        // A BORROWED tuple, as `verify.rs::bind_pattern`: when its key segments, each
+                        // heap field is an interior alias (a B cell) and a scalar one untracked;
+                        // when it does not, every field is tracked as an alias. (An OWNED tuple's
+                        // fields are freed by the tuple's deep drop — not modeled here.)
+                        CPat::Tuple(subs) if scrut_borrowed => {
+                            let field_keys = match scrut {
+                                Atom::Var(sv) => self
+                                    .keys
+                                    .get(sv)
+                                    .and_then(|k| self.recinfo.split_tuple_key(k, subs.len())),
+                                _ => None,
+                            };
+                            for (fi, sub) in subs.iter().enumerate() {
+                                match sub {
+                                    CPat::Var(v) => {
+                                        let track = field_keys.as_ref().is_none_or(|ks| {
+                                            ks.get(fi).is_some_and(|el| {
+                                                self.recinfo.classify_tuple_elem(el).is_some()
+                                            })
+                                        });
+                                        if track {
+                                            let id = self.borrow_next;
+                                            self.borrow_next += 1;
+                                            self.ids.insert(v.clone(), id);
+                                            self.borrowed.insert(id);
+                                        }
+                                    }
+                                    CPat::Wild => {}
                                     _ => return Err("nested extraction pattern"),
                                 }
                             }
@@ -428,6 +551,15 @@ fn nest_arms(arms: Vec<MExpr>) -> MExpr {
     }
 }
 
+/// `e` then `k` (Lean's `AxionDrop.seq`): `k` replaces `e`'s final `done`, after any join.
+fn seq(e: MExpr, k: MExpr) -> MExpr {
+    match e {
+        MExpr::Done => k,
+        MExpr::Op(op, r) => MExpr::Op(op, Box::new(seq(*r, k))),
+        MExpr::Brn(t, f, r) => MExpr::Brn(t, f, Box::new(seq(*r, k))),
+    }
+}
+
 fn prepend(ops: Vec<MOp>, tail: MExpr) -> MExpr {
     let mut e = tail;
     for op in ops.into_iter().rev() {
@@ -446,10 +578,6 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
         return Err("generated");
     }
     let pkeys = lowered.param_keys.get(&f.name);
-    // Conservative: without per-param key info we cannot classify a heap param as owned vs borrowed.
-    if pkeys.is_none() && !f.params.is_empty() {
-        return Err("no param-key info");
-    }
     let owned: HashSet<&String> = f.owned_params.iter().collect();
     let mut tr = Tr {
         ba: &lowered.borrow_args,
@@ -460,9 +588,33 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
         next: 0,
         borrow_next: 1_000_000,
         arm_con: HashMap::new(),
+        hi: 0,
+        result: None,
+        lent_params: HashSet::new(),
+        keys: HashMap::new(),
     };
     let mut param_ops = Vec::new();
+    if pkeys.is_none() {
+        // No signature (a lifted lambda, a generated worker): the verifier then knows no param's
+        // type, and seeds a param as an OWNED resource iff it is `%1` or freed in the body, and
+        // the caller does not lend it (`verify.rs` param seeding); any other param owns and
+        // borrows nothing, so any use of it is fine — modeled by leaving it untracked.
+        let lent = lowered.borrow_args.get(&f.name);
+        for (i, p) in f.params.iter().enumerate() {
+            let owns = f.owned_params.contains(p) || dropped_within(p, &f.body);
+            if owns && !lent.is_some_and(|s| s.contains(&i)) {
+                let id = tr.fresh();
+                tr.ids.insert(p.clone(), id);
+                param_ops.push(MOp::Alloc(id));
+            }
+        }
+    }
     if let Some(keys) = pkeys {
+        for (p, k) in f.params.iter().zip(keys) {
+            if let Some(k) = k {
+                tr.keys.insert(p.clone(), k.clone());
+            }
+        }
         for (i, p) in f.params.iter().enumerate() {
             let is_heap = keys.get(i).is_some_and(|k| k.is_some());
             if is_heap {
@@ -484,6 +636,11 @@ fn tr_fn(f: &CoreFn, lowered: &Lowered) -> Result<(MExpr, Vec<u32>), &'static st
                 tr.ids.insert(p.clone(), id);
                 param_ops.push(MOp::Alloc(id));
             }
+        }
+    }
+    for p in &f.params {
+        if !tr.ids.contains_key(p) && !owned.contains(p) && !dropped_within(p, &f.body) {
+            tr.lent_params.insert(p.clone());
         }
     }
     let body = tr.tr_term(&f.body)?;
@@ -560,7 +717,10 @@ pub fn emit_model_trace(lowered: &Lowered) -> String {
                     if accept { "true" } else { "false" }
                 ));
             }
-            Err(reason) => *reasons.entry(reason).or_insert(0) += 1,
+            Err(reason) => {
+                *reasons.entry(reason).or_insert(0) += 1;
+                body.push_str(&format!("-- out of fragment: `{}`: {reason}\n", f.name));
+            }
         }
     }
 
