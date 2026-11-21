@@ -411,7 +411,15 @@
           "named": true
         },
         {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
           "type": "record_fields",
+          "named": true
+        },
+        {
+          "type": "refined_type",
           "named": true
         },
         {
@@ -607,6 +615,14 @@
           "named": true
         },
         {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
+          "type": "refined_type",
+          "named": true
+        },
+        {
           "type": "type_constructor",
           "named": true
         },
@@ -657,6 +673,14 @@
       "types": [
         {
           "type": "arrow",
+          "named": true
+        },
+        {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
+          "type": "refined_type",
           "named": true
         },
         {
@@ -949,6 +973,14 @@
           "named": true
         },
         {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
+          "type": "refined_type",
+          "named": true
+        },
+        {
           "type": "type_constructor",
           "named": true
         },
@@ -1162,6 +1194,48 @@
     }
   },
   {
+    "type": "named_parameter",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "variable",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "arrow",
+          "named": true
+        },
+        {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
+          "type": "refined_type",
+          "named": true
+        },
+        {
+          "type": "type_constructor",
+          "named": true
+        },
+        {
+          "type": "variable",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "operator",
     "named": true,
     "fields": {},
@@ -1277,6 +1351,82 @@
     }
   },
   {
+    "type": "refined_type",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "variable",
+            "named": true
+          }
+        ]
+      },
+      "predicate": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "application",
+            "named": true
+          },
+          {
+            "type": "case_expression",
+            "named": true
+          },
+          {
+            "type": "do_expression",
+            "named": true
+          },
+          {
+            "type": "if_expression",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "let_expression",
+            "named": true
+          },
+          {
+            "type": "operator",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "arrow",
+          "named": true
+        },
+        {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
+          "type": "refined_type",
+          "named": true
+        },
+        {
+          "type": "type_constructor",
+          "named": true
+        },
+        {
+          "type": "variable",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "source_file",
     "named": true,
     "root": true,
@@ -1356,6 +1506,14 @@
           "named": true
         },
         {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
+          "type": "refined_type",
+          "named": true
+        },
+        {
           "type": "type_constructor",
           "named": true
         },
@@ -1396,6 +1554,14 @@
         },
         {
           "type": "context",
+          "named": true
+        },
+        {
+          "type": "named_parameter",
+          "named": true
+        },
+        {
+          "type": "refined_type",
           "named": true
         },
         {
@@ -1446,6 +1612,10 @@
   },
   {
     "type": "..",
+    "named": false
+  },
+  {
+    "type": ":",
     "named": false
   },
   {

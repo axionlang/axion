@@ -123,6 +123,22 @@ pub struct Parser<'a> {
     errors: Vec<Diagnostic>,
     /// Module-wide operator fixities (from `infix*` declarations), pre-scanned.
     fixities: FixityTable,
+    /// Refinement state of the signature being parsed (`SigRefine`).
+    sig: SigRefine,
+}
+
+/// While a top-level signature is parsed, `on` enables named parameters (`a:Array Int`) and
+/// refined types (`{i:Int | 0 <= i}`); `pos` is the arrow position being parsed, and `names` /
+/// `preds` collect what the signature declares. Everywhere else (data fields, foreign imports,
+/// a parenthesized type) `on` is off and types parse as before.
+#[derive(Default)]
+struct SigRefine {
+    on: bool,
+    pos: usize,
+    names: Vec<(usize, String)>,
+    preds: Vec<crate::ast::RefinePred>,
+    /// nesting of `top_item`: a refinement is allowed only on an outermost (depth 1) one.
+    depth: usize,
 }
 
 type PResult<T> = Result<T, Diagnostic>;
@@ -150,6 +166,8 @@ fn build_module(items: Vec<TopItem>) -> Module {
         classes: asm.classes,
         instances: asm.instances,
         level_ceiling: None, // filled from the source pragma in main.rs
+        refinements: asm.refinements,
+        bounds_proven: Vec::new(),
     }
 }
 
@@ -159,6 +177,7 @@ pub fn parse_module(toks: &[LSpanned]) -> Result<Module, Diagnostic> {
         pos: 0,
         errors: Vec::new(),
         fixities: scan_fixities(toks),
+        sig: SigRefine::default(),
     };
     let items = p.block(Parser::top_item)?;
     Ok(build_module(items))
@@ -174,6 +193,7 @@ pub fn parse_module_resilient(toks: &[LSpanned]) -> (Module, Vec<Diagnostic>) {
         pos: 0,
         errors: Vec::new(),
         fixities: scan_fixities(toks),
+        sig: SigRefine::default(),
     };
     let items = p.block_recover(Parser::top_item);
     let errors = std::mem::take(&mut p.errors);
@@ -183,7 +203,12 @@ pub fn parse_module_resilient(toks: &[LSpanned]) -> (Module, Vec<Diagnostic>) {
 enum TopItem {
     ModuleName(Vec<String>),
     Import(ImportDecl),
-    Sig(String, Vec<(String, String)>, Type),
+    Sig(
+        String,
+        Vec<(String, String)>,
+        Type,
+        Option<crate::ast::Refinement>,
+    ),
     Clause(String, Clause),
     Data(DataDecl),
     Foreign(Foreign),
@@ -205,6 +230,7 @@ struct Assembled {
     foreign_enums: Vec<crate::ast::ForeignEnum>,
     classes: Vec<ClassDecl>,
     instances: Vec<InstanceDecl>,
+    refinements: Vec<crate::ast::Refinement>,
 }
 
 /// Joins signatures and clauses by name (functions) and separates the
@@ -221,7 +247,10 @@ fn assemble(items: Vec<TopItem>) -> Assembled {
             TopItem::Data(d) => asm.datas.push(d),
             TopItem::Class(c) => asm.classes.push(c),
             TopItem::Instance(i) => asm.instances.push(i),
-            TopItem::Sig(name, constraints, ty) => {
+            TopItem::Sig(name, constraints, ty, refine) => {
+                if let Some(r) = refine {
+                    asm.refinements.push(r);
+                }
                 let sp = (0, 0);
                 let i = *index.entry(name.clone()).or_insert_with(|| {
                     asm.funcs.push(Func {
@@ -446,6 +475,13 @@ impl<'a> Parser<'a> {
 
     // --- top-level declarations (signature or clause) ---
     fn top_item(&mut self) -> PResult<TopItem> {
+        self.sig.depth += 1;
+        let r = self.top_item_inner();
+        self.sig.depth -= 1;
+        r
+    }
+
+    fn top_item_inner(&mut self) -> PResult<TopItem> {
         if self.at(&Tok::Module) {
             return Ok(TopItem::ModuleName(self.parse_module_name()?));
         }
@@ -541,8 +577,21 @@ impl<'a> Parser<'a> {
             None => self.var_name("function name")?,
         };
         if self.eat(&Tok::ColonColon) {
-            let (constraints, ty) = self.parse_qualified_type()?;
-            Ok(TopItem::Sig(name, constraints, ty))
+            // named parameters and refined types: only in an outermost signature
+            let outer = self.sig.depth == 1;
+            let saved = std::mem::take(&mut self.sig);
+            self.sig.on = outer;
+            self.sig.depth = saved.depth;
+            let parsed = self.parse_qualified_type();
+            let sig = std::mem::replace(&mut self.sig, saved);
+            let (constraints, ty) = parsed?;
+            let refine =
+                (!sig.names.is_empty() || !sig.preds.is_empty()).then(|| crate::ast::Refinement {
+                    func: name.clone(),
+                    names: sig.names,
+                    preds: sig.preds,
+                });
+            Ok(TopItem::Sig(name, constraints, ty, refine))
         } else {
             // clause: patterns up to '=' or '|'
             let mut pats = Vec::new();
@@ -934,7 +983,11 @@ impl<'a> Parser<'a> {
     /// discharge the method obligations. Backtracks if there is no `=>`.
     fn parse_qualified_type(&mut self) -> PResult<(Vec<(String, String)>, Type)> {
         let save = self.pos;
-        let ctx = self.parse_btype()?;
+        let Ok(ctx) = self.parse_btype() else {
+            // not a context (a refined first parameter `{i:Int | …}`, say): a plain type
+            self.pos = save;
+            return Ok((Vec::new(), self.parse_type()?));
+        };
         if self.eat(&Tok::FatArrow) {
             let cs = context_constraints(&ctx);
             let ty = self.parse_type()?;
@@ -946,13 +999,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> PResult<Type> {
-        let from = self.parse_btype()?;
+        let from = if self.sig.on {
+            self.parse_sig_param()?
+        } else {
+            self.parse_btype()?
+        };
         // multiplicity: on an arrow (`A %1 -> B`) it marks the parameter; on a
         // terminal (`... -> Process %1`) marks the linear result.
         if let Some(LTok::Tok(Tok::Mult(m))) = self.cur() {
             let mult = parse_mult(m);
             self.pos += 1;
             if self.eat(&Tok::Arrow) {
+                self.sig.pos += 1;
                 let to = self.parse_type()?;
                 return Ok(Type::Arrow {
                     mult,
@@ -965,6 +1023,7 @@ impl<'a> Parser<'a> {
             return Ok(from);
         }
         if self.eat(&Tok::Arrow) {
+            self.sig.pos += 1;
             let to = self.parse_type()?;
             return Ok(Type::Arrow {
                 mult: Mult::Many,
@@ -973,6 +1032,49 @@ impl<'a> Parser<'a> {
             });
         }
         Ok(from)
+    }
+
+    /// One position of a top-level signature: `T`, `x:T` (a named parameter) or
+    /// `{x:T | pred}` (a refined one, `x` also naming it).
+    fn parse_sig_param(&mut self) -> PResult<Type> {
+        let pos = self.sig.pos;
+        if let (Some(LTok::Tok(Tok::VarId(n))), Some(LTok::Tok(Tok::Colon))) =
+            (self.cur(), self.toks.get(self.pos + 1).map(|t| &t.tok))
+        {
+            let n = n.clone();
+            self.pos += 2;
+            self.sig.names.push((pos, n));
+            return self.plain(Parser::parse_btype);
+        }
+        if !self.at(&Tok::LBrace) {
+            return self.parse_btype();
+        }
+        let start = self.span_here().0;
+        self.bump(); // {
+        let binder = self.var_name("the refined value's name")?.0;
+        self.expect(&Tok::Colon, "':' after the refined value's name")?;
+        let ty = self.plain(Parser::parse_type)?;
+        self.expect(&Tok::Bar, "'|' before the refinement")?;
+        let pred = self.plain(Parser::parse_expr)?;
+        let end = self.span_here().1;
+        self.expect(&Tok::RBrace, "'}' closing the refinement")?;
+        self.sig.names.push((pos, binder.clone()));
+        self.sig.preds.push(crate::ast::RefinePred {
+            pos,
+            binder,
+            ty: ty.clone(),
+            pred,
+            span: (start, end),
+        });
+        Ok(ty)
+    }
+
+    /// Runs `f` with the signature-only syntax off (a nested type or the predicate).
+    fn plain<T>(&mut self, f: fn(&mut Self) -> PResult<T>) -> PResult<T> {
+        let on = std::mem::replace(&mut self.sig.on, false);
+        let r = f(self);
+        self.sig.on = on;
+        r
     }
 
     fn parse_btype(&mut self) -> PResult<Type> {
@@ -1008,9 +1110,9 @@ impl<'a> Parser<'a> {
                 if self.eat(&Tok::RParen) {
                     return Ok(Type::Unit);
                 }
-                let mut ts = vec![self.parse_type()?];
+                let mut ts = vec![self.plain(Parser::parse_type)?];
                 while self.eat(&Tok::Comma) {
-                    ts.push(self.parse_type()?);
+                    ts.push(self.plain(Parser::parse_type)?);
                 }
                 self.expect(&Tok::RParen, "')' in the type")?;
                 if ts.len() == 1 {

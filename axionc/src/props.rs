@@ -180,6 +180,8 @@ fn wrap(ty: GTy, e: Expr) -> Module {
         classes: vec![],
         instances: vec![],
         level_ceiling: None,
+        refinements: Vec::new(),
+        bounds_proven: Vec::new(),
     }
 }
 

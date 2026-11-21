@@ -509,6 +509,8 @@ fn strip_bodies_and_spans(m: &ast::Module) -> ast::Module {
             })
             .collect(),
         level_ceiling: m.level_ceiling,
+        refinements: m.refinements.clone(),
+        bounds_proven: Vec::new(),
     }
 }
 

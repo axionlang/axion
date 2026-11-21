@@ -1,5 +1,6 @@
   --> axionc/tests/fixtures/use_after_move.axi:7:18
   = help: after moving a %1 (consuming), you cannot read or consume it again — ownership has left this scope (§2).
+  = rule: R6 (docs/spec.md#r6)
   |
   |
   |                  ^ 'x' used here…

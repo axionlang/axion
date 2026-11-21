@@ -107,6 +107,10 @@ pub enum SyntaxKind {
     // an or-pattern `p1 | p2 | …` (a `case` arm, or inside parentheses there): expanded by the
     // lowering into one arm per alternative. Appended last (stable discriminants).
     OR_PAT,
+    // a named parameter `a:Array Int` in a top-level signature (`refine.rs`). Appended last.
+    TYPE_NAMED,
+    // a refined type `{i:Int | 0 <= i}` in a top-level signature (`refine.rs`). Appended last.
+    TYPE_REFINE,
 }
 
 use SyntaxKind::{
@@ -116,7 +120,7 @@ use SyntaxKind::{
     INSTANCE_DECL, KEYWORD, LAMBDA_EXPR, LET_EXPR, LET_STMT, LIST_EXPR, LITERAL, LITERAL_EXPR,
     LIT_PAT, METHOD_SIG, MODULE, MODULE_HEADER, NAME_EXPR, OPER, OR_PAT, PAREN_EXPR, PUNCT,
     RECORD_EXPR, SECTION_EXPR, SIG, TUPLE_EXPR, TUPLE_PAT, TYPE_APP, TYPE_ARROW, TYPE_CON,
-    TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
+    TYPE_NAMED, TYPE_REFINE, TYPE_TUPLE, TYPE_UNIT, TYPE_VAR, VAR_PAT, WHERE, WHITESPACE, WILD_PAT,
 };
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -195,6 +199,8 @@ impl Language for AxionLang {
             FOREIGN_ENUM,
             CASE_ALT,
             OR_PAT,
+            TYPE_NAMED,
+            TYPE_REFINE,
         ];
         KINDS.get(raw.0 as usize).copied().unwrap_or(ERROR)
     }
@@ -696,6 +702,8 @@ struct ExprParser<'a> {
     /// Module-wide operator fixities (from `infix*` declarations), pre-scanned — shared
     /// with the recursive-descent parser via [`crate::parser::op_fixity`].
     fixities: crate::parser::FixityTable,
+    /// in a signature's type: named parameters and refined types are allowed (`refine.rs`)
+    sig_on: bool,
 }
 
 impl ExprParser<'_> {
@@ -1382,7 +1390,10 @@ impl ExprParser<'_> {
         }
         if matches!(self.cur(), Some(Tok::ColonColon)) {
             self.bump(); // ::
+                         // refinements are lowered only from a top-level signature (`lower_module`)
+            self.sig_on = true;
             self.qualified_type();
+            self.sig_on = false;
             self.b.start_node_at(cp, SIG.into());
             self.b.finish_node();
         } else {
@@ -1457,7 +1468,11 @@ impl ExprParser<'_> {
     /// A type: `btype` optionally followed by `%mult ->` or `->` (right-assoc).
     fn type_(&mut self) {
         let cp = self.b.checkpoint();
-        self.btype();
+        if self.sig_on {
+            self.sig_param();
+        } else {
+            self.btype();
+        }
         if matches!(self.cur(), Some(Tok::Mult(_))) {
             if matches!(self.peek_tok(1), Some(Tok::Arrow)) {
                 self.b.start_node_at(cp, TYPE_ARROW.into());
@@ -1473,6 +1488,35 @@ impl ExprParser<'_> {
             self.bump(); // ->
             self.type_();
             self.b.finish_node();
+        }
+    }
+
+    /// One position of a signature: `T`, `x:T` or `{x:T | pred}`.
+    fn sig_param(&mut self) {
+        let cp = self.b.checkpoint();
+        if matches!(self.cur(), Some(Tok::VarId(_))) && matches!(self.peek_tok(1), Some(Tok::Colon))
+        {
+            self.bump(); // name
+            self.bump(); // :
+            self.sig_on = false;
+            self.btype();
+            self.sig_on = true;
+            self.b.start_node_at(cp, TYPE_NAMED.into());
+            self.b.finish_node();
+        } else if matches!(self.cur(), Some(Tok::LBrace)) {
+            self.bump(); // {
+            self.var_id();
+            self.expect_tok(&Tok::Colon);
+            self.sig_on = false;
+            self.type_();
+            self.expect_tok(&Tok::Bar);
+            self.expr();
+            self.sig_on = true;
+            self.expect_tok(&Tok::RBrace);
+            self.b.start_node_at(cp, TYPE_REFINE.into());
+            self.b.finish_node();
+        } else {
+            self.btype();
         }
     }
 
@@ -1515,6 +1559,7 @@ impl ExprParser<'_> {
                     self.b.finish_node();
                     return;
                 }
+                let on = std::mem::replace(&mut self.sig_on, false);
                 self.type_();
                 let mut tuple = false;
                 while matches!(self.cur(), Some(Tok::Comma)) {
@@ -1522,6 +1567,7 @@ impl ExprParser<'_> {
                     self.bump();
                     self.type_();
                 }
+                self.sig_on = on;
                 self.expect_tok(&Tok::RParen);
                 if tuple {
                     self.b.start_node_at(cp, TYPE_TUPLE.into());
@@ -1841,6 +1887,7 @@ fn parse_expr_cst(wrapped: &str) -> Option<(SyntaxNode, bool)> {
         b: GreenNodeBuilder::new(),
         ok: true,
         fixities: crate::parser::scan_fixities(&toks),
+        sig_on: false,
     };
     p.b.start_node(MODULE.into());
     p.eat_v(&LTok::VLBrace); // outer module block
@@ -1882,6 +1929,7 @@ pub fn build_lossless_cst(src: &str) -> Option<SyntaxNode> {
         b: GreenNodeBuilder::new(),
         ok: true,
         fixities: crate::parser::scan_fixities(&toks),
+        sig_on: false,
     };
     p.b.start_node(MODULE.into());
     p.block(ExprParser::top_decl); // the module's top level is itself a layout block
@@ -2475,7 +2523,14 @@ pub fn expr_matches_parser(src: &str) -> bool {
 fn is_type_kind(k: SyntaxKind) -> bool {
     matches!(
         k,
-        TYPE_CON | TYPE_VAR | TYPE_APP | TYPE_ARROW | TYPE_TUPLE | TYPE_UNIT
+        TYPE_CON
+            | TYPE_VAR
+            | TYPE_APP
+            | TYPE_ARROW
+            | TYPE_TUPLE
+            | TYPE_UNIT
+            | TYPE_NAMED
+            | TYPE_REFINE
     )
 }
 
@@ -2493,6 +2548,8 @@ fn lower_type(node: &SyntaxNode) -> Option<crate::ast::Type> {
         TYPE_CON => Some(Type::Con(head_token(node)?.text().to_string())),
         TYPE_VAR => Some(Type::Var(head_token(node)?.text().to_string())),
         TYPE_UNIT => Some(Type::Unit),
+        // a named or refined signature position: its type (`sig_refinement` reads the rest)
+        TYPE_NAMED | TYPE_REFINE => lower_type(&node.children().find(|c| is_type_kind(c.kind()))?),
         TYPE_APP => {
             let mut kids = node.children();
             let f = lower_type(&kids.next()?)?;
@@ -2614,12 +2671,77 @@ fn first_kind_token(node: &SyntaxNode, kind: SyntaxKind) -> Option<String> {
         .map(|t| t.text().to_string())
 }
 
+/// The refinements of a top-level signature (`refine.rs`): each named or refined position of
+/// its arrow spine, as `parser::parse_sig_param` records them (empty lists when it has none).
+fn sig_refinement(sig: &SyntaxNode) -> Option<crate::ast::Refinement> {
+    let (name, _, _) = lower_sig(sig)?;
+    let mut node = sig.children().find(|c| is_type_kind(c.kind()))?;
+    let mut names = Vec::new();
+    let mut preds = Vec::new();
+    let mut pos = 0;
+    loop {
+        let (param, next) = if node.kind() == TYPE_ARROW {
+            let mut kids = node.children();
+            (kids.next()?, kids.next())
+        } else {
+            (node.clone(), None)
+        };
+        match param.kind() {
+            TYPE_NAMED => names.push((pos, head_token(&param)?.text().to_string())),
+            TYPE_REFINE => {
+                let binder = direct_tokens(&param)
+                    .find(|t| t.kind() == IDENT)?
+                    .text()
+                    .to_string();
+                let ty = lower_type(&param.children().find(|c| is_type_kind(c.kind()))?)?;
+                let pred = lower_expr(&param.children().find(|c| is_expr_kind(c.kind()))?)?;
+                names.push((pos, binder.clone()));
+                preds.push(crate::ast::RefinePred {
+                    pos,
+                    binder,
+                    ty,
+                    pred,
+                    span: node_span(&param),
+                });
+            }
+            _ => {}
+        }
+        match next {
+            Some(n) => {
+                node = n;
+                pos += 1;
+            }
+            None => break,
+        }
+    }
+    Some(crate::ast::Refinement {
+        func: name,
+        names,
+        preds,
+    })
+}
+
+/// Does a signature use the top-level-only syntax (`x:T`, `{x:T | p}`)?
+fn has_refinement_syntax(sig: &SyntaxNode) -> bool {
+    sig.descendants()
+        .any(|n| matches!(n.kind(), TYPE_NAMED | TYPE_REFINE))
+}
+
 /// Assemble a run of `SIG`/`FUN_CLAUSE` nodes into `Func`s by name and first-mention
 /// order, exactly as `parser::assemble` does. Shared by the module and instance bodies.
+/// A nested (`where`/`let`/instance) signature may not carry refinements: the parse is then
+/// not lowered here, and the recursive-descent parser reports it.
 fn assemble_funcs(decls: impl Iterator<Item = SyntaxNode>) -> Option<Vec<Func>> {
+    assemble_funcs_at(decls, false)
+}
+
+fn assemble_funcs_at(decls: impl Iterator<Item = SyntaxNode>, top: bool) -> Option<Vec<Func>> {
     let mut funcs: Vec<Func> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for decl in decls {
+        if decl.kind() == SIG && !top && has_refinement_syntax(&decl) {
+            return None;
+        }
         let name = match decl.kind() {
             SIG => lower_sig(&decl)?.0,
             FUN_CLAUSE => lower_clause(&decl)?.0,
@@ -2658,7 +2780,14 @@ fn assemble_funcs(decls: impl Iterator<Item = SyntaxNode>) -> Option<Vec<Func>> 
 /// Lower a token-driven module CST to `ast::Module`.
 fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
     use crate::ast;
-    let funcs = assemble_funcs(cst.children())?;
+    let funcs = assemble_funcs_at(cst.children(), true)?;
+    let mut refinements = Vec::new();
+    for decl in cst.children().filter(|d| d.kind() == SIG) {
+        let r = sig_refinement(&decl)?;
+        if !r.names.is_empty() || !r.preds.is_empty() {
+            refinements.push(r);
+        }
+    }
     let mut m = ast::Module {
         name: None,
         imports: Vec::new(),
@@ -2670,6 +2799,8 @@ fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
         classes: Vec::new(),
         instances: Vec::new(),
         level_ceiling: None,
+        refinements,
+        bounds_proven: Vec::new(),
     };
     for decl in cst.children() {
         match decl.kind() {
@@ -2942,6 +3073,7 @@ fn parse_module_cst(src: &str) -> (SyntaxNode, bool) {
         b: GreenNodeBuilder::new(),
         ok: true,
         fixities: crate::parser::scan_fixities(&toks),
+        sig_on: false,
     };
     p.b.start_node(MODULE.into());
     p.block(ExprParser::top_decl);

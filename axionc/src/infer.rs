@@ -772,6 +772,8 @@ fn empty_module() -> Module {
         classes: Vec::new(),
         instances: Vec::new(),
         level_ceiling: None,
+        refinements: Vec::new(),
+        bounds_proven: Vec::new(),
     }
 }
 

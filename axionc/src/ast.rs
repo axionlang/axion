@@ -548,6 +548,37 @@ pub struct Module {
     /// `None` when absent — no ceiling to enforce. Only tightens what a decl may
     /// *write* (its own multiplicities/types/builtins), never what it calls.
     pub level_ceiling: Option<u8>,
+    /// Integer refinements written in top-level signatures (`refine.rs`). Kept beside the
+    /// functions, so `Type` and everything that matches on it are unchanged.
+    pub refinements: Vec<Refinement>,
+    /// Spans of the `getArray`/`setArray` applications `refine::check` proved in bounds; the
+    /// native lowering emits them without their bounds check (`refine::apply_proven`).
+    pub bounds_proven: Vec<Span>,
+}
+
+/// The refinements of one top-level signature:
+/// `get :: a:Array Float -> {i:Int | 0 <= i && i < len a} -> Float`.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
+pub struct Refinement {
+    pub func: String,
+    /// `(position, name)` of each named parameter (`a:` or the binder of `{i:Int | …}`).
+    pub names: Vec<(usize, String)>,
+    pub preds: Vec<RefinePred>,
+}
+
+/// One refined position: `{binder:Int | pred}`. `pos` is the parameter index, or the number of
+/// parameters for the result.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
+pub struct RefinePred {
+    pub pos: usize,
+    pub binder: String,
+    pub ty: Type,
+    pub pred: Expr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

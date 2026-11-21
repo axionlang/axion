@@ -7590,3 +7590,55 @@ fn spec_rules_are_pinned() {
         "the AX0001 error should cite its rule:\n{text}"
     );
 }
+
+#[test]
+fn refinements_prove_calls_and_drop_proven_checks() {
+    // Refined calls proven from the caller's refinements, `if`/guard conditions, `let`s, a
+    // refined result, and division by a positive constant; all three backends agree, and the
+    // three array accesses the checker proved compile without their bounds check.
+    agree_across_backends("refinements.axi", "3\n4\n10\n135\n11\n27\n");
+    let out = axionc()
+        .args(["--emit", "core", &fixture("refinements.axi")])
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(core.matches("axion_array_get_nobc").count(), 2, "{core}");
+    assert_eq!(core.matches("axion_array_set_nobc").count(), 1, "{core}");
+    assert!(!core.contains("rtcall axion_array_get "), "{core}");
+}
+
+#[test]
+fn unproven_refinements_are_errors() {
+    let out = axionc().arg(fixture("refine_reject.axi")).output().unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert_eq!(text.matches("error[AX0600]").count(), 6, "{text}");
+    for line in [
+        "noFacts a k = get a k",
+        "offByOne a i",
+        "wraps k = if k >= 0 then next (k + 1)",
+        "floatFact y k",
+        "wrongBranch k",
+        "cannot prove the result refinement `0 <= r`",
+    ] {
+        assert!(text.contains(line), "missing `{line}`:\n{text}");
+    }
+}
+
+#[test]
+fn ill_formed_refinements_are_errors() {
+    let out = axionc()
+        .arg(fixture("refine_malformed.axi"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert_eq!(text.matches("error[AX0601]").count(), 3, "{text}");
+    assert_eq!(text.matches("error[AX0602]").count(), 1, "{text}");
+    assert!(text.contains("only `Int` values can be refined"), "{text}");
+    assert!(
+        text.contains("`y` is not a parameter named in this signature"),
+        "{text}"
+    );
+    assert!(text.contains("`n` is not an array parameter"), "{text}");
+}

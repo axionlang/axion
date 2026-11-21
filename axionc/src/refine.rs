@@ -1,0 +1,1410 @@
+//! Integer refinements in top-level signatures (`docs/refinements.md`):
+//!
+//! ```text
+//! get :: a:Array Float -> {i:Int | 0 <= i && i < len a} -> Float
+//! ```
+//!
+//! A refinement is a predicate over a function's `Int` arguments and its arrays' lengths. Every
+//! call must prove it for its arguments, from what is known where the call is: the caller's own
+//! refinements, the `if`/guard conditions on the path to the call, `case` literals, and `let`s.
+//! A refined result (`-> {r:Int | 0 <= r}`) is proven at each return and known after each call.
+//!
+//! **Semantics.** A predicate is ordinary integer arithmetic over the *machine values* of the
+//! names it mentions (no wrapping inside a predicate). Program code wraps (`Int` is 64-bit), so
+//! a code expression `i + 1` stands for the integer `i + 1` only when the checker proves it does
+//! not overflow; otherwise it is an unknown value. A comparison is used as a fact only when both
+//! sides are evidently `Int` (an `Int` parameter, a literal, a `let` of such, `+ - *` of those,
+//! an array length, a call to an `Int`-returning function): a `Float` comparison is never read as
+//! an integer fact. Dropping a fact can only make a proof fail, never succeed wrongly.
+//!
+//! **Decision procedure.** "The facts imply the goal" is checked as "the facts and the negated
+//! goal have no integer solution": Fourier–Motzkin elimination over linear constraints
+//! `Σ c·x + k >= 0`, each normalized by the gcd of its coefficients with the constant rounded
+//! down (sound for integers). Products of two unknowns are opaque atoms. A search that grows too
+//! large gives up — the proof fails, the program is refused, nothing unsound is accepted.
+//!
+//! The checker is front-end only: refinements are erased, and every backend runs the program
+//! unchanged — except that an array access proven in bounds (`getArray a i` with `0 <= i < len
+//! a` proven) is recorded in `proven`, and the native backends emit it without its check.
+
+use crate::ast::{Body, Expr, Func, Module, Pat, RefinePred, Refinement, Span, Type};
+use crate::diag::{Diagnostic, Diagnostics};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+const MIN: i128 = i64::MIN as i128;
+const MAX: i128 = i64::MAX as i128;
+/// An array's length is below 2^61: allocating one whose size does not fit a `usize` is out of
+/// memory (`axion-rt`'s `array_bytes`; the interpreter's `Vec` refuses it too). 2^60 is a
+/// comfortable, still-sound bound that lets `i + 1` with `i < len a` be proven not to overflow.
+const LEN_MAX: i128 = 1 << 60;
+/// Fourier–Motzkin gives up (proof fails) beyond this many constraints.
+const MAX_ROWS: usize = 4000;
+/// …or when a negated goal splits into more cases than this.
+const MAX_CASES: usize = 64;
+
+/// A linear term `Σ coef·atom + c`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Lin {
+    c: i128,
+    t: BTreeMap<usize, i128>,
+}
+
+impl Lin {
+    fn konst(c: i128) -> Lin {
+        Lin {
+            c,
+            t: BTreeMap::new(),
+        }
+    }
+    fn atom(a: usize) -> Lin {
+        Lin {
+            c: 0,
+            t: BTreeMap::from([(a, 1)]),
+        }
+    }
+    fn add(&self, o: &Lin) -> Option<Lin> {
+        let mut r = self.clone();
+        r.c = r.c.checked_add(o.c)?;
+        for (a, k) in &o.t {
+            let e = r.t.entry(*a).or_insert(0);
+            *e = e.checked_add(*k)?;
+        }
+        r.t.retain(|_, k| *k != 0);
+        Some(r)
+    }
+    fn scale(&self, k: i128) -> Option<Lin> {
+        let mut r = Lin::konst(self.c.checked_mul(k)?);
+        for (a, c) in &self.t {
+            let v = c.checked_mul(k)?;
+            if v != 0 {
+                r.t.insert(*a, v);
+            }
+        }
+        Some(r)
+    }
+    fn sub(&self, o: &Lin) -> Option<Lin> {
+        self.add(&o.scale(-1)?)
+    }
+    fn as_const(&self) -> Option<i128> {
+        self.t.is_empty().then_some(self.c)
+    }
+}
+
+/// A predicate as a formula over constraints `lin >= 0`.
+#[derive(Clone, Debug)]
+enum Formula {
+    True,
+    False,
+    Ge(Lin),
+    And(Vec<Formula>),
+    Or(Vec<Formula>),
+}
+
+fn negate(f: &Formula) -> Option<Formula> {
+    Some(match f {
+        Formula::True => Formula::False,
+        Formula::False => Formula::True,
+        // ¬(l >= 0) ⇔ l <= -1 ⇔ -l - 1 >= 0
+        Formula::Ge(l) => Formula::Ge(l.scale(-1)?.add(&Lin::konst(-1))?),
+        Formula::And(fs) => Formula::Or(fs.iter().map(negate).collect::<Option<_>>()?),
+        Formula::Or(fs) => Formula::And(fs.iter().map(negate).collect::<Option<_>>()?),
+    })
+}
+
+/// Disjunctive normal form: a list of cases, each a conjunction of constraints.
+fn dnf(f: &Formula) -> Option<Vec<Vec<Lin>>> {
+    match f {
+        Formula::True => Some(vec![vec![]]),
+        Formula::False => Some(vec![]),
+        Formula::Ge(l) => Some(vec![vec![l.clone()]]),
+        Formula::Or(fs) => {
+            let mut out = Vec::new();
+            for g in fs {
+                out.extend(dnf(g)?);
+                if out.len() > MAX_CASES {
+                    return None;
+                }
+            }
+            Some(out)
+        }
+        Formula::And(fs) => {
+            let mut acc = vec![vec![]];
+            for g in fs {
+                let d = dnf(g)?;
+                let mut next = Vec::new();
+                for a in &acc {
+                    for b in &d {
+                        let mut c = a.clone();
+                        c.extend(b.iter().cloned());
+                        next.push(c);
+                    }
+                }
+                if next.len() > MAX_CASES {
+                    return None;
+                }
+                acc = next;
+            }
+            Some(acc)
+        }
+    }
+}
+
+/// The constraints a formula guarantees when it holds: those of every case of its normal form
+/// (a constraint only some cases have is not guaranteed, so it contributes nothing).
+fn conjuncts(f: &Formula, out: &mut Vec<Lin>) {
+    let Some(cases) = dnf(f) else {
+        return;
+    };
+    let mut cases = cases.into_iter();
+    let Some(first) = cases.next() else {
+        // no case at all: the formula is false, so anything holds; add a contradiction
+        out.push(Lin::konst(-1));
+        return;
+    };
+    let rest: Vec<Vec<Lin>> = cases.collect();
+    for l in first {
+        if rest.iter().all(|c| c.contains(&l)) && !out.contains(&l) {
+            out.push(l);
+        }
+    }
+}
+
+fn gcd(a: i128, b: i128) -> i128 {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// `l >= 0` over integers, divided by the gcd of its coefficients with the constant rounded
+/// down: `2x + 3 >= 0` → `x + 1 >= 0` (x >= -1.5 ⇔ x >= -1 for an integer x).
+fn normalize(mut l: Lin) -> Lin {
+    let g = l.t.values().fold(0, |g, k| gcd(g, *k));
+    if g > 1 {
+        for k in l.t.values_mut() {
+            *k /= g;
+        }
+        l.c = l.c.div_euclid(g);
+    }
+    l
+}
+
+/// Do the constraints (`each >= 0`) have NO integer solution? `true` is a proof; `false` means
+/// a solution exists or the search gave up.
+fn unsat(rows: Vec<Lin>) -> bool {
+    let mut rows: Vec<Lin> = rows.into_iter().map(normalize).collect();
+    loop {
+        let mut set: HashSet<Lin> = HashSet::new();
+        for r in rows.drain(..) {
+            match r.as_const() {
+                Some(c) if c < 0 => return true,
+                Some(_) => {}
+                None => {
+                    set.insert(r);
+                }
+            }
+        }
+        rows = set.into_iter().collect();
+        // the variable whose elimination creates the fewest rows
+        let mut count: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+        for r in &rows {
+            for (a, k) in &r.t {
+                let e = count.entry(*a).or_default();
+                if *k > 0 {
+                    e.0 += 1;
+                } else {
+                    e.1 += 1;
+                }
+            }
+        }
+        let Some((&x, _)) = count.iter().min_by_key(|(_, (p, n))| p * n) else {
+            return false; // no variables left and no contradiction
+        };
+        let (with, mut rest): (Vec<Lin>, Vec<Lin>) =
+            rows.into_iter().partition(|r| r.t.contains_key(&x));
+        let (pos, neg): (Vec<&Lin>, Vec<&Lin>) = with.iter().partition(|r| r.t[&x] > 0);
+        for p in &pos {
+            for n in &neg {
+                let (a, b) = (p.t[&x], -n.t[&x]);
+                let (Some(pa), Some(nb)) = (p.scale(b), n.scale(a)) else {
+                    return false;
+                };
+                let Some(s) = pa.add(&nb) else {
+                    return false;
+                };
+                rest.push(normalize(s));
+            }
+        }
+        if rest.len() > MAX_ROWS {
+            return false;
+        }
+        rows = rest;
+    }
+}
+
+/// What a name stands for while a body is checked.
+#[derive(Clone, Debug)]
+#[allow(variant_size_differences)]
+enum Bind {
+    /// an `Int` value: this term
+    Int(Lin),
+    /// an array: its length atom, and whether its elements are `Int`
+    Arr(usize, bool),
+    /// anything else (it still shadows a top-level function of the same name)
+    Other,
+}
+
+#[derive(Clone, Default)]
+struct Cx {
+    env: HashMap<String, Bind>,
+    facts: Vec<Lin>,
+}
+
+/// A predicate's names, bound for one use: an `Int` term or an array length atom.
+#[derive(Clone)]
+#[allow(variant_size_differences)]
+enum PVal {
+    Int(Lin),
+    Len(usize),
+}
+
+pub struct Outcome {
+    /// spans of `getArray`/`setArray` applications whose index is proven in bounds
+    pub proven: HashSet<Span>,
+}
+
+struct Checker<'a> {
+    refs: HashMap<String, &'a Refinement>,
+    /// top-level function → its parameter types and result type
+    sigs: HashMap<String, (Vec<Type>, Type)>,
+    /// display name and lower bound of each atom (a length's upper bound is `LEN_MAX`)
+    atoms: Vec<(String, i128)>,
+    diags: &'a mut Diagnostics,
+    proven: HashSet<Span>,
+    /// the module's own top-level names: a user `lenArray` is not the builtin
+    user: HashSet<String>,
+}
+
+fn is_int(t: &Type) -> bool {
+    matches!(t, Type::Con(c) if c == "Int")
+}
+
+/// `Array Int` → `Some(true)`, `Array t` → `Some(false)`, otherwise `None`.
+fn array_elem_int(t: &Type) -> Option<bool> {
+    match t {
+        Type::App(f, a) if matches!(&**f, Type::Con(c) if c == "Array") => Some(is_int(a)),
+        _ => None,
+    }
+}
+
+fn split_sig(t: &Type) -> (Vec<Type>, Type) {
+    let mut ps = Vec::new();
+    let mut t = t;
+    while let Type::Arrow { from, to, .. } = t {
+        ps.push((**from).clone());
+        t = to;
+    }
+    (ps, t.clone())
+}
+
+fn spine(e: &Expr) -> (&Expr, Vec<&Expr>) {
+    let mut args = Vec::new();
+    let mut h = e;
+    while let Expr::App(f, a, _) = h {
+        args.push(&**a);
+        h = f;
+    }
+    args.reverse();
+    (h, args)
+}
+
+fn pat_names(p: &Pat, out: &mut Vec<String>) {
+    match p {
+        Pat::Var(v, _) => out.push(v.clone()),
+        Pat::Con(_, ps, _) | Pat::Tuple(ps, _) => ps.iter().for_each(|q| pat_names(q, out)),
+        Pat::Wild(_) | Pat::Int(..) | Pat::Str(..) => {}
+    }
+}
+
+/// Source text of a predicate, for messages.
+fn show(e: &Expr) -> String {
+    match e {
+        Expr::Int(n, _) => n.to_string(),
+        Expr::Var(v, _) => v.clone(),
+        Expr::BinOp(op, a, b, _) => format!("{} {op} {}", show_arg(a), show_arg(b)),
+        Expr::App(..) => {
+            let (h, args) = spine(e);
+            let mut s = show_arg(h);
+            for a in args {
+                s.push(' ');
+                s.push_str(&show_arg(a));
+            }
+            s
+        }
+        Expr::If(c, t, e, _) => match (&**t, &**e) {
+            (_, Expr::Con(f, _)) if f == "False" => format!("{} && {}", show(c), show(t)),
+            (Expr::Con(tr, _), _) if tr == "True" => format!("{} || {}", show_arg(c), show_arg(e)),
+            _ => format!("if {} then {} else {}", show(c), show(t), show(e)),
+        },
+        Expr::Con(c, _) => c.clone(),
+        _ => "…".to_string(),
+    }
+}
+
+fn show_arg(e: &Expr) -> String {
+    match e {
+        Expr::BinOp(..) | Expr::App(..) | Expr::If(..) => format!("({})", show(e)),
+        _ => show(e),
+    }
+}
+
+impl Checker<'_> {
+    fn fresh(&mut self, name: &str, lo: i128) -> usize {
+        self.atoms.push((name.to_string(), lo));
+        self.atoms.len() - 1
+    }
+
+    /// Do `facts` imply `goal`?
+    fn prove(&self, facts: &[Lin], goal: &Formula) -> bool {
+        let Some(neg) = negate(goal) else {
+            return false;
+        };
+        let Some(cases) = dnf(&neg) else {
+            return false;
+        };
+        cases
+            .into_iter()
+            .all(|case| unsat(self.rows_for(facts, case)))
+    }
+
+    /// The facts that share atoms (transitively) with `goal`, plus each atom's machine bounds.
+    fn rows_for(&self, facts: &[Lin], goal: Vec<Lin>) -> Vec<Lin> {
+        let mut atoms: HashSet<usize> = goal.iter().flat_map(|l| l.t.keys().copied()).collect();
+        let mut used = vec![false; facts.len()];
+        let mut rows = goal;
+        // a fact over no atom is a contradiction (an unreachable branch) or trivially true
+        for (i, f) in facts.iter().enumerate() {
+            if f.t.is_empty() {
+                used[i] = true;
+                rows.push(f.clone());
+            }
+        }
+        loop {
+            let mut grew = false;
+            for (i, f) in facts.iter().enumerate() {
+                if !used[i] && f.t.keys().any(|a| atoms.contains(a)) {
+                    used[i] = true;
+                    atoms.extend(f.t.keys().copied());
+                    rows.push(f.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        for a in atoms {
+            let lo = self.atoms.get(a).map_or(MIN, |x| x.1);
+            // lengths are the atoms bounded below by 0
+            let hi = if lo == 0 { LEN_MAX } else { MAX };
+            rows.push(Lin {
+                c: -lo,
+                t: BTreeMap::from([(a, 1)]),
+            });
+            rows.push(Lin {
+                c: hi,
+                t: BTreeMap::from([(a, -1)]),
+            });
+        }
+        rows
+    }
+
+    fn in_range(&self, facts: &[Lin], l: &Lin) -> bool {
+        let (Some(lo), Some(hi)) = (l.sub(&Lin::konst(MIN)), Lin::konst(MAX).sub(l)) else {
+            return false;
+        };
+        self.prove(facts, &Formula::And(vec![Formula::Ge(lo), Formula::Ge(hi)]))
+    }
+
+    fn is_global(cx: &Cx, name: &str) -> bool {
+        !cx.env.contains_key(name)
+    }
+
+    /// Does `name` here mean the builtin of that name (not a local, not a user definition)?
+    fn builtin(&self, cx: &Cx, name: &str) -> bool {
+        Self::is_global(cx, name) && !self.user.contains(name)
+    }
+
+    /// The length atom of an array-valued expression: an array name, or `setArray` of one
+    /// (which keeps its length).
+    fn arr_len(&self, cx: &Cx, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::Var(v, _) => match cx.env.get(v) {
+                Some(Bind::Arr(l, _)) => Some(*l),
+                _ => None,
+            },
+            Expr::App(..) => {
+                let (h, args) = spine(e);
+                match (h, args.as_slice()) {
+                    (Expr::Var(f, _), [a, _, _]) if f == "setArray" && self.builtin(cx, f) => {
+                        self.arr_len(cx, a)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The length atom of an array-valued expression, as `arr_len`, or a fresh one for a new
+    /// array: `newArray n x` has length `max n 0` (every backend clamps a negative length), so
+    /// its length is `>= n` and `>= 0`, and `== n` when `n >= 0` is provable; any other call
+    /// returning an `Array` has an unknown length `>= 0`.
+    fn arr_value(&mut self, cx: &Cx, e: &Expr, side: &mut Vec<Lin>) -> Option<usize> {
+        if let Some(l) = self.arr_len(cx, e) {
+            return Some(l);
+        }
+        let (h, args) = spine(e);
+        let Expr::Var(g, _) = h else {
+            return None;
+        };
+        if g == "newArray" && args.len() == 2 && self.builtin(cx, g) {
+            let l = self.fresh(&format!("len ({})", show(e)), 0);
+            if let Some(n) = self.term(cx, args[0], side) {
+                let ll = Lin::atom(l);
+                if let Some(d) = ll.sub(&n) {
+                    side.push(d); // len - n >= 0
+                    let mut facts = cx.facts.clone();
+                    facts.extend(side.iter().cloned());
+                    if self.prove(&facts, &Formula::Ge(n.clone())) {
+                        if let Some(nd) = n.sub(&ll) {
+                            side.push(nd); // n - len >= 0
+                        }
+                    }
+                }
+            }
+            return Some(l);
+        }
+        if !Self::is_global(cx, g) {
+            return None;
+        }
+        let (ps, ret) = self.sigs.get(g)?;
+        if args.len() == ps.len() && array_elem_int(ret).is_some() {
+            return Some(self.fresh(&format!("len ({})", show(e)), 0));
+        }
+        None
+    }
+
+    /// The value of an evidently-`Int` code expression, in machine semantics: `None` when it is
+    /// not evidently `Int`. A sum or product that may overflow, a division, or an opaque call
+    /// becomes a fresh atom. `side` receives facts known about fresh atoms (a refined result).
+    fn term(&mut self, cx: &Cx, e: &Expr, side: &mut Vec<Lin>) -> Option<Lin> {
+        match e {
+            Expr::Int(n, _) => Some(Lin::konst(i128::from(*n))),
+            Expr::Var(v, _) => match cx.env.get(v) {
+                Some(Bind::Int(l)) => Some(l.clone()),
+                _ => None,
+            },
+            Expr::BinOp(op, a, b, _) if matches!(op.as_str(), "+" | "-" | "*") => {
+                let ta = self.term(cx, a, side)?;
+                let tb = self.term(cx, b, side)?;
+                let math = match op.as_str() {
+                    "+" => ta.add(&tb),
+                    "-" => ta.sub(&tb),
+                    _ => match (ta.as_const(), tb.as_const()) {
+                        (Some(k), _) => tb.scale(k),
+                        (_, Some(k)) => ta.scale(k),
+                        _ => None,
+                    },
+                };
+                let mut facts = cx.facts.clone();
+                facts.extend(side.iter().cloned());
+                match math {
+                    Some(m) if self.in_range(&facts, &m) => Some(m),
+                    _ => Some(Lin::atom(self.fresh(&show(e), MIN))),
+                }
+            }
+            Expr::BinOp(op, a, b, _) if matches!(op.as_str(), "div" | "mod" | "/" | "rem") => {
+                let ta = self.term(cx, a, side)?;
+                let tb = self.term(cx, b, side)?;
+                let q = self.fresh(&show(e), MIN);
+                // `x op k` with `x >= 0` and a constant `k > 0`: floor and truncating division
+                // agree there (every backend), so `k*q <= x <= k*q + k - 1` for the quotient
+                // and `0 <= r <= k - 1` for the remainder
+                if let Some(k) = tb.as_const().filter(|k| *k > 0) {
+                    let mut facts = cx.facts.clone();
+                    facts.extend(side.iter().cloned());
+                    if self.prove(&facts, &Formula::Ge(ta.clone())) {
+                        let ql = Lin::atom(q);
+                        if op == "mod" || op == "rem" {
+                            side.push(ql.clone());
+                            if let Some(u) = Lin::konst(k - 1).sub(&ql) {
+                                side.push(u);
+                            }
+                        } else if let Some(kq) = ql.scale(k) {
+                            if let (Some(lo), Some(hi)) = (
+                                ta.sub(&kq),
+                                kq.add(&Lin::konst(k - 1)).and_then(|u| u.sub(&ta)),
+                            ) {
+                                side.push(lo);
+                                side.push(hi);
+                            }
+                        }
+                    }
+                }
+                Some(Lin::atom(q))
+            }
+            Expr::App(..) => {
+                let (h, args) = spine(e);
+                let Expr::Var(g, _) = h else {
+                    return None;
+                };
+                if !Self::is_global(cx, g) {
+                    return None;
+                }
+                if g == "lenArray" && args.len() == 1 && self.builtin(cx, g) {
+                    return self.arr_value(cx, args[0], side).map(Lin::atom);
+                }
+                if g == "getArray" && args.len() == 2 && self.builtin(cx, g) {
+                    if let Expr::Var(a, _) = args[0] {
+                        if matches!(cx.env.get(a), Some(Bind::Arr(_, true))) {
+                            return Some(Lin::atom(self.fresh(&show(e), MIN)));
+                        }
+                    }
+                    return None;
+                }
+                let (ps, ret) = self.sigs.get(g)?.clone();
+                if args.len() != ps.len() || !is_int(&ret) {
+                    return None;
+                }
+                let r = self.fresh(&show(e), MIN);
+                if let Some(rf) = self.refs.get(g.as_str()).copied() {
+                    let vals = self.arg_vals(cx, rf, &ps, &args, side);
+                    for p in rf.preds.iter().filter(|p| p.pos == ps.len()) {
+                        let mut vals = vals.clone();
+                        vals.insert(p.binder.clone(), PVal::Int(Lin::atom(r)));
+                        if let Some(f) = self.formula(&p.pred, &vals) {
+                            conjuncts(&f, side);
+                        }
+                    }
+                }
+                Some(Lin::atom(r))
+            }
+            _ => None,
+        }
+    }
+
+    /// The predicate names of `rf` bound to a call's arguments.
+    fn arg_vals(
+        &mut self,
+        cx: &Cx,
+        rf: &Refinement,
+        ps: &[Type],
+        args: &[&Expr],
+        side: &mut Vec<Lin>,
+    ) -> HashMap<String, PVal> {
+        let mut vals = HashMap::new();
+        for (pos, name) in &rf.names {
+            let (Some(arg), Some(ty)) = (args.get(*pos), ps.get(*pos)) else {
+                continue;
+            };
+            let v = if array_elem_int(ty).is_some() {
+                PVal::Len(
+                    self.arr_value(cx, arg, side)
+                        .unwrap_or_else(|| self.fresh(&format!("len ({})", show(arg)), 0)),
+                )
+            } else {
+                PVal::Int(
+                    self.term(cx, arg, side)
+                        .unwrap_or_else(|| Lin::atom(self.fresh(&show(arg), MIN))),
+                )
+            };
+            vals.insert(name.clone(), v);
+        }
+        vals
+    }
+
+    /// A predicate as a formula (mathematical arithmetic), names bound by `vals`. `None` when
+    /// the predicate is outside the language (reported by `well_formed`).
+    fn formula(&mut self, e: &Expr, vals: &HashMap<String, PVal>) -> Option<Formula> {
+        match e {
+            Expr::BinOp(op, a, b, _) => match op.as_str() {
+                "&&" => Some(Formula::And(vec![
+                    self.formula(a, vals)?,
+                    self.formula(b, vals)?,
+                ])),
+                "||" => Some(Formula::Or(vec![
+                    self.formula(a, vals)?,
+                    self.formula(b, vals)?,
+                ])),
+                "<" | "<=" | ">" | ">=" | "==" | "/=" => {
+                    let ta = self.pterm(a, vals)?;
+                    let tb = self.pterm(b, vals)?;
+                    cmp(op, &ta, &tb)
+                }
+                _ => None,
+            },
+            Expr::Con(c, _) if c == "True" => Some(Formula::True),
+            Expr::Con(c, _) if c == "False" => Some(Formula::False),
+            // `a && b` / `a || b` are parsed as `if a then b else False` / `if a then True else b`
+            Expr::If(c, t, e, _) => {
+                let fc = self.formula(c, vals)?;
+                let ft = self.formula(t, vals)?;
+                let fe = self.formula(e, vals)?;
+                Some(Formula::Or(vec![
+                    Formula::And(vec![fc.clone(), ft]),
+                    Formula::And(vec![negate(&fc)?, fe]),
+                ]))
+            }
+            _ => None,
+        }
+    }
+
+    /// An arithmetic term of a predicate (mathematical: no wrapping).
+    fn pterm(&mut self, e: &Expr, vals: &HashMap<String, PVal>) -> Option<Lin> {
+        match e {
+            Expr::Int(n, _) => Some(Lin::konst(i128::from(*n))),
+            Expr::Var(v, _) => match vals.get(v)? {
+                PVal::Int(l) => Some(l.clone()),
+                PVal::Len(_) => None,
+            },
+            Expr::BinOp(op, a, b, _) => {
+                let ta = self.pterm(a, vals)?;
+                let tb = self.pterm(b, vals)?;
+                match op.as_str() {
+                    "+" => ta.add(&tb),
+                    "-" => ta.sub(&tb),
+                    "*" => match (ta.as_const(), tb.as_const()) {
+                        (Some(k), _) => tb.scale(k),
+                        (_, Some(k)) => ta.scale(k),
+                        // a product of two unknowns: an opaque value
+                        _ => Some(Lin::atom(self.fresh(&show(e), MIN))),
+                    },
+                    _ => None,
+                }
+            }
+            Expr::App(f, a, _) => match (&**f, &**a) {
+                (Expr::Var(l, _), Expr::Var(x, _)) if l == "len" || l == "lenArray" => {
+                    match vals.get(x)? {
+                        PVal::Len(n) => Some(Lin::atom(*n)),
+                        PVal::Int(_) => None,
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Facts from a condition: those that hold when it is true, and when it is false.
+    fn cond(&mut self, cx: &Cx, e: &Expr) -> (Vec<Lin>, Vec<Lin>) {
+        match e {
+            Expr::BinOp(op, a, b, _) if op == "&&" => {
+                let (ta, _) = self.cond(cx, a);
+                let (tb, _) = self.cond(cx, b);
+                (ta.into_iter().chain(tb).collect(), Vec::new())
+            }
+            Expr::BinOp(op, a, b, _) if op == "||" => {
+                let (_, fa) = self.cond(cx, a);
+                let (_, fb) = self.cond(cx, b);
+                (Vec::new(), fa.into_iter().chain(fb).collect())
+            }
+            Expr::BinOp(op, a, b, _)
+                if matches!(op.as_str(), "<" | "<=" | ">" | ">=" | "==" | "/=") =>
+            {
+                let mut side = Vec::new();
+                let (Some(ta), Some(tb)) =
+                    (self.term(cx, a, &mut side), self.term(cx, b, &mut side))
+                else {
+                    return (Vec::new(), Vec::new());
+                };
+                let Some(f) = cmp(op, &ta, &tb) else {
+                    return (Vec::new(), Vec::new());
+                };
+                let mut yes = side.clone();
+                conjuncts(&f, &mut yes);
+                let mut no = side;
+                if let Some(n) = negate(&f) {
+                    conjuncts(&n, &mut no);
+                }
+                (yes, no)
+            }
+            // `a && b` / `a || b` (parsed as these `if`s)
+            Expr::If(a, b, f, _) if matches!(&**f, Expr::Con(c, _) if c == "False") => {
+                let (ta, _) = self.cond(cx, a);
+                let (tb, _) = self.cond(&Self::with_facts(cx, ta.clone()), b);
+                (ta.into_iter().chain(tb).collect(), Vec::new())
+            }
+            Expr::If(a, t, b, _) if matches!(&**t, Expr::Con(c, _) if c == "True") => {
+                let (_, fa) = self.cond(cx, a);
+                let (_, fb) = self.cond(&Self::with_facts(cx, fa.clone()), b);
+                (Vec::new(), fa.into_iter().chain(fb).collect())
+            }
+            Expr::App(f, a, _) if matches!(&**f, Expr::Var(n, _) if n == "not" && self.builtin(cx, n)) =>
+            {
+                let (t, f) = self.cond(cx, a);
+                (f, t)
+            }
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    fn with_facts(cx: &Cx, more: Vec<Lin>) -> Cx {
+        let mut c = cx.clone();
+        c.facts.extend(more);
+        c
+    }
+
+    /// Check every refined call and array access in `e`.
+    fn walk(&mut self, cx: &Cx, e: &Expr) {
+        match e {
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => {}
+            Expr::Var(v, sp) => {
+                if Self::is_global(cx, v) && self.refs.contains_key(v.as_str()) {
+                    self.unsaturated(v, *sp);
+                }
+            }
+            Expr::App(_, _, sp) => {
+                let (h, args) = spine(e);
+                match h {
+                    Expr::Var(g, hsp) if Self::is_global(cx, g) => {
+                        if let Some(rf) = self.refs.get(g.as_str()).copied() {
+                            self.check_call(cx, g, rf, &args, *hsp, *sp);
+                        } else if self.builtin(cx, g)
+                            && ((g == "getArray" && args.len() == 2)
+                                || (g == "setArray" && args.len() == 3))
+                        {
+                            self.check_access(cx, &args, *sp);
+                        }
+                    }
+                    _ => self.walk(cx, h),
+                }
+                for a in args {
+                    self.walk(cx, a);
+                }
+            }
+            Expr::BinOp(op, a, b, _) => {
+                self.walk(cx, a);
+                let (t, f) = self.cond(cx, a);
+                let cb = match op.as_str() {
+                    "&&" => Self::with_facts(cx, t),
+                    "||" => Self::with_facts(cx, f),
+                    _ => cx.clone(),
+                };
+                self.walk(&cb, b);
+            }
+            Expr::If(c, t, f, _) => {
+                self.walk(cx, c);
+                let (yes, no) = self.cond(cx, c);
+                self.walk(&Self::with_facts(cx, yes), t);
+                self.walk(&Self::with_facts(cx, no), f);
+            }
+            Expr::Let(fs, body, _) => {
+                let inner = self.bind_locals(cx, fs);
+                self.walk(&inner, body);
+            }
+            Expr::Case(scrut, arms, _) => {
+                self.walk(cx, scrut);
+                let mut side = Vec::new();
+                let ts = self.term(cx, scrut, &mut side);
+                for (p, body) in arms {
+                    let arm = Self::bind_pat(cx, p, ts.as_ref(), &side);
+                    self.walk(&arm, body);
+                }
+            }
+            Expr::Tuple(es, _) => es.iter().for_each(|x| self.walk(cx, x)),
+            Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| self.walk(cx, x)),
+            Expr::RecordUpd(b, fs, _) => {
+                self.walk(cx, b);
+                fs.iter().for_each(|(_, x)| self.walk(cx, x));
+            }
+            Expr::Lam(ps, body, _) => {
+                let mut inner = cx.clone();
+                let mut names = Vec::new();
+                ps.iter().for_each(|p| pat_names(p, &mut names));
+                for n in names {
+                    inner.env.insert(n, Bind::Other);
+                }
+                self.walk(&inner, body);
+            }
+        }
+    }
+
+    /// A `case` arm's scope: its pattern's names shadow; an `Int` literal pattern on an `Int`
+    /// scrutinee is a fact, and a variable pattern names the scrutinee's value.
+    fn bind_pat(cx: &Cx, p: &Pat, scrut: Option<&Lin>, side: &[Lin]) -> Cx {
+        let mut arm = Self::with_facts(cx, side.to_vec());
+        let mut names = Vec::new();
+        pat_names(p, &mut names);
+        for n in names {
+            arm.env.insert(n, Bind::Other);
+        }
+        match (p, scrut) {
+            (Pat::Int(k, _), Some(t)) => {
+                if let Some(f) = cmp("==", t, &Lin::konst(i128::from(*k))) {
+                    conjuncts(&f, &mut arm.facts);
+                }
+            }
+            (Pat::Var(v, _), Some(t)) => {
+                arm.env.insert(v.clone(), Bind::Int(t.clone()));
+            }
+            _ => {}
+        }
+        arm
+    }
+
+    /// The scope after `let`/`where` bindings: every name shadows; a value binding of an
+    /// evidently-`Int` expression or an array names its value. A local function's body is
+    /// checked with `cx`'s facts: a `let` function is callable only inside the `let` (on the
+    /// same path), and a `where` one is bound at clause entry, where `cx` holds only the
+    /// clause's own refinements, true throughout the clause.
+    fn bind_locals(&mut self, cx: &Cx, fs: &[Func]) -> Cx {
+        let mut inner = cx.clone();
+        for f in fs {
+            inner.env.insert(f.name.clone(), Bind::Other);
+        }
+        for f in fs {
+            let value = f.clauses.len() == 1 && f.clauses[0].pats.is_empty();
+            let scope = inner.clone();
+            for c in &f.clauses {
+                let mut cs = scope.clone();
+                let mut names = Vec::new();
+                c.pats.iter().for_each(|p| pat_names(p, &mut names));
+                for n in names {
+                    cs.env.insert(n, Bind::Other);
+                }
+                let cs = self.bind_locals(&cs, &c.wher);
+                self.walk_body(&cs, &c.body);
+            }
+            if value {
+                if let Body::Plain(e) = &f.clauses[0].body {
+                    let mut side = Vec::new();
+                    if let Some(t) = self.term(&inner, e, &mut side) {
+                        inner.facts.extend(side);
+                        inner.env.insert(f.name.clone(), Bind::Int(t));
+                    } else if let Some(l) = self.arr_value(&inner, e, &mut side) {
+                        inner.facts.extend(side);
+                        inner.env.insert(f.name.clone(), Bind::Arr(l, false));
+                    }
+                }
+            }
+        }
+        inner
+    }
+
+    fn walk_body(&mut self, cx: &Cx, b: &Body) {
+        match b {
+            Body::Plain(e) => self.walk(cx, e),
+            Body::Guarded(arms) => {
+                let mut cur = cx.clone();
+                for (g, r) in arms {
+                    self.walk(&cur, g);
+                    let (yes, no) = self.cond(&cur, g);
+                    self.walk(&Self::with_facts(&cur, yes), r);
+                    cur.facts.extend(no);
+                }
+            }
+        }
+    }
+
+    fn unsaturated(&mut self, g: &str, sp: Span) {
+        self.diags.push(
+            Diagnostic::error(
+                "AX0602",
+                format!("`{g}` has refined parameters and must be called with all of them"),
+            )
+            .label(sp.0, sp.1, "used here without its refined arguments")
+            .with_help(
+                "a refinement is checked at each call, against the arguments given there; pass \
+                 the function to another one through a lambda that calls it in full",
+            ),
+        );
+    }
+
+    fn check_call(
+        &mut self,
+        cx: &Cx,
+        g: &str,
+        rf: &Refinement,
+        args: &[&Expr],
+        hsp: Span,
+        sp: Span,
+    ) {
+        let Some((ps, _)) = self.sigs.get(g).cloned() else {
+            return;
+        };
+        let need = rf
+            .preds
+            .iter()
+            .filter(|p| p.pos < ps.len())
+            .flat_map(|p| {
+                // every name the predicate mentions must be supplied
+                rf.names
+                    .iter()
+                    .filter(|(_, n)| mentions(&p.pred, n) || *n == p.binder)
+                    .map(|(i, _)| *i + 1)
+                    .collect::<Vec<_>>()
+            })
+            .max()
+            .unwrap_or(0);
+        if args.len() < need {
+            self.unsaturated(g, (hsp.0, sp.1));
+            return;
+        }
+        let mut side = Vec::new();
+        let vals = self.arg_vals(cx, rf, &ps, args, &mut side);
+        let mut facts = cx.facts.clone();
+        facts.extend(side);
+        for p in rf.preds.iter().filter(|p| p.pos < ps.len()) {
+            let Some(goal) = self.formula(&p.pred, &vals) else {
+                continue;
+            };
+            if !self.prove(&facts, &goal) {
+                let asp = args[p.pos].span();
+                let known = self.known(&facts, &goal);
+                let mut d = Diagnostic::error(
+                    "AX0600",
+                    format!(
+                        "cannot prove `{}` for the argument `{}` of `{g}`",
+                        show(&p.pred),
+                        p.binder
+                    ),
+                )
+                .label(asp.0, asp.1, format!("must satisfy `{}`", show(&p.pred)));
+                d = d.with_help(known);
+                self.diags.push(d);
+            }
+        }
+    }
+
+    fn check_access(&mut self, cx: &Cx, args: &[&Expr], sp: Span) {
+        let mut side = Vec::new();
+        let (Some(len), Some(i)) = (
+            self.arr_value(cx, args[0], &mut side),
+            self.term(cx, args[1], &mut side),
+        ) else {
+            return;
+        };
+        let mut facts = cx.facts.clone();
+        facts.extend(side);
+        let (Some(lo), Some(hi)) = (
+            Some(i.clone()),
+            Lin::atom(len).sub(&i).and_then(|d| d.add(&Lin::konst(-1))),
+        ) else {
+            return;
+        };
+        if self.prove(
+            &facts,
+            &Formula::And(vec![Formula::Ge(lo), Formula::Ge(hi)]),
+        ) {
+            self.proven.insert(sp);
+        }
+    }
+
+    /// A help line listing the facts that bear on a failed goal.
+    fn known(&self, facts: &[Lin], goal: &Formula) -> String {
+        let mut gl = Vec::new();
+        conjuncts(goal, &mut gl);
+        if let Formula::Or(fs) = goal {
+            fs.iter().for_each(|f| conjuncts(f, &mut gl));
+        }
+        let rows = self.rows_for(facts, gl.clone());
+        // the facts themselves, not the machine bounds `rows_for` adds to every atom
+        let shown: Vec<String> = rows
+            .iter()
+            .filter(|r| !gl.contains(r) && r.c.abs() < (1 << 62))
+            .take(8)
+            .map(|r| self.show_row(r))
+            .collect();
+        if shown.is_empty() {
+            "nothing is known here about these values; add a condition (`if i < len a then …`) or \
+             a refinement on the caller's parameters"
+                .to_string()
+        } else {
+            format!("known here: {}", shown.join(", "))
+        }
+    }
+
+    fn show_row(&self, r: &Lin) -> String {
+        let mut pos = Vec::new();
+        let mut neg = Vec::new();
+        for (a, k) in &r.t {
+            let name = self.atoms.get(*a).map_or("?", |x| x.0.as_str());
+            let s = if k.abs() == 1 {
+                name.to_string()
+            } else {
+                format!("{}*{name}", k.abs())
+            };
+            if *k > 0 {
+                pos.push(s);
+            } else {
+                neg.push(s);
+            }
+        }
+        let lhs = if pos.is_empty() {
+            "0".to_string()
+        } else {
+            pos.join(" + ")
+        };
+        let mut rhs = neg.join(" + ");
+        // Σpos + c >= Σneg  ⇔  Σneg <= Σpos + c
+        let c = r.c;
+        if rhs.is_empty() {
+            rhs = "0".to_string();
+        }
+        match c.cmp(&0) {
+            std::cmp::Ordering::Equal => format!("{rhs} <= {lhs}"),
+            std::cmp::Ordering::Greater => format!("{rhs} <= {lhs} + {c}"),
+            std::cmp::Ordering::Less => format!("{rhs} <= {lhs} - {}", -c),
+        }
+    }
+
+    /// Check one top-level function: its body under its own refinements, and its refined
+    /// result at each return.
+    fn check_func(&mut self, f: &Func) {
+        let (ps, ret) = f
+            .sig
+            .as_ref()
+            .map(split_sig)
+            .unwrap_or((Vec::new(), Type::Unit));
+        let rf = self.refs.get(f.name.as_str()).copied();
+        for c in &f.clauses {
+            let mut cx = Cx::default();
+            // each parameter position's value (named or not)
+            let mut pvals: HashMap<usize, PVal> = HashMap::new();
+            for (i, ty) in ps.iter().enumerate() {
+                let pat = c.pats.get(i);
+                let label = match pat {
+                    Some(Pat::Var(v, _)) => v.clone(),
+                    _ => format!("argument {}", i + 1),
+                };
+                if is_int(ty) {
+                    let t = match pat {
+                        Some(Pat::Int(k, _)) => Lin::konst(i128::from(*k)),
+                        _ => Lin::atom(self.fresh(&label, MIN)),
+                    };
+                    if let Some(Pat::Var(v, _)) = pat {
+                        cx.env.insert(v.clone(), Bind::Int(t.clone()));
+                    }
+                    pvals.insert(i, PVal::Int(t));
+                } else if let Some(int_elems) = array_elem_int(ty) {
+                    let l = self.fresh(&format!("len {label}"), 0);
+                    if let Some(Pat::Var(v, _)) = pat {
+                        cx.env.insert(v.clone(), Bind::Arr(l, int_elems));
+                    }
+                    pvals.insert(i, PVal::Len(l));
+                }
+            }
+            for p in &c.pats {
+                let mut names = Vec::new();
+                pat_names(p, &mut names);
+                for n in names {
+                    cx.env.entry(n).or_insert(Bind::Other);
+                }
+            }
+            let mut vals: HashMap<String, PVal> = HashMap::new();
+            if let Some(rf) = rf {
+                for (pos, name) in &rf.names {
+                    if let Some(v) = pvals.get(pos) {
+                        vals.insert(name.clone(), v.clone());
+                    }
+                }
+                for p in rf.preds.iter().filter(|p| p.pos < ps.len()) {
+                    if let Some(fm) = self.formula(&p.pred, &vals) {
+                        conjuncts(&fm, &mut cx.facts);
+                    }
+                }
+            }
+            let cx = self.bind_locals(&cx, &c.wher);
+            self.walk_body(&cx, &c.body);
+            if let Some(rf) = rf {
+                let res: Vec<&RefinePred> = rf.preds.iter().filter(|p| p.pos == ps.len()).collect();
+                if !res.is_empty() && is_int(&ret) {
+                    match &c.body {
+                        Body::Plain(e) => self.check_returns(&cx, e, &res, &vals),
+                        Body::Guarded(arms) => {
+                            let mut cur = cx.clone();
+                            for (g, r) in arms {
+                                let (yes, no) = self.cond(&cur, g);
+                                self.check_returns(&Self::with_facts(&cur, yes), r, &res, &vals);
+                                cur.facts.extend(no);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Prove a refined result at every return of `e`.
+    fn check_returns(
+        &mut self,
+        cx: &Cx,
+        e: &Expr,
+        res: &[&RefinePred],
+        vals: &HashMap<String, PVal>,
+    ) {
+        match e {
+            Expr::If(c, t, f, _) => {
+                let (yes, no) = self.cond(cx, c);
+                self.check_returns(&Self::with_facts(cx, yes), t, res, vals);
+                self.check_returns(&Self::with_facts(cx, no), f, res, vals);
+            }
+            Expr::Let(fs, body, _) => {
+                let inner = self.bind_locals_quiet(cx, fs);
+                self.check_returns(&inner, body, res, vals);
+            }
+            Expr::Case(scrut, arms, _) => {
+                let mut side = Vec::new();
+                let ts = self.term(cx, scrut, &mut side);
+                for (p, body) in arms {
+                    let arm = Self::bind_pat(cx, p, ts.as_ref(), &side);
+                    self.check_returns(&arm, body, res, vals);
+                }
+            }
+            _ => {
+                let mut side = Vec::new();
+                let t = self
+                    .term(cx, e, &mut side)
+                    .unwrap_or_else(|| Lin::atom(self.fresh(&show(e), MIN)));
+                let mut facts = cx.facts.clone();
+                facts.extend(side);
+                for p in res {
+                    let mut v = vals.clone();
+                    v.insert(p.binder.clone(), PVal::Int(t.clone()));
+                    let Some(goal) = self.formula(&p.pred, &v) else {
+                        continue;
+                    };
+                    if !self.prove(&facts, &goal) {
+                        let sp = e.span();
+                        let known = self.known(&facts, &goal);
+                        self.diags.push(
+                            Diagnostic::error(
+                                "AX0600",
+                                format!("cannot prove the result refinement `{}`", show(&p.pred)),
+                            )
+                            .label(
+                                sp.0,
+                                sp.1,
+                                format!("this result must satisfy `{}`", show(&p.pred)),
+                            )
+                            .with_help(known),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// `bind_locals` without re-checking the bindings' bodies (already walked).
+    fn bind_locals_quiet(&mut self, cx: &Cx, fs: &[Func]) -> Cx {
+        let mut quiet = Diagnostics::new();
+        std::mem::swap(self.diags, &mut quiet);
+        let r = self.bind_locals(cx, fs);
+        std::mem::swap(self.diags, &mut quiet);
+        r
+    }
+}
+
+/// `a op b` as a formula (mathematical).
+fn cmp(op: &str, a: &Lin, b: &Lin) -> Option<Formula> {
+    let ge = |x: &Lin, y: &Lin, k: i128| -> Option<Formula> {
+        // x - y + k >= 0
+        Some(Formula::Ge(x.sub(y)?.add(&Lin::konst(k))?))
+    };
+    Some(match op {
+        "<=" => ge(b, a, 0)?,
+        "<" => ge(b, a, -1)?,
+        ">=" => ge(a, b, 0)?,
+        ">" => ge(a, b, -1)?,
+        "==" => Formula::And(vec![ge(a, b, 0)?, ge(b, a, 0)?]),
+        "/=" => Formula::Or(vec![ge(a, b, -1)?, ge(b, a, -1)?]),
+        _ => return None,
+    })
+}
+
+fn mentions(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Var(v, _) => v == name,
+        Expr::BinOp(_, a, b, _) | Expr::App(a, b, _) => mentions(a, name) || mentions(b, name),
+        Expr::If(c, t, e, _) => mentions(c, name) || mentions(t, name) || mentions(e, name),
+        _ => false,
+    }
+}
+
+/// Is the predicate inside the refinement language, over names that exist?
+fn well_formed(rf: &Refinement, p: &RefinePred, ps: &[Type], diags: &mut Diagnostics) -> bool {
+    let types: HashMap<&str, &Type> = rf
+        .names
+        .iter()
+        .filter_map(|(i, n)| ps.get(*i).map(|t| (n.as_str(), t)))
+        .collect();
+    let result = p.pos == ps.len();
+    let mut err = |sp: Span, msg: String| {
+        diags.push(
+            Diagnostic::error("AX0601", format!("ill-formed refinement: {msg}"))
+                .label(sp.0, sp.1, "here")
+                .with_help(
+                    "a refinement compares Int expressions (`+ - *`, literals, `len a` of an array \
+                     parameter) with `< <= > >= == /=`, joined by `&&`/`||`",
+                ),
+        );
+        false
+    };
+    if !is_int(&p.ty) {
+        return err(p.span, "only `Int` values can be refined".to_string());
+    }
+    if p.pos > ps.len() {
+        return err(p.span, "the signature has fewer parameters".to_string());
+    }
+    fn walk(
+        e: &Expr,
+        bool_pos: bool,
+        types: &HashMap<&str, &Type>,
+        binder: &str,
+        result: bool,
+        err: &mut dyn FnMut(Span, String) -> bool,
+    ) -> bool {
+        match e {
+            Expr::BinOp(op, a, b, _) if bool_pos && matches!(op.as_str(), "&&" | "||") => {
+                walk(a, true, types, binder, result, err)
+                    && walk(b, true, types, binder, result, err)
+            }
+            Expr::BinOp(op, a, b, _)
+                if bool_pos && matches!(op.as_str(), "<" | "<=" | ">" | ">=" | "==" | "/=") =>
+            {
+                walk(a, false, types, binder, result, err)
+                    && walk(b, false, types, binder, result, err)
+            }
+            Expr::BinOp(op, a, b, _) if !bool_pos && matches!(op.as_str(), "+" | "-" | "*") => {
+                walk(a, false, types, binder, result, err)
+                    && walk(b, false, types, binder, result, err)
+            }
+            Expr::Con(c, _) if bool_pos && (c == "True" || c == "False") => true,
+            Expr::If(c, t, e, _) if bool_pos => {
+                walk(c, true, types, binder, result, err)
+                    && walk(t, true, types, binder, result, err)
+                    && walk(e, true, types, binder, result, err)
+            }
+            Expr::Int(..) if !bool_pos => true,
+            Expr::Var(v, sp) if !bool_pos => {
+                if result && v == binder {
+                    return true;
+                }
+                match types.get(v.as_str()) {
+                    Some(t) if is_int(t) => true,
+                    Some(_) => err(
+                        *sp,
+                        format!("`{v}` is not an `Int` (use `len {v}` for an array)"),
+                    ),
+                    None => err(
+                        *sp,
+                        format!("`{v}` is not a parameter named in this signature"),
+                    ),
+                }
+            }
+            Expr::App(f, a, sp) if !bool_pos => match (&**f, &**a) {
+                (Expr::Var(l, _), Expr::Var(x, _)) if l == "len" || l == "lenArray" => {
+                    match types.get(x.as_str()) {
+                        Some(t) if array_elem_int(t).is_some() => true,
+                        _ => err(*sp, format!("`{x}` is not an array parameter")),
+                    }
+                }
+                _ => err(
+                    *sp,
+                    "only `len a` may be applied in a refinement".to_string(),
+                ),
+            },
+            other => err(
+                other.span(),
+                "this is not part of the refinement language".to_string(),
+            ),
+        }
+    }
+    walk(&p.pred, true, &types, &p.binder, result, &mut err)
+}
+
+/// Check every refinement in the module and every call that must satisfy one.
+pub fn check(module: &Module, diags: &mut Diagnostics) -> Outcome {
+    let mut sigs = HashMap::new();
+    for f in &module.funcs {
+        if let Some(s) = &f.sig {
+            sigs.insert(f.name.clone(), split_sig(s));
+        }
+    }
+    let mut refs: HashMap<String, &Refinement> = HashMap::new();
+    for rf in &module.refinements {
+        let Some((ps, _)) = sigs.get(&rf.func) else {
+            continue;
+        };
+        if rf.preds.iter().all(|p| well_formed(rf, p, ps, diags)) && !rf.preds.is_empty() {
+            refs.insert(rf.func.clone(), rf);
+        }
+    }
+    let mut ck = Checker {
+        refs,
+        sigs,
+        atoms: Vec::new(),
+        diags,
+        proven: HashSet::new(),
+        user: module.funcs.iter().map(|f| f.name.clone()).collect(),
+    };
+    // a program with no refinements still gets its provable array accesses
+    for f in &module.funcs {
+        ck.check_func(f);
+    }
+    for inst in &module.instances {
+        for m in &inst.methods {
+            ck.check_func(m);
+        }
+    }
+    Outcome { proven: ck.proven }
+}
+
+/// Emit each array access `check` proved in bounds without its check: its Core `let` (or tail
+/// `ret`) carries the access's source span. Generated functions are left alone, and a span that
+/// matches nothing leaves the access checked.
+pub fn apply_proven(fns: &mut [crate::core::CoreFn], proven: &[Span]) {
+    use crate::core::{Op, Rhs, Term};
+    if proven.is_empty() {
+        return;
+    }
+    let set: HashSet<Span> = proven.iter().copied().collect();
+    fn op(o: &mut Op, sp: Span, set: &HashSet<Span>) {
+        if let Op::RtCall { func, .. } = o {
+            if sp.1 > sp.0 && set.contains(&sp) {
+                if func == "axion_array_get" {
+                    *func = crate::bce::GET_NOBC.to_string();
+                } else if func == "axion_array_set" {
+                    *func = crate::bce::SET_NOBC.to_string();
+                }
+            }
+        }
+    }
+    fn rhs(r: &mut Rhs, sp: Span, set: &HashSet<Span>) {
+        match r {
+            Rhs::Op(o) => op(o, sp, set),
+            Rhs::If(_, t, e) => {
+                term(t, set);
+                term(e, set);
+            }
+            Rhs::Case(_, arms) => arms.iter_mut().for_each(|(_, b)| term(b, set)),
+        }
+    }
+    fn term(t: &mut Term, set: &HashSet<Span>) {
+        match t {
+            Term::Let(_, r, sp, k) => {
+                rhs(r, *sp, set);
+                term(k, set);
+            }
+            Term::Drop(_, _, _, _, k) => term(k, set),
+            Term::Ret(r, sp) => rhs(r, *sp, set),
+        }
+    }
+    for f in fns.iter_mut() {
+        if !f.name.starts_with("axion_") {
+            term(&mut f.body, &set);
+        }
+    }
+}

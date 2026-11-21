@@ -64,6 +64,7 @@ NATIVE=(
   axionc/tests/fixtures/lambda_local_functions.axi
   axionc/tests/fixtures/tuple_accessors_borrow.axi
   axionc/tests/fixtures/getter_result_embedded.axi
+  axionc/tests/fixtures/refinements.axi
   axionc/tests/fixtures/bits_complement_popcount.axi
   axionc/tests/fixtures/bits_user_complement.axi
   axionc/tests/fixtures/bits_user_ops_prelude.axi

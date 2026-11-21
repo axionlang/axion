@@ -111,7 +111,14 @@ module.exports = grammar({
     )),
 
     // ---- types ----------------------------------------------------------
-    _type: $ => prec.right(seq($._btype, repeat(seq($.arrow, $._btype)))),
+    _type: $ => prec.right(seq($._sig_param, repeat(seq($.arrow, $._sig_param)))),
+    // a signature position: a type, a named parameter `a:Array Int`, or a refined type
+    // `{i:Int | 0 <= i && i < len a}` (integer refinements, docs/refinements.md)
+    _sig_param: $ => choice($._btype, $.named_parameter, $.refined_type),
+    named_parameter: $ => prec(1, seq(field('name', $.variable), ':', $._btype)),
+    refined_type: $ => seq(
+      '{', field('name', $.variable), ':', $._type, '|', field('predicate', $._expression), '}',
+    ),
     arrow: $ => choice('->', seq($.multiplicity, '->')),
     _btype: $ => prec.left(repeat1($._atype)),
     _atype: $ => choice(

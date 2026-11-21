@@ -33,12 +33,15 @@ as JSON and are explainable via `axion --explain AXnnnn`.
 | `AX0305` | Sessions | `spawn` closure captures an endpoint from outside: would break the nursery's tree topology (§9) | **enforced by `axionc`** (Phase 3) |
 | `AX0400`–`AX0405` | Typeclasses | Class/instance coherence and use-site constraints (see the `AX04xx` band below) | **enforced by `axionc`** |
 | `AX0500` | Levels | A declaration's *written* level (its own multiplicities/level-defining types/builtins) exceeds the module's `{-# LEVEL Ln #-}` ceiling (§8) | **enforced by `axionc`** |
+| `AX0600` | Refinements | A call's refined argument (or a function's refined result) is not proven from what is known there | **enforced by `axionc`** |
+| `AX0601` | Refinements | An ill-formed refinement: not an `Int`, an unknown name, `len` of a non-array, or outside the predicate language | **enforced by `axionc`** |
+| `AX0602` | Refinements | A function with refined parameters used without the arguments its refinements mention (as a value, partially applied) | **enforced by `axionc`** |
 
 The ownership errors (`AX0001`, `AX0002`, `AX0004`, `AX0007`, and the native-build `AX0910`,
 `AX0911`, `AX0912`, `AX0914`) print the rule of [`spec.md`](spec.md) they enforce.
 
 Next free per band — language: `AX0008`; front-end: `AX0102`; types: `AX0204`;
-channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`.
+channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`; refinements: `AX0603`.
 
 **`AX03xx` channels and session types (Phase 3).** The §17 band for the session
 calculus (see [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Enforced:
@@ -359,3 +362,24 @@ higher-level feature. Malformed pragmas (`{-# LEVEL wat #-}`) are reported as an
 
 > Scope: the module pragma is enforced today. The manifest `max-level` cap (§8)
 > awaits the `axion` driver/`axion.toml` and is deferred.
+
+## `AX06xx` — integer refinements
+
+See [`refinements.md`](refinements.md). A top-level signature may refine an `Int` parameter or
+result (`{i:Int | 0 <= i && i < len a}`); every call proves it from the facts known where it is
+made.
+
+- **`AX0600`** — the refinement is not proven for this argument (or this return). The help line
+  lists the facts known there. Add a condition on the path (`if i < lenArray a then …`), refine
+  the caller's own parameters, or check the value first.
+
+  ```haskell
+  get :: a:Array Int -> {i:Int | 0 <= i && i < len a} -> Int
+  bad a k = get a k            -- AX0600: nothing is known about k
+  ```
+
+- **`AX0601`** — the refinement is outside the language: a non-`Int` refined, a name that is not
+  a parameter of the signature, `len` of something that is not an array parameter, or an
+  operator the predicate language lacks.
+- **`AX0602`** — a function with refined parameters is named without the arguments its
+  refinements mention (`map idx xs`): nothing can be proven there.

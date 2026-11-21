@@ -1,5 +1,6 @@
   --> axionc/tests/fixtures/struct_mustuse.axi:7:12
   = help: endpoints, Token and handles are must-use (they have no Drop); consume it or return it (§2).
+  = rule: R3 (docs/spec.md#r3)
   |
   |            ^ 's' : Sess %1 (no Drop)
 7 | useSession s = 0

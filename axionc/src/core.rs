@@ -3504,6 +3504,8 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         classes: module.classes.clone(),
         instances: module.instances.clone(),
         level_ceiling: module.level_ceiling,
+        refinements: module.refinements.clone(),
+        bounds_proven: module.bounds_proven.clone(),
     }
 }
 
@@ -7938,6 +7940,7 @@ pub fn lower_with(
         })
         .collect();
     if std::env::var_os("AXION_NO_BCE").is_none() {
+        crate::refine::apply_proven(&mut result, &module.bounds_proven);
         let before: HashSet<String> = result.iter().map(|f| f.name.clone()).collect();
         crate::bce::version_counting_loops(&mut result);
         for f in &result {

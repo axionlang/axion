@@ -10,6 +10,8 @@
    |            ^ 's' used here…
   = help: after moving a %1 (consuming), you cannot read or consume it again — ownership has left this scope (§2).
   = help: after moving a %1 (consuming), you cannot read or consume it again — ownership has left this scope (§2).
+  = rule: R6 (docs/spec.md#r6)
+  = rule: R6 (docs/spec.md#r6)
 10 | inLet n = let s = show n in eat s + strLen s
 10 | inLet n = let s = show n in eat s + strLen s
 18 |   putStrLn (show (eat s))

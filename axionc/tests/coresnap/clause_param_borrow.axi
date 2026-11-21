@@ -39,7 +39,7 @@
   let a = newArray 4 3  ; Δ{} · makes Array
   let b = call idArr 2 a  ; Δ{a} · moves{a} · makes Array
   let x = call sumK 5 a  ; Δ{a}
-  let y = rtcall axion_array_get a 1  ; Δ{a}
+  let y = rtcall axion_array_get_nobc a 1  ; Δ{a}
   ret + _t0 _t1  ; Δ{}
   ret 0  ; Δ{}
   ret if _t0 then

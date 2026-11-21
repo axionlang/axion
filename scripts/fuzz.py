@@ -1748,6 +1748,83 @@ def gen_tuple_acc(rng):
         lines.append(f"  putStrLn ({call})")
     return TUPLES_PRE + "\n".join(funs) + "\nmain :: IO ()\nmain = do\n" + "\n".join(lines) + "\n"
 
+def gen_refine(rng):
+    """Integer refinements (axionc/src/refine.rs): random conditions, often subtly wrong (off by
+    one, the wrong branch, a sum that wraps near the largest Int, division), guarding a call to a
+    refined `get` whose access the checker then emits WITHOUT its bounds check; loops with random
+    starts, steps and offsets; a refined result with a random body. The checker must refuse
+    (AX0600) every program whose access could go out of bounds: an accepted one must agree with
+    the interpreter (which always checks) and be ASan-clean — an interpreter bounds abort that
+    native does not reproduce is an unsound proof."""
+    big = [9223372036854775807, 4611686018427387904, -9223372036854775807, 9223372036854775806]
+    val = lambda: rng.choice(big) if rng.random() < 0.15 else rng.randint(-3, 14)
+    lit = lambda v: f"({v})" if v < 0 else str(v)
+    C = lambda: rng.randint(-2, 3)
+    def iexpr():
+        return rng.choice(["x", "y", "x + {c}", "y - {c}", "x + y", "lenArray a - {k}",
+                           "x / 2", "x `mod` 4", "x + (y - x) / 2", "{k}", "x * 2", "y + 1"]
+                          ).format(c=rng.randint(0, 3), k=rng.randint(0, 3))
+    def atom():
+        return rng.choice(["0 <= {e}", "{e} < lenArray a", "{e} <= lenArray a", "{e} >= 0",
+                           "{e} > {c}", "x < y", "y <= lenArray a", "x >= 0", "0 < x",
+                           "{e} /= {c}", "{e} == {c}"]).format(e=iexpr(), c=C())
+    def cond():
+        r = rng.random()
+        if r < 0.5:
+            return f"{atom()} && {atom()}"
+        if r < 0.7:
+            return f"{atom()} && {atom()} && {atom()}"
+        if r < 0.85:
+            return atom()
+        return f"({atom()} || {atom()}) && {atom()}"
+    funs, calls = [], []
+    for i in range(rng.randint(1, 2)):   # one rejected function rejects the whole program
+        n = f"f{i}"
+        t = rng.randint(0, 5)
+        if t == 5:      # the right guard, or one off by one (`<=`, a shifted index)
+            e = iexpr()
+            op = rng.choice(["<", "<", "<="])
+            idx = rng.choice([e, e, f"{e} + 1", f"{e} - 1"])
+            lo = rng.choice(["0 <= " + e, "0 <= " + e, "0 < " + e, e + " > (0 - 1)", e + " >= 1"])
+            funs.append(f"{n} :: Array Int -> Int -> Int -> Int\n"
+                        f"{n} a x y = if {lo} && {e} {op} lenArray a then get a ({idx}) else 9\n")
+        elif t == 0:    # an `if` guarding the access
+            funs.append(f"{n} :: Array Int -> Int -> Int -> Int\n"
+                        f"{n} a x y = if {cond()} then get a ({iexpr()}) else 0 - 1\n")
+        elif t == 1:    # guards, the access in a later one
+            funs.append(f"{n} :: Array Int -> Int -> Int -> Int\n{n} a x y\n"
+                        f"  | {atom()} = 0 - 2\n  | {cond()} = get a ({iexpr()})\n  | otherwise = 7\n")
+        elif t == 2:    # a counting loop with a random start, step and offset
+            d, st, o = rng.randint(-1, 2), rng.choice([1, 1, 2, 3]), rng.randint(-1, 2)
+            funs.append(f"{n} :: a:Array Int -> {{i:Int | 0 <= i}} -> Int -> Int\n"
+                        f"{n} a i acc = if i < lenArray a - {d} then {n} a (i + {st}) "
+                        f"(acc + get a (i + {lit(o)})) else acc\n")
+            calls.append(f"  putStrLn (showInt ({n} arr {rng.randint(0, 3)} 0))")
+            continue
+        elif t == 3:    # a let-bound index
+            c = cond()
+            if rng.random() < 0.5:
+                c = c.replace("x", "j")
+            funs.append(f"{n} :: Array Int -> Int -> Int -> Int\n"
+                        f"{n} a x y =\n  let j = {iexpr()} in\n  if {c} then get a j else 3\n")
+        else:           # a refined result, then used as an index
+            body = rng.choice(["if x < 0 then 0 else if x > hi then hi else x",
+                               "if x < 0 then 0 else if x >= hi then hi else x",
+                               "if x <= 0 then 0 else if x > hi then hi - 1 else x",
+                               "if x < 0 then 0 else x `mod` (hi + 1)",
+                               "if x > hi then hi else x"])
+            funs.append(f"clamp{i} :: Int -> {{hi:Int | 0 <= hi}} -> {{r:Int | 0 <= r && r <= hi}}\n"
+                        f"clamp{i} x hi = {body}\n"
+                        f"{n} :: Array Int -> Int -> Int -> Int\n"
+                        f"{n} a x y = if lenArray a > {rng.randint(0, 2)} then "
+                        f"get a (clamp{i} x (lenArray a - 1)) else 5\n")
+        for _ in range(rng.randint(1, 3)):
+            calls.append(f"  putStrLn (showInt ({n} arr {lit(val())} {lit(val())}))")
+    length = rng.randint(0, 9)
+    return ("-- fuzz:refine\nget :: a:Array Int -> {i:Int | 0 <= i && i < len a} -> Int\n"
+            "get a i = getArray a i\n\n" + "\n".join(funs)
+            + f"\nmain :: IO ()\nmain = do\n  let arr = newArray {length} 4\n" + "\n".join(calls) + "\n")
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.08:
@@ -1867,7 +1944,8 @@ def asan_run(src, work, oracle_out):
     rr, orr, err = run([str(work / "p")])
     if rr == HANG_RC:
         return ("hang", f"native binary exceeded {HANG_SECS}s at runtime")
-    if "use-after-free" in err or "double-free" in err or "invalid pointer" in err:
+    if ("use-after-free" in err or "double-free" in err or "invalid pointer" in err
+            or "heap-buffer-overflow" in err):
         return ("corruption", err[-600:])
     if "detected memory leaks" in err:
         # session tasks free what they own: a leak in a session-heap program is a real finding

@@ -69,6 +69,7 @@ mod lexer;
 #[cfg(feature = "native")]
 mod llvm;
 mod parser;
+mod refine;
 #[cfg(feature = "wasm")]
 mod wasm;
 
@@ -1650,6 +1651,13 @@ pub fn prepare_for_check_with(
     specialize: bool,
 ) -> PreparedModule {
     resolve_imports_with(&mut module, path, diags, resolve);
+    // integer refinements (`refine.rs`): every refined call proven, over the program and its
+    // imports (a call to an imported refined function too), before the prelude is added. The
+    // editor engine (`db::processed_module`) reports them through this same path.
+    let refined = refine::check(&module, diags);
+    let mut proven: Vec<ast::Span> = refined.proven.into_iter().collect();
+    proven.sort_unstable();
+    module.bounds_proven = proven;
     inject_prelude(&mut module);
     // `foreign struct` → generated constructor + selector functions, and `S { f = e }` record
     // construction → a positional call. Runs after the prelude (so `newBuffer`/`peek`/`poke` are
@@ -7092,6 +7100,14 @@ fn resolve_imports_rec(
                     }
                 }
                 module.funcs.insert(0, f);
+            }
+        }
+        for mut r in imported.refinements {
+            if let Some(ref p) = prefix {
+                r.func = p.clone() + &r.func;
+            }
+            if !has_func.contains(&r.func) {
+                module.refinements.push(r);
             }
         }
         for c in imported.classes.into_iter().rev() {

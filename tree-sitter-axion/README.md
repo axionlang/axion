@@ -13,7 +13,7 @@ does **not** affect colouring: token captures fire inside `ERROR` nodes too. Wit
 break is ambiguous; the grammar keeps both readings (a GLR conflict on `application`) and prefers
 the one that starts a new equation, `case` arm or bind (`prec.dynamic`). A bare expression
 statement at the end of a `do` has no such marker, so it can merge into the line before it.
-Over the repo's examples and fixtures this leaves 470 `ERROR` nodes (was 6115), and 296 files
+Over the repo's examples and fixtures this leaves 669 `ERROR` nodes (was 6115), and 330 files
 parse with none. A fully
 structural parse (for tree-sitter text-objects / auto-indent) would need the scanner and
 is out of scope.

@@ -1,5 +1,6 @@
   --> axionc/tests/fixtures/drop_linear.axi:4:8
   = help: endpoints, Token and handles are must-use (they have no Drop); consume it or return it (§2).
+  = rule: R3 (docs/spec.md#r3)
   |
   |        ^ 'x' : Token %1 (no Drop)
 4 | dropIt x = 0

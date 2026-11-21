@@ -1,5 +1,6 @@
   --> axionc/tests/fixtures/record_use_twice.axi:6:8
   = help: reading (borrowing) a %1 is free and unlimited; moving ownership (consuming) may happen only once — to share it by ownership, use 'split' into two %0.5 halves (§2).
+  = rule: R5 (docs/spec.md#r5)
   |
   |        ^ 'r' is %1: consumable only once
 6 | dupRes r = (r, r)

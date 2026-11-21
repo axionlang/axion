@@ -246,10 +246,19 @@ pub unsafe extern "C" fn axion_buf_copy(buf: i64) -> i64 {
 }
 
 // --- linear dense Array (i64): [len][elem…], libc-malloc/free ---
+/// The size of an array of `n >= 0` elements, header included. A size that does not fit a
+/// `usize` is out of memory: it never wraps to a small block the elements would overrun. So an
+/// array that exists has `len < 2^61` — a bound the refinement checker relies on (`refine.rs`).
+fn array_bytes(n: i64) -> usize {
+    (n as usize)
+        .checked_mul(8)
+        .and_then(|b| b.checked_add(8))
+        .unwrap_or_else(|| oom())
+}
 #[no_mangle]
 pub unsafe extern "C" fn axion_array_new(len: i64, init: i64) -> i64 {
     let n = if len < 0 { 0 } else { len };
-    let b = libc::malloc(8 + n as usize * 8) as *mut u8;
+    let b = libc::malloc(array_bytes(n)) as *mut u8;
     if b.is_null() {
         oom();
     }
@@ -323,7 +332,7 @@ pub unsafe extern "C" fn axion_array_dot(a: i64, b: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn axion_array_iota(len: i64) -> i64 {
     let n = if len < 0 { 0 } else { len };
-    let b = libc::malloc(8 + n as usize * 8) as *mut u8;
+    let b = libc::malloc(array_bytes(n)) as *mut u8;
     if b.is_null() {
         oom();
     }
