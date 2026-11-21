@@ -34,6 +34,9 @@ as JSON and are explainable via `axion --explain AXnnnn`.
 | `AX0400`–`AX0405` | Typeclasses | Class/instance coherence and use-site constraints (see the `AX04xx` band below) | **enforced by `axionc`** |
 | `AX0500` | Levels | A declaration's *written* level (its own multiplicities/level-defining types/builtins) exceeds the module's `{-# LEVEL Ln #-}` ceiling (§8) | **enforced by `axionc`** |
 
+The ownership errors (`AX0001`, `AX0002`, `AX0004`, `AX0007`, and the native-build `AX0910`,
+`AX0911`, `AX0912`, `AX0914`) print the rule of [`spec.md`](spec.md) they enforce.
+
 Next free per band — language: `AX0008`; front-end: `AX0102`; types: `AX0204`;
 channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`.
 
@@ -60,6 +63,8 @@ acyclic pipelines) and the surface→ASC differential.
 ---
 
 ## `AX0001` — contraction of a linear resource (consumed >1 time)
+
+Rule: [R5](spec.md#r5).
 
 **Rule (§2), with fine liveness.** *Reading* (borrowing) a `%1` is free and
 unlimited — Borrow Elision. *Consuming* (moving ownership: argument of a `%1`
@@ -102,6 +107,8 @@ error[AX0001]: linear resource 'x' consumed 2 times (contraction forbidden)
 ---
 
 ## `AX0002` — must-use resource dropped without consumption
+
+Rule: [R3](spec.md#r3).
 
 **Rule (§2).** Weakening (dropping) is allowed only for types with a `Drop`
 instance. Types without `Drop` — session endpoints (`Ep`), `Token`, transaction
@@ -154,6 +161,8 @@ Fixtures: `arena_escape.axi` (escapes → `AX0003`), `arena_promote_ok.axi`
 ---
 
 ## `AX0004` — use-after-move
+
+Rule: [R6](spec.md#r6).
 
 **Rule (§2), order-sensitive.** Once ownership of a `%1` is **moved** (consumed —
 passed to a `%1` parameter, placed in a `%1` field, or returned), it cannot be
@@ -235,6 +244,8 @@ accepted, and runs).
 ---
 
 ## `AX0007` — a borrowed resource is consumed
+
+Rule: [R7](spec.md#r7).
 
 A parameter whose type has no `%1` is **borrowed**: the caller keeps ownership. For a resource
 (a `Handle`, `Sock`, `Listener` or session endpoint, which has no destructor) the caller must

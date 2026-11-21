@@ -7536,3 +7536,57 @@ fn axmpv_m7_regressions_agree_natively() {
         );
     }
 }
+
+#[test]
+fn spec_rules_are_pinned() {
+    // docs/spec.md is the normative ownership spec: every rule has an anchor and names fixtures
+    // that exist, every rule the diagnostics cite (diag.rs `SPEC_RULES`) exists and mentions
+    // the code that cites it, and a rendered error carries its rule.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let spec = std::fs::read_to_string(root.join("../docs/spec.md")).unwrap();
+    let diag = std::fs::read_to_string(root.join("src/diag.rs")).unwrap();
+    let mut sections: std::collections::BTreeMap<String, String> = Default::default();
+    for part in spec.split("<a id=\"").skip(1) {
+        let (id, body) = part.split_once('"').unwrap();
+        let body = body.split("<a id=").next().unwrap();
+        assert!(body.contains("Pinned by:"), "{id} names no fixture");
+        let pinned = body.split("Pinned by:").nth(1).unwrap();
+        for name in pinned.split('`').skip(1).step_by(2) {
+            assert!(
+                root.join("tests/fixtures").join(name).exists(),
+                "{id} pins missing fixture {name}"
+            );
+        }
+        sections.insert(id.to_string(), body.to_string());
+    }
+    let n = sections.len();
+    for i in 1..=n {
+        assert!(
+            sections.contains_key(&format!("r{i}")),
+            "rule numbers have a gap at R{i}"
+        );
+    }
+    let table = diag.split("pub const SPEC_RULES").nth(1).unwrap();
+    let table = table.split("];").next().unwrap();
+    let mut cited = 0;
+    for line in table.lines() {
+        let quoted: Vec<&str> = line.split('"').skip(1).step_by(2).collect();
+        if let [code, rule] = quoted[..] {
+            let body = sections
+                .get(&rule.to_lowercase())
+                .unwrap_or_else(|| panic!("{code} cites {rule}, which docs/spec.md lacks"));
+            assert!(body.contains(code), "{rule} does not mention {code}");
+            cited += 1;
+        }
+    }
+    assert!(cited >= 8, "SPEC_RULES table not found in diag.rs");
+    let out = axionc()
+        .arg(fixture("heap_duplication.axi"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(
+        text.contains("AX0001") && text.contains("= rule: R5 (docs/spec.md#r5)"),
+        "the AX0001 error should cite its rule:\n{text}"
+    );
+}

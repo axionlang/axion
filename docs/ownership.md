@@ -2,7 +2,8 @@
 
 Axion is often summarised as "linear". That is true of **resources**, not of data. This page is
 the precise version: what is freed for you, what you must consume yourself, what is checked, and
-where the checks stop. Every behaviour below is pinned by a test in `axionc/tests/`.
+where the checks stop. Every behaviour below is pinned by a test in `axionc/tests/`. The same rules,
+numbered and stated normatively, are in [`spec.md`](spec.md).
 
 ## Three kinds of value
 

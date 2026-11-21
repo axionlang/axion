@@ -153,10 +153,13 @@ fn to_analyzed(d: &AxDiagnostic, pos: &Positions) -> Analyzed {
         Severity::Error => DiagnosticSeverity::ERROR,
         Severity::Warning => DiagnosticSeverity::WARNING,
     };
-    let message = match &d.help {
+    let mut message = match &d.help {
         Some(h) => format!("{}\n\nhelp: {h}", d.message),
         None => d.message.clone(),
     };
+    if let Some(rule) = crate::diag::spec_rule(&d.code) {
+        message.push_str(&format!("\n\nrule: {rule} (docs/spec.md)"));
+    }
     let diagnostic = Diagnostic {
         range,
         severity: Some(severity),

@@ -150,8 +150,33 @@ impl Diagnostic {
                 fix.message, fix.replacement
             ));
         }
+        if let Some(rule) = spec_rule(&self.code) {
+            out.push_str(&format!(
+                "  = rule: {rule} (docs/spec.md#{})\n",
+                rule.to_lowercase()
+            ));
+        }
         out
     }
+}
+
+/// The ownership rules of `docs/spec.md` each ownership error enforces, cited in its text and
+/// LSP rendering. `spec_rules_are_pinned` (tests/run.rs) checks every rule named here exists.
+pub const SPEC_RULES: &[(&str, &str)] = &[
+    ("AX0001", "R5"),
+    ("AX0002", "R3"),
+    ("AX0004", "R6"),
+    ("AX0007", "R7"),
+    ("AX0910", "R18"),
+    ("AX0911", "R18"),
+    ("AX0912", "R16"),
+    ("AX0914", "R17"),
+];
+
+/// The `docs/spec.md` rule an error code enforces, if it is an ownership error.
+#[must_use]
+pub fn spec_rule(code: &str) -> Option<&'static str> {
+    SPEC_RULES.iter().find(|(c, _)| *c == code).map(|(_, r)| *r)
 }
 
 /// Spans of a specialization clone are its source's spans shifted by a multiple of this stride

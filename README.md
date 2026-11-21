@@ -138,6 +138,7 @@ More detail in [`docs/backend.md`](docs/backend.md) and the phase docs.
 | [`examples/`](examples/) | `.axi` programs (Hello, fib, FizzBuzz, typeclasses, linear buffer, Listing 2.1, borrows). |
 | [`docs/by-example.md`](docs/by-example.md) | **Guided tour L0→L4** — the best entry point to learn. |
 | [`docs/ownership.md`](docs/ownership.md) | **The ownership model** in one page — what is freed for you (data), what you must consume (resources), typestate, error paths, effects, and how it compares with Rust. |
+| [`docs/spec.md`](docs/spec.md) | **The ownership rules**, numbered (R1–R19), each pinned by a fixture; ownership errors cite them (`= rule: R5`). |
 | [`docs/`](docs/) | Grammar, [error codes](docs/error-codes.md), [backend](docs/backend.md), [benchmarks](docs/benchmarks.md), [session calculus](docs/phase-3-calculus.md), phase checklists. |
 | [`scripts/`](scripts/) | `sanitize.sh` (ASan/LSan), `differential.sh` (GHC oracle), `bench.sh`. |
 | [`prototype/`](prototype/) | Throwaway EDSL bench from Phase 0 (validated linearity in Linear Haskell). |
