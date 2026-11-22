@@ -129,6 +129,10 @@ struct Infer<'a> {
     /// literal resolved to `Integer` by context is rewritten `fromInt n`, and an
     /// unconstrained one defaults to `Int`.
     int_lit_vars: Vec<(Span, Ty)>,
+    /// The value of each integer literal (an `Int32` one must fit in 32 bits).
+    int_lit_vals: HashMap<Span, i64>,
+    /// Float literals: `Float`, or `Float32` where one is expected (`num32.rs`).
+    float_lit_vars: Vec<(Span, Ty)>,
     /// Spans of integer literals in PATTERN position (subset of `int_lit_vars` spans). A
     /// user-numeric literal is overloadable only in EXPRESSION position (rewritten to a
     /// `fromInteger` call); a pattern literal cannot be, so one resolving to a user type is an
@@ -208,6 +212,8 @@ pub struct Mono {
     /// Phase 1b: integer-literal (EXPRESSION) spans that resolved to a USER numeric type with a
     /// `Num` instance → rewritten `fromInteger$<T> n` (literal overloading). span → type head.
     pub user_lits: std::collections::HashMap<Span, String>,
+    /// Float literals that resolved to `Float32` → rewritten `toFloat32 x` (`num32.rs`).
+    pub f32_lits: std::collections::HashSet<Span>,
     /// Monomorphic `show`/`showArg` functions synthesized for shapes with no
     /// usable nominal instance: TUPLES (`show$(Int,Int)`) and MULTI-PARAM derived
     /// data (`show$Either$Int$Bool`). Injected after inference (see
@@ -538,6 +544,8 @@ fn setup<'a>(module: &Module, diags: &'a mut Diagnostics) -> (Infer<'a>, Env) {
         var_use_tys: HashMap::new(),
         record_var_tys: false,
         int_lit_vars: Vec::new(),
+        int_lit_vals: HashMap::new(),
+        float_lit_vars: Vec::new(),
         int_lit_pat_spans: std::collections::HashSet::new(),
         where_ret_tys: HashMap::new(),
         where_poly: HashMap::new(),
@@ -1091,7 +1099,7 @@ impl Infer<'_> {
             Ty::Con(n, args) => {
                 if matches!(
                     n.as_str(),
-                    "Int" | "Float" | "Bool" | "Char" | "String" | "Integer"
+                    "Int" | "Float" | "Bool" | "Char" | "String" | "Integer" | "Int32" | "Float32"
                 ) {
                     return true;
                 }
@@ -1116,13 +1124,15 @@ impl Infer<'_> {
     fn is_scalar_elem(&self, t: &Ty) -> bool {
         match t {
             Ty::Con(n, args) if args.is_empty() => {
-                matches!(n.as_str(), "Int" | "Float" | "Bool" | "Char")
-                    || (self.cons.values().any(|(d, _)| d == n)
-                        && self
-                            .cons
-                            .values()
-                            .filter(|(d, _)| d == n)
-                            .all(|(_, fs)| fs.is_empty()))
+                matches!(
+                    n.as_str(),
+                    "Int" | "Float" | "Bool" | "Char" | "Int32" | "Float32"
+                ) || (self.cons.values().any(|(d, _)| d == n)
+                    && self
+                        .cons
+                        .values()
+                        .filter(|(d, _)| d == n)
+                        .all(|(_, fs)| fs.is_empty()))
             }
             _ => false,
         }
@@ -1151,6 +1161,23 @@ impl Infer<'_> {
                 Ty::Con(ref n, _) if n == "Integer" => {
                     integer_lits.insert(span);
                 }
+                // an `Int32` literal: the same value, if it fits
+                Ty::Con(ref n, _) if n == "Int32" => {
+                    let k = inf.int_lit_vals.get(&span).copied().unwrap_or(0);
+                    if i32::try_from(k).is_err() {
+                        inf.diags.push(
+                            Diagnostic::error(
+                                "AX0200",
+                                format!("the literal {k} does not fit in an `Int32`"),
+                            )
+                            .label(span.0, span.1, "outside -2147483648 … 2147483647")
+                            .with_help(
+                                "an `Int32` holds 32 bits; use an `Int`, or `toInt32 n` to keep \
+                                 the low 32 bits of a larger value",
+                            ),
+                        );
+                    }
+                }
                 // an EXPRESSION literal resolved to a user numeric type → `fromInteger$T n`.
                 // A PATTERN literal cannot be a call, so it is excluded and falls through to the
                 // `unify Int` below, which raises a clean type error at a user type.
@@ -1162,8 +1189,21 @@ impl Infer<'_> {
                 }
             }
         }
+        // float literals: `Float32` where one is expected (→ `toFloat32 x`), else `Float`
+        let mut f32_lits: std::collections::HashSet<Span> = std::collections::HashSet::new();
+        for (span, v) in std::mem::take(&mut inf.float_lit_vars) {
+            match inf.apply(&v) {
+                Ty::Con(ref n, _) if n == "Float32" => {
+                    f32_lits.insert(span);
+                }
+                _ => {
+                    inf.unify(&v, &Ty::Con("Float".into(), vec![]), span);
+                }
+            }
+        }
         inf.check_exhaustiveness();
         let mut mono = inf.discharge_obligations(module);
+        mono.f32_lits = f32_lits;
         mono.integer_lits = integer_lits;
         mono.user_lits = user_lits;
         // Phase B (generic-owning corner): the owning-generic specializations
@@ -1286,7 +1326,7 @@ pub fn is_division_method(op: &str) -> bool {
 /// `Int`/`Float`/`Integer`. Any OTHER operand is a user type that dispatches through the
 /// instance it declares (`instance Num Complex` → `+$Complex`).
 pub fn is_primitive_num(ty: &str) -> bool {
-    matches!(ty, "Int" | "Float" | "Integer")
+    matches!(ty, "Int" | "Float" | "Integer") || crate::num32::is_type(ty)
 }
 
 /// The dispatch target for a comparison operator (`== < >`) over a USER type `name`: `==` → the
@@ -1326,6 +1366,8 @@ pub fn division_resolve(ty: &str) -> &'static str {
     match ty {
         "Float" => "/.",
         "Integer" => "div#I",
+        "Int32" => "div#i32",
+        "Float32" => "/#f32",
         _ => "div", // Int (and the Int default for an unconstrained use)
     }
 }
@@ -3032,6 +3074,16 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // 32-bit numbers (`num32.rs`): conversions and math
+        for (n, p, r) in crate::num32::BUILTINS {
+            env.insert(
+                (*n).into(),
+                mono(Ty::Fun(
+                    Box::new(Ty::Con((*p).into(), vec![])),
+                    Box::new(Ty::Con((*r).into(), vec![])),
+                )),
+            );
+        }
         // gpuFor :: Array a -> (Int -> a -> a) -> Array a — `parFor` on the GPU (`gpu.rs`)
         if let Some(s) = env.get("parFor").cloned() {
             env.insert("gpuFor".into(), s);
@@ -3499,6 +3551,18 @@ impl<'a> Infer<'a> {
                         resolutions.insert((o.func.clone(), o.span), op);
                     }
                 }
+                // a built-in operator over a 32-bit number (`num32.rs`): its primitive, or (an
+                // `Int32` comparison) the `Int` operator itself
+                Ty::Con(name, _)
+                    if (is_builtin_op_method(&o.method) || is_integral_method(&o.method))
+                        && crate::num32::op_name(&o.method, &name).is_some() =>
+                {
+                    if let Some(crate::num32::Resolved::Prim(op)) =
+                        crate::num32::op_name(&o.method, &name)
+                    {
+                        resolutions.insert((o.func.clone(), o.span), op.into());
+                    }
+                }
                 // built-in Num/Ord operator over Float → rewrite to the dotted form
                 // the backends already lower.
                 Ty::Con(name, _) if is_builtin_op_method(&o.method) && name == "Float" => {
@@ -3952,7 +4016,13 @@ impl<'a> Infer<'a> {
             for (sp, m, ci) in poly_methods.get(f).into_iter().flatten() {
                 // each use rewrites at ITS constraint var's concrete type.
                 let ti = types.get(*ci).map(ty_mangle).unwrap_or_else(|| t.clone());
-                if is_builtin_op_method(m) {
+                if (is_builtin_op_method(m) || is_integral_method(m))
+                    && crate::num32::op_name(m, &ti).is_some()
+                {
+                    if let Some(crate::num32::Resolved::Prim(op)) = crate::num32::op_name(m, &ti) {
+                        rewrites.insert(*sp, op.into());
+                    }
+                } else if is_builtin_op_method(m) {
                     // built-in Num/comparison over a primitive: Float and Integer rewrite to their
                     // own ops (`+.`, `==#I` — an Integer is a boxed bignum, so the Int operator
                     // would compare pointers); Int keeps the operator. A USER type dispatches to
@@ -4026,6 +4096,7 @@ impl<'a> Infer<'a> {
             heap_array_elems: Vec::new(),
             integer_lits: std::collections::HashSet::new(),
             user_lits: std::collections::HashMap::new(),
+            f32_lits: std::collections::HashSet::new(),
             synth_shows: synth_show_funcs(&show_needs, &decls),
             where_ret_tys: HashMap::new(),
             where_param_tys: HashMap::new(),
@@ -4165,9 +4236,11 @@ impl<'a> Infer<'a> {
                 }
                 // a bare var at a scalar needs no owning clone (nothing to free)
                 let bare = o.vars.len() == 1 && o.vars[0].1.is_empty();
-                let scalar = bare && repls.first().is_some_and(
-                    |t| matches!(t, Type::Con(n) if matches!(n.as_str(), "Int" | "Float" | "Bool")),
-                );
+                let scalar = bare
+                    && repls.first().is_some_and(|t| {
+                        matches!(t, Type::Con(n)
+                            if matches!(n.as_str(), "Int" | "Float" | "Bool" | "Int32" | "Float32"))
+                    });
                 if !repls.is_empty() && !scalar {
                     class_seeds.push((pi, o.span, o.target.clone(), repls.clone()));
                     seeds.push((plan.name.clone(), o.span, o.target.clone(), repls));
@@ -4251,6 +4324,7 @@ impl<'a> Infer<'a> {
             heap_array_elems: Vec::new(),
             integer_lits: std::collections::HashSet::new(),
             user_lits: std::collections::HashMap::new(),
+            f32_lits: std::collections::HashSet::new(),
             synth_shows: Vec::new(),
             where_ret_tys: HashMap::new(),
             where_param_tys: HashMap::new(),
@@ -4276,6 +4350,8 @@ impl<'a> Infer<'a> {
                 head,
                 "Int"
                     | "Float"
+                    | "Int32"
+                    | "Float32"
                     | "String"
                     | "U8"
                     | "U16"
@@ -4639,12 +4715,18 @@ impl<'a> Infer<'a> {
         match e {
             // Phase 1b: Num-polymorphic literal — a fresh var resolved at the end of
             // inference to `Integer` (→ rewritten `fromInt n`) or defaulted to `Int`.
-            Expr::Int(_, span) => {
+            Expr::Int(n, span) => {
                 let v = self.fresh();
                 self.int_lit_vars.push((*span, v.clone()));
+                self.int_lit_vals.insert(*span, *n);
                 v
             }
-            Expr::Float(_, _) => Ty::Con("Float".into(), vec![]),
+            // `Float`, or `Float32` where one is expected (resolved at the end, like an `Int`)
+            Expr::Float(_, span) => {
+                let v = self.fresh();
+                self.float_lit_vars.push((*span, v.clone()));
+                v
+            }
             Expr::Str(_, _) => Ty::Con("String".into(), vec![]),
             Expr::Var(n, span) => {
                 let ty = match env.get(n) {

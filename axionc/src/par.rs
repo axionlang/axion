@@ -391,6 +391,14 @@ const GPU_BUILTINS: &[&str] = &[
     "le",
     "eq",
     "fromInteger",
+    // 32-bit numbers (`num32.rs`), but not `showFloat32` (a String)
+    "toInt32",
+    "fromInt32",
+    "toFloat32",
+    "fromFloat32",
+    "int32ToFloat32",
+    "truncateF32",
+    "sqrtF32",
 ];
 
 /// The standard operators: primitive on `Int`, `Float` and `Bool` (the prelude defines some of

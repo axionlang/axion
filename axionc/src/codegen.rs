@@ -174,6 +174,7 @@ impl Cg {
             ("axion_par_for", 2, true),
             ("axion_gpu_for", 2, true),
             ("axion_div_zero", 0, false), // an `Int` division by zero (inline check)
+            ("axion_show_float32", 1, true),
             ("axion_contract_fail", 1, true),
             ("axion_i32_new", 2, true),
             ("axion_i32_iota", 1, true),
@@ -697,6 +698,76 @@ impl Fx<'_, '_> {
         Ok(self.builder.block_params(done)[0])
     }
 
+    /// An `i64` wrapped to an `Int32`: its low 32 bits, sign-extended.
+    fn wrap32(&mut self, x: Value) -> Value {
+        let n = self.builder.ins().ireduce(types::I32, x);
+        self.builder.ins().sextend(types::I64, n)
+    }
+    /// A `Float32` (its bits in the low half of the slot) as an `f32`, and back.
+    fn f32_in(&mut self, x: Value) -> Value {
+        let n = self.builder.ins().ireduce(types::I32, x);
+        self.builder.ins().bitcast(types::F32, MemFlags::new(), n)
+    }
+    fn f32_out(&mut self, f: Value) -> Value {
+        let n = self.builder.ins().bitcast(types::I32, MemFlags::new(), f);
+        self.builder.ins().uextend(types::I64, n)
+    }
+
+    /// `Float32` arithmetic and comparisons (`num32.rs`): single precision, rounded once.
+    fn float32_op(&mut self, op: crate::num32::Op, a: Value, b: Value) -> Value {
+        use crate::num32::Op as N;
+        let (x, y) = (self.f32_in(a), self.f32_in(b));
+        if op.is_cmp() {
+            let cc = match op {
+                N::EqF => FloatCC::Equal,
+                N::LtF => FloatCC::LessThan,
+                _ => FloatCC::GreaterThan,
+            };
+            let c = self.builder.ins().fcmp(cc, x, y);
+            return self.builder.ins().uextend(types::I64, c);
+        }
+        let r = match op {
+            N::AddF => self.builder.ins().fadd(x, y),
+            N::SubF => self.builder.ins().fsub(x, y),
+            N::MulF => self.builder.ins().fmul(x, y),
+            _ => self.builder.ins().fdiv(x, y),
+        };
+        self.f32_out(r)
+    }
+
+    /// The 32-bit conversions and math (`num32.rs`).
+    fn num32_unary(&mut self, name: &str, x: Value) -> Value {
+        match name {
+            "toInt32" => self.wrap32(x),
+            "toFloat32" => {
+                let d = self.builder.ins().bitcast(types::F64, MemFlags::new(), x);
+                let f = self.builder.ins().fdemote(types::F32, d);
+                self.f32_out(f)
+            }
+            "fromFloat32" => {
+                let f = self.f32_in(x);
+                let d = self.builder.ins().fpromote(types::F64, f);
+                self.builder.ins().bitcast(types::I64, MemFlags::new(), d)
+            }
+            "int32ToFloat32" => {
+                let n = self.builder.ins().ireduce(types::I32, x);
+                let f = self.builder.ins().fcvt_from_sint(types::F32, n);
+                self.f32_out(f)
+            }
+            // saturating, like `truncate`: NaN is 0
+            "truncateF32" => {
+                let f = self.f32_in(x);
+                let n = self.builder.ins().fcvt_to_sint_sat(types::I32, f);
+                self.builder.ins().sextend(types::I64, n)
+            }
+            _ => {
+                let f = self.f32_in(x);
+                let r = self.builder.ins().sqrt(f);
+                self.f32_out(r)
+            }
+        }
+    }
+
     /// Interna um literal de string como objecto de dados (C-string).
     fn intern(&mut self, s: &str) -> Result<DataId, String> {
         if let Some(id) = self.strings.get(s) {
@@ -1049,6 +1120,19 @@ impl Fx<'_, '_> {
                     "-" => self.builder.ins().isub(a, b),
                     "*" => self.builder.ins().imul(a, b),
                     "div" | "mod" => self.int_div(o == "div", a, b)?,
+                    // `Int32` (`num32.rs`): computed in 64 bits, which two sign-extended 32-bit
+                    // values cannot overflow, then wrapped to 32
+                    o if crate::num32::binop(o).is_some() => {
+                        use crate::num32::Op as N;
+                        let r = match crate::num32::binop(o).ok_or("i32 op")? {
+                            N::AddI => self.builder.ins().iadd(a, b),
+                            N::SubI => self.builder.ins().isub(a, b),
+                            N::MulI => self.builder.ins().imul(a, b),
+                            N::DivI => self.int_div(true, a, b)?,
+                            _ => self.int_div(false, a, b)?,
+                        };
+                        self.wrap32(r)
+                    }
                     "band" | ".&." => self.builder.ins().band(a, b),
                     ".|." => self.builder.ins().bor(a, b),
                     "xor" => self.builder.ins().bxor(a, b),
@@ -1063,6 +1147,11 @@ impl Fx<'_, '_> {
             }
             // float op: bitcast the i64 bit-pattern operands to f64, compute, and
             // bitcast the f64 result back into the i64 ABI slot.
+            Op::PrimF(o, l, r) if crate::num32::binop(o).is_some() => {
+                let a = self.atom(l)?;
+                let b = self.atom(r)?;
+                Ok(self.float32_op(crate::num32::binop(o).ok_or("f32 op")?, a, b))
+            }
             Op::PrimF(o, l, r) => {
                 let a = self.atom(l)?;
                 let b = self.atom(r)?;
@@ -1114,6 +1203,10 @@ impl Fx<'_, '_> {
                 // saturating, like the interpreter (Rust `as`): NaN is 0 and a value out of range
                 // the nearest `Int` (`fcvt_to_sint` traps on both)
                 Ok(self.builder.ins().fcvt_to_sint_sat(types::I64, f))
+            }
+            Op::FloatUnary(o, a) if crate::num32::is_unary(o) => {
+                let x = self.atom(a)?;
+                Ok(self.num32_unary(o, x))
             }
             // unary Float math via native Cranelift IEEE instructions.
             Op::FloatUnary(o, a) => {

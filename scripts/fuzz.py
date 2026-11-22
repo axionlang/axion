@@ -2113,6 +2113,62 @@ def gen_gpu(rng):
             f"  putStrLn ({show} (getArray a1 {rng.randint(0, n - 1)}))"]
     return "\n".join(prog) + "\n"
 
+def gen_num32(rng):
+    """32-bit numbers (docs/numbers32.md): random `Int32` and `Float32` kernels and scalar code —
+    wrapping arithmetic, `div`/`mod` by values that may be zero, single-precision `/`, `sqrtF32`,
+    conversions both ways, comparisons (NaN included) — in a `gpuFor` kernel and on the CPU. Every
+    backend must print the same bits and fail the same way (checked like `gen_gpu`)."""
+    fl = rng.random() < 0.6
+    n = rng.choice([1, 7, 100, 1000, 5000])
+    def iexp(d):
+        r = rng.random()
+        if d <= 0 or r < 0.3:
+            return rng.choice(["(toInt32 i)", "k", "c32", str(rng.randint(0, 9)),
+                               f"({rng.randint(-9, -1)})", "2147483647", "(0 - 2147483647 - 1)"])
+        if r < 0.6:
+            return f"({iexp(d - 1)} {rng.choice(['+', '-', '*'])} {iexp(d - 1)})"
+        if r < 0.7:
+            return f"({iexp(d - 1)} `{rng.choice(['div', 'mod'])}` {rng.choice([iexp(d - 1), str(rng.randint(1, 9))])})"
+        if r < 0.8:
+            return f"(truncateF32 {fexp(d - 1)})"
+        return f"(if {iexp(d - 1)} < {iexp(d - 1)} then {iexp(d - 1)} else {iexp(d - 1)})"
+    def fexp(d):
+        r = rng.random()
+        if d <= 0 or r < 0.3:
+            xf = "x" if fl else "(int32ToFloat32 x)"   # `x` is the element: Float32 or Int32
+            return rng.choice([xf, "cf", "(int32ToFloat32 (toInt32 i))", "0.5", "1.25", "3.0",
+                               "1.0e-3", "(toFloat32 0.1)", f"(int32ToFloat32 {iexp(0)})"])
+        if r < 0.6:
+            return f"({fexp(d - 1)} {rng.choice(['+', '-', '*'])} {fexp(d - 1)})"
+        if r < 0.7:
+            return f"({fexp(d - 1)} / {fexp(d - 1)})"
+        if r < 0.8:
+            return f"(sqrtF32 ({fexp(d - 1)} * {fexp(d - 1)}))"
+        if r < 0.85:
+            return f"(toFloat32 (fromFloat32 {fexp(d - 1)} *. 1.5))"
+        return f"(if {fexp(d - 1)} < {fexp(d - 1)} then {fexp(d - 1)} else {fexp(d - 1)})"
+    elem, zero, summ = (("Float32", "0.0", "sumF") if fl else ("Int32", "0", "sumI"))
+    body = fexp(3) if fl else f"(x + {iexp(3)})"
+    init = "int32ToFloat32 (toInt32 i) * 0.5" if fl else "toInt32 i * 3 - 7"
+    prog = ["-- fuzz:gpu num32",
+            "sumF :: Array Float32 -> Int -> Float32 -> Float32",
+            "sumF a j acc = if j >= lenArray a then acc else sumF a (j + 1) (acc + getArray a j)",
+            "sumI :: Array Int32 -> Int -> Int32 -> Int32",
+            "sumI a j acc = if j >= lenArray a then acc else sumI a (j + 1) (acc + getArray a j)",
+            "k32 :: Int32",
+            f"k32 = {rng.randint(-5, 5)}",
+            "f32 :: Float32",
+            f"f32 = {rng.choice(['0.5', '2.0', '1.0e-3', '3.25'])}",
+            "main :: IO ()", "main = do",
+            f"  let k = toInt32 (strLen \"{'x' * rng.randint(0, 5)}\") + k32",
+            "  let c32 = k * 3",
+            "  let cf = f32 * int32ToFloat32 k",
+            f"  let a0 = parFor (newArray {n} {zero}) (\\i _ -> {init})",
+            f"  let a1 = gpuFor a0 (\\i x -> {body})",
+            f"  putStrLn (show ({summ} a1 0 {zero}))",
+            f"  putStrLn (show (getArray a1 {rng.randint(0, n - 1)}))"]
+    return "\n".join(prog) + "\n"
+
 def check_gpu(prog, src):
     """Every backend prints the same and fails the same way; with a GPU, `--release` uses it."""
     runs = []

@@ -70,6 +70,7 @@ NATIVE=(
   axionc/tests/fixtures/parfor.axi
   axionc/tests/fixtures/contracts.axi
   axionc/tests/fixtures/gpu.axi
+  axionc/tests/fixtures/numbers32.axi
   axionc/tests/fixtures/bits_complement_popcount.axi
   axionc/tests/fixtures/bits_user_complement.axi
   axionc/tests/fixtures/bits_user_ops_prelude.axi
@@ -296,7 +297,7 @@ run_asan() { # <name> <exe> <detect_leaks 0|1> → run under ASan; stderr→$WOR
     local H="$WORK/fffhome"; rm -rf "$H"; mkdir -p "$H/sub"
     : >"$H/a.txt"; : >"$H/b.txt"; printf 'line1\nline2\nline3\n' >"$H/note.txt"
     printf '%b' "$FFF_DRIVE" | HOME="$H" ASAN_OPTIONS=detect_leaks=$3 "$2" "$H" >/dev/null 2>"$WORK/e"
-  elif [ "$1" = gpu ]; then
+  elif [ "$1" = gpu ] || [ "$1" = numbers32 ]; then
     # the CUDA driver maps memory in ASan's shadow gap: without `protect_shadow_gap=0` it fails
     # to start under ASan and the loops quietly run on the CPU. `AXION_GPU=report` names where
     # they ran in the log.

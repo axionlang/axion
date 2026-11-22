@@ -2285,6 +2285,13 @@ pub unsafe extern "C" fn axion_show_float(bits: i64) -> i64 {
     alloc_str(fmt_float(f64::from_bits(bits as u64)).as_bytes())
 }
 
+/// `showFloat32`: the shortest decimal that reads back as the same single (`0.1`, not the
+/// `0.10000000149011612` of the double it widens to). The value is a single's bits in the low half.
+#[no_mangle]
+pub unsafe extern "C" fn axion_show_float32(bits: i64) -> i64 {
+    alloc_str(format!("{}", f32::from_bits(bits as u32)).as_bytes())
+}
+
 /// Shortest round-tripping decimal, exactly as the interpreter shows a `Float` (Rust's `{}`): a
 /// whole float shows without a fractional part (`2`), and negative zero keeps its sign (`-0`; going
 /// through an `i64`, as this once did, printed `0`).
@@ -3297,6 +3304,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_par_for", axion_par_for as *const u8),
         ("axion_gpu_for", axion_gpu_for as *const u8),
         ("axion_div_zero", axion_div_zero as *const u8),
+        ("axion_show_float32", axion_show_float32 as *const u8),
         ("axion_contract_fail", axion_contract_fail as *const u8),
         ("axion_array_set", axion_array_set as *const u8),
         ("axion_array_sum", axion_array_sum as *const u8),

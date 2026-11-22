@@ -789,6 +789,12 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             args: Vec::new(),
         });
     }
+    if let Some((n, _, _)) = crate::num32::BUILTINS.iter().find(|(n, _, _)| *n == name) {
+        return Ok(Value::Builtin {
+            name: n,
+            args: Vec::new(),
+        });
+    }
     match name {
         "otherwise" => Ok(Value::Bool(true)),
         "putStrLn" => Ok(Value::Builtin {
@@ -1743,6 +1749,7 @@ fn is_builtin_op(op: &str) -> bool {
             | ">#I"
     ) || crate::core::is_bitwise_op(op)
         || crate::simd::binop(op).is_some()
+        || crate::num32::binop(op).is_some()
 }
 
 /// A lane-wise binary SIMD operation (`simd::float_lane` / `int_lane`: the backends' semantics).
@@ -1855,6 +1862,22 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
     if let Some((vop, _)) = crate::simd::binop(op) {
         return simd_bin(vop, &a, &b);
     }
+    // 32-bit numbers (`num32.rs`): an `Int32` is a wrapped `Int`, a `Float32` a `Float` that a
+    // single holds exactly
+    if let Some(o) = crate::num32::binop(op) {
+        return match (&a, &b) {
+            (Value::Int(x), Value::Int(y)) if !o.is_float() => crate::num32::int_op(o, *x, *y)
+                .map(Value::Int)
+                .ok_or_else(|| "axion: division by zero".to_string()),
+            (Value::Float(x), Value::Float(y)) if o.is_float() => {
+                Ok(match crate::num32::float_op(o, *x, *y) {
+                    Ok(f) => Value::Float(f),
+                    Err(b) => Value::Bool(b),
+                })
+            }
+            _ => Err(format!("{op}: bad operands")),
+        };
+    }
     use Value::*;
     match (op, a, b) {
         // Int is fixed-width (§ Listing 1.4): arithmetic wraps,
@@ -1933,6 +1956,21 @@ fn run_par_for(prog: &Program, mut args: Vec<Value>) -> Result<Value, RunError> 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
     if let Some(b) = crate::simd::builtin(name) {
         return simd_apply(b, &args);
+    }
+    if crate::num32::is_builtin(name) {
+        use crate::num32::{f32_of, show_f32, wrap32};
+        return match (name, args.as_slice()) {
+            ("toInt32", [Value::Int(x)]) => Ok(Value::Int(wrap32(*x))),
+            ("fromInt32", [Value::Int(x)]) => Ok(Value::Int(*x)),
+            ("toFloat32", [Value::Float(x)]) => Ok(Value::Float(f64::from(*x as f32))),
+            ("fromFloat32", [Value::Float(x)]) => Ok(Value::Float(*x)),
+            ("int32ToFloat32", [Value::Int(x)]) => Ok(Value::Float(f64::from(*x as f32))),
+            // saturating, like `truncate` (NaN is 0)
+            ("truncateF32", [Value::Float(x)]) => Ok(Value::Int(i64::from(f32_of(*x) as i32))),
+            ("sqrtF32", [Value::Float(x)]) => Ok(Value::Float(f64::from(f32_of(*x).sqrt()))),
+            ("showFloat32", [Value::Float(x)]) => Ok(Value::Str(show_f32(f32_of(*x)))),
+            _ => Err(format!("{name}: bad arguments")),
+        };
     }
     // Async-socket ops (docs/async-sockets.md) delegate to the libc socket impls (`net_call_foreign`)
     // — Sock/Listener are i64 fds. `netClose`/`netCloseL` return `()` (the fd is consumed).

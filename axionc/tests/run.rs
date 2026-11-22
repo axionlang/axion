@@ -7801,6 +7801,47 @@ fn malformed_contracts_are_refused() {
 }
 
 #[test]
+fn thirty_two_bit_numbers_give_the_same_bits_everywhere() {
+    // wrapping Int32 arithmetic, single-precision Float32 rounding, conversions, comparisons
+    // with NaN, a Float32 array, and a Float32 GPU kernel
+    let want = "-294967296\n-409399843\n-3 -1\n-2147483648 0\n5 4000000000\n\
+                0.1 0.10000000149011612\n7.4854717\n5 1.4142135\n2147483647 0 -2\n\
+                true false false\n499.49997\n2500226\n";
+    agree_across_backends("numbers32.axi", want);
+    let out = axionc()
+        .arg("--release")
+        .arg(fixture("numbers32.axi"))
+        .env("AXION_GPU", "off")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want, "on the CPU");
+}
+
+#[test]
+fn thirty_two_bit_numbers_do_not_mix_silently() {
+    let out = axionc()
+        .arg(fixture("numbers32_reject.axi"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    for (code, what) in [
+        (
+            "AX0200",
+            "the literal 3000000000 does not fit in an `Int32`",
+        ),
+        ("AX0200", "type mismatch: Int32 vs Int"),
+        ("AX0200", "type mismatch: Float32 vs Int"),
+        ("AX0404", "no instance of `Integral` for `Float32`"),
+    ] {
+        assert!(
+            text.contains(&format!("error[{code}]")) && text.contains(what),
+            "missing {code} `{what}`:\n{text}"
+        );
+    }
+}
+
+#[test]
 fn gpu_kernels_give_the_same_result_on_or_off_the_gpu() {
     let want = "-182.5\n10753840\n3007002\n4032\n714\n0\n1330\n";
     agree_across_backends("gpu.axi", want);

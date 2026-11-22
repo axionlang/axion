@@ -74,12 +74,18 @@ run-time check runs on the GPU as well (see below for what happens when it fails
 
 ## Speed
 
-`Int` and `Float` are 64-bit, and consumer GPUs are slow at 64-bit arithmetic. On a GTX 1650,
-double precision runs at 1/32 of single precision, and 64-bit integer operations are emulated.
-There, a Mandelbrot frame (1024², up to 500 iterations a pixel) takes about 45 ms on the GPU and
-about 45 ms with `parFor` on 8 CPU threads. Starting the GPU (driver initialization and the PTX
-compile) costs about 165 ms once per run. A GPU with full-rate 64-bit arithmetic, or 32-bit
-number types in the language, would change that picture.
+Consumer GPUs are fast at 32-bit arithmetic and slow at 64-bit. On a GTX 1650, double precision
+runs at 1/32 of single precision, and 64-bit integer operations are emulated. So write a GPU
+kernel in [`Float32` and `Int32`](numbers32.md) where 32 bits are enough. A Mandelbrot frame
+(1024², up to 500 iterations a pixel) on that GPU:
+
+| | time per frame |
+|---|---|
+| `parFor`, 8 CPU threads, `Float` or `Float32` | about 51 ms |
+| `gpuFor`, `Float` | about 29 ms |
+| `gpuFor`, `Float32` | about 12 ms |
+
+Starting the GPU (driver initialization and the PTX compile) costs about 165 ms once per run.
 
 Fixtures: `tests/fixtures/gpu.axi`, `gpu_reject.axi`. Fuzzing: `scripts/fuzz.py --only gpu`
 (random integer and float kernels: every backend prints the same bits and fails the same way).

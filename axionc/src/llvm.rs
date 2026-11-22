@@ -183,6 +183,9 @@ declare double @llvm.sqrt.f64(double)
 declare double @llvm.floor.f64(double)
 declare double @llvm.fabs.f64(double)
 declare i64 @llvm.fptosi.sat.i64.f64(double)
+declare i32 @llvm.fptosi.sat.i32.f32(float)
+declare float @llvm.sqrt.f32(float)
+declare i64 @axion_show_float32(i64)
 declare i64 @axion_gpu_for(i64, i64)
 declare i64 @axion_gpu_launch(i64, i64, i64, i64, i64, i64)
 ";
@@ -716,6 +719,8 @@ fn device_ptx(
          declare double @llvm.floor.f64(double)\n\
          declare double @llvm.fabs.f64(double)\n\
          declare i64 @llvm.fptosi.sat.i64.f64(double)\n\
+         declare i32 @llvm.fptosi.sat.i32.f32(float)\n\
+         declare float @llvm.sqrt.f32(float)\n\
          declare void @llvm.trap()\n\
          declare i32 @llvm.nvvm.read.ptx.sreg.tid.x()\n\
          declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()\n\
@@ -1206,13 +1211,13 @@ impl Emit<'_> {
     /// (`axion_div_zero`; a trap on the GPU, where the loop then reruns on the CPU), and
     /// `minBound / -1` wraps (to `minBound`, remainder 0). A plain `sdiv`/`srem` of either is
     /// undefined, which LLVM uses (`k / k` folded to 1 even when `k` is 0).
-    fn int_div(&mut self, div: bool, x: &str, y: &str) -> String {
+    fn int_div(&mut self, div: bool, x: &str, y: &str, ty: &str) -> String {
         // one test for both special divisors (`y + 1 <= 1` unsigned: `y` is 0 or -1), off the
         // common path: a division cannot be speculated, so this stays a predicted branch and the
         // common case is the plain `sdiv`/`srem`
         let (t, special) = (self.val(), self.val());
-        self.ins(&format!("{t} = add i64 {y}, 1"));
-        self.ins(&format!("{special} = icmp ule i64 {t}, 1"));
+        self.ins(&format!("{t} = add {ty} {y}, 1"));
+        self.ins(&format!("{special} = icmp ule {ty} {t}, 1"));
         let (lfast, lslow, lz, lm1, ldone) = (
             self.label("dfast"),
             self.label("dspecial"),
@@ -1225,7 +1230,7 @@ impl Emit<'_> {
         ));
         self.block(&lslow);
         let z = self.val();
-        self.ins(&format!("{z} = icmp eq i64 {y}, 0"));
+        self.ins(&format!("{z} = icmp eq {ty} {y}, 0"));
         self.ins(&format!("br i1 {z}, label %{lz}, label %{lm1}"));
         self.block(&lz);
         if self.gpu.device {
@@ -1238,22 +1243,139 @@ impl Emit<'_> {
         self.block(&lm1);
         let neg = self.val();
         if div {
-            self.ins(&format!("{neg} = sub i64 0, {x}"));
+            self.ins(&format!("{neg} = sub {ty} 0, {x}"));
         } else {
-            self.ins(&format!("{neg} = add i64 0, 0"));
+            self.ins(&format!("{neg} = add {ty} 0, 0"));
         }
         self.ins(&format!("br label %{ldone}"));
         self.block(&lfast);
         let q = self.val();
         let op = if div { "sdiv" } else { "srem" };
-        self.ins(&format!("{q} = {op} i64 {x}, {y}"));
+        self.ins(&format!("{q} = {op} {ty} {x}, {y}"));
         self.ins(&format!("br label %{ldone}"));
         self.block(&ldone);
         let r = self.val();
         self.ins(&format!(
-            "{r} = phi i64 [ {neg}, %{lm1} ], [ {q}, %{lfast} ]"
+            "{r} = phi {ty} [ {neg}, %{lm1} ], [ {q}, %{lfast} ]"
         ));
         r
+    }
+
+    /// An `Int32` (sign-extended in the `i64` slot) as an `i32`, and back.
+    fn i32_in(&mut self, x: &str) -> String {
+        let v = self.val();
+        self.ins(&format!("{v} = trunc i64 {x} to i32"));
+        v
+    }
+    fn i32_out(&mut self, x: &str) -> String {
+        let v = self.val();
+        self.ins(&format!("{v} = sext i32 {x} to i64"));
+        v
+    }
+    /// A `Float32` (its bits in the low half of the slot) as a `float`, and back.
+    fn f32_in(&mut self, x: &str) -> String {
+        let i = self.i32_in(x);
+        let v = self.val();
+        self.ins(&format!("{v} = bitcast i32 {i} to float"));
+        v
+    }
+    fn f32_out(&mut self, x: &str) -> String {
+        let (i, v) = (self.val(), self.val());
+        self.ins(&format!("{i} = bitcast float {x} to i32"));
+        self.ins(&format!("{v} = zext i32 {i} to i64"));
+        v
+    }
+
+    /// `Int32` arithmetic (`num32.rs`), in 32 bits: wrapping, and `div`/`mod` as `Int`'s.
+    fn int32_op(&mut self, op: crate::num32::Op, x: &str, y: &str) -> String {
+        use crate::num32::Op;
+        let (a, b) = (self.i32_in(x), self.i32_in(y));
+        let r = match op {
+            Op::DivI | Op::ModI => self.int_div(op == Op::DivI, &a, &b, "i32"),
+            _ => {
+                let ins = match op {
+                    Op::AddI => "add",
+                    Op::SubI => "sub",
+                    _ => "mul",
+                };
+                let r = self.val();
+                self.ins(&format!("{r} = {ins} i32 {a}, {b}"));
+                r
+            }
+        };
+        self.i32_out(&r)
+    }
+
+    /// `Float32` arithmetic and comparisons (`num32.rs`), in single precision: each operation
+    /// rounded once, a comparison false when an operand is NaN.
+    fn float32_op(&mut self, op: crate::num32::Op, x: &str, y: &str) -> String {
+        use crate::num32::Op;
+        let (a, b) = (self.f32_in(x), self.f32_in(y));
+        if op.is_cmp() {
+            let pred = match op {
+                Op::EqF => "oeq",
+                Op::LtF => "olt",
+                _ => "ogt",
+            };
+            let (c, z) = (self.val(), self.val());
+            self.ins(&format!("{c} = fcmp {pred} float {a}, {b}"));
+            self.ins(&format!("{z} = zext i1 {c} to i64"));
+            return z;
+        }
+        let ins = match op {
+            Op::AddF => "fadd",
+            Op::SubF => "fsub",
+            Op::MulF => "fmul",
+            _ => "fdiv",
+        };
+        let r = self.val();
+        self.ins(&format!("{r} = {ins} float {a}, {b}"));
+        self.f32_out(&r)
+    }
+
+    /// The 32-bit conversions and math (`num32.rs`).
+    fn num32_unary(&mut self, name: &str, x: &str) -> String {
+        match name {
+            "toInt32" => {
+                let i = self.i32_in(x);
+                self.i32_out(&i)
+            }
+            "toFloat32" => {
+                let (d, f) = (self.val(), self.val());
+                self.ins(&format!("{d} = bitcast i64 {x} to double"));
+                self.ins(&format!("{f} = fptrunc double {d} to float"));
+                self.f32_out(&f)
+            }
+            "fromFloat32" => {
+                let f = self.f32_in(x);
+                let (d, z) = (self.val(), self.val());
+                self.ins(&format!("{d} = fpext float {f} to double"));
+                self.ins(&format!("{z} = bitcast double {d} to i64"));
+                z
+            }
+            "int32ToFloat32" => {
+                let i = self.i32_in(x);
+                let f = self.val();
+                self.ins(&format!("{f} = sitofp i32 {i} to float"));
+                self.f32_out(&f)
+            }
+            // saturating, like `truncate`: NaN is 0
+            "truncateF32" => {
+                let f = self.f32_in(x);
+                let i = self.val();
+                self.ins(&format!(
+                    "{i} = call i32 @llvm.fptosi.sat.i32.f32(float {f})"
+                ));
+                self.i32_out(&i)
+            }
+            _ => {
+                // sqrtF32
+                let f = self.f32_in(x);
+                let r = self.val();
+                self.ins(&format!("{r} = call float @llvm.sqrt.f32(float {f})"));
+                self.f32_out(&r)
+            }
+        }
     }
 
     /// Call to a runtime function (`ret` indicates whether it returns a value).
@@ -1550,7 +1672,10 @@ impl Emit<'_> {
                 // a positive constant divisor was wrong for a negative dividend). LLVM
                 // strength-reduces a constant `srem` itself.
                 if o == "div" || o == "mod" {
-                    return Ok(self.int_div(o == "div", &x, &y));
+                    return Ok(self.int_div(o == "div", &x, &y, "i64"));
+                }
+                if let Some(op) = crate::num32::binop(o) {
+                    return Ok(self.int32_op(op, &x, &y));
                 }
                 let (expr, is_cmp) = match o.as_str() {
                     "+" => (format!("add i64 {x}, {y}"), false),
@@ -1590,6 +1715,9 @@ impl Emit<'_> {
             Op::PrimF(o, a, b) => {
                 let x = self.atom(a)?;
                 let y = self.atom(b)?;
+                if let Some(op) = crate::num32::binop(o) {
+                    return Ok(self.float32_op(op, &x, &y));
+                }
                 let (xf, yf) = (self.val(), self.val());
                 self.ins(&format!("{xf} = bitcast i64 {x} to double"));
                 self.ins(&format!("{yf} = bitcast i64 {y} to double"));
@@ -1643,6 +1771,10 @@ impl Emit<'_> {
                 Ok(z)
             }
             // unary Float math via LLVM intrinsics (`@llvm.sqrt.f64`, …).
+            Op::FloatUnary(o, a) if crate::num32::is_unary(o) => {
+                let x = self.atom(a)?;
+                Ok(self.num32_unary(o, &x))
+            }
             Op::FloatUnary(o, a) => {
                 let intr = match o.as_str() {
                     "sqrt" => "llvm.sqrt.f64",
