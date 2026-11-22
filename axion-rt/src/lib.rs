@@ -1797,6 +1797,12 @@ struct ChunkHdr {
 struct Arena {
     cur: *mut ChunkHdr,
 }
+// The --release backend bumps a cell inline with these offsets (axionc `llvm.rs`,
+// `arena_alloc_inline`): a layout change must change it too.
+const _: () = assert!(std::mem::offset_of!(Arena, cur) == 0);
+const _: () = assert!(std::mem::offset_of!(ChunkHdr, cap) == 8);
+const _: () = assert!(std::mem::offset_of!(ChunkHdr, off) == 16);
+const _: () = assert!(std::mem::size_of::<ChunkHdr>() == 24);
 #[repr(C)]
 struct Mark {
     arena: *mut Arena,

@@ -964,6 +964,46 @@ impl Emit<'_> {
         ));
     }
 
+    /// INLINE `allocateCell` (bench `alloc`): the bump of `axion_arena_alloc` for one `CELL_SIZE`
+    /// cell. The runtime is a separately compiled Rust library, so a call per cell cannot be
+    /// inlined by LTO the way the old C runtime's was. The layout is the runtime's (`axion-rt`):
+    /// the arena is `{ cur: *Chunk }` and a chunk `{ prev @0, cap @8, off @16, data @24… }`. A cell
+    /// that fits is `data + off`, and `off` moves past it; a full chunk takes the runtime call,
+    /// which starts a new one.
+    fn arena_alloc_inline(&mut self, arena: &str) -> String {
+        let c = self.load(arena, 0);
+        let off = self.load(&c, 16);
+        let cap = self.load(&c, 8);
+        let next = self.val();
+        self.ins(&format!("{next} = add i64 {off}, {CELL_SIZE}"));
+        let full = self.val();
+        self.ins(&format!("{full} = icmp sgt i64 {next}, {cap}"));
+        let (lfast, lslow, ldone) = (self.label("cfit"), self.label("cfull"), self.label("cdone"));
+        self.ins(&format!(
+            "br i1 {full}, label %{lslow}, label %{lfast}, !prof !{{!\"branch_weights\", i32 1, i32 1000}}"
+        ));
+        self.block(&lfast);
+        let base = self.val();
+        self.ins(&format!("{base} = add i64 {c}, 24"));
+        let p = self.val();
+        self.ins(&format!("{p} = add i64 {base}, {off}"));
+        self.store(&c, 16, &next);
+        self.ins(&format!("br label %{ldone}"));
+        self.block(&lslow);
+        let q = self.rt(
+            "axion_arena_alloc",
+            true,
+            &[arena.to_string(), CELL_SIZE.to_string()],
+        );
+        self.ins(&format!("br label %{ldone}"));
+        self.block(&ldone);
+        let r = self.val();
+        self.ins(&format!(
+            "{r} = phi i64 [ {p}, %{lfast} ], [ {q}, %{lslow} ]"
+        ));
+        r
+    }
+
     /// Call to a runtime function (`ret` indicates whether it returns a value).
     fn rt(&mut self, name: &str, ret: bool, args: &[String]) -> String {
         let a = args
@@ -1568,7 +1608,7 @@ impl Emit<'_> {
             }
             Op::ArenaAlloc(a) => {
                 let av = self.atom(a)?;
-                Ok(self.rt("axion_arena_alloc", true, &[av, CELL_SIZE.to_string()]))
+                Ok(self.arena_alloc_inline(&av))
             }
             Op::Promote(t, c) => {
                 let tv = self.atom(t)?;
