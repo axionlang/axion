@@ -774,6 +774,7 @@ fn empty_module() -> Module {
         level_ceiling: None,
         refinements: Vec::new(),
         bounds_proven: Vec::new(),
+        total: Vec::new(),
     }
 }
 

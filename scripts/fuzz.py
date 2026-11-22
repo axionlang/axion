@@ -1891,6 +1891,57 @@ def gen_simd(rng):
                 f"(splat{name} {lit()}))))")
     return "\n".join(prog) + "\n"
 
+def gen_total(rng):
+    """Totality (axionc/src/total.rs): random counting loops (guards that may be off by one or
+    point the wrong way, steps that may skip a bound or wrap at the largest Int), divisions
+    behind random tests of the divisor, array accesses behind random guards, structural
+    recursion with a missing clause or no progress — every function declared TOTAL, called with
+    extreme arguments. The checker must refuse each one that can loop or abort: an accepted
+    program must finish and return normally on every backend (a hang or a runtime error is a
+    finding)."""
+    big, small = "9223372036854775807", "(0 - 9223372036854775807)"
+    funs, calls, names = [], [], []
+    for k in range(1):   # one function: a refused one would refuse the whole program
+        n = f"t{k}"
+        kind = rng.randint(0, 3)
+        if kind == 0:   # a counting loop
+            cond = rng.choice(["i < n", "i <= n", "i > n", "i >= n", "i /= n", "n > i", "n - i > 0",
+                               "i + 1 < n", "i < n - 1"])
+            step = rng.choice(["i + 1", "i + 1", "i + 2", "i - 1", "i - 2", "i"])
+            funs.append(f"{n} :: Int -> Int -> Int\n{n} i n = if {cond} then {n} ({step}) n else i\n")
+            for a, b in rng.sample([("0", "5"), (f"({big} - 3)", big), (f"({small} + 3)", small),
+                                    ("5", "0"), ("3", "3"), ("(0 - 4)", "7")], 3):
+                calls.append(f"showInt ({n} {a} {b})")
+        elif kind == 1:  # a division
+            test = rng.choice(["b /= 0", "b > 0", "b >= 0", "b == 0", "b < 1", "not (b == 0)",
+                               "b * b > 0", "b + 1 > 1"])
+            then_div = rng.random() < 0.7
+            op = rng.choice(["div", "mod"])
+            body = (f"if {test} then a `{op}` b else 0" if then_div
+                    else f"if {test} then 0 else a `{op}` b")
+            funs.append(f"{n} :: Int -> Int -> Int\n{n} a b = {body}\n")
+            for a, b in rng.sample([("7", "2"), ("7", "0"), (small, "(0 - 1)"), ("5", "(0 - 3)")], 3):
+                calls.append(f"showInt ({n} {a} {b})")
+        elif kind == 2:  # an array access
+            test = rng.choice(["i < lenArray a", "i >= 0 && i < lenArray a", "i >= 0 && i <= lenArray a",
+                               "0 <= i && i + 1 < lenArray a", "i > 0 && i < lenArray a",
+                               "i >= 0 && i < lenArray a - 1"])
+            idx = rng.choice(["i", "i", "i + 1", "i - 1"])
+            funs.append(f"{n} :: Array Int -> Int -> Int\n{n} a i = if {test} then getArray a ({idx}) else 0 - 1\n")
+            for i in rng.sample(["0", "3", "4", "(0 - 1)", big], 3):
+                calls.append(f"showInt ({n} (newArray 4 9) {i})")
+        else:            # structural recursion over a list
+            nil = rng.random() < 0.85
+            rec = rng.choice(["xs", "xs", "Cons x xs", "Cons 1 xs"])
+            arms = ("  Nil -> 0\n" if nil else "") + f"  Cons x xs -> x + {n} ({rec})\n"
+            funs.append(f"{n} :: List Int -> Int\n{n} l = case l of\n{arms}")
+            calls.append(f"showInt ({n} [1, 2, 3])")
+            calls.append(f"showInt ({n} Nil)")
+        names.append(n)
+    body = "\n".join(f"  putStrLn ({c})" for c in calls)
+    return (f"-- fuzz:total\n{{-# TOTAL {' '.join(names)} #-}}\n" + "\n".join(funs)
+            + f"\nmain :: IO ()\nmain = do\n{body}\n")
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.08:
@@ -2076,6 +2127,9 @@ def check(prog, work):
         return ("verdict", f"interp ran but cranelift rejected:\n{ec[-400:]}")
     if ri != 0 and rc == 0:
         return ("verdict", f"cranelift ran but interp rejected:\n{ei[-400:]}")
+    if "fuzz:total" in prog and ri != 0 and "error[" not in (oi + ei):
+        # every function is declared total and was accepted: it must not abort
+        return ("totality", f"an accepted total function failed at run time:\n{(oi + ei)[-400:]}")
     if ri != 0 and rc != 0:
         if "fuzz:locals" in prog:              # every local-function program is well-typed + linear
             return ("gap", f"front end rejected a generated program:\n{(oi + ei)[-600:]}")

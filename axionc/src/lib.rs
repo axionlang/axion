@@ -71,6 +71,7 @@ mod llvm;
 mod parser;
 mod refine;
 mod simd;
+mod total;
 #[cfg(feature = "wasm")]
 mod wasm;
 
@@ -1294,6 +1295,38 @@ pub fn run_cli() -> ExitCode {
 
 /// Runs the front-end (lex → layout → parse → check → infer), accumulating
 /// diagnostics and returning the `free`s inserted by Auto-Drop.
+/// Every name in the source's `{-# TOTAL f g … #-}` pragmas (`total.rs`), each with the span of
+/// the name inside the pragma. The lexer skips pragmas, so they are read off the raw source.
+fn scan_total_pragmas(src: &str) -> Vec<(String, ast::Span)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(rel) = src.get(at..).and_then(|r| r.find("{-#")) {
+        let start = at + rel + 3;
+        let Some(end) = src
+            .get(start..)
+            .and_then(|r| r.find("#-}"))
+            .map(|e| start + e)
+        else {
+            break;
+        };
+        let inner = src.get(start..end).unwrap_or("");
+        let mut words = inner.split_whitespace();
+        if words.next() == Some("TOTAL") {
+            let mut pos = start;
+            for w in words {
+                let off = src
+                    .get(pos..end)
+                    .and_then(|r| r.find(w))
+                    .map_or(pos, |o| pos + o);
+                out.push((w.trim_end_matches(',').to_string(), (off, off + w.len())));
+                pos = off + w.len();
+            }
+        }
+        at = end + 3;
+    }
+    out
+}
+
 /// Scan the raw source for a `{-# LEVEL Ln #-}` pragma (§8) and return the ceiling
 /// `n`. A malformed `{-# LEVEL … #-}` yields a warning and is ignored (no ceiling).
 /// Done here (not in the grammar) because the lexer skips `{-# … #-}` entirely.
@@ -1408,6 +1441,7 @@ pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
     #[cfg(feature = "cst")]
     if let Some(mut module) = cst::parse_module_full(src) {
         module.level_ceiling = scan_level_pragma(src, diags);
+        module.total = scan_total_pragmas(src);
         levels::check_levels(&module, diags);
         return Some(module);
     }
@@ -1447,6 +1481,7 @@ pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
     // the user's *own* declarations — this depends only on this file, so it stays in
     // the memoizable parse stage.
     module.level_ceiling = scan_level_pragma(src, diags);
+    module.total = scan_total_pragmas(src);
     levels::check_levels(&module, diags);
     Some(module)
 }
@@ -1716,6 +1751,9 @@ pub fn prepare_for_check_with(
     // Local functions in `let` → `where`-locals taking their captured variables, so the native
     // backends compile them (see `letlift`).
     letlift::lift_let_functions(&mut module);
+    // Totality (`{-# TOTAL f #-}`, `total.rs`): here, where the batch and the editor pipelines
+    // share the module (before higher-order specialization, which only the batch one does).
+    total::check(&module, diags);
     // Infer `%1` (consumed) ownership for a signature param whose extracted heap
     // element escapes via the result (`head`/`append`/`reverse`) or whose whole heap value
     // is embedded into the result (`pairUp`, Rule A′). Runs BEFORE the linear checker and
@@ -7827,6 +7865,31 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
              function a concrete signature, or keep such values in a List. Scalar\n\
              elements (Int, Float, Bool, Char, field-less `data`) are stored as is. The\n\
              interpreter runs the program unchanged."
+        }
+        "AX0700" => {
+            "AX0700 — a function declared total may not terminate. `{-# TOTAL f #-}` asks\n\
+             the compiler to prove that every recursive call makes something smaller: a\n\
+             value a pattern took apart, or an Int that is >= 0 at the call and decreases\n\
+             (`n - 1` with `n > 0` known), or counts up to a bound (`i + 1` with `i < n`, or\n\
+             `i < strLen s`, `i < lenArray a`). Mutual recursion and lexicographic orders\n\
+             (Ackermann) are found automatically. `i <= n` then `i + 1` is refused: it\n\
+             never stops when n is the largest Int. See docs/totality.md."
+        }
+        "AX0701" => {
+            "AX0701 — a function declared total may fail at run time: a pattern match or\n\
+             clause list that does not cover every value (nested patterns included), guards\n\
+             that may all fail, an array access or SIMD lane not proven in range, a division\n\
+             whose divisor may be zero, or a built-in that does not return normally\n\
+             (`exitWith`, an FFI call). Guard the operation (`if b == 0 then … else a `div` b`,\n\
+             `if i >= 0 && i < lenArray a then …`) or cover the missing patterns."
+        }
+        "AX0702" => {
+            "AX0702 — a function declared total calls one that is not. Everything a total\n\
+             function uses must be total too; the message says why the callee is not.\n\
+             Declare the callee total to see its own errors."
+        }
+        "AX0703" => {
+            "AX0703 — a name in `{-# TOTAL … #-}` is not a top-level function of this module."
         }
         "AX0915" => {
             "AX0915 — a SIMD vector cannot go here natively. A vector (F64x2, F64x4,\n\

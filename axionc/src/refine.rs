@@ -48,7 +48,7 @@ const MAX_CASES: usize = 64;
 
 /// A linear term `Σ coef·atom + c`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Lin {
+pub struct Lin {
     c: i128,
     t: BTreeMap<usize, i128>,
 }
@@ -409,12 +409,19 @@ enum Bind {
     Arr(usize, bool),
     /// anything else (it still shadows a top-level function of the same name)
     Other,
+    /// (totality) a part of the value of a function's structural parameter `id`: the value
+    /// itself, or (`true`) a strict subterm taken apart by a pattern
+    Part(usize, bool),
+    /// (totality) a local function: its node name
+    Local(String),
 }
 
 #[derive(Clone, Default)]
 struct Cx {
     env: HashMap<String, Bind>,
     facts: Vec<Lin>,
+    /// (totality) values known to be non-zero here (`if b == 0 then … else <here>`)
+    ne: Vec<Lin>,
 }
 
 /// A predicate's names, bound for one use: an `Int` term or an array length atom.
@@ -444,6 +451,113 @@ struct Checker<'a> {
     user: HashSet<String>,
     /// every accepted certificate, when collected (`--emit refine-certs`)
     certs: std::cell::RefCell<Option<Vec<Cert>>>,
+    /// totality mode (`total.rs`): what the walk records besides refinement checks
+    tot: Option<TotWalk>,
+}
+
+/// A size-change measure of a function (`total.rs`): an `Int` quantity, which must be `>= 0`
+/// where it strictly decreases, or the structural size of a parameter.
+#[derive(Clone, Debug)]
+#[allow(variant_size_differences)]
+pub enum Measure {
+    /// `Σ k·v + c` over the function's values, with its display text
+    Int(Vec<(i128, MVal)>, i128, String),
+    /// the size of structural parameter `i`
+    Struct(usize),
+}
+
+/// A value an `Int` measure is made of.
+#[derive(Clone, Debug)]
+#[allow(variant_size_differences)]
+pub enum MVal {
+    /// `Int` parameter `i`
+    Param(usize),
+    /// the length of array parameter `i`
+    Len(usize),
+    /// a captured value, fixed where the (local) function is defined
+    Fixed(Lin),
+    /// the length of `String` parameter `i`
+    StrLen(usize),
+}
+
+/// One call inside a recursive group: which measures of the caller relate to which of the
+/// callee, `true` for a strict decrease.
+#[derive(Clone, Debug)]
+pub struct SctCall {
+    pub caller: String,
+    pub callee: String,
+    pub edges: Vec<(usize, usize, bool)>,
+    pub span: Span,
+}
+
+/// A use of a function or built-in by a node (a top-level function, or a local `parent$name`).
+#[derive(Clone, Debug)]
+pub struct TRef {
+    pub from: String,
+    /// a node, or `builtin:<name>` / `partial:<why>`
+    pub to: String,
+    pub span: Span,
+    /// called with at least its parameters (a use as a value otherwise)
+    pub saturated: bool,
+}
+
+#[derive(Clone, Debug)]
+#[allow(variant_size_differences)]
+enum FVal {
+    Int(Lin),
+    Len(usize),
+    /// a structural parameter: its part id and the pattern it was matched with
+    Struct(usize, Pat),
+    None,
+}
+
+struct Frame {
+    node: String,
+    vals: Vec<FVal>,
+    measures: Vec<Measure>,
+}
+
+/// A local function's arity, definition span, and each clause's span and patterns.
+pub type LocalShape = (usize, Span, Vec<(Span, Vec<Pat>)>);
+
+/// The totality walk's inputs, state and findings.
+#[derive(Default)]
+pub struct TotWalk {
+    /// `parent$local` → the local's parameter types (inference)
+    pub where_tys: HashMap<String, Vec<Option<Type>>>,
+    /// top-level function → the id of its (top-level) recursive group
+    pub top_scc: HashMap<String, usize>,
+    /// top-level function → number of parameters its clauses take
+    pub arity: HashMap<String, usize>,
+    /// top-level function → its parameters' names (from its first clause), for messages
+    pub pnames: HashMap<String, Vec<String>>,
+    pub calls: Vec<SctCall>,
+    pub refs: Vec<TRef>,
+    /// node → its measures
+    pub measures: HashMap<String, Vec<Measure>>,
+    /// local node → (arity, definition span, its clauses' patterns)
+    pub locals: HashMap<String, LocalShape>,
+    /// spans of clauses whose guards may all fail
+    pub guards_open: HashSet<Span>,
+    frames: Vec<Frame>,
+    /// a whole `String` value (its part id) → the atom of its length
+    strlen: HashMap<usize, usize>,
+    next_id: usize,
+    cur_top: String,
+    cur_clause: Span,
+}
+
+impl TotWalk {
+    pub fn new(
+        where_tys: HashMap<String, Vec<Option<Type>>>,
+        top_scc: HashMap<String, usize>,
+    ) -> TotWalk {
+        TotWalk {
+            where_tys,
+            top_scc,
+            ..TotWalk::default()
+        }
+    }
 }
 
 fn is_int(t: &Type) -> bool {
@@ -737,6 +851,14 @@ impl Checker<'_> {
                 if !Self::is_global(cx, g) {
                     return None;
                 }
+                if g == "strLen" && args.len() == 1 && self.builtin(cx, g) && self.tot.is_some() {
+                    if let Expr::Var(v, _) = args[0] {
+                        if let Some(Bind::Part(id, false)) = cx.env.get(v) {
+                            let id = *id;
+                            return Some(Lin::atom(self.str_len_atom(id, v)));
+                        }
+                    }
+                }
                 if g == "lenArray" && args.len() == 1 && self.builtin(cx, g) {
                     return self.arr_value(cx, args[0], side).map(Lin::atom);
                 }
@@ -938,9 +1060,17 @@ impl Checker<'_> {
                 if Self::is_global(cx, v) && self.refs.contains_key(v.as_str()) {
                     self.unsaturated(v, *sp);
                 }
+                if self.tot.is_some() {
+                    self.tot_use(cx, v, &[], *sp);
+                }
             }
             Expr::App(_, _, sp) => {
                 let (h, args) = spine(e);
+                if self.tot.is_some() {
+                    if let Expr::Var(g, _) = h {
+                        self.tot_use(cx, g, &args, *sp);
+                    }
+                }
                 match h {
                     Expr::Var(g, hsp) if Self::is_global(cx, g) => {
                         if let Some(rf) = self.refs.get(g.as_str()).copied() {
@@ -952,13 +1082,17 @@ impl Checker<'_> {
                             self.check_access(cx, &args, *sp);
                         }
                     }
+                    Expr::Var(..) if self.tot.is_some() => {}
                     _ => self.walk(cx, h),
                 }
                 for a in args {
                     self.walk(cx, a);
                 }
             }
-            Expr::BinOp(op, a, b, _) => {
+            Expr::BinOp(op, a, b, sp) => {
+                if self.tot.is_some() {
+                    self.tot_binop(cx, op, b, *sp);
+                }
                 self.walk(cx, a);
                 let (t, f) = self.cond(cx, a);
                 let cb = match op.as_str() {
@@ -971,8 +1105,14 @@ impl Checker<'_> {
             Expr::If(c, t, f, _) => {
                 self.walk(cx, c);
                 let (yes, no) = self.cond(cx, c);
-                self.walk(&Self::with_facts(cx, yes), t);
-                self.walk(&Self::with_facts(cx, no), f);
+                let (mut ct, mut cf) = (Self::with_facts(cx, yes), Self::with_facts(cx, no));
+                if self.tot.is_some() {
+                    let (ny, nn) = self.ne_of(cx, c);
+                    ct.ne.extend(ny);
+                    cf.ne.extend(nn);
+                }
+                self.walk(&ct, t);
+                self.walk(&cf, f);
             }
             Expr::Let(fs, body, _) => {
                 let inner = self.bind_locals(cx, fs);
@@ -982,8 +1122,23 @@ impl Checker<'_> {
                 self.walk(cx, scrut);
                 let mut side = Vec::new();
                 let ts = self.term(cx, scrut, &mut side);
+                let part = match &**scrut {
+                    Expr::Var(v, _) => match cx.env.get(v) {
+                        Some(Bind::Part(id, _)) => Some(*id),
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 for (p, body) in arms {
-                    let arm = Self::bind_pat(cx, p, ts.as_ref(), &side);
+                    let mut arm = Self::bind_pat(cx, p, ts.as_ref(), &side);
+                    if let (Some(id), true) = (part, self.tot.is_some()) {
+                        let mut names = Vec::new();
+                        pat_names(p, &mut names);
+                        let whole = matches!(p, Pat::Var(..));
+                        for n in names {
+                            arm.env.insert(n, Bind::Part(id, !whole));
+                        }
+                    }
                     self.walk(&arm, body);
                 }
             }
@@ -1035,12 +1190,20 @@ impl Checker<'_> {
     /// clause's own refinements, true throughout the clause.
     fn bind_locals(&mut self, cx: &Cx, fs: &[Func]) -> Cx {
         let mut inner = cx.clone();
-        for f in fs {
-            inner.env.insert(f.name.clone(), Bind::Other);
+        let nodes: Vec<Option<String>> = fs.iter().map(|f| self.tot_local(f)).collect();
+        for (f, node) in fs.iter().zip(&nodes) {
+            let b = match node {
+                Some(n) => Bind::Local(n.clone()),
+                None => Bind::Other,
+            };
+            inner.env.insert(f.name.clone(), b);
         }
-        for f in fs {
+        for (f, node) in fs.iter().zip(&nodes) {
             let value = f.clauses.len() == 1 && f.clauses[0].pats.is_empty();
             let scope = inner.clone();
+            if let Some(n) = node {
+                self.tot_measures_local(&scope, f, n);
+            }
             for c in &f.clauses {
                 let mut cs = scope.clone();
                 let mut names = Vec::new();
@@ -1048,8 +1211,24 @@ impl Checker<'_> {
                 for n in names {
                     cs.env.insert(n, Bind::Other);
                 }
+                if let Some(n) = node {
+                    let tys = self
+                        .tot
+                        .as_ref()
+                        .and_then(|t| t.where_tys.get(&local_key(n)).cloned())
+                        .unwrap_or_default();
+                    let tys: Vec<Option<Type>> = (0..c.pats.len())
+                        .map(|i| tys.get(i).cloned().flatten())
+                        .collect();
+                    self.tot_enter(&mut cs, n, &c.pats, &tys, c.span);
+                }
                 let cs = self.bind_locals(&cs, &c.wher);
                 self.walk_body(&cs, &c.body);
+                if node.is_some() {
+                    if let Some(t) = self.tot.as_mut() {
+                        t.frames.pop();
+                    }
+                }
             }
             if value {
                 if let Body::Plain(e) = &f.clauses[0].body {
@@ -1072,11 +1251,26 @@ impl Checker<'_> {
             Body::Plain(e) => self.walk(cx, e),
             Body::Guarded(arms) => {
                 let mut cur = cx.clone();
+                let mut closed = false;
                 for (g, r) in arms {
                     self.walk(&cur, g);
                     let (yes, no) = self.cond(&cur, g);
-                    self.walk(&Self::with_facts(&cur, yes), r);
+                    let mut arm = Self::with_facts(&cur, yes);
+                    if self.tot.is_some() {
+                        let (ny, nn) = self.ne_of(&cur, g);
+                        arm.ne.extend(ny);
+                        cur.ne.extend(nn);
+                    }
+                    self.walk(&arm, r);
                     cur.facts.extend(no);
+                    closed = matches!(g, Expr::Var(n, _) if n == "otherwise")
+                        || matches!(g, Expr::Con(c, _) if c == "True");
+                }
+                // totality: may every guard fail (and the clause fall through)?
+                if self.tot.is_some() && !closed && !self.absurd(&cur.facts) {
+                    if let Some(t) = self.tot.as_mut() {
+                        t.guards_open.insert(t.cur_clause);
+                    }
                 }
             }
         }
@@ -1290,8 +1484,27 @@ impl Checker<'_> {
                     }
                 }
             }
+            if self.tot.is_some() {
+                let tys: Vec<Option<Type>> =
+                    (0..c.pats.len()).map(|i| ps.get(i).cloned()).collect();
+                let mut ints: Vec<Option<Lin>> = vec![None; c.pats.len()];
+                let mut lens: Vec<Option<usize>> = vec![None; c.pats.len()];
+                for (i, v) in &pvals {
+                    match v {
+                        PVal::Int(l) if *i < ints.len() => ints[*i] = Some(l.clone()),
+                        PVal::Len(l) if *i < lens.len() => lens[*i] = Some(*l),
+                        _ => {}
+                    }
+                }
+                self.tot_frame_top(&mut cx, f, &c.pats, &tys, &ints, &lens, c.span);
+            }
             let cx = self.bind_locals(&cx, &c.wher);
             self.walk_body(&cx, &c.body);
+            if self.tot.is_some() {
+                if let Some(t) = self.tot.as_mut() {
+                    t.frames.pop();
+                }
+            }
             if let Some(rf) = rf {
                 let res: Vec<&RefinePred> = rf.preds.iter().filter(|p| p.pos == ps.len()).collect();
                 if !res.is_empty() && is_int(&ret) {
@@ -1529,6 +1742,7 @@ pub fn check_with(module: &Module, diags: &mut Diagnostics, collect: bool) -> Ou
         proven: HashSet::new(),
         user: module.funcs.iter().map(|f| f.name.clone()).collect(),
         certs: std::cell::RefCell::new(collect.then(Vec::new)),
+        tot: None,
     };
     // a program with no refinements still gets its provable array accesses
     for f in &module.funcs {
@@ -1615,6 +1829,966 @@ pub fn apply_proven(fns: &mut [crate::core::CoreFn], proven: &[Span]) {
             term(&mut f.body, &set);
         }
     }
+}
+
+// --- totality mode (`total.rs`) ---
+
+/// Built-ins that always return normally: they cannot abort, loop or end the program. Anything
+/// else a total function uses must be proven safe at the use (`getArray`, `div`, SIMD lanes …)
+/// or is partial.
+const TOTAL_BUILTINS: &[&str] = &[
+    "True",
+    "False",
+    "otherwise",
+    "nullPtr",
+    "+",
+    "-",
+    "*",
+    "==",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "/=",
+    "&&",
+    "||",
+    "not",
+    ".&.",
+    ".|.",
+    "xor",
+    "shiftL",
+    "shiftR",
+    "abs",
+    "+.",
+    "-.",
+    "*.",
+    "/.",
+    "<.",
+    ">.",
+    "==.",
+    "sqrt",
+    "floor",
+    "toFloat",
+    "truncate",
+    "intToPtr",
+    "ptrToInt",
+    "handleAddr",
+    "imperative",
+    "showInt",
+    "showFloat",
+    "showInteger",
+    "strAppend",
+    "strLen",
+    "charAt",
+    "substr",
+    "strCmp",
+    "chr",
+    "putStr",
+    "putStrLn",
+    "ePutStr",
+    "ePutStrLn",
+    "fromInt",
+    "getEnv",
+    "runCapture",
+    "runStatus",
+    "execCapture",
+    "execStatus",
+    "readFile",
+    "writeFile",
+    "fileExists",
+    "makeDir",
+    "removeFile",
+    "renameFile",
+    "readDir",
+    "readDirTyped",
+    "readDirListing",
+    "readLine",
+    "readSecret",
+    "readKey",
+    "readKeyTimeout",
+    "resized",
+    "randHex",
+    "getArgs",
+    "getArg",
+    "fileOpenRaw",
+    "fileErrno",
+    "fileSize",
+    "fileRead",
+    "fileClose",
+    "newBuffer",
+    "bufIota",
+    "sumBytes",
+    "bufLen",
+    "bufPtr",
+    "bufPtrN",
+    "free",
+    "newArray",
+    "lenArray",
+    "arrayIota",
+    "arraySum",
+    "newI8Array",
+    "lenI8",
+    "i8Iota",
+    "i8Sum",
+    "newI32Array",
+    "lenI32",
+    "i32Iota",
+    "i32Sum",
+    "newTritVec",
+    "lenTritVec",
+    "tritVecIota",
+    "withArena",
+    "withSubArena",
+    "allocateCell",
+    "promote",
+    "arena_mark",
+    "arena_release",
+    "bound",
+    "spawn",
+    "send",
+    "recv",
+    "newChannel",
+    "select",
+    "offer",
+    "cancel",
+    "close",
+    "join",
+    "split",
+    "connect",
+    "pipe3",
+    "parMap",
+    "++#str",
+    "+#I",
+    "-#I",
+    "*#I",
+    "==#I",
+    "<#I",
+    ">#I",
+];
+
+/// The `parent$name` key inference records a local's types under (a node name without the
+/// `#k` that tells two same-named locals of one function apart).
+fn local_key(node: &str) -> String {
+    node.split('#').next().unwrap_or(node).to_string()
+}
+
+/// The names a function's clauses mention (an over-approximation of its free variables).
+fn mentioned(f: &Func, out: &mut HashSet<String>) {
+    fn expr(e: &Expr, out: &mut HashSet<String>) {
+        match e {
+            Expr::Var(v, _) => {
+                out.insert(v.clone());
+            }
+            Expr::App(a, b, _) | Expr::BinOp(_, a, b, _) => {
+                expr(a, out);
+                expr(b, out);
+            }
+            Expr::If(c, t, f, _) => {
+                expr(c, out);
+                expr(t, out);
+                expr(f, out);
+            }
+            Expr::Let(fs, b, _) => {
+                fs.iter().for_each(|f| mentioned(f, out));
+                expr(b, out);
+            }
+            Expr::Case(s, arms, _) => {
+                expr(s, out);
+                arms.iter().for_each(|(_, b)| expr(b, out));
+            }
+            Expr::Tuple(es, _) => es.iter().for_each(|x| expr(x, out)),
+            Expr::RecordCon(_, fs, _) => fs.iter().for_each(|(_, x)| expr(x, out)),
+            Expr::RecordUpd(b, fs, _) => {
+                expr(b, out);
+                fs.iter().for_each(|(_, x)| expr(x, out));
+            }
+            Expr::Lam(_, b, _) => expr(b, out),
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => {}
+        }
+    }
+    for c in &f.clauses {
+        match &c.body {
+            Body::Plain(e) => expr(e, out),
+            Body::Guarded(arms) => arms.iter().for_each(|(g, r)| {
+                expr(g, out);
+                expr(r, out);
+            }),
+        }
+        c.wher.iter().for_each(|w| mentioned(w, out));
+    }
+}
+
+/// The `Int` measures worth trying for a function: each `Int` parameter `p` (counting down to
+/// 0), `b - p` and `p - b` for another `Int` parameter or captured value `b` (counting up to,
+/// or down to, a bound), and `len a - p` (counting up to an array's length).
+fn int_candidates(ints: &[(usize, String)], bounds: &[(MVal, String)]) -> Vec<Measure> {
+    let mut out = Vec::new();
+    for (p, pn) in ints {
+        out.push(Measure::Int(vec![(1, MVal::Param(*p))], 0, pn.clone()));
+    }
+    for (p, pn) in ints {
+        for (q, qn) in ints {
+            if p != q {
+                out.push(Measure::Int(
+                    vec![(1, MVal::Param(*q)), (-1, MVal::Param(*p))],
+                    0,
+                    format!("{qn} - {pn}"),
+                ));
+            }
+        }
+        for (b, bn) in bounds {
+            out.push(Measure::Int(
+                vec![(1, b.clone()), (-1, MVal::Param(*p))],
+                0,
+                format!("{bn} - {pn}"),
+            ));
+            out.push(Measure::Int(
+                vec![(1, MVal::Param(*p)), (-1, b.clone())],
+                0,
+                format!("{pn} - {bn}"),
+            ));
+        }
+    }
+    out.truncate(48);
+    out
+}
+
+/// What kind of value a parameter of this type is, for measures.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PKind {
+    Int,
+    Arr,
+    Str,
+    Struct,
+}
+
+fn pkind(t: Option<&Type>) -> PKind {
+    match t {
+        Some(t) if is_int(t) => PKind::Int,
+        Some(t) if array_elem_int(t).is_some() => PKind::Arr,
+        Some(Type::Con(c)) if c == "String" => PKind::Str,
+        _ => PKind::Struct,
+    }
+}
+
+fn pat_label(p: Option<&Pat>, i: usize) -> String {
+    match p {
+        Some(Pat::Var(v, _)) => v.clone(),
+        _ => format!("argument {}", i + 1),
+    }
+}
+
+/// Is `e` the structural parameter `id` rebuilt from the parts its pattern `p` took apart?
+fn rebuilds(cx: &Cx, e: &Expr, p: &Pat, id: usize) -> bool {
+    match p {
+        Pat::Var(v, _) => {
+            matches!(e, Expr::Var(w, _) if w == v)
+                && matches!(cx.env.get(v), Some(Bind::Part(a, _)) if *a == id)
+        }
+        Pat::Int(k, _) => matches!(e, Expr::Int(j, _) if j == k),
+        Pat::Tuple(ps, _) => match e {
+            Expr::Tuple(es, _) => {
+                es.len() == ps.len() && es.iter().zip(ps).all(|(x, q)| rebuilds(cx, x, q, id))
+            }
+            _ => false,
+        },
+        Pat::Con(c, ps, _) => {
+            let (h, args) = spine(e);
+            matches!(h, Expr::Con(d, _) if d == c)
+                && args.len() == ps.len()
+                && args.iter().zip(ps).all(|(x, q)| rebuilds(cx, x, q, id))
+        }
+        Pat::Wild(_) | Pat::Str(..) => false,
+    }
+}
+
+impl Checker<'_> {
+    /// (totality) The atom of the length of the whole `String` value `id`.
+    fn str_len_atom(&mut self, id: usize, name: &str) -> usize {
+        if let Some(a) = self.tot.as_ref().and_then(|t| t.strlen.get(&id).copied()) {
+            return a;
+        }
+        let a = self.fresh(&format!("strLen {name}"), 0);
+        if let Some(t) = self.tot.as_mut() {
+            t.strlen.insert(id, a);
+        }
+        a
+    }
+
+    /// (totality) The values a condition shows to be non-zero when it holds and when it fails:
+    /// `a /= b` and the failing `a == b` give `a - b`.
+    fn ne_of(&mut self, cx: &Cx, e: &Expr) -> (Vec<Lin>, Vec<Lin>) {
+        match e {
+            Expr::BinOp(op, a, b, _) if op == "==" || op == "/=" => {
+                let mut side = Vec::new();
+                let d = match (self.term(cx, a, &mut side), self.term(cx, b, &mut side)) {
+                    (Some(x), Some(y)) => x.sub(&y),
+                    _ => None,
+                };
+                match (d, op.as_str()) {
+                    (Some(d), "==") => (Vec::new(), vec![d]),
+                    (Some(d), _) => (vec![d], Vec::new()),
+                    (None, _) => (Vec::new(), Vec::new()),
+                }
+            }
+            Expr::App(f, a, _) if matches!(&**f, Expr::Var(n, _) if n == "not") => {
+                let (y, n) = self.ne_of(cx, a);
+                (n, y)
+            }
+            Expr::If(a, b, f, _) if matches!(&**f, Expr::Con(c, _) if c == "False") => {
+                let (ya, _) = self.ne_of(cx, a);
+                let (yb, _) = self.ne_of(cx, b);
+                (ya.into_iter().chain(yb).collect(), Vec::new())
+            }
+            Expr::If(a, t, b, _) if matches!(&**t, Expr::Con(c, _) if c == "True") => {
+                let (_, na) = self.ne_of(cx, a);
+                let (_, nb) = self.ne_of(cx, b);
+                (Vec::new(), na.into_iter().chain(nb).collect())
+            }
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Facts with no integer solution: the path they hold on is impossible.
+    fn absurd(&self, facts: &[Lin]) -> bool {
+        if facts.is_empty() {
+            return false;
+        }
+        let rows = self.rows_for(facts, facts.to_vec());
+        match refute(&rows) {
+            Some(cert) if check_cert(&cert) => {
+                if let Some(out) = self.certs.borrow_mut().as_mut() {
+                    out.push(cert);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn tot_partial(&mut self, why: &str, sp: Span) {
+        if let Some(t) = self.tot.as_mut() {
+            if let Some(fr) = t.frames.last() {
+                let from = fr.node.clone();
+                t.refs.push(TRef {
+                    from,
+                    to: format!("partial:{why}"),
+                    span: sp,
+                    saturated: true,
+                });
+            }
+        }
+    }
+
+    /// A local function's node name (totality mode), registered with its shape.
+    fn tot_local(&mut self, f: &Func) -> Option<String> {
+        let t = self.tot.as_mut()?;
+        let base = format!("{}${}", t.cur_top, f.name);
+        let mut name = base.clone();
+        let mut k = 1;
+        while t.locals.contains_key(&name) {
+            k += 1;
+            name = format!("{base}#{k}");
+        }
+        let arity = f.clauses.first().map_or(0, |c| c.pats.len());
+        let clauses = f.clauses.iter().map(|c| (c.span, c.pats.clone())).collect();
+        t.locals.insert(name.clone(), (arity, f.span, clauses));
+        Some(name)
+    }
+
+    /// A local function's measures: over its own parameters (typed by inference) and the
+    /// `Int` values and array lengths it captures, fixed where it is defined.
+    fn tot_measures_local(&mut self, scope: &Cx, f: &Func, node: &str) {
+        let Some(t) = self.tot.as_ref() else {
+            return;
+        };
+        let tys = t
+            .where_tys
+            .get(&local_key(node))
+            .cloned()
+            .unwrap_or_default();
+        let arity = f.clauses.first().map_or(0, |c| c.pats.len());
+        let first = f.clauses.first();
+        let mut used = HashSet::new();
+        mentioned(f, &mut used);
+        let mut ints = Vec::new();
+        let mut bounds = Vec::new();
+        let mut structs = Vec::new();
+        for i in 0..arity {
+            let label = pat_label(first.and_then(|c| c.pats.get(i)), i);
+            match pkind(tys.get(i).and_then(Option::as_ref)) {
+                PKind::Int => ints.push((i, label)),
+                PKind::Arr => bounds.push((MVal::Len(i), format!("len {label}"))),
+                PKind::Str => {
+                    bounds.push((MVal::StrLen(i), format!("strLen {label}")));
+                    structs.push(i);
+                }
+                PKind::Struct => structs.push(i),
+            }
+        }
+        let mut names: Vec<&String> = used.iter().collect();
+        names.sort();
+        let strlen_used = used.contains("strLen");
+        let mut fixed = Vec::new();
+        for n in names {
+            match scope.env.get(n) {
+                Some(Bind::Int(l)) => fixed.push((MVal::Fixed(l.clone()), n.clone())),
+                Some(Bind::Arr(l, _)) => {
+                    fixed.push((MVal::Fixed(Lin::atom(*l)), format!("len {n}")));
+                }
+                Some(Bind::Part(id, false)) if strlen_used => {
+                    let a = self.str_len_atom(*id, n);
+                    fixed.push((MVal::Fixed(Lin::atom(a)), format!("strLen {n}")));
+                }
+                _ => {}
+            }
+        }
+        bounds.extend(fixed);
+        let mut ms = int_candidates(&ints, &bounds);
+        ms.extend(structs.into_iter().map(Measure::Struct));
+        if let Some(t) = self.tot.as_mut() {
+            t.measures.insert(node.to_string(), ms);
+        }
+    }
+
+    /// A top-level function's measures, from its signature.
+    fn tot_top_measures(&mut self, g: &str) -> Vec<Measure> {
+        if let Some(ms) = self.tot.as_ref().and_then(|t| t.measures.get(g)) {
+            return ms.clone();
+        }
+        let arity = self
+            .tot
+            .as_ref()
+            .and_then(|t| t.arity.get(g).copied())
+            .unwrap_or(0);
+        let ps = self
+            .sigs
+            .get(g)
+            .map(|(ps, _)| ps.clone())
+            .unwrap_or_default();
+        let mut ints = Vec::new();
+        let mut bounds = Vec::new();
+        let mut structs = Vec::new();
+        let pn = self
+            .tot
+            .as_ref()
+            .and_then(|t| t.pnames.get(g).cloned())
+            .unwrap_or_default();
+        for i in 0..arity {
+            let label = pn
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("argument {}", i + 1));
+            match pkind(ps.get(i)) {
+                PKind::Int => ints.push((i, label)),
+                PKind::Arr => bounds.push((MVal::Len(i), format!("len {label}"))),
+                PKind::Str => {
+                    bounds.push((MVal::StrLen(i), format!("strLen {label}")));
+                    structs.push(i);
+                }
+                PKind::Struct => structs.push(i),
+            }
+        }
+        let mut ms = int_candidates(&ints, &bounds);
+        ms.extend(structs.into_iter().map(Measure::Struct));
+        if let Some(t) = self.tot.as_mut() {
+            t.measures.insert(g.to_string(), ms.clone());
+        }
+        ms
+    }
+
+    /// Binds a clause's parameters for the totality walk and opens its frame.
+    fn tot_enter(&mut self, cs: &mut Cx, node: &str, pats: &[Pat], tys: &[Option<Type>], sp: Span) {
+        let mut vals = Vec::new();
+        for (i, p) in pats.iter().enumerate() {
+            let v = match pkind(tys.get(i).and_then(Option::as_ref)) {
+                PKind::Int => {
+                    let l = match p {
+                        Pat::Int(k, _) => Lin::konst(i128::from(*k)),
+                        _ => Lin::atom(self.fresh(&pat_label(Some(p), i), MIN)),
+                    };
+                    if let Pat::Var(v, _) = p {
+                        cs.env.insert(v.clone(), Bind::Int(l.clone()));
+                    }
+                    FVal::Int(l)
+                }
+                PKind::Arr => {
+                    let l = self.fresh(&format!("len {}", pat_label(Some(p), i)), 0);
+                    if let Pat::Var(v, _) = p {
+                        let int_elems = tys
+                            .get(i)
+                            .and_then(Option::as_ref)
+                            .and_then(array_elem_int)
+                            .unwrap_or(false);
+                        cs.env.insert(v.clone(), Bind::Arr(l, int_elems));
+                    }
+                    FVal::Len(l)
+                }
+                PKind::Str | PKind::Struct => self.tot_struct_param(cs, p),
+            };
+            vals.push(v);
+        }
+        if let Some(t) = self.tot.as_mut() {
+            let measures = t.measures.get(node).cloned().unwrap_or_default();
+            t.cur_clause = sp;
+            t.frames.push(Frame {
+                node: node.to_string(),
+                vals,
+                measures,
+            });
+        }
+    }
+
+    /// A structural parameter: its value is part `id` (itself), and what its pattern takes
+    /// apart is a strict part of it.
+    fn tot_struct_param(&mut self, cs: &mut Cx, p: &Pat) -> FVal {
+        let Some(t) = self.tot.as_mut() else {
+            return FVal::None;
+        };
+        t.next_id += 1;
+        let id = t.next_id;
+        match p {
+            Pat::Var(v, _) => {
+                cs.env.insert(v.clone(), Bind::Part(id, false));
+            }
+            _ => {
+                let mut names = Vec::new();
+                pat_names(p, &mut names);
+                for n in names {
+                    cs.env.insert(n, Bind::Part(id, true));
+                }
+            }
+        }
+        FVal::Struct(id, p.clone())
+    }
+
+    /// Opens a top-level clause's frame (totality mode); `ints`/`lens` are the values
+    /// `check_func` already gave its `Int` and array parameters.
+    #[allow(clippy::too_many_arguments)]
+    fn tot_frame_top(
+        &mut self,
+        cx: &mut Cx,
+        f: &Func,
+        pats: &[Pat],
+        tys: &[Option<Type>],
+        ints: &[Option<Lin>],
+        lens: &[Option<usize>],
+        sp: Span,
+    ) {
+        if let Some(t) = self.tot.as_mut() {
+            t.cur_top = f.name.clone();
+        }
+        let measures = self.tot_top_measures(&f.name);
+        let mut vals = Vec::new();
+        for (i, p) in pats.iter().enumerate() {
+            let v = match pkind(tys.get(i).and_then(Option::as_ref)) {
+                PKind::Int => ints[i].clone().map_or(FVal::None, FVal::Int),
+                PKind::Arr => lens[i].map_or(FVal::None, FVal::Len),
+                PKind::Str | PKind::Struct => self.tot_struct_param(cx, p),
+            };
+            vals.push(v);
+        }
+        if let Some(t) = self.tot.as_mut() {
+            t.cur_clause = sp;
+            t.frames.push(Frame {
+                node: f.name.clone(),
+                vals,
+                measures,
+            });
+        }
+    }
+
+    /// A use of `g` (applied to `args`) in totality mode.
+    fn tot_use(&mut self, cx: &Cx, g: &str, args: &[&Expr], sp: Span) {
+        let Some(t) = self.tot.as_ref() else {
+            return;
+        };
+        let Some(from) = t.frames.last().map(|f| f.node.clone()) else {
+            return;
+        };
+        let (node, arity) = match cx.env.get(g) {
+            Some(Bind::Local(n)) => (n.clone(), t.locals.get(n).map_or(0, |l| l.0)),
+            Some(_) => return, // a parameter or local value: calling a function argument
+            None if self.user.contains(g) => (g.to_string(), t.arity.get(g).copied().unwrap_or(0)),
+            None => {
+                self.tot_builtin(cx, g, args, sp);
+                return;
+            }
+        };
+        let saturated = args.len() >= arity;
+        let same_group = node.starts_with(&format!("{}$", t.cur_top))
+            || node == t.cur_top
+            || match (t.top_scc.get(&node), t.top_scc.get(&t.cur_top)) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            };
+        if let Some(t) = self.tot.as_mut() {
+            t.refs.push(TRef {
+                from,
+                to: node.clone(),
+                span: sp,
+                saturated,
+            });
+        }
+        if saturated && same_group {
+            self.tot_edges(cx, &node, &args[..arity], sp);
+        }
+    }
+
+    /// A built-in used by a total function: always total, total when proven safe here, or
+    /// partial.
+    fn tot_builtin(&mut self, cx: &Cx, g: &str, args: &[&Expr], sp: Span) {
+        if TOTAL_BUILTINS.contains(&g) {
+            return;
+        }
+        if let Some(b) = crate::simd::builtin(g) {
+            use crate::simd::{Builtin, VOp};
+            let n = crate::simd::builtin_ty(b).n() as i128;
+            let ok = match b {
+                Builtin::Op(VOp::Lane, _) => {
+                    args.len() >= 2 && {
+                        let mut side = Vec::new();
+                        match self.term(cx, args[1], &mut side) {
+                            Some(i) => {
+                                let mut facts = cx.facts.clone();
+                                facts.extend(side);
+                                let hi = Lin::konst(n - 1).sub(&i);
+                                hi.is_some_and(|hi| {
+                                    self.prove(
+                                        &facts,
+                                        &Formula::And(vec![Formula::Ge(i), Formula::Ge(hi)]),
+                                    )
+                                })
+                            }
+                            None => false,
+                        }
+                    }
+                }
+                Builtin::Load(_) | Builtin::Store(_) => {
+                    args.len() >= 2 && {
+                        let mut side = Vec::new();
+                        match (
+                            self.arr_value(cx, args[0], &mut side),
+                            self.term(cx, args[1], &mut side),
+                        ) {
+                            (Some(len), Some(i)) => {
+                                let mut facts = cx.facts.clone();
+                                facts.extend(side);
+                                let hi =
+                                    Lin::atom(len).sub(&i).and_then(|d| d.add(&Lin::konst(-n)));
+                                hi.is_some_and(|hi| {
+                                    self.prove(
+                                        &facts,
+                                        &Formula::And(vec![Formula::Ge(i), Formula::Ge(hi)]),
+                                    )
+                                })
+                            }
+                            _ => false,
+                        }
+                    }
+                }
+                Builtin::Op(..) => true,
+            };
+            if !ok {
+                self.tot_partial(&format!("`{g}` here may index out of range"), sp);
+            }
+            return;
+        }
+        match g {
+            "getArray" | "setArray" => {
+                let want = if g == "getArray" { 2 } else { 3 };
+                if args.len() >= want {
+                    self.check_access(cx, args, sp);
+                }
+                if !self.proven.contains(&sp) {
+                    self.tot_partial("this array access may be out of bounds", sp);
+                }
+            }
+            "div" | "mod" | "rem" if args.len() >= 2 => self.tot_nonzero(cx, args[1], sp),
+            "exitWith" => self.tot_partial("`exitWith` ends the program", sp),
+            _ => self.tot_partial(&format!("`{g}` is not known to return normally"), sp),
+        }
+    }
+
+    /// A built-in operator in totality mode: a division must have a non-zero divisor.
+    fn tot_binop(&mut self, cx: &Cx, op: &str, b: &Expr, sp: Span) {
+        match op {
+            "div" | "mod" | "rem" | "/" => self.tot_nonzero(cx, b, sp),
+            "div#I" | "mod#I" if !matches!(b, Expr::Int(k, _) if *k != 0) => {
+                self.tot_partial("this `Integer` division's divisor may be zero", sp);
+            }
+            "++" => {
+                if let Some(from) = self
+                    .tot
+                    .as_ref()
+                    .and_then(|t| t.frames.last())
+                    .map(|f| f.node.clone())
+                {
+                    if let Some(t) = self.tot.as_mut() {
+                        t.refs.push(TRef {
+                            from,
+                            to: "append".into(),
+                            span: sp,
+                            saturated: true,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn tot_nonzero(&mut self, cx: &Cx, d: &Expr, sp: Span) {
+        if matches!(d, Expr::Int(k, _) if *k != 0) {
+            return;
+        }
+        let mut side = Vec::new();
+        let ok = match self.term(cx, d, &mut side) {
+            Some(t)
+                if cx
+                    .ne
+                    .iter()
+                    .any(|n| *n == t || Some(n.clone()) == t.scale(-1)) =>
+            {
+                true
+            }
+            Some(t) => {
+                let mut facts = cx.facts.clone();
+                facts.extend(side);
+                let pos = t.add(&Lin::konst(-1));
+                let neg = Lin::konst(-1).sub(&t);
+                match (pos, neg) {
+                    (Some(p), Some(n)) => {
+                        self.prove(&facts, &Formula::Or(vec![Formula::Ge(p), Formula::Ge(n)]))
+                    }
+                    _ => false,
+                }
+            }
+            None => false,
+        };
+        if !ok {
+            self.tot_partial(&format!("the divisor `{}` may be zero", show(d)), sp);
+        }
+    }
+
+    /// The size-change graph of a call to `callee` (in the caller's recursive group): which
+    /// caller measures the callee's measures are below (strictly) or not above.
+    fn tot_edges(&mut self, cx: &Cx, callee: &str, args: &[&Expr], sp: Span) {
+        let Some(fr) = self.tot.as_ref().and_then(|t| t.frames.last()) else {
+            return;
+        };
+        let from_node = fr.node.clone();
+        let caller_vals = fr.vals.clone();
+        let caller_ms = fr.measures.clone();
+        // the length atoms of the from_node's String parameters
+        let mut flens: HashMap<usize, usize> = HashMap::new();
+        for (i, v) in caller_vals.iter().enumerate() {
+            if let FVal::Struct(id, _) = v {
+                let wanted = caller_ms.iter().any(|m| {
+                    matches!(m, Measure::Int(ts, _, _) if ts.iter().any(|(_, x)| matches!(x, MVal::StrLen(k) if *k == i)))
+                });
+                if wanted {
+                    flens.insert(i, self.str_len_atom(*id, ""));
+                }
+            }
+        }
+        let cms = if callee.contains('$') && !self.user.contains(callee) {
+            self.tot
+                .as_ref()
+                .and_then(|t| t.measures.get(callee).cloned())
+                .unwrap_or_default()
+        } else {
+            self.tot_top_measures(callee)
+        };
+        let mut side = Vec::new();
+        let mut aint: HashMap<usize, Option<Lin>> = HashMap::new();
+        let mut alen: HashMap<usize, Option<usize>> = HashMap::new();
+        let eval_caller = |m: &[(i128, MVal)], c: i128| -> Option<Lin> {
+            let mut acc = Lin::konst(c);
+            for (k, v) in m {
+                let x = match v {
+                    MVal::Param(i) => match caller_vals.get(*i) {
+                        Some(FVal::Int(l)) => l.clone(),
+                        _ => return None,
+                    },
+                    MVal::Len(i) => match caller_vals.get(*i) {
+                        Some(FVal::Len(l)) => Lin::atom(*l),
+                        _ => return None,
+                    },
+                    MVal::Fixed(l) => l.clone(),
+                    MVal::StrLen(i) => Lin::atom(*flens.get(i)?),
+                };
+                acc = acc.add(&x.scale(*k)?)?;
+            }
+            Some(acc)
+        };
+        let mut cvals: Vec<Option<Lin>> = Vec::new();
+        for m in &cms {
+            let v = match m {
+                Measure::Int(terms, c, _) => {
+                    let mut acc = Some(Lin::konst(*c));
+                    for (k, v) in terms {
+                        let x = match v {
+                            MVal::Param(i) => {
+                                if !aint.contains_key(i) {
+                                    let t = args.get(*i).and_then(|a| self.term(cx, a, &mut side));
+                                    aint.insert(*i, t);
+                                }
+                                aint[i].clone()
+                            }
+                            MVal::Len(i) => {
+                                if !alen.contains_key(i) {
+                                    let l =
+                                        args.get(*i).and_then(|a| self.arr_value(cx, a, &mut side));
+                                    alen.insert(*i, l);
+                                }
+                                alen[i].map(Lin::atom)
+                            }
+                            MVal::Fixed(l) => Some(l.clone()),
+                            MVal::StrLen(i) => match args.get(*i) {
+                                Some(Expr::Var(v, _)) => match cx.env.get(v) {
+                                    Some(Bind::Part(id, false)) => {
+                                        let id = *id;
+                                        Some(Lin::atom(self.str_len_atom(id, v)))
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            },
+                        };
+                        acc = match (acc, x) {
+                            (Some(a), Some(x)) => x.scale(*k).and_then(|xs| a.add(&xs)),
+                            _ => None,
+                        };
+                    }
+                    acc
+                }
+                Measure::Struct(_) => None,
+            };
+            cvals.push(v);
+        }
+        let mut facts = cx.facts.clone();
+        facts.extend(side);
+        let diagonal = from_node == callee || caller_ms.len() * cms.len() > 400;
+        let mut edges = Vec::new();
+        for (i, mi) in caller_ms.iter().enumerate() {
+            for (j, mj) in cms.iter().enumerate() {
+                if diagonal && i != j {
+                    continue;
+                }
+                match (mi, mj) {
+                    (Measure::Int(ti, ci, _), Measure::Int(..)) => {
+                        let (Some(vi), Some(vj)) = (eval_caller(ti, *ci), cvals[j].clone()) else {
+                            continue;
+                        };
+                        if vi == vj {
+                            edges.push((i, j, false));
+                            continue;
+                        }
+                        let strict = vi
+                            .sub(&vj)
+                            .and_then(|d| d.add(&Lin::konst(-1)))
+                            .is_some_and(|d| {
+                                self.prove(
+                                    &facts,
+                                    &Formula::And(vec![Formula::Ge(vi.clone()), Formula::Ge(d)]),
+                                )
+                            });
+                        if strict {
+                            edges.push((i, j, true));
+                        } else if vi
+                            .sub(&vj)
+                            .is_some_and(|d| self.prove(&facts, &Formula::Ge(d)))
+                        {
+                            edges.push((i, j, false));
+                        }
+                    }
+                    (Measure::Struct(pi), Measure::Struct(pj)) => {
+                        let Some(FVal::Struct(id, pat)) = caller_vals.get(*pi) else {
+                            continue;
+                        };
+                        let Some(arg) = args.get(*pj) else {
+                            continue;
+                        };
+                        if let Expr::Var(v, _) = arg {
+                            if let Some(Bind::Part(aid, strict)) = cx.env.get(v) {
+                                if aid == id {
+                                    edges.push((i, j, *strict));
+                                    continue;
+                                }
+                            }
+                        }
+                        // the parameter rebuilt from its own pattern's parts: the same size
+                        if rebuilds(cx, arg, pat, *id) {
+                            edges.push((i, j, false));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(t) = self.tot.as_mut() {
+            t.calls.push(SctCall {
+                caller: from_node,
+                callee: callee.to_string(),
+                edges,
+                span: sp,
+            });
+        }
+    }
+}
+
+/// The totality walk (`total.rs`) over the `needed` top-level functions of `module`: every
+/// use of a function or built-in, every partial operation, and the size-change graph of every
+/// call inside a recursive group.
+pub fn total_walk(module: &Module, needed: &HashSet<String>, mut tw: TotWalk) -> TotWalk {
+    let mut sigs = HashMap::new();
+    for f in &module.funcs {
+        if let Some(s) = &f.sig {
+            sigs.insert(f.name.clone(), split_sig(s));
+        }
+        tw.arity.insert(
+            f.name.clone(),
+            f.clauses.first().map_or(0, |c| c.pats.len()),
+        );
+        let names = f.clauses.first().map_or(Vec::new(), |c| {
+            c.pats
+                .iter()
+                .enumerate()
+                .map(|(i, p)| pat_label(Some(p), i))
+                .collect()
+        });
+        tw.pnames.insert(f.name.clone(), names);
+    }
+    let mut scratch = Diagnostics::default();
+    let mut refs: HashMap<String, &Refinement> = HashMap::new();
+    for rf in &module.refinements {
+        let Some((ps, _)) = sigs.get(&rf.func) else {
+            continue;
+        };
+        if rf
+            .preds
+            .iter()
+            .all(|p| well_formed(rf, p, ps, &mut scratch))
+            && !rf.preds.is_empty()
+        {
+            refs.insert(rf.func.clone(), rf);
+        }
+    }
+    let mut ck = Checker {
+        refs,
+        sigs,
+        atoms: Vec::new(),
+        diags: &mut scratch,
+        proven: HashSet::new(),
+        user: module.funcs.iter().map(|f| f.name.clone()).collect(),
+        certs: std::cell::RefCell::new(None),
+        tot: Some(tw),
+    };
+    for f in module.funcs.iter().filter(|f| needed.contains(&f.name)) {
+        ck.check_func(f);
+    }
+    ck.tot.take().unwrap_or_default()
 }
 
 #[cfg(test)]

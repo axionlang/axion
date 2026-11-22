@@ -2801,6 +2801,7 @@ fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
         level_ceiling: None,
         refinements,
         bounds_proven: Vec::new(),
+        total: Vec::new(),
     };
     for decl in cst.children() {
         match decl.kind() {

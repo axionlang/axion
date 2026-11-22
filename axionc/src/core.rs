@@ -3604,6 +3604,7 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         level_ceiling: module.level_ceiling,
         refinements: module.refinements.clone(),
         bounds_proven: module.bounds_proven.clone(),
+        total: module.total.clone(),
     }
 }
 

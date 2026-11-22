@@ -7715,3 +7715,48 @@ fn simd_vector_in_a_tuple_is_rejected_natively() {
         );
     }
 }
+
+#[test]
+fn total_functions_are_proven_and_run() {
+    // counting loops, structural and lexicographic recursion, mutual recursion, String scans,
+    // guarded divisions and array accesses, prelude higher-order functions: all proven total
+    agree_across_backends("total.axi", "180\n21\n3\n20\nsame\n");
+}
+
+#[test]
+fn functions_that_are_not_total_are_refused() {
+    let out = axionc().arg(fixture("total_reject.axi")).output().unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    for (code, what) in [
+        (
+            "AX0700",
+            "`spin` is declared total, but cannot show that the recursion",
+        ),
+        ("AX0700", "`upTo` is declared total"),
+        (
+            "AX0701",
+            "`firstJust` is declared total, but this pattern match",
+        ),
+        ("AX0701", "`sign` is declared total, but its clauses"),
+        ("AX0702", "`quit` is declared total, but it calls `die`"),
+        ("AX0702", "`useSpin` is declared total, but it calls `spin`"),
+        (
+            "AX0701",
+            "`half` is declared total, but the divisor `b` may be zero",
+        ),
+        ("AX0701", "`sel` is declared total, but its clauses"),
+        (
+            "AX0700",
+            "`selfApply` is used as a value inside its own recursion",
+        ),
+        ("AX0701", "`floatGuard` is declared total"),
+        ("AX0700", "`floatLoop` is declared total"),
+    ] {
+        assert!(
+            text.contains(&format!("error[{code}]")) && text.contains(what),
+            "missing {code} `{what}`:\n{text}"
+        );
+    }
+    assert_eq!(text.matches("error[AX070").count(), 11, "{text}");
+}

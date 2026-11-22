@@ -36,13 +36,17 @@ as JSON and are explainable via `axion --explain AXnnnn`.
 | `AX0600` | Refinements | A call's refined argument (or a function's refined result) is not proven from what is known there | **enforced by `axionc`** |
 | `AX0601` | Refinements | An ill-formed refinement: not an `Int`, an unknown name, `len` of a non-array, or outside the predicate language | **enforced by `axionc`** |
 | `AX0602` | Refinements | A function with refined parameters used without the arguments its refinements mention (as a value, partially applied) | **enforced by `axionc`** |
+| `AX0700` | Totality | A function declared `{-# TOTAL f #-}` may not terminate: some cycle of recursive calls makes nothing smaller (see [`totality.md`](totality.md)) | **enforced by `axionc`** |
+| `AX0701` | Totality | A function declared total may fail at run time: incomplete patterns or guards, an array access/lane not proven in range, a divisor that may be zero, `exitWith`, an FFI call | **enforced by `axionc`** |
+| `AX0702` | Totality | A function declared total calls one that is not total | **enforced by `axionc`** |
+| `AX0703` | Totality | A name in a `TOTAL` pragma is not a top-level function of the module | **enforced by `axionc`** |
 | `AX0915` | Native build | A SIMD vector (`F64x4`, …) used where natively only a 64-bit slot fits: a tuple/record/constructor field, a closure capture, an argument or result of a function value, the result of `main` (see [`simd.md`](simd.md)). The interpreter runs the program | **enforced by `axionc`** (native builds) |
 
 The ownership errors (`AX0001`, `AX0002`, `AX0004`, `AX0007`, and the native-build `AX0910`,
 `AX0911`, `AX0912`, `AX0914`) print the rule of [`spec.md`](spec.md) they enforce.
 
 Next free per band — language: `AX0008`; front-end: `AX0102`; types: `AX0204`;
-channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`; refinements: `AX0603`.
+channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`; refinements: `AX0603`; totality: `AX0704`.
 
 **`AX03xx` channels and session types (Phase 3).** The §17 band for the session
 calculus (see [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Enforced:

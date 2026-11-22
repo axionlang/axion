@@ -168,6 +168,7 @@ fn build_module(items: Vec<TopItem>) -> Module {
         level_ceiling: None, // filled from the source pragma in main.rs
         refinements: asm.refinements,
         bounds_proven: Vec::new(),
+        total: Vec::new(),
     }
 }
 

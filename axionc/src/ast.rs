@@ -554,6 +554,8 @@ pub struct Module {
     /// Spans of the `getArray`/`setArray` applications `refine::check` proved in bounds; the
     /// native lowering emits them without their bounds check (`refine::apply_proven`).
     pub bounds_proven: Vec<Span>,
+    /// Functions declared total by `{-# TOTAL f g #-}` (`total.rs`), with the pragma's span.
+    pub total: Vec<(String, Span)>,
 }
 
 /// The refinements of one top-level signature:

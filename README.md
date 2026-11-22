@@ -140,6 +140,7 @@ More detail in [`docs/backend.md`](docs/backend.md) and the phase docs.
 | [`docs/ownership.md`](docs/ownership.md) | **The ownership model** in one page — what is freed for you (data), what you must consume (resources), typestate, error paths, effects, and how it compares with Rust. |
 | [`docs/spec.md`](docs/spec.md) | **The ownership rules**, numbered (R1–R19), each pinned by a fixture; ownership errors cite them (`= rule: R5`). |
 | [`docs/refinements.md`](docs/refinements.md) | **Integer refinements**: `{i:Int \| 0 <= i && i < len a}` in a signature, proven at every call; proven array accesses lose their bounds check. |
+| [`docs/totality.md`](docs/totality.md) | **Totality**: `{-# TOTAL f #-}` proves `f` terminates (size-change, with certificate-checked arithmetic) and cannot abort (patterns, guards, bounds, divisors). |
 | [`docs/simd.md`](docs/simd.md) | **SIMD vector types**: `F64x4`, `I64x4`, … as plain values in vector registers, lane-wise operators, range-checked vector loads/stores. |
 | [`docs/`](docs/) | Grammar, [error codes](docs/error-codes.md), [backend](docs/backend.md), [benchmarks](docs/benchmarks.md), [session calculus](docs/phase-3-calculus.md), phase checklists. |
 | [`scripts/`](scripts/) | `sanitize.sh` (ASan/LSan), `differential.sh` (GHC oracle), `bench.sh`. |
