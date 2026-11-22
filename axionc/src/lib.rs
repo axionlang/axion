@@ -70,6 +70,7 @@ mod lexer;
 mod llvm;
 mod parser;
 mod refine;
+mod simd;
 #[cfg(feature = "wasm")]
 mod wasm;
 
@@ -977,6 +978,22 @@ pub fn run_cli() -> ExitCode {
             &analysis.where_param_tys,
             fuse,
         );
+        // SIMD vectors have their own representation natively (`simd.rs`): one stored where only
+        // a 64-bit slot fits (a tuple/record field, a closure capture, …) cannot compile.
+        if let Err((msg, span)) = simd::analyze(&lowered.fns, "main") {
+            let d = Diagnostic::error("AX0915", msg)
+                .label(span.0, span.1, "a vector cannot go here natively")
+                .with_help(
+                    "a SIMD vector (F64x4, …) is passed in vector registers, not as one 64-bit \
+                     value, so natively it can be a variable, an argument or a result, but not a \
+                     field of a tuple, record or constructor, a closure capture, an argument of \
+                     a function value, or the result of `main`. Keep its lanes in the data \
+                     structure instead (`storeF64x4` into an `Array Float`, or the `Float`s \
+                     themselves). The interpreter (`axionc <file>`) runs this program as is.",
+                );
+            eprint!("{}", d.render(&path, &src, &lines));
+            return ExitCode::FAILURE;
+        }
         let all = verify::verify(&lowered);
         let corruption: Vec<_> = all.iter().filter(|f| f.cat.is_corruption()).collect();
         if !corruption.is_empty() {
@@ -7810,6 +7827,17 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
              function a concrete signature, or keep such values in a List. Scalar\n\
              elements (Int, Float, Bool, Char, field-less `data`) are stored as is. The\n\
              interpreter runs the program unchanged."
+        }
+        "AX0915" => {
+            "AX0915 — a SIMD vector cannot go here natively. A vector (F64x2, F64x4,\n\
+             I64x2, I64x4) is a plain value, but a native build keeps it in vector\n\
+             registers rather than in the 64-bit slot every other value uses. So it can\n\
+             be a variable, a parameter, a result, loop state or the result of an\n\
+             `if`/`case`, but not a field of a tuple, record or constructor (nor a list\n\
+             element), a closure capture, an argument or result of a function value, or\n\
+             the result of `main`. Store its lanes instead (`storeF64x4` into an\n\
+             `Array Float`, or the Floats themselves). The interpreter runs the program\n\
+             unchanged. See docs/simd.md."
         }
         _ => return None,
     };

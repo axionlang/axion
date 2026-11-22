@@ -185,6 +185,12 @@ pub const RT_TABLE: &[RtEntry] = &[
         "index proven in bounds: for every iteration by the bce.rs entry guard, or by refine.rs",
     ),
     e("axion_array_len", B, Scalar),
+    ea(
+        "axion_array_range",
+        B,
+        Scalar,
+        "returns its index argument; the SIMD load/store element accesses after it are unchecked",
+    ),
     e("axion_array_iota", M, Owned("Array")),
     e("axion_array_sum", B, Scalar),
     e("axion_array_dot", B, Scalar),
@@ -538,6 +544,9 @@ mod tests {
         let listed: HashSet<&str> = SURFACE.iter().map(|(n, _)| *n).collect();
         let missing: Vec<_> = crate::infer::builtin_names()
             .into_iter()
+            // the SIMD built-ins are one table of their own (`simd.rs`), lowered to `Op::Vec`
+            // or to `simd::RANGE` plus element accesses (see `simd_lowerings_are_classified`)
+            .filter(|n| crate::simd::builtin(n).is_none())
             .filter(|n| !listed.contains(n.as_str()))
             .collect();
         assert!(
@@ -561,6 +570,17 @@ mod tests {
             "built-ins the interpreter lacks (implement them, or list them in NATIVE_ONLY): \
              {missing:?}"
         );
+    }
+
+    /// Every runtime function the SIMD lowering emits is classified, and the interpreter has every
+    /// SIMD built-in (it dispatches them by `simd::builtin`).
+    #[test]
+    fn simd_lowerings_are_classified() {
+        for f in [crate::simd::RANGE, "axion_array_get", "axion_array_set"] {
+            assert!(rt_entry(f).is_some(), "{f}");
+        }
+        assert!(include_str!("interp.rs").contains("crate::simd::builtin(name)"));
+        assert!(crate::simd::names().count() >= 36);
     }
 
     /// The array entries carry their element assumption (the AX0914 gate relies on it).

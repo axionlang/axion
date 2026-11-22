@@ -71,12 +71,16 @@ struct Cg {
     arena: Arena,
     rt_fns: HashMap<String, (FuncId, bool)>,
     records: RecordInfo,
+    /// the program's SIMD vector values (`simd::analyze`); a vector is passed as its lanes
+    sigs: crate::simd::Sigs,
 }
 
 impl Cg {
     fn new(records: RecordInfo) -> Result<Cg, String> {
         let mut flags = cranelift::codegen::settings::builder();
         drop(flags.set("opt_level", "none"));
+        // a function returning a SIMD vector returns its lanes, more than fit in registers
+        drop(flags.set("enable_multi_ret_implicit_sret", "true"));
         let isa = cranelift_native::builder()
             .map_err(|e| e.to_string())?
             .finish(cranelift::codegen::settings::Flags::new(flags))
@@ -144,6 +148,8 @@ impl Cg {
             ("axion_array_len", 1, true),
             ("axion_array_free", 1, false),
             ("axion_array_oob", 2, false), // cold OOB abort for the INLINED array access
+            ("axion_array_range", 3, true), // SIMD load/store range check (simd.rs)
+            ("axion_lane_oob", 2, false),  // out-of-range SIMD lane index
             // TritVec (§10): base-243 packed ternary array
             ("axion_tritvec_new", 2, true),
             ("axion_tritvec_get", 2, true),
@@ -279,18 +285,32 @@ impl Cg {
             arena,
             rt_fns,
             records,
+            sigs: crate::simd::Sigs::new(),
         })
     }
 
+    /// How many `i64` slots each parameter of `f` takes (a vector: one per lane), and its result.
+    fn widths(&self, f: &CoreFn) -> (Vec<usize>, usize) {
+        let w = |t: Option<crate::simd::VTy>| t.map_or(1, crate::simd::VTy::n);
+        match self.sigs.get(&f.name) {
+            Some(s) => (s.params.iter().map(|t| w(*t)).collect(), w(s.ret)),
+            None => (vec![1; f.params.len()], 1),
+        }
+    }
+
     fn declare_all(&mut self, fns: &[CoreFn]) -> Result<(), String> {
+        self.sigs = crate::simd::analyze(fns, "main").map_err(|(m, _)| format!("AX0915: {m}"))?;
         for f in fns {
             let mut sig = self.module.make_signature();
             // closures receive the env pointer as the 1st parameter
-            let nparams = f.params.len() + usize::from(f.is_closure);
+            let (pw, rw) = self.widths(f);
+            let nparams = pw.iter().sum::<usize>() + usize::from(f.is_closure);
             for _ in 0..nparams {
                 sig.params.push(AbiParam::new(types::I64));
             }
-            sig.returns.push(AbiParam::new(types::I64));
+            for _ in 0..rw {
+                sig.returns.push(AbiParam::new(types::I64));
+            }
             let id = self
                 .module
                 .declare_function(&f.name, Linkage::Export, &sig)
@@ -333,12 +353,15 @@ impl Cg {
     /// Builds the body of a Core function and returns the filled `Context`.
     fn build(&mut self, f: &CoreFn) -> Result<Context, String> {
         let (id, _) = self.ids[&f.name];
-        let nparams = f.params.len() + usize::from(f.is_closure);
+        let (pw, rw) = self.widths(f);
+        let nparams = pw.iter().sum::<usize>() + usize::from(f.is_closure);
         let mut ctx = self.module.make_context();
         for _ in 0..nparams {
             ctx.func.signature.params.push(AbiParam::new(types::I64));
         }
-        ctx.func.signature.returns.push(AbiParam::new(types::I64));
+        for _ in 0..rw {
+            ctx.func.signature.returns.push(AbiParam::new(types::I64));
+        }
         ctx.func.name = UserFuncName::user(0, id.as_u32());
 
         let mut fbctx = FunctionBuilderContext::new();
@@ -367,6 +390,9 @@ impl Cg {
                 rt_fns: &self.rt_fns,
                 records: &self.records,
                 tco: None,
+                vvars: HashMap::new(),
+                fvars: self.sigs.get(&f.name).map(|s| &s.vars),
+                want: rw,
             };
 
             if f.is_closure {
@@ -378,13 +404,11 @@ impl Cg {
                             .load(types::I64, MemFlags::new(), env, (i as i32 + 3) * 8);
                     fx.bind_val(cap, v);
                 }
-                for (j, p) in f.params.iter().enumerate() {
-                    fx.bind_val(p, argvals[j + 1]);
-                }
-            } else {
-                for (j, p) in f.params.iter().enumerate() {
-                    fx.bind_val(p, argvals[j]);
-                }
+            }
+            let mut at = usize::from(f.is_closure);
+            for (p, w) in f.params.iter().zip(&pw) {
+                fx.bind_vals(p, argvals[at..at + w].to_vec());
+                at += w;
             }
 
             // Tail-call optimization: a self-tail-recursive function loops instead
@@ -400,7 +424,8 @@ impl Cg {
                 fx.builder.seal_block(header); // all back-edges emitted
             } else {
                 let ret = fx.emit_term(&f.body)?;
-                fx.builder.ins().return_(&[ret]);
+                let ret = fx.fit(ret);
+                fx.builder.ins().return_(&ret);
             }
             fx.builder.finalize();
         }
@@ -429,9 +454,192 @@ struct Fx<'a, 'b> {
     /// tail self-call reassigns the params and jumps to the header instead of
     /// calling+returning. `None` for non-tail-recursive functions.
     tco: Option<(Block, String, Vec<String>)>,
+    /// SIMD vector variables: one `Variable` per lane (a `Float` lane as its bit pattern)
+    vvars: HashMap<String, Vec<Variable>>,
+    /// this function's vector variables (`simd::analyze`)
+    fvars: Option<&'a HashMap<String, crate::simd::VTy>>,
+    /// how many values the term being emitted yields: the lanes of a vector, else 1
+    want: usize,
 }
 
 impl Fx<'_, '_> {
+    /// How many values variable `name` holds.
+    fn width(&self, name: &str) -> usize {
+        self.fvars.and_then(|m| m.get(name)).map_or(1, |t| t.n())
+    }
+    /// Binds `name` to `vals`: one value, or a vector's lanes.
+    fn bind_vals(&mut self, name: &str, vals: Vec<Value>) {
+        if vals.len() == 1 && self.width(name) == 1 {
+            self.bind_val(name, vals[0]);
+        } else {
+            let vs = vals.into_iter().map(|v| self.fresh_var(v)).collect();
+            self.vvars.insert(name.to_string(), vs);
+        }
+    }
+    /// A branch's values, as many as the join expects: an aborting path yields one dummy value.
+    fn fit(&mut self, mut vals: Vec<Value>) -> Vec<Value> {
+        while vals.len() < self.want {
+            vals.push(self.builder.ins().iconst(types::I64, 0));
+        }
+        vals.truncate(self.want.max(1));
+        vals
+    }
+    /// The values of an atom: a vector's lanes, or the atom itself.
+    fn atom_v(&mut self, a: &Atom) -> Result<Vec<Value>, String> {
+        if let Atom::Var(x) = a {
+            if let Some(vs) = self.vvars.get(x).cloned() {
+                return Ok(vs.iter().map(|v| self.builder.use_var(*v)).collect());
+            }
+        }
+        Ok(vec![self.atom(a)?])
+    }
+    /// An operation's values: several for a vector, else one.
+    fn emit_op_v(&mut self, op: &Op) -> Result<Vec<Value>, String> {
+        match op {
+            Op::Vec(o, t, args) if !o.scalar_result() => self.vec_lanes(*o, *t, args),
+            Op::Atom(a) => self.atom_v(a),
+            Op::CallDirect(name, args, _) => {
+                let (id, arity) = *self
+                    .ids
+                    .get(name)
+                    .ok_or_else(|| format!("function '{name}' is not natively compilable"))?;
+                if args.len() != arity {
+                    return Err(format!("'{name}' called with wrong arity"));
+                }
+                let mut vals = Vec::new();
+                for a in args {
+                    vals.extend(self.atom_v(a)?);
+                }
+                let callee = self.module.declare_func_in_func(id, self.builder.func);
+                let call = self.builder.ins().call(callee, &vals);
+                Ok(self.builder.inst_results(call).to_vec())
+            }
+            _ => Ok(vec![self.emit_op(op)?]),
+        }
+    }
+    /// One lane of a binary SIMD operation (`Float` lanes are bit patterns).
+    fn lane_bin(&mut self, o: crate::simd::VOp, float: bool, a: Value, b: Value) -> Value {
+        use crate::simd::VOp;
+        let ins = self.builder.ins();
+        if float {
+            let af = self.builder.ins().bitcast(types::F64, MemFlags::new(), a);
+            let bf = self.builder.ins().bitcast(types::F64, MemFlags::new(), b);
+            let rf = match o {
+                VOp::Add => self.builder.ins().fadd(af, bf),
+                VOp::Sub => self.builder.ins().fsub(af, bf),
+                VOp::Mul => self.builder.ins().fmul(af, bf),
+                VOp::Div => self.builder.ins().fdiv(af, bf),
+                _ => {
+                    let cc = if o == VOp::Min {
+                        FloatCC::LessThan
+                    } else {
+                        FloatCC::GreaterThan
+                    };
+                    let c = self.builder.ins().fcmp(cc, af, bf);
+                    return self.builder.ins().select(c, a, b);
+                }
+            };
+            return self.builder.ins().bitcast(types::I64, MemFlags::new(), rf);
+        }
+        match o {
+            VOp::Add => ins.iadd(a, b),
+            VOp::Sub => ins.isub(a, b),
+            VOp::Mul => ins.imul(a, b),
+            VOp::Min => ins.smin(a, b),
+            _ => ins.smax(a, b),
+        }
+    }
+    /// A SIMD operation with a vector result, lane by lane.
+    fn vec_lanes(
+        &mut self,
+        o: crate::simd::VOp,
+        t: crate::simd::VTy,
+        args: &[Atom],
+    ) -> Result<Vec<Value>, String> {
+        use crate::simd::VOp;
+        let mut ops = Vec::new();
+        for a in args {
+            ops.push(self.atom_v(a)?);
+        }
+        let n = t.n();
+        Ok(match o {
+            VOp::Make => ops.iter().map(|v| v[0]).collect(),
+            VOp::Splat => vec![ops[0][0]; n],
+            VOp::Fma => (0..n)
+                .map(|k| {
+                    let f = |me: &mut Self, v: Value| {
+                        me.builder.ins().bitcast(types::F64, MemFlags::new(), v)
+                    };
+                    let (a, b, c) = (f(self, ops[0][k]), f(self, ops[1][k]), f(self, ops[2][k]));
+                    let r = self.builder.ins().fma(a, b, c);
+                    self.builder.ins().bitcast(types::I64, MemFlags::new(), r)
+                })
+                .collect(),
+            VOp::Sqrt => (0..n)
+                .map(|k| {
+                    let a = self
+                        .builder
+                        .ins()
+                        .bitcast(types::F64, MemFlags::new(), ops[0][k]);
+                    let r = self.builder.ins().sqrt(a);
+                    self.builder.ins().bitcast(types::I64, MemFlags::new(), r)
+                })
+                .collect(),
+            VOp::Lane | VOp::Sum => return Err("a SIMD lane is not a vector".into()),
+            _ => (0..n)
+                .map(|k| self.lane_bin(o, t.float, ops[0][k], ops[1][k]))
+                .collect(),
+        })
+    }
+    /// A SIMD operation with a lane result (`laneT`, `sumT`).
+    fn vec_scalar(
+        &mut self,
+        o: crate::simd::VOp,
+        t: crate::simd::VTy,
+        args: &[Atom],
+    ) -> Result<Value, String> {
+        use crate::simd::VOp;
+        let lanes = self.atom_v(&args[0])?;
+        if o == VOp::Sum {
+            let mut acc = lanes[0];
+            for &x in &lanes[1..] {
+                acc = self.lane_bin(VOp::Add, t.float, acc, x);
+            }
+            return Ok(acc);
+        }
+        let n = t.n() as i64;
+        if let Atom::Int(k) = args[1] {
+            if (0..n).contains(&k) {
+                return Ok(lanes[k as usize]);
+            }
+        }
+        let idx = self.atom(&args[1])?;
+        let bad = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, idx, n);
+        let oob_b = self.builder.create_block();
+        let ok_b = self.builder.create_block();
+        self.builder.ins().brif(bad, oob_b, &[], ok_b, &[]);
+        self.builder.switch_to_block(oob_b);
+        self.builder.seal_block(oob_b);
+        let oob_id = self
+            .rt_fns
+            .get("axion_lane_oob")
+            .map(|&(id, _)| id)
+            .ok_or("runtime builtin 'axion_lane_oob' not declared")?;
+        let nv = self.builder.ins().iconst(types::I64, n);
+        self.rt_call(oob_id, &[idx, nv]);
+        self.builder.ins().trap(TrapCode::HEAP_OUT_OF_BOUNDS);
+        self.builder.switch_to_block(ok_b);
+        self.builder.seal_block(ok_b);
+        let mut r = lanes[0];
+        for (k, &x) in lanes.iter().enumerate().skip(1) {
+            let c = self.builder.ins().icmp_imm(IntCC::Equal, idx, k as i64);
+            r = self.builder.ins().select(c, x, r);
+        }
+        Ok(r)
+    }
     /// Interna um literal de string como objecto de dados (C-string).
     fn intern(&mut self, s: &str) -> Result<DataId, String> {
         if let Some(id) = self.strings.get(s) {
@@ -581,11 +789,14 @@ impl Fx<'_, '_> {
         xs.iter().map(|a| self.atom(a)).collect()
     }
 
-    fn emit_term(&mut self, t: &Term) -> Result<Value, String> {
+    fn emit_term(&mut self, t: &Term) -> Result<Vec<Value>, String> {
         match t {
             Term::Let(name, rhs, _, body) => {
-                let v = self.emit_rhs(rhs)?;
-                self.bind_val(name, v);
+                let w = self.width(name);
+                let saved = std::mem::replace(&mut self.want, w);
+                let v = self.emit_rhs(rhs);
+                self.want = saved;
+                self.bind_vals(name, v?);
                 self.emit_term(body)
             }
             Term::Drop(name, ty, skip, _, body) => {
@@ -659,8 +870,11 @@ impl Fx<'_, '_> {
     fn emit_term_tail(&mut self, t: &Term) -> Result<(), String> {
         match t {
             Term::Let(name, rhs, _, body) => {
-                let v = self.emit_rhs(rhs)?;
-                self.bind_val(name, v);
+                let w = self.width(name);
+                let saved = std::mem::replace(&mut self.want, w);
+                let v = self.emit_rhs(rhs);
+                self.want = saved;
+                self.bind_vals(name, v?);
                 self.emit_term_tail(body)
             }
             Term::Drop(name, ty, skip, _, body) => {
@@ -677,21 +891,31 @@ impl Fx<'_, '_> {
             Rhs::Op(Op::CallDirect(g, args, _))
                 if self.tco.as_ref().is_some_and(|(_, name, _)| name == g) =>
             {
-                let vals: Vec<Value> = args
-                    .iter()
-                    .map(|a| self.atom(a))
-                    .collect::<Result<_, _>>()?;
+                let mut vals: Vec<Vec<Value>> = Vec::new();
+                for a in args {
+                    vals.push(self.atom_v(a)?);
+                }
                 let (header, _, params) = self.tco.clone().ok_or("TCO state")?;
-                for (p, v) in params.iter().zip(vals) {
-                    let var = self.vars[p];
-                    self.builder.def_var(var, v);
+                for (p, vs) in params.iter().zip(vals) {
+                    match self.vvars.get(p).cloned() {
+                        Some(lanes) => {
+                            for (var, v) in lanes.into_iter().zip(vs) {
+                                self.builder.def_var(var, v);
+                            }
+                        }
+                        None => {
+                            let var = self.vars[p];
+                            self.builder.def_var(var, vs[0]);
+                        }
+                    }
                 }
                 self.builder.ins().jump(header, &[]);
                 Ok(())
             }
             Rhs::Op(op) => {
-                let v = self.emit_op(op)?;
-                self.builder.ins().return_(&[v]);
+                let v = self.emit_op_v(op)?;
+                let v = self.fit(v);
+                self.builder.ins().return_(&v);
                 Ok(())
             }
             Rhs::If(cond, t, e) => {
@@ -713,30 +937,34 @@ impl Fx<'_, '_> {
         }
     }
 
-    fn emit_rhs(&mut self, rhs: &Rhs) -> Result<Value, String> {
+    fn emit_rhs(&mut self, rhs: &Rhs) -> Result<Vec<Value>, String> {
         match rhs {
-            Rhs::Op(op) => self.emit_op(op),
+            Rhs::Op(op) => self.emit_op_v(op),
             Rhs::If(cond, t, e) => {
                 let c = self.atom(cond)?;
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
                 let merge_b = self.builder.create_block();
-                self.builder.append_block_param(merge_b, types::I64);
+                for _ in 0..self.want.max(1) {
+                    self.builder.append_block_param(merge_b, types::I64);
+                }
                 self.builder.ins().brif(c, then_b, &[], else_b, &[]);
 
                 self.builder.switch_to_block(then_b);
                 self.builder.seal_block(then_b);
                 let tv = self.emit_term(t)?;
-                self.builder.ins().jump(merge_b, &[tv]);
+                let tv = self.fit(tv);
+                self.builder.ins().jump(merge_b, &tv);
 
                 self.builder.switch_to_block(else_b);
                 self.builder.seal_block(else_b);
                 let ev = self.emit_term(e)?;
-                self.builder.ins().jump(merge_b, &[ev]);
+                let ev = self.fit(ev);
+                self.builder.ins().jump(merge_b, &ev);
 
                 self.builder.switch_to_block(merge_b);
                 self.builder.seal_block(merge_b);
-                Ok(self.builder.block_params(merge_b)[0])
+                Ok(self.builder.block_params(merge_b).to_vec())
             }
             Rhs::Case(scrut, arms) => {
                 let s = self.atom(scrut)?;
@@ -748,6 +976,8 @@ impl Fx<'_, '_> {
     fn emit_op(&mut self, op: &Op) -> Result<Value, String> {
         match op {
             Op::Atom(a) => self.atom(a),
+            Op::Vec(o, t, args) if o.scalar_result() => self.vec_scalar(*o, *t, args),
+            Op::Vec(..) => Err("a SIMD vector used as a scalar".into()),
             Op::Prim(o, l, r) => {
                 let a = self.atom(l)?;
                 let b = self.atom(r)?;
@@ -1307,7 +1537,12 @@ impl Fx<'_, '_> {
         self.emit_case_tail(sval, arms, i + 1)
     }
 
-    fn emit_case(&mut self, sval: Value, arms: &[(CPat, Term)], i: usize) -> Result<Value, String> {
+    fn emit_case(
+        &mut self,
+        sval: Value,
+        arms: &[(CPat, Term)],
+        i: usize,
+    ) -> Result<Vec<Value>, String> {
         let (pat, body) = &arms[i];
         match pat {
             CPat::Wild => self.emit_term(body),
@@ -1342,22 +1577,26 @@ impl Fx<'_, '_> {
                 let then_b = self.builder.create_block();
                 let else_b = self.builder.create_block();
                 let merge_b = self.builder.create_block();
-                self.builder.append_block_param(merge_b, types::I64);
+                for _ in 0..self.want.max(1) {
+                    self.builder.append_block_param(merge_b, types::I64);
+                }
                 self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
 
                 self.builder.switch_to_block(then_b);
                 self.builder.seal_block(then_b);
                 let tv = self.emit_term(body)?;
-                self.builder.ins().jump(merge_b, &[tv]);
+                let tv = self.fit(tv);
+                self.builder.ins().jump(merge_b, &tv);
 
                 self.builder.switch_to_block(else_b);
                 self.builder.seal_block(else_b);
                 let ev = self.emit_case(sval, arms, i + 1)?;
-                self.builder.ins().jump(merge_b, &[ev]);
+                let ev = self.fit(ev);
+                self.builder.ins().jump(merge_b, &ev);
 
                 self.builder.switch_to_block(merge_b);
                 self.builder.seal_block(merge_b);
-                Ok(self.builder.block_params(merge_b)[0])
+                Ok(self.builder.block_params(merge_b).to_vec())
             }
             CPat::Con(con, subpats) => {
                 // 1-constructor type (no tag) or last arm: destructure without
@@ -1378,23 +1617,27 @@ impl Fx<'_, '_> {
                         let then_b = self.builder.create_block();
                         let else_b = self.builder.create_block();
                         let merge_b = self.builder.create_block();
-                        self.builder.append_block_param(merge_b, types::I64);
+                        for _ in 0..self.want.max(1) {
+                            self.builder.append_block_param(merge_b, types::I64);
+                        }
                         self.builder.ins().brif(cond, then_b, &[], else_b, &[]);
 
                         self.builder.switch_to_block(then_b);
                         self.builder.seal_block(then_b);
                         self.destructure_con(con, subpats, sval)?;
                         let tv = self.emit_term(body)?;
-                        self.builder.ins().jump(merge_b, &[tv]);
+                        let tv = self.fit(tv);
+                        self.builder.ins().jump(merge_b, &tv);
 
                         self.builder.switch_to_block(else_b);
                         self.builder.seal_block(else_b);
                         let ev = self.emit_case(sval, arms, i + 1)?;
-                        self.builder.ins().jump(merge_b, &[ev]);
+                        let ev = self.fit(ev);
+                        self.builder.ins().jump(merge_b, &ev);
 
                         self.builder.switch_to_block(merge_b);
                         self.builder.seal_block(merge_b);
-                        Ok(self.builder.block_params(merge_b)[0])
+                        Ok(self.builder.block_params(merge_b).to_vec())
                     }
                 }
             }

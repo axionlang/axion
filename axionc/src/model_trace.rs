@@ -178,6 +178,7 @@ impl Tr<'_> {
             | Op::IntToFloat(_)
             | Op::FloatToInt(_)
             | Op::FloatUnary(..)
+            | Op::Vec(..)
             | Op::CallDirect(..)
             | Op::MakeCon { .. }
             | Op::MakeTuple(_)

@@ -7642,3 +7642,76 @@ fn ill_formed_refinements_are_errors() {
     );
     assert!(text.contains("`n` is not an array parameter"), "{text}");
 }
+
+#[test]
+fn simd_vectors_agree_across_backends() {
+    // F64x2/F64x4/I64x2/I64x4: operators, lanes, sums, min/max, fma, sqrt, range-checked
+    // loads/stores, vectors as parameters/results/loop state and through `if`/`case` joins.
+    agree_across_backends(
+        "simd.axi",
+        "9\n3\n8\n10\n94\n25\n2480\n2.5\n9\n9006029\n7\n",
+    );
+    // a load/store checks its lane range once; the element accesses after it are unchecked
+    let out = axionc()
+        .args(["--emit", "core", &fixture("simd.axi")])
+        .output()
+        .unwrap();
+    let core = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        core.matches("rtcall axion_array_range").count(),
+        4,
+        "{core}"
+    );
+    assert_eq!(core.matches("axion_array_get_nobc").count(), 12, "{core}");
+    assert_eq!(core.matches("axion_array_set_nobc").count(), 4, "{core}");
+    // --release keeps them in vector registers
+    let ir = axionc()
+        .args(["--emit", "llvm", &fixture("simd.axi")])
+        .output()
+        .unwrap();
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert!(
+        ir.contains(
+            "define <4 x double> @\"ax_axpy\"(i64 %arg0, <4 x double> %arg1, <4 x double> %arg2)"
+        ),
+        "{ir}"
+    );
+    assert!(ir.contains("fmul <4 x double>"), "{ir}");
+}
+
+#[test]
+fn simd_out_of_range_aborts_on_every_backend() {
+    for args in [vec![], vec!["--backend", "cranelift"], vec!["--release"]] {
+        let out = axionc()
+            .args(&args)
+            .arg(fixture("simd_oob.axi"))
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{args:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("array bounds — index 6 out of range [0, 6)"),
+            "{args:?}: {err}"
+        );
+    }
+}
+
+#[test]
+fn simd_vector_in_a_tuple_is_rejected_natively() {
+    let interp = axionc().arg(fixture("simd_reject.axi")).output().unwrap();
+    assert!(interp.status.success());
+    assert_eq!(String::from_utf8_lossy(&interp.stdout), "5\n");
+    for b in [["--backend", "cranelift"], ["--release", "--release"]] {
+        let out = axionc()
+            .args(&b[..if b[0] == b[1] { 1 } else { 2 }])
+            .arg(fixture("simd_reject.axi"))
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("error[AX0915]") && err.contains("pair v = (v, 1)"),
+            "{err}"
+        );
+    }
+}

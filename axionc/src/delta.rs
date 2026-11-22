@@ -87,6 +87,8 @@ pub fn op_delta_effect<'a>(op: &'a Op, ba: &BorrowArgs) -> DeltaEffect<'a> {
             e.borrows.push(b);
         }
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => e.borrows.push(a),
+        // SIMD operations read plain values (vectors and lanes); nothing is heap.
+        Op::Vec(_, _, xs) => e.borrows.extend(xs.iter()),
         Op::CallDirect(g, args, ty) => {
             // borrowed positions (pure-borrow callee args) keep the caller's
             // ownership; everything else moves into the callee. A generated

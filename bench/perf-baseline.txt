@@ -4,6 +4,7 @@ fib 103
 loop 97
 alloc 31
 simd 105
+fdot 27
 dispatch 98
 sumtype 102
 tritvec 111

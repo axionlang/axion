@@ -1825,6 +1825,72 @@ def gen_refine(rng):
             "get a i = getArray a i\n\n" + "\n".join(funs)
             + f"\nmain :: IO ()\nmain = do\n  let arr = newArray {length} 4\n" + "\n".join(calls) + "\n")
 
+def gen_simd(rng):
+    """SIMD vector types (axionc/src/simd.rs): random lane arithmetic (`+ - * /`, min/max, fma,
+    sqrt), vectors as parameters, results, loop accumulators and `if` joins, range-checked loads
+    and stores at random (sometimes out-of-range) indices, and lanes at random indices. The
+    interpreter models the lanes; the native backends keep vectors in registers (LLVM) or as
+    lanes (Cranelift) and must print the same bits, abort on the same out-of-range accesses, and
+    be ASan-clean (an unchecked lane access past the array is a heap-buffer-overflow)."""
+    name, n, fl = rng.choice([("F64x4", 4, True), ("F64x2", 2, True),
+                              ("I64x4", 4, False), ("I64x2", 2, False)])
+    lc, elem = name.lower(), ("Float" if fl else "Int")
+    show = "showFloat" if fl else "showInt"
+    def lit():
+        if fl:
+            return rng.choice(["0.5", "1.0", "2.0", "3.25", "0.0", "1.5", "7.0", "0.125", "1.0e-3"])
+        v = rng.randint(-6, 9)
+        return f"({v})" if v < 0 else str(v)
+    def idx():
+        return str(rng.choice([0, 0, 1, 2, n - 1, n, rng.randint(0, 12)]))
+    def vexpr(d, env):
+        r = rng.random()
+        if d <= 0 or r < 0.25:
+            return rng.choice([f"({lc} {' '.join(lit() for _ in range(n))})",
+                               f"(splat{name} {lit()})"] + env)
+        if r < 0.55:
+            ops = ["+", "-", "*"] + (["/"] if fl else [])
+            return f"({vexpr(d - 1, env)} {rng.choice(ops)} {vexpr(d - 1, env)})"
+        if r < 0.65:
+            return f"({rng.choice(['min', 'max'])}{name} {vexpr(d - 1, env)} {vexpr(d - 1, env)})"
+        if r < 0.72 and fl:
+            return f"(fma{name} {vexpr(d - 1, env)} {vexpr(d - 1, env)} {vexpr(d - 1, env)})"
+        if r < 0.76 and fl:
+            x = vexpr(d - 1, env)
+            return f"(sqrt{name} ({x} * {x}))"
+        if r < 0.86:
+            return f"(if sum{name} {vexpr(d - 1, env)} < sum{name} {vexpr(d - 1, env)} " \
+                   f"then {vexpr(d - 1, env)} else {vexpr(d - 1, env)})"
+        if env:   # inside `h0` itself: no recursive call
+            return f"({vexpr(d - 1, env)} + {vexpr(d - 1, env)})"
+        return f"(h0 {vexpr(d - 1, env)} {vexpr(d - 1, env)})"
+    def scalar(v):
+        if rng.random() < 0.7:
+            return f"(sum{name} {v})"
+        return f"(lane{name} {v} {idx() if rng.random() < 0.9 else rng.randint(-2, 6)})"
+    step = rng.choice([n, n, 1, n + 1])
+    length = rng.randint(0, 3 * n + 2)
+    prog = [f"-- fuzz:simd\nh0 :: {name} -> {name} -> {name}\nh0 v w = {vexpr(2, ['v', 'w'])}\n",
+            f"acc :: Array {elem} -> Int -> {name} -> {name}\n"
+            f"acc a i s = if i + {n} <= lenArray a then acc a (i + {step}) "
+            f"(s + load{name} a i) else s\n",
+            f"fill :: Array {elem} -> Int -> Array {elem}\n"
+            f"fill a i = if i < lenArray a then fill (setArray a i "
+            f"({'toFloat ' if fl else ''}(i * 3 - 5))) (i + 1) else a\n",
+            "main :: IO ()\nmain = do",
+            f"  let a0 = fill (newArray {length} {lit()}) 0"]
+    cur = "a0"
+    for k in range(rng.randint(0, 3)):
+        prog.append(f"  let a{k + 1} = store{name} {cur} {idx()} {vexpr(2, [])}")
+        cur = f"a{k + 1}"
+    for _ in range(rng.randint(1, 3)):
+        prog.append(f"  putStrLn ({show} {scalar(vexpr(3, []))})")
+    if rng.random() < 0.7:
+        prog.append(f"  putStrLn ({show} {scalar(f'(load{name} {cur} {idx()})')})")
+    prog.append(f"  putStrLn ({show} (sum{name} (acc {cur} {rng.randint(0, 2)} "
+                f"(splat{name} {lit()}))))")
+    return "\n".join(prog) + "\n"
+
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
     if r < 0.08:

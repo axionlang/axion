@@ -3334,6 +3334,25 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // SIMD vector types (`simd.rs`): `F64x4`, … — constructors, lanes, loads/stores
+        for name in crate::simd::names() {
+            if let Some(b) = crate::simd::builtin(name) {
+                let t = crate::simd::builtin_ty(b);
+                let slot = |s: crate::simd::Slot| match s {
+                    crate::simd::Slot::Vec => Ty::Con(t.name().into(), vec![]),
+                    crate::simd::Slot::Elem => Ty::Con(t.elem().into(), vec![]),
+                    crate::simd::Slot::Int => int(),
+                    crate::simd::Slot::ArrayOfElem => {
+                        Ty::Con("Array".into(), vec![Ty::Con(t.elem().into(), vec![])])
+                    }
+                };
+                let (params, ret) = crate::simd::signature(b);
+                let ty = params.into_iter().rev().fold(slot(ret), |acc, p| {
+                    Ty::Fun(Box::new(slot(p)), Box::new(acc))
+                });
+                env.insert(name.into(), mono(ty));
+            }
+        }
         env
     }
 
@@ -3432,6 +3451,20 @@ impl<'a> Infer<'a> {
                 // through to the generic instance arm below (`/$Complex`).
                 Ty::Con(name, _) if is_division_method(&o.method) && is_primitive_num(&name) => {
                     resolutions.insert((o.func.clone(), o.span), division_resolve(&name).into());
+                }
+                // `+ - *` (and `/` over `Float` lanes) over a SIMD vector type → the lane-wise
+                // vector operator (`+#F64x4`, `simd.rs`). Comparisons have no vector instance.
+                Ty::Con(name, _)
+                    if (is_builtin_op_method(&o.method) || is_division_method(&o.method))
+                        && crate::simd::VTy::from_name(&name)
+                            .and_then(|t| crate::simd::op_name(&o.method, t))
+                            .is_some() =>
+                {
+                    if let Some(op) = crate::simd::VTy::from_name(&name)
+                        .and_then(|t| crate::simd::op_name(&o.method, t))
+                    {
+                        resolutions.insert((o.func.clone(), o.span), op);
+                    }
                 }
                 // built-in Num/Ord operator over Float → rewrite to the dotted form
                 // the backends already lower.

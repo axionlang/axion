@@ -93,7 +93,7 @@ bench_rust() {
   rustc -C opt-level=2 "bench/$k.rs" -o "$tmp/${k}_r2" 2>/dev/null && run "$k:r2" "$tmp/${k}_r2" || run "$k:r2" SKIP
 }
 
-KERNELS="fib loop alloc simd dispatch sumtype tritvec dot_i8 ternmv i8mv i32mv gauss"
+KERNELS="fib loop alloc simd fdot dispatch sumtype tritvec dot_i8 ternmv i8mv i32mv gauss"
 NOBUILD=""   # Axion --release kernels that failed to build: a failure, not a `-` in the table
 for k in $KERNELS; do bench_kernel "$k"; bench_c "$k"; bench_rust "$k"; done
 

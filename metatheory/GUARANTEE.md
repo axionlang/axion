@@ -123,6 +123,13 @@ and well-mitigated this list is.
    `refine-trace.sh` re-checks every corpus certificate with the Lean `check`. Trusted: reading the
    facts and goal off the program (comparisons, overflow, lengths) — mitigated by the `refine`
    fuzzer (interp vs native, ASan).
+6. **SIMD vector lowering** (`simd.rs`, docs/simd.md) — vectors are plain values (nothing to
+   reclaim), so the ownership guarantee is untouched; what is trusted is their representation.
+   `simd::analyze` decides which values live in vector registers and rejects a vector anywhere only
+   a 64-bit slot fits (AX0915); the backends' vector code is part of item 1. A vector load/store's
+   element accesses are unchecked after one range check (`mark_range_lanes`: the accesses carry the
+   check's span and index from its result). Mitigated by the `simd` fuzzer (interp vs Cranelift vs
+   LLVM + ASan, random out-of-range indices) and the fixtures `simd*.axi`.
 
 ---
 

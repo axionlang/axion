@@ -113,6 +113,8 @@ declare i64 @axion_fold_bytes(i64, i64, i64)
 declare i64 @axion_array_new(i64, i64)
 declare i64 @axion_array_get(i64, i64)
 declare i64 @axion_array_set(i64, i64, i64)
+declare i64 @axion_array_range(i64, i64, i64)
+declare void @axion_lane_oob(i64, i64)
 declare i64 @axion_array_len(i64)
 declare void @axion_array_free(i64)
 declare void @axion_array_oob(i64, i64)
@@ -254,6 +256,7 @@ pub fn emit_ir(
         fuse,
     )
     .fns;
+    let sigs = crate::simd::analyze(&fns, "main").map_err(|(m, _)| format!("AX0915: {m}"))?;
     let records = RecordInfo::build(module);
     // type keys with a generated destructor `axion_drop_<key>` — includes the
     // monomorphized ones (`List$P`), whose key is not a `needs_deep_drop` type.
@@ -273,6 +276,15 @@ pub fn emit_ir(
 
     let mut out = String::from("; Axion --release (LLVM IR)\n");
     out.push_str(RT_DECLS);
+    if !sigs.is_empty() {
+        // the vector intrinsics the SIMD operations use
+        for t in crate::simd::TYPES.iter().filter(|t| t.float) {
+            let (v, n) = (t.llvm(), t.lanes);
+            out.push_str(&format!(
+                "declare {v} @llvm.fma.v{n}f64({v}, {v}, {v})\ndeclare {v} @llvm.sqrt.v{n}f64({v})\n"
+            ));
+        }
+    }
     // declarations of the FFI imports (§18): `declare <ret> @name(<arg tys>)`, where a `Float`
     // arg/result is `double` (FP register, SysV ABI) and everything else is `i64`.
     let mut ffi: HashMap<String, (Vec<bool>, bool)> = HashMap::new();
@@ -325,7 +337,9 @@ pub fn emit_ir(
         .map(|f| (f.name.clone(), f.params.len()))
         .collect();
     for f in &fns {
-        out.push_str(&emit_fn(f, &records, &strings, &drop_keys, &fn_arity)?);
+        out.push_str(&emit_fn(
+            f, &records, &strings, &drop_keys, &fn_arity, &sigs,
+        )?);
         out.push('\n');
     }
 
@@ -433,7 +447,13 @@ pub fn build_and_run(
     // Compile the program IR and link the Rust runtime staticlib (`axion-rt`, which now IS the whole
     // runtime) after the IR that references it, plus the system libs its std needs. `-pthread`: the
     // session scheduler runs tasks on std::threads.
+    // The target CPU: the host's by default, so vector code (`simd.rs`) uses the machine's
+    // vector width and its FMA unit instead of a libm call per lane. `AXION_MARCH=x86-64` (any
+    // clang `-march`) builds a binary for other machines. No floating-point semantics change: the
+    // IR carries no fast-math flags, so nothing is contracted or reassociated either way.
+    let march = std::env::var("AXION_MARCH").unwrap_or_else(|_| "native".into());
     cmd.args(["-O2", "-flto", "-w", "-pthread"])
+        .arg(format!("-march={march}"))
         .arg(&ll)
         .arg(&rta)
         .arg("-ldl")
@@ -548,9 +568,10 @@ fn op_atoms(op: &Op) -> Vec<&Atom> {
         Op::FuncAddr(_) => vec![],
         Op::Prim(_, a, b) | Op::PrimF(_, a, b) | Op::Promote(a, b) => vec![a, b],
         Op::IntToFloat(a) | Op::FloatToInt(a) | Op::FloatUnary(_, a) => vec![a],
-        Op::CallDirect(_, xs, _) | Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => {
-            xs.iter().collect()
-        }
+        Op::CallDirect(_, xs, _)
+        | Op::MakeTuple(xs)
+        | Op::MakeCon { args: xs, .. }
+        | Op::Vec(_, _, xs) => xs.iter().collect(),
         Op::CallClosure(c, xs) => std::iter::once(c).chain(xs).collect(),
         Op::MakeClosure { captures, .. } => captures.iter().collect(),
         Op::MakeRecord { fields, .. } => fields.iter().map(|(_, a)| a).collect(),
@@ -622,6 +643,7 @@ fn emit_fn(
     strings: &HashMap<String, usize>,
     drop_keys: &HashSet<String>,
     fn_arity: &HashMap<String, usize>,
+    sigs: &crate::simd::Sigs,
 ) -> Result<String, String> {
     let mut e = Emit {
         out: String::new(),
@@ -633,7 +655,10 @@ fn emit_fn(
         strings,
         drop_keys,
         fn_arity,
+        sigs,
+        vt: HashMap::new(),
     };
+    let mine = sigs.get(&f.name);
     let mut params: Vec<String> = Vec::new();
     if f.is_closure {
         params.push("i64 %env".into());
@@ -641,14 +666,22 @@ fn emit_fn(
     for (i, p) in f.params.iter().enumerate() {
         let name = format!("%arg{i}");
         e.scope.insert(p.clone(), name.clone());
-        params.push(format!("i64 {name}"));
+        match mine.and_then(|m| m.params[i]) {
+            Some(t) => {
+                params.push(format!("{} {name}", t.llvm()));
+                e.vt.insert(name, t);
+            }
+            None => params.push(format!("i64 {name}")),
+        }
     }
+    let ret_ty = mine.and_then(|m| m.ret);
     // `#0` = `sanitize_address`: clang instruments only the functions that carry it, and IR
     // compiled from a `.ll` file has no frontend to add it — without it an ASan build checked no
     // load or store of generated code (only the runtime's `free`/`memcpy` interceptors and LSan
     // saw anything). Inert unless the ASan pass runs.
     let header = format!(
-        "define i64 @\"ax_{}\"({}) #0 {{\nentry:\n",
+        "define {} @\"ax_{}\"({}) #0 {{\nentry:\n",
+        ret_ty.map_or("i64".to_string(), |t| t.llvm()),
         f.name,
         params.join(", ")
     );
@@ -660,7 +693,11 @@ fn emit_fn(
         }
     }
     let ret = e.term(&f.body)?;
-    Ok(format!("{header}{}  ret i64 {ret}\n}}\n", e.out))
+    let ret = match ret_ty {
+        Some(t) => format!("{} {}", t.llvm(), e.as_vec(&ret)),
+        None => format!("i64 {ret}"),
+    };
+    Ok(format!("{header}{}  ret {ret}\n}}\n", e.out))
 }
 
 /// State of emitting a function.
@@ -674,9 +711,169 @@ struct Emit<'a> {
     strings: &'a HashMap<String, usize>,
     drop_keys: &'a HashSet<String>,
     fn_arity: &'a HashMap<String, usize>,
+    /// the program's SIMD vector values (`simd::analyze`)
+    sigs: &'a crate::simd::Sigs,
+    /// the SSA values that are vectors, with their type (every other value is an `i64`)
+    vt: HashMap<String, crate::simd::VTy>,
 }
 
 impl Emit<'_> {
+    /// A value used where a vector is expected: itself, or `zeroinitializer` for the `0` a path
+    /// that never returns (an abort) yields.
+    fn as_vec(&self, v: &str) -> String {
+        if self.vt.contains_key(v) {
+            v.to_string()
+        } else {
+            "zeroinitializer".to_string()
+        }
+    }
+    /// `phi` joining two branch results, typed by whichever of them is a vector.
+    fn phi(&mut self, tv: &str, tb: &str, ev: &str, eb: &str) -> String {
+        let r = self.val();
+        match self.vt.get(tv).or_else(|| self.vt.get(ev)).copied() {
+            Some(t) => {
+                let (a, b) = (self.as_vec(tv), self.as_vec(ev));
+                self.ins(&format!(
+                    "{r} = phi {} [ {a}, %{tb} ], [ {b}, %{eb} ]",
+                    t.llvm()
+                ));
+                self.vt.insert(r.clone(), t);
+            }
+            None => self.ins(&format!("{r} = phi i64 [ {tv}, %{tb} ], [ {ev}, %{eb} ]")),
+        }
+        r
+    }
+    /// A float lane (an `i64` bit pattern) as a `double`.
+    fn as_double(&mut self, x: &str) -> String {
+        let d = self.val();
+        self.ins(&format!("{d} = bitcast i64 {x} to double"));
+        d
+    }
+    /// A SIMD operation (`simd::VOp`) over vector type `t`.
+    fn vec_op(
+        &mut self,
+        op: crate::simd::VOp,
+        t: crate::simd::VTy,
+        args: &[Atom],
+    ) -> Result<String, String> {
+        use crate::simd::VOp;
+        let vs = self.atoms(args)?;
+        let ty = t.llvm();
+        let lane = if t.float { "double" } else { "i64" };
+        let r = self.val();
+        match op {
+            VOp::Make | VOp::Splat => {
+                let lanes: &[String] = if op == VOp::Make { &vs } else { &vs[..1] };
+                let mut cur = "poison".to_string();
+                for (k, x) in lanes.iter().enumerate() {
+                    let x = if t.float {
+                        self.as_double(x)
+                    } else {
+                        x.clone()
+                    };
+                    let nv = self.val();
+                    self.ins(&format!(
+                        "{nv} = insertelement {ty} {cur}, {lane} {x}, i64 {k}"
+                    ));
+                    cur = nv;
+                }
+                if op == VOp::Splat {
+                    self.ins(&format!(
+                        "{r} = shufflevector {ty} {cur}, {ty} poison, <{} x i32> zeroinitializer",
+                        t.lanes
+                    ));
+                } else {
+                    self.ins(&format!("{r} = bitcast {ty} {cur} to {ty}"));
+                }
+            }
+            VOp::Add | VOp::Sub | VOp::Mul | VOp::Div => {
+                let ins = match (op, t.float) {
+                    (VOp::Add, true) => "fadd",
+                    (VOp::Sub, true) => "fsub",
+                    (VOp::Mul, true) => "fmul",
+                    (VOp::Div, true) => "fdiv",
+                    (VOp::Add, false) => "add",
+                    (VOp::Sub, false) => "sub",
+                    (VOp::Mul, false) => "mul",
+                    _ => return Err("integer vector division".into()),
+                };
+                self.ins(&format!("{r} = {ins} {ty} {}, {}", vs[0], vs[1]));
+            }
+            VOp::Min | VOp::Max => {
+                let c = self.val();
+                let pred = match (op, t.float) {
+                    (VOp::Min, true) => "fcmp olt",
+                    (VOp::Max, true) => "fcmp ogt",
+                    (VOp::Min, false) => "icmp slt",
+                    _ => "icmp sgt",
+                };
+                self.ins(&format!("{c} = {pred} {ty} {}, {}", vs[0], vs[1]));
+                self.ins(&format!(
+                    "{r} = select <{} x i1> {c}, {ty} {}, {ty} {}",
+                    t.lanes, vs[0], vs[1]
+                ));
+            }
+            VOp::Fma => self.ins(&format!(
+                "{r} = call {ty} @llvm.fma.v{}f64({ty} {}, {ty} {}, {ty} {})",
+                t.lanes, vs[0], vs[1], vs[2]
+            )),
+            VOp::Sqrt => self.ins(&format!(
+                "{r} = call {ty} @llvm.sqrt.v{}f64({ty} {})",
+                t.lanes, vs[0]
+            )),
+            VOp::Lane => {
+                let n = i64::from(t.lanes);
+                let constant = matches!(args[1], Atom::Int(k) if (0..n).contains(&k));
+                if !constant {
+                    let bad = self.val();
+                    self.ins(&format!("{bad} = icmp uge i64 {}, {n}", vs[1]));
+                    let (lf, lo) = (self.label("loob"), self.label("lok"));
+                    self.ins(&format!("br i1 {bad}, label %{lf}, label %{lo}"));
+                    self.block(&lf);
+                    self.ins(&format!(
+                        "call void @axion_lane_oob(i64 {}, i64 {n})",
+                        vs[1]
+                    ));
+                    self.ins("unreachable");
+                    self.block(&lo);
+                }
+                let x = self.val();
+                self.ins(&format!(
+                    "{x} = extractelement {ty} {}, i64 {}",
+                    vs[0], vs[1]
+                ));
+                if t.float {
+                    self.ins(&format!("{r} = bitcast double {x} to i64"));
+                } else {
+                    return Ok(x);
+                }
+                return Ok(r);
+            }
+            VOp::Sum => {
+                let mut acc = String::new();
+                for k in 0..t.lanes {
+                    let x = self.val();
+                    self.ins(&format!("{x} = extractelement {ty} {}, i64 {k}", vs[0]));
+                    acc = if k == 0 {
+                        x
+                    } else {
+                        let s = self.val();
+                        let ins = if t.float { "fadd" } else { "add" };
+                        self.ins(&format!("{s} = {ins} {lane} {acc}, {x}"));
+                        s
+                    };
+                }
+                if t.float {
+                    self.ins(&format!("{r} = bitcast double {acc} to i64"));
+                } else {
+                    return Ok(acc);
+                }
+                return Ok(r);
+            }
+        }
+        self.vt.insert(r.clone(), t);
+        Ok(r)
+    }
     fn val(&mut self) -> String {
         let v = format!("%v{}", self.ssa);
         self.ssa += 1;
@@ -915,9 +1112,7 @@ impl Emit<'_> {
                 self.ins(&format!("br label %{lm}"));
 
                 self.block(&lm);
-                let r = self.val();
-                self.ins(&format!("{r} = phi i64 [ {tv}, %{tb} ], [ {ev}, %{eb} ]"));
-                Ok(r)
+                Ok(self.phi(&tv, &tb, &ev, &eb))
             }
             Rhs::Case(scrut, arms) => {
                 let s = self.atom(scrut)?;
@@ -1003,9 +1198,7 @@ impl Emit<'_> {
                 self.ins(&format!("br label %{lm}"));
 
                 self.block(&lm);
-                let r = self.val();
-                self.ins(&format!("{r} = phi i64 [ {tv}, %{tb} ], [ {ev}, %{eb} ]"));
-                Ok(r)
+                Ok(self.phi(&tv, &tb, &ev, &eb))
             }
             CPat::Con(con, subpats) => {
                 // 1-constructor type (no tag) or last arm: destructure without
@@ -1040,9 +1233,7 @@ impl Emit<'_> {
                         self.ins(&format!("br label %{lm}"));
 
                         self.block(&lm);
-                        let r = self.val();
-                        self.ins(&format!("{r} = phi i64 [ {tv}, %{tb} ], [ {ev}, %{eb} ]"));
-                        Ok(r)
+                        Ok(self.phi(&tv, &tb, &ev, &eb))
                     }
                 }
             }
@@ -1178,14 +1369,27 @@ impl Emit<'_> {
                         ));
                     }
                 }
+                let callee = self.sigs.get(name);
                 let a = self
                     .atoms(args)?
                     .iter()
-                    .map(|v| format!("i64 {v}"))
+                    .enumerate()
+                    .map(
+                        |(i, v)| match callee.and_then(|c| c.params.get(i).copied().flatten()) {
+                            Some(t) => format!("{} {}", t.llvm(), self.as_vec(v)),
+                            None => format!("i64 {v}"),
+                        },
+                    )
                     .collect::<Vec<_>>()
                     .join(", ");
                 let r = self.val();
-                self.ins(&format!("{r} = call i64 @\"ax_{name}\"({a})"));
+                match callee.and_then(|c| c.ret) {
+                    Some(t) => {
+                        self.ins(&format!("{r} = call {} @\"ax_{name}\"({a})", t.llvm()));
+                        self.vt.insert(r.clone(), t);
+                    }
+                    None => self.ins(&format!("{r} = call i64 @\"ax_{name}\"({a})")),
+                }
                 Ok(r)
             }
             Op::CallClosure(clos, args) => {
@@ -1403,6 +1607,30 @@ impl Emit<'_> {
                 self.ins(&format!("{n} = load i64, ptr {ap}, !tbaa {TBAA_ARRAY_LEN}"));
                 Ok(n)
             }
+            // a vector load/store's range check (`simd::RANGE`): inline, the runtime call only on
+            // the cold failure path (it prints the first bad index and aborts)
+            Op::RtCall { func, args, .. }
+                if func == crate::simd::RANGE && matches!(args.get(2), Some(Atom::Int(_))) =>
+            {
+                let vs = self.atoms(args)?;
+                let ap = self.val();
+                self.ins(&format!("{ap} = inttoptr i64 {} to ptr", vs[0]));
+                let n = self.val();
+                self.ins(&format!("{n} = load i64, ptr {ap}, !tbaa {TBAA_ARRAY_LEN}"));
+                let lim = self.val();
+                self.ins(&format!("{lim} = sub i64 {n}, {}", vs[2]));
+                let (c1, c2, bad) = (self.val(), self.val(), self.val());
+                self.ins(&format!("{c1} = icmp slt i64 {}, 0", vs[1]));
+                self.ins(&format!("{c2} = icmp sgt i64 {}, {lim}", vs[1]));
+                self.ins(&format!("{bad} = or i1 {c1}, {c2}"));
+                let (lf, lo) = (self.label("roob"), self.label("rok"));
+                self.ins(&format!("br i1 {bad}, label %{lf}, label %{lo}"));
+                self.block(&lf);
+                self.rt(func, true, &vs);
+                self.ins("unreachable");
+                self.block(&lo);
+                Ok(vs[1].clone())
+            }
             // index proven in bounds for the whole loop by `bce.rs`'s entry guard: no check
             Op::RtCall { func, args, .. } if func == crate::bce::GET_NOBC => {
                 let vs = self.atoms(args)?;
@@ -1474,6 +1702,7 @@ impl Emit<'_> {
                 ));
                 Ok(r)
             }
+            Op::Vec(o, t, args) => self.vec_op(*o, *t, args),
             Op::Unsupported(m) => Err(format!("{m} does not compile under --release")),
         }
     }

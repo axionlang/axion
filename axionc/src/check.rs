@@ -1630,6 +1630,8 @@ pub fn builtins() -> HashSet<String> {
         "modInteger",
     ]
     .iter()
+    .copied()
+    .chain(crate::simd::names())
     .map(|s| s.to_string())
     .collect()
 }
@@ -2819,6 +2821,16 @@ fn build_ctx(module: &Module) -> Ctx {
         vec![Mult::One, Mult::Many, Mult::Many],
     );
     consumers.insert("lenArray".to_string(), vec![Mult::Many]);
+    // SIMD (`simd.rs`): a vector store consumes the array (in place, like `setArray`); a load
+    // borrows it; vectors and lanes are plain values.
+    for name in crate::simd::names() {
+        let m = match crate::simd::builtin(name) {
+            Some(crate::simd::Builtin::Store(_)) => vec![Mult::One, Mult::Many, Mult::Many],
+            Some(b) => vec![Mult::Many; crate::simd::arity(b)],
+            None => continue,
+        };
+        consumers.insert(name.to_string(), m);
+    }
     // TritVec (§10): like Array — setTritVec consumes the vec (in-place, returns
     // the same linear thread), the others borrow.
     consumers.insert("newTritVec".to_string(), vec![Mult::Many, Mult::Many]);

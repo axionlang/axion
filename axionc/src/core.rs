@@ -68,6 +68,9 @@ pub enum Op {
     IntToFloat(Atom),
     /// `truncate :: Float -> Int` — f64 (bit pattern) → signed i64, truncating.
     FloatToInt(Atom),
+    /// a SIMD vector operation (`simd.rs`): its operands and result are vectors or lanes, as
+    /// `VOp::operand_kinds` says. Pure, reads its operands, allocates nothing.
+    Vec(crate::simd::VOp, crate::simd::VTy, Vec<Atom>),
     /// unary Float math (`sqrt`/`floor`/`abs`) :: Float -> Float — the operand is
     /// an f64 bit pattern in i64; the backend bitcasts to f64, applies the IEEE
     /// operation (Cranelift instruction / LLVM intrinsic), and bitcasts back.
@@ -290,7 +293,10 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
             // (never `axion_free`), so like `Ptr` it lowers as a scalar and is not auto-reclaimed.
             | "Handle"
             // `File`: a linear file (an fd, or -errno), closed by `fileClose` — a scalar like `Handle`.
-            | "File",
+            | "File"
+            // SIMD vectors (`simd.rs`): not a 64-bit slot, but the backends give them their own
+            // representation; `simd::analyze` rejects a vector anywhere only a slot fits (AX0915)
+            | "F64x2" | "F64x4" | "I64x2" | "I64x4",
         ) => true,
         Some(h) => data_types.contains(h),
         None => false,
@@ -1816,6 +1822,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
     ] {
         g.insert(b.to_string());
     }
+    g.extend(crate::simd::names().map(String::from));
     g
 }
 
@@ -2087,6 +2094,8 @@ impl Lower<'_> {
                 }
                 if is_float_op(op) {
                     Op::PrimF(op.clone(), a, b)
+                } else if let Some((vop, ty)) = crate::simd::binop(op) {
+                    Op::Vec(vop, ty, vec![a, b])
                 } else if let Some(func) = integer_op_rt(op) {
                     // Integer (§ Listing 1.4): `#I` operators → arbitrary-precision runtime.
                     Op::RtCall {
@@ -2339,6 +2348,10 @@ impl Lower<'_> {
         }
         if name == "toFloat" && args.len() == 1 {
             return Op::IntToFloat(self.atom(args[0], buf));
+        }
+        if let Some(b) = crate::simd::builtin(name).filter(|b| crate::simd::arity(*b) == args.len())
+        {
+            return self.simd_call(b, &args, e.span(), buf);
         }
         if name == "truncate" && args.len() == 1 {
             return Op::FloatToInt(self.atom(args[0], buf));
@@ -2754,6 +2767,91 @@ impl Lower<'_> {
     }
 
     /// Lowers a builtin that is a runtime call (`Buffer`/§4).
+    /// A SIMD built-in (`simd.rs`). A load or store checks the whole lane range once
+    /// (`simd::RANGE`, which returns the index) and then accesses the elements from that index;
+    /// `simd::mark_range_lanes` drops their own checks, identified by the call's span.
+    fn simd_call(
+        &mut self,
+        b: crate::simd::Builtin,
+        args: &[&Expr],
+        sp: Span,
+        buf: &mut Vec<(String, Rhs, Span)>,
+    ) -> Op {
+        use crate::simd::{Builtin, VOp};
+        let atoms: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
+        let (ty, store) = match b {
+            Builtin::Op(op, ty) => return Op::Vec(op, ty, atoms),
+            Builtin::Load(ty) => (ty, false),
+            Builtin::Store(ty) => (ty, true),
+        };
+        let n = ty.n();
+        let start = self.fresh();
+        buf.push((
+            start.clone(),
+            Rhs::Op(Op::RtCall {
+                func: crate::simd::RANGE.into(),
+                args: vec![atoms[0].clone(), atoms[1].clone(), Atom::Int(n as i64)],
+                returns: true,
+            }),
+            sp,
+        ));
+        let mut arr = atoms[0].clone();
+        let mut lanes = Vec::new();
+        for k in 0..n {
+            let idx = if k == 0 {
+                Atom::Var(start.clone())
+            } else {
+                let t = self.fresh();
+                buf.push((
+                    t.clone(),
+                    Rhs::Op(Op::Prim(
+                        "+".into(),
+                        Atom::Var(start.clone()),
+                        Atom::Int(k as i64),
+                    )),
+                    sp,
+                ));
+                Atom::Var(t)
+            };
+            if store {
+                let x = self.fresh();
+                buf.push((
+                    x.clone(),
+                    Rhs::Op(Op::Vec(
+                        VOp::Lane,
+                        ty,
+                        vec![atoms[2].clone(), Atom::Int(k as i64)],
+                    )),
+                    sp,
+                ));
+                let set = Op::RtCall {
+                    func: "axion_array_set".into(),
+                    args: vec![arr.clone(), idx, Atom::Var(x)],
+                    returns: true,
+                };
+                if k + 1 == n {
+                    return set;
+                }
+                let t = self.fresh();
+                buf.push((t.clone(), Rhs::Op(set), sp));
+                arr = Atom::Var(t);
+            } else {
+                let x = self.fresh();
+                buf.push((
+                    x.clone(),
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_array_get".into(),
+                        args: vec![arr.clone(), idx],
+                        returns: true,
+                    }),
+                    sp,
+                ));
+                lanes.push(Atom::Var(x));
+            }
+        }
+        Op::Vec(VOp::Make, ty, lanes)
+    }
+
     fn rtcall(
         &mut self,
         func: &str,
@@ -4709,6 +4807,7 @@ impl SessGen<'_> {
                 }
                 Atom::Var(n.clone())
             }
+            Expr::BinOp(op, ..) if crate::simd::binop(op).is_some() => self.unsupported(binds),
             Expr::BinOp(op, a, b, _) => {
                 let av = self.val(a, binds);
                 let bv = self.val(b, binds);
@@ -7940,6 +8039,7 @@ pub fn lower_with(
         })
         .collect();
     if std::env::var_os("AXION_NO_BCE").is_none() {
+        crate::simd::mark_range_lanes(&mut result);
         crate::refine::apply_proven(&mut result, &module.bounds_proven);
         let before: HashSet<String> = result.iter().map(|f| f.name.clone()).collect();
         crate::bce::version_counting_loops(&mut result);
@@ -10706,6 +10806,7 @@ fn op_nonborrow(v: &str, op: &Op) -> bool {
         Op::FuncAddr(_) => false,
         Op::StoreRaw(ptr, _, val) => atom_is(v, ptr) || atom_is(v, val),
         Op::Prim(_, a, b) | Op::PrimF(_, a, b) => atom_is(v, a) || atom_is(v, b),
+        Op::Vec(_, _, xs) => xs.iter().any(|a| atom_is(v, a)),
         Op::CallDirect(_, xs, _) | Op::CallClosure(_, xs) => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeTuple(xs) | Op::MakeCon { args: xs, .. } => xs.iter().any(|a| atom_is(v, a)),
         Op::MakeRecord { fields, .. } => fields.iter().any(|(_, a)| atom_is(v, a)),
@@ -11085,6 +11186,7 @@ fn uq_op(op: &mut Op, env: &HashMap<String, String>) {
         | Op::MakeCon { args: xs, .. }
         | Op::RtCall { args: xs, .. }
         | Op::Ffi { args: xs, .. }
+        | Op::Vec(_, _, xs)
         | Op::MakeClosure { captures: xs, .. } => xs.iter_mut().for_each(|a| uq_atom(a, env)),
         Op::CallClosure(f, xs) => {
             uq_atom(f, env);
@@ -11847,7 +11949,7 @@ fn op_moves(v: &str, op: &Op, ba: &BorrowArgs) -> bool {
         // (the old behavior) made any `f x = x <op> …` drop `x` from its borrow set, so a
         // caller passing an OWNED value that is then reused (a `%1` list element used by a
         // predicate AND embedded in the output) was flagged as a double-move by the verifier.
-        Op::Prim(_, _, _) | Op::PrimF(_, _, _) => false,
+        Op::Prim(_, _, _) | Op::PrimF(_, _, _) | Op::Vec(..) => false,
         Op::StoreRaw(a, _, b) | Op::Promote(a, b) => atom_is(v, a) || atom_is(v, b),
         // as `delta::op_delta_effect` reads them: a closure that does not own its captures
         // BORROWS them; an FFI argument is moved only if declared `Own`; a runtime call follows
@@ -15995,6 +16097,7 @@ fn op_mentions_any(op: &Op, set: &HashSet<String>) -> bool {
         | Op::MakeCon { args: xs, .. }
         | Op::RtCall { args: xs, .. }
         | Op::Ffi { args: xs, .. }
+        | Op::Vec(_, _, xs)
         | Op::MakeClosure { captures: xs, .. } => xs.iter().any(hit),
         Op::CallClosure(f, xs) => hit(f) || xs.iter().any(hit),
         Op::MakeRecord { fields, .. } => fields.iter().any(|(_, x)| hit(x)),
@@ -17137,6 +17240,7 @@ pub fn dump_op(op: &Op) -> String {
         Op::StoreRaw(p, off, val) => format!("store {}[{off}] = {}", atom(p), atom(val)),
         Op::FuncAddr(n) => format!("&{n}"),
         Op::Prim(o, a, b) | Op::PrimF(o, a, b) => format!("{o} {} {}", atom(a), atom(b)),
+        Op::Vec(o, t, xs) => format!("vec.{}.{}{}", o.name(), t.name(), args(xs)),
         Op::CallDirect(f, xs, _) => format!("call {f}{}", args(xs)),
         Op::CallClosure(c, xs) => format!("callclo {}{}", atom(c), args(xs)),
         Op::MakeClosure {

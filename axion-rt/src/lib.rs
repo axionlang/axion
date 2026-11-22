@@ -309,6 +309,25 @@ pub unsafe extern "C" fn axion_array_len(arr: i64) -> i64 {
 pub unsafe extern "C" fn axion_array_oob(idx: i64, n: i64) -> ! {
     bounds_abort("array", idx, n)
 }
+/// The range check of a SIMD vector load or store (`loadF64x4 a i`): aborts unless every index of
+/// `[idx, idx + n)` is in bounds, naming the first one that is not; returns `idx`. The element
+/// accesses that follow are unchecked (`axionc/src/simd.rs`).
+#[no_mangle]
+pub unsafe extern "C" fn axion_array_range(arr: i64, idx: i64, n: i64) -> i64 {
+    let len = blen(arr);
+    if idx < 0 {
+        bounds_abort("array", idx, len);
+    }
+    if idx > len - n {
+        bounds_abort("array", idx.max(len), len);
+    }
+    idx
+}
+/// Out-of-range lane index of a SIMD vector (`laneF64x4 v i`, `i` outside `[0, n)`). Never returns.
+#[no_mangle]
+pub unsafe extern "C" fn axion_lane_oob(idx: i64, n: i64) -> ! {
+    bounds_abort("lane", idx, n)
+}
 #[no_mangle]
 pub unsafe extern "C" fn axion_array_free(arr: i64) {
     libc::free(arr as *mut libc::c_void);
@@ -2729,6 +2748,8 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_array_len", axion_array_len as *const u8),
         ("axion_array_new", axion_array_new as *const u8),
         ("axion_array_oob", axion_array_oob as *const u8),
+        ("axion_array_range", axion_array_range as *const u8),
+        ("axion_lane_oob", axion_lane_oob as *const u8),
         ("axion_array_set", axion_array_set as *const u8),
         ("axion_array_sum", axion_array_sum as *const u8),
         ("axion_bignum_add", axion_bignum_add as *const u8),

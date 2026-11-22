@@ -84,6 +84,10 @@ enum Value {
     /// i64-bit-pattern representation. The linear type system forbids aliasing, so the shared `Rc`
     /// is never observed as a stale copy by a valid program.
     Array(Rc<RefCell<Vec<Value>>>),
+    /// A SIMD vector of `Float` lanes (`F64x2`/`F64x4`, `simd.rs`).
+    VecF(Vec<f64>),
+    /// A SIMD vector of `Int` lanes (`I64x2`/`I64x4`).
+    VecI(Vec<i64>),
     /// A session endpoint (§6): the id of its buffer in the scheduler (§11).
     Endpoint(usize),
     /// An unresolved typeclass method: on receiving the 1st argument, it dispatches
@@ -274,6 +278,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Tuple(_) => "tuple",
         Value::Record { .. } => "record",
         Value::Array(_) => "Array",
+        Value::VecF(_) | Value::VecI(_) => "SIMD vector",
         Value::Endpoint(_) => "endpoint",
         Value::Closure { .. }
         | Value::Builtin { .. }
@@ -298,6 +303,9 @@ fn value_type_head(prog: &Program, v: &Value) -> Option<String> {
 }
 
 fn builtin_arity(name: &str) -> usize {
+    if let Some(b) = crate::simd::builtin(name) {
+        return crate::simd::arity(b);
+    }
     match name {
         "substr" | "setArray" | "readDirListing" | "pokeU32" | "pokeU8" | "pokeU16" | "pokeU64"
         | "pokeF64" => 3,
@@ -772,6 +780,12 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: sym.clone(), // the C symbol dlsym resolves (an alias binds an uppercase C name)
             arity: *arity,
             interp_safe: *interp_safe,
+            args: Vec::new(),
+        });
+    }
+    if let Some(n) = crate::simd::static_name(name) {
+        return Ok(Value::Builtin {
+            name: n,
             args: Vec::new(),
         });
     }
@@ -1714,9 +1728,119 @@ fn is_builtin_op(op: &str) -> bool {
             | "<#I"
             | ">#I"
     ) || crate::core::is_bitwise_op(op)
+        || crate::simd::binop(op).is_some()
+}
+
+/// A lane-wise binary SIMD operation (`simd::float_lane` / `int_lane`: the backends' semantics).
+fn simd_bin(op: crate::simd::VOp, a: &Value, b: &Value) -> Result<Value, RunError> {
+    match (a, b) {
+        (Value::VecF(x), Value::VecF(y)) => Ok(Value::VecF(
+            x.iter()
+                .zip(y)
+                .map(|(p, q)| crate::simd::float_lane(op, *p, *q))
+                .collect(),
+        )),
+        (Value::VecI(x), Value::VecI(y)) => Ok(Value::VecI(
+            x.iter()
+                .zip(y)
+                .map(|(p, q)| crate::simd::int_lane(op, *p, *q))
+                .collect(),
+        )),
+        _ => Err(format!(
+            "SIMD {}: expected two vectors of one type",
+            op.name()
+        )),
+    }
+}
+
+/// A SIMD built-in function (`simd.rs`).
+fn simd_apply(b: crate::simd::Builtin, args: &[Value]) -> Result<Value, RunError> {
+    use crate::simd::{Builtin, VOp};
+    let ty = crate::simd::builtin_ty(b);
+    let n = ty.n();
+    let lane = |v: &Value| -> Result<Value, RunError> {
+        match (v, ty.float) {
+            (Value::Float(f), true) => Ok(Value::Float(*f)),
+            (Value::Int(i), false) => Ok(Value::Int(*i)),
+            _ => Err(format!("{}: a lane must be {}", ty.name(), ty.elem())),
+        }
+    };
+    let make = |ls: Vec<Value>| -> Value {
+        if ty.float {
+            Value::VecF(
+                ls.iter()
+                    .map(|v| if let Value::Float(f) = v { *f } else { 0.0 })
+                    .collect(),
+            )
+        } else {
+            Value::VecI(
+                ls.iter()
+                    .map(|v| if let Value::Int(i) = v { *i } else { 0 })
+                    .collect(),
+            )
+        }
+    };
+    let lanes = |v: &Value| -> Result<Vec<Value>, RunError> {
+        match v {
+            Value::VecF(x) => Ok(x.iter().map(|f| Value::Float(*f)).collect()),
+            Value::VecI(x) => Ok(x.iter().map(|i| Value::Int(*i)).collect()),
+            _ => Err(format!("{}: expected a vector", ty.name())),
+        }
+    };
+    let range = |a: &Rc<RefCell<Vec<Value>>>, i: i64| -> Result<usize, RunError> {
+        let len = a.borrow().len() as i64;
+        match crate::simd::range_fault(i, n as i64, len) {
+            Some(bad) => Err(format!(
+                "axion: array bounds — index {bad} out of range [0, {len})"
+            )),
+            None => Ok(i as usize),
+        }
+    };
+    match (b, args) {
+        (Builtin::Op(VOp::Make, _), ls) => Ok(make(ls.iter().map(lane).collect::<Result<_, _>>()?)),
+        (Builtin::Op(VOp::Splat, _), [x]) => Ok(make(vec![lane(x)?; n])),
+        (Builtin::Op(VOp::Lane, _), [v, Value::Int(i)]) => {
+            let ls = lanes(v)?;
+            usize::try_from(*i)
+                .ok()
+                .and_then(|k| ls.get(k).cloned())
+                .ok_or_else(|| crate::simd::lane_oob_message(*i, n))
+        }
+        (Builtin::Op(VOp::Sum, _), [v]) => match v {
+            Value::VecF(x) => Ok(Value::Float(x[1..].iter().fold(x[0], |acc, y| acc + y))),
+            Value::VecI(x) => Ok(Value::Int(
+                x[1..].iter().fold(x[0], |acc, y| acc.wrapping_add(*y)),
+            )),
+            _ => Err(format!("{}: expected a vector", ty.name())),
+        },
+        (Builtin::Op(VOp::Fma, _), [Value::VecF(a), Value::VecF(b), Value::VecF(c)]) => Ok(
+            Value::VecF((0..n).map(|k| a[k].mul_add(b[k], c[k])).collect()),
+        ),
+        (Builtin::Op(VOp::Sqrt, _), [Value::VecF(a)]) => {
+            Ok(Value::VecF(a.iter().map(|x| x.sqrt()).collect()))
+        }
+        (Builtin::Op(op, _), [x, y]) => simd_bin(op, x, y),
+        (Builtin::Load(_), [Value::Array(a), Value::Int(i)]) => {
+            let i = range(a, *i)?;
+            let v = a.borrow();
+            Ok(make(
+                v[i..i + n].iter().map(lane).collect::<Result<_, _>>()?,
+            ))
+        }
+        (Builtin::Store(_), [Value::Array(a), Value::Int(i), v]) => {
+            let i = range(a, *i)?;
+            let ls = lanes(v)?;
+            a.borrow_mut()[i..i + n].clone_from_slice(&ls);
+            Ok(Value::Array(a.clone()))
+        }
+        _ => Err(format!("{}: bad arguments", ty.name())),
+    }
 }
 
 fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
+    if let Some((vop, _)) = crate::simd::binop(op) {
+        return simd_bin(vop, &a, &b);
+    }
     use Value::*;
     match (op, a, b) {
         // Int is fixed-width (§ Listing 1.4): arithmetic wraps,
@@ -1776,6 +1900,9 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
 }
 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
+    if let Some(b) = crate::simd::builtin(name) {
+        return simd_apply(b, &args);
+    }
     // Async-socket ops (docs/async-sockets.md) delegate to the libc socket impls (`net_call_foreign`)
     // — Sock/Listener are i64 fds. `netClose`/`netCloseL` return `()` (the fd is consumed).
     if let Some(ax) = net_alias(name) {
@@ -2259,7 +2386,11 @@ pub(crate) fn eval_binding(module: &Module, name: &str) -> Result<RtType, RunErr
         Value::Str(_) => RtType::Str,
         Value::Unit => RtType::Unit,
         Value::Io(_) => RtType::Io,
-        Value::Record { .. } | Value::Tuple(_) | Value::Array(_) => RtType::Record,
+        Value::Record { .. }
+        | Value::Tuple(_)
+        | Value::Array(_)
+        | Value::VecF(_)
+        | Value::VecI(_) => RtType::Record,
         Value::Closure { .. }
         | Value::Builtin { .. }
         | Value::Ctor { .. }
