@@ -1891,6 +1891,76 @@ def gen_simd(rng):
                 f"(splat{name} {lit()}))))")
     return "\n".join(prog) + "\n"
 
+def gen_parfor(rng):
+    """Parallel loops (docs/parallel.md): `parFor` over Int and Float arrays of random lengths
+    (some long enough, and with kernels heavy enough, to go past the runtime's timed cutoff onto
+    the thread pool), kernels that read the old element, captured arrays at in-range indices and
+    captured scalars, named kernels, a kernel calling a function passed in, nested parFor, chained
+    parFors — and, sometimes, a kernel the compiler must refuse (an effect, a captured array
+    written in place). The native run is multi-threaded and the interpreter sequential: their
+    outputs must agree (the result cannot depend on scheduling), ASan-clean."""
+    fl = rng.random() < 0.4
+    elem, zero, show = ("Float", "0.0", "showFloat") if fl else ("Int", "0", "showInt")
+    n = rng.choice([0, 1, 7, 64, 65, 200, 1000, 3000])
+    work = rng.choice([1, 1, 50, 400])           # inner loop length: heavy kernels go parallel
+    def num(e):
+        return f"(toFloat ({e}))" if fl else f"({e})"
+    def kbody(i, x, caps):
+        """A kernel body over index `i` and old element `x`."""
+        parts = [num(f"spin {i} {work}"), x]
+        if caps:
+            c = rng.choice(caps)
+            parts.append(f"getArray {c} ({i} `mod` lenArray {c})")
+        if rng.random() < 0.3:
+            parts.append(num(f"triangle ({i} `mod` 9)"))
+        op = "+." if fl else "+"
+        return f" {op} ".join(f"({p})" for p in parts)
+    prog = ["-- fuzz:parfor",
+            "spin :: Int -> Int -> Int",
+            "spin i k = if k <= 0 then i `mod` 1000 else spin ((i * 7 + 3) `mod` 100003) (k - 1)",
+            "sumA :: Array Int -> Int -> Int -> Int",
+            "sumA a i acc = if i >= lenArray a then acc else sumA a (i + 1) (acc + getArray a i)",
+            "sumF :: Array Float -> Int -> Float -> Float",
+            "sumF a i acc = if i >= lenArray a then acc else sumF a (i + 1) (acc +. getArray a i)",
+            "triangle :: Int -> Int",
+            "triangle r = sumA (parFor (newArray (r + 1) 0) (\\j _ -> j)) 0 0",
+            f"named :: Int -> {elem} -> {elem}",
+            f"named i x = {kbody('i', 'x', [])}",
+            f"tabulate :: Int -> (Int -> {elem}) -> Array {elem}",
+            f"tabulate m f = parFor (newArray m {zero}) (\\i _ -> f i)",
+            "logged :: Int -> Int",
+            "logged x = let u = putStrLn \"x\" in x",
+            "main :: IO ()", "main = do",
+            f"  let c0 = parFor (newArray {rng.choice([1, 5, 33])} {zero}) "
+            f"(\\i _ -> {num('i * 3 - 4')})",
+            "  let k = " + ("2.5" if fl else "5")]
+    caps = ["c0"]
+    cur = None
+    for step in range(rng.randint(1, 3)):
+        src = f"(newArray {n} {zero})" if cur is None else cur
+        r = rng.random()
+        if r < 0.35:
+            kern = f"(\\i x -> {kbody('i', 'x', caps)} {'+.' if fl else '+'} k)"
+        elif r < 0.5:
+            kern = "named"
+        elif r < 0.6:
+            kern = f"(\\i x -> {kbody('i', 'x', caps)})"
+            src = f"(tabulate {n} (\\j -> {kbody('j', num('0'), caps)}))" if cur is None else src
+        elif r < 0.7:
+            kern = f"(\\i x -> x {'+.' if fl else '+'} {num('triangle (i `mod` 40)')})"
+        elif r < 0.78:     # refused: an effect in the kernel
+            kern = f"(\\i x -> {num('logged i')})"
+            prog[0] = "-- fuzz:parfor expect:AX0800"
+        elif r < 0.84:     # refused: a captured array written in place
+            kern = f"(\\i x -> getArray (setArray c0 0 x) 0)"
+            prog[0] = "-- fuzz:parfor expect:AX0800"
+        else:
+            kern = f"(\\i x -> {kbody('i', 'x', caps)})"
+        prog.append(f"  let a{step} = parFor {src} {kern}")
+        cur = f"a{step}"
+        prog.append(f"  putStrLn ({show} ({'sumF' if fl else 'sumA'} a{step} 0 {zero}))")
+    return "\n".join(prog) + "\n"
+
 def gen_total(rng):
     """Totality (axionc/src/total.rs): random counting loops (guards that may be off by one or
     point the wrong way, steps that may skip a bound or wrap at the largest Int), divisions
@@ -2127,6 +2197,14 @@ def check(prog, work):
         return ("verdict", f"interp ran but cranelift rejected:\n{ec[-400:]}")
     if ri != 0 and rc == 0:
         return ("verdict", f"cranelift ran but interp rejected:\n{ei[-400:]}")
+    if "fuzz:parfor" in prog:
+        # refused exactly when a kernel was generated to be refused (an effect, a captured array
+        # written in place), and then for that reason
+        expect = "expect:AX0800" in prog
+        refused = ri != 0 and "error[" in (oi + ei)
+        if expect != refused or (refused and "error[AX0800]" not in (oi + ei)):
+            return ("verdict", f"parFor: expected {'AX0800' if expect else 'acceptance'}:\n"
+                               f"{(oi + ei)[-600:]}")
     if "fuzz:total" in prog and ri != 0 and "error[" not in (oi + ei):
         # every function is declared total and was accepted: it must not abort
         return ("totality", f"an accepted total function failed at run time:\n{(oi + ei)[-400:]}")

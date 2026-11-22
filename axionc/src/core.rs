@@ -1765,6 +1765,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "newArray",
         "getArray",
         "setArray",
+        "parFor",
         "lenArray",
         "newTritVec",
         "getTritVec",
@@ -2459,6 +2460,32 @@ impl Lower<'_> {
                 return self.rtcall("axion_array_set", &args, true, buf);
             }
             ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
+            // `parFor a k` (`docs/parallel.md`): the runtime replaces every slot `i` of `a` by
+            // `k i a[i]`, the index range split among threads. It borrows both: the checker made
+            // `a` dead here (consumed, like `setArray`), so writing it in place is invisible, and
+            // the same array is the result. Scalar elements only: a heap element would need its
+            // old value freed and the new one owned per slot.
+            ("parFor", 2) => {
+                if self.heap_array_elem(e.span()).is_some() {
+                    return Op::Unsupported(
+                        "parFor over an array of heap elements (natively: Int, Float, Bool, Char)"
+                            .into(),
+                    );
+                }
+                let arr = self.atom(args[0], buf);
+                let clos = self.atom(args[1], buf);
+                let done = self.fresh();
+                buf.push((
+                    done,
+                    Rhs::Op(Op::RtCall {
+                        func: "axion_par_for".into(),
+                        args: vec![arr.clone(), clos],
+                        returns: true,
+                    }),
+                    e.span(),
+                ));
+                return Op::Atom(arr);
+            }
             // TritVec (§10): base-243 packed ternary array. A flat block (packed
             // bytes inline, no nested heap) → Auto-Drop's flat `axion_free`
             // reclaims it; `drop_ty` marks the `newTritVec` binding as owned.
@@ -3518,6 +3545,7 @@ fn absorb_lambda_caf(mut f: ast::Func) -> ast::Func {
 /// Built-ins with their own lowering (sessions, sockets, arenas, control forms): never wrapped
 /// in a lambda (`eta_expand`) or a top-level wrapper (`lib::wrap_builtin_closure_args`).
 pub const NOT_ETA: &[&str] = &[
+    "parFor",
     "bound",
     "spawn",
     "send",

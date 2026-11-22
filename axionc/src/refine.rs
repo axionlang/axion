@@ -1837,6 +1837,7 @@ pub fn apply_proven(fns: &mut [crate::core::CoreFn], proven: &[Span]) {
 /// else a total function uses must be proven safe at the use (`getArray`, `div`, SIMD lanes …)
 /// or is partial.
 const TOTAL_BUILTINS: &[&str] = &[
+    "parFor",
     "True",
     "False",
     "otherwise",

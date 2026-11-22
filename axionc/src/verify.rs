@@ -748,6 +748,7 @@ fn run_fn(
         binder_of: HashMap::new(),
         consumed_slots: HashMap::new(),
         borrowed_params,
+        captures: f.captures.iter().cloned().collect(),
         ret_alias,
         frees_heap,
         poly_borrowed: HashSet::new(),
@@ -851,6 +852,9 @@ struct Verifier<'a> {
     /// like `dropWhile` — not in `borrow_args`). `consume` flags freeing an interior of one
     /// of THESE (the owner double-frees), but not of a moved-in/view param (this fn owns it).
     borrowed_params: HashSet<String>,
+    /// A closure's captures (`[env …]`): the closure cell holds them across every call, so the
+    /// body only ever borrows them.
+    captures: HashSet<String>,
     /// The WHOLE-VALUE param-return relation (R-1, `ret_alias_summary`): `ret_alias[g]` = the
     /// param indices `g`'s result may BE. Consumed at call sites (`classify`) to mark a call's
     /// result as aliasing an argument the callee BORROWS and returns whole — the
@@ -1292,7 +1296,44 @@ impl Verifier<'_> {
         }
         let e = op_delta_effect(op, self.ba);
         if let Some(Atom::Var(src)) = e.alias {
+            // an alias of a closure capture (untracked: the closure holds it) borrows it
+            if !st.contains_key(src) && self.captures.contains(src) {
+                return Val {
+                    owned: false,
+                    borrows: HashSet::from([src.clone()]),
+                    dead: None,
+                    key: None,
+                    moved_in: false,
+                };
+            }
             return st.get(src).cloned().unwrap_or_default();
+        }
+        // An array write (`setArray`) stores in place and returns the array it was given. The
+        // table reads it as handing the array over for a fresh one, which is right for an array
+        // this function holds; but a closure's capture (or an alias of one) stays the closure's:
+        // the write's result IS that borrowed array, so freeing it frees what the closure still
+        // holds and runs again on — a lambda writing an array it captured (`parFor`, `map`).
+        if let Op::RtCall { func, args, .. } = op {
+            if func == "axion_array_set" || func == "axion_array_set_nobc" {
+                if let Some(Atom::Var(a)) = args.first() {
+                    let held = st.get(a).is_some_and(|v| v.owned || v.moved_in);
+                    let captured = self.captures.contains(a)
+                        || st
+                            .get(a)
+                            .is_some_and(|v| v.borrows.iter().any(|b| self.captures.contains(b)));
+                    if captured && !held {
+                        let mut borrows = st.get(a).map(|v| v.borrows.clone()).unwrap_or_default();
+                        borrows.insert(a.clone());
+                        return Val {
+                            owned: false,
+                            borrows,
+                            dead: None,
+                            key: None,
+                            moved_in: false,
+                        };
+                    }
+                }
+            }
         }
         // A BY-COPY record update shares every heap field it does not set with the record it
         // copies (`b { label = … }` keeps `b`'s `onClick` cell): the result borrows that record,

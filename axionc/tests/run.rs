@@ -7724,6 +7724,82 @@ fn total_functions_are_proven_and_run() {
 }
 
 #[test]
+fn parallel_loops_give_the_sequential_result() {
+    // matrix-vector product, uneven kernels, named kernels, a total function, a kernel calling a
+    // function passed in, nested parFor, Bool elements: the same on every backend…
+    let want = "59.5\n1834634\n4495500\n873250\n4499950\n334\n";
+    agree_across_backends("parfor.axi", want);
+    // …and with any number of threads
+    for threads in ["1", "3"] {
+        let out = axionc()
+            .arg("--release")
+            .arg(fixture("parfor.axi"))
+            .env("AXION_PAR_THREADS", threads)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            want,
+            "{threads} threads"
+        );
+    }
+}
+
+#[test]
+fn parallel_loop_kernels_with_effects_are_refused() {
+    let out = axionc().arg(fixture("parfor_reject.axi")).output().unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    for (code, what) in [
+        ("AX0800", "it uses `putStrLn`, which has effects"),
+        (
+            "AX0800",
+            "it uses `viaLogged` → `logged` → `putStrLn`, which has effects",
+        ),
+        ("AX0800", "it uses `noisy` → `logged` → `putStrLn`"),
+        ("AX0800", "`setArray` writes `cap` in place"),
+        ("AX0800", "it uses `exitWith`, which has effects"),
+        (
+            "AX0801",
+            "`parFor` must be applied to its array and its kernel",
+        ),
+    ] {
+        assert!(
+            text.contains(&format!("error[{code}]")) && text.contains(what),
+            "missing {code} `{what}`:\n{text}"
+        );
+    }
+    assert_eq!(text.matches("error[").count(), 6, "{text}");
+}
+
+#[test]
+fn a_closure_writing_an_array_it_captured_is_not_compiled() {
+    // each call of `f` wrote the captured array in place and freed it — a double free natively.
+    // The verifier sees that the write's result is the closure's borrowed capture. (A lambda that
+    // higher-order specialization turns into a function with the capture as a parameter, as in
+    // `map (\i -> …) xs`, is not covered yet: docs/parallel.md.)
+    let dir = std::env::temp_dir().join(format!("axion_capwrite_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let p = dir.join("capwrite.axi");
+    std::fs::write(
+        &p,
+        "main :: IO ()\nmain = do\n  let cap = newArray 10 0\n  \
+         let f = \\i -> getArray (setArray cap 0 i) 0\n  \
+         putStrLn (showInt (f 1 + f 2))\n",
+    )
+    .unwrap();
+    let out = axionc()
+        .arg("--emit")
+        .arg("verify")
+        .arg(&p)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("DropOfAlias"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn functions_that_are_not_total_are_refused() {
     let out = axionc().arg(fixture("total_reject.axi")).output().unwrap();
     assert!(!out.status.success());

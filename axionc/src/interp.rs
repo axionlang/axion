@@ -312,7 +312,7 @@ fn builtin_arity(name: &str) -> usize {
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
         | "getArray" | "arrayDot" | "peekU8" | "peekU16" | "peekU32" | "peekU64" | "peekF64"
-        | "bufPtrN" | "fileRead" | "xorInPlace" => 2,
+        | "bufPtrN" | "fileRead" | "xorInPlace" | "parFor" => 2,
         "netSendBuf" => 4,
         _ => 1,
     }
@@ -1066,6 +1066,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "setArray",
             args: Vec::new(),
         }),
+        "parFor" => Ok(Value::Builtin {
+            name: "parFor",
+            args: Vec::new(),
+        }),
         "lenArray" => Ok(Value::Builtin {
             name: "lenArray",
             args: Vec::new(),
@@ -1194,7 +1198,9 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         }
         Value::Builtin { name, mut args } => {
             args.push(arg);
-            if args.len() >= builtin_arity(name) {
+            if name == "parFor" && args.len() == 2 {
+                run_par_for(prog, args)
+            } else if args.len() >= builtin_arity(name) {
                 run_builtin(name, args)
             } else {
                 Ok(Value::Builtin { name, args })
@@ -1897,6 +1903,23 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
             type_name(&y)
         )),
     }
+}
+
+/// `parFor a k` (`docs/parallel.md`): every slot `i` of `a` becomes `k i a[i]`. Natively the
+/// slots are split among threads; here they run in index order. The kernel has no effects and
+/// cannot see the array (the checker refuses both), so the order makes no difference.
+fn run_par_for(prog: &Program, mut args: Vec<Value>) -> Result<Value, RunError> {
+    let (Some(k), Some(Value::Array(a))) = (args.pop(), args.pop()) else {
+        return Err("parFor: expected an Array and a function".into());
+    };
+    let n = a.borrow().len();
+    for i in 0..n {
+        let x = a.borrow()[i].clone();
+        let f = apply(prog, k.clone(), Value::Int(i as i64))?;
+        let y = apply(prog, f, x)?;
+        a.borrow_mut()[i] = y;
+    }
+    Ok(Value::Array(a))
 }
 
 fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {

@@ -68,6 +68,7 @@ mod levels;
 mod lexer;
 #[cfg(feature = "native")]
 mod llvm;
+mod par;
 mod parser;
 mod refine;
 mod simd;
@@ -1754,6 +1755,8 @@ pub fn prepare_for_check_with(
     // Totality (`{-# TOTAL f #-}`, `total.rs`): here, where the batch and the editor pipelines
     // share the module (before higher-order specialization, which only the batch one does).
     total::check(&module, diags);
+    // Parallel loops (`parFor`, `par.rs`): a kernel must have no effects.
+    par::check(&module, diags);
     // Infer `%1` (consumed) ownership for a signature param whose extracted heap
     // element escapes via the result (`head`/`append`/`reverse`) or whose whole heap value
     // is embedded into the result (`pairUp`, Rule A′). Runs BEFORE the linear checker and
@@ -7890,6 +7893,22 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
         }
         "AX0703" => {
             "AX0703 — a name in `{-# TOTAL … #-}` is not a top-level function of this module."
+        }
+        "AX0800" => {
+            "AX0800 — a `parFor` kernel has an effect. `parFor a k` replaces every\n\
+             element `i` of `a` by `k i a[i]` on several threads at once, in no fixed\n\
+             order, so the result is the same as a sequential loop only if the kernel\n\
+             just computes: it may read what it captures and allocate, but not do I/O,\n\
+             exit, use channels or sessions, start tasks, or write a Buffer or an arena\n\
+             in place. The check looks into the kernel and every function it calls by\n\
+             name. Compute the values with `parFor`, then do the effects after it.\n\
+             See docs/parallel.md."
+        }
+        "AX0801" => {
+            "AX0801 — `parFor` is used without both of its arguments (as a value, or\n\
+             partially applied). Its kernel has to be visible where it is called, so\n\
+             that it can be checked for effects (AX0800): write `parFor a (\\i x -> …)`\n\
+             or `parFor a kernel`. See docs/parallel.md."
         }
         "AX0915" => {
             "AX0915 — a SIMD vector cannot go here natively. A vector (F64x2, F64x4,\n\

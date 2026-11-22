@@ -348,6 +348,217 @@ pub unsafe extern "C" fn axion_array_dot(a: i64, b: i64) -> i64 {
     let db = std::slice::from_raw_parts((b as *const u8).add(8).cast::<i64>(), n as usize);
     da.iter().zip(db).map(|(&x, &y)| x * y).sum()
 }
+// ─── parallel loops (`parFor`, docs/parallel.md) ─────────────────────────────────────────────
+
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering as AtOrd};
+// `parFor a k` replaces every slot `i` of the array by `k i a[i]`. The indices are handed out in
+// blocks from one atomic counter to `par_threads()` threads (the caller is one of them), so each
+// slot is read and written by exactly one thread: the blocks are disjoint. The kernel is a closure
+// `{fn_ptr, …}` called as `fn_ptr(clo, i, x)`; it only reads what it captured (the compiler
+// refuses kernels with effects or in-place writes) and the array itself is not reachable from it
+// (the checker consumed it at the call), so nothing else touches the slots while they are written.
+
+thread_local! {
+    /// Set on the threads of a running `parFor`: a `parFor` inside a kernel runs sequentially
+    /// on its thread instead of starting threads of its own.
+    static IN_PAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Slots per block a thread takes at a time (a slot is one kernel call).
+const PAR_BLOCK_MIN: i64 = 64;
+/// A `parFor` estimated to take less than this (ns) runs on the calling thread alone.
+const PAR_MIN_NS: i64 = 50_000;
+
+fn par_threads() -> usize {
+    for var in ["AXION_PAR_THREADS", "AXION_SESS_THREADS"] {
+        if let Ok(env) = std::env::var(var) {
+            if let Ok(n) = env.parse::<usize>() {
+                if n > 0 {
+                    return n;
+                }
+            }
+        }
+    }
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// Runs the kernel over the slots `[lo, hi)`.
+unsafe fn par_run(clo: i64, data: i64, lo: i64, hi: i64) {
+    let f = std::mem::transmute::<i64, extern "C" fn(i64, i64, i64) -> i64>(*(clo as *const i64));
+    let d = data as *mut i64;
+    for i in lo..hi {
+        let p = d.add(i as usize);
+        *p = f(clo, i, *p);
+    }
+}
+
+/// One `parFor` handed to the pool: the kernel, the slots, and how they are cut into blocks.
+#[derive(Clone, Copy)]
+struct ParJob {
+    clo: i64,
+    data: i64,
+    n: i64,
+    block: i64,
+    nblocks: i64,
+}
+
+impl ParJob {
+    /// Takes blocks from `next` until none are left.
+    unsafe fn work(self, next: &AtomicI64) {
+        let was = IN_PAR.with(|c| c.replace(true));
+        loop {
+            let b = next.fetch_add(1, AtOrd::Relaxed);
+            if b >= self.nblocks {
+                break;
+            }
+            let lo = b * self.block;
+            par_run(self.clo, self.data, lo, (lo + self.block).min(self.n));
+        }
+        IN_PAR.with(|c| c.set(was));
+    }
+}
+
+struct PoolState {
+    /// bumped for each job; a worker runs every generation once
+    gen: u64,
+    job: Option<ParJob>,
+    /// workers still on the current job
+    active: usize,
+}
+
+/// The `parFor` threads, started on first use and kept for the life of the process (starting
+/// threads per call would cost far more than a small loop). One job at a time: a `parFor` that
+/// finds the pool busy (one started on another thread meanwhile) runs on its own thread.
+struct ParPool {
+    m: Mutex<PoolState>,
+    work: std::sync::Condvar,
+    done: std::sync::Condvar,
+    next: AtomicI64,
+    busy: AtomicBool,
+    /// threads actually started
+    workers: AtomicUsize,
+}
+
+static PAR_POOL: std::sync::OnceLock<&'static ParPool> = std::sync::OnceLock::new();
+
+fn par_lock(p: &ParPool) -> MutexGuard<'_, PoolState> {
+    p.m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn par_pool() -> &'static ParPool {
+    PAR_POOL.get_or_init(|| {
+        let pool: &'static ParPool = Box::leak(Box::new(ParPool {
+            m: Mutex::new(PoolState {
+                gen: 0,
+                job: None,
+                active: 0,
+            }),
+            work: std::sync::Condvar::new(),
+            done: std::sync::Condvar::new(),
+            next: AtomicI64::new(0),
+            busy: AtomicBool::new(false),
+            workers: AtomicUsize::new(0),
+        }));
+        for _ in 1..par_threads() {
+            let spawned = std::thread::Builder::new()
+                .stack_size(1 << 28)
+                .spawn(move || par_worker(pool));
+            if spawned.is_err() {
+                break; // fewer threads: the caller takes their blocks
+            }
+            pool.workers.fetch_add(1, AtOrd::Relaxed);
+        }
+        pool
+    })
+}
+
+fn par_worker(pool: &'static ParPool) {
+    let mut seen = 0u64;
+    loop {
+        let job = {
+            let mut g = par_lock(pool);
+            while g.gen == seen {
+                g = pool.work.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            seen = g.gen;
+            g.job
+        };
+        if let Some(job) = job {
+            // SAFETY: the job's array and closure outlive it — `axion_par_for` waits for every
+            // worker (`active == 0`) before it returns.
+            unsafe { job.work(&pool.next) };
+        }
+        let mut g = par_lock(pool);
+        g.active -= 1;
+        if g.active == 0 {
+            pool.done.notify_all();
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn axion_par_for(arr: i64, clo: i64) -> i64 {
+    let n = blen(arr);
+    let data = (arr as *mut u8).add(8) as i64;
+    let threads = if IN_PAR.with(|c| c.get()) {
+        1
+    } else {
+        par_threads()
+    };
+    // blocks: about 8 per thread (load balance for uneven kernels), never under PAR_BLOCK_MIN
+    let block = (n / (threads as i64 * 8)).max(PAR_BLOCK_MIN);
+    let nblocks = (n + block - 1) / block;
+    if threads <= 1 || nblocks <= 1 {
+        par_run(clo, data, 0, n);
+        return 0;
+    }
+    // The first block runs here, timed: a loop whose whole run would take less than waking the
+    // pool costs (`PAR_MIN_NS`) finishes on this thread. The compiler cannot know a kernel's cost;
+    // this measures it.
+    let t0 = std::time::Instant::now();
+    par_run(clo, data, 0, block);
+    let est = (t0.elapsed().as_nanos() as i64).saturating_mul(nblocks - 1);
+    if est < PAR_MIN_NS {
+        par_run(clo, data, block, n);
+        return 0;
+    }
+    let pool = par_pool();
+    if pool.workers.load(AtOrd::Relaxed) == 0
+        || pool
+            .busy
+            .compare_exchange(false, true, AtOrd::Acquire, AtOrd::Relaxed)
+            .is_err()
+    {
+        par_run(clo, data, block, n);
+        return 0;
+    }
+    let job = ParJob {
+        clo,
+        data,
+        n,
+        block,
+        nblocks,
+    };
+    {
+        let mut g = par_lock(pool);
+        pool.next.store(1, AtOrd::Relaxed); // block 0 is done
+        g.job = Some(job);
+        g.active = pool.workers.load(AtOrd::Relaxed);
+        g.gen += 1;
+        pool.work.notify_all();
+    }
+    job.work(&pool.next);
+    {
+        let mut g = par_lock(pool);
+        while g.active > 0 {
+            g = pool.done.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+        g.job = None;
+    }
+    pool.busy.store(false, AtOrd::Release);
+    0
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn axion_array_iota(len: i64) -> i64 {
     let n = if len < 0 { 0 } else { len };
@@ -534,7 +745,8 @@ pub unsafe extern "C" fn axion_i8_matvec_sum(arr: i64, act_arr: i64, k_width: i6
         len_mismatch("i8_matvec_sum", k_width, alen);
     }
     let w = std::slice::from_raw_parts((arr as *const i8).byte_add(8), n as usize);
-    let act = std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), alen as usize);
+    let act =
+        std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), alen as usize);
     let mut acc = 0i64;
     let mut k = 0usize;
     for &wi in w {
@@ -615,7 +827,8 @@ pub unsafe extern "C" fn axion_i32_matvec_sum(arr: i64, act_arr: i64, k_width: i
         len_mismatch("i32_matvec_sum", k_width, alen);
     }
     let w = std::slice::from_raw_parts((arr as *const i32).byte_add(8), n as usize);
-    let act = std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), alen as usize);
+    let act =
+        std::slice::from_raw_parts((act_arr as *const u8).add(8).cast::<i64>(), alen as usize);
     let mut acc = 0i64;
     let mut k = 0usize;
     for &wi in w {
@@ -812,7 +1025,7 @@ struct Inner {
     budget: i64,
     done: bool,
     result: i64,
-    par: bool,        // parMap: finish when ALL tasks are done (no single root)
+    par: bool, // parMap: finish when ALL tasks are done (no single root)
     ncompleted: usize,
 }
 
@@ -1080,10 +1293,9 @@ unsafe fn sess_worker(sched_p: i64) {
                 // readied — by another worker finishing, or by an epoll shard thread re-readying a
                 // socket-parked task and notifying. NOT a busy-sleep. The 50 ms timeout is a
                 // safety-net: a missed notify degrades to a brief re-check, never a hang.
-                let (guard, _) = s
-                    .cv
-                    .wait_timeout(g, std::time::Duration::from_millis(50))
-                    .unwrap_or_else(|e| e.into_inner());
+                let (guard, _) =
+                    s.cv.wait_timeout(g, std::time::Duration::from_millis(50))
+                        .unwrap_or_else(|e| e.into_inner());
                 drop(guard);
                 continue;
             }
@@ -1127,7 +1339,11 @@ unsafe fn sess_worker(sched_p: i64) {
             // `n_parked` and the epoll set stay consistent.
             let shard = (fd as usize) % s.shards.len();
             let mut ev = libc::epoll_event {
-                events: if want_write { libc::EPOLLOUT } else { libc::EPOLLIN } as u32,
+                events: if want_write {
+                    libc::EPOLLOUT
+                } else {
+                    libc::EPOLLIN
+                } as u32,
                 u64: pack_fd_task(fd, i),
             };
             libc::epoll_ctl(s.shards[shard].epfd, libc::EPOLL_CTL_ADD, fd, &mut ev);
@@ -1164,7 +1380,9 @@ unsafe fn run_pool(sched_p: i64) {
     let mut handles = Vec::new();
     for shard in 0..nshards {
         let p = sched_p;
-        handles.push(std::thread::spawn(move || unsafe { epoll_worker(p, shard) }));
+        handles.push(std::thread::spawn(move || unsafe {
+            epoll_worker(p, shard)
+        }));
     }
     let n = sess_nthreads();
     for _ in 0..n {
@@ -1218,7 +1436,12 @@ pub unsafe extern "C" fn axion_sess_run_par(sched_p: i64, step: i64, state: i64)
 /// Structured fork-join (parMap): one worker per input, preload each input, run all to completion,
 /// then collect replies into a List (Cons/Nil, in input order).
 #[no_mangle]
-pub unsafe extern "C" fn axion_par_map(step: i64, state_size: i64, ep_slot: i64, inputs: i64) -> i64 {
+pub unsafe extern "C" fn axion_par_map(
+    step: i64,
+    state_size: i64,
+    ep_slot: i64,
+    inputs: i64,
+) -> i64 {
     let sp = axion_sess_new();
     lock(sched(sp)).par = true;
 
@@ -1395,7 +1618,12 @@ pub unsafe extern "C" fn ax_net_connect(host_ptr: i64, port: i64) -> i64 {
     hints.ai_family = libc::AF_UNSPEC;
     hints.ai_socktype = libc::SOCK_STREAM;
     let mut res: *mut libc::addrinfo = std::ptr::null_mut();
-    let r = libc::getaddrinfo(host_ptr as *const libc::c_char, std::ptr::null(), &hints, &mut res);
+    let r = libc::getaddrinfo(
+        host_ptr as *const libc::c_char,
+        std::ptr::null(),
+        &hints,
+        &mut res,
+    );
     if r != 0 || res.is_null() {
         return -i64::from(if r != 0 { r } else { libc::EAI_FAIL });
     }
@@ -1464,7 +1692,11 @@ pub unsafe extern "C" fn ax_net_listen(port: i64) -> i64 {
 /// listen fd's blocking mode; the caller sets it non-blocking via `ax_net_set_nonblocking`.
 #[no_mangle]
 pub unsafe extern "C" fn ax_net_accept(listen_fd: i64) -> i64 {
-    let c = libc::accept(listen_fd as libc::c_int, std::ptr::null_mut(), std::ptr::null_mut());
+    let c = libc::accept(
+        listen_fd as libc::c_int,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    );
     if c >= 0 {
         i64::from(c)
     } else if errno_is_wouldblock() {
@@ -1523,12 +1755,7 @@ pub unsafe extern "C" fn ax_net_send_buf(fd: i64, buf: i64, off: i64, len: i64) 
 #[no_mangle]
 pub unsafe extern "C" fn ax_net_recv(fd: i64) -> i64 {
     let mut buf = [0u8; 4096];
-    let n = libc::recv(
-        fd as libc::c_int,
-        buf.as_mut_ptr().cast(),
-        buf.len() - 1,
-        0,
-    );
+    let n = libc::recv(fd as libc::c_int, buf.as_mut_ptr().cast(), buf.len() - 1, 0);
     if n > 0 {
         alloc_str(&buf[..n as usize])
     } else if n < 0 && errno_is_wouldblock() {
@@ -1612,7 +1839,11 @@ pub unsafe extern "C" fn axion_arena_alloc(arena: i64, size: i64) -> i64 {
     }
     let mut c = (*a).cur;
     if (*c).off + size > (*c).cap {
-        let cap = if size > ARENA_CHUNK { size } else { ARENA_CHUNK };
+        let cap = if size > ARENA_CHUNK {
+            size
+        } else {
+            ARENA_CHUNK
+        };
         c = chunk_new(cap, (*a).cur);
         (*a).cur = c;
     }
@@ -1981,7 +2212,11 @@ pub unsafe extern "C" fn axion_run(cmd: i64) -> i64 {
 /// `runStatus cmd` — run via the shell, return the exit status (-1 if it could not run).
 #[no_mangle]
 pub unsafe extern "C" fn axion_system(cmd: i64) -> i64 {
-    match std::process::Command::new("sh").arg("-c").arg(os(cmd)).status() {
+    match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(os(cmd))
+        .status()
+    {
         Ok(st) => st.code().map_or(-1, i64::from),
         Err(_) => -1,
     }
@@ -2110,7 +2345,10 @@ pub unsafe extern "C" fn axion_file_exists(path: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn axion_mkdir_p(path: i64) -> i64 {
     use std::os::unix::fs::DirBuilderExt;
-    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(os(path));
+    let _ = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(os(path));
     0
 }
 
@@ -2452,7 +2690,11 @@ unsafe fn read_key_timeout_impl(ms: i64) -> i64 {
     // SIGWINCH (resize) returns "" at once and a TUI's idle key-wait wakes IMMEDIATELY (then checks
     // `resized`), not after the timeout. `poll` sees the kernel fd directly, which is correct now that no
     // userspace buffer is kept. On POLLIN, read the one ready byte; timeout/EINTR/EOF → "".
-    let to = if ms > i64::from(i32::MAX) { i32::MAX } else { ms as i32 };
+    let to = if ms > i64::from(i32::MAX) {
+        i32::MAX
+    } else {
+        ms as i32
+    };
     let wfd = WINCH_RFD.load(std::sync::atomic::Ordering::Relaxed);
     let mut pfds = [
         libc::pollfd {
@@ -2515,7 +2757,13 @@ unsafe fn exec_impl(argv_joined: i64, stdin_str: i64, want_stdout: bool) -> i64 
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     let joined = str_bytes(argv_joined);
-    let fail = || if want_stdout { unsafe { alloc_str(b"") } } else { -1 };
+    let fail = || {
+        if want_stdout {
+            unsafe { alloc_str(b"") }
+        } else {
+            -1
+        }
+    };
     if joined.is_empty() || joined[0] == b'\n' {
         return fail();
     }
@@ -2527,8 +2775,16 @@ unsafe fn exec_impl(argv_joined: i64, stdin_str: i64, want_stdout: bool) -> i64 
     }
     let input = str_bytes(stdin_str);
     let feed = !input.is_empty();
-    cmd.stdin(if feed { Stdio::piped() } else { Stdio::inherit() });
-    cmd.stdout(if want_stdout { Stdio::piped() } else { Stdio::inherit() });
+    cmd.stdin(if feed {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
+    cmd.stdout(if want_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    });
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => return fail(),
@@ -2731,9 +2987,18 @@ pub unsafe extern "C" fn axion_bignum_to_string(p: i64) -> i64 {
 #[must_use]
 pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
-        ("axion_bignum_to_string", axion_bignum_to_string as *const u8),
-        ("axion_tritvec_from_buffer", axion_tritvec_from_buffer as *const u8),
-        ("axion_tritvec_matvec_sum", axion_tritvec_matvec_sum as *const u8),
+        (
+            "axion_bignum_to_string",
+            axion_bignum_to_string as *const u8,
+        ),
+        (
+            "axion_tritvec_from_buffer",
+            axion_tritvec_from_buffer as *const u8,
+        ),
+        (
+            "axion_tritvec_matvec_sum",
+            axion_tritvec_matvec_sum as *const u8,
+        ),
         ("axion_alloc", axion_alloc as *const u8),
         ("axion_arena_alloc", axion_arena_alloc as *const u8),
         ("axion_arena_mark", axion_arena_mark as *const u8),
@@ -2750,6 +3015,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_array_oob", axion_array_oob as *const u8),
         ("axion_array_range", axion_array_range as *const u8),
         ("axion_lane_oob", axion_lane_oob as *const u8),
+        ("axion_par_for", axion_par_for as *const u8),
         ("axion_array_set", axion_array_set as *const u8),
         ("axion_array_sum", axion_array_sum as *const u8),
         ("axion_bignum_add", axion_bignum_add as *const u8),
@@ -2871,9 +3137,15 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_file_read", axion_file_read as *const u8),
         ("axion_file_close", axion_file_close as *const u8),
         ("axion_buf_len", axion_buf_len as *const u8),
-        ("ax_net_set_nonblocking", ax_net_set_nonblocking as *const u8),
+        (
+            "ax_net_set_nonblocking",
+            ax_net_set_nonblocking as *const u8,
+        ),
         ("ax_net_wouldblock", ax_net_wouldblock as *const u8),
-        ("axion_read_key_timeout", axion_read_key_timeout as *const u8),
+        (
+            "axion_read_key_timeout",
+            axion_read_key_timeout as *const u8,
+        ),
     ]
 }
 

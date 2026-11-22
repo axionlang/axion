@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Concurrency gate (§11) for the M:N session scheduler + parMap.
+# Concurrency gate (§11) for the M:N session scheduler, parMap and parFor.
 #
 # WHAT CHANGED (C→Rust runtime port). When the scheduler was C, data-race-freedom
 # had NO static guarantee, so it was checked dynamically: compile the runtime with
@@ -62,6 +62,8 @@ CASES=(
   "session_run_fib 6765"
   "session_run_parfib 300100" # four+ workers in parallel — the real stress
   "session_run_server 63"     # recursive session: a server loop (§6)
+  # parallel loops (docs/parallel.md): the pool, block sharing, nested parFor, the timed cutoff
+  "parfor 59.5\n1834634\n4495500\n873250\n4499950\n334"
 )
 # worker counts to stress: force 1 (serialized), 2, 4, 8 via AXION_SESS_THREADS.
 THREADS=(1 2 4 8)
@@ -71,7 +73,7 @@ fail=0
 ok=0
 for entry in "${CASES[@]}"; do
   name="${entry% *}"
-  want="${entry##* }"
+  want="$(printf '%b' "${entry##* }")" # `\n` separates the lines of a multi-line output
   f="axionc/tests/fixtures/$name.axi"
   [ -f "$f" ] || continue
   if ! "$AXIONC" --emit llvm "$f" >"$WORK/ir.ll" 2>/dev/null; then
@@ -82,7 +84,7 @@ for entry in "${CASES[@]}"; do
   bad=0
   for nt in "${THREADS[@]}"; do
     for _ in $(seq "$REPS"); do
-      out=$(AXION_SESS_THREADS="$nt" TSAN_OPTIONS="halt_on_error=0 exitcode=0" \
+      out=$(AXION_SESS_THREADS="$nt" AXION_PAR_THREADS="$nt" TSAN_OPTIONS="halt_on_error=0 exitcode=0" \
             timeout 30 "$WORK/exe" 2>/dev/null)
       if [ "$out" != "$want" ]; then
         echo "✗ $name: wrong result at AXION_SESS_THREADS=$nt (got '$out', want '$want')"

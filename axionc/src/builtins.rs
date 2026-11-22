@@ -194,6 +194,14 @@ pub const RT_TABLE: &[RtEntry] = &[
     e("axion_array_iota", M, Owned("Array")),
     e("axion_array_sum", B, Scalar),
     e("axion_array_dot", B, Scalar),
+    ea(
+        "axion_par_for",
+        B,
+        Scalar,
+        "writes the array's slots in place (the checker consumes it at `parFor`, like \
+         `setArray`; the lowering hands the same array on) and only calls the kernel; scalar \
+         elements only (a heap element type is refused at lowering)",
+    ),
     // --- I8Array / I32Array / TritVec (monomorphic integer elements) ---
     e("axion_i8_new", M, Owned("I8Array")),
     e("axion_i8_iota", M, Owned("I8Array")),
@@ -389,6 +397,7 @@ pub const SURFACE: &[(&str, &str)] = &[
     ("arrayIota", "axion_array_iota"),
     ("arraySum", "axion_array_sum"),
     ("arrayDot", "axion_array_dot"),
+    ("parFor", "axion_par_for (in place, threads)"),
     ("newI8Array", "axion_i8_new"),
     ("getI8", "axion_i8_get"),
     ("setI8", "axion_i8_set"),

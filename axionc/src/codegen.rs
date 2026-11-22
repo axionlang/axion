@@ -171,6 +171,7 @@ impl Cg {
             ("axion_i8_dot_i8", 2, true),
             ("axion_array_sum", 1, true),
             ("axion_array_dot", 2, true),
+            ("axion_par_for", 2, true),
             ("axion_i32_new", 2, true),
             ("axion_i32_iota", 1, true),
             ("axion_i32_get", 2, true),

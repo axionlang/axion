@@ -3004,6 +3004,24 @@ impl<'a> Infer<'a> {
                 ),
             },
         );
+        // parFor :: Array a -> (Int -> a -> a) -> Array a — every element `i` replaced by
+        // `k i x`, the indices split among threads (`docs/parallel.md`)
+        env.insert(
+            "parFor".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(
+                    Box::new(arra_ty()),
+                    Box::new(Ty::Fun(
+                        Box::new(Ty::Fun(
+                            Box::new(int()),
+                            Box::new(Ty::Fun(Box::new(Ty::Var(0)), Box::new(Ty::Var(0)))),
+                        )),
+                        Box::new(arra_ty()),
+                    )),
+                ),
+            },
+        );
         // getArray :: Array a -> Int -> a
         env.insert(
             "getArray".into(),
@@ -4642,7 +4660,7 @@ impl<'a> Infer<'a> {
                     }
                 }
                 // …and one read out of it: a copy is made at the element's concrete type
-                if n == "getArray" {
+                if n == "getArray" || n == "parFor" {
                     if let Some(Ty::Con(_, args)) = nth_param(&ty, 0) {
                         if let Some(t) = args.first() {
                             self.arr_elems.push((t.clone(), *span));
@@ -4778,7 +4796,7 @@ impl<'a> Infer<'a> {
                     }
                     if let Expr::Var(n, _) = head {
                         match (n.as_str(), n_args) {
-                            ("newArray", 2) | ("setArray", 3) => {
+                            ("newArray", 2) | ("setArray", 3) | ("parFor", 2) => {
                                 self.array_ret_tys.insert(*span, r.clone());
                             }
                             ("getArray", 2) => {

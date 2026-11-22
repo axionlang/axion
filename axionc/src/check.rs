@@ -237,7 +237,7 @@ impl Effects {
 }
 
 /// Every name a function references: its clause bodies and, recursively, its `where`s.
-fn collect_func_refs(f: &Func, out: &mut HashSet<String>) {
+pub fn collect_func_refs(f: &Func, out: &mut HashSet<String>) {
     for c in &f.clauses {
         collect_body_refs(&c.body, out);
         for w in &c.wher {
@@ -303,7 +303,7 @@ fn where_body_is_effectful(w: &Func, effects: &Effects) -> bool {
     refs.iter().any(|n| effects.contains(n))
 }
 
-fn collect_body_refs(body: &Body, out: &mut HashSet<String>) {
+pub fn collect_body_refs(body: &Body, out: &mut HashSet<String>) {
     match body {
         Body::Plain(e) => collect_refs(e, out),
         Body::Guarded(arms) => {
@@ -317,7 +317,7 @@ fn collect_body_refs(body: &Body, out: &mut HashSet<String>) {
 
 /// Collect every `Var` name referenced in `e` (over-approximate: no shadowing/bound
 /// tracking, which only ever marks a name as *used* — never a false "unused" warning).
-fn collect_refs(e: &Expr, out: &mut HashSet<String>) {
+pub fn collect_refs(e: &Expr, out: &mut HashSet<String>) {
     match e {
         Expr::Var(n, _) => {
             out.insert(n.clone());
@@ -1573,6 +1573,7 @@ pub fn builtins() -> HashSet<String> {
         "newArray",
         "getArray",
         "setArray",
+        "parFor",
         "lenArray",
         // TritVec: base-243 packed ternary array (§10)
         "newTritVec",
@@ -2479,7 +2480,7 @@ fn report_resource(
     }
 }
 
-fn collect_pat_vars(p: &Pat, out: &mut HashSet<String>) {
+pub fn collect_pat_vars(p: &Pat, out: &mut HashSet<String>) {
     match p {
         Pat::Var(n, _) => {
             out.insert(n.clone());
@@ -2821,6 +2822,8 @@ fn build_ctx(module: &Module) -> Ctx {
         vec![Mult::One, Mult::Many, Mult::Many],
     );
     consumers.insert("lenArray".to_string(), vec![Mult::Many]);
+    // parFor consumes the array (written in place, like `setArray`) and borrows the kernel
+    consumers.insert("parFor".to_string(), vec![Mult::One, Mult::Many]);
     // SIMD (`simd.rs`): a vector store consumes the array (in place, like `setArray`); a load
     // borrows it; vectors and lanes are plain values.
     for name in crate::simd::names() {
@@ -3078,14 +3081,28 @@ fn analyze_with(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, pick: fn(Uses, Uses) -
             // makes `Two xs xs` count `xs` as consumed twice (contraction, AX0001).
             let is_ctor = matches!(head, Expr::Con(_, _));
             let mults = head_mults(head, ctx);
-            let mut u = analyze(head, x, Mode::Borrow, ctx);
+            // an applied lambda `(\p -> b) a` runs once: its body is counted as is
+            let mut u = match head {
+                Expr::Lam(pats, body, _) if !binds_var(pats, x) => analyze(body, x, mode, ctx),
+                _ => analyze(head, x, Mode::Borrow, ctx),
+            };
+            let once =
+                matches!(head, Expr::Var(f, _) if RUNS_ITS_LAMBDA_ONCE.contains(&f.as_str()));
             for (i, a) in args.iter().enumerate() {
                 let m = if is_ctor {
                     Mode::Consume
                 } else {
                     arg_mode(mults.get(i))
                 };
-                u = add(u, analyze(a, x, m, ctx));
+                u = add(
+                    u,
+                    match a {
+                        Expr::Lam(pats, body, _) if once && !binds_var(pats, x) => {
+                            analyze(body, x, m, ctx)
+                        }
+                        _ => analyze(a, x, m, ctx),
+                    },
+                );
             }
             u
         }
@@ -3116,16 +3133,32 @@ fn analyze_with(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, pick: fn(Uses, Uses) -
             analyze(base, x, Mode::Consume, ctx), // the update takes ownership of the base
             analyze_assigns(assigns, x, ctx, pick),
         ),
-        // a lambda that shadows x doesn't reference it; otherwise count the body
+        // a lambda that shadows x doesn't reference it; otherwise count the body. A lambda may
+        // run any number of times (`map`, `parFor`, a `let`-bound function called twice): if it
+        // gives away a value it captured, each run gives it away again — so that counts as more
+        // than once (AX0001), unless the lambda provably runs once (applied on the spot, or the
+        // argument of a built-in in `RUNS_ITS_LAMBDA_ONCE`: the `App` case above).
         Expr::Lam(pats, body, _) => {
             if binds_var(pats, x) {
                 (0, 0)
             } else {
-                analyze(body, x, mode, ctx)
+                let (c, b) = analyze(body, x, mode, ctx);
+                (if c > 0 { c.max(2) } else { 0 }, b)
             }
         }
     }
 }
+
+/// Built-ins that call the lambda they are given exactly once, so it may give away what it
+/// captured (`withBuffer n (\b -> …)`, a `spawn`ed task, a nursery body, an arena scope).
+const RUNS_ITS_LAMBDA_ONCE: &[&str] = &[
+    "withBuffer",
+    "withArena",
+    "withSubArena",
+    "spawn",
+    "bound",
+    "imperative",
+];
 
 /// True if any of the patterns binds the name `x` (shadowing).
 fn binds_var(pats: &[Pat], x: &str) -> bool {

@@ -62,6 +62,7 @@ const L1_BUILTINS: &[&str] = &[
     "newArray",
     "getArray",
     "setArray",
+    "parFor",
     "lenArray",
     "arrayIota",
     "arraySum",
