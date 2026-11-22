@@ -1114,7 +1114,7 @@ impl Checker<'_> {
                 }
                 // `parFor a (\i x -> …)`: the kernel's index is in `[0, len a)`
                 if let (Expr::Var(g, _), [arr, Expr::Lam(ps, body, _)]) = (h, args.as_slice()) {
-                    if (g == "parFor" || g == "gpuFor") && self.builtin(cx, g) {
+                    if g == "parFor" && self.builtin(cx, g) {
                         if let Some(Pat::Var(i, _)) = ps.first() {
                             self.walk(cx, arr);
                             let mut side = Vec::new();
@@ -1984,7 +1984,6 @@ pub fn apply_proven(fns: &mut [crate::core::CoreFn], proven: &[Span]) {
 /// or is partial.
 const TOTAL_BUILTINS: &[&str] = &[
     "parFor",
-    "gpuFor",
     "toInt32",
     "fromInt32",
     "toFloat32",

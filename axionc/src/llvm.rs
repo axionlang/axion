@@ -186,8 +186,6 @@ declare i64 @llvm.fptosi.sat.i64.f64(double)
 declare i32 @llvm.fptosi.sat.i32.f32(float)
 declare float @llvm.sqrt.f32(float)
 declare i64 @axion_show_float32(i64)
-declare i64 @axion_gpu_for(i64, i64)
-declare i64 @axion_gpu_launch(i64, i64, i64, i64, i64, i64)
 ";
 
 /// `true` if `main :: Int` (the driver prints); otherwise `:: IO ()` (already printed).
@@ -283,46 +281,8 @@ pub fn emit_ir(
         collect_strings(&f.body, &mut strings);
     }
 
-    // GPU kernels (`gpuFor`, `gpu.rs`): compiled a second time, for the device, into PTX that the
-    // binary carries and hands to the driver at run time
-    let kernels = crate::gpu::kernels(&fns);
-    let mut gpu = GpuCtx::default();
-    let mut ptx_globals = String::new();
-    if !kernels.is_empty() {
-        let dev = crate::gpu::device_fns(&fns, &kernels)
-            .map_err(|(what, f)| format!("AX0802: a gpuFor kernel uses {what} (in `{f}`)"))?;
-        for (i, k) in kernels.iter().enumerate() {
-            gpu.kernels.insert(k.lam.clone(), (i, k.clone()));
-        }
-        let fn_arity: HashMap<String, usize> = fns
-            .iter()
-            .map(|f| (f.name.clone(), f.params.len()))
-            .collect();
-        match device_ptx(
-            &dev, &kernels, &records, &strings, &drop_keys, &fn_arity, &sigs,
-        ) {
-            Ok(ptx) => {
-                gpu.ptx = true;
-                let n = ptx.len() + 1;
-                ptx_globals.push_str(&format!(
-                    "@.ptx = private unnamed_addr constant [{n} x i8] c\"{}\"\n",
-                    encode_cstr(&ptx)
-                ));
-                for i in 0..kernels.len() {
-                    let name = format!("axk{i}");
-                    ptx_globals.push_str(&format!(
-                        "@.kname{i} = private unnamed_addr constant [{} x i8] c\"{name}\\00\"\n",
-                        name.len() + 1
-                    ));
-                }
-            }
-            Err(e) => eprintln!("axionc: the gpuFor kernels will run on the CPU: {e}"),
-        }
-    }
-
     let mut out = String::from("; Axion --release (LLVM IR)\n");
     out.push_str(RT_DECLS);
-    out.push_str(&ptx_globals);
     if !sigs.is_empty() {
         // the vector intrinsics the SIMD operations use
         for t in crate::simd::TYPES.iter().filter(|t| t.float) {
@@ -385,7 +345,7 @@ pub fn emit_ir(
         .collect();
     for f in &fns {
         out.push_str(&emit_fn(
-            f, &records, &strings, &drop_keys, &fn_arity, &sigs, &gpu,
+            f, &records, &strings, &drop_keys, &fn_arity, &sigs,
         )?);
         out.push('\n');
     }
@@ -684,148 +644,6 @@ fn encode_cstr(s: &str) -> String {
 
 // --- emitting a function ---
 
-/// What the emitter knows about the program's GPU kernels (`gpu.rs`).
-#[derive(Default)]
-struct GpuCtx {
-    /// a kernel's closure function → its index (`axk<i>`) and its captures
-    kernels: HashMap<String, (usize, crate::gpu::Kernel)>,
-    /// the PTX was made (else every `gpuFor` runs on the CPU)
-    ptx: bool,
-    /// emitting device code (`device_ptx`)
-    device: bool,
-}
-
-/// The device module of the kernels (target `nvptx64`), compiled to PTX by clang: the functions
-/// they run, emitted as for the host but with traps for the inline checks' aborts, and one entry
-/// `axk<i>(env, data, n)` per kernel that runs element `i = block * width + thread`.
-#[allow(clippy::too_many_arguments)]
-fn device_ptx(
-    dev: &[&CoreFn],
-    kernels: &[crate::gpu::Kernel],
-    records: &RecordInfo,
-    strings: &HashMap<String, usize>,
-    drop_keys: &HashSet<String>,
-    fn_arity: &HashMap<String, usize>,
-    sigs: &crate::simd::Sigs,
-) -> Result<String, String> {
-    let ctx = GpuCtx {
-        device: true,
-        ..GpuCtx::default()
-    };
-    let mut ir = String::from(
-        "target datalayout = \"e-i64:64-i128:128-v16:16-v32:32-n16:32:64\"\n\
-         target triple = \"nvptx64-nvidia-cuda\"\n\
-         declare double @llvm.sqrt.f64(double)\n\
-         declare double @llvm.floor.f64(double)\n\
-         declare double @llvm.fabs.f64(double)\n\
-         declare i64 @llvm.fptosi.sat.i64.f64(double)\n\
-         declare i32 @llvm.fptosi.sat.i32.f32(float)\n\
-         declare float @llvm.sqrt.f32(float)\n\
-         declare void @llvm.trap()\n\
-         declare i32 @llvm.nvvm.read.ptx.sreg.tid.x()\n\
-         declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()\n\
-         declare i32 @llvm.nvvm.read.ptx.sreg.ntid.x()\n\
-         define void @axion_array_oob(i64 %i, i64 %n) {\n  call void @llvm.trap()\n  unreachable\n}\n",
-    );
-    for f in dev {
-        ir.push_str(&emit_fn(
-            f, records, strings, drop_keys, fn_arity, sigs, &ctx,
-        )?);
-        ir.push('\n');
-    }
-    let mut ann = Vec::new();
-    for (k, kern) in kernels.iter().enumerate() {
-        ir.push_str(&format!(
-            "define void @axk{k}(i64 %env, i64 %data, i64 %n) {{\n\
-             entry:\n\
-             \x20 %t = call i32 @llvm.nvvm.read.ptx.sreg.tid.x()\n\
-             \x20 %c = call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()\n\
-             \x20 %w = call i32 @llvm.nvvm.read.ptx.sreg.ntid.x()\n\
-             \x20 %t64 = zext i32 %t to i64\n\
-             \x20 %c64 = zext i32 %c to i64\n\
-             \x20 %w64 = zext i32 %w to i64\n\
-             \x20 %cw = mul i64 %c64, %w64\n\
-             \x20 %i = add i64 %cw, %t64\n\
-             \x20 %in = icmp slt i64 %i, %n\n\
-             \x20 br i1 %in, label %run, label %done\n\
-             run:\n\
-             \x20 %off = shl i64 %i, 3\n\
-             \x20 %a1 = add i64 %data, 8\n\
-             \x20 %a2 = add i64 %a1, %off\n\
-             \x20 %p = inttoptr i64 %a2 to ptr\n\
-             \x20 %x = load i64, ptr %p\n\
-             \x20 %r = call i64 @\"ax_{}\"(i64 %env, i64 %i, i64 %x)\n\
-             \x20 store i64 %r, ptr %p\n\
-             \x20 br label %done\n\
-             done:\n\
-             \x20 ret void\n\
-             }}\n",
-            dev_sym(&kern.lam)
-        ));
-        ann.push(format!("!{{ptr @axk{k}, !\"kernel\", i32 1}}"));
-    }
-    let base = 100;
-    let refs: Vec<String> = (0..ann.len()).map(|i| format!("!{}", base + i)).collect();
-    ir.push_str(&format!("!nvvm.annotations = !{{{}}}\n", refs.join(", ")));
-    for (i, a) in ann.iter().enumerate() {
-        ir.push_str(&format!("!{} = {a}\n", base + i));
-    }
-    ir.push_str(TBAA_METADATA);
-    ir.push_str("attributes #0 = { nounwind }\n");
-    compile_ptx(&ir)
-}
-
-/// A function's name as a PTX symbol: PTX takes letters, digits and `_` (`lam$0` → `lam_240`).
-fn dev_sym(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            out.push(c);
-        } else {
-            out.push_str(&format!("_{:x}", c as u32));
-        }
-    }
-    out
-}
-
-/// `clang` the device IR to PTX. IEEE arithmetic as on the host: no multiply-add is fused
-/// (`-nvptx-fma-level=0`), and the IR carries no fast-math flags.
-fn compile_ptx(ir: &str) -> Result<String, String> {
-    let dir = std::env::temp_dir();
-    let pid = std::process::id();
-    let ll = dir.join(format!("axion-{pid}-dev.ll"));
-    let ptx = dir.join(format!("axion-{pid}-dev.ptx"));
-    std::fs::write(&ll, ir).map_err(|e| e.to_string())?;
-    let clang = std::env::var("AXION_CLANG").unwrap_or_else(|_| "clang".into());
-    let arch = std::env::var("AXION_GPU_ARCH").unwrap_or_else(|_| "sm_52".into());
-    let res = std::process::Command::new(&clang)
-        .args(["-target", "nvptx64-nvidia-cuda", "-O2", "-w", "-S"])
-        .arg(format!("-march={arch}"))
-        .args([
-            "-mllvm",
-            "-nvptx-fma-level=0",
-            "-Wno-unused-command-line-argument",
-        ])
-        .arg(&ll)
-        .arg("-o")
-        .arg(&ptx)
-        .output();
-    drop(std::fs::remove_file(&ll));
-    let out = res.map_err(|e| format!("could not invoke '{clang}' ({e})"))?;
-    if !out.status.success() {
-        drop(std::fs::remove_file(&ptx));
-        let err = String::from_utf8_lossy(&out.stderr);
-        let first = err
-            .lines()
-            .find(|l| l.contains("error"))
-            .unwrap_or("clang could not target nvptx64");
-        return Err(first.to_string());
-    }
-    let text = std::fs::read_to_string(&ptx).map_err(|e| e.to_string());
-    drop(std::fs::remove_file(&ptx));
-    text
-}
-
 #[allow(clippy::too_many_arguments)]
 fn emit_fn(
     f: &CoreFn,
@@ -834,15 +652,8 @@ fn emit_fn(
     drop_keys: &HashSet<String>,
     fn_arity: &HashMap<String, usize>,
     sigs: &crate::simd::Sigs,
-    gpu: &GpuCtx,
 ) -> Result<String, String> {
     let mut e = Emit {
-        gpu,
-        clos: if gpu.kernels.is_empty() {
-            HashMap::new()
-        } else {
-            crate::gpu::closures(&f.body)
-        },
         out: String::new(),
         ssa: 0,
         blk: 0,
@@ -879,11 +690,7 @@ fn emit_fn(
     let header = format!(
         "define {} @\"ax_{}\"({}) #0 {{\nentry:\n",
         ret_ty.map_or("i64".to_string(), |t| t.llvm()),
-        if gpu.device {
-            dev_sym(&f.name)
-        } else {
-            f.name.clone()
-        },
+        f.name,
         params.join(", ")
     );
     // loads the captures from env[(i+3)*8] (after `fn_ptr`, `dtor` and `copier`)
@@ -916,10 +723,6 @@ struct Emit<'a> {
     sigs: &'a crate::simd::Sigs,
     /// the SSA values that are vectors, with their type (every other value is an `i64`)
     vt: HashMap<String, crate::simd::VTy>,
-    /// the program's GPU kernels, and whether this is device code
-    gpu: &'a GpuCtx,
-    /// closure variable → its lifted function (to find a `gpuFor`'s kernel)
-    clos: HashMap<String, String>,
 }
 
 impl Emit<'_> {
@@ -1208,7 +1011,7 @@ impl Emit<'_> {
     }
 
     /// `Int` `div`/`mod` as the interpreter defines them: a zero divisor aborts
-    /// (`axion_div_zero`; a trap on the GPU, where the loop then reruns on the CPU), and
+    /// (`axion_div_zero`), and
     /// `minBound / -1` wraps (to `minBound`, remainder 0). A plain `sdiv`/`srem` of either is
     /// undefined, which LLVM uses (`k / k` folded to 1 even when `k` is 0).
     fn int_div(&mut self, div: bool, x: &str, y: &str, ty: &str) -> String {
@@ -1233,11 +1036,7 @@ impl Emit<'_> {
         self.ins(&format!("{z} = icmp eq {ty} {y}, 0"));
         self.ins(&format!("br i1 {z}, label %{lz}, label %{lm1}"));
         self.block(&lz);
-        if self.gpu.device {
-            self.ins("call void @llvm.trap()");
-        } else {
-            self.ins("call void @axion_div_zero()");
-        }
+        self.ins("call void @axion_div_zero()");
         self.ins("unreachable");
         // `x / -1` wraps (`minBound / -1` is `minBound`), and `x mod -1` is 0
         self.block(&lm1);
@@ -1452,12 +1251,6 @@ impl Emit<'_> {
     }
 
     fn term(&mut self, t: &Term) -> Result<String, String> {
-        // device code: a contract's failure branch traps (the launch fails and the CPU reruns the
-        // loop, failing with the contract's message there)
-        if self.gpu.device && crate::gpu::fails(t) {
-            self.ins("call void @llvm.trap()");
-            return Ok("0".into());
-        }
         match t {
             Term::Let(x, rhs, _, body) => {
                 let v = self.rhs(rhs)?;
@@ -1820,11 +1613,6 @@ impl Emit<'_> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let r = self.val();
-                let name = if self.gpu.device {
-                    dev_sym(name)
-                } else {
-                    name.clone()
-                };
                 match callee.and_then(|c| c.ret) {
                     Some(t) => {
                         self.ins(&format!("{r} = call {} @\"ax_{name}\"({a})", t.llvm()));
@@ -2030,33 +1818,6 @@ impl Emit<'_> {
             }
             // Array element access: inline the bounds-checked load/store instead of an opaque
             // runtime call, so LLVM can optimize the numeric loops (see `array_get_inline`).
-            Op::RtCall { func, args, .. } if func == crate::gpu::RT && !self.gpu.device => {
-                let arr = self.atom(&args[0])?;
-                let clo = self.atom(&args[1])?;
-                let kernel = match &args[1] {
-                    Atom::Var(c) => self
-                        .clos
-                        .get(c)
-                        .and_then(|l| self.gpu.kernels.get(l))
-                        .cloned(),
-                    _ => None,
-                };
-                Ok(match kernel {
-                    Some((i, k)) if self.gpu.ptx => self.rt(
-                        "axion_gpu_launch",
-                        true,
-                        &[
-                            arr,
-                            clo,
-                            "ptrtoint (ptr @.ptx to i64)".into(),
-                            format!("ptrtoint (ptr @.kname{i} to i64)"),
-                            k.ncaps.to_string(),
-                            (k.mask as i64).to_string(),
-                        ],
-                    ),
-                    _ => self.rt("axion_gpu_for", true, &[arr, clo]),
-                })
-            }
             Op::RtCall { func, args, .. } if func == "axion_array_get" => {
                 let vs = self.atoms(args)?;
                 Ok(self.array_get_inline(&vs[0], &vs[1]))

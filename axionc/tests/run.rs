@@ -7803,18 +7803,11 @@ fn malformed_contracts_are_refused() {
 #[test]
 fn thirty_two_bit_numbers_give_the_same_bits_everywhere() {
     // wrapping Int32 arithmetic, single-precision Float32 rounding, conversions, comparisons
-    // with NaN, a Float32 array, and a Float32 GPU kernel
+    // with NaN, a Float32 array, and a Float32 parallel kernel
     let want = "-294967296\n-409399843\n-3 -1\n-2147483648 0\n5 4000000000\n\
                 0.1 0.10000000149011612\n7.4854717\n5 1.4142135\n2147483647 0 -2\n\
                 true false false\n499.49997\n2500226\n";
     agree_across_backends("numbers32.axi", want);
-    let out = axionc()
-        .arg("--release")
-        .arg(fixture("numbers32.axi"))
-        .env("AXION_GPU", "off")
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), want, "on the CPU");
 }
 
 #[test]
@@ -7839,112 +7832,6 @@ fn thirty_two_bit_numbers_do_not_mix_silently() {
             "missing {code} `{what}`:\n{text}"
         );
     }
-}
-
-#[test]
-fn gpu_kernels_give_the_same_result_on_or_off_the_gpu() {
-    let want = "-182.5\n10753840\n3007002\n4032\n714\n0\n1330\n";
-    agree_across_backends("gpu.axi", want);
-    // on the GPU when there is one (`report` says where), and on the CPU when told not to use it
-    for gpu in ["report", "off"] {
-        let out = axionc()
-            .arg("--release")
-            .arg(fixture("gpu.axi"))
-            .env("AXION_GPU", gpu)
-            .output()
-            .unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout),
-            want,
-            "AXION_GPU={gpu}"
-        );
-        if gpu == "report" {
-            let err = String::from_utf8_lossy(&out.stderr);
-            assert!(
-                err.contains("gpuFor runs on the GPU")
-                    || err.contains("gpuFor runs on the CPU (no GPU)")
-                    || err.contains("the gpuFor kernels will run on the CPU"),
-                "{err}"
-            );
-        }
-    }
-}
-
-#[test]
-fn kernels_the_gpu_cannot_run_are_refused() {
-    let out = axionc().arg(fixture("gpu_reject.axi")).output().unwrap();
-    assert!(!out.status.success());
-    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
-    for (code, what) in [
-        ("AX0802", "it uses a call through the function value `f`"),
-        (
-            "AX0802",
-            "it uses a pattern on the data value `Circle`, in `area`",
-        ),
-        (
-            "AX0802",
-            "it uses `strLen`, which cannot run on the GPU, in `label`",
-        ),
-        ("AX0802", "it uses a tuple"),
-        (
-            "AX0800",
-            "a `gpuFor` kernel must not have effects: it uses `putStrLn`",
-        ),
-        (
-            "AX0801",
-            "`gpuFor` must be applied to its array and its kernel",
-        ),
-    ] {
-        assert!(
-            text.contains(&format!("error[{code}]")) && text.contains(what),
-            "missing {code} `{what}`:\n{text}"
-        );
-    }
-}
-
-#[test]
-fn a_gpu_kernel_that_fails_fails_as_on_the_cpu() {
-    // the launch fails (a trap on the device), the loop reruns on the CPU, and the program stops
-    // with the CPU's message; a data value the source does not show (a derived `==`) is refused
-    // natively
-    let dir = std::env::temp_dir().join(format!("axion_gpufail_{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let fail = dir.join("fail.axi");
-    std::fs::write(
-        &fail,
-        "{-# CONTRACT pick requires 0 <= i && i < len a #-}\npick :: Array Int -> Int -> Int\n\
-         pick a i = getArray a i\n\nmain :: IO ()\nmain = do\n  let w = arrayIota 64\n  \
-         let off = strLen \"abc\"\n  \
-         putStrLn (showInt (getArray (gpuFor (newArray 64 0) (\\i _ -> pick w (i + off))) 3))\n",
-    )
-    .unwrap();
-    let msg = "axion: contract violated: `pick` requires `0 <= i && i < (len a)` (len a = 64, \
-               i = 64), called from `main`";
-    for backend in [&[][..], &["--backend", "cranelift"][..], &["--release"][..]] {
-        let out = axionc().args(backend).arg(&fail).output().unwrap();
-        assert!(!out.status.success(), "{backend:?}");
-        let all = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
-        assert!(all.contains(msg), "{backend:?}: {all}");
-    }
-    let data = dir.join("data.axi");
-    std::fs::write(
-        &data,
-        "data Shape = Circle Int | Square Int deriving (Eq)\n\nmain :: IO ()\nmain = do\n  \
-         let s = Circle 3\n  \
-         putStrLn (showInt (getArray (gpuFor (newArray 8 0) (\\i x -> if s == s then i else x)) 5))\n",
-    )
-    .unwrap();
-    let interp = axionc().arg(&data).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&interp.stdout), "5\n");
-    for backend in [&["--backend", "cranelift"][..], &["--release"][..]] {
-        let out = axionc().args(backend).arg(&data).output().unwrap();
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            !out.status.success() && err.contains("error[AX0802]"),
-            "{backend:?}: {err}"
-        );
-    }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

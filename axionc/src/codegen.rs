@@ -172,7 +172,6 @@ impl Cg {
             ("axion_array_sum", 1, true),
             ("axion_array_dot", 2, true),
             ("axion_par_for", 2, true),
-            ("axion_gpu_for", 2, true),
             ("axion_div_zero", 0, false), // an `Int` division by zero (inline check)
             ("axion_show_float32", 1, true),
             ("axion_contract_fail", 1, true),

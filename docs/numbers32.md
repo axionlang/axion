@@ -7,10 +7,10 @@
 | `Int32` | -2147483648 … 2147483647 | wraps at 32 bits, like `Int` at 64 |
 | `Float32` | IEEE single precision | each operation rounded once to a single |
 
-They exist for speed where 32 bits are enough. A GPU runs single-precision arithmetic up to 32×
-faster than double precision (see [gpu.md](gpu.md)); on a GTX 1650, a Mandelbrot frame takes
-about 12 ms in `Float32` on the GPU, against about 29 ms in `Float` there and 51 ms on 8 CPU
-threads. On the CPU they run at about the speed of `Int` and `Float`.
+They are for code that needs exactly 32-bit behavior: integer arithmetic that wraps at 32 bits
+(hashes, random number generators, formats defined in 32 bits) and single-precision results that
+match other single-precision code. On the CPU they run at about the speed of `Int` and `Float`.
+Each still takes a 64-bit slot (see below), so they save no memory yet.
 
 ```haskell
 harmonic :: Float32 -> Int32 -> Float32
@@ -46,9 +46,9 @@ nearest to 0.1, shown as a double.
 
 ## Same bits everywhere
 
-Every backend computes the same results: the interpreter, `--dev`, `--release` and the GPU.
+Every backend computes the same results: the interpreter, `--dev` and `--release`.
 `axionc/src/num32.rs` holds the reference semantics, and the native backends emit 32-bit
-instructions with the same rounding. No multiply-add is fused, on the CPU or on the GPU.
+instructions with the same rounding. No multiply-add is fused.
 
 ## Representation
 

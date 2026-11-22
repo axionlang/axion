@@ -312,7 +312,7 @@ fn builtin_arity(name: &str) -> usize {
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
         | "getArray" | "arrayDot" | "peekU8" | "peekU16" | "peekU32" | "peekU64" | "peekF64"
-        | "bufPtrN" | "fileRead" | "xorInPlace" | "parFor" | "gpuFor" => 2,
+        | "bufPtrN" | "fileRead" | "xorInPlace" | "parFor" => 2,
         "netSendBuf" => 4,
         _ => 1,
     }
@@ -1080,10 +1080,6 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "parFor",
             args: Vec::new(),
         }),
-        "gpuFor" => Ok(Value::Builtin {
-            name: "gpuFor",
-            args: Vec::new(),
-        }),
         "lenArray" => Ok(Value::Builtin {
             name: "lenArray",
             args: Vec::new(),
@@ -1212,7 +1208,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         }
         Value::Builtin { name, mut args } => {
             args.push(arg);
-            if (name == "parFor" || name == "gpuFor") && args.len() == 2 {
+            if name == "parFor" && args.len() == 2 {
                 run_par_for(prog, args)
             } else if args.len() >= builtin_arity(name) {
                 run_builtin(name, args)

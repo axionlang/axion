@@ -31,7 +31,7 @@
                                               let _t116 = * w w  ; Δ{}
                                               let _t117 = newArray _t116 0  ; Δ{} · makes Array
                                               let _t118 = closure lam$1 w  ; Δ{_t117} · makes Closure
-                                              let _t119 = rtcall axion_gpu_for _t117 _t118  ; Δ{_t117 _t118}
+                                              let _t119 = rtcall axion_par_for _t117 _t118  ; Δ{_t117 _t118}
                                               let _t120 = call sumA m 0 0  ; Δ{}
                                               let _t121 = showInt _t120  ; Δ{} · makes String
                                               let m = _t117  ; Δ{_t117} · moves{_t117}

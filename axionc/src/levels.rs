@@ -63,7 +63,6 @@ const L1_BUILTINS: &[&str] = &[
     "getArray",
     "setArray",
     "parFor",
-    "gpuFor",
     "lenArray",
     "arrayIota",
     "arraySum",

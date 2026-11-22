@@ -1,5 +1,5 @@
 -- 32-bit numbers (docs/numbers32.md): `Int32` wraps at 32 bits and `Float32` rounds to single
--- precision once per operation, the same on every backend (and on the GPU).
+-- precision once per operation, the same on every backend.
 
 -- a linear congruential generator: the wrapping is the point
 lcg :: Int32 -> Int32 -> Int32
@@ -28,7 +28,7 @@ norm x y = sqrtF32 (x * x + y * y)
 sumF :: Array Float32 -> Int -> Float32 -> Float32
 sumF a i acc = if i >= lenArray a then acc else sumF a (i + 1) (acc + getArray a i)
 
--- the GPU computes in single precision too (no fused multiply-add): the same bits
+-- a single-precision kernel run on every core: no fused multiply-add, the same bits
 orbit :: Float32 -> Float32 -> Float32 -> Float32 -> Int32 -> Int32
 orbit cr ci zr zi k =
   if k >= 200 then k
@@ -53,5 +53,5 @@ main = do
   let v = parFor (newArray 1000 0.0) (\i _ -> int32ToFloat32 (toInt32 i) * 0.001)
   putStrLn (show (sumF v 0 0.0))
   let w = 256
-  let m = gpuFor (newArray (w * w) 0) (\p _ -> fromInt32 (orbit (int32ToFloat32 (toInt32 (p `mod` w)) * 3.0 / int32ToFloat32 (toInt32 w) - 2.0) (int32ToFloat32 (toInt32 (p / w)) * 3.0 / int32ToFloat32 (toInt32 w) - 1.5) 0.0 0.0 0))
+  let m = parFor (newArray (w * w) 0) (\p _ -> fromInt32 (orbit (int32ToFloat32 (toInt32 (p `mod` w)) * 3.0 / int32ToFloat32 (toInt32 w) - 2.0) (int32ToFloat32 (toInt32 (p / w)) * 3.0 / int32ToFloat32 (toInt32 w) - 1.5) 0.0 0.0 0))
   putStrLn (showInt (sumA m 0 0))
