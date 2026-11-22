@@ -172,6 +172,8 @@ impl Cg {
             ("axion_array_sum", 1, true),
             ("axion_array_dot", 2, true),
             ("axion_par_for", 2, true),
+            ("axion_gpu_for", 2, true),
+            ("axion_div_zero", 0, false), // an `Int` division by zero (inline check)
             ("axion_contract_fail", 1, true),
             ("axion_i32_new", 2, true),
             ("axion_i32_iota", 1, true),
@@ -642,6 +644,39 @@ impl Fx<'_, '_> {
         }
         Ok(r)
     }
+    /// `Int` `div`/`mod` as the interpreter defines them: a zero divisor aborts
+    /// (`axion_div_zero`), and `minBound / -1` wraps (to `minBound`, remainder 0) where `sdiv`
+    /// and `srem` would trap.
+    fn int_div(&mut self, div: bool, a: Value, b: Value) -> Result<Value, String> {
+        let zero = self.builder.ins().icmp_imm(IntCC::Equal, b, 0);
+        let dz = self.builder.create_block();
+        let ok = self.builder.create_block();
+        self.builder.ins().brif(zero, dz, &[], ok, &[]);
+        self.builder.switch_to_block(dz);
+        self.builder.seal_block(dz);
+        let id = self
+            .rt_fns
+            .get("axion_div_zero")
+            .map(|&(id, _)| id)
+            .ok_or("runtime builtin 'axion_div_zero' not declared")?;
+        self.rt_call(id, &[]);
+        self.builder.ins().trap(TrapCode::INTEGER_DIVISION_BY_ZERO);
+        self.builder.switch_to_block(ok);
+        self.builder.seal_block(ok);
+        let m1 = self.builder.ins().icmp_imm(IntCC::Equal, b, -1);
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let safe = self.builder.ins().select(m1, one, b);
+        Ok(if div {
+            let q = self.builder.ins().sdiv(a, safe);
+            let neg = self.builder.ins().ineg(a);
+            self.builder.ins().select(m1, neg, q)
+        } else {
+            let r = self.builder.ins().srem(a, safe);
+            let z = self.builder.ins().iconst(types::I64, 0);
+            self.builder.ins().select(m1, z, r)
+        })
+    }
+
     /// Interna um literal de string como objecto de dados (C-string).
     fn intern(&mut self, s: &str) -> Result<DataId, String> {
         if let Some(id) = self.strings.get(s) {
@@ -993,8 +1028,7 @@ impl Fx<'_, '_> {
                     "+" => self.builder.ins().iadd(a, b),
                     "-" => self.builder.ins().isub(a, b),
                     "*" => self.builder.ins().imul(a, b),
-                    "div" => self.builder.ins().sdiv(a, b),
-                    "mod" => self.builder.ins().srem(a, b),
+                    "div" | "mod" => self.int_div(o == "div", a, b)?,
                     "band" | ".&." => self.builder.ins().band(a, b),
                     ".|." => self.builder.ins().bor(a, b),
                     "xor" => self.builder.ins().bxor(a, b),
@@ -1057,7 +1091,9 @@ impl Fx<'_, '_> {
             Op::FloatToInt(a) => {
                 let x = self.atom(a)?;
                 let f = self.builder.ins().bitcast(types::F64, MemFlags::new(), x);
-                Ok(self.builder.ins().fcvt_to_sint(types::I64, f))
+                // saturating, like the interpreter (Rust `as`): NaN is 0 and a value out of range
+                // the nearest `Int` (`fcvt_to_sint` traps on both)
+                Ok(self.builder.ins().fcvt_to_sint_sat(types::I64, f))
             }
             // unary Float math via native Cranelift IEEE instructions.
             Op::FloatUnary(o, a) => {

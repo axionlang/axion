@@ -1767,6 +1767,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "getArray",
         "setArray",
         "parFor",
+        "gpuFor",
         "contractFailed",
         "lenArray",
         "newTritVec",
@@ -2469,20 +2470,26 @@ impl Lower<'_> {
             // `a` dead here (consumed, like `setArray`), so writing it in place is invisible, and
             // the same array is the result. Scalar elements only: a heap element would need its
             // old value freed and the new one owned per slot.
-            ("parFor", 2) => {
+            // `gpuFor` (`gpu.rs`) lowers the same way, to its own runtime entry: the `--release`
+            // backend compiles the kernel for the GPU; the others run it like `parFor`
+            ("parFor", 2) | ("gpuFor", 2) => {
                 if self.heap_array_elem(e.span()).is_some() {
-                    return Op::Unsupported(
-                        "parFor over an array of heap elements (natively: Int, Float, Bool, Char)"
-                            .into(),
-                    );
+                    return Op::Unsupported(format!(
+                        "{name} over an array of heap elements (natively: Int, Float, Bool, Char)"
+                    ));
                 }
+                let rt = if name == "gpuFor" {
+                    "axion_gpu_for"
+                } else {
+                    "axion_par_for"
+                };
                 let arr = self.atom(args[0], buf);
                 let clos = self.atom(args[1], buf);
                 let done = self.fresh();
                 buf.push((
                     done,
                     Rhs::Op(Op::RtCall {
-                        func: "axion_par_for".into(),
+                        func: rt.into(),
                         args: vec![arr.clone(), clos],
                         returns: true,
                     }),
@@ -3550,6 +3557,7 @@ fn absorb_lambda_caf(mut f: ast::Func) -> ast::Func {
 /// in a lambda (`eta_expand`) or a top-level wrapper (`lib::wrap_builtin_closure_args`).
 pub const NOT_ETA: &[&str] = &[
     "parFor",
+    "gpuFor",
     "bound",
     "spawn",
     "send",

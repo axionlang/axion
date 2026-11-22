@@ -1575,6 +1575,7 @@ pub fn builtins() -> HashSet<String> {
         "getArray",
         "setArray",
         "parFor",
+        "gpuFor",
         "lenArray",
         // TritVec: base-243 packed ternary array (§10)
         "newTritVec",
@@ -2825,6 +2826,7 @@ fn build_ctx(module: &Module) -> Ctx {
     consumers.insert("lenArray".to_string(), vec![Mult::Many]);
     // parFor consumes the array (written in place, like `setArray`) and borrows the kernel
     consumers.insert("parFor".to_string(), vec![Mult::One, Mult::Many]);
+    consumers.insert("gpuFor".to_string(), vec![Mult::One, Mult::Many]);
     // SIMD (`simd.rs`): a vector store consumes the array (in place, like `setArray`); a load
     // borrows it; vectors and lanes are plain values.
     for name in crate::simd::names() {

@@ -50,6 +50,7 @@ mod codegen_tv;
 mod contracts;
 mod core;
 mod delta;
+mod gpu;
 mod model_trace;
 pub mod ownership;
 mod verify;
@@ -1005,6 +1006,28 @@ pub fn run_cli() -> ExitCode {
                 );
             eprint!("{}", d.render(&path, &src, &lines));
             return ExitCode::FAILURE;
+        }
+        // GPU kernels (`gpu.rs`): what a `gpuFor` runs must be device code, also after overloading
+        // and specialization (the front end's AX0802 reads the source)
+        let kernels = gpu::kernels(&lowered.fns);
+        if !kernels.is_empty() {
+            if let Err((what, f)) = gpu::device_fns(&lowered.fns, &kernels) {
+                let d = Diagnostic::error(
+                    "AX0802",
+                    format!(
+                        "a `gpuFor` kernel must run on the GPU: natively it uses {what} (in \
+                         `{f}`)"
+                    ),
+                )
+                .with_help(
+                    "a GPU kernel computes with `Int`, `Float` and `Bool` values and reads the \
+                     arrays it captures; an overloaded operator on a `data` type, a String or \
+                     any other heap value cannot run there. Use `parFor` for this kernel (see \
+                     docs/gpu.md). The interpreter (`axionc <file>`) runs this program as is.",
+                );
+                eprint!("{}", d.render(&path, &src, &lines));
+                return ExitCode::FAILURE;
+            }
         }
         let all = verify::verify(&lowered);
         let corruption: Vec<_> = all.iter().filter(|f| f.cat.is_corruption()).collect();
@@ -7982,6 +8005,15 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
              partially applied). Its kernel has to be visible where it is called, so\n\
              that it can be checked for effects (AX0800): write `parFor a (\\i x -> …)`\n\
              or `parFor a kernel`. See docs/parallel.md."
+        }
+        "AX0802" => {
+            "AX0802 — a `gpuFor` kernel uses something the GPU cannot run. A GPU kernel\n\
+             computes with `Int`, `Float` and `Bool` values: arithmetic, comparisons, `if`,\n\
+             `case` on numbers, `let`, `getArray`/`lenArray` on the arrays it captures, and\n\
+             calls to functions that do the same. It cannot use strings, lists, tuples,\n\
+             records or other `data` values, or function values; the message names the\n\
+             first such use and the functions on the way to it. `parFor` runs any kernel\n\
+             without effects on the CPU's threads. See docs/gpu.md."
         }
         "AX0915" => {
             "AX0915 — a SIMD vector cannot go here natively. A vector (F64x2, F64x4,\n\

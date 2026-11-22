@@ -323,6 +323,12 @@ pub unsafe extern "C" fn axion_array_range(arr: i64, idx: i64, n: i64) -> i64 {
     }
     idx
 }
+/// An `Int` `div`/`mod` by zero (the generated code checks the divisor first). Never returns.
+#[no_mangle]
+pub unsafe extern "C" fn axion_div_zero() -> ! {
+    eprintln!("axion: division by zero");
+    std::process::abort();
+}
 /// Out-of-range lane index of a SIMD vector (`laneF64x4 v i`, `i` outside `[0, n)`). Never returns.
 #[no_mangle]
 pub unsafe extern "C" fn axion_lane_oob(idx: i64, n: i64) -> ! {
@@ -557,6 +563,270 @@ pub unsafe extern "C" fn axion_par_for(arr: i64, clo: i64) -> i64 {
     }
     pool.busy.store(false, AtOrd::Release);
     0
+}
+
+// ─── GPU kernels (`gpuFor`, docs/gpu.md) ─────────────────────────────────────────────────────
+// `gpuFor a k` means what `parFor a k` means. `--release` compiles the kernel to PTX and calls
+// `axion_gpu_launch`, which runs it through the CUDA driver API (`libcuda`, loaded at run time:
+// nothing is needed to build, and a machine without a GPU just runs the loop on its CPU). The
+// array and the arrays the kernel captures are copied to the device; the closure cell is copied
+// with those captures replaced by their device copies, so the kernel reads them at the same
+// offsets. A launch that fails (no device, an error, a kernel that trapped on an out-of-range index
+// or a zero divisor) leaves the host array untouched and runs the loop on the CPU instead, which
+// then gives exactly the CPU's result, or its abort.
+
+/// `gpuFor` without a GPU kernel (the `--dev` backend): the loop on the CPU.
+#[no_mangle]
+pub unsafe extern "C" fn axion_gpu_for(arr: i64, clo: i64) -> i64 {
+    axion_par_for(arr, clo)
+}
+
+type CuResult = i32;
+
+struct Cuda {
+    ctx: usize,
+    module_load_data: unsafe extern "C" fn(*mut usize, *const u8) -> CuResult,
+    module_get_function: unsafe extern "C" fn(*mut usize, usize, *const u8) -> CuResult,
+    mem_alloc: unsafe extern "C" fn(*mut u64, usize) -> CuResult,
+    mem_free: unsafe extern "C" fn(u64) -> CuResult,
+    htod: unsafe extern "C" fn(u64, *const u8, usize) -> CuResult,
+    dtoh: unsafe extern "C" fn(*mut u8, u64, usize) -> CuResult,
+    #[allow(clippy::type_complexity)]
+    launch: unsafe extern "C" fn(
+        usize,
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        u32,
+        usize,
+        *mut *mut std::ffi::c_void,
+        *mut *mut std::ffi::c_void,
+    ) -> CuResult,
+    synchronize: unsafe extern "C" fn() -> CuResult,
+    set_current: unsafe extern "C" fn(usize) -> CuResult,
+    name: String,
+}
+
+struct GpuState {
+    cuda: Option<Cuda>,
+    /// (PTX text, kernel name) → the loaded kernel
+    kernels: std::collections::HashMap<(usize, usize), usize>,
+    reported: bool,
+}
+
+static GPU: Mutex<Option<GpuState>> = Mutex::new(None);
+
+unsafe fn sym<T: Copy>(lib: *mut libc::c_void, name: &str) -> Option<T> {
+    let c = std::ffi::CString::new(name).ok()?;
+    let p = libc::dlsym(lib, c.as_ptr());
+    (!p.is_null()).then(|| std::mem::transmute_copy::<*mut libc::c_void, T>(&p))
+}
+
+/// Loads the driver and makes a context on device 0, or `None` (no driver, no device,
+/// `AXION_GPU=off`).
+unsafe fn cuda_open() -> Option<Cuda> {
+    if std::env::var("AXION_GPU").is_ok_and(|v| v == "off") {
+        return None;
+    }
+    let mut names = vec!["libcuda.so.1".to_string()];
+    if let Ok(p) = std::env::var("AXION_CUDA_LIB") {
+        names.insert(0, p);
+    }
+    names.push("/run/opengl-driver/lib/libcuda.so.1".into()); // NixOS
+    names.push("/usr/lib/x86_64-linux-gnu/libcuda.so.1".into());
+    let lib = names.iter().find_map(|n| {
+        let c = std::ffi::CString::new(n.as_str()).ok()?;
+        let h = libc::dlopen(c.as_ptr(), libc::RTLD_NOW);
+        (!h.is_null()).then_some(h)
+    })?;
+    let init: unsafe extern "C" fn(u32) -> CuResult = sym(lib, "cuInit")?;
+    let device_get: unsafe extern "C" fn(*mut i32, i32) -> CuResult = sym(lib, "cuDeviceGet")?;
+    let device_name: unsafe extern "C" fn(*mut u8, i32, i32) -> CuResult =
+        sym(lib, "cuDeviceGetName")?;
+    let retain: unsafe extern "C" fn(*mut usize, i32) -> CuResult =
+        sym(lib, "cuDevicePrimaryCtxRetain")?;
+    if init(0) != 0 {
+        return None;
+    }
+    let mut dev = 0i32;
+    if device_get(&mut dev, 0) != 0 {
+        return None;
+    }
+    let mut ctx = 0usize;
+    if retain(&mut ctx, dev) != 0 {
+        return None;
+    }
+    let mut buf = [0u8; 128];
+    device_name(buf.as_mut_ptr(), buf.len() as i32, dev);
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    Some(Cuda {
+        ctx,
+        module_load_data: sym(lib, "cuModuleLoadData")?,
+        module_get_function: sym(lib, "cuModuleGetFunction")?,
+        mem_alloc: sym(lib, "cuMemAlloc_v2")?,
+        mem_free: sym(lib, "cuMemFree_v2")?,
+        htod: sym(lib, "cuMemcpyHtoD_v2")?,
+        dtoh: sym(lib, "cuMemcpyDtoH_v2")?,
+        launch: sym(lib, "cuLaunchKernel")?,
+        synchronize: sym(lib, "cuCtxSynchronize")?,
+        set_current: sym(lib, "cuCtxSetCurrent")?,
+        name: String::from_utf8_lossy(&buf[..end]).into_owned(),
+    })
+}
+
+/// Device memory freed when dropped.
+struct DevBuf<'a> {
+    cu: &'a Cuda,
+    ptr: u64,
+}
+impl Drop for DevBuf<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` came from `mem_alloc` and is freed once
+        unsafe {
+            (self.cu.mem_free)(self.ptr);
+        }
+    }
+}
+
+unsafe fn dev_copy<'a>(cu: &'a Cuda, src: *const u8, n: usize) -> Option<DevBuf<'a>> {
+    let mut p = 0u64;
+    if (cu.mem_alloc)(&mut p, n.max(8)) != 0 {
+        return None;
+    }
+    let b = DevBuf { cu, ptr: p };
+    if (cu.htod)(p, src, n) != 0 {
+        return None;
+    }
+    Some(b)
+}
+
+/// The bytes of an array block `[len][elems…]`.
+unsafe fn array_block_bytes(arr: i64) -> usize {
+    (blen(arr).max(0) as usize + 1) * 8
+}
+
+/// Runs the kernel on the GPU. `Some(())` when the results are in `arr`, `None` when it could
+/// not (the array is then untouched).
+unsafe fn gpu_run(
+    st: &mut GpuState,
+    arr: i64,
+    clo: i64,
+    ptx: i64,
+    kname: i64,
+    ncaps: i64,
+    mask: i64,
+) -> Option<()> {
+    let cu = st.cuda.as_ref()?;
+    if (cu.set_current)(cu.ctx) != 0 {
+        return None;
+    }
+    let key = (ptx as usize, kname as usize);
+    let func = match st.kernels.get(&key) {
+        Some(f) => *f,
+        None => {
+            let mut module = 0usize;
+            if (cu.module_load_data)(&mut module, ptx as *const u8) != 0 {
+                return None;
+            }
+            let mut f = 0usize;
+            if (cu.module_get_function)(&mut f, module, kname as *const u8) != 0 {
+                return None;
+            }
+            st.kernels.insert(key, f);
+            f
+        }
+    };
+    let n = blen(arr);
+    let data = dev_copy(cu, arr as *const u8, array_block_bytes(arr))?;
+    // the closure cell `{fn, dtor, copier, captures…}`, array captures replaced by device copies
+    let mut cell: Vec<i64> = vec![0, 0, 0];
+    let mut keep: Vec<DevBuf> = Vec::new();
+    for i in 0..ncaps.max(0) as usize {
+        let v = *((clo + 24 + 8 * i as i64) as *const i64);
+        if i < 63 && mask & (1 << i) != 0 {
+            let b = dev_copy(cu, v as *const u8, array_block_bytes(v))?;
+            cell.push(b.ptr as i64);
+            keep.push(b);
+        } else {
+            cell.push(v);
+        }
+    }
+    let env = dev_copy(cu, cell.as_ptr() as *const u8, cell.len() * 8)?;
+    let mut a0 = env.ptr;
+    let mut a1 = data.ptr;
+    let mut a2 = n;
+    let mut params: [*mut std::ffi::c_void; 3] = [
+        (&mut a0 as *mut u64).cast(),
+        (&mut a1 as *mut u64).cast(),
+        (&mut a2 as *mut i64).cast(),
+    ];
+    let block = 128u32;
+    let grid = ((n + block as i64 - 1) / block as i64) as u32;
+    if (cu.launch)(
+        func,
+        grid,
+        1,
+        1,
+        block,
+        1,
+        1,
+        0,
+        0,
+        params.as_mut_ptr(),
+        std::ptr::null_mut(),
+    ) != 0
+    {
+        return None;
+    }
+    if (cu.synchronize)() != 0 {
+        return None;
+    }
+    if (cu.dtoh)(arr as *mut u8, data.ptr, array_block_bytes(arr)) != 0 {
+        return None;
+    }
+    drop(keep);
+    Some(())
+}
+
+/// `gpuFor` with its kernel compiled to PTX (`--release`): `ptx` and `kname` are NUL-terminated
+/// (`ptx` 0 when no PTX could be made), `mask` marks the captures that are arrays.
+/// `AXION_GPU=off` runs on the CPU; `AXION_GPU=report` says once where the loops run.
+#[no_mangle]
+pub unsafe extern "C" fn axion_gpu_launch(
+    arr: i64,
+    clo: i64,
+    ptx: i64,
+    kname: i64,
+    ncaps: i64,
+    mask: i64,
+) -> i64 {
+    if ptx != 0 && blen(arr) > 0 && !IN_PAR.with(|c| c.get()) {
+        let mut g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+        let st = g.get_or_insert_with(|| GpuState {
+            cuda: cuda_open(),
+            kernels: std::collections::HashMap::new(),
+            reported: false,
+        });
+        let report = std::env::var("AXION_GPU").is_ok_and(|v| v == "report");
+        let ran = gpu_run(st, arr, clo, ptx, kname, ncaps, mask).is_some();
+        if report && !st.reported {
+            st.reported = true;
+            match (&st.cuda, ran) {
+                (Some(cu), true) => eprintln!("axion: gpuFor runs on the GPU ({})", cu.name),
+                (Some(cu), false) => {
+                    eprintln!("axion: gpuFor ran on the CPU (the GPU {} failed)", cu.name)
+                }
+                (None, _) => eprintln!("axion: gpuFor runs on the CPU (no GPU)"),
+            }
+        }
+        if ran {
+            return 0;
+        }
+    }
+    axion_par_for(arr, clo)
 }
 
 #[no_mangle]
@@ -2015,15 +2285,11 @@ pub unsafe extern "C" fn axion_show_float(bits: i64) -> i64 {
     alloc_str(fmt_float(f64::from_bits(bits as u64)).as_bytes())
 }
 
-/// Shortest round-tripping decimal. Rust's `{}` for `f64` is already shortest-round-trip, EXCEPT it
-/// omits a decimal point for integral values — the old C `%g` path prints e.g. `2` for `2.0`, so
-/// match that (whole floats show without a fractional part).
+/// Shortest round-tripping decimal, exactly as the interpreter shows a `Float` (Rust's `{}`): a
+/// whole float shows without a fractional part (`2`), and negative zero keeps its sign (`-0`; going
+/// through an `i64`, as this once did, printed `0`).
 fn fmt_float(d: f64) -> String {
-    if d.is_finite() && d == d.trunc() && d.abs() < 1e16 {
-        format!("{}", d as i64)
-    } else {
-        format!("{d}")
-    }
+    format!("{d}")
 }
 
 /// `a ++ b` — concatenate two NUL-terminated Strings into a fresh heap String.
@@ -3029,6 +3295,8 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_array_range", axion_array_range as *const u8),
         ("axion_lane_oob", axion_lane_oob as *const u8),
         ("axion_par_for", axion_par_for as *const u8),
+        ("axion_gpu_for", axion_gpu_for as *const u8),
+        ("axion_div_zero", axion_div_zero as *const u8),
         ("axion_contract_fail", axion_contract_fail as *const u8),
         ("axion_array_set", axion_array_set as *const u8),
         ("axion_array_sum", axion_array_sum as *const u8),

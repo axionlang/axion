@@ -90,19 +90,37 @@ fn direct(name: &str, effects: &Effects) -> bool {
 struct Cx<'a> {
     /// the module's top-level names (a kernel's other free names are captured locals)
     globals: HashSet<String>,
+    /// every named function (top-level and `where`), for the GPU subset check
+    funcs: HashMap<String, &'a crate::ast::Func>,
     bad: HashMap<String, String>,
     effects: &'a Effects,
     diags: &'a mut Diagnostics,
 }
 
-/// Checks every `parFor` in the module (AX0800, AX0801).
+/// The built-ins that run a kernel over an array: `parFor` (threads) and `gpuFor` (the GPU).
+const LOOPS: &[&str] = &["parFor", "gpuFor"];
+
+/// Checks every `parFor` and `gpuFor` in the module (AX0800, AX0801, AX0802).
 pub fn check(module: &Module, diags: &mut Diagnostics) {
     if !mentions_par_for(module) {
         return;
     }
     let effects = Effects::of(module);
+    let mut funcs = HashMap::new();
+    fn add<'m>(f: &'m crate::ast::Func, out: &mut HashMap<String, &'m crate::ast::Func>) {
+        out.entry(f.name.clone()).or_insert(f);
+        for c in &f.clauses {
+            for w in &c.wher {
+                add(w, out);
+            }
+        }
+    }
+    for f in &module.funcs {
+        add(f, &mut funcs);
+    }
     let mut cx = Cx {
         globals: module.funcs.iter().map(|f| f.name.clone()).collect(),
+        funcs,
         bad: unsafe_functions(module, &effects),
         effects: &effects,
         diags,
@@ -116,7 +134,7 @@ fn mentions_par_for(module: &Module) -> bool {
     module.funcs.iter().any(|f| {
         let mut r = HashSet::new();
         collect_func_refs(f, &mut r);
-        r.contains("parFor")
+        LOOPS.iter().any(|l| r.contains(*l))
     })
 }
 
@@ -145,17 +163,17 @@ impl Cx<'_> {
     /// `applied`: how many arguments the enclosing applications give `e`.
     fn expr(&mut self, e: &Expr, applied: usize) {
         match e {
-            Expr::Var(n, span) if n == "parFor" && applied < 2 => {
+            Expr::Var(n, span) if LOOPS.contains(&n.as_str()) && applied < 2 => {
                 self.diags.push(
                     Diagnostic::error(
                         "AX0801",
-                        "`parFor` must be applied to its array and its kernel".to_string(),
+                        format!("`{n}` must be applied to its array and its kernel"),
                     )
                     .label(span.0, span.1, "used here without both arguments")
-                    .with_help(
-                        "write the call out, `parFor a (\\i x -> …)`, so the kernel can be \
-                         checked: a kernel must not have effects (see docs/parallel.md)",
-                    ),
+                    .with_help(format!(
+                        "write the call out, `{n} a (\\i x -> …)`, so the kernel can be \
+                         checked: a kernel must not have effects (see docs/parallel.md)"
+                    )),
                 );
             }
             Expr::Var(..) | Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => {}
@@ -168,8 +186,13 @@ impl Cx<'_> {
                         head = g;
                     }
                     args.reverse();
-                    if matches!(head, Expr::Var(n, _) if n == "parFor") && args.len() >= 2 {
-                        self.kernel(args[1]);
+                    if let Expr::Var(n, _) = head {
+                        if LOOPS.contains(&n.as_str()) && args.len() >= 2 {
+                            let n = n.clone();
+                            if self.kernel(&n, args[1]) && n == "gpuFor" {
+                                self.gpu_kernel(args[1]);
+                            }
+                        }
                     }
                 }
                 self.expr(f, applied + 1);
@@ -227,15 +250,16 @@ impl Cx<'_> {
         find_write(k, &bound, &self.globals)
     }
 
-    /// AX0800: the kernel `k` of a `parFor` uses something whose order would show.
-    fn kernel(&mut self, k: &Expr) {
+    /// AX0800: the kernel `k` of a `parFor`/`gpuFor` (`lp`) uses something whose order would
+    /// show. Returns whether it passed.
+    fn kernel(&mut self, lp: &str, k: &Expr) -> bool {
         if let Some((v, w, span)) = self.writes_capture(k) {
             self.diags.push(
                 Diagnostic::error(
                     "AX0800",
                     format!(
-                        "a `parFor` kernel must not write what it captured: `{w}` writes `{v}` \
-                         in place"
+                        "a `{lp}` kernel must not write what it captured: `{w}` writes `{v}` in \
+                         place"
                     ),
                 )
                 .label(
@@ -249,7 +273,7 @@ impl Cx<'_> {
                      Read it (`getArray`), or build a fresh array inside the kernel."
                 )),
             );
-            return;
+            return false;
         }
         let mut refs = HashSet::new();
         collect_refs(k, &mut refs);
@@ -283,7 +307,7 @@ impl Cx<'_> {
                 self.diags.push(
                     Diagnostic::error(
                         "AX0800",
-                        format!("a `parFor` kernel must not have effects: it uses {why}"),
+                        format!("a `{lp}` kernel must not have effects: it uses {why}"),
                     )
                     .label(s.0, s.1, "this kernel runs on several threads at once")
                     .with_help(
@@ -294,8 +318,312 @@ impl Cx<'_> {
                          (see docs/parallel.md).",
                     ),
                 );
-                return;
+                return false;
             }
+        }
+        true
+    }
+
+    /// AX0802: the kernel of a `gpuFor` uses something the GPU cannot run.
+    fn gpu_kernel(&mut self, k: &Expr) {
+        let mut g = Gpu {
+            funcs: &self.funcs,
+            checked: HashMap::new(),
+            builtins: None,
+        };
+        let locals = HashSet::new();
+        let found = match k {
+            Expr::Lam(ps, body, _) => g.lambda(ps, body, &locals),
+            Expr::Var(f, sp) => g.call(f, *sp),
+            other => g.expr(other, &locals),
+        };
+        if let Some(v) = found {
+            let s = k.span();
+            let via = if v.via.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<String> = v.via.iter().map(|n| format!("`{n}`")).collect();
+                format!(", in {}", names.join(" → "))
+            };
+            self.diags.push(
+                Diagnostic::error(
+                    "AX0802",
+                    format!(
+                        "a `gpuFor` kernel must run on the GPU: it uses {}{via}",
+                        v.what
+                    ),
+                )
+                .label(v.span.0, v.span.1, "this cannot run on the GPU")
+                .label(s.0, s.1, "in this kernel")
+                .with_help(
+                    "a GPU kernel computes with `Int`, `Float` and `Bool` values: arithmetic, \
+                     comparisons, `if`, `case` on numbers, `let`, `getArray`/`lenArray` on the \
+                     arrays it captures, and calls to functions that do the same. It cannot use \
+                     strings, lists, tuples, records or other `data` values, or function \
+                     values. Use `parFor` for a kernel that needs them (see docs/gpu.md).",
+                ),
+            );
+        }
+    }
+}
+
+/// What a GPU kernel may not use, and where.
+struct Unfit {
+    what: String,
+    span: crate::ast::Span,
+    /// the named functions on the way to it, outermost first
+    via: Vec<String>,
+}
+
+/// Built-ins a GPU kernel may use (besides arithmetic and comparison operators).
+const GPU_BUILTINS: &[&str] = &[
+    "getArray",
+    "lenArray",
+    "toFloat",
+    "truncate",
+    "sqrt",
+    "floor",
+    "abs",
+    "div",
+    "mod",
+    "not",
+    "otherwise", // the built-in classes' methods: primitive on `Int`/`Float`
+    "le",
+    "eq",
+    "fromInteger",
+];
+
+/// The standard operators: primitive on `Int`, `Float` and `Bool` (the prelude defines some of
+/// them through a class, which on a data type the check of the final Core sees, `gpu.rs`).
+const STD_OPS: &[&str] = &[
+    "+", "-", "*", "/", "==", "/=", "<", "<=", ">", ">=", "&&", "||", "+.", "-.", "*.", "/.", "<.",
+    ">.", "<=.", ">=.", "==.", ".&.", ".|.", "xor", "shiftL", "shiftR", "mod", "div",
+];
+
+struct Gpu<'a, 'f> {
+    funcs: &'a HashMap<String, &'f crate::ast::Func>,
+    /// functions already checked: `None` fits (or is being checked), `Some` does not
+    checked: HashMap<String, Option<Box<Unfit>>>,
+    /// the built-in names, when first needed
+    builtins: Option<HashSet<String>>,
+}
+
+fn unfit(what: impl Into<String>, span: crate::ast::Span) -> Unfit {
+    Unfit {
+        what: what.into(),
+        span,
+        via: Vec::new(),
+    }
+}
+
+impl Gpu<'_, '_> {
+    fn pat(p: &crate::ast::Pat) -> Option<Unfit> {
+        use crate::ast::Pat;
+        match p {
+            Pat::Wild(_) | Pat::Var(..) | Pat::Int(..) => None,
+            Pat::Con(c, ps, _) if (c == "True" || c == "False") && ps.is_empty() => None,
+            Pat::Con(c, _, sp) => Some(unfit(format!("a pattern on the data value `{c}`"), *sp)),
+            Pat::Str(_, sp) => Some(unfit("a String pattern", *sp)),
+            Pat::Tuple(_, sp) => Some(unfit("a tuple pattern", *sp)),
+        }
+    }
+
+    fn lambda(
+        &mut self,
+        ps: &[crate::ast::Pat],
+        body: &Expr,
+        locals: &HashSet<String>,
+    ) -> Option<Unfit> {
+        let mut inner = locals.clone();
+        for p in ps {
+            if let Some(u) = Self::pat(p) {
+                return Some(u);
+            }
+            collect_pat_vars(p, &mut inner);
+        }
+        self.expr(body, &inner)
+    }
+
+    /// A named function the kernel calls: it must fit too.
+    fn call(&mut self, f: &str, sp: crate::ast::Span) -> Option<Unfit> {
+        if GPU_BUILTINS.contains(&f) || STD_OPS.contains(&f) {
+            return None;
+        }
+        let Some(func) = self.funcs.get(f).copied() else {
+            // a built-in, or a function value the kernel captured
+            let builtins = self
+                .builtins
+                .get_or_insert_with(|| crate::infer::builtin_sigs().into_keys().collect());
+            return if builtins.contains(f) {
+                Some(unfit(format!("`{f}`, which cannot run on the GPU"), sp))
+            } else {
+                Some(unfit(
+                    format!("a call through the function value `{f}`"),
+                    sp,
+                ))
+            };
+        };
+        if let Some(r) = self.checked.get(f) {
+            return r.as_ref().map(|u| Unfit {
+                what: u.what.clone(),
+                span: u.span,
+                via: std::iter::once(f.to_string())
+                    .chain(u.via.clone())
+                    .collect(),
+            });
+        }
+        self.checked.insert(f.to_string(), None);
+        let mut found = None;
+        'clauses: for c in &func.clauses {
+            let mut locals = HashSet::new();
+            for p in &c.pats {
+                if let Some(u) = Self::pat(p) {
+                    found = Some(u);
+                    break 'clauses;
+                }
+                collect_pat_vars(p, &mut locals);
+            }
+            for w in &c.wher {
+                locals.insert(w.name.clone());
+            }
+            let r = match &c.body {
+                Body::Plain(e) => self.expr(e, &locals),
+                Body::Guarded(arms) => arms
+                    .iter()
+                    .find_map(|(g, r)| self.expr(g, &locals).or_else(|| self.expr(r, &locals))),
+            };
+            if r.is_some() {
+                found = r;
+                break;
+            }
+            for w in &c.wher {
+                if let Some(u) = self.call(&w.name, w.span) {
+                    found = Some(u);
+                    break 'clauses;
+                }
+            }
+        }
+        let found = found.map(|mut u| {
+            u.via.insert(0, f.to_string());
+            u
+        });
+        self.checked.insert(
+            f.to_string(),
+            found.as_ref().map(|u| {
+                Box::new(Unfit {
+                    what: u.what.clone(),
+                    span: u.span,
+                    via: u.via[1..].to_vec(),
+                })
+            }),
+        );
+        found
+    }
+
+    fn expr(&mut self, e: &Expr, locals: &HashSet<String>) -> Option<Unfit> {
+        match e {
+            Expr::Int(..) | Expr::Float(..) => None,
+            Expr::Str(_, sp) => Some(unfit("a String", *sp)),
+            Expr::Con(c, sp) => {
+                if c == "True" || c == "False" {
+                    None
+                } else {
+                    Some(unfit(format!("the data value `{c}`"), *sp))
+                }
+            }
+            // a local, or a value the kernel captured (what the device then does with it is
+            // checked again on the final Core, `gpu.rs`)
+            Expr::Var(v, sp) => {
+                if !locals.contains(v) && self.funcs.contains_key(v) {
+                    Some(unfit(format!("`{v}` as a function value"), *sp))
+                } else {
+                    None
+                }
+            }
+            Expr::App(..) => {
+                let mut args = Vec::new();
+                let mut h = e;
+                while let Expr::App(f, a, _) = h {
+                    args.push(&**a);
+                    h = f;
+                }
+                let head = match h {
+                    Expr::Var(f, sp) if locals.contains(f) => Some(unfit(
+                        format!("a call through the function value `{f}`"),
+                        *sp,
+                    )),
+                    Expr::Var(f, sp) => self.call(f, *sp),
+                    Expr::Con(c, sp) => Some(unfit(format!("the data value `{c}`"), *sp)),
+                    other => Some(unfit("a call through a function value", other.span())),
+                };
+                head.or_else(|| args.iter().rev().find_map(|a| self.expr(a, locals)))
+            }
+            Expr::BinOp(op, a, b, sp) => {
+                // an operator a program defines is a function like any other
+                let user = if self.funcs.contains_key(op) && !STD_OPS.contains(&op.as_str()) {
+                    self.call(op, *sp)
+                } else {
+                    None
+                };
+                user.or_else(|| self.expr(a, locals))
+                    .or_else(|| self.expr(b, locals))
+            }
+            // a contract checked at run time (`contracts.rs`): its failure branch only builds the
+            // message and aborts — on the device it traps, and the loop reruns on the CPU
+            Expr::If(c, t, f, _) => {
+                let fails = matches!(&**f, Expr::App(h, _, _)
+                    if matches!(&**h, Expr::Var(n, _) if n == crate::contracts::FAIL));
+                self.expr(c, locals)
+                    .or_else(|| self.expr(t, locals))
+                    .or_else(|| if fails { None } else { self.expr(f, locals) })
+            }
+            Expr::Let(binds, body, _) => {
+                let mut inner = locals.clone();
+                for b in binds {
+                    inner.insert(b.name.clone());
+                }
+                for b in binds {
+                    for c in &b.clauses {
+                        let mut l = inner.clone();
+                        for p in &c.pats {
+                            if let Some(u) = Self::pat(p) {
+                                return Some(u);
+                            }
+                            collect_pat_vars(p, &mut l);
+                        }
+                        let r = match &c.body {
+                            Body::Plain(e) => self.expr(e, &l),
+                            Body::Guarded(arms) => arms
+                                .iter()
+                                .find_map(|(g, r)| self.expr(g, &l).or_else(|| self.expr(r, &l))),
+                        };
+                        if r.is_some() {
+                            return r;
+                        }
+                    }
+                }
+                self.expr(body, &inner)
+            }
+            Expr::Case(scrut, arms, _) => {
+                if let Some(u) = self.expr(scrut, locals) {
+                    return Some(u);
+                }
+                for (p, a) in arms {
+                    if let Some(u) = Self::pat(p) {
+                        return Some(u);
+                    }
+                    let mut l = locals.clone();
+                    collect_pat_vars(p, &mut l);
+                    if let Some(u) = self.expr(a, &l) {
+                        return Some(u);
+                    }
+                }
+                None
+            }
+            Expr::Tuple(_, sp) => Some(unfit("a tuple", *sp)),
+            Expr::RecordCon(c, _, sp) => Some(unfit(format!("the record `{c}`"), *sp)),
+            Expr::RecordUpd(_, _, sp) => Some(unfit("a record update", *sp)),
+            Expr::Lam(_, _, sp) => Some(unfit("a function value (a lambda)", *sp)),
         }
     }
 }

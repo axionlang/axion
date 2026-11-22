@@ -43,13 +43,14 @@ as JSON and are explainable via `axion --explain AXnnnn`.
 | `AX0703` | Totality | A name in a `TOTAL` pragma is not a top-level function of the module | **enforced by `axionc`** |
 | `AX0800` | Parallel loops | A `parFor` kernel has an effect (I/O, exit, a channel/session/task operation, a `Buffer` or arena written in place), in its body or in a function it calls by name (see [`parallel.md`](parallel.md)) | **enforced by `axionc`** |
 | `AX0801` | Parallel loops | `parFor` used without both of its arguments (as a value, or partially applied): its kernel cannot be checked | **enforced by `axionc`** |
+| `AX0802` | GPU kernels | A `gpuFor` kernel uses something the GPU cannot run: a String, a list, tuple, record or other `data` value, a function value, or a built-in other than arithmetic and array reads, in its body or in a function it calls (see [`gpu.md`](gpu.md)); natively also after overloading and specialization | **enforced by `axionc`** |
 | `AX0915` | Native build | A SIMD vector (`F64x4`, …) used where natively only a 64-bit slot fits: a tuple/record/constructor field, a closure capture, an argument or result of a function value, the result of `main` (see [`simd.md`](simd.md)). The interpreter runs the program | **enforced by `axionc`** (native builds) |
 
 The ownership errors (`AX0001`, `AX0002`, `AX0004`, `AX0007`, and the native-build `AX0910`,
 `AX0911`, `AX0912`, `AX0914`) print the rule of [`spec.md`](spec.md) they enforce.
 
 Next free per band — language: `AX0008`; front-end: `AX0102`; types: `AX0204`;
-channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`; refinements and contracts: `AX0604`; totality: `AX0704`; parallel loops: `AX0802`.
+channels/sessions: `AX0306`; typeclasses: `AX0406`; levels: `AX0501`; refinements and contracts: `AX0604`; totality: `AX0704`; parallel loops and GPU kernels: `AX0803`.
 
 **`AX03xx` channels and session types (Phase 3).** The §17 band for the session
 calculus (see [`docs/phase-3-calculus.md`](phase-3-calculus.md)). Enforced:

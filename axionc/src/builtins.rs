@@ -195,6 +195,22 @@ pub const RT_TABLE: &[RtEntry] = &[
     e("axion_array_sum", B, Scalar),
     e("axion_array_dot", B, Scalar),
     e("axion_contract_fail", B, Scalar),
+    e("axion_div_zero", B, Scalar),
+    ea(
+        "axion_gpu_launch",
+        B,
+        Scalar,
+        "the --release form of axion_gpu_for (llvm.rs emits it with the kernel's PTX): the same \
+         ownership, the extra arguments are scalars",
+    ),
+    ea(
+        "axion_gpu_for",
+        B,
+        Scalar,
+        "like axion_par_for: writes the consumed array in place and only runs the kernel (on the \
+         GPU under --release, `axion_gpu_launch`, from device copies of the array and of the \
+         closure's captures; the host values are only read until the results are copied back)",
+    ),
     ea(
         "axion_par_for",
         B,
@@ -400,6 +416,10 @@ pub const SURFACE: &[(&str, &str)] = &[
     ("arraySum", "axion_array_sum"),
     ("arrayDot", "axion_array_dot"),
     ("parFor", "axion_par_for (in place, threads)"),
+    (
+        "gpuFor",
+        "axion_gpu_for (in place, GPU; --release: axion_gpu_launch)",
+    ),
     ("newI8Array", "axion_i8_new"),
     ("getI8", "axion_i8_get"),
     ("setI8", "axion_i8_set"),

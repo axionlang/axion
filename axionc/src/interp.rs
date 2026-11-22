@@ -312,7 +312,7 @@ fn builtin_arity(name: &str) -> usize {
         "join" | "strAppend" | "divInteger" | "modInteger" | "charAt" | "strCmp" | "writeFile"
         | "renameFile" | "execCapture" | "execStatus" | "netConnect" | "netSend" | "newArray"
         | "getArray" | "arrayDot" | "peekU8" | "peekU16" | "peekU32" | "peekU64" | "peekF64"
-        | "bufPtrN" | "fileRead" | "xorInPlace" | "parFor" => 2,
+        | "bufPtrN" | "fileRead" | "xorInPlace" | "parFor" | "gpuFor" => 2,
         "netSendBuf" => 4,
         _ => 1,
     }
@@ -1074,6 +1074,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "parFor",
             args: Vec::new(),
         }),
+        "gpuFor" => Ok(Value::Builtin {
+            name: "gpuFor",
+            args: Vec::new(),
+        }),
         "lenArray" => Ok(Value::Builtin {
             name: "lenArray",
             args: Vec::new(),
@@ -1202,7 +1206,7 @@ fn apply(prog: &Program, callee: Value, arg: Value) -> Result<Value, RunError> {
         }
         Value::Builtin { name, mut args } => {
             args.push(arg);
-            if name == "parFor" && args.len() == 2 {
+            if (name == "parFor" || name == "gpuFor") && args.len() == 2 {
                 run_par_for(prog, args)
             } else if args.len() >= builtin_arity(name) {
                 run_builtin(name, args)
@@ -1861,10 +1865,10 @@ fn eval_binop(op: &str, a: Value, b: Value) -> Result<Value, RunError> {
         // `mod` (Integral): the remainder of the truncated `div` — the sign of the dividend, as
         // native `srem` and `Integer`'s `divmod` (so `a == (a `div` b) * b + a `mod` b`).
         ("mod", Int(x), Int(y)) if y != 0 => Ok(Int(x.wrapping_rem(y))),
-        ("mod", Int(_), Int(_)) => Err("mod by zero".to_string()),
+        ("mod", Int(_), Int(_)) => Err("axion: division by zero".to_string()),
         // `div` (Integral): truncated toward zero, matching native sdiv.
         ("div", Int(x), Int(y)) if y != 0 => Ok(Int(x.wrapping_div(y))),
-        ("div", Int(_), Int(_)) => Err("div by zero".to_string()),
+        ("div", Int(_), Int(_)) => Err("axion: division by zero".to_string()),
         // bitwise (`Data.Bits`): a shift amount is taken mod 64, as natively (`wrapping_sh*`
         // masks it; `shiftR` is arithmetic)
         (".&.", Int(x), Int(y)) => Ok(Int(x & y)),

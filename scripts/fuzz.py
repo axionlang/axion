@@ -2058,6 +2058,80 @@ def check_contracts(prog, src):
             return ("divergence", f"{be or 'interp'}: {bad}; got rc={rc} out={lines}\n{(o + e)[-500:]}")
     return ("ok", None)
 
+def gen_gpu(rng):
+    """GPU kernels (docs/gpu.md): `gpuFor` over Int and Float arrays with random arithmetic
+    kernels — captured arrays read at computed (sometimes out-of-range) indices, captured scalars,
+    helper loops, `div`/`mod` by values that may be zero, float `/.`, `sqrt`, `floor`, `truncate`,
+    `toFloat`. The interpreter runs the loop in order, Cranelift on CPU threads, `--release` on the
+    GPU (or the CPU without one): every run must print the same bits and fail the same way."""
+    fl = rng.random() < 0.5
+    n = rng.choice([1, 7, 100, 1000, 5000])
+    def iexp(d):
+        r = rng.random()
+        if d <= 0 or r < 0.25:
+            return rng.choice(["i", "k", "(lenArray w)", str(rng.randint(0, 9)), f"({rng.randint(-9, -1)})"])
+        if r < 0.55:
+            return f"({iexp(d - 1)} {rng.choice(['+', '-', '*'])} {iexp(d - 1)})"
+        if r < 0.65:
+            return f"({iexp(d - 1)} `{rng.choice(['div', 'mod'])}` {rng.choice([iexp(d - 1), str(rng.randint(1, 9))])})"
+        if r < 0.8:
+            idx = rng.choice([f"(({iexp(d - 1)}) `mod` lenArray w)", f"(i `mod` lenArray w)", iexp(d - 1)])
+            return f"(getArray w {idx})"
+        if r < 0.9:
+            return f"(loopSum {iexp(d - 1)} {rng.randint(0, 30)} 0)"
+        return f"(if {iexp(d - 1)} < {iexp(d - 1)} then {iexp(d - 1)} else {iexp(d - 1)})"
+    def fexp(d):
+        r = rng.random()
+        if d <= 0 or r < 0.25:
+            return rng.choice(["x", "c", "(toFloat i)", "0.5", "1.25", "3.0", f"(toFloat {iexp(0)})"])
+        if r < 0.55:
+            return f"({fexp(d - 1)} {rng.choice(['+.', '-.', '*.'])} {fexp(d - 1)})"
+        if r < 0.65:
+            return f"({fexp(d - 1)} /. ({fexp(d - 1)} *. {fexp(d - 1)} +. 1.0))"
+        if r < 0.75:
+            return f"(sqrt ({fexp(d - 1)} *. {fexp(d - 1)}))"
+        if r < 0.85:
+            return f"(toFloat (truncate ({fexp(d - 1)} *. 100.0)) /. 7.0)"
+        return f"(if {fexp(d - 1)} <. {fexp(d - 1)} then {fexp(d - 1)} else floor {fexp(d - 1)})"
+    body = fexp(3) if fl else f"(x + {iexp(3)})"
+    elem, zero, show, summ = (("Float", "0.0", "showFloat", "sumF") if fl
+                              else ("Int", "0", "showInt", "sumA"))
+    prog = ["-- fuzz:gpu",
+            "loopSum :: Int -> Int -> Int -> Int",
+            "loopSum a k acc = if k <= 0 then acc else loopSum a (k - 1) (acc + a * k)",
+            "sumA :: Array Int -> Int -> Int -> Int",
+            "sumA a j acc = if j >= lenArray a then acc else sumA a (j + 1) (acc + getArray a j)",
+            "sumF :: Array Float -> Int -> Float -> Float",
+            "sumF a j acc = if j >= lenArray a then acc else sumF a (j + 1) (acc +. getArray a j)",
+            "main :: IO ()", "main = do",
+            f"  let w = arrayIota {rng.choice([1, 10, 97])}",
+            f"  let k = strLen \"{'x' * rng.randint(0, 5)}\"",
+            f"  let c = {rng.choice(['0.5', '2.0', '1.0e-3'])}",
+            f"  let a0 = parFor (newArray {n} {zero}) (\\i _ -> {'toFloat i *. 0.5' if fl else 'i * 3 - 7'})",
+            f"  let a1 = gpuFor a0 (\\i x -> {body})",
+            f"  putStrLn ({show} ({summ} a1 0 {zero}))",
+            f"  putStrLn ({show} (getArray a1 {rng.randint(0, n - 1)}))"]
+    return "\n".join(prog) + "\n"
+
+def check_gpu(prog, src):
+    """Every backend prints the same and fails the same way; with a GPU, `--release` uses it."""
+    runs = []
+    for be in ([], ["--backend", "cranelift"], ["--release"]):
+        env = dict(os.environ, AXION_GPU="report")
+        p = subprocess.run([AXIONC, *be, str(src)], capture_output=True, text=True,
+                           timeout=HANG_SECS, env=env)
+        runs.append((be, p.returncode, p.stdout, p.stderr))
+    (_, r0, o0, e0) = runs[0]
+    if r0 != 0 and "error[" in (o0 + e0):
+        return ("verdict", f"a gpuFor program was refused:\n{(o0 + e0)[-500:]}")
+    for be, rc, o, e in runs[1:]:
+        if (rc == 0) != (r0 == 0) or o != o0:
+            return ("divergence", f"{be}: rc={rc} out={o!r} vs interp rc={r0} out={o0!r}\n{e[-400:]}")
+    _, rr, _, er = runs[2]
+    if rr == 0 and os.path.exists("/dev/nvidia0") and "gpuFor runs on the GPU" not in er:
+        return ("verdict", f"the GPU is there but the kernel did not run on it:\n{er[-400:]}")
+    return ("ok", None)
+
 def gen_total(rng):
     """Totality (axionc/src/total.rs): random counting loops (guards that may be off by one or
     point the wrong way, steps that may skip a bound or wrap at the largest Int), divisions
@@ -2251,6 +2325,8 @@ def check(prog, work):
     src.write_text(prog)
     if "fuzz:contracts" in prog:
         return check_contracts(prog, src)
+    if "fuzz:gpu" in prog:
+        return check_gpu(prog, src)
     ri, oi, ei = run([AXIONC, str(src)])
     # A hang on ANY invocation is the worst-masked class: two hanging runs would otherwise look
     # like a "consistent reject". Flag it the moment it happens, with the program for a repro.

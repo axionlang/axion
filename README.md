@@ -142,6 +142,7 @@ More detail in [`docs/backend.md`](docs/backend.md) and the phase docs.
 | [`docs/refinements.md`](docs/refinements.md) | **Integer refinements**: `{i:Int \| 0 <= i && i < len a}` in a signature, proven at every call; proven array accesses lose their bounds check. |
 | [`docs/totality.md`](docs/totality.md) | **Totality**: `{-# TOTAL f #-}` proves `f` terminates (size-change, with certificate-checked arithmetic) and cannot abort (patterns, guards, bounds, divisors). |
 | [`docs/contracts.md`](docs/contracts.md) | **Contracts**: `{-# CONTRACT f requires … ensures … #-}`, proven at compile time where possible and checked at run time elsewhere; `--emit contracts` and `--certified` report which. |
+| [`docs/gpu.md`](docs/gpu.md) | **GPU kernels**: `gpuFor` means `parFor` and runs on an NVIDIA GPU under `--release` (PTX via clang, the driver loaded at run time), with the same bits as the CPU; the CPU otherwise. |
 | [`docs/parallel.md`](docs/parallel.md) | **Parallel loops**: `parFor a k` replaces each element `i` by `k i a[i]` on every core; kernels with effects are refused, so there are no data races and the result matches the sequential loop. |
 | [`docs/simd.md`](docs/simd.md) | **SIMD vector types**: `F64x4`, `I64x4`, … as plain values in vector registers, lane-wise operators, range-checked vector loads/stores. |
 | [`docs/`](docs/) | Grammar, [error codes](docs/error-codes.md), [backend](docs/backend.md), [benchmarks](docs/benchmarks.md), [session calculus](docs/phase-3-calculus.md), phase checklists. |
