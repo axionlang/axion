@@ -7724,6 +7724,83 @@ fn total_functions_are_proven_and_run() {
 }
 
 #[test]
+fn contracts_are_proven_or_checked_at_run_time() {
+    // every contract holds: the same output everywhere, nothing aborts
+    agree_across_backends(
+        "contracts.axi",
+        "70\n3\n7\n17\n43\n144\n500500\n10\n298\n42\n",
+    );
+    // which obligations are proven, and which the program checks
+    let out = axionc()
+        .args(["--emit", "contracts", &fixture("contracts.axi")])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    for want in [
+        "9:27  `withdraw` ensures `0 <= result && result <= balance`  proven",
+        "25:39  `sumTo` ensures `result >= acc`  checked at run time",
+        "52:22  `at` requires `0 <= i && i < (len a)`  proven",
+        "54:22  `at` requires `0 <= i && i < (len a)`  checked at run time",
+        "57:33  `withdraw` used as a value (its whole contract)  checked at run time",
+        "61:81  `at` requires `0 <= i && i < (len a)`  proven",
+        "62:33  `scale` requires `n >= 0`  checked at run time",
+        "15 obligation(s): 9 proven, 6 checked at run time",
+    ] {
+        assert!(text.contains(want), "missing `{want}`:\n{text}");
+    }
+}
+
+#[test]
+fn a_contract_violated_at_run_time_stops_the_program() {
+    let msg = "axion: contract violated: `withdraw` requires `0 <= amount && amount <= balance` \
+               (balance = 10, amount = 13), called from `main`";
+    for backend in [&[][..], &["--backend", "cranelift"][..], &["--release"][..]] {
+        let out = axionc()
+            .args(backend)
+            .arg(fixture("contracts_fail.axi"))
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{backend:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "7\n", "{backend:?}");
+        let all = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+        assert!(all.contains(msg), "{backend:?}: {all}");
+    }
+}
+
+#[test]
+fn malformed_contracts_are_refused() {
+    let out = axionc()
+        .arg(fixture("contracts_reject.axi"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    for (code, what) in [
+        (
+            "AX0603",
+            "expected `requires` or `ensures` after the function name",
+        ),
+        ("AX0603", "this predicate does not parse"),
+        (
+            "AX0603",
+            "`nosuch` is not a top-level function of this module",
+        ),
+        (
+            "AX0603",
+            "`nosig` needs a type signature to have a contract",
+        ),
+        ("AX0603", "`twice` has more than one contract"),
+        ("AX0601", "`y` is not a parameter named in this signature"),
+        ("AX0601", "only `Int` values can be refined"),
+    ] {
+        assert!(
+            text.contains(&format!("error[{code}]")) && text.contains(what),
+            "missing {code} `{what}`:\n{text}"
+        );
+    }
+}
+
+#[test]
 fn parallel_loops_give_the_sequential_result() {
     // matrix-vector product, uneven kernels, named kernels, a total function, a kernel calling a
     // function passed in, nested parFor, Bool elements: the same on every backend…

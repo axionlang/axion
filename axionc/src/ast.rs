@@ -556,6 +556,22 @@ pub struct Module {
     pub bounds_proven: Vec<Span>,
     /// Functions declared total by `{-# TOTAL f g #-}` (`total.rs`), with the pragma's span.
     pub total: Vec<(String, Span)>,
+    /// `{-# CONTRACT f requires … ensures … #-}` pragmas (`contracts.rs`).
+    pub contracts: Vec<Contract>,
+}
+
+/// A function's contract: what a call must satisfy and what the result then satisfies. Each
+/// predicate is proven where it can be, and checked at run time where it cannot
+/// (`contracts.rs`, docs/contracts.md).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
+#[cfg_attr(any(feature = "salsa", feature = "cst"), derive(PartialEq))]
+pub struct Contract {
+    pub func: String,
+    /// the span of the function's name in the pragma
+    pub span: Span,
+    pub requires: Vec<Expr>,
+    pub ensures: Vec<Expr>,
 }
 
 /// The refinements of one top-level signature:
@@ -581,6 +597,9 @@ pub struct RefinePred {
     pub ty: Type,
     pub pred: Expr,
     pub span: Span,
+    /// from a contract: a call (or return) where it is not proven is checked at run time
+    /// instead of refused
+    pub dynamic: bool,
 }
 
 #[derive(Debug, Clone)]

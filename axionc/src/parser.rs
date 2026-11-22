@@ -169,6 +169,7 @@ fn build_module(items: Vec<TopItem>) -> Module {
         refinements: asm.refinements,
         bounds_proven: Vec::new(),
         total: Vec::new(),
+        contracts: Vec::new(),
     }
 }
 
@@ -1066,6 +1067,7 @@ impl<'a> Parser<'a> {
             ty: ty.clone(),
             pred,
             span: (start, end),
+            dynamic: false,
         });
         Ok(ty)
     }

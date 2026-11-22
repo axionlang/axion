@@ -775,6 +775,7 @@ fn empty_module() -> Module {
         refinements: Vec::new(),
         bounds_proven: Vec::new(),
         total: Vec::new(),
+        contracts: Vec::new(),
     }
 }
 
@@ -2426,6 +2427,15 @@ impl<'a> Infer<'a> {
         env.insert(
             "randHex".into(),
             mono(Ty::Fun(Box::new(int()), Box::new(string()))), // n bytes → 2n hex chars
+        );
+        // contractFailed :: forall a. String -> a — a contract checked at run time failed
+        // (`contracts.rs`): aborts with the message, like a failed bounds check
+        env.insert(
+            "contractFailed".into(),
+            Scheme {
+                vars: vec![0],
+                ty: Ty::Fun(Box::new(string()), Box::new(Ty::Var(0))),
+            },
         );
         env.insert(
             "exitWith".into(),

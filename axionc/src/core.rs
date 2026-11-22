@@ -661,6 +661,7 @@ fn sess_builtin_rt(name: &str) -> Option<(&'static str, usize)> {
         "chr" => ("axion_chr", 1),
         "randHex" => ("axion_rand_hex", 1),
         "exitWith" => ("axion_exit", 1),
+        "contractFailed" => ("axion_contract_fail", 1),
         "getArgs" => ("axion_getargs", 1),
         "getArg" => ("axion_getarg", 1),
         // async sockets (docs/async-sockets.md): the non-suspending ops, for value/arg position
@@ -1766,6 +1767,7 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "getArray",
         "setArray",
         "parFor",
+        "contractFailed",
         "lenArray",
         "newTritVec",
         "getTritVec",
@@ -2460,6 +2462,8 @@ impl Lower<'_> {
                 return self.rtcall("axion_array_set", &args, true, buf);
             }
             ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
+            // a contract checked at run time failed (`contracts.rs`): print and abort
+            ("contractFailed", 1) => return self.rtcall("axion_contract_fail", &args, true, buf),
             // `parFor a k` (`docs/parallel.md`): the runtime replaces every slot `i` of `a` by
             // `k i a[i]`, the index range split among threads. It borrows both: the checker made
             // `a` dead here (consumed, like `setArray`), so writing it in place is invisible, and
@@ -3633,6 +3637,7 @@ fn eta_expand(module: &ast::Module) -> ast::Module {
         refinements: module.refinements.clone(),
         bounds_proven: module.bounds_proven.clone(),
         total: module.total.clone(),
+        contracts: module.contracts.clone(),
     }
 }
 

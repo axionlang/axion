@@ -437,6 +437,10 @@ pub struct Outcome {
     pub proven: HashSet<Span>,
     /// the certificate of every proof, when collected
     pub certs: Vec<Cert>,
+    /// what was not proven about contracts, to be checked at run time (`contracts.rs`)
+    pub dynamic: crate::contracts::Dynamic,
+    /// every contract obligation met, proven or not
+    pub obligations: Vec<crate::contracts::Obligation>,
 }
 
 struct Checker<'a> {
@@ -453,6 +457,14 @@ struct Checker<'a> {
     certs: std::cell::RefCell<Option<Vec<Cert>>>,
     /// totality mode (`total.rs`): what the walk records besides refinement checks
     tot: Option<TotWalk>,
+    /// the top-level function being checked
+    cur_fn: String,
+    /// contract obligations not proven (checked at run time instead)
+    dynamic: crate::contracts::Dynamic,
+    obligations: Vec<crate::contracts::Obligation>,
+    /// functions whose contract `ensures` is not assumed after a call from their own body (it
+    /// is checked at run time only after calls from outside)
+    no_self: HashSet<String>,
 }
 
 /// A size-change measure of a function (`total.rs`): an `Int` quantity, which must be `>= 0`
@@ -602,7 +614,7 @@ fn pat_names(p: &Pat, out: &mut Vec<String>) {
 }
 
 /// Source text of a predicate, for messages.
-fn show(e: &Expr) -> String {
+pub fn show(e: &Expr) -> String {
     match e {
         Expr::Int(n, _) => n.to_string(),
         Expr::Var(v, _) => v.clone(),
@@ -757,7 +769,10 @@ impl Checker<'_> {
         let Expr::Var(g, _) = h else {
             return None;
         };
-        if g == "newArray" && args.len() == 2 && self.builtin(cx, g) {
+        // (`arrayIota n` clamps its length the same way)
+        if ((g == "newArray" && args.len() == 2) || (g == "arrayIota" && args.len() == 1))
+            && self.builtin(cx, g)
+        {
             let l = self.fresh(&format!("len ({})", show(e)), 0);
             if let Some(n) = self.term(cx, args[0], side) {
                 let ll = Lin::atom(l);
@@ -877,7 +892,13 @@ impl Checker<'_> {
                 let r = self.fresh(&show(e), MIN);
                 if let Some(rf) = self.refs.get(g.as_str()).copied() {
                     let vals = self.arg_vals(cx, rf, &ps, &args, side);
-                    for p in rf.preds.iter().filter(|p| p.pos == ps.len()) {
+                    // a contract `ensures` checked at run time only after calls from outside
+                    let unchecked = *g == self.cur_fn && self.no_self.contains(g.as_str());
+                    for p in rf
+                        .preds
+                        .iter()
+                        .filter(|p| p.pos == ps.len() && !(p.dynamic && unchecked))
+                    {
                         let mut vals = vals.clone();
                         vals.insert(p.binder.clone(), PVal::Int(Lin::atom(r)));
                         if let Some(f) = self.formula(&p.pred, &vals) {
@@ -1057,8 +1078,14 @@ impl Checker<'_> {
         match e {
             Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Con(..) => {}
             Expr::Var(v, sp) => {
-                if Self::is_global(cx, v) && self.refs.contains_key(v.as_str()) {
-                    self.unsaturated(v, *sp);
+                if Self::is_global(cx, v) {
+                    if let Some(rf) = self.refs.get(v.as_str()) {
+                        if rf.preds.iter().all(|p| p.dynamic) {
+                            self.value_use(v, *sp);
+                        } else {
+                            self.unsaturated(v, *sp);
+                        }
+                    }
                 }
                 if self.tot.is_some() {
                     self.tot_use(cx, v, &[], *sp);
@@ -1084,6 +1111,34 @@ impl Checker<'_> {
                     }
                     Expr::Var(..) if self.tot.is_some() => {}
                     _ => self.walk(cx, h),
+                }
+                // `parFor a (\i x -> …)`: the kernel's index is in `[0, len a)`
+                if let (Expr::Var(g, _), [arr, Expr::Lam(ps, body, _)]) = (h, args.as_slice()) {
+                    if g == "parFor" && self.builtin(cx, g) {
+                        if let Some(Pat::Var(i, _)) = ps.first() {
+                            self.walk(cx, arr);
+                            let mut side = Vec::new();
+                            let len = self.arr_value(cx, arr, &mut side);
+                            let mut inner = Self::with_facts(cx, side);
+                            let mut names = Vec::new();
+                            ps.iter().for_each(|p| pat_names(p, &mut names));
+                            for n in names {
+                                inner.env.insert(n, Bind::Other);
+                            }
+                            let at = self.fresh(i, MIN);
+                            let ix = Lin::atom(at);
+                            inner.facts.push(ix.clone()); // i >= 0
+                            if let Some(hi) = len
+                                .and_then(|l| Lin::atom(l).sub(&ix))
+                                .and_then(|d| d.add(&Lin::konst(-1)))
+                            {
+                                inner.facts.push(hi); // len a - 1 - i >= 0
+                            }
+                            inner.env.insert(i.clone(), Bind::Int(ix));
+                            self.walk(&inner, body);
+                            return;
+                        }
+                    }
                 }
                 for a in args {
                     self.walk(cx, a);
@@ -1276,6 +1331,17 @@ impl Checker<'_> {
         }
     }
 
+    /// A contract function used as a value: every call through it is checked at run time.
+    fn value_use(&mut self, g: &str, sp: Span) {
+        self.dynamic.values.insert(sp);
+        self.obligations.push(crate::contracts::Obligation {
+            func: g.to_string(),
+            what: "used as a value (its whole contract)".to_string(),
+            span: sp,
+            proven: false,
+        });
+    }
+
     fn unsaturated(&mut self, g: &str, sp: Span) {
         self.diags.push(
             Diagnostic::error(
@@ -1317,6 +1383,10 @@ impl Checker<'_> {
             .max()
             .unwrap_or(0);
         if args.len() < need {
+            if rf.preds.iter().all(|p| p.dynamic) {
+                self.value_use(g, hsp);
+                return;
+            }
             self.unsaturated(g, (hsp.0, sp.1));
             return;
         }
@@ -1324,8 +1394,32 @@ impl Checker<'_> {
         let vals = self.arg_vals(cx, rf, &ps, args, &mut side);
         let mut facts = cx.facts.clone();
         facts.extend(side);
-        for p in rf.preds.iter().filter(|p| p.pos < ps.len()) {
-            let Some(goal) = self.formula(&p.pred, &vals) else {
+        for (k, p) in rf
+            .preds
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.pos < ps.len())
+        {
+            let goal = self.formula(&p.pred, &vals);
+            if p.dynamic {
+                let ok = goal.as_ref().is_some_and(|g| self.prove(&facts, g));
+                self.obligations.push(crate::contracts::Obligation {
+                    func: g.to_string(),
+                    what: format!("requires `{}`", show(&p.pred)),
+                    span: sp,
+                    proven: ok,
+                });
+                if !ok {
+                    let e = self
+                        .dynamic
+                        .calls
+                        .entry(sp)
+                        .or_insert_with(|| (g.to_string(), Vec::new()));
+                    e.1.push(k);
+                }
+                continue;
+            }
+            let Some(goal) = goal else {
                 continue;
             };
             if !self.prove(&facts, &goal) {
@@ -1437,6 +1531,7 @@ impl Checker<'_> {
             .map(split_sig)
             .unwrap_or((Vec::new(), Type::Unit));
         let rf = self.refs.get(f.name.as_str()).copied();
+        self.cur_fn = f.name.clone();
         for c in &f.clauses {
             let mut cx = Cx::default();
             // each parameter position's value (named or not)
@@ -1481,6 +1576,22 @@ impl Checker<'_> {
                 for p in rf.preds.iter().filter(|p| p.pos < ps.len()) {
                     if let Some(fm) = self.formula(&p.pred, &vals) {
                         conjuncts(&fm, &mut cx.facts);
+                    }
+                }
+                // a non-zero fact (`requires d /= 0`) is a disjunction, not a row: keep it with
+                // the others a division may use (totality)
+                if self.tot.is_some() {
+                    let mut pcx = Cx::default();
+                    for (n, v) in &vals {
+                        let b = match v {
+                            PVal::Int(l) => Bind::Int(l.clone()),
+                            PVal::Len(l) => Bind::Arr(*l, false),
+                        };
+                        pcx.env.insert(n.clone(), b);
+                    }
+                    for p in rf.preds.iter().filter(|p| p.pos < ps.len()) {
+                        let (yes, _) = self.ne_of(&pcx, &p.pred);
+                        cx.ne.extend(yes);
                     }
                 }
             }
@@ -1560,7 +1671,21 @@ impl Checker<'_> {
                 for p in res {
                     let mut v = vals.clone();
                     v.insert(p.binder.clone(), PVal::Int(t.clone()));
-                    let Some(goal) = self.formula(&p.pred, &v) else {
+                    let goal = self.formula(&p.pred, &v);
+                    if p.dynamic {
+                        let ok = goal.as_ref().is_some_and(|g| self.prove(&facts, g));
+                        self.obligations.push(crate::contracts::Obligation {
+                            func: self.cur_fn.clone(),
+                            what: format!("ensures `{}`", show(&p.pred)),
+                            span: e.span(),
+                            proven: ok,
+                        });
+                        if !ok {
+                            self.dynamic.ensures.insert(self.cur_fn.clone());
+                        }
+                        continue;
+                    }
+                    let Some(goal) = goal else {
                         continue;
                     };
                     if !self.prove(&facts, &goal) {
@@ -1591,6 +1716,15 @@ impl Checker<'_> {
         let r = self.bind_locals(cx, fs);
         std::mem::swap(self.diags, &mut quiet);
         r
+    }
+}
+
+/// The leftmost string literal of a `strAppend` chain (a contract check's message).
+fn first_str(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Str(s, _) => Some(s),
+        Expr::App(..) => spine(e).1.first().and_then(|a| first_str(a)),
+        _ => None,
     }
 }
 
@@ -1712,13 +1846,19 @@ fn well_formed(rf: &Refinement, p: &RefinePred, ps: &[Type], diags: &mut Diagnos
     walk(&p.pred, true, &types, &p.binder, result, &mut err)
 }
 
-/// Check every refinement in the module and every call that must satisfy one.
-pub fn check(module: &Module, diags: &mut Diagnostics) -> Outcome {
-    check_with(module, diags, false)
-}
-
 /// `check`, also returning every proof's certificate when `collect`.
 pub fn check_with(module: &Module, diags: &mut Diagnostics, collect: bool) -> Outcome {
+    check_full(module, diags, collect, &HashSet::new())
+}
+
+/// `check_with`, not assuming the contract `ensures` of the functions in `no_self` after their
+/// calls from their own bodies.
+pub fn check_full(
+    module: &Module,
+    diags: &mut Diagnostics,
+    collect: bool,
+    no_self: &HashSet<String>,
+) -> Outcome {
     let mut sigs = HashMap::new();
     for f in &module.funcs {
         if let Some(s) = &f.sig {
@@ -1743,6 +1883,10 @@ pub fn check_with(module: &Module, diags: &mut Diagnostics, collect: bool) -> Ou
         user: module.funcs.iter().map(|f| f.name.clone()).collect(),
         certs: std::cell::RefCell::new(collect.then(Vec::new)),
         tot: None,
+        cur_fn: String::new(),
+        dynamic: crate::contracts::Dynamic::default(),
+        obligations: Vec::new(),
+        no_self: no_self.clone(),
     };
     // a program with no refinements still gets its provable array accesses
     for f in &module.funcs {
@@ -1757,6 +1901,8 @@ pub fn check_with(module: &Module, diags: &mut Diagnostics, collect: bool) -> Ou
     Outcome {
         proven: ck.proven,
         certs,
+        dynamic: ck.dynamic,
+        obligations: ck.obligations,
     }
 }
 
@@ -2507,6 +2653,20 @@ impl Checker<'_> {
             }
             "div" | "mod" | "rem" if args.len() >= 2 => self.tot_nonzero(cx, args[1], sp),
             "exitWith" => self.tot_partial("`exitWith` ends the program", sp),
+            crate::contracts::FAIL => {
+                // the run-time check of a contract not proven here (`contracts.rs`)
+                let what = args
+                    .first()
+                    .and_then(|a| first_str(a))
+                    .and_then(|m| m.strip_prefix("axion: contract violated: "))
+                    .map_or_else(|| "a contract".to_string(), str::to_string);
+                self.tot_partial(
+                    &format!(
+                        "the contract {what} is not proven here, so it is checked at run time"
+                    ),
+                    sp,
+                );
+            }
             _ => self.tot_partial(&format!("`{g}` is not known to return normally"), sp),
         }
     }
@@ -2785,6 +2945,10 @@ pub fn total_walk(module: &Module, needed: &HashSet<String>, mut tw: TotWalk) ->
         user: module.funcs.iter().map(|f| f.name.clone()).collect(),
         certs: std::cell::RefCell::new(None),
         tot: Some(tw),
+        cur_fn: String::new(),
+        dynamic: crate::contracts::Dynamic::default(),
+        obligations: Vec::new(),
+        no_self: HashSet::new(),
     };
     for f in module.funcs.iter().filter(|f| needed.contains(&f.name)) {
         ck.check_func(f);

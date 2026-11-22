@@ -1512,6 +1512,7 @@ pub fn builtins() -> HashSet<String> {
         "chr",
         "randHex",
         "exitWith",
+        "contractFailed",
         "getArgs",
         "getArg",
         // typed async-socket ops (docs/async-sockets.md)

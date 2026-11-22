@@ -512,6 +512,7 @@ fn strip_bodies_and_spans(m: &ast::Module) -> ast::Module {
         refinements: m.refinements.clone(),
         bounds_proven: Vec::new(),
         total: Vec::new(),
+        contracts: Vec::new(),
     }
 }
 

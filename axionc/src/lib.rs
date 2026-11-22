@@ -47,6 +47,7 @@ mod check;
 #[cfg(feature = "native")]
 mod codegen;
 mod codegen_tv;
+mod contracts;
 mod core;
 mod delta;
 mod model_trace;
@@ -114,6 +115,7 @@ enum Emit {
     Verify,
     ModelTrace,
     RefineCerts,
+    Contracts,
     CodegenTv,
     CodegenTvClif,
     RetAlias,
@@ -278,6 +280,7 @@ pub fn run_cli() -> ExitCode {
                     Some("verify") => emit = Emit::Verify,
                     Some("model-trace") => emit = Emit::ModelTrace,
                     Some("refine-certs") => emit = Emit::RefineCerts,
+                    Some("contracts") => emit = Emit::Contracts,
                     Some("codegen-tv") => emit = Emit::CodegenTv,
                     Some("codegen-tv-clif") => emit = Emit::CodegenTvClif,
                     Some("ret-alias") => emit = Emit::RetAlias,
@@ -380,8 +383,15 @@ pub fn run_cli() -> ExitCode {
             return ExitCode::FAILURE;
         };
         resolve_imports_with(&mut module, &path, &mut diags, &disk_import_resolver);
+        contracts::attach(&mut module, &mut diags);
         let out = refine::check_with(&module, &mut diags, true);
         print!("{}", refine::certs_lean(&out.certs));
+        return ExitCode::SUCCESS;
+    }
+    if emit == Emit::Contracts {
+        // every contract obligation: proven at compile time, or checked at run time
+        let obligations = contract_obligations(&src, &path, &mut diags);
+        print!("{}", contracts::report(&obligations, &lines));
         return ExitCode::SUCCESS;
     }
     let (module, analysis) = compile_front(&src, &path, &mut diags);
@@ -1163,6 +1173,15 @@ pub fn run_cli() -> ExitCode {
                  double-free/use-after-free (AX0910), no leaks (AX0911), no unsound native \
                  aliasing (AX0912); no verification bypass in effect."
             );
+            // contracts: which are proven, and which the program checks at run time
+            let mut scratch = Diagnostics::new();
+            let obligations = contract_obligations(&src, &path, &mut scratch);
+            if !obligations.is_empty() {
+                eprint!(
+                    "{}",
+                    contracts::certified_summary(&obligations, &path, &lines)
+                );
+            }
         }
     }
 
@@ -1443,6 +1462,7 @@ pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
     if let Some(mut module) = cst::parse_module_full(src) {
         module.level_ceiling = scan_level_pragma(src, diags);
         module.total = scan_total_pragmas(src);
+        module.contracts = contracts::scan(src, diags);
         levels::check_levels(&module, diags);
         return Some(module);
     }
@@ -1483,8 +1503,43 @@ pub fn parse_source(src: &str, diags: &mut Diagnostics) -> Option<ast::Module> {
     // the memoizable parse stage.
     module.level_ceiling = scan_level_pragma(src, diags);
     module.total = scan_total_pragmas(src);
+    module.contracts = contracts::scan(src, diags);
     levels::check_levels(&module, diags);
     Some(module)
+}
+
+/// Every contract obligation of the program at `path` and whether it is proven
+/// (`--emit contracts`, `--certified`): the same check `prepare_for_check_with` runs.
+fn contract_obligations(
+    src: &str,
+    path: &str,
+    diags: &mut Diagnostics,
+) -> Vec<contracts::Obligation> {
+    let Some(mut module) = parse_source(src, diags) else {
+        return Vec::new();
+    };
+    resolve_imports_with(&mut module, path, diags, &disk_import_resolver);
+    contracts::attach(&mut module, diags);
+    refine_with_contracts(&module, diags).obligations
+}
+
+/// The refinement check, with contracts: a first pass finds the contract `ensures` that are not
+/// proven; those are checked at run time after calls from outside their function only, so a
+/// second pass re-checks without assuming them after the function's calls to itself.
+fn refine_with_contracts(module: &ast::Module, diags: &mut Diagnostics) -> refine::Outcome {
+    let none = std::collections::HashSet::new();
+    let mut first = Diagnostics::new();
+    let out = refine::check_full(module, &mut first, false, &none);
+    if out.dynamic.ensures.is_empty() {
+        for d in first.items {
+            diags.push(d);
+        }
+        return out;
+    }
+    let no_self = out.dynamic.ensures;
+    let mut again = refine::check_full(module, diags, false, &no_self);
+    again.dynamic.ensures.extend(no_self);
+    again
 }
 
 /// Stage 2 — the cross-file downstream: imports + prelude + class lowering +
@@ -1720,7 +1775,11 @@ pub fn prepare_for_check_with(
     // integer refinements (`refine.rs`): every refined call proven, over the program and its
     // imports (a call to an imported refined function too), before the prelude is added. The
     // editor engine (`db::processed_module`) reports them through this same path.
-    let refined = refine::check(&module, diags);
+    // Contracts (`contracts.rs`) are refinements that fall back to run-time checks: what refine
+    // cannot prove is checked where it is needed.
+    contracts::attach(&mut module, diags);
+    let refined = refine_with_contracts(&module, diags);
+    contracts::instrument(&mut module, &refined.dynamic);
     let mut proven: Vec<ast::Span> = refined.proven.into_iter().collect();
     proven.sort_unstable();
     module.bounds_proven = proven;
@@ -7127,6 +7186,9 @@ fn resolve_imports_rec(
         let Some((mut imported, resolved_path)) = resolve(dir, &import, diags) else {
             continue;
         };
+        // its contracts travel with its refinements (`contracts.rs`)
+        contracts::attach(&mut imported, diags);
+        imported.contracts.clear();
         // each imported module in its own span band, after the prelude's (see `band_module_spans`)
         band_module_spans(&mut imported, diag::PRELUDE_SPAN_BAND + resolved.len());
         diag::register_import_band(diag::PRELUDE_SPAN_BAND + resolved.len(), &resolved_path);
@@ -7894,6 +7956,17 @@ pub fn explain_text(code: &str) -> Option<&'static str> {
         "AX0703" => {
             "AX0703 — a name in `{-# TOTAL … #-}` is not a top-level function of this module."
         }
+        "AX0603" => {
+            "AX0603 — a malformed contract. Write\n\
+             \n\
+             \x20   {-# CONTRACT f requires <predicate> ensures <predicate> #-}\n\
+             \n\
+             for a top-level function `f` with a type signature, at most one contract per\n\
+             function, with any number of `requires`/`ensures` clauses. The predicates are\n\
+             those of refinements (AX0601). A contract is proven where it can be and checked\n\
+             at run time where it cannot; `--emit contracts` shows which. See\n\
+             docs/contracts.md."
+        }
         "AX0800" => {
             "AX0800 — a `parFor` kernel has an effect. `parFor a k` replaces every\n\
              element `i` of `a` by `k i a[i]` on several threads at once, in no fixed\n\
@@ -7939,6 +8012,7 @@ fn print_usage() {
          axionc --emit ownership <file> each heap value: created, lent, moved, copied (why), freed\n  \
          axionc --emit core <file>      Axion Core IR (ANF) — the shared lowering\n  \
          axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
+         axionc --emit contracts <file> each contract obligation: proven, or checked at run time\n  \
          axionc --emit extract-tags <f> ownership tags on heap-field case-extractions (report)\n  \
          axionc --emit tag-check <file> second-opinion tag-checker: double-free report (non-gating)\n  \
          axionc --emit ffi <file>       every FFI import and call site: C symbol, ownership, effects\n  \

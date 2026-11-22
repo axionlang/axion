@@ -183,6 +183,7 @@ fn wrap(ty: GTy, e: Expr) -> Module {
         refinements: Vec::new(),
         bounds_proven: Vec::new(),
         total: Vec::new(),
+        contracts: Vec::new(),
     }
 }
 

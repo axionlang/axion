@@ -50,7 +50,7 @@ fuzz-fail/ for a deterministic repro (the seed + index reproduce any run).
 
 Run:  AXION_CLANG=clang ./scripts/fuzz.py [--count N] [--seed S] [--keep-going] [--only NAME]
 """
-import os, sys, random, subprocess, tempfile, pathlib, argparse
+import os, re, sys, random, subprocess, tempfile, pathlib, argparse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AXIONC = os.environ.get("AXIONC", str(ROOT / "axionc/target/debug/axionc"))
@@ -1961,6 +1961,103 @@ def gen_parfor(rng):
         prog.append(f"  putStrLn ({show} ({'sumF' if fl else 'sumA'} a{step} 0 {zero}))")
     return "\n".join(prog) + "\n"
 
+def gen_contracts(rng):
+    """Contracts (docs/contracts.md): random `requires`/`ensures` over two Int parameters and
+    over an array index, calls with literal arguments (often provable either way) and with values
+    only known at run time (`strLen` of a literal), contract functions used as values. The
+    generator computes every call itself, so it knows the exact output and which call is the
+    first to break a contract: every backend must print exactly the lines before it, then stop
+    with that violation (`requires` or `ensures`). A wrong proof — an obligation "proven" that
+    does not hold — shows up as a missing failure."""
+    c = rng.randint(-3, 3)
+    lo, hi = rng.randint(-5, 2), rng.randint(0, 9)
+    reqs = rng.sample([("lo <= x", lambda x, y: lo <= x), ("x <= hi", lambda x, y: x <= hi),
+                       ("x + y <= 12", lambda x, y: x + y <= 12),
+                       ("y /= 0", lambda x, y: y != 0)], rng.randint(1, 2))
+    reqs = [(t.replace("lo", f"({lo})" if lo < 0 else str(lo)).replace("hi", str(hi)), f)
+            for t, f in reqs]
+    floor = rng.randint(-20, 5)
+    ens = rng.random() < 0.6
+    req_txt = " && ".join(t for t, _ in reqs)
+    prog = ["-- fuzz:contracts",
+            "{-# CONTRACT f requires " + req_txt
+            + (f" ensures result >= ({floor}) #-}}" if ens else " #-}"),
+            "f :: Int -> Int -> Int",
+            f"f x y = x * ({c}) + y",
+            "{-# CONTRACT at requires 0 <= i && i < len a #-}",
+            "at :: Array Int -> Int -> Int",
+            "at a i = getArray a i",
+            "sumL :: List Int -> Int",
+            "sumL xs = case xs of\n  Nil -> 0\n  Cons z rest -> z + sumL rest",
+            "main :: IO ()", "main = do",
+            "  let arr = arrayIota 6"]
+    out, fail = [], None
+    def run_f(x, y):
+        nonlocal fail
+        if fail:
+            return None
+        if not all(f(x, y) for _, f in reqs):
+            fail = "requires"
+            return None
+        r = x * c + y
+        if ens and r < floor:
+            fail = "ensures"
+            return None
+        return r
+    def arg():
+        v = rng.randint(-6, 12)
+        if rng.random() < 0.4 and v >= 0:
+            return f"(strLen \"{'x' * v}\")", v       # known only at run time
+        return (f"({v})" if v < 0 else str(v)), v
+    for _ in range(rng.randint(1, 5)):
+        r = rng.random()
+        if r < 0.6:
+            (ax, x), (ay, y) = arg(), arg()
+            v = run_f(x, y)
+            prog.append(f"  putStrLn (showInt (f {ax} {ay}))")
+        elif r < 0.8:
+            ai, i = arg()
+            prog.append(f"  putStrLn (showInt (at arr {ai}))")
+            if not fail:
+                if 0 <= i < 6:
+                    v = i
+                else:
+                    fail, v = "requires", None
+        else:
+            ax, x = arg()
+            ys = [rng.randint(-3, 5) for _ in range(3)]
+            lit = "[" + ", ".join(f"({y})" if y < 0 else str(y) for y in ys) + "]"
+            prog.append(f"  putStrLn (showInt (sumL (map (f {ax}) {lit})))")
+            vals = [run_f(x, y) for y in ys]
+            v = None if fail else sum(vals)
+        if fail:
+            break
+        out.append(str(v))
+    prog.insert(1, f"-- expect-out: {'|'.join(out)}")
+    prog.insert(2, f"-- expect-fail: {fail or 'none'}")
+    return "\n".join(prog) + "\n"
+
+def check_contracts(prog, src):
+    """The exact oracle of `gen_contracts`, on every backend."""
+    want = re.search(r"-- expect-out: (.*)", prog).group(1)
+    want = [l for l in want.split("|") if l]
+    fail = re.search(r"-- expect-fail: (\w+)", prog).group(1)
+    for be in ([], ["--backend", "cranelift"], ["--release"]):
+        rc, o, e = run([AXIONC, *be, str(src)])
+        if rc == HANG_RC:
+            return ("hang", f"{be} exceeded {HANG_SECS}s")
+        lines = o.splitlines()
+        bad = None
+        if fail == "none":
+            if rc != 0 or lines != want:
+                bad = f"expected success with {want}"
+        elif rc == 0 or lines != want or f"contract violated: `" not in (o + e) \
+                or f"` {fail} `" not in (o + e):
+            bad = f"expected {want} then a `{fail}` violation"
+        if bad:
+            return ("divergence", f"{be or 'interp'}: {bad}; got rc={rc} out={lines}\n{(o + e)[-500:]}")
+    return ("ok", None)
+
 def gen_total(rng):
     """Totality (axionc/src/total.rs): random counting loops (guards that may be off by one or
     point the wrong way, steps that may skip a bound or wrap at the largest Int), divisions
@@ -2152,6 +2249,8 @@ def asan_run(src, work, oracle_out):
 def check(prog, work):
     src = work / "p.axi"
     src.write_text(prog)
+    if "fuzz:contracts" in prog:
+        return check_contracts(prog, src)
     ri, oi, ei = run([AXIONC, str(src)])
     # A hang on ANY invocation is the worst-masked class: two hanging runs would otherwise look
     # like a "consistent reject". Flag it the moment it happens, with the program for a repro.

@@ -1066,6 +1066,10 @@ fn resolve_var(prog: &Program, env: &Env, name: &str) -> Result<Value, RunError>
             name: "setArray",
             args: Vec::new(),
         }),
+        "contractFailed" => Ok(Value::Builtin {
+            name: "contractFailed",
+            args: Vec::new(),
+        }),
         "parFor" => Ok(Value::Builtin {
             name: "parFor",
             args: Vec::new(),
@@ -2346,6 +2350,8 @@ fn run_builtin(name: &str, args: Vec<Value>) -> Result<Value, RunError> {
             }
         }
         ("imperative", [v]) => Ok(v.clone()),
+        // a contract checked at run time failed: a run-time error, like a bounds failure
+        ("contractFailed", [Value::Str(msg)]) => Err(msg.to_string()),
         ("intToPtr", [v]) | ("ptrToInt", [v]) | ("handleAddr", [v]) => Ok(v.clone()),
         ("lenArray", [Value::Array(a)]) => Ok(Value::Int(a.borrow().len() as i64)),
         ("arrayIota", [Value::Int(n)]) => {

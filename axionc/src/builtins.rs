@@ -194,6 +194,7 @@ pub const RT_TABLE: &[RtEntry] = &[
     e("axion_array_iota", M, Owned("Array")),
     e("axion_array_sum", B, Scalar),
     e("axion_array_dot", B, Scalar),
+    e("axion_contract_fail", B, Scalar),
     ea(
         "axion_par_for",
         B,
@@ -361,6 +362,7 @@ pub const SURFACE: &[(&str, &str)] = &[
     ("resized", "axion_resized"),
     ("randHex", "axion_rand_hex"),
     ("exitWith", "axion_exit"),
+    ("contractFailed", "axion_contract_fail"),
     ("getArgs", "axion_getargs"),
     ("getArg", "axion_getarg"),
     // files + buffers

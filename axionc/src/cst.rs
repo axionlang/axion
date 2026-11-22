@@ -2702,6 +2702,7 @@ fn sig_refinement(sig: &SyntaxNode) -> Option<crate::ast::Refinement> {
                     ty,
                     pred,
                     span: node_span(&param),
+                    dynamic: false,
                 });
             }
             _ => {}
@@ -2802,6 +2803,7 @@ fn lower_module(cst: &SyntaxNode) -> Option<crate::ast::Module> {
         refinements,
         bounds_proven: Vec::new(),
         total: Vec::new(),
+        contracts: Vec::new(),
     };
     for decl in cst.children() {
         match decl.kind() {

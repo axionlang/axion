@@ -52,8 +52,9 @@ The checker proves a call from what is known at that point:
   the negation of earlier guards), and `&&`/`||` short-circuit facts;
 - `let` bindings of `Int` expressions, and an `Int` literal matched by a `case`;
 - a refined result of a call (`get a (clamp k (lenArray a - 1))`);
-- array lengths: `lenArray a`, `len (setArray a i v) = len a`, and `newArray n x` has length
-  `n` when `n >= 0` is known (a negative length gives an empty array);
+- array lengths: `lenArray a`, `len (setArray a i v) = len a`, and `newArray n x` and
+  `arrayIota n` have length `n` when `n >= 0` is known (a negative length gives an empty array);
+- in a parallel loop's kernel `parFor a (\i x -> …)`, `0 <= i && i < len a`;
 - division and remainder by a positive constant of a value known to be non-negative.
 
 Only comparisons whose sides are evidently `Int` count: a `Float` comparison is never read as an
@@ -93,5 +94,8 @@ What remains trusted is reading the facts and the goal off the program: which co
 overflow, array lengths, the meaning of `newArray`/`setArray`/`div`. That part is exercised by
 `scripts/fuzz.py --only refine` (random, often subtly wrong guards: every accepted program must
 agree with the interpreter, which always checks, and be ASan-clean).
+
+A refinement must be proven at every call. To fall back to a run-time check where a proof is
+not found, state it as a [contract](contracts.md) instead.
 
 Fixtures: `tests/fixtures/refinements.axi`, `refine_reject.axi`, `refine_malformed.axi`.

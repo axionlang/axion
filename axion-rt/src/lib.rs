@@ -1965,6 +1965,13 @@ pub unsafe extern "C" fn axion_puts(s: i64) {
 pub unsafe extern "C" fn axion_put(s: i64) {
     write_out(str_bytes(s), false);
 }
+/// A contract checked at run time failed (`contractFailed`, axionc `contracts.rs`): print its
+/// message and abort, like a failed bounds check.
+#[no_mangle]
+pub unsafe extern "C" fn axion_contract_fail(s: i64) -> i64 {
+    write_err(str_bytes(s), true);
+    std::process::abort();
+}
 #[no_mangle]
 pub unsafe extern "C" fn axion_eput(s: i64) {
     write_err(str_bytes(s), false);
@@ -3016,6 +3023,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("axion_array_range", axion_array_range as *const u8),
         ("axion_lane_oob", axion_lane_oob as *const u8),
         ("axion_par_for", axion_par_for as *const u8),
+        ("axion_contract_fail", axion_contract_fail as *const u8),
         ("axion_array_set", axion_array_set as *const u8),
         ("axion_array_sum", axion_array_sum as *const u8),
         ("axion_bignum_add", axion_bignum_add as *const u8),
