@@ -228,6 +228,26 @@ arithmetic on 80 000 random and edge inputs (0, ±1, ±2^62, ±2^63, …), and w
 loop and checks every index. The `gen_bce` fuzzer checks the whole pipeline (interpreter vs native,
 ASan), mostly on out-of-bounds programs.
 
+## Refinement certificates — `AxionRefine.lean`
+
+`axionc/src/refine.rs` proves integer refinements (and array accesses in bounds) by refuting the
+facts plus the negated goal. Each refutation is a certificate: `hyp i` (an input row), `comb i a j
+b` (`a·rowᵢ + b·rowⱼ`, `a b : Nat`) and `tight i g` (divide by `g > 0`, constant rounded down),
+ending in a row with all coefficients `0` and a negative constant. Rows are `Σ cᵢ·xᵢ + k ≥ 0`
+over integers.
+
+| Theorem | Statement |
+|---|---|
+| `sound` | `check input steps = true` → no `σ : Nat → Int` satisfies every input row |
+| `stepRow_holds` / `run_holds` | each derived row holds wherever the input rows hold |
+| `tighten` | `0 ≤ g·D + k`, `g > 0` → `0 ≤ D + k / g` (integer rounding) |
+| `dot_addL` / `dot_scaleL` / `dot_div` | linearity of the row evaluation |
+
+`sound` uses only `propext` and `Quot.sound`. The code ↔ model link is twofold: the Rust checker
+`refine::check_cert` is the same algorithm (and `refine.rs`'s tests feed it tampered certificates),
+and `refine-trace.sh` emits every certificate over the corpus (`axionc --emit refine-certs`) and
+checks each with this file's `check` by `rfl`.
+
 ## Scope & remaining work
 
 Covered: the linear core; branches (`merge_vals` arm-balance, all paths); interior aliases

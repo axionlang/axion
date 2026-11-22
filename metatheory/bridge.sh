@@ -19,6 +19,10 @@ echo "== Whole-fragment: executable model agrees with the verifier over the corp
 "$here/model-trace.sh"
 
 echo
+echo "== Refinement certificates: Lean's AxionRefine.check accepts every proof the compiler makes =="
+"$here/refine-trace.sh"
+
+echo
 echo "== Bounded-exhaustive (M4): model agrees with the verifier on EVERY program up to size k =="
 "$here/exhaustive.sh"
 

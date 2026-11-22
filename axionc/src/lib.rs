@@ -110,6 +110,7 @@ enum Emit {
     Ownership,
     Verify,
     ModelTrace,
+    RefineCerts,
     CodegenTv,
     CodegenTvClif,
     RetAlias,
@@ -273,6 +274,7 @@ pub fn run_cli() -> ExitCode {
                     Some("ownership") => emit = Emit::Ownership,
                     Some("verify") => emit = Emit::Verify,
                     Some("model-trace") => emit = Emit::ModelTrace,
+                    Some("refine-certs") => emit = Emit::RefineCerts,
                     Some("codegen-tv") => emit = Emit::CodegenTv,
                     Some("codegen-tv-clif") => emit = Emit::CodegenTvClif,
                     Some("ret-alias") => emit = Emit::RetAlias,
@@ -368,6 +370,17 @@ pub fn run_cli() -> ExitCode {
 
     let lines = LineMap::new(&src);
     let mut diags = Diagnostics::new();
+    if emit == Emit::RefineCerts {
+        // every refinement proof's certificate, as Lean `example`s for `AxionRefine.check`
+        // (metatheory/refine-trace.sh): the same check `prepare_for_check_with` runs
+        let Some(mut module) = parse_source(&src, &mut diags) else {
+            return ExitCode::FAILURE;
+        };
+        resolve_imports_with(&mut module, &path, &mut diags, &disk_import_resolver);
+        let out = refine::check_with(&module, &mut diags, true);
+        print!("{}", refine::certs_lean(&out.certs));
+        return ExitCode::SUCCESS;
+    }
     let (module, analysis) = compile_front(&src, &path, &mut diags);
 
     // report diagnostics

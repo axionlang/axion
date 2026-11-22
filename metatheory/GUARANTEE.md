@@ -116,6 +116,13 @@ and well-mitigated this list is.
    then north-star extraction of the verifier from the model.
 4. **The front-end** — parser, inference, linearity checker: soundness of *acceptance* is tested, not
    proven.
+5. **Integer refinements' fact extraction** (`refine.rs`, docs/refinements.md) — an array access the
+   refinement checker proves in bounds is compiled without its check. The *arithmetic* of each proof
+   is not trusted: it carries a certificate that `check_cert` replays, `AxionRefine.lean` proves
+   that checker sound (`sound`: an accepted certificate means no integer solution), and
+   `refine-trace.sh` re-checks every corpus certificate with the Lean `check`. Trusted: reading the
+   facts and goal off the program (comparisons, overflow, lengths) — mitigated by the `refine`
+   fuzzer (interp vs native, ASan).
 
 ---
 
@@ -304,6 +311,7 @@ The trusted base of §4 and the deferrals of §5 are the frontier. In descending
 
 ```sh
 ./metatheory/check.sh    # Lean: every theorem type-checks, no sorry, propext/Quot.sound only
+./metatheory/refine-trace.sh  # Lean re-checks every refinement certificate the compiler produces
 ./metatheory/bridge.sh   # Lean proofs + verifier agreement on the 8 canonical shapes
 ./scripts/sanitize.sh    # ASan/LSan ground truth over the native fixtures
 ./scripts/fuzz.py        # differential interp-vs-native fuzzing

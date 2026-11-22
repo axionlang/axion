@@ -22,6 +22,10 @@
 //! `Σ c·x + k >= 0`, each normalized by the gcd of its coefficients with the constant rounded
 //! down (sound for integers). Products of two unknowns are opaque atoms. A search that grows too
 //! large gives up — the proof fails, the program is refused, nothing unsound is accepted.
+//! Each refutation is recorded as a certificate (`Cert`: combinations and gcd tightenings of the
+//! input rows) and counts only when the independent checker `check_cert` replays it — the same
+//! algorithm as `metatheory/AxionRefine.lean`'s `check`, proven sound there. So the arithmetic
+//! decision is not trusted; what remains trusted is reading facts and goals off the program.
 //!
 //! The checker is front-end only: refinements are erased, and every backend runs the program
 //! unchanged — except that an array access proven in bounds (`getArray a i` with `0 <= i < len
@@ -177,39 +181,143 @@ fn gcd(a: i128, b: i128) -> i128 {
     a
 }
 
-/// `l >= 0` over integers, divided by the gcd of its coefficients with the constant rounded
-/// down: `2x + 3 >= 0` → `x + 1 >= 0` (x >= -1.5 ⇔ x >= -1 for an integer x).
-fn normalize(mut l: Lin) -> Lin {
-    let g = l.t.values().fold(0, |g, k| gcd(g, *k));
-    if g > 1 {
-        for k in l.t.values_mut() {
-            *k /= g;
-        }
-        l.c = l.c.div_euclid(g);
+/// The gcd of a row's coefficients (0 for a constant row).
+fn coeff_gcd(l: &Lin) -> i128 {
+    l.t.values().fold(0, |g, k| gcd(g, *k))
+}
+
+/// `l >= 0` over integers, divided by `g > 1` (the gcd of its coefficients) with the constant
+/// rounded down: `2x + 3 >= 0` → `x + 1 >= 0` (x >= -1.5 ⇔ x >= -1 for an integer x).
+fn tighten(mut l: Lin, g: i128) -> Lin {
+    for k in l.t.values_mut() {
+        *k /= g;
     }
+    l.c = l.c.div_euclid(g);
     l
 }
 
-/// Do the constraints (`each >= 0`) have NO integer solution? `true` is a proof; `false` means
-/// a solution exists or the search gave up.
-fn unsat(rows: Vec<Lin>) -> bool {
-    let mut rows: Vec<Lin> = rows.into_iter().map(normalize).collect();
+/// A row of a certificate: dense coefficients (variable `i` is coefficient `i`) and a constant,
+/// meaning `Σ c[i]·x[i] + k >= 0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CRow {
+    pub c: Vec<i128>,
+    pub k: i128,
+}
+
+/// A certificate step — the same three as `metatheory/AxionRefine.lean`'s `Step`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CStep {
+    /// input row `i`
+    Hyp(usize),
+    /// `a·row[i] + b·row[j]`, `a, b >= 0`
+    Comb(usize, i128, usize, i128),
+    /// `row[i]` divided by `g > 0` (every coefficient divisible), the constant rounded down
+    Tight(usize, i128),
+}
+
+/// A refutation: `steps`, replayed over `input`, end in a row `0 >= -k` with `k > 0`.
+#[derive(Clone, Debug)]
+pub struct Cert {
+    pub input: Vec<CRow>,
+    pub steps: Vec<CStep>,
+}
+
+/// The certificate checker — the trusted part of a refinement proof, independent of the search
+/// that found it. It replays the steps with the rules of `AxionRefine.check` (proven sound in
+/// Lean: an accepted certificate means the input rows have no integer solution); an arithmetic
+/// overflow rejects the certificate (Lean's integers are unbounded, so this only refuses more).
+pub fn check_cert(cert: &Cert) -> bool {
+    fn add_l(a: &[i128], b: &[i128]) -> Option<Vec<i128>> {
+        (0..a.len().max(b.len()))
+            .map(|i| {
+                a.get(i)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(b.get(i).copied().unwrap_or(0))
+            })
+            .collect()
+    }
+    fn scale(m: i128, a: &[i128]) -> Option<Vec<i128>> {
+        a.iter().map(|x| m.checked_mul(*x)).collect()
+    }
+    let mut rows: Vec<CRow> = Vec::new();
+    for s in &cert.steps {
+        let next = match *s {
+            CStep::Hyp(i) => cert.input.get(i).cloned(),
+            CStep::Comb(i, a, j, b) => (|| {
+                if a < 0 || b < 0 {
+                    return None;
+                }
+                let (r, t) = (rows.get(i)?, rows.get(j)?);
+                Some(CRow {
+                    c: add_l(&scale(a, &r.c)?, &scale(b, &t.c)?)?,
+                    k: a.checked_mul(r.k)?.checked_add(b.checked_mul(t.k)?)?,
+                })
+            })(),
+            CStep::Tight(i, g) => rows.get(i).and_then(|r| {
+                (g > 0 && r.c.iter().all(|x| x.rem_euclid(g) == 0)).then(|| CRow {
+                    c: r.c.iter().map(|x| x.div_euclid(g)).collect(),
+                    k: r.k.div_euclid(g),
+                })
+            }),
+        };
+        match next {
+            Some(r) => rows.push(r),
+            None => return false,
+        }
+    }
+    rows.last()
+        .is_some_and(|r| r.c.iter().all(|x| *x == 0) && r.k < 0)
+}
+
+/// How a row of the search was derived.
+#[derive(Clone, Copy)]
+enum Origin {
+    Hyp(usize),
+    Comb(usize, i128, usize, i128),
+    Tight(usize, i128),
+}
+
+/// Fourier–Motzkin elimination over the constraints (`each >= 0`), recording how each row is
+/// derived. `Some(cert)` is a refutation: no integer solution. `None` means a solution exists or
+/// the search gave up. Only `check_cert` decides whether the certificate counts.
+fn refute(input: &[Lin]) -> Option<Cert> {
+    let mut arena: Vec<(Lin, Origin)> = Vec::new();
+    // a row, tightened by its gcd (a recorded step) when that is above 1
+    fn push_norm(arena: &mut Vec<(Lin, Origin)>, l: Lin, o: Origin) -> usize {
+        arena.push((l, o));
+        let i = arena.len() - 1;
+        let g = coeff_gcd(&arena[i].0);
+        if g > 1 {
+            let t = tighten(arena[i].0.clone(), g);
+            arena.push((t, Origin::Tight(i, g)));
+            return arena.len() - 1;
+        }
+        i
+    }
+    let mut cur: Vec<usize> = input
+        .iter()
+        .enumerate()
+        .map(|(i, l)| push_norm(&mut arena, l.clone(), Origin::Hyp(i)))
+        .collect();
     loop {
-        let mut set: HashSet<Lin> = HashSet::new();
-        for r in rows.drain(..) {
-            match r.as_const() {
-                Some(c) if c < 0 => return true,
+        let mut seen: HashSet<Lin> = HashSet::new();
+        let mut rows = Vec::new();
+        for i in cur.drain(..) {
+            match arena[i].0.as_const() {
+                Some(c) if c < 0 => return Some(build_cert(input, &arena, i)),
                 Some(_) => {}
                 None => {
-                    set.insert(r);
+                    if seen.insert(arena[i].0.clone()) {
+                        rows.push(i);
+                    }
                 }
             }
         }
-        rows = set.into_iter().collect();
         // the variable whose elimination creates the fewest rows
         let mut count: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-        for r in &rows {
-            for (a, k) in &r.t {
+        for &i in &rows {
+            for (a, k) in &arena[i].0.t {
                 let e = count.entry(*a).or_default();
                 if *k > 0 {
                     e.0 += 1;
@@ -218,28 +326,76 @@ fn unsat(rows: Vec<Lin>) -> bool {
                 }
             }
         }
-        let Some((&x, _)) = count.iter().min_by_key(|(_, (p, n))| p * n) else {
-            return false; // no variables left and no contradiction
-        };
-        let (with, mut rest): (Vec<Lin>, Vec<Lin>) =
-            rows.into_iter().partition(|r| r.t.contains_key(&x));
-        let (pos, neg): (Vec<&Lin>, Vec<&Lin>) = with.iter().partition(|r| r.t[&x] > 0);
-        for p in &pos {
-            for n in &neg {
-                let (a, b) = (p.t[&x], -n.t[&x]);
-                let (Some(pa), Some(nb)) = (p.scale(b), n.scale(a)) else {
-                    return false;
-                };
-                let Some(s) = pa.add(&nb) else {
-                    return false;
-                };
-                rest.push(normalize(s));
+        let (&x, _) = count.iter().min_by_key(|(_, (p, n))| p * n)?;
+        let (with, mut rest): (Vec<usize>, Vec<usize>) = rows
+            .into_iter()
+            .partition(|i| arena[*i].0.t.contains_key(&x));
+        let (pos, neg): (Vec<usize>, Vec<usize>) =
+            with.into_iter().partition(|i| arena[*i].0.t[&x] > 0);
+        for &p in &pos {
+            for &n in &neg {
+                let (a, b) = (arena[p].0.t[&x], -arena[n].0.t[&x]);
+                let s = arena[p].0.scale(b)?.add(&arena[n].0.scale(a)?)?;
+                rest.push(push_norm(&mut arena, s, Origin::Comb(p, b, n, a)));
             }
         }
         if rest.len() > MAX_ROWS {
-            return false;
+            return None;
         }
-        rows = rest;
+        cur = rest;
+    }
+}
+
+/// The certificate for row `target`: its ancestors in derivation order (each refers only to
+/// earlier rows), the hypotheses it uses re-indexed densely, and the variables numbered densely.
+fn build_cert(input: &[Lin], arena: &[(Lin, Origin)], target: usize) -> Cert {
+    let mut need = vec![false; arena.len()];
+    let mut stack = vec![target];
+    while let Some(i) = stack.pop() {
+        if std::mem::replace(&mut need[i], true) {
+            continue;
+        }
+        match arena[i].1 {
+            Origin::Hyp(_) => {}
+            Origin::Comb(p, _, q, _) => stack.extend([p, q]),
+            Origin::Tight(p, _) => stack.push(p),
+        }
+    }
+    let mut vars: Vec<usize> = Vec::new();
+    let mut hyps: Vec<usize> = Vec::new();
+    for (i, (_, o)) in arena.iter().enumerate() {
+        if need[i] {
+            if let Origin::Hyp(h) = o {
+                hyps.push(*h);
+                vars.extend(input[*h].t.keys().copied());
+            }
+        }
+    }
+    vars.sort_unstable();
+    vars.dedup();
+    let dense = |l: &Lin| CRow {
+        c: vars
+            .iter()
+            .map(|v| l.t.get(v).copied().unwrap_or(0))
+            .collect(),
+        k: l.c,
+    };
+    let mut at: HashMap<usize, usize> = HashMap::new();
+    let mut steps = Vec::new();
+    for (i, (_, o)) in arena.iter().enumerate() {
+        if !need[i] {
+            continue;
+        }
+        at.insert(i, steps.len());
+        steps.push(match *o {
+            Origin::Hyp(h) => CStep::Hyp(hyps.iter().position(|x| *x == h).unwrap_or(0)),
+            Origin::Comb(p, a, q, b) => CStep::Comb(at[&p], a, at[&q], b),
+            Origin::Tight(p, g) => CStep::Tight(at[&p], g),
+        });
+    }
+    Cert {
+        input: hyps.iter().map(|h| dense(&input[*h])).collect(),
+        steps,
     }
 }
 
@@ -272,6 +428,8 @@ enum PVal {
 pub struct Outcome {
     /// spans of `getArray`/`setArray` applications whose index is proven in bounds
     pub proven: HashSet<Span>,
+    /// the certificate of every proof, when collected
+    pub certs: Vec<Cert>,
 }
 
 struct Checker<'a> {
@@ -284,6 +442,8 @@ struct Checker<'a> {
     proven: HashSet<Span>,
     /// the module's own top-level names: a user `lenArray` is not the builtin
     user: HashSet<String>,
+    /// every accepted certificate, when collected (`--emit refine-certs`)
+    certs: std::cell::RefCell<Option<Vec<Cert>>>,
 }
 
 fn is_int(t: &Type) -> bool {
@@ -373,9 +533,23 @@ impl Checker<'_> {
         let Some(cases) = dnf(&neg) else {
             return false;
         };
-        cases
-            .into_iter()
-            .all(|case| unsat(self.rows_for(facts, case)))
+        // every case must be refuted by a certificate the independent checker accepts
+        cases.into_iter().all(|case| {
+            let Some(cert) = refute(&self.rows_for(facts, case)) else {
+                return false;
+            };
+            let ok = check_cert(&cert);
+            debug_assert!(
+                ok,
+                "refute produced a certificate check_cert rejects: {cert:?}"
+            );
+            if ok {
+                if let Some(out) = self.certs.borrow_mut().as_mut() {
+                    out.push(cert);
+                }
+            }
+            ok
+        })
     }
 
     /// The facts that share atoms (transitively) with `goal`, plus each atom's machine bounds.
@@ -1327,6 +1501,11 @@ fn well_formed(rf: &Refinement, p: &RefinePred, ps: &[Type], diags: &mut Diagnos
 
 /// Check every refinement in the module and every call that must satisfy one.
 pub fn check(module: &Module, diags: &mut Diagnostics) -> Outcome {
+    check_with(module, diags, false)
+}
+
+/// `check`, also returning every proof's certificate when `collect`.
+pub fn check_with(module: &Module, diags: &mut Diagnostics, collect: bool) -> Outcome {
     let mut sigs = HashMap::new();
     for f in &module.funcs {
         if let Some(s) = &f.sig {
@@ -1349,6 +1528,7 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Outcome {
         diags,
         proven: HashSet::new(),
         user: module.funcs.iter().map(|f| f.name.clone()).collect(),
+        certs: std::cell::RefCell::new(collect.then(Vec::new)),
     };
     // a program with no refinements still gets its provable array accesses
     for f in &module.funcs {
@@ -1359,7 +1539,35 @@ pub fn check(module: &Module, diags: &mut Diagnostics) -> Outcome {
             ck.check_func(m);
         }
     }
-    Outcome { proven: ck.proven }
+    let certs = ck.certs.take().unwrap_or_default();
+    Outcome {
+        proven: ck.proven,
+        certs,
+    }
+}
+
+/// Each certificate as a Lean `example` checked by `AxionRefine.check` (`metatheory/refine-trace.sh`).
+pub fn certs_lean(certs: &[Cert]) -> String {
+    let row = |r: &CRow| {
+        let c: Vec<String> = r.c.iter().map(i128::to_string).collect();
+        format!("⟨[{}], {}⟩", c.join(", "), r.k)
+    };
+    let step = |s: &CStep| match *s {
+        CStep::Hyp(i) => format!(".hyp {i}"),
+        CStep::Comb(i, a, j, b) => format!(".comb {i} {a} {j} {b}"),
+        CStep::Tight(i, g) => format!(".tight {i} {g}"),
+    };
+    let mut out = format!("-- refine-certs: {} certificate(s)\n", certs.len());
+    for c in certs {
+        let input: Vec<String> = c.input.iter().map(row).collect();
+        let steps: Vec<String> = c.steps.iter().map(step).collect();
+        out.push_str(&format!(
+            "example : AxionRefine.check [{}] [{}] = true := by rfl\n",
+            input.join(", "),
+            steps.join(", ")
+        ));
+    }
+    out
 }
 
 /// Emit each array access `check` proved in bounds without its check: its Core `let` (or tail
@@ -1406,5 +1614,71 @@ pub fn apply_proven(fns: &mut [crate::core::CoreFn], proven: &[Span]) {
         if !f.name.starts_with("axion_") {
             term(&mut f.body, &set);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lin(c: i128, t: &[(usize, i128)]) -> Lin {
+        Lin {
+            c,
+            t: t.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn refutations_carry_certificates_the_checker_accepts() {
+        // x >= 1, y >= x, 3 >= y + x... x + y <= 3 with x >= 1, y >= x: (1,1),(1,2) satisfy it
+        assert!(refute(&[
+            lin(-1, &[(0, 1)]),
+            lin(0, &[(1, 1), (0, -1)]),
+            lin(3, &[(0, -1), (1, -1)])
+        ])
+        .is_none());
+        // ... but adding y >= 3 refutes it
+        let rows = [
+            lin(-1, &[(0, 1)]),
+            lin(0, &[(1, 1), (0, -1)]),
+            lin(3, &[(0, -1), (1, -1)]),
+            lin(-3, &[(1, 1)]),
+        ];
+        let cert = refute(&rows).expect("refuted");
+        assert!(check_cert(&cert));
+        // 2x - 1 >= 0 and 1 - 2x >= 0: rationally x = 1/2, integrally impossible (tightening)
+        let cert = refute(&[lin(-1, &[(5, 2)]), lin(1, &[(5, -2)])]).expect("refuted");
+        assert!(check_cert(&cert));
+        assert!(cert.steps.iter().any(|s| matches!(s, CStep::Tight(..))));
+    }
+
+    #[test]
+    fn the_checker_rejects_tampered_certificates() {
+        let input = vec![CRow { c: vec![1], k: -1 }, CRow { c: vec![-1], k: 0 }];
+        let ok = Cert {
+            input: input.clone(),
+            steps: vec![CStep::Hyp(0), CStep::Hyp(1), CStep::Comb(0, 1, 1, 1)],
+        };
+        assert!(check_cert(&ok));
+        let bad = |steps: Vec<CStep>| {
+            check_cert(&Cert {
+                input: input.clone(),
+                steps,
+            })
+        };
+        // a negative multiplier would let x >= 1 "prove" anything
+        assert!(!bad(vec![CStep::Hyp(0), CStep::Comb(0, -1, 0, 0)]));
+        // ending on a row that is not a contradiction
+        assert!(!bad(vec![CStep::Hyp(0), CStep::Hyp(1)]));
+        // a tightening whose divisor does not divide the coefficients
+        assert!(!bad(vec![CStep::Hyp(0), CStep::Tight(0, 2)]));
+        // a reference to a row not yet derived, or an input that does not exist
+        assert!(!bad(vec![CStep::Comb(0, 1, 1, 1)]));
+        assert!(!bad(vec![CStep::Hyp(7)]));
+        // a satisfiable input is never refuted: x >= 0 and 5 - x >= 0
+        assert!(!check_cert(&Cert {
+            input: vec![CRow { c: vec![1], k: 0 }, CRow { c: vec![-1], k: 5 }],
+            steps: vec![CStep::Hyp(0), CStep::Hyp(1), CStep::Comb(0, 1, 1, 1)],
+        }));
     }
 }

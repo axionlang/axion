@@ -81,9 +81,17 @@ Fourier–Motzkin elimination (exact over the rationals, tightened for integers)
 grows too large it gives up and the call is refused. An array access whose index it proves in
 bounds is compiled without its check — `getArray`/`setArray` in any function, refined or not.
 
-The checker is part of the trusted base for those unchecked accesses. It is exercised by
+Every proof carries a **certificate**: the steps of the refutation (non-negative combinations of
+the facts and the negated goal, and gcd tightenings) ending in `0 >= k` with `k < 0`. A proof
+counts only when a separate, small checker (`refine::check_cert`) replays it. That checker is the
+algorithm of `metatheory/AxionRefine.lean`, whose theorem `sound` proves in Lean that an
+accepted certificate means the facts and the negated goal have no integer solution; and
+`metatheory/refine-trace.sh` re-checks every certificate the compiler produces over the corpus
+with the Lean `check` itself (in CI, as part of `bridge.sh`). So the arithmetic is not trusted.
+
+What remains trusted is reading the facts and the goal off the program: which comparisons count,
+overflow, array lengths, the meaning of `newArray`/`setArray`/`div`. That part is exercised by
 `scripts/fuzz.py --only refine` (random, often subtly wrong guards: every accepted program must
-agree with the interpreter, which always checks, and be ASan-clean). A proof certificate checked
-by a small, separately modeled checker is the planned next step.
+agree with the interpreter, which always checks, and be ASan-clean).
 
 Fixtures: `tests/fixtures/refinements.axi`, `refine_reject.axi`, `refine_malformed.axi`.
