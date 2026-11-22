@@ -648,10 +648,24 @@ impl Fx<'_, '_> {
     /// (`axion_div_zero`), and `minBound / -1` wraps (to `minBound`, remainder 0) where `sdiv`
     /// and `srem` would trap.
     fn int_div(&mut self, div: bool, a: Value, b: Value) -> Result<Value, String> {
-        let zero = self.builder.ins().icmp_imm(IntCC::Equal, b, 0);
+        // one test for both special divisors (`b + 1 <= 1` unsigned: `b` is 0 or -1), so the
+        // common path is the plain `sdiv`/`srem`
+        let t = self.builder.ins().iadd_imm(b, 1);
+        let special = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::UnsignedLessThanOrEqual, t, 1);
+        let fast = self.builder.create_block();
+        let slow = self.builder.create_block();
         let dz = self.builder.create_block();
-        let ok = self.builder.create_block();
-        self.builder.ins().brif(zero, dz, &[], ok, &[]);
+        let m1 = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(special, slow, &[], fast, &[]);
+        self.builder.switch_to_block(slow);
+        self.builder.seal_block(slow);
+        let zero = self.builder.ins().icmp_imm(IntCC::Equal, b, 0);
+        self.builder.ins().brif(zero, dz, &[], m1, &[]);
         self.builder.switch_to_block(dz);
         self.builder.seal_block(dz);
         let id = self
@@ -661,20 +675,26 @@ impl Fx<'_, '_> {
             .ok_or("runtime builtin 'axion_div_zero' not declared")?;
         self.rt_call(id, &[]);
         self.builder.ins().trap(TrapCode::INTEGER_DIVISION_BY_ZERO);
-        self.builder.switch_to_block(ok);
-        self.builder.seal_block(ok);
-        let m1 = self.builder.ins().icmp_imm(IntCC::Equal, b, -1);
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let safe = self.builder.ins().select(m1, one, b);
-        Ok(if div {
-            let q = self.builder.ins().sdiv(a, safe);
-            let neg = self.builder.ins().ineg(a);
-            self.builder.ins().select(m1, neg, q)
+        // `a / -1` wraps (`minBound / -1` is `minBound`), and `a mod -1` is 0
+        self.builder.switch_to_block(m1);
+        self.builder.seal_block(m1);
+        let r1 = if div {
+            self.builder.ins().ineg(a)
         } else {
-            let r = self.builder.ins().srem(a, safe);
-            let z = self.builder.ins().iconst(types::I64, 0);
-            self.builder.ins().select(m1, z, r)
-        })
+            self.builder.ins().iconst(types::I64, 0)
+        };
+        self.builder.ins().jump(done, &[r1]);
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        let r2 = if div {
+            self.builder.ins().sdiv(a, b)
+        } else {
+            self.builder.ins().srem(a, b)
+        };
+        self.builder.ins().jump(done, &[r2]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        Ok(self.builder.block_params(done)[0])
     }
 
     /// Interna um literal de string como objecto de dados (C-string).

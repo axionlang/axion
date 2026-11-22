@@ -1207,12 +1207,26 @@ impl Emit<'_> {
     /// `minBound / -1` wraps (to `minBound`, remainder 0). A plain `sdiv`/`srem` of either is
     /// undefined, which LLVM uses (`k / k` folded to 1 even when `k` is 0).
     fn int_div(&mut self, div: bool, x: &str, y: &str) -> String {
+        // one test for both special divisors (`y + 1 <= 1` unsigned: `y` is 0 or -1), off the
+        // common path: a division cannot be speculated, so this stays a predicted branch and the
+        // common case is the plain `sdiv`/`srem`
+        let (t, special) = (self.val(), self.val());
+        self.ins(&format!("{t} = add i64 {y}, 1"));
+        self.ins(&format!("{special} = icmp ule i64 {t}, 1"));
+        let (lfast, lslow, lz, lm1, ldone) = (
+            self.label("dfast"),
+            self.label("dspecial"),
+            self.label("dzero"),
+            self.label("dneg1"),
+            self.label("ddone"),
+        );
+        self.ins(&format!(
+            "br i1 {special}, label %{lslow}, label %{lfast}, !prof !{{!\"branch_weights\", i32 1, i32 1000}}"
+        ));
+        self.block(&lslow);
         let z = self.val();
         self.ins(&format!("{z} = icmp eq i64 {y}, 0"));
-        let (lz, lo) = (self.label("dzero"), self.label("dok"));
-        self.ins(&format!(
-            "br i1 {z}, label %{lz}, label %{lo}, !prof !{{!\"branch_weights\", i32 1, i32 1000}}"
-        ));
+        self.ins(&format!("br i1 {z}, label %{lz}, label %{lm1}"));
         self.block(&lz);
         if self.gpu.device {
             self.ins("call void @llvm.trap()");
@@ -1220,20 +1234,25 @@ impl Emit<'_> {
             self.ins("call void @axion_div_zero()");
         }
         self.ins("unreachable");
-        self.block(&lo);
-        let (m1, safe, q) = (self.val(), self.val(), self.val());
-        self.ins(&format!("{m1} = icmp eq i64 {y}, -1"));
-        self.ins(&format!("{safe} = select i1 {m1}, i64 1, i64 {y}"));
-        let r = self.val();
+        // `x / -1` wraps (`minBound / -1` is `minBound`), and `x mod -1` is 0
+        self.block(&lm1);
+        let neg = self.val();
         if div {
-            let neg = self.val();
-            self.ins(&format!("{q} = sdiv i64 {x}, {safe}"));
             self.ins(&format!("{neg} = sub i64 0, {x}"));
-            self.ins(&format!("{r} = select i1 {m1}, i64 {neg}, i64 {q}"));
         } else {
-            self.ins(&format!("{q} = srem i64 {x}, {safe}"));
-            self.ins(&format!("{r} = select i1 {m1}, i64 0, i64 {q}"));
+            self.ins(&format!("{neg} = add i64 0, 0"));
         }
+        self.ins(&format!("br label %{ldone}"));
+        self.block(&lfast);
+        let q = self.val();
+        let op = if div { "sdiv" } else { "srem" };
+        self.ins(&format!("{q} = {op} i64 {x}, {y}"));
+        self.ins(&format!("br label %{ldone}"));
+        self.block(&ldone);
+        let r = self.val();
+        self.ins(&format!(
+            "{r} = phi i64 [ {neg}, %{lm1} ], [ {q}, %{lfast} ]"
+        ));
         r
     }
 
