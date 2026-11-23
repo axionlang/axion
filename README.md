@@ -95,16 +95,16 @@ the FFI: [`docs/ffi-trust-boundary.md`](docs/ffi-trust-boundary.md) states preci
 guaranteed on the Axión side of a `foreign` call and what becomes the programmer's responsibility
 once a value crosses into C.
 
-Benchmarks (ms, best of 3; same `clang` for C and Axion `--release` —
+Benchmarks (ms, best of 7; same `clang` 21 for C and Axion `--release`; i5-9300HF —
 [`docs/benchmarks.md`](docs/benchmarks.md)):
 
 ```
 kernel    Ax --rel |  C -O2  Rs -O2
-fib            252 |    252     323      (parity)
-loop           542 |    550     545      (parity)
-alloc           32 |    316     495      (arena: ~10× > malloc, ~15× > Box)
-simd            33 |     32      31      (parity)
-dispatch       563 |    564     561      (monomorphized typeclass = zero-cost)
+fib            248 |    248     295      (parity)
+loop           519 |    532     533      (parity)
+alloc           55 |    300     487      (arena: ~5.5× faster than malloc, ~9× than Box)
+simd            33 |     31      31      (parity)
+dispatch       552 |    459     553      (parity with Rust; C's while loop is 1.2× faster)
 ```
 
 ## How it works (architecture)

@@ -42,19 +42,38 @@
   without `-flto`). The arena's advantage is **structural** (inlinable
   bump-allocator vs a general heap allocator in libc), not a flags artifact.
 
-## Result (one machine, 8 cores; indicative, not definitive)
+## Result (one machine, 8 threads; indicative, not definitive)
+
+2026-11-23, i5-9300HF, clang 21 (`scripts/bench.sh`, best of 7):
 
 ```
-Times (ms, best of 3):
-  kernel    Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
-  --------  -------- -------- |   -----   ----- |  ------  ------
-  fib            648      274 |     570     257 |     822     302
-  loop          2169      544 |    2239     544 |    2451     545
-  alloc         1423       26 |     332     321 |    1113     504
-  simd          1897       34 |     339      32 |     716      32
-  dispatch      2149      470 |    2439     470 |    2497     564
-  sumtype       2276      455 |    2718     448 |    2754     569
+  kernel  Ax --dev Ax --rel |   C -O0   C -O2 |  Rs -O0  Rs -O2
+  ------  -------- -------- |   -----   ----- |  ------  ------
+  fib         1051      248 |     549     248 |     795     295
+  loop        2560      519 |    2192     532 |    2389     533
+  alloc       1081       55 |     321     300 |    1036     487
+  simd         536       33 |     333      31 |     695      31
+  fdot         681       22 |     184      83 |     593      82
+  dispatch    2534      552 |    2380     459 |    2426     553
+  sumtype     2572      554 |    2605     427 |    2669     558
+  tritvec      660      183 |     697     169 |    1383     179
+  dot_i8       537       57 |     516      60 |    1137      60
+  ternmv       535       61 |     586      51 |    1245      71
+  i8mv         539       57 |     486      62 |     998      74
+  i32mv        586       98 |     236      97 |     859     107
+  gauss       1873       78 |     404      71 |    2896     246
 ```
+
+Notes on the numbers:
+
+- `alloc` was 26 ms when the runtime was C and LTO inlined its arena bump into the loop. The
+  Rust runtime is a separate library, so since 2026-09 each `allocateCell` was a call (~105 ms);
+  `--release` now emits the bump inline and calls the runtime only for a new chunk (55 ms).
+- `dispatch` and `sumtype` were at parity with an older clang; clang 21 optimizes the C `while`
+  loops better (C −20%), while Axion's recursion-as-loop did not move. They now match Rust, not C.
+- `--release` pads branches away from 32-byte boundaries (`-mbranches-within-32B-boundaries`):
+  on CPUs with Intel's JCC erratum (Skylake to Coffee Lake) a hot loop otherwise changes speed
+  with where the linker places it (`fib` measured 250 or 298 ms after an unrelated runtime change).
 
 (Ax `--dev` now compiles tail recursion to a **loop** — TCO, §backend — so on
 `loop`/`dispatch`/`sumtype` it is on par with, and here slightly ahead of, C/Rust

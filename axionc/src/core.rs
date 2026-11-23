@@ -2193,486 +2193,511 @@ impl Lower<'_> {
             let vals = args.iter().map(|a| self.atom(a, buf)).collect();
             return Op::CallClosure(clos, vals);
         };
-        if name == "putStrLn" && args.len() == 1 {
-            return Op::PutStrLn(self.atom(args[0], buf));
-        }
-        if name == "putStr" && args.len() == 1 {
-            return Op::PutStr(self.atom(args[0], buf));
-        }
-        if name == "ePutStrLn" && args.len() == 1 {
-            return self.rtcall("axion_eputs", &args, false, buf);
-        }
-        if name == "ePutStr" && args.len() == 1 {
-            return self.rtcall("axion_eput", &args, false, buf);
-        }
-        if name == "showInt" && args.len() == 1 {
-            return Op::ShowInt(self.atom(args[0], buf));
-        }
-        if name == "showFloat" && args.len() == 1 {
-            return self.rtcall("axion_show_float", &args, true, buf);
-        }
-        // Integer (§ Listing 1.4): construct from an Int / render to a String.
-        if name == "fromInt" && args.len() == 1 {
-            return self.rtcall("axion_bignum_from_i64", &args, true, buf);
-        }
-        if name == "bignumFromStr" && args.len() == 1 {
-            return self.rtcall("axion_bignum_from_str", &args, true, buf);
-        }
-        if name == "showInteger" && args.len() == 1 {
-            return self.rtcall("axion_bignum_to_string", &args, true, buf);
-        }
-        if name == "divInteger" && args.len() == 2 {
-            return self.rtcall("axion_bignum_div", &args, true, buf);
-        }
-        if name == "modInteger" && args.len() == 2 {
-            return self.rtcall("axion_bignum_mod", &args, true, buf);
-        }
-        if name == "strAppend" && args.len() == 2 {
-            return self.rtcall("axion_strcat", &args, true, buf);
-        }
-        // char-level string primitives (§text)
-        if name == "strLen" && args.len() == 1 {
-            return self.rtcall("axion_str_len", &args, true, buf);
-        }
-        if name == "charAt" && args.len() == 2 {
-            return self.rtcall("axion_str_at", &args, true, buf);
-        }
-        if name == "pokeU32" && args.len() == 3 {
-            return self.rtcall("axion_poke_u32", &args, true, buf);
-        }
-        // Buffer peek/poke family + the FFI data-pointer accessor (see sess_builtin_rt map).
-        if args.len() == 3 {
-            if let Some(f) = match name.as_str() {
-                "pokeU8" => Some("axion_poke_u8"),
-                "pokeU16" => Some("axion_poke_u16"),
-                "pokeU64" => Some("axion_poke_u64"),
-                "pokeF64" => Some("axion_poke_f64"),
-                _ => None,
-            } {
-                return self.rtcall(f, &args, true, buf);
+        // A function the program defines (top-level or `where`-local) is called as itself, even
+        // when a built-in has the same name: inference and the interpreter already let the
+        // program's definition shadow the built-in (`fromInt :: Int -> Dir` in bench/sumtype once
+        // called the bignum `fromInt` natively). A local variable is not such a function.
+        let program_fn = !self.local_names.contains(name) && !self.foreigns.contains_key(name) && {
+            let key = self.locals.get(name).map_or(name.as_str(), String::as_str);
+            self.fn_arity.contains_key(key)
+        };
+        'builtins: {
+            if program_fn {
+                break 'builtins;
             }
-        }
-        if args.len() == 2 {
-            if let Some(f) = match name.as_str() {
-                "peekU8" => Some("axion_peek_u8"),
-                "peekU16" => Some("axion_peek_u16"),
-                "peekU32" => Some("axion_peek_u32"),
-                "peekU64" => Some("axion_peek_u64"),
-                "peekF64" => Some("axion_peek_f64"),
-                _ => None,
-            } {
-                return self.rtcall(f, &args, true, buf);
+            if name == "putStrLn" && args.len() == 1 {
+                return Op::PutStrLn(self.atom(args[0], buf));
             }
-        }
-        if name == "bufPtr" && args.len() == 1 {
-            return self.rtcall("axion_buf_ptr", &args, true, buf);
-        }
-        if name == "bufPtrN" && args.len() == 2 {
-            return self.rtcall("axion_buf_ptr_n", &args, true, buf);
-        }
-        if name == "strCmp" && args.len() == 2 {
-            return self.rtcall("axion_str_cmp", &args, true, buf);
-        }
-        if name == "substr" && args.len() == 3 {
-            return self.rtcall("axion_substr", &args, true, buf);
-        }
-        // OS capability layer (§pass)
-        if name == "getEnv" && args.len() == 1 {
-            return self.rtcall("axion_getenv", &args, true, buf);
-        }
-        if name == "runCapture" && args.len() == 1 {
-            return self.rtcall("axion_run", &args, true, buf);
-        }
-        if name == "runStatus" && args.len() == 1 {
-            return self.rtcall("axion_system", &args, true, buf);
-        }
-        if name == "execCapture" && args.len() == 2 {
-            return self.rtcall("axion_exec_capture", &args, true, buf);
-        }
-        if name == "execStatus" && args.len() == 2 {
-            return self.rtcall("axion_exec_status", &args, true, buf);
-        }
-        if name == "readFile" && args.len() == 1 {
-            return self.rtcall("axion_read_file", &args, true, buf);
-        }
-        if name == "writeFile" && args.len() == 2 {
-            return self.rtcall("axion_write_file", &args, true, buf);
-        }
-        if name == "fileExists" && args.len() == 1 {
-            return self.rtcall("axion_file_exists", &args, true, buf);
-        }
-        if name == "makeDir" && args.len() == 1 {
-            return self.rtcall("axion_mkdir_p", &args, true, buf);
-        }
-        if name == "removeFile" && args.len() == 1 {
-            return self.rtcall("axion_unlink", &args, true, buf);
-        }
-        if name == "renameFile" && args.len() == 2 {
-            return self.rtcall("axion_rename", &args, true, buf);
-        }
-        if name == "readDir" && args.len() == 1 {
-            return self.rtcall("axion_readdir", &args, true, buf);
-        }
-        if name == "readDirTyped" && args.len() == 1 {
-            return self.rtcall("axion_readdir_typed", &args, true, buf);
-        }
-        if name == "readDirListing" && args.len() == 3 {
-            return self.rtcall("axion_readdir_listing", &args, true, buf);
-        }
-        if name == "readLine" && args.len() == 1 {
-            return self.rtcall("axion_read_line", &args, true, buf);
-        }
-        if name == "readSecret" && args.len() == 1 {
-            return self.rtcall("axion_read_secret", &args, true, buf);
-        }
-        if name == "readKey" && args.len() == 1 {
-            return self.rtcall("axion_read_key", &args, true, buf);
-        }
-        if name == "readKeyTimeout" && args.len() == 1 {
-            return self.rtcall("axion_read_key_timeout", &args, true, buf);
-        }
-        if name == "resized" && args.len() == 1 {
-            return self.rtcall("axion_resized", &args, true, buf);
-        }
-        if name == "chr" && args.len() == 1 {
-            return self.rtcall("axion_chr", &args, true, buf);
-        }
-        if name == "randHex" && args.len() == 1 {
-            return self.rtcall("axion_rand_hex", &args, true, buf);
-        }
-        if name == "exitWith" && args.len() == 1 {
-            return self.rtcall("axion_exit", &args, true, buf);
-        }
-        if name == "getArgs" && args.len() == 1 {
-            return self.rtcall("axion_getargs", &args, true, buf);
-        }
-        if name == "getArg" && args.len() == 1 {
-            return self.rtcall("axion_getarg", &args, true, buf);
-        }
-        if name == "toFloat" && args.len() == 1 {
-            return Op::IntToFloat(self.atom(args[0], buf));
-        }
-        if let Some(b) = crate::simd::builtin(name).filter(|b| crate::simd::arity(*b) == args.len())
-        {
-            return self.simd_call(b, &args, e.span(), buf);
-        }
-        if name == "truncate" && args.len() == 1 {
-            return Op::FloatToInt(self.atom(args[0], buf));
-        }
-        if is_float_unary(name) && args.len() == 1 {
-            return Op::FloatUnary(name.clone(), self.atom(args[0], buf));
-        }
-        if self.fields.contains(name) && args.len() == 1 {
-            let rec = self.atom(args[0], buf);
-            return Op::Field {
-                name: name.clone(),
-                rec,
-            };
-        }
-        // an accessor of a FUNCTION field applied further (`onClick b x`): read the field, then
-        // call the closure it holds with the remaining arguments
-        if self.fields.contains(name) && args.len() > 1 {
-            let rec = self.atom(args[0], buf);
-            let f = self.fresh();
-            buf.push((
-                f.clone(),
-                Rhs::Op(Op::Field {
+            if name == "putStr" && args.len() == 1 {
+                return Op::PutStr(self.atom(args[0], buf));
+            }
+            if name == "ePutStrLn" && args.len() == 1 {
+                return self.rtcall("axion_eputs", &args, false, buf);
+            }
+            if name == "ePutStr" && args.len() == 1 {
+                return self.rtcall("axion_eput", &args, false, buf);
+            }
+            if name == "showInt" && args.len() == 1 {
+                return Op::ShowInt(self.atom(args[0], buf));
+            }
+            if name == "showFloat" && args.len() == 1 {
+                return self.rtcall("axion_show_float", &args, true, buf);
+            }
+            // Integer (§ Listing 1.4): construct from an Int / render to a String.
+            if name == "fromInt" && args.len() == 1 {
+                return self.rtcall("axion_bignum_from_i64", &args, true, buf);
+            }
+            if name == "bignumFromStr" && args.len() == 1 {
+                return self.rtcall("axion_bignum_from_str", &args, true, buf);
+            }
+            if name == "showInteger" && args.len() == 1 {
+                return self.rtcall("axion_bignum_to_string", &args, true, buf);
+            }
+            if name == "divInteger" && args.len() == 2 {
+                return self.rtcall("axion_bignum_div", &args, true, buf);
+            }
+            if name == "modInteger" && args.len() == 2 {
+                return self.rtcall("axion_bignum_mod", &args, true, buf);
+            }
+            if name == "strAppend" && args.len() == 2 {
+                return self.rtcall("axion_strcat", &args, true, buf);
+            }
+            // char-level string primitives (§text)
+            if name == "strLen" && args.len() == 1 {
+                return self.rtcall("axion_str_len", &args, true, buf);
+            }
+            if name == "charAt" && args.len() == 2 {
+                return self.rtcall("axion_str_at", &args, true, buf);
+            }
+            if name == "pokeU32" && args.len() == 3 {
+                return self.rtcall("axion_poke_u32", &args, true, buf);
+            }
+            // Buffer peek/poke family + the FFI data-pointer accessor (see sess_builtin_rt map).
+            if args.len() == 3 {
+                if let Some(f) = match name.as_str() {
+                    "pokeU8" => Some("axion_poke_u8"),
+                    "pokeU16" => Some("axion_poke_u16"),
+                    "pokeU64" => Some("axion_poke_u64"),
+                    "pokeF64" => Some("axion_poke_f64"),
+                    _ => None,
+                } {
+                    return self.rtcall(f, &args, true, buf);
+                }
+            }
+            if args.len() == 2 {
+                if let Some(f) = match name.as_str() {
+                    "peekU8" => Some("axion_peek_u8"),
+                    "peekU16" => Some("axion_peek_u16"),
+                    "peekU32" => Some("axion_peek_u32"),
+                    "peekU64" => Some("axion_peek_u64"),
+                    "peekF64" => Some("axion_peek_f64"),
+                    _ => None,
+                } {
+                    return self.rtcall(f, &args, true, buf);
+                }
+            }
+            if name == "bufPtr" && args.len() == 1 {
+                return self.rtcall("axion_buf_ptr", &args, true, buf);
+            }
+            if name == "bufPtrN" && args.len() == 2 {
+                return self.rtcall("axion_buf_ptr_n", &args, true, buf);
+            }
+            if name == "strCmp" && args.len() == 2 {
+                return self.rtcall("axion_str_cmp", &args, true, buf);
+            }
+            if name == "substr" && args.len() == 3 {
+                return self.rtcall("axion_substr", &args, true, buf);
+            }
+            // OS capability layer (§pass)
+            if name == "getEnv" && args.len() == 1 {
+                return self.rtcall("axion_getenv", &args, true, buf);
+            }
+            if name == "runCapture" && args.len() == 1 {
+                return self.rtcall("axion_run", &args, true, buf);
+            }
+            if name == "runStatus" && args.len() == 1 {
+                return self.rtcall("axion_system", &args, true, buf);
+            }
+            if name == "execCapture" && args.len() == 2 {
+                return self.rtcall("axion_exec_capture", &args, true, buf);
+            }
+            if name == "execStatus" && args.len() == 2 {
+                return self.rtcall("axion_exec_status", &args, true, buf);
+            }
+            if name == "readFile" && args.len() == 1 {
+                return self.rtcall("axion_read_file", &args, true, buf);
+            }
+            if name == "writeFile" && args.len() == 2 {
+                return self.rtcall("axion_write_file", &args, true, buf);
+            }
+            if name == "fileExists" && args.len() == 1 {
+                return self.rtcall("axion_file_exists", &args, true, buf);
+            }
+            if name == "makeDir" && args.len() == 1 {
+                return self.rtcall("axion_mkdir_p", &args, true, buf);
+            }
+            if name == "removeFile" && args.len() == 1 {
+                return self.rtcall("axion_unlink", &args, true, buf);
+            }
+            if name == "renameFile" && args.len() == 2 {
+                return self.rtcall("axion_rename", &args, true, buf);
+            }
+            if name == "readDir" && args.len() == 1 {
+                return self.rtcall("axion_readdir", &args, true, buf);
+            }
+            if name == "readDirTyped" && args.len() == 1 {
+                return self.rtcall("axion_readdir_typed", &args, true, buf);
+            }
+            if name == "readDirListing" && args.len() == 3 {
+                return self.rtcall("axion_readdir_listing", &args, true, buf);
+            }
+            if name == "readLine" && args.len() == 1 {
+                return self.rtcall("axion_read_line", &args, true, buf);
+            }
+            if name == "readSecret" && args.len() == 1 {
+                return self.rtcall("axion_read_secret", &args, true, buf);
+            }
+            if name == "readKey" && args.len() == 1 {
+                return self.rtcall("axion_read_key", &args, true, buf);
+            }
+            if name == "readKeyTimeout" && args.len() == 1 {
+                return self.rtcall("axion_read_key_timeout", &args, true, buf);
+            }
+            if name == "resized" && args.len() == 1 {
+                return self.rtcall("axion_resized", &args, true, buf);
+            }
+            if name == "chr" && args.len() == 1 {
+                return self.rtcall("axion_chr", &args, true, buf);
+            }
+            if name == "randHex" && args.len() == 1 {
+                return self.rtcall("axion_rand_hex", &args, true, buf);
+            }
+            if name == "exitWith" && args.len() == 1 {
+                return self.rtcall("axion_exit", &args, true, buf);
+            }
+            if name == "getArgs" && args.len() == 1 {
+                return self.rtcall("axion_getargs", &args, true, buf);
+            }
+            if name == "getArg" && args.len() == 1 {
+                return self.rtcall("axion_getarg", &args, true, buf);
+            }
+            if name == "toFloat" && args.len() == 1 {
+                return Op::IntToFloat(self.atom(args[0], buf));
+            }
+            if let Some(b) =
+                crate::simd::builtin(name).filter(|b| crate::simd::arity(*b) == args.len())
+            {
+                return self.simd_call(b, &args, e.span(), buf);
+            }
+            if name == "truncate" && args.len() == 1 {
+                return Op::FloatToInt(self.atom(args[0], buf));
+            }
+            if is_float_unary(name) && args.len() == 1 {
+                return Op::FloatUnary(name.clone(), self.atom(args[0], buf));
+            }
+            if self.fields.contains(name) && args.len() == 1 {
+                let rec = self.atom(args[0], buf);
+                return Op::Field {
                     name: name.clone(),
                     rec,
-                }),
-                e.span(),
-            ));
-            let rest: Vec<Atom> = args[1..].iter().map(|a| self.atom(a, buf)).collect();
-            return Op::CallClosure(Atom::Var(f), rest);
-        }
-        // arena builtins (§3)
-        match (name.as_str(), args.len()) {
-            ("withArena", 1) => {
-                let clos = self.atom(args[0], buf);
-                return Op::WithArena { parent: None, clos };
-            }
-            ("withSubArena", 2) => {
-                let parent = self.atom(args[0], buf);
-                let clos = self.atom(args[1], buf);
-                return Op::WithArena {
-                    parent: Some(parent),
-                    clos,
                 };
             }
-            ("allocateCell", 1) => return Op::ArenaAlloc(self.atom(args[0], buf)),
-            ("promote", 2) => {
-                let target = self.atom(args[0], buf);
-                let cell = self.atom(args[1], buf);
-                return Op::Promote(target, cell);
+            // an accessor of a FUNCTION field applied further (`onClick b x`): read the field, then
+            // call the closure it holds with the remaining arguments
+            if self.fields.contains(name) && args.len() > 1 {
+                let rec = self.atom(args[0], buf);
+                let f = self.fresh();
+                buf.push((
+                    f.clone(),
+                    Rhs::Op(Op::Field {
+                        name: name.clone(),
+                        rec,
+                    }),
+                    e.span(),
+                ));
+                let rest: Vec<Atom> = args[1..].iter().map(|a| self.atom(a, buf)).collect();
+                return Op::CallClosure(Atom::Var(f), rest);
             }
-            ("arena_mark", 1) => return Op::ArenaMark(self.atom(args[0], buf)),
-            ("arena_release", 1) => return Op::ArenaRelease(self.atom(args[0], buf)),
-            // linear Buffer U8 (§4/§5): builtins that are runtime calls
-            ("newBuffer", 1) => return self.rtcall("axion_buf_new", &args, true, buf),
-            ("bufIota", 1) => return self.rtcall("axion_buf_iota", &args, true, buf),
-            ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
-            ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
-            // files (linear `File`, an fd or -errno) and the byte Buffers read from them
-            ("fileOpenRaw", 1) => return self.rtcall("axion_file_open", &args, true, buf),
-            ("fileErrno", 1) => return self.rtcall("axion_file_errno", &args, true, buf),
-            ("fileSize", 1) => return self.rtcall("axion_file_size", &args, true, buf),
-            ("fileRead", 2) => return self.rtcall("axion_file_read", &args, true, buf),
-            ("fileClose", 1) => return self.rtcall("axion_file_close", &args, true, buf),
-            ("bufLen", 1) => return self.rtcall("axion_buf_len", &args, true, buf),
-            ("free", 1) => return self.rtcall("axion_buf_free", &args, true, buf),
-            ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
-            // linear dense Array: imperative operations
-            ("newArray", 2) if self.heap_array_elem(e.span()).is_some() => {
-                // a heap element: every slot gets its own copy of the initial value
-                let k = self
-                    .heap_array_elem(e.span())
-                    .map(|(_, k)| k)
-                    .unwrap_or_default();
-                let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
-                return Op::CallDirect(format!("{ARROP}new${k}"), a, Some(format!("Array${k}")));
-            }
-            ("newArray", 2) => {
-                let len = self.atom(args[0], buf);
-                let init = self.atom(args[1], buf);
-                // scalar elements: a flat block (heap elements took the helper path above)
-                return Op::ArrayNew {
-                    len,
-                    init,
-                    elem_ty: None,
-                };
-            }
-            ("getArray", 2) => {
-                // a heap element is read out as a fresh copy the caller owns
-                if let Some((_, k)) = self.heap_array_elem(e.span()) {
-                    let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
-                    return Op::CallDirect(format!("{ARROP}get${k}"), a, Some(k));
+            // arena builtins (§3)
+            match (name.as_str(), args.len()) {
+                ("withArena", 1) => {
+                    let clos = self.atom(args[0], buf);
+                    return Op::WithArena { parent: None, clos };
                 }
-                return self.rtcall("axion_array_get", &args, true, buf);
-            }
-            ("setArray", 3) => {
-                // a heap element: free the replaced one, store a copy of the new one
-                if let Some((_, k)) = self.heap_array_elem(e.span()) {
+                ("withSubArena", 2) => {
+                    let parent = self.atom(args[0], buf);
+                    let clos = self.atom(args[1], buf);
+                    return Op::WithArena {
+                        parent: Some(parent),
+                        clos,
+                    };
+                }
+                ("allocateCell", 1) => return Op::ArenaAlloc(self.atom(args[0], buf)),
+                ("promote", 2) => {
+                    let target = self.atom(args[0], buf);
+                    let cell = self.atom(args[1], buf);
+                    return Op::Promote(target, cell);
+                }
+                ("arena_mark", 1) => return Op::ArenaMark(self.atom(args[0], buf)),
+                ("arena_release", 1) => return Op::ArenaRelease(self.atom(args[0], buf)),
+                // linear Buffer U8 (§4/§5): builtins that are runtime calls
+                ("newBuffer", 1) => return self.rtcall("axion_buf_new", &args, true, buf),
+                ("bufIota", 1) => return self.rtcall("axion_buf_iota", &args, true, buf),
+                ("xorInPlace", 2) => return self.rtcall("axion_buf_xor", &args, true, buf),
+                ("sumBytes", 1) => return self.rtcall("axion_buf_sum", &args, true, buf),
+                // files (linear `File`, an fd or -errno) and the byte Buffers read from them
+                ("fileOpenRaw", 1) => return self.rtcall("axion_file_open", &args, true, buf),
+                ("fileErrno", 1) => return self.rtcall("axion_file_errno", &args, true, buf),
+                ("fileSize", 1) => return self.rtcall("axion_file_size", &args, true, buf),
+                ("fileRead", 2) => return self.rtcall("axion_file_read", &args, true, buf),
+                ("fileClose", 1) => return self.rtcall("axion_file_close", &args, true, buf),
+                ("bufLen", 1) => return self.rtcall("axion_buf_len", &args, true, buf),
+                ("free", 1) => return self.rtcall("axion_buf_free", &args, true, buf),
+                ("foldBytes", 3) => return self.rtcall("axion_fold_bytes", &args, true, buf),
+                // linear dense Array: imperative operations
+                ("newArray", 2) if self.heap_array_elem(e.span()).is_some() => {
+                    // a heap element: every slot gets its own copy of the initial value
+                    let k = self
+                        .heap_array_elem(e.span())
+                        .map(|(_, k)| k)
+                        .unwrap_or_default();
                     let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
                     return Op::CallDirect(
-                        format!("{ARROP}set${k}"),
+                        format!("{ARROP}new${k}"),
                         a,
                         Some(format!("Array${k}")),
                     );
                 }
-                return self.rtcall("axion_array_set", &args, true, buf);
-            }
-            ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
-            // a contract checked at run time failed (`contracts.rs`): print and abort
-            ("contractFailed", 1) => return self.rtcall("axion_contract_fail", &args, true, buf),
-            // `parFor a k` (`docs/parallel.md`): the runtime replaces every slot `i` of `a` by
-            // `k i a[i]`, the index range split among threads. It borrows both: the checker made
-            // `a` dead here (consumed, like `setArray`), so writing it in place is invisible, and
-            // the same array is the result. Scalar elements only: a heap element would need its
-            // old value freed and the new one owned per slot.
-            ("parFor", 2) => {
-                if self.heap_array_elem(e.span()).is_some() {
-                    return Op::Unsupported(
+                ("newArray", 2) => {
+                    let len = self.atom(args[0], buf);
+                    let init = self.atom(args[1], buf);
+                    // scalar elements: a flat block (heap elements took the helper path above)
+                    return Op::ArrayNew {
+                        len,
+                        init,
+                        elem_ty: None,
+                    };
+                }
+                ("getArray", 2) => {
+                    // a heap element is read out as a fresh copy the caller owns
+                    if let Some((_, k)) = self.heap_array_elem(e.span()) {
+                        let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
+                        return Op::CallDirect(format!("{ARROP}get${k}"), a, Some(k));
+                    }
+                    return self.rtcall("axion_array_get", &args, true, buf);
+                }
+                ("setArray", 3) => {
+                    // a heap element: free the replaced one, store a copy of the new one
+                    if let Some((_, k)) = self.heap_array_elem(e.span()) {
+                        let a: Vec<Atom> = args.iter().map(|x| self.atom(x, buf)).collect();
+                        return Op::CallDirect(
+                            format!("{ARROP}set${k}"),
+                            a,
+                            Some(format!("Array${k}")),
+                        );
+                    }
+                    return self.rtcall("axion_array_set", &args, true, buf);
+                }
+                ("lenArray", 1) => return self.rtcall("axion_array_len", &args, true, buf),
+                // a contract checked at run time failed (`contracts.rs`): print and abort
+                ("contractFailed", 1) => {
+                    return self.rtcall("axion_contract_fail", &args, true, buf)
+                }
+                // `parFor a k` (`docs/parallel.md`): the runtime replaces every slot `i` of `a` by
+                // `k i a[i]`, the index range split among threads. It borrows both: the checker made
+                // `a` dead here (consumed, like `setArray`), so writing it in place is invisible, and
+                // the same array is the result. Scalar elements only: a heap element would need its
+                // old value freed and the new one owned per slot.
+                ("parFor", 2) => {
+                    if self.heap_array_elem(e.span()).is_some() {
+                        return Op::Unsupported(
                         "parFor over an array of heap elements (natively: Int, Float, Bool, Char)"
                             .into(),
                     );
+                    }
+                    let arr = self.atom(args[0], buf);
+                    let clos = self.atom(args[1], buf);
+                    let done = self.fresh();
+                    buf.push((
+                        done,
+                        Rhs::Op(Op::RtCall {
+                            func: "axion_par_for".into(),
+                            args: vec![arr.clone(), clos],
+                            returns: true,
+                        }),
+                        e.span(),
+                    ));
+                    return Op::Atom(arr);
                 }
-                let arr = self.atom(args[0], buf);
-                let clos = self.atom(args[1], buf);
-                let done = self.fresh();
-                buf.push((
-                    done,
-                    Rhs::Op(Op::RtCall {
-                        func: "axion_par_for".into(),
-                        args: vec![arr.clone(), clos],
-                        returns: true,
-                    }),
-                    e.span(),
-                ));
-                return Op::Atom(arr);
-            }
-            // TritVec (§10): base-243 packed ternary array. A flat block (packed
-            // bytes inline, no nested heap) → Auto-Drop's flat `axion_free`
-            // reclaims it; `drop_ty` marks the `newTritVec` binding as owned.
-            ("newTritVec", 2) => return self.rtcall("axion_tritvec_new", &args, true, buf),
-            ("getTritVec", 2) => return self.rtcall("axion_tritvec_get", &args, true, buf),
-            ("setTritVec", 3) => return self.rtcall("axion_tritvec_set", &args, true, buf),
-            ("lenTritVec", 1) => return self.rtcall("axion_tritvec_len", &args, true, buf),
-            // fused ternary dot product (§10): borrows both, returns a scalar Int.
-            ("tritDot", 2) => return self.rtcall("axion_tritvec_dot", &args, true, buf),
-            // ternary matvec (§10): borrows both, K inert, returns a scalar Int.
-            ("tritMatVecSum", 3) => {
-                return self.rtcall("axion_tritvec_matvec_sum", &args, true, buf)
-            }
-            // wrap pre-packed base-243 bytes into a TritVec (borrows the buffer).
-            ("tritVecFromBuffer", 2) => {
-                return self.rtcall("axion_tritvec_from_buffer", &args, true, buf)
-            }
-            // bulk builders (§10): construct a packed vec / dense array in one
-            // native pass — owned results, reclaimed like newTritVec / newArray.
-            ("tritVecIota", 1) => return self.rtcall("axion_tritvec_iota", &args, true, buf),
-            ("arrayIota", 1) => return self.rtcall("axion_array_iota", &args, true, buf),
-            // I8Array (Phase B): compact signed-byte array.
-            ("newI8Array", 2) => return self.rtcall("axion_i8_new", &args, true, buf),
-            ("i8Iota", 1) => return self.rtcall("axion_i8_iota", &args, true, buf),
-            ("getI8", 2) => return self.rtcall("axion_i8_get", &args, true, buf),
-            ("setI8", 3) => return self.rtcall("axion_i8_set", &args, true, buf),
-            ("lenI8", 1) => return self.rtcall("axion_i8_len", &args, true, buf),
-            ("i8MatVecSum", 3) => return self.rtcall("axion_i8_matvec_sum", &args, true, buf),
-            ("i8Sum", 1) => return self.rtcall("axion_i8_sum", &args, true, buf),
-            ("i8Dot", 2) => return self.rtcall("axion_i8_dot", &args, true, buf),
-            ("i8DotI8", 2) => return self.rtcall("axion_i8_dot_i8", &args, true, buf),
-            // Array Int fused reductions (general primitives).
-            ("arraySum", 1) => return self.rtcall("axion_array_sum", &args, true, buf),
-            ("arrayDot", 2) => return self.rtcall("axion_array_dot", &args, true, buf),
-            // I32Array (compact int32 array).
-            ("newI32Array", 2) => return self.rtcall("axion_i32_new", &args, true, buf),
-            ("i32Iota", 1) => return self.rtcall("axion_i32_iota", &args, true, buf),
-            ("getI32", 2) => return self.rtcall("axion_i32_get", &args, true, buf),
-            ("setI32", 3) => return self.rtcall("axion_i32_set", &args, true, buf),
-            ("lenI32", 1) => return self.rtcall("axion_i32_len", &args, true, buf),
-            ("i32Sum", 1) => return self.rtcall("axion_i32_sum", &args, true, buf),
-            ("i32Dot", 2) => return self.rtcall("axion_i32_dot", &args, true, buf),
-            ("i32MatVecSum", 3) => return self.rtcall("axion_i32_matvec_sum", &args, true, buf),
-            // `imperative e` = e (the imperative block is identity; §5)
-            ("imperative", 1) => return self.op(args[0], buf),
-            // Ptr casts (§18): `Ptr a` is a reinterpreted i64, so intToPtr/ptrToInt are identity.
-            ("intToPtr", 1) | ("ptrToInt", 1) | ("handleAddr", 1) => return self.op(args[0], buf),
-            // withBuffer n f = f (newBuffer n): allocates and passes to the closure (which consumes)
-            ("withBuffer", 2) => {
-                let n = self.atom(args[0], buf);
-                let clos = self.atom(args[1], buf);
-                let b = self.fresh();
-                buf.push((
-                    b.clone(),
-                    Rhs::Op(Op::RtCall {
-                        func: "axion_buf_new".into(),
-                        args: vec![n],
-                        returns: true,
-                    }),
-                    NO_SPAN,
-                ));
-                return Op::CallClosure(clos, vec![Atom::Var(b)]);
-            }
-            // §9 structured fork-join: `parMap worker xs` → the `axion_par_map`
-            // runtime driver. The worker's state machine (`worker$step`) and its
-            // layout (state size, endpoint slot) were resolved pre-eta; here we
-            // materialize the step address and pass the input list. The N endpoints
-            // live inside the driver's own scheduler, never in the linear world.
-            ("parMap", 2) => {
-                if let Expr::Var(wname, _) = args[0] {
-                    if let Some((step, size, ep_slot, _)) = self.parmap_workers.get(wname).cloned()
-                    {
-                        let xs = self.atom(args[1], buf);
-                        let fa = self.fresh();
-                        buf.push((fa.clone(), Rhs::Op(Op::FuncAddr(step)), NO_SPAN));
-                        // Phase 4 (deep-drop): the reply `List` may carry heap payloads
-                        // (`List (List Int)`); seed its specialized destructor so the
-                        // element lists are reclaimed. The drop is keyed concretely in
-                        // `collect_drop_types` (the RtCall has no key field).
-                        if let Some(ty) = self.makecon_tys.get(&e.span()) {
-                            if ty_head_args(ty)
-                                .0
-                                .is_some_and(|h| self.parametric_data.contains(h))
-                                && mono_key(ty).is_some_and(|k| k.contains('$'))
-                            {
-                                self.mono_seeds.push(ty.clone());
+                // TritVec (§10): base-243 packed ternary array. A flat block (packed
+                // bytes inline, no nested heap) → Auto-Drop's flat `axion_free`
+                // reclaims it; `drop_ty` marks the `newTritVec` binding as owned.
+                ("newTritVec", 2) => return self.rtcall("axion_tritvec_new", &args, true, buf),
+                ("getTritVec", 2) => return self.rtcall("axion_tritvec_get", &args, true, buf),
+                ("setTritVec", 3) => return self.rtcall("axion_tritvec_set", &args, true, buf),
+                ("lenTritVec", 1) => return self.rtcall("axion_tritvec_len", &args, true, buf),
+                // fused ternary dot product (§10): borrows both, returns a scalar Int.
+                ("tritDot", 2) => return self.rtcall("axion_tritvec_dot", &args, true, buf),
+                // ternary matvec (§10): borrows both, K inert, returns a scalar Int.
+                ("tritMatVecSum", 3) => {
+                    return self.rtcall("axion_tritvec_matvec_sum", &args, true, buf)
+                }
+                // wrap pre-packed base-243 bytes into a TritVec (borrows the buffer).
+                ("tritVecFromBuffer", 2) => {
+                    return self.rtcall("axion_tritvec_from_buffer", &args, true, buf)
+                }
+                // bulk builders (§10): construct a packed vec / dense array in one
+                // native pass — owned results, reclaimed like newTritVec / newArray.
+                ("tritVecIota", 1) => return self.rtcall("axion_tritvec_iota", &args, true, buf),
+                ("arrayIota", 1) => return self.rtcall("axion_array_iota", &args, true, buf),
+                // I8Array (Phase B): compact signed-byte array.
+                ("newI8Array", 2) => return self.rtcall("axion_i8_new", &args, true, buf),
+                ("i8Iota", 1) => return self.rtcall("axion_i8_iota", &args, true, buf),
+                ("getI8", 2) => return self.rtcall("axion_i8_get", &args, true, buf),
+                ("setI8", 3) => return self.rtcall("axion_i8_set", &args, true, buf),
+                ("lenI8", 1) => return self.rtcall("axion_i8_len", &args, true, buf),
+                ("i8MatVecSum", 3) => return self.rtcall("axion_i8_matvec_sum", &args, true, buf),
+                ("i8Sum", 1) => return self.rtcall("axion_i8_sum", &args, true, buf),
+                ("i8Dot", 2) => return self.rtcall("axion_i8_dot", &args, true, buf),
+                ("i8DotI8", 2) => return self.rtcall("axion_i8_dot_i8", &args, true, buf),
+                // Array Int fused reductions (general primitives).
+                ("arraySum", 1) => return self.rtcall("axion_array_sum", &args, true, buf),
+                ("arrayDot", 2) => return self.rtcall("axion_array_dot", &args, true, buf),
+                // I32Array (compact int32 array).
+                ("newI32Array", 2) => return self.rtcall("axion_i32_new", &args, true, buf),
+                ("i32Iota", 1) => return self.rtcall("axion_i32_iota", &args, true, buf),
+                ("getI32", 2) => return self.rtcall("axion_i32_get", &args, true, buf),
+                ("setI32", 3) => return self.rtcall("axion_i32_set", &args, true, buf),
+                ("lenI32", 1) => return self.rtcall("axion_i32_len", &args, true, buf),
+                ("i32Sum", 1) => return self.rtcall("axion_i32_sum", &args, true, buf),
+                ("i32Dot", 2) => return self.rtcall("axion_i32_dot", &args, true, buf),
+                ("i32MatVecSum", 3) => {
+                    return self.rtcall("axion_i32_matvec_sum", &args, true, buf)
+                }
+                // `imperative e` = e (the imperative block is identity; §5)
+                ("imperative", 1) => return self.op(args[0], buf),
+                // Ptr casts (§18): `Ptr a` is a reinterpreted i64, so intToPtr/ptrToInt are identity.
+                ("intToPtr", 1) | ("ptrToInt", 1) | ("handleAddr", 1) => {
+                    return self.op(args[0], buf)
+                }
+                // withBuffer n f = f (newBuffer n): allocates and passes to the closure (which consumes)
+                ("withBuffer", 2) => {
+                    let n = self.atom(args[0], buf);
+                    let clos = self.atom(args[1], buf);
+                    let b = self.fresh();
+                    buf.push((
+                        b.clone(),
+                        Rhs::Op(Op::RtCall {
+                            func: "axion_buf_new".into(),
+                            args: vec![n],
+                            returns: true,
+                        }),
+                        NO_SPAN,
+                    ));
+                    return Op::CallClosure(clos, vec![Atom::Var(b)]);
+                }
+                // §9 structured fork-join: `parMap worker xs` → the `axion_par_map`
+                // runtime driver. The worker's state machine (`worker$step`) and its
+                // layout (state size, endpoint slot) were resolved pre-eta; here we
+                // materialize the step address and pass the input list. The N endpoints
+                // live inside the driver's own scheduler, never in the linear world.
+                ("parMap", 2) => {
+                    if let Expr::Var(wname, _) = args[0] {
+                        if let Some((step, size, ep_slot, _)) =
+                            self.parmap_workers.get(wname).cloned()
+                        {
+                            let xs = self.atom(args[1], buf);
+                            let fa = self.fresh();
+                            buf.push((fa.clone(), Rhs::Op(Op::FuncAddr(step)), NO_SPAN));
+                            // Phase 4 (deep-drop): the reply `List` may carry heap payloads
+                            // (`List (List Int)`); seed its specialized destructor so the
+                            // element lists are reclaimed. The drop is keyed concretely in
+                            // `collect_drop_types` (the RtCall has no key field).
+                            if let Some(ty) = self.makecon_tys.get(&e.span()) {
+                                if ty_head_args(ty)
+                                    .0
+                                    .is_some_and(|h| self.parametric_data.contains(h))
+                                    && mono_key(ty).is_some_and(|k| k.contains('$'))
+                                {
+                                    self.mono_seeds.push(ty.clone());
+                                }
                             }
+                            return Op::RtCall {
+                                func: "axion_par_map".into(),
+                                args: vec![
+                                    Atom::Var(fa),
+                                    Atom::Int(size as i64),
+                                    Atom::Int(ep_slot as i64),
+                                    xs,
+                                ],
+                                returns: true,
+                            };
                         }
-                        return Op::RtCall {
-                            func: "axion_par_map".into(),
-                            args: vec![
-                                Atom::Var(fa),
-                                Atom::Int(size as i64),
-                                Atom::Int(ep_slot as i64),
-                                xs,
-                            ],
-                            returns: true,
-                        };
                     }
+                    return Op::Unsupported(
+                        "parMap: the worker must be a named top-level session function".into(),
+                    );
                 }
-                return Op::Unsupported(
-                    "parMap: the worker must be a named top-level session function".into(),
-                );
-            }
-            // §9 worker↔worker: `connect prod cons` → the `axion_connect` runtime driver. Both
-            // workers' state machines + layouts (size, endpoint slot) were resolved pre-eta (via
-            // `parmap_targets`); materialize both step addresses and hand the runtime the (step,
-            // size, ep_slot) triple for each. The channel lives inside the driver's own scheduler.
-            ("connect", 2) => {
-                if let (Expr::Var(pname, _), Expr::Var(cname, _)) = (args[0], args[1]) {
-                    if let (Some((ps, psz, pep, _)), Some((cs, csz, cep, _))) = (
-                        self.parmap_workers.get(pname).cloned(),
-                        self.parmap_workers.get(cname).cloned(),
-                    ) {
-                        let pfa = self.fresh();
-                        buf.push((pfa.clone(), Rhs::Op(Op::FuncAddr(ps)), NO_SPAN));
-                        let cfa = self.fresh();
-                        buf.push((cfa.clone(), Rhs::Op(Op::FuncAddr(cs)), NO_SPAN));
-                        return Op::RtCall {
-                            func: "axion_connect".into(),
-                            args: vec![
-                                Atom::Var(pfa),
-                                Atom::Int(psz as i64),
-                                Atom::Int(pep as i64),
-                                Atom::Var(cfa),
-                                Atom::Int(csz as i64),
-                                Atom::Int(cep as i64),
-                            ],
-                            returns: true,
-                        };
+                // §9 worker↔worker: `connect prod cons` → the `axion_connect` runtime driver. Both
+                // workers' state machines + layouts (size, endpoint slot) were resolved pre-eta (via
+                // `parmap_targets`); materialize both step addresses and hand the runtime the (step,
+                // size, ep_slot) triple for each. The channel lives inside the driver's own scheduler.
+                ("connect", 2) => {
+                    if let (Expr::Var(pname, _), Expr::Var(cname, _)) = (args[0], args[1]) {
+                        if let (Some((ps, psz, pep, _)), Some((cs, csz, cep, _))) = (
+                            self.parmap_workers.get(pname).cloned(),
+                            self.parmap_workers.get(cname).cloned(),
+                        ) {
+                            let pfa = self.fresh();
+                            buf.push((pfa.clone(), Rhs::Op(Op::FuncAddr(ps)), NO_SPAN));
+                            let cfa = self.fresh();
+                            buf.push((cfa.clone(), Rhs::Op(Op::FuncAddr(cs)), NO_SPAN));
+                            return Op::RtCall {
+                                func: "axion_connect".into(),
+                                args: vec![
+                                    Atom::Var(pfa),
+                                    Atom::Int(psz as i64),
+                                    Atom::Int(pep as i64),
+                                    Atom::Var(cfa),
+                                    Atom::Int(csz as i64),
+                                    Atom::Int(cep as i64),
+                                ],
+                                returns: true,
+                            };
+                        }
                     }
+                    return Op::Unsupported(
+                        "connect: both workers must be named top-level session functions".into(),
+                    );
                 }
-                return Op::Unsupported(
-                    "connect: both workers must be named top-level session functions".into(),
-                );
-            }
-            // §9 worker↔worker chain: `pipe3 s1 s2 s3` → the `axion_pipe3` runtime driver — a
-            // producer→relay→consumer pipeline (the N=3 generalization of `connect`). The relay
-            // `s2` holds TWO endpoints (recv-from-`s1`, send-to-`s3`), so it contributes both its
-            // up- and down-slots; `s1`/`s3` are single-endpoint like connect's prod/cons. Data
-            // flows worker→worker→worker; the driver returns `s3`'s result. Deadlock-free by
-            // construction: a linear chain is rank-ordered (rank = position).
-            ("pipe3", 3) => {
-                if let (Expr::Var(n1, _), Expr::Var(n2, _), Expr::Var(n3, _)) =
-                    (args[0], args[1], args[2])
-                {
-                    if let (Some(w1), Some(w2), Some(w3)) = (
-                        self.parmap_workers.get(n1).cloned(),
-                        self.parmap_workers.get(n2).cloned(),
-                        self.parmap_workers.get(n3).cloned(),
-                    ) {
-                        let (s1, sz1, down1, _) = w1; // producer: down-endpoint only
-                        let (s2, sz2, up2, down2) = w2; // relay: recv up2, send down2
-                        let (s3, sz3, up3, _) = w3; // consumer: up-endpoint only
-                        let a1 = self.fresh();
-                        buf.push((a1.clone(), Rhs::Op(Op::FuncAddr(s1)), NO_SPAN));
-                        let a2 = self.fresh();
-                        buf.push((a2.clone(), Rhs::Op(Op::FuncAddr(s2)), NO_SPAN));
-                        let a3 = self.fresh();
-                        buf.push((a3.clone(), Rhs::Op(Op::FuncAddr(s3)), NO_SPAN));
-                        return Op::RtCall {
-                            func: "axion_pipe3".into(),
-                            args: vec![
-                                Atom::Var(a1),
-                                Atom::Int(sz1 as i64),
-                                Atom::Int(down1 as i64),
-                                Atom::Var(a2),
-                                Atom::Int(sz2 as i64),
-                                Atom::Int(up2 as i64),
-                                Atom::Int(down2 as i64),
-                                Atom::Var(a3),
-                                Atom::Int(sz3 as i64),
-                                Atom::Int(up3 as i64),
-                            ],
-                            returns: true,
-                        };
+                // §9 worker↔worker chain: `pipe3 s1 s2 s3` → the `axion_pipe3` runtime driver — a
+                // producer→relay→consumer pipeline (the N=3 generalization of `connect`). The relay
+                // `s2` holds TWO endpoints (recv-from-`s1`, send-to-`s3`), so it contributes both its
+                // up- and down-slots; `s1`/`s3` are single-endpoint like connect's prod/cons. Data
+                // flows worker→worker→worker; the driver returns `s3`'s result. Deadlock-free by
+                // construction: a linear chain is rank-ordered (rank = position).
+                ("pipe3", 3) => {
+                    if let (Expr::Var(n1, _), Expr::Var(n2, _), Expr::Var(n3, _)) =
+                        (args[0], args[1], args[2])
+                    {
+                        if let (Some(w1), Some(w2), Some(w3)) = (
+                            self.parmap_workers.get(n1).cloned(),
+                            self.parmap_workers.get(n2).cloned(),
+                            self.parmap_workers.get(n3).cloned(),
+                        ) {
+                            let (s1, sz1, down1, _) = w1; // producer: down-endpoint only
+                            let (s2, sz2, up2, down2) = w2; // relay: recv up2, send down2
+                            let (s3, sz3, up3, _) = w3; // consumer: up-endpoint only
+                            let a1 = self.fresh();
+                            buf.push((a1.clone(), Rhs::Op(Op::FuncAddr(s1)), NO_SPAN));
+                            let a2 = self.fresh();
+                            buf.push((a2.clone(), Rhs::Op(Op::FuncAddr(s2)), NO_SPAN));
+                            let a3 = self.fresh();
+                            buf.push((a3.clone(), Rhs::Op(Op::FuncAddr(s3)), NO_SPAN));
+                            return Op::RtCall {
+                                func: "axion_pipe3".into(),
+                                args: vec![
+                                    Atom::Var(a1),
+                                    Atom::Int(sz1 as i64),
+                                    Atom::Int(down1 as i64),
+                                    Atom::Var(a2),
+                                    Atom::Int(sz2 as i64),
+                                    Atom::Int(up2 as i64),
+                                    Atom::Int(down2 as i64),
+                                    Atom::Var(a3),
+                                    Atom::Int(sz3 as i64),
+                                    Atom::Int(up3 as i64),
+                                ],
+                                returns: true,
+                            };
+                        }
                     }
+                    return Op::Unsupported(
+                        "pipe3: all three stages must be named top-level session functions".into(),
+                    );
                 }
-                return Op::Unsupported(
-                    "pipe3: all three stages must be named top-level session functions".into(),
-                );
+                _ => {}
             }
-            _ => {}
         }
         let mut vals: Vec<Atom> = args.iter().map(|a| self.atom(a, buf)).collect();
         // over-application: `(f a…) b…` applies a function beyond its arity. Call `f`

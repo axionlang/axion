@@ -7850,6 +7850,12 @@ fn parallel_loop_kernels_with_effects_are_refused() {
 }
 
 #[test]
+fn a_program_function_shadows_a_builtin_of_the_same_name() {
+    // natively the built-in used to win (`fromInt` called the bignum one and printed a pointer)
+    agree_across_backends("shadow_builtin.axi", "41\n105\n30\n6\n20\n15\n");
+}
+
+#[test]
 fn a_closure_writing_an_array_it_captured_is_not_compiled() {
     // A lambda that runs more than once and writes, in place, an array it captured would free what
     // the closure still holds, once per run: a double free natively. The verifier refuses it

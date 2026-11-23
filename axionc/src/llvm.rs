@@ -457,8 +457,15 @@ pub fn build_and_run(
     // IR carries no fast-math flags, so nothing is contracted or reassociated either way.
     let march = std::env::var("AXION_MARCH").unwrap_or_else(|_| "native".into());
     cmd.args(["-O2", "-flto", "-w", "-pthread"])
-        .arg(format!("-march={march}"))
-        .arg(&ll)
+        .arg(format!("-march={march}"));
+    // Intel's JCC erratum (Skylake to Coffee Lake): after its microcode fix, a jump that crosses or
+    // ends on a 32-byte boundary is much slower, so a hot loop's speed depended on where the linker
+    // happened to place it (`fib` swung 250 ↔ 298 ms with an unrelated change of runtime size). Pad
+    // so no branch straddles a boundary; harmless elsewhere (a few bytes of code).
+    if cfg!(target_arch = "x86_64") {
+        cmd.arg("-mbranches-within-32B-boundaries");
+    }
+    cmd.arg(&ll)
         .arg(&rta)
         .arg("-ldl")
         .arg("-lm")
