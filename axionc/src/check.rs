@@ -1634,7 +1634,6 @@ pub fn builtins() -> HashSet<String> {
     .iter()
     .copied()
     .chain(crate::simd::names())
-    .chain(crate::num32::BUILTINS.iter().map(|(n, _, _)| *n))
     .map(|s| s.to_string())
     .collect()
 }
@@ -2607,11 +2606,10 @@ fn resolve_expr(
             // Only SYMBOLIC operators (`<+>`) are resolved: an alphabetic backtick name
             // (`` `mod` ``, `` `div` ``) may be a builtin that lives outside `globals`, so
             // it keeps its prior (unchecked) treatment rather than a false positive.
-            let symbolic = crate::num32::binop(op).is_none()
-                && op
-                    .chars()
-                    .next()
-                    .is_some_and(|c| !c.is_alphabetic() && c != '_');
+            let symbolic = op
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_alphabetic() && c != '_');
             if symbolic
                 && !BUILTIN_OPS.contains(&op.as_str())
                 && !scope.contains(op)
@@ -2965,10 +2963,7 @@ fn build_ctx(module: &Module) -> Ctx {
         .filter(|(_, sig)| {
             let rt = crate::core::result_type(sig);
             matches!(rt, Type::Unit)
-                || matches!(
-                    rt.head_con(),
-                    Some("Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char")
-                )
+                || matches!(rt.head_con(), Some("Int" | "Float" | "Bool" | "Char"))
         })
         .map(|(name, _)| name)
         .collect();

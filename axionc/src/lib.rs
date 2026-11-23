@@ -51,7 +51,6 @@ mod contracts;
 mod core;
 mod delta;
 mod model_trace;
-mod num32;
 pub mod ownership;
 mod verify;
 // `Diagnostic` is re-exported (public API of the engine); its fields carry inline
@@ -1589,12 +1588,7 @@ pub fn analyze_module(
     // stops being a method (dynamic dispatch) and now compiles natively.
     let mono = infer::infer(&module, diags);
     resolve_methods(&mut module, &mono.resolutions);
-    // a float literal at `Float32` (`num32.rs`) → `toFloat32 x`, through the same rewrite
-    let mut user_lits = mono.user_lits.clone();
-    for sp in &mono.f32_lits {
-        user_lits.insert(*sp, F32_LIT.into());
-    }
-    rewrite_int_lits(&mut module, &mono.integer_lits, &user_lits);
+    rewrite_int_lits(&mut module, &mono.integer_lits, &mono.user_lits);
     materialize_specs(&mut module, &mono.specs);
     // Monomorphic `show`/`showArg` synthesized for tuples and multi-param derived
     // data (no usable nominal instance to specialize). Injected after
@@ -4447,10 +4441,7 @@ fn container_elem_is_heap(ty: &ast::Type) -> bool {
     };
     match elem.as_ref() {
         ast::Type::Tuple(_) | ast::Type::App(_, _) => true,
-        ast::Type::Con(h) => !matches!(
-            h.as_str(),
-            "Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char"
-        ),
+        ast::Type::Con(h) => !matches!(h.as_str(), "Int" | "Float" | "Bool" | "Char"),
         _ => false,
     }
 }
@@ -4528,7 +4519,7 @@ fn heap_alias_violations(
 /// Excludes such a param from the embed-consume rule: `dup n = (n, n)` over `Int` copies `n`,
 /// it does not alias it.
 fn is_bare_scalar(ty: &ast::Type) -> bool {
-    matches!(ty, ast::Type::Con(h) if matches!(h.as_str(), "Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char"))
+    matches!(ty, ast::Type::Con(h) if matches!(h.as_str(), "Int" | "Float" | "Bool" | "Char"))
 }
 
 /// A constructor field that carries a separately-allocated heap payload once
@@ -5329,25 +5320,11 @@ fn rw_int_lits_func(
     }
 }
 
-/// The `user_lits` marker of a float literal at `Float32`.
-const F32_LIT: &str = "#f32";
-
 fn rw_int_lits_expr(
     e: &mut ast::Expr,
     lits: &std::collections::HashSet<(usize, usize)>,
     user_lits: &std::collections::HashMap<(usize, usize), String>,
 ) {
-    if let ast::Expr::Float(x, span) = e {
-        if user_lits.get(span).is_some_and(|m| m == F32_LIT) {
-            let (sp, val) = (*span, *x);
-            *e = ast::Expr::App(
-                Box::new(ast::Expr::Var("toFloat32".into(), sp)),
-                Box::new(ast::Expr::Float(val, sp)),
-                sp,
-            );
-        }
-        return;
-    }
     use ast::Expr::{App, BinOp, Case, If, Int, Lam, Let, RecordCon, RecordUpd, Tuple, Var};
     // an Integer literal → `fromInt n`, or a user-numeric literal → `fromInteger$<T> n`; return so
     // the wrapped inner `Int` (same span) is not re-visited.
@@ -6255,20 +6232,6 @@ instance Eq Float where
   eq x y = x == y
 instance Ord Float where
   le x y = if x < y then True else x == y
-instance Eq Int32 where
-  eq x y = x == y
-instance Ord Int32 where
-  le x y = if x < y then True else x == y
-instance Eq Float32 where
-  eq x y = x == y
-instance Ord Float32 where
-  le x y = if x < y then True else x == y
-instance Show Int32 where
-  show x = showInt (fromInt32 x)
-  showArg x = showInt (fromInt32 x)
-instance Show Float32 where
-  show x = showFloat32 x
-  showArg x = showFloat32 x
 instance Eq Bool where
   eq x y = if x then y else if y then False else True
 instance Ord Bool where

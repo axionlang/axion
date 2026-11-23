@@ -196,7 +196,6 @@ pub const RT_TABLE: &[RtEntry] = &[
     e("axion_array_dot", B, Scalar),
     e("axion_contract_fail", B, Scalar),
     e("axion_div_zero", B, Scalar),
-    e("axion_show_float32", B, STR),
     ea(
         "axion_par_for",
         B,
@@ -326,14 +325,6 @@ pub const SURFACE: &[(&str, &str)] = &[
     // strings / show / IO
     ("showInt", "Op::ShowInt (borrow, fresh String)"),
     ("showFloat", "axion_show_float"),
-    ("showFloat32", "axion_show_float32"),
-    ("toInt32", "Op::FloatUnary (num32.rs)"),
-    ("fromInt32", "identity (an Int32 is a sign-extended Int)"),
-    ("toFloat32", "Op::FloatUnary (num32.rs)"),
-    ("fromFloat32", "Op::FloatUnary (num32.rs)"),
-    ("int32ToFloat32", "Op::FloatUnary (num32.rs)"),
-    ("truncateF32", "Op::FloatUnary (num32.rs)"),
-    ("sqrtF32", "Op::FloatUnary (num32.rs)"),
     ("showInteger", "axion_bignum_to_string"),
     ("strAppend", "axion_strcat"),
     ("strLen", "axion_str_len"),

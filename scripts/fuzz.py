@@ -2058,77 +2058,6 @@ def check_contracts(prog, src):
             return ("divergence", f"{be or 'interp'}: {bad}; got rc={rc} out={lines}\n{(o + e)[-500:]}")
     return ("ok", None)
 
-def gen_num32(rng):
-    """32-bit numbers (docs/numbers32.md): random `Int32` and `Float32` kernels and scalar code —
-    wrapping arithmetic, `div`/`mod` by values that may be zero, single-precision `/`, `sqrtF32`,
-    conversions both ways, comparisons (NaN included) — in a `parFor` kernel and in sequential
-    code. Every backend must print the same bits and fail the same way (`check_backends`)."""
-    fl = rng.random() < 0.6
-    n = rng.choice([1, 7, 100, 1000, 5000])
-    def iexp(d):
-        r = rng.random()
-        if d <= 0 or r < 0.3:
-            return rng.choice(["(toInt32 i)", "k", "c32", str(rng.randint(0, 9)),
-                               f"({rng.randint(-9, -1)})", "2147483647", "(0 - 2147483647 - 1)"])
-        if r < 0.6:
-            return f"({iexp(d - 1)} {rng.choice(['+', '-', '*'])} {iexp(d - 1)})"
-        if r < 0.7:
-            return f"({iexp(d - 1)} `{rng.choice(['div', 'mod'])}` {rng.choice([iexp(d - 1), str(rng.randint(1, 9))])})"
-        if r < 0.8:
-            return f"(truncateF32 {fexp(d - 1)})"
-        return f"(if {iexp(d - 1)} < {iexp(d - 1)} then {iexp(d - 1)} else {iexp(d - 1)})"
-    def fexp(d):
-        r = rng.random()
-        if d <= 0 or r < 0.3:
-            xf = "x" if fl else "(int32ToFloat32 x)"   # `x` is the element: Float32 or Int32
-            return rng.choice([xf, "cf", "(int32ToFloat32 (toInt32 i))", "0.5", "1.25", "3.0",
-                               "1.0e-3", "(toFloat32 0.1)", f"(int32ToFloat32 {iexp(0)})"])
-        if r < 0.6:
-            return f"({fexp(d - 1)} {rng.choice(['+', '-', '*'])} {fexp(d - 1)})"
-        if r < 0.7:
-            return f"({fexp(d - 1)} / {fexp(d - 1)})"
-        if r < 0.8:
-            return f"(sqrtF32 ({fexp(d - 1)} * {fexp(d - 1)}))"
-        if r < 0.85:
-            return f"(toFloat32 (fromFloat32 {fexp(d - 1)} *. 1.5))"
-        return f"(if {fexp(d - 1)} < {fexp(d - 1)} then {fexp(d - 1)} else {fexp(d - 1)})"
-    elem, zero, summ = (("Float32", "0.0", "sumF") if fl else ("Int32", "0", "sumI"))
-    body = fexp(3) if fl else f"(x + {iexp(3)})"
-    init = "int32ToFloat32 (toInt32 i) * 0.5" if fl else "toInt32 i * 3 - 7"
-    prog = ["-- fuzz:num32",
-            "sumF :: Array Float32 -> Int -> Float32 -> Float32",
-            "sumF a j acc = if j >= lenArray a then acc else sumF a (j + 1) (acc + getArray a j)",
-            "sumI :: Array Int32 -> Int -> Int32 -> Int32",
-            "sumI a j acc = if j >= lenArray a then acc else sumI a (j + 1) (acc + getArray a j)",
-            "k32 :: Int32",
-            f"k32 = {rng.randint(-5, 5)}",
-            "f32 :: Float32",
-            f"f32 = {rng.choice(['0.5', '2.0', '1.0e-3', '3.25'])}",
-            "main :: IO ()", "main = do",
-            f"  let k = toInt32 (strLen \"{'x' * rng.randint(0, 5)}\") + k32",
-            "  let c32 = k * 3",
-            "  let cf = f32 * int32ToFloat32 k",
-            f"  let a0 = parFor (newArray {n} {zero}) (\\i _ -> {init})",
-            f"  let a1 = parFor a0 (\\i x -> {body})",
-            f"  putStrLn (show ({summ} a1 0 {zero}))",
-            f"  putStrLn (show (getArray a1 {rng.randint(0, n - 1)}))"]
-    return "\n".join(prog) + "\n"
-
-def check_backends(prog, src):
-    """The interpreter, Cranelift and `--release` print the same and fail the same way."""
-    runs = []
-    for be in ([], ["--backend", "cranelift"], ["--release"]):
-        p = subprocess.run([AXIONC, *be, str(src)], capture_output=True, text=True,
-                           timeout=HANG_SECS)
-        runs.append((be, p.returncode, p.stdout, p.stderr))
-    (_, r0, o0, e0) = runs[0]
-    if r0 != 0 and "error[" in (o0 + e0):
-        return ("verdict", f"a generated program was refused:\n{(o0 + e0)[-500:]}")
-    for be, rc, o, e in runs[1:]:
-        if (rc == 0) != (r0 == 0) or o != o0:
-            return ("divergence", f"{be}: rc={rc} out={o!r} vs interp rc={r0} out={o0!r}\n{e[-400:]}")
-    return ("ok", None)
-
 def gen_total(rng):
     """Totality (axionc/src/total.rs): random counting loops (guards that may be off by one or
     point the wrong way, steps that may skip a bound or wrap at the largest Int), divisions
@@ -2322,8 +2251,6 @@ def check(prog, work):
     src.write_text(prog)
     if "fuzz:contracts" in prog:
         return check_contracts(prog, src)
-    if "fuzz:num32" in prog:
-        return check_backends(prog, src)
     ri, oi, ei = run([AXIONC, str(src)])
     # A hang on ANY invocation is the worst-masked class: two hanging runs would otherwise look
     # like a "consistent reject". Flag it the moment it happens, with the program for a repro.

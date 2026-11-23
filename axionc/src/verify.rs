@@ -130,10 +130,7 @@ fn ctor_base(key: &str) -> &str {
 /// element-alias double-free check only where a shared element would actually be freed twice.
 fn key_elem_is_heap(key: &str) -> bool {
     match key.split_once('$') {
-        Some((_, elem)) => !matches!(
-            elem,
-            "Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char"
-        ),
+        Some((_, elem)) => !matches!(elem, "Int" | "Float" | "Bool" | "Char"),
         None => false,
     }
 }
@@ -1498,17 +1495,9 @@ impl Verifier<'_> {
                                 .and_then(|val| val.key.as_deref())
                                 .is_some_and(|k| {
                                     k.contains('$')
-                                        && k.split('$').skip(1).all(|e| {
-                                            matches!(
-                                                e,
-                                                "Int"
-                                                    | "Int32"
-                                                    | "Float"
-                                                    | "Float32"
-                                                    | "Bool"
-                                                    | "Char"
-                                            )
-                                        })
+                                        && k.split('$')
+                                            .skip(1)
+                                            .all(|e| matches!(e, "Int" | "Float" | "Bool" | "Char"))
                                 })
                             {
                                 continue;
@@ -1607,10 +1596,7 @@ impl Verifier<'_> {
         // `x` is tracked (a field the scrutinee key makes scalar is not bound at all).
         // 0-false-positive: no legitimate destructor key has a scalar base.
         if let Some(dk) = key {
-            if matches!(
-                ctor_base(dk),
-                "Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char"
-            ) {
+            if matches!(ctor_base(dk), "Int" | "Float" | "Bool" | "Char") {
                 self.finding(Cat::WrongDropKey, x, sp);
             }
         }

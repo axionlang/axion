@@ -283,7 +283,7 @@ pub fn native_ty(t: &Type, data_types: &HashSet<String>) -> bool {
         // helpers is reclaimed by the uniquify pass + the fixpoint borrow analysis
         // (`compute_borrow_args`) + the array read-op borrow spec (`body_moves`).
         Some(
-            "Int" | "Int32" | "Integer" | "Float" | "Float32" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark"
+            "Int" | "Integer" | "Float" | "Bool" | "String" | "IO" | "Arena" | "Cell" | "Mark"
             | "Buffer" | "Array" | "TritVec" | "I8Array" | "I32Array" | "()" | "U8" | "U16" | "U32"
             | "U64" | "I8" | "I16" | "I32" | "I64" | "Word" | "Byte"
             // `Ptr a` (§18): an opaque, type-safe C handle — a raw i64 pointer, never reclaimed
@@ -374,9 +374,7 @@ pub fn is_bool(t: &Type) -> bool {
 /// shiftR`), which lower to `Op::Prim`. The rest is a user infix operator — a named function
 /// applied to two arguments. Matches `interp::is_builtin_op`.
 pub fn is_builtin_op(op: &str) -> bool {
-    matches!(op, "+" | "-" | "*" | "div" | "mod" | "==" | "<" | ">")
-        || is_bitwise_op(op)
-        || crate::num32::binop(op).is_some_and(|o| !o.is_float())
+    matches!(op, "+" | "-" | "*" | "div" | "mod" | "==" | "<" | ">") || is_bitwise_op(op)
 }
 
 /// The bitwise `Int` operators: `.&.` `.|.` `xor` `shiftL` `shiftR` (Haskell's `Data.Bits`
@@ -388,7 +386,7 @@ pub fn is_bitwise_op(op: &str) -> bool {
 /// FLOAT infix operators — arithmetic (`+. -. *. /.`) and comparisons
 /// (`<. >. ==.`) — all of which lower to `Op::PrimF`.
 pub fn is_float_op(op: &str) -> bool {
-    is_float_arith(op) || is_float_cmp(op) || crate::num32::binop(op).is_some_and(|o| o.is_float())
+    is_float_arith(op) || is_float_cmp(op)
 }
 
 /// `true` if `f` calls **itself** in tail position (the last thing it does on some
@@ -416,7 +414,7 @@ pub fn has_tail_self_call(f: &CoreFn) -> bool {
 
 /// Unary Float math builtins (`Float -> Float`), lowered to `Op::FloatUnary`.
 pub fn is_float_unary(name: &str) -> bool {
-    matches!(name, "sqrt" | "floor" | "abs") || crate::num32::is_unary(name)
+    matches!(name, "sqrt" | "floor" | "abs")
 }
 
 /// FLOAT arithmetic operators (result is `Float`).
@@ -795,10 +793,8 @@ impl RecordInfo {
                 let mut owned = HashSet::new();
                 let mut field_param: HashMap<usize, usize> = HashMap::new();
                 for (i, f) in c.fields.iter().enumerate() {
-                    if matches!(
-                        f.ty.head_con(),
-                        Some("Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char")
-                    ) && !matches!(f.ty, Type::Arrow { .. } | Type::Tuple(_))
+                    if matches!(f.ty.head_con(), Some("Int" | "Float" | "Bool" | "Char"))
+                        && !matches!(f.ty, Type::Arrow { .. } | Type::Tuple(_))
                     {
                         r.con_scalar_fields
                             .entry(c.name.clone())
@@ -1007,10 +1003,8 @@ impl RecordInfo {
         self.split_mono_key(scrut_key)
             .and_then(|(_, args)| args.get(idx).cloned())
             .is_some_and(|e| {
-                matches!(
-                    e.as_str(),
-                    "Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char"
-                ) || self.enum_types.contains(&e)
+                matches!(e.as_str(), "Int" | "Float" | "Bool" | "Char")
+                    || self.enum_types.contains(&e)
             })
     }
 
@@ -1774,14 +1768,6 @@ fn global_names(module: &ast::Module) -> HashSet<String> {
         "setArray",
         "parFor",
         "contractFailed",
-        "toInt32",
-        "fromInt32",
-        "toFloat32",
-        "fromFloat32",
-        "int32ToFloat32",
-        "truncateF32",
-        "sqrtF32",
-        "showFloat32",
         "lenArray",
         "newTritVec",
         "getTritVec",
@@ -1964,7 +1950,7 @@ impl Lower<'_> {
         let heap = match &el {
             Type::Tuple(_) => true,
             _ => match el.head_con() {
-                Some("Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char") | None => false,
+                Some("Int" | "Float" | "Bool" | "Char") | None => false,
                 Some("String" | "Integer") => true,
                 Some(h) => self.con_ty.values().any(|d| d.as_deref() == Some(h)),
             },
@@ -2224,13 +2210,6 @@ impl Lower<'_> {
         }
         if name == "showFloat" && args.len() == 1 {
             return self.rtcall("axion_show_float", &args, true, buf);
-        }
-        // 32-bit numbers (`num32.rs`): an `Int32` is already a sign-extended `Int`
-        if name == "fromInt32" && args.len() == 1 {
-            return self.op(args[0], buf);
-        }
-        if name == "showFloat32" && args.len() == 1 {
-            return self.rtcall("axion_show_float32", &args, true, buf);
         }
         // Integer (§ Listing 1.4): construct from an Int / render to a String.
         if name == "fromInt" && args.len() == 1 {
@@ -4509,7 +4488,6 @@ fn sess_fresh_string_builtin(name: &str) -> bool {
         "strAppend"
             | "substr"
             | "showFloat"
-            | "showFloat32"
             | "showInteger"
             | "getEnv"
             | "runCapture"
@@ -8887,7 +8865,7 @@ fn capture_kind_of_type(t: &Type, cx: &ClosureOwnCx) -> Option<Option<String>> {
     match t {
         Type::Tuple(_) => mono_key(t).filter(|_| !type_has_var_or_fun(t)).map(Some),
         _ => match t.head_con()? {
-            "Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char" => Some(None),
+            "Int" | "Float" | "Bool" | "Char" => Some(None),
             "String" => Some(Some("String".into())),
             "Integer" => Some(Some("Integer".into())),
             h if cx.recinfo.type_cons(h).is_some() && !type_has_var_or_fun(t) => {
@@ -12402,7 +12380,7 @@ fn field_ty_heap(ty: &Type, recinfo: &RecordInfo) -> bool {
         Type::Var(_) => true,   // polymorphic — may instantiate to heap
         Type::Tuple(_) => true, // heap cell
         _ => match ty.head_con() {
-            Some("Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char" | "Buffer") => false,
+            Some("Int" | "Float" | "Bool" | "Char" | "Buffer") => false,
             Some(h) if recinfo.is_enum_type(h) => false, // unboxed immediate
             Some(_) => true,
             None => false, // function / unknown
@@ -13512,7 +13490,7 @@ fn copy_shared_update_fields(
                 continue;
             }
             let kind = match ty.head_con() {
-                Some("Int" | "Int32" | "Float" | "Float32" | "Bool" | "Char") => continue,
+                Some("Int" | "Float" | "Bool" | "Char") => continue,
                 Some(h) if enum_types.contains(h) => continue,
                 Some("String") => CopyKind::Str,
                 Some("Integer") => CopyKind::Int,

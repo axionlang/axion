@@ -7801,40 +7801,6 @@ fn malformed_contracts_are_refused() {
 }
 
 #[test]
-fn thirty_two_bit_numbers_give_the_same_bits_everywhere() {
-    // wrapping Int32 arithmetic, single-precision Float32 rounding, conversions, comparisons
-    // with NaN, a Float32 array, and a Float32 parallel kernel
-    let want = "-294967296\n-409399843\n-3 -1\n-2147483648 0\n5 4000000000\n\
-                0.1 0.10000000149011612\n7.4854717\n5 1.4142135\n2147483647 0 -2\n\
-                true false false\n499.49997\n2500226\n";
-    agree_across_backends("numbers32.axi", want);
-}
-
-#[test]
-fn thirty_two_bit_numbers_do_not_mix_silently() {
-    let out = axionc()
-        .arg(fixture("numbers32_reject.axi"))
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
-    for (code, what) in [
-        (
-            "AX0200",
-            "the literal 3000000000 does not fit in an `Int32`",
-        ),
-        ("AX0200", "type mismatch: Int32 vs Int"),
-        ("AX0200", "type mismatch: Float32 vs Int"),
-        ("AX0404", "no instance of `Integral` for `Float32`"),
-    ] {
-        assert!(
-            text.contains(&format!("error[{code}]")) && text.contains(what),
-            "missing {code} `{what}`:\n{text}"
-        );
-    }
-}
-
-#[test]
 fn parallel_loops_give_the_sequential_result() {
     // matrix-vector product, uneven kernels, named kernels, a total function, a kernel calling a
     // function passed in, nested parFor, Bool elements: the same on every backend…

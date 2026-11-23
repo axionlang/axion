@@ -1984,14 +1984,6 @@ pub fn apply_proven(fns: &mut [crate::core::CoreFn], proven: &[Span]) {
 /// or is partial.
 const TOTAL_BUILTINS: &[&str] = &[
     "parFor",
-    "toInt32",
-    "fromInt32",
-    "toFloat32",
-    "fromFloat32",
-    "int32ToFloat32",
-    "truncateF32",
-    "sqrtF32",
-    "showFloat32",
     "True",
     "False",
     "otherwise",
@@ -2682,7 +2674,7 @@ impl Checker<'_> {
     /// A built-in operator in totality mode: a division must have a non-zero divisor.
     fn tot_binop(&mut self, cx: &Cx, op: &str, b: &Expr, sp: Span) {
         match op {
-            "div" | "mod" | "rem" | "/" | "div#i32" | "mod#i32" => self.tot_nonzero(cx, b, sp),
+            "div" | "mod" | "rem" | "/" => self.tot_nonzero(cx, b, sp),
             "div#I" | "mod#I" if !matches!(b, Expr::Int(k, _) if *k != 0) => {
                 self.tot_partial("this `Integer` division's divisor may be zero", sp);
             }
