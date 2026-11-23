@@ -7916,6 +7916,24 @@ fn a_closure_writing_an_array_it_captured_is_not_compiled() {
 }
 
 #[test]
+fn total_functions_emit_size_change_certificates() {
+    // one Lean `AxionSct.check` example per accepted recursive group (metatheory/sct-trace.sh
+    // re-checks them all with Lean); a rejected group has none
+    let out = axionc()
+        .args(["--emit", "sct-certs", &fixture("total.axi")])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let n = text
+        .lines()
+        .filter(|l| l.starts_with("example : AxionSct.check [") && l.ends_with("= true := by rfl"))
+        .count();
+    assert!(n >= 10, "{text}");
+    // `ack`'s lexicographic group: both of its call graphs are in its certificate
+    assert!(text.contains("⟨0, 0, false⟩, ⟨1, 1, true⟩"), "{text}");
+}
+
+#[test]
 fn functions_that_are_not_total_are_refused() {
     let out = axionc().arg(fixture("total_reject.axi")).output().unwrap();
     assert!(!out.status.success());

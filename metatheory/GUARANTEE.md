@@ -123,7 +123,12 @@ and well-mitigated this list is.
    `refine-trace.sh` re-checks every corpus certificate with the Lean `check`. Trusted: reading the
    facts and goal off the program (comparisons, overflow, lengths) — mitigated by the `refine`
    fuzzer (interp vs native, ASan).
-6. **SIMD vector lowering** (`simd.rs`, docs/simd.md) — vectors are plain values (nothing to
+6. **Totality** (`total.rs`, docs/totality.md) — opt-in, and not part of the memory-safety
+   guarantee. Each accepted recursive group's size-change closure is a certificate that
+   `sct-trace.sh` re-checks with Lean (`AxionSct.lean` proves what an accepted one means; the
+   size-change theorem itself is cited, not proven). Trusted: the pattern-coverage check and
+   reading the size-change graphs off the program.
+7. **SIMD vector lowering** (`simd.rs`, docs/simd.md) — vectors are plain values (nothing to
    reclaim), so the ownership guarantee is untouched; what is trusted is their representation.
    `simd::analyze` decides which values live in vector registers and rejects a vector anywhere only
    a 64-bit slot fits (AX0915); the backends' vector code is part of item 1. A vector load/store's
@@ -319,6 +324,7 @@ The trusted base of §4 and the deferrals of §5 are the frontier. In descending
 ```sh
 ./metatheory/check.sh    # Lean: every theorem type-checks, no sorry, propext/Quot.sound only
 ./metatheory/refine-trace.sh  # Lean re-checks every refinement certificate the compiler produces
+./metatheory/sct-trace.sh     # Lean re-checks every totality size-change certificate
 ./metatheory/bridge.sh   # Lean proofs + verifier agreement on the 8 canonical shapes
 ./scripts/sanitize.sh    # ASan/LSan ground truth over the native fixtures
 ./scripts/fuzz.py        # differential interp-vs-native fuzzing

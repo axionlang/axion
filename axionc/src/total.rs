@@ -142,7 +142,7 @@ fn compose(a: &Graph, b: &Graph) -> Graph {
 /// The size-change principle over one recursive group: `None` when every infinite call
 /// sequence would descend some measure forever (so none exists), else the span of a call on a
 /// cycle that does not.
-fn size_change(calls: &[(Graph, Span)]) -> Result<(), Span> {
+fn size_change(calls: &[(Graph, Span)]) -> Result<Vec<Graph>, Span> {
     const LIMIT: usize = 20_000;
     let mut all: HashMap<Graph, Span> = HashMap::new();
     let mut work: Vec<Graph> = Vec::new();
@@ -174,7 +174,54 @@ fn size_change(calls: &[(Graph, Span)]) -> Result<(), Span> {
             return Err(*sp);
         }
     }
-    Ok(())
+    let mut closure: Vec<Graph> = all.into_keys().collect();
+    closure.sort();
+    Ok(closure)
+}
+
+// --- certificates (`metatheory/AxionSct.lean`, `--emit sct-certs`) ---
+
+thread_local! {
+    /// When set, each accepted recursive group's size-change certificate, as a Lean `example`.
+    static CERTS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start collecting certificates (`--emit sct-certs`).
+pub fn collect_certs() {
+    CERTS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+/// The certificates collected since `collect_certs`.
+pub fn take_certs() -> Vec<String> {
+    CERTS.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
+/// A graph as a Lean `AxionSct.Graph` literal (its edges already canonical: sorted by `(i, j)`,
+/// one per pair, as `normalize` builds them and `AxionSct.normalize` rebuilds them).
+fn lean_graph(g: &Graph) -> String {
+    let es: Vec<String> = g
+        .edges
+        .iter()
+        .map(|&(i, j, s)| format!("⟨{i}, {j}, {s}⟩"))
+        .collect();
+    format!("⟨{}, {}, [{}]⟩", g.from, g.to, es.join(", "))
+}
+
+fn record_cert(calls: &[(Graph, Span)], closure: &[Graph]) {
+    CERTS.with(|c| {
+        if let Some(v) = c.borrow_mut().as_mut() {
+            let mut cs: Vec<&Graph> = calls.iter().map(|(g, _)| g).collect();
+            cs.sort();
+            cs.dedup();
+            let calls: Vec<String> = cs.into_iter().map(lean_graph).collect();
+            let clos: Vec<String> = closure.iter().map(lean_graph).collect();
+            v.push(format!(
+                "example : AxionSct.check [{}] [{}] = true := by rfl",
+                calls.join(", "),
+                clos.join(", ")
+            ));
+        }
+    });
 }
 
 // --- pattern coverage (Maranget's usefulness) ---
@@ -684,7 +731,7 @@ pub fn check(module: &Module, diags: &mut Diagnostics) {
         let verdict = if missing {
             Err((0, 0))
         } else {
-            size_change(&calls)
+            size_change(&calls).map(|closure| record_cert(&calls, &closure))
         };
         if let Err(sp) = verdict {
             for &v in &comp {

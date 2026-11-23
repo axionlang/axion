@@ -87,9 +87,21 @@ function, a named function as a callee. A function used as a value inside its ow
 ## What is guaranteed, and what is trusted
 
 Totality is a static check over the program before code generation, so every backend runs the
-same proven program. Trusted: the size-change closure and the pattern-coverage check
-(`axionc/src/total.rs`), and the reading of facts off the program shared with refinements.
-Not trusted: the arithmetic of each decrease and non-zero/in-range proof (certificates).
+same proven program.
+
+Not trusted:
+- **the size-change decision.** Each accepted recursive group emits a certificate (its call
+  graphs and the closure `total.rs` computed; `axionc --emit sct-certs`), and
+  `metatheory/sct-trace.sh` re-checks every one over the corpus with Lean. `AxionSct.lean`
+  proves what an accepted certificate means: the closure holds the composite of every chain of
+  calls, and every idempotent self-graph in it has a strict self-edge. That this implies
+  termination is the size-change theorem (Lee, Jones and Ben-Amram, POPL 2001), cited, not
+  proven in Lean.
+- **the arithmetic of each decrease and non-zero/in-range proof:** certificates, replayed by
+  `refine.rs`'s checker (not yet in the Lean trace).
+
+Trusted: the pattern-coverage check (`axionc/src/total.rs`), and reading the size-change graphs
+and facts off the program (shared with refinements).
 Exercised by `scripts/fuzz.py --only total`, which generates loops with off-by-one guards,
 wrong-way steps, wrapping bounds, unguarded divisions and accesses. Every accepted program must
 finish and return normally on every backend.

@@ -115,6 +115,7 @@ enum Emit {
     Verify,
     ModelTrace,
     RefineCerts,
+    SctCerts,
     Contracts,
     CodegenTv,
     CodegenTvClif,
@@ -280,6 +281,7 @@ pub fn run_cli() -> ExitCode {
                     Some("verify") => emit = Emit::Verify,
                     Some("model-trace") => emit = Emit::ModelTrace,
                     Some("refine-certs") => emit = Emit::RefineCerts,
+                    Some("sct-certs") => emit = Emit::SctCerts,
                     Some("contracts") => emit = Emit::Contracts,
                     Some("codegen-tv") => emit = Emit::CodegenTv,
                     Some("codegen-tv-clif") => emit = Emit::CodegenTvClif,
@@ -386,6 +388,16 @@ pub fn run_cli() -> ExitCode {
         contracts::attach(&mut module, &mut diags);
         let out = refine::check_with(&module, &mut diags, true);
         print!("{}", refine::certs_lean(&out.certs));
+        return ExitCode::SUCCESS;
+    }
+    if emit == Emit::SctCerts {
+        // every accepted recursive group's size-change certificate, as Lean `example`s for
+        // `AxionSct.check` (metatheory/sct-trace.sh): the same check `prepare_for_check_with` runs
+        total::collect_certs();
+        let _ = compile_front(&src, &path, &mut diags);
+        for c in total::take_certs() {
+            println!("{c}");
+        }
         return ExitCode::SUCCESS;
     }
     if emit == Emit::Contracts {
@@ -8013,6 +8025,7 @@ fn print_usage() {
          axionc --emit core <file>      Axion Core IR (ANF) — the shared lowering\n  \
          axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
          axionc --emit contracts <file> each contract obligation: proven, or checked at run time\n  \
+         axionc --emit sct-certs <file> totality's size-change certificates (Lean, AxionSct)\n  \
          axionc --emit extract-tags <f> ownership tags on heap-field case-extractions (report)\n  \
          axionc --emit tag-check <file> second-opinion tag-checker: double-free report (non-gating)\n  \
          axionc --emit ffi <file>       every FFI import and call site: C symbol, ownership, effects\n  \

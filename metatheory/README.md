@@ -248,6 +248,23 @@ over integers.
 and `refine-trace.sh` emits every certificate over the corpus (`axionc --emit refine-certs`) and
 checks each with this file's `check` by `rfl`.
 
+## Size-change certificates (`AxionSct.lean`)
+
+Totality (`axionc/src/total.rs`, docs/totality.md) accepts a recursive group when the closure of
+its size-change graphs under composition has a strict self-edge in every idempotent self-graph.
+Each accepted group emits a certificate (`axionc --emit sct-certs`): its call graphs and that
+closure, as canonical edge lists. `AxionSct.check` re-checks one; `sct-trace.sh` checks every
+certificate of the corpus by `rfl`.
+
+| Theorem | Statement |
+|---|---|
+| `comp_mem` | a set closed under composing with a call holds every composite of a chain of calls |
+| `sound` | `check calls clos = true` → every chain's composite is in `clos`, and every idempotent self-graph in `clos` has a strict self-edge |
+
+`sound` uses only `propext` and `Quot.sound`. Those two facts are the hypothesis of the
+size-change theorem (Lee, Jones and Ben-Amram, POPL 2001, Theorem 4), which is cited, not proven
+here: its proof needs Ramsey's theorem.
+
 ## Scope & remaining work
 
 Covered: the linear core; branches (`merge_vals` arm-balance, all paths); interior aliases
