@@ -34,7 +34,7 @@ default = ["cst", "native", "lsp"]
 # The native backends (Cranelift `--dev` + LLVM `--release`) and the FFI runtime.
 # Default-on; a `--no-default-features` wasm build drops them (they can't target
 # wasm32) and runs programs through the interpreter instead.
-native = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native", "dep:axion-rt"]
+native = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native", "dep:axion-rt", "dep:libc"]
 # The salsa incremental query engine (§8). The LSP pulls it in so the server
 # reuses memoized parses (prelude + unchanged imports) across edits.
 salsa = ["dep:salsa"]
@@ -76,6 +76,9 @@ cranelift-native = { version = "0.116", optional = true }
 # `heap-stats` powers the `--dev` JIT's AXION_HEAP_STATS leak accounting (allocs == frees);
 # the `--release` staticlib is built without it (zero alloc-path overhead).
 axion-rt = { path = "../axion-rt", optional = true, features = ["heap-stats"] }
+# Native-only: portable `dlsym`/`RTLD_DEFAULT` and socket types for the JIT + interpreter FFI
+# (the per-OS struct layouts and constants differ — e.g. glibc vs FreeBSD `addrinfo`).
+libc = { version = "0.2", optional = true }
 
 # Browser playground (optional — `--features wasm`). Pinned to match the local
 # `wasm-bindgen` CLI (the crate and CLI versions must agree).

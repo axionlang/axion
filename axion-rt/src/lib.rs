@@ -1035,19 +1035,223 @@ struct Inner {
     ncompleted: usize,
 }
 
-/// One readiness SHARD (async sockets, tail-latency work): a persistent `epoll` instance plus an
-/// `eventfd` used to wake its I/O thread on shutdown. Socket fds are hashed to a shard by `fd % K`,
-/// and each shard has a dedicated thread blocked in `epoll_wait` — so readiness is detected
-/// CONCURRENTLY with the compute workers (no "poll only when idle" starvation) and in O(ready)
-/// rather than O(parked). The eventfd is registered in the epoll with data `EPOLL_SHUTDOWN`.
-struct Shard {
-    epfd: i32,
-    evfd: i32,
-}
-const EPOLL_SHUTDOWN: u64 = u64::MAX;
+/// One readiness SHARD (async sockets, tail-latency work): a persistent OS readiness poller (see
+/// `poller`: epoll on Linux, kqueue on the BSDs/macOS) plus a shutdown wakeup. Socket fds are hashed
+/// to a shard by `fd % K`, and each shard has a dedicated thread blocked in `Poller::wait` — so
+/// readiness is detected CONCURRENTLY with the compute workers (no "poll only when idle"
+/// starvation) and in O(ready) rather than O(parked).
+type Shard = poller::Poller;
 
-/// Pack (fd, task) into an `epoll_event.data.u64` so a ready event carries both the fd (to remove
-/// from the set) and the task (to re-ready) with no side table. `task` fits in 32 bits in practice.
+/// Portable one-shot readiness poller. Contract (identical on every backend):
+/// - `add(fd, want_write, data)` registers interest; when the fd becomes ready, `wait` yields
+///   `data` ONCE and the fd is removed from the set (re-added when the task next parks).
+/// - `wake()` makes a blocked `wait` return with `shutdown = true` (written only on shutdown).
+/// - `wait` returns `None` on error (EINTR etc.), else `Some(shutdown)` after appending the ready
+///   `data` values to `out`.
+mod poller {
+    #[cfg(target_os = "linux")]
+    pub struct Poller {
+        epfd: i32,
+        evfd: i32,
+    }
+
+    #[cfg(target_os = "linux")]
+    const SHUTDOWN: u64 = u64::MAX;
+
+    #[cfg(target_os = "linux")]
+    impl Poller {
+        pub fn new() -> Poller {
+            // SAFETY: standard epoll/eventfd setup; fds are closed in `close`. The eventfd is
+            // registered with data `SHUTDOWN` so `wake` breaks `epoll_wait` immediately.
+            unsafe {
+                let epfd = libc::epoll_create1(libc::EPOLL_CLOEXEC);
+                let evfd = libc::eventfd(0, libc::EFD_CLOEXEC);
+                let mut ev = libc::epoll_event {
+                    events: libc::EPOLLIN as u32,
+                    u64: SHUTDOWN,
+                };
+                libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, evfd, &mut ev);
+                Poller { epfd, evfd }
+            }
+        }
+        pub fn add(&self, fd: i32, want_write: bool, data: u64) {
+            let mut ev = libc::epoll_event {
+                events: if want_write {
+                    libc::EPOLLOUT
+                } else {
+                    libc::EPOLLIN
+                } as u32,
+                u64: data,
+            };
+            // SAFETY: `ev` is a valid epoll_event for the duration of the call.
+            unsafe { libc::epoll_ctl(self.epfd, libc::EPOLL_CTL_ADD, fd, &mut ev) };
+        }
+        pub fn wait(&self, out: &mut Vec<u64>) -> Option<bool> {
+            // SAFETY: `evs` is a valid buffer of 64 epoll_events.
+            let mut evs: [libc::epoll_event; 64] = unsafe { std::mem::zeroed() };
+            let n = unsafe { libc::epoll_wait(self.epfd, evs.as_mut_ptr(), 64, -1) };
+            if n < 0 {
+                return None;
+            }
+            let mut shutdown = false;
+            // index access on purpose: `epoll_event` is `#[repr(packed)]`, so the `u64` field must
+            // be read by value out of the array element (an iterator ref would be unaligned).
+            #[allow(clippy::needless_range_loop)]
+            for idx in 0..n as usize {
+                let data = evs[idx].u64; // copy out of the packed epoll_event
+                if data == SHUTDOWN {
+                    shutdown = true;
+                    continue;
+                }
+                // Level-triggered → remove on wake (one-shot contract); re-added on next park.
+                let fd = (data >> 32) as i32;
+                // SAFETY: EPOLL_CTL_DEL ignores the event pointer.
+                unsafe {
+                    libc::epoll_ctl(self.epfd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())
+                };
+                out.push(data);
+            }
+            Some(shutdown)
+        }
+        pub fn wake(&self) {
+            let one: u64 = 1;
+            // SAFETY: writes 8 bytes from a valid u64 to our own eventfd.
+            unsafe { libc::write(self.evfd, std::ptr::addr_of!(one).cast(), 8) };
+        }
+        pub fn close(&self) {
+            // SAFETY: closing fds this poller owns, once (at scheduler free).
+            unsafe {
+                libc::close(self.epfd);
+                libc::close(self.evfd);
+            }
+        }
+    }
+
+    #[cfg(any(
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "macos",
+        target_os = "ios"
+    ))]
+    pub struct Poller {
+        kq: i32,
+    }
+
+    /// `EVFILT_USER` ident used for the shutdown wakeup (no fd needed on kqueue).
+    #[cfg(any(
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "macos",
+        target_os = "ios"
+    ))]
+    const WAKE_IDENT: usize = 0;
+
+    #[cfg(any(
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "macos",
+        target_os = "ios"
+    ))]
+    impl Poller {
+        fn change(&self, ident: usize, filter: i32, flags: u32, fflags: u32, data: u64) {
+            // SAFETY: a zeroed kevent is valid (covers platform-specific trailing fields); the
+            // changelist is one valid element and no eventlist is requested.
+            unsafe {
+                let mut kev: libc::kevent = std::mem::zeroed();
+                kev.ident = ident as _;
+                kev.filter = filter as _;
+                kev.flags = flags as _;
+                kev.fflags = fflags as _;
+                kev.udata = data as usize as _;
+                libc::kevent(self.kq, &kev, 1, std::ptr::null_mut(), 0, std::ptr::null());
+            }
+        }
+        pub fn new() -> Poller {
+            // SAFETY: plain kqueue creation; closed in `close`.
+            let kq = unsafe { libc::kqueue() };
+            if kq >= 0 {
+                // SAFETY: setting close-on-exec on our own fd.
+                unsafe { libc::fcntl(kq, libc::F_SETFD, libc::FD_CLOEXEC) };
+            }
+            let p = Poller { kq };
+            // The shutdown wakeup: a user event, triggered by `wake` (EV_CLEAR → auto-reset).
+            p.change(
+                WAKE_IDENT,
+                libc::EVFILT_USER.into(),
+                (libc::EV_ADD | libc::EV_CLEAR).into(),
+                0,
+                0,
+            );
+            p
+        }
+        pub fn add(&self, fd: i32, want_write: bool, data: u64) {
+            let filter = if want_write {
+                libc::EVFILT_WRITE
+            } else {
+                libc::EVFILT_READ
+            };
+            // EV_ONESHOT: the kernel removes the registration after it fires (one-shot contract).
+            self.change(
+                fd as usize,
+                filter.into(),
+                (libc::EV_ADD | libc::EV_ONESHOT).into(),
+                0,
+                data,
+            );
+        }
+        pub fn wait(&self, out: &mut Vec<u64>) -> Option<bool> {
+            // SAFETY: `evs` is a valid buffer of 64 kevents; a null timeout blocks indefinitely.
+            let mut evs: [libc::kevent; 64] = unsafe { std::mem::zeroed() };
+            let n = unsafe {
+                libc::kevent(
+                    self.kq,
+                    std::ptr::null(),
+                    0,
+                    evs.as_mut_ptr(),
+                    64,
+                    std::ptr::null(),
+                )
+            };
+            if n < 0 {
+                return None;
+            }
+            let mut shutdown = false;
+            for ev in &evs[..n as usize] {
+                if ev.filter as i32 == libc::EVFILT_USER as i32 {
+                    shutdown = true;
+                    continue;
+                }
+                // An EV_ERROR result (e.g. fd closed under us) still re-readies the task, which
+                // then observes the error on its next I/O call — same as epoll's EPOLLERR.
+                out.push(ev.udata as usize as u64);
+            }
+            Some(shutdown)
+        }
+        pub fn wake(&self) {
+            self.change(
+                WAKE_IDENT,
+                libc::EVFILT_USER.into(),
+                0,
+                libc::NOTE_TRIGGER,
+                0,
+            );
+        }
+        pub fn close(&self) {
+            // SAFETY: closing the kqueue this poller owns, once (at scheduler free).
+            unsafe { libc::close(self.kq) };
+        }
+    }
+}
+
+/// Pack (fd, task) into the poller's per-registration `u64` (epoll data / kqueue udata) so a
+/// ready event carries both the fd and the task (to re-ready) with no side table. `task` fits in
+/// 32 bits in practice.
 #[inline]
 fn pack_fd_task(fd: i32, task: usize) -> u64 {
     ((fd as u32 as u64) << 32) | (task as u64 & 0xffff_ffff)
@@ -1100,20 +1304,7 @@ unsafe fn sched<'a>(p: i64) -> &'a Sched {
 pub extern "C" fn axion_sess_new() -> i64 {
     // One epoll instance + eventfd per readiness shard; the eventfd is registered so a shutdown
     // signal wakes the shard's `epoll_wait` immediately (no timeout polling → no shutdown latency).
-    let mut shards = Vec::new();
-    for _ in 0..sess_nshards() {
-        // SAFETY: standard Linux epoll/eventfd setup; fds are closed in `sess_free`.
-        unsafe {
-            let epfd = libc::epoll_create1(0);
-            let evfd = libc::eventfd(0, 0);
-            let mut ev = libc::epoll_event {
-                events: libc::EPOLLIN as u32,
-                u64: EPOLL_SHUTDOWN,
-            };
-            libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, evfd, &mut ev);
-            shards.push(Shard { epfd, evfd });
-        }
-    }
+    let shards: Vec<Shard> = (0..sess_nshards()).map(|_| Shard::new()).collect();
     let s = Box::new(Sched {
         m: Mutex::new(Inner {
             eps: Vec::new(),
@@ -1223,35 +1414,21 @@ pub unsafe extern "C" fn axion_sess_spawn(sched_p: i64, step: i64, state: i64) {
 /// busy workers — the tail-latency fix vs the old "poll only when running==0" poller.
 unsafe fn epoll_worker(sched_p: i64, shard: usize) {
     let s = sched(sched_p);
-    let epfd = s.shards[shard].epfd;
-    let mut evs: [libc::epoll_event; 64] = std::mem::zeroed();
+    let poller = &s.shards[shard];
+    let mut datas: Vec<u64> = Vec::new();
     loop {
-        let n = libc::epoll_wait(epfd, evs.as_mut_ptr(), 64, -1);
-        if n < 0 {
+        // Collect the whole ready batch (the poller drops each fd from its set — one-shot,
+        // re-added on next park — WITHOUT the lock), then take the scheduler lock ONCE to re-ready
+        // them and notify. Batching the lock keeps the I/O thread from contending with the workers
+        // on every single fd.
+        datas.clear();
+        let Some(shutdown) = poller.wait(&mut datas) else {
             if lock(s).done {
                 return;
             }
             continue; // EINTR etc.
-        }
-        // Collect the whole ready batch (DEL each fd — level-triggered, re-added on next park —
-        // WITHOUT the lock), then take the scheduler lock ONCE to re-ready them and notify. Batching
-        // the lock keeps the I/O thread from contending with the workers on every single fd.
-        let mut woke: Vec<usize> = Vec::new();
-        let mut shutdown = false;
-        // index access on purpose: `epoll_event` is `#[repr(packed)]`, so the `u64` field must be
-        // read by value out of the array element (an iterator ref would be an unaligned borrow).
-        #[allow(clippy::needless_range_loop)]
-        for idx in 0..n as usize {
-            let data = evs[idx].u64; // copy out of the packed epoll_event
-            if data == EPOLL_SHUTDOWN {
-                shutdown = true;
-                continue; // the eventfd is written only on shutdown
-            }
-            let fd = (data >> 32) as i32;
-            let task = (data & 0xffff_ffff) as usize;
-            libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut());
-            woke.push(task);
-        }
+        };
+        let woke: Vec<usize> = datas.iter().map(|d| (d & 0xffff_ffff) as usize).collect();
         if !woke.is_empty() {
             let mut g = lock(s);
             for t in &woke {
@@ -1271,9 +1448,8 @@ unsafe fn epoll_worker(sched_p: i64, shard: usize) {
 /// threads observe it and exit promptly (the eventfd write wakes an `epoll_wait` immediately).
 unsafe fn wake_all(s: &Sched) {
     s.cv.notify_all();
-    let one: u64 = 1;
     for sh in &s.shards {
-        libc::write(sh.evfd, std::ptr::addr_of!(one).cast(), 8);
+        sh.wake();
     }
 }
 
@@ -1344,15 +1520,7 @@ unsafe fn sess_worker(sched_p: i64) {
             // thread re-readies the task when the fd becomes ready. Registered under the lock so
             // `n_parked` and the epoll set stay consistent.
             let shard = (fd as usize) % s.shards.len();
-            let mut ev = libc::epoll_event {
-                events: if want_write {
-                    libc::EPOLLOUT
-                } else {
-                    libc::EPOLLIN
-                } as u32,
-                u64: pack_fd_task(fd, i),
-            };
-            libc::epoll_ctl(s.shards[shard].epfd, libc::EPOLL_CTL_ADD, fd, &mut ev);
+            s.shards[shard].add(fd, want_write, pack_fd_task(fd, i));
             g.n_parked += 1;
         } else {
             g.blocked.push(i);
@@ -1404,8 +1572,7 @@ unsafe fn run_pool(sched_p: i64) {
 unsafe fn sess_free(sched_p: i64) -> i64 {
     let boxed = Box::from_raw(sched_p as *mut Sched);
     for sh in &boxed.shards {
-        libc::close(sh.epfd);
-        libc::close(sh.evfd);
+        sh.close();
     }
     let inner = lock(&boxed);
     for &a in &inner.allocs {
@@ -1781,8 +1948,8 @@ pub unsafe extern "C" fn ax_net_close(fd: i64) -> i64 {
 
 #[inline]
 fn errno() -> i32 {
-    // SAFETY: `__errno_location` returns a valid per-thread pointer.
-    unsafe { *libc::__errno_location() }
+    // Portable (`__errno_location` on Linux, `__error` on the BSDs/macOS).
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 // ─── arenas (Stage 3b) ───────────────────────────────────────────────────────────────────────

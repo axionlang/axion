@@ -16,6 +16,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 CLANG="${AXION_CLANG:-clang}"
+# LeakSanitizer is Linux-only: FreeBSD's ASan has none (asking for it aborts the run with "detect_leaks
+# is not supported on this platform"), so elsewhere only the corruption (ASan) checks run.
+if [ "$(uname -s)" = Linux ]; then LSAN=1; SANITIZE=address,leak; else LSAN=0; SANITIZE=address; fi
 if ! "$CLANG" --version >/dev/null 2>&1; then
   echo "no clang (set AXION_CLANG or put clang on PATH) — skipping sanitizers"
   exit 0
@@ -279,9 +282,9 @@ NATIVE=(
 )
 
 
-compile() { # <axi> <out> → emits LLVM and compiles with ASan/LSan; 0 if native
+compile() { # <axi> <out> → emits LLVM and compiles with ASan (+LSan where supported); 0 if native
   "$AXIONC" --emit llvm "$1" >"$WORK/ir.ll" 2>/dev/null || return 1
-  "$CLANG" -fsanitize=address,leak -pthread -O1 -w "$WORK/ir.ll" "$RT_A" -ldl -lm -o "$2" 2>/dev/null
+  "$CLANG" -fsanitize="$SANITIZE" -pthread -O1 -w "$WORK/ir.ll" "$RT_A" -ldl -lm -o "$2" 2>/dev/null
 }
 
 # fff is an INTERACTIVE TUI: run bare, it reads EOF and quits immediately, so the gate would only
@@ -324,7 +327,10 @@ for f in "${NATIVE[@]}"; do
     echo "✗ $name: memory CORRUPTION under ASan"; grep -E 'ERROR|SUMMARY' "$WORK/e" | head -2; fail=1; continue
   fi
   corr=$((corr + 1))
-  # leak gate (every fixture)
+  # leak gate (every fixture) — only where LeakSanitizer exists
+  if [ "$LSAN" = 0 ]; then
+    echo "✓ $name: ASan clean (leak gate skipped: no LSan on $(uname -s))"; continue
+  fi
   if run_asan "$name" "$exe" 1; then
     echo "✓ $name: ASan + LSan clean"; leak=$((leak + 1))
   else
@@ -334,7 +340,11 @@ done
 
 echo "---"
 if [ "$fail" -eq 0 ]; then
-  echo "OK: $corr fixtures without corruption; $leak leak-free (every native fixture is leak-gated)."
+  if [ "$LSAN" = 1 ]; then
+    echo "OK: $corr fixtures without corruption; $leak leak-free (every native fixture is leak-gated)."
+  else
+    echo "OK: $corr fixtures without corruption; leak gate NOT run (no LeakSanitizer on $(uname -s))."
+  fi
 else
   echo "FAILURE: memory regression detected."
 fi

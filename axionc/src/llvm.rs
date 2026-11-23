@@ -377,14 +377,29 @@ pub fn emit_ir(
 
 /// Resolve a bare FFI soname (`libSDL2.so`) to an absolute path by searching `LIBRARY_PATH`
 /// (and the common nix-wrapper `NIX_LDFLAGS` `-L` dirs), so the `-o` link can bake an rpath and
-/// the binary runs without `LD_LIBRARY_PATH`. `None` if not found (caller falls back to `-l:`).
+/// the binary runs without `LD_LIBRARY_PATH`. Then the platform's package-library dir, which the
+/// system linker does NOT search by default off Linux (FreeBSD `pkg` installs to `/usr/local/lib`,
+/// Homebrew to `/opt/homebrew/lib`). `None` if not found (caller falls back to `-l:`).
 fn resolve_soname(soname: &str) -> Option<std::path::PathBuf> {
     let lp = std::env::var("LIBRARY_PATH").unwrap_or_default();
     let nix = std::env::var("NIX_LDFLAGS").unwrap_or_default();
     let nix_dirs = nix.split_whitespace().filter_map(|t| t.strip_prefix("-L"));
+    let pkg_dirs: &[&str] = if cfg!(any(
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )) {
+        &["/usr/local/lib"]
+    } else if cfg!(target_os = "macos") {
+        &["/opt/homebrew/lib", "/usr/local/lib"]
+    } else {
+        &[]
+    };
     lp.split(':')
         .filter(|d| !d.is_empty())
         .chain(nix_dirs)
+        .chain(pkg_dirs.iter().copied())
         .map(|d| std::path::Path::new(d).join(soname))
         .find(|p| p.exists())
 }
@@ -478,6 +493,10 @@ pub fn build_and_run(
     // a literal path and fail. (Runtime resolution of a soname is via LD_LIBRARY_PATH, as for the
     // cranelift/dlopen path.)
     for lib in module.foreign_libs() {
+        // glibc core sonames off glibc: already covered by the default C-runtime link (-lc/-lm).
+        if crate::ffi::is_system_c_runtime(&lib) {
+            continue;
+        }
         let path = std::path::Path::new(&lib);
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());

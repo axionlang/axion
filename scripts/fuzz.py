@@ -50,7 +50,7 @@ fuzz-fail/ for a deterministic repro (the seed + index reproduce any run).
 
 Run:  AXION_CLANG=clang ./scripts/fuzz.py [--count N] [--seed S] [--keep-going] [--only NAME]
 """
-import os, re, sys, random, subprocess, tempfile, pathlib, argparse
+import os, re, sys, random, subprocess, tempfile, pathlib, argparse, platform
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AXIONC = os.environ.get("AXIONC", str(ROOT / "axionc/target/debug/axionc"))
@@ -2250,6 +2250,10 @@ def run(args, want_bin=None, timeout=HANG_SECS):
         return 127, "", str(e)          # executable missing (e.g. no clang) — caller skips
 
 CLANG_OK = run([CLANG, "--version"])[0] == 0
+# LeakSanitizer is Linux-only: FreeBSD's ASan has none (asking for it aborts every run with
+# "detect_leaks is not supported on this platform"), so elsewhere only corruption is hunted.
+LSAN = platform.system() == "Linux"
+SANITIZE = "-fsanitize=address,leak" if LSAN else "-fsanitize=address"
 
 def asan_run(src, work, oracle_out):
     """Compile --release + ASan/LSan and run. `oracle_out` is the interpreter's stdout to
@@ -2263,7 +2267,7 @@ def asan_run(src, work, oracle_out):
     if rl != 0:
         return ("ok", None)
     (work / "ir.ll").write_text(ol)
-    rcc, _, ecc = run([CLANG, "-fsanitize=address,leak", "-pthread", "-O1", "-w",
+    rcc, _, ecc = run([CLANG, SANITIZE, "-pthread", "-O1", "-w",
                        str(work / "ir.ll"), RT_A, "-ldl", "-lm", "-o", str(work / "p")])
     if rcc != 0:
         # A link failure AFTER interp+cranelift agreed means a missing/renamed runtime symbol — a

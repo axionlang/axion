@@ -22,19 +22,12 @@ use std::collections::HashSet;
 
 // FFI (§18): resolves a symbol already loaded in the process (libc + axionc's
 // runtime) via `dlsym(RTLD_DEFAULT, …)`. Serves the JIT's `symbol_lookup_fn`.
-extern "C" {
-    fn dlsym(
-        handle: *mut std::ffi::c_void,
-        symbol: *const std::ffi::c_char,
-    ) -> *mut std::ffi::c_void;
-}
-
+// `RTLD_DEFAULT` is OS-specific (null on glibc, `-2` on FreeBSD), so take it from `libc`.
 fn resolve_symbol(name: &str) -> Option<*const u8> {
     let cname = std::ffi::CString::new(name).ok()?;
-    // RTLD_DEFAULT = null pointer (glibc): searches in the normal resolution order.
     // SAFETY: dlsym with RTLD_DEFAULT reads the process symbol table
     // — pointer is valid or null, both safe to inspect.
-    let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
+    let p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
     (!p.is_null()).then_some(p as *const u8)
 }
 

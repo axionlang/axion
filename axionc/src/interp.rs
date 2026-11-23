@@ -1404,11 +1404,11 @@ fn net_alias(name: &str) -> Option<&'static str> {
 
 /// Networking FFI fallback — uses POSIX socket APIs directly (the interpreter
 /// binary links against libc). These replicate `axion_rt.c` networking functions.
+/// Struct layouts and constants come from `libc` (they differ per OS: e.g. FreeBSD's
+/// `addrinfo` puts `ai_canonname` before `ai_addr`, and its sockaddrs carry a length byte).
 #[cfg(feature = "native")]
 #[allow(unsafe_code)]
-#[allow(clashing_extern_declarations)]
 fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
-    use std::os::raw::c_char;
     fn get_str(v: &Value) -> Option<&str> {
         match v {
             Value::Str(s) => Some(s),
@@ -1421,6 +1421,11 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
             _ => None,
         }
     }
+    // Suppress SIGPIPE on a send to a closed peer (Linux/BSD flag; macOS has no MSG_NOSIGNAL).
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    const SEND_FLAGS: libc::c_int = libc::MSG_NOSIGNAL;
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    const SEND_FLAGS: libc::c_int = 0;
     // SAFETY: POSIX socket API calls — well-known functions with stable ABIs.
     unsafe {
         match name {
@@ -1428,23 +1433,11 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
                 let host = get_str(&args[0])?;
                 let port = get_int(&args[1])?;
                 let cstr = std::ffi::CString::new(host).ok()?;
-                extern "C" {
-                    fn getaddrinfo(
-                        node: *const c_char,
-                        service: *const c_char,
-                        hints: *const u8,
-                        res: *mut *mut u8,
-                    ) -> i32;
-                    fn freeaddrinfo(res: *mut u8);
-                    fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
-                    fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
-                    fn close(fd: i32) -> i32;
-                }
-                let mut hints = [0u8; 48];
-                hints[4] = 2;
-                hints[8] = 1; // AF_INET, SOCK_STREAM at addrinfo offsets
-                let mut res: *mut u8 = std::ptr::null_mut();
-                if getaddrinfo(cstr.as_ptr(), std::ptr::null(), hints.as_ptr(), &mut res) != 0
+                let mut hints: libc::addrinfo = std::mem::zeroed();
+                hints.ai_family = libc::AF_INET;
+                hints.ai_socktype = libc::SOCK_STREAM;
+                let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+                if libc::getaddrinfo(cstr.as_ptr(), std::ptr::null(), &hints, &mut res) != 0
                     || res.is_null()
                 {
                     return Some(Value::Int(-1));
@@ -1452,80 +1445,83 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
                 let mut fd = -1i32;
                 let mut rp = res;
                 while !rp.is_null() {
-                    let family = *(rp.add(4) as *const i32); // ai_family at offset 4
-                    fd = socket(family, 1, 0);
+                    let ai = &*rp;
+                    fd = libc::socket(ai.ai_family, ai.ai_socktype, ai.ai_protocol);
                     if fd >= 0 {
-                        let addr_ptr = *(rp.add(24) as *const *const u8);
-                        let mut sa = [0u8; 16];
-                        std::ptr::copy_nonoverlapping(addr_ptr, sa.as_mut_ptr(), 16);
-                        sa[2] = ((port as u16) >> 8) as u8;
-                        sa[3] = port as u8;
-                        if connect(fd, sa.as_ptr(), 16) == 0 {
+                        // patch the port into the resolved sockaddr (getaddrinfo left it 0).
+                        let sa = ai.ai_addr as *mut libc::sockaddr_in;
+                        (*sa).sin_port = (port as u16).to_be();
+                        if libc::connect(fd, ai.ai_addr, ai.ai_addrlen) == 0 {
                             break;
                         }
-                        close(fd);
+                        libc::close(fd);
                         fd = -1;
                     }
-                    rp = *(rp.add(40) as *const *mut u8);
+                    rp = ai.ai_next;
                 }
-                freeaddrinfo(res);
+                libc::freeaddrinfo(res);
                 Some(Value::Int(fd as i64))
             }
             "ax_net_listen" => {
                 let port = get_int(&args[0])?;
-                extern "C" {
-                    fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
-                    fn setsockopt(fd: i32, level: i32, opt: i32, val: *const i32, len: u32) -> i32;
-                    fn bind(fd: i32, addr: *const u8, len: u32) -> i32;
-                    fn listen(fd: i32, backlog: i32) -> i32;
-                    fn close(fd: i32) -> i32;
-                }
-                let fd = socket(2, 1, 0);
+                let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
                 if fd < 0 {
                     return Some(Value::Int(-1));
                 }
-                let opt: i32 = 1;
-                setsockopt(fd, 1, 2, &opt, 4);
-                let mut addr = [0u8; 16];
-                addr[0] = 2;
-                addr[2] = ((port as u16) >> 8) as u8;
-                addr[3] = port as u8;
-                if bind(fd, addr.as_ptr(), 16) < 0 {
-                    close(fd);
+                let opt: libc::c_int = 1;
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_REUSEADDR,
+                    std::ptr::addr_of!(opt).cast(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+                let mut addr: libc::sockaddr_in = std::mem::zeroed();
+                #[cfg(any(
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly",
+                    target_os = "macos",
+                    target_os = "ios"
+                ))]
+                {
+                    addr.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+                }
+                addr.sin_family = libc::AF_INET as libc::sa_family_t;
+                addr.sin_port = (port as u16).to_be();
+                addr.sin_addr.s_addr = libc::INADDR_ANY;
+                if libc::bind(
+                    fd,
+                    std::ptr::addr_of!(addr).cast(),
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                ) < 0
+                {
+                    libc::close(fd);
                     return Some(Value::Int(-1));
                 }
-                if listen(fd, 128) < 0 {
-                    close(fd);
+                if libc::listen(fd, 128) < 0 {
+                    libc::close(fd);
                     return Some(Value::Int(-1));
                 }
                 Some(Value::Int(fd as i64))
             }
             "ax_net_accept" => {
                 let fd = get_int(&args[0])? as i32;
-                extern "C" {
-                    fn accept(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
-                }
                 Some(Value::Int(
-                    accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) as i64,
+                    libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) as i64,
                 ))
             }
             "ax_net_send" => {
                 let fd = get_int(&args[0])? as i32;
                 let data = get_str(&args[1])?;
-                let cstr = std::ffi::CString::new(data).ok()?;
-                extern "C" {
-                    fn send(fd: i32, buf: *const c_char, len: usize, flags: i32) -> isize;
-                }
-                let n = send(fd, cstr.as_ptr() as *const c_char, data.len(), 0x4000);
+                let n = libc::send(fd, data.as_ptr().cast(), data.len(), SEND_FLAGS);
                 Some(Value::Int(n as i64))
             }
             "ax_net_recv" => {
                 let fd = get_int(&args[0])? as i32;
-                extern "C" {
-                    fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
-                }
                 let mut buf = [0u8; 4096];
-                let n = recv(fd, buf.as_mut_ptr(), buf.len() - 1, 0);
+                let n = libc::recv(fd, buf.as_mut_ptr().cast(), buf.len() - 1, 0);
                 if n <= 0 {
                     return Some(Value::Str(String::new()));
                 }
@@ -1540,10 +1536,7 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
             }
             "ax_net_close" => {
                 let fd = get_int(&args[0])? as i32;
-                extern "C" {
-                    fn close(fd: i32) -> i32;
-                }
-                close(fd);
+                libc::close(fd);
                 Some(Value::Int(0))
             }
             _ => None,
@@ -1553,20 +1546,13 @@ fn net_call_foreign(name: &str, args: &[Value]) -> Option<Value> {
 
 // FFI (§18): resolves the C symbol via dlsym and calls it with the Int ABI (i64).
 #[cfg(feature = "native")]
-extern "C" {
-    fn dlsym(
-        handle: *mut std::ffi::c_void,
-        symbol: *const std::ffi::c_char,
-    ) -> *mut std::ffi::c_void;
-}
-
-#[cfg(feature = "native")]
 #[allow(unsafe_code)]
 fn call_foreign(name: &str, args: &[Value]) -> Result<Value, RunError> {
     let cname = std::ffi::CString::new(name).map_err(|_| "invalid FFI name".to_string())?;
     // SAFETY: `dlsym` with RTLD_DEFAULT searches the process symbol table;
-    // the result is either a valid function pointer or NULL.
-    let p = unsafe { dlsym(std::ptr::null_mut(), cname.as_ptr()) };
+    // the result is either a valid function pointer or NULL. (`RTLD_DEFAULT` is OS-specific:
+    // null on glibc, `-2` on FreeBSD — a null handle there searches only the caller's object.)
+    let p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
     if p.is_null() {
         // fallback: networking functions (in axion_rt.c) are not linked into the
         // axionc binary; use local implementations that call libc sockets directly.

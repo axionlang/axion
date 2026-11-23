@@ -403,7 +403,7 @@ fn ownership_hints_draw_the_auto_drop_topology() {
     );
 
     // A syntactically broken buffer degrades to no hints rather than panicking.
-    assert!(ownership_hints("test.axi", "main = = =").is_empty());
+    assert_eq!(ownership_hints("test.axi", "main = = ="), Vec::new());
 }
 
 #[test]

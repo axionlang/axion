@@ -145,8 +145,16 @@ fn verifier_accept_is_sanitizer_sound_over_the_bounded_family() {
         let ll = dir.join(format!("{name}.ll"));
         std::fs::write(&ll, &ir.stdout).unwrap();
         let exe = dir.join(format!("{name}.san"));
+        // LeakSanitizer exists only on some platforms (Linux yes, FreeBSD no — ASan there aborts
+        // with "detect_leaks is not supported"), so elsewhere only memory corruption is checked.
+        let lsan = cfg!(target_os = "linux");
         let cc = Command::new(&clang)
-            .args(["-fsanitize=address,leak", "-pthread", "-O1", "-w"])
+            .arg(if lsan {
+                "-fsanitize=address,leak"
+            } else {
+                "-fsanitize=address"
+            })
+            .args(["-pthread", "-O1", "-w"])
             .arg(&ll)
             .arg(env!("AXION_RT_LIB"))
             .args(["-ldl", "-lm", "-o"])
@@ -155,7 +163,14 @@ fn verifier_accept_is_sanitizer_sound_over_the_bounded_family() {
             .unwrap();
         assert!(cc.success(), "`{name}`: clang+sanitizer link failed");
         let run = Command::new(&exe)
-            .env("ASAN_OPTIONS", "detect_leaks=1")
+            .env(
+                "ASAN_OPTIONS",
+                if lsan {
+                    "detect_leaks=1"
+                } else {
+                    "detect_leaks=0"
+                },
+            )
             .output()
             .unwrap();
         assert!(

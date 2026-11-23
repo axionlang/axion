@@ -5620,8 +5620,15 @@ fn native_runtime_is_leak_free_under_lsan() {
         let exe = dir.join(format!("{name}.san"));
         // Link the Rust runtime staticlib (`axion-rt`, which now IS the whole runtime — the C is
         // fully ported and gone); `AXION_RT_LIB` is set by build.rs.
+        // LeakSanitizer is Linux-only here (FreeBSD's ASan has none): elsewhere, ASan only.
+        let lsan = cfg!(target_os = "linux");
         let cc = std::process::Command::new(&clang)
-            .args(["-fsanitize=address,leak", "-pthread", "-O1", "-w"])
+            .arg(if lsan {
+                "-fsanitize=address,leak"
+            } else {
+                "-fsanitize=address"
+            })
+            .args(["-pthread", "-O1", "-w"])
             .arg(&ll)
             .arg(env!("AXION_RT_LIB"))
             .args(["-ldl", "-lm"])
@@ -5632,7 +5639,14 @@ fn native_runtime_is_leak_free_under_lsan() {
         assert!(cc.success(), "{name}: clang+sanitizer failed");
         // run with leak detection on — it must exit clean
         let run = std::process::Command::new(&exe)
-            .env("ASAN_OPTIONS", "detect_leaks=1")
+            .env(
+                "ASAN_OPTIONS",
+                if lsan {
+                    "detect_leaks=1"
+                } else {
+                    "detect_leaks=0"
+                },
+            )
             .output()
             .unwrap();
         assert!(

@@ -12,6 +12,9 @@ cd "$(dirname "$0")/.."
 
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 CLANG="${AXION_CLANG:-clang}"
+# LeakSanitizer is Linux-only: FreeBSD's ASan has none (asking for it aborts the run with "detect_leaks
+# is not supported on this platform"), so elsewhere only the corruption (ASan) checks run.
+if [ "$(uname -s)" = Linux ]; then LSAN=1; SANITIZE=address,leak; else LSAN=0; SANITIZE=address; fi
 PORT="${AXHTTPD_TEST_PORT:-18431}"
 if [ ! -x "$AXIONC" ]; then
   echo "building axionc…"
@@ -23,7 +26,7 @@ command -v "$CLANG" >/dev/null || { echo "SKIP: clang not found"; exit 0; }
 W="$(mktemp -d)"; trap 'kill "${srv:-}" 2>/dev/null; rm -rf "$W"' EXIT
 cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "FAIL: axion-rt build"; exit 1; }
 "$AXIONC" --emit llvm examples/httpd.axi > "$W/ir.ll" || { echo "FAIL: httpd.axi did not lower"; exit 1; }
-"$CLANG" -fsanitize=address,leak -pthread -O1 -w "$W/ir.ll" \
+"$CLANG" -fsanitize="$SANITIZE" -pthread -O1 -w "$W/ir.ll" \
   axion-rt/target/release/libaxion_rt.a -ldl -lm -o "$W/httpd" || { echo "FAIL: ASan build"; exit 1; }
 
 # the site, and a file beside it that must stay out of reach
@@ -36,7 +39,7 @@ printf 'secret\n' > "$W/secret.txt"
 
 PAR=20
 CONNS=$((1 + 13 + PAR))   # readiness probe + the single requests below + the concurrent ones
-AXHTTPD_ROOT="$W/site" AXHTTPD_PORT="$PORT" AXHTTPD_MAX="$CONNS" ASAN_OPTIONS=detect_leaks=1 \
+AXHTTPD_ROOT="$W/site" AXHTTPD_PORT="$PORT" AXHTTPD_MAX="$CONNS" ASAN_OPTIONS=detect_leaks=$LSAN \
   timeout 120 "$W/httpd" >"$W/out" 2>"$W/err" &
 srv=$!
 up=0
@@ -82,7 +85,11 @@ if [ "$rc" != 0 ]; then echo "✗ server exited $rc"; fail=1; else echo "✓ ser
 if grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)" "$W/err"; then
   echo "✗ sanitizer report:"; grep -E "ERROR|SUMMARY" "$W/err" | head -5; fail=1
 else
-  echo "✓ ASan/LSan clean"
+  [ "$LSAN" = 1 ] && echo "✓ ASan/LSan clean" || echo "✓ ASan clean (no LSan on $(uname -s): leaks not checked)"
 fi
-[ "$fail" = 0 ] && echo "OK: httpd serves correctly and leak-free" || echo "FAIL: httpd"
+if [ "$fail" = 0 ]; then
+  [ "$LSAN" = 1 ] && echo "OK: httpd serves correctly and leak-free" || echo "OK: httpd serves correctly (leaks not checked)"
+else
+  echo "FAIL: httpd"
+fi
 exit "$fail"

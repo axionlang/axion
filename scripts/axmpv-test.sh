@@ -14,6 +14,12 @@ cd "$(dirname "$0")/.."
 AXIONC="${AXIONC:-axionc/target/debug/axionc}"
 DIR=examples/axmpv
 CLANG="${AXION_CLANG:-clang}"
+# LeakSanitizer is Linux-only: FreeBSD's ASan has none (asking for it aborts the run with "detect_leaks
+# is not supported on this platform"), so elsewhere only the corruption (ASan) checks run.
+if [ "$(uname -s)" = Linux ]; then LSAN=1; SANITIZE=address,leak; else LSAN=0; SANITIZE=address; fi
+SAN_LABEL=$([ "$LSAN" = 1 ] && echo "ASan + LSan" || echo "ASan")
+# glibc's libc soname, linked explicitly on Linux; elsewhere the default `-lc` covers it.
+LIBC_FLAG=$([ "$LSAN" = 1 ] && echo "-l:libc.so.6" || echo "-lc")
 fail=0
 
 skip_or_fail() { # message
@@ -44,15 +50,15 @@ for b in "--backend cranelift" "--release"; do
 done
 [ "$(wc -l < "$WORK/interp.out")" -ge 30 ] || { echo "✗ CoreTest printed too little"; fail=1; }
 
-# 2. ASan + LSan
+# 2. ASan + LSan (ASan only where LSan is unsupported)
 if command -v "$CLANG" >/dev/null 2>&1; then
   cargo build -q --release --manifest-path axion-rt/Cargo.toml || { echo "axion-rt build failed"; exit 2; }
   if "$AXIONC" --emit llvm "$DIR/CoreTest.axi" > "$WORK/ct.ll" \
-     && "$CLANG" -fsanitize=address,leak -pthread -O1 -w "$WORK/ct.ll" axion-rt/target/release/libaxion_rt.a -ldl -lm -o "$WORK/ct"; then
+     && "$CLANG" -fsanitize="$SANITIZE" -pthread -O1 -w "$WORK/ct.ll" axion-rt/target/release/libaxion_rt.a -ldl -lm -o "$WORK/ct"; then
     if "$WORK/ct" > "$WORK/asan.out" 2> "$WORK/asan.err" && diff -q "$WORK/interp.out" "$WORK/asan.out" >/dev/null; then
-      echo "✓ CoreTest ASan + LSan clean"
+      echo "✓ CoreTest $SAN_LABEL clean"
     else
-      echo "✗ CoreTest under ASan/LSan:"; grep -E "ERROR|SUMMARY" "$WORK/asan.err" | head; fail=1
+      echo "✗ CoreTest under $SAN_LABEL:"; grep -E "ERROR|SUMMARY" "$WORK/asan.err" | head; fail=1
     fi
   else
     echo "✗ CoreTest: could not build the ASan binary"; fail=1
@@ -104,8 +110,8 @@ run_player() {
   IFS=: read -r -a ldirs <<< "$libs"
   local lflags=()
   for d in "${ldirs[@]}"; do lflags+=("-L$d"); done
-  if ! "$CLANG" -fsanitize=address,leak -pthread -O1 -w "$WORK/axmpv.ll" axion-rt/target/release/libaxion_rt.a \
-       "${lflags[@]}" -l:libSDL2.so -l:libc.so.6 -ldl -lm -o "$WORK/axmpv"; then
+  if ! "$CLANG" -fsanitize="$SANITIZE" -pthread -O1 -w "$WORK/axmpv.ll" axion-rt/target/release/libaxion_rt.a \
+       "${lflags[@]}" -l:libSDL2.so "$LIBC_FLAG" -ldl -lm -o "$WORK/axmpv"; then
     echo "✗ could not build the ASan player"; fail=1; return
   fi
   # Every run gets a sandboxed HOME: no user config is read, nothing is written under the real one.

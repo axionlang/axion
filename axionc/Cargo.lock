@@ -64,6 +64,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "libc",
  "logos",
  "rowan",
  "salsa",
