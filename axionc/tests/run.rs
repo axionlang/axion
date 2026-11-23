@@ -7851,28 +7851,61 @@ fn parallel_loop_kernels_with_effects_are_refused() {
 
 #[test]
 fn a_closure_writing_an_array_it_captured_is_not_compiled() {
-    // each call of `f` wrote the captured array in place and freed it — a double free natively.
-    // The verifier sees that the write's result is the closure's borrowed capture. (A lambda that
-    // higher-order specialization turns into a function with the capture as a parameter, as in
-    // `map (\i -> …) xs`, is not covered yet: docs/parallel.md.)
+    // A lambda that runs more than once and writes, in place, an array it captured would free what
+    // the closure still holds, once per run: a double free natively. The verifier refuses it
+    // however the lambda runs (a `let`-bound function called twice, `map` specialized for the
+    // lambda) and however the write is reached (`setArray` on the capture, or a helper that owns
+    // its argument). A lambda that only reads the array compiles.
     let dir = std::env::temp_dir().join(format!("axion_capwrite_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    let p = dir.join("capwrite.axi");
-    std::fs::write(
-        &p,
-        "main :: IO ()\nmain = do\n  let cap = newArray 10 0\n  \
-         let f = \\i -> getArray (setArray cap 0 i) 0\n  \
-         putStrLn (showInt (f 1 + f 2))\n",
-    )
-    .unwrap();
-    let out = axionc()
-        .arg("--emit")
-        .arg("verify")
-        .arg(&p)
-        .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
-    assert!(text.contains("DropOfAlias"), "{text}");
+    let head = "sumL :: List Int -> Int\nsumL xs = case xs of\n  Nil -> 0\n  \
+                Cons y rest -> y + sumL rest\n\
+                bump :: Array Int -> Int -> Array Int\nbump a i = setArray a 0 i\n\
+                main :: IO ()\nmain = do\n  let cap = newArray 10 0\n  ";
+    for (tag, body, refused) in [
+        (
+            "let",
+            "let f = \\i -> getArray (setArray cap 0 i) 0\n  putStrLn (showInt (f 1 + f 2))",
+            true,
+        ),
+        (
+            "map",
+            "putStrLn (showInt (sumL (map (\\i -> getArray (setArray cap 0 i) 0) [1, 2])))",
+            true,
+        ),
+        (
+            "helper",
+            "let f = \\i -> getArray (bump cap i) 0\n  putStrLn (showInt (f 1 + f 2))",
+            true,
+        ),
+        (
+            "map-helper",
+            "putStrLn (showInt (sumL (map (\\i -> getArray (bump cap i) 0) [1, 2])))",
+            true,
+        ),
+        (
+            "read",
+            "putStrLn (showInt (sumL (map (\\i -> getArray cap 0 + i) [1, 2])))",
+            false,
+        ),
+    ] {
+        let p = dir.join(format!("{tag}.axi"));
+        std::fs::write(&p, format!("{head}{body}\n")).unwrap();
+        let out = axionc()
+            .args(["--backend", "cranelift"])
+            .arg(&p)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+        if refused {
+            assert!(
+                !out.status.success() && text.contains("error[AX0910]"),
+                "{tag}: {text}"
+            );
+        } else {
+            assert!(out.status.success(), "{tag}: {text}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

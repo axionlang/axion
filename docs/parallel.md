@@ -50,10 +50,9 @@ sequentially, and every backend prints the same output.
 
 A kernel writing a captured array in place is also caught natively by the drop verifier: the
 write's result is the closure's own capture, and freeing it is a corruption finding (AX0910).
-The same holds for any closure (`let f = \i -> … setArray cap …` called twice). One case is not
-covered yet: a lambda given to a higher-order function that is specialized for it (`map (\i ->
-… setArray cap …) xs`) becomes a function taking the capture as a parameter, and the verifier
-does not see that parameter being written on every call.
+The same holds for any closure that runs more than once (`let f = \i -> … setArray cap …`
+called twice, or `map (\i -> … setArray cap …) xs`), and for a write reached through a helper
+that owns its argument (`\i -> getArray (bump cap i) 0`).
 
 The check needs to see the kernel itself. A function passed in as a value and called by the
 kernel (`f` in `tabulate n f = parFor (newArray n 0) (\i _ -> f i)`) is not looked into: its

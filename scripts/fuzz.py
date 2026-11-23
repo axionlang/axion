@@ -2189,12 +2189,56 @@ def gen(rng):
 HANG_SECS = 30
 HANG_RC = 124           # subprocess timeout → this return code (checked by `check`/`asan_run`)
 
+def gen_capture(rng):
+    """A lambda that captures an array and runs more than once (`map`, `foldl`, a function applied
+    twice, a `let`-bound function called twice). It READS the array (`fuzz:capread`: safe, so a
+    native refusal is a gap) or WRITES it in place (`fuzz:capwrite`: each run would free what the
+    closure still holds — native must refuse it, AX0910, however the write is reached: directly,
+    through a `let` alias, or through a helper function)."""
+    write = rng.random() < 0.5
+    n = rng.randint(1, 12)
+    if write:
+        body = rng.choice([
+            "getArray (setArray cap 0 i) 0",
+            "let c = cap in getArray (setArray c 0 i) 0",
+            "getArray (bump cap i) 0",
+            "lenArray (setArray cap (i `mod` lenArray cap) 7)",
+        ])
+    else:
+        body = rng.choice([
+            "getArray cap (i `mod` lenArray cap) + i",
+            "lenArray cap * i",
+            "peek cap (i `mod` lenArray cap)",
+            "let c = cap in getArray c 0 + i",
+        ])
+    shape = rng.choice(["map", "foldl", "twice", "let"])
+    use = {
+        "map": f"sumL (map (\\i -> {body}) [1, 2, 3])",
+        "foldl": f"foldl (\\acc i -> acc + ({body})) 0 [4, 5, 6]",
+        "twice": f"applyTwice (\\i -> {body}) 2",
+        "let": f"(let f = \\i -> {body} in f 1 + f 2)",
+    }[shape]
+    prog = [f"-- fuzz:{'capwrite' if write else 'capread'}",
+            "sumL :: List Int -> Int",
+            "sumL xs = case xs of\n  Nil -> 0\n  Cons y rest -> y + sumL rest",
+            "applyTwice :: (Int -> Int) -> Int -> Int",
+            "applyTwice f x = f (f x)",
+            "bump :: Array Int -> Int -> Array Int",
+            "bump a i = setArray a 0 i",
+            "peek :: Array Int -> Int -> Int",
+            "peek a i = getArray a i",
+            "main :: IO ()", "main = do",
+            f"  let cap = arrayIota {n}",
+            f"  putStrLn (showInt ({use}))",
+            "  putStrLn (showInt (getArray cap 0))"]
+    return "\n".join(prog) + "\n"
+
 def _safe_by_construction(prog):
     """Generators whose every program is safe value-semantics code: a native AX0910/AX0911 on one is
     a reclamation GAP (hard finding), not a sound rejection — `gen_sharing`, `gen_closure_values`,
     `gen_nested_patterns`, `gen_local_fns`, `gen_tuple_acc`."""
     return ("fuzz:sharing" in prog or "fuzz:closures" in prog or "fuzz:nested" in prog
-            or "fuzz:locals" in prog or "fuzz:tuples" in prog)
+            or "fuzz:locals" in prog or "fuzz:tuples" in prog or "fuzz:capread" in prog)
 
 def run(args, want_bin=None, timeout=HANG_SECS):
     try:
@@ -2251,6 +2295,16 @@ def check(prog, work):
     src.write_text(prog)
     if "fuzz:contracts" in prog:
         return check_contracts(prog, src)
+    if "fuzz:capwrite" in prog:
+        # a closure that writes an array it captured and runs again: native code must refuse it
+        for be in (["--backend", "cranelift"], ["--release"]):
+            rc, o, e = run([AXIONC, *be, str(src)])
+            if rc == HANG_RC:
+                return ("hang", f"{be} exceeded {HANG_SECS}s")
+            if "error[AX0910]" not in (o + e) and "error[AX0800]" not in (o + e):
+                return ("corruption", f"{be}: a closure writing its captured array was compiled:\n"
+                                      f"{(o + e)[-500:]}")
+        return ("ax0910", None)
     ri, oi, ei = run([AXIONC, str(src)])
     # A hang on ANY invocation is the worst-masked class: two hanging runs would otherwise look
     # like a "consistent reject". Flag it the moment it happens, with the program for a repro.

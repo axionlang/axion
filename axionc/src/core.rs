@@ -8066,6 +8066,7 @@ pub fn lower_with(
                     // a moved-in closure is this function's: storing it twice is a duplication
                     Type::Arrow { .. } => Some("Closure".to_string()),
                     t if t.head_con() == Some("Buffer") => Some("Buffer".to_string()),
+                    t if t.head_con() == Some("Array") => Some("Array".to_string()),
                     _ => None,
                 })
                 .collect();

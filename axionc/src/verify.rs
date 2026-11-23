@@ -749,6 +749,8 @@ fn run_fn(
         consumed_slots: HashMap::new(),
         borrowed_params,
         captures: f.captures.iter().cloned().collect(),
+        callee_keys: param_keys,
+        callee_leaf: param_leaf,
         ret_alias,
         frees_heap,
         poly_borrowed: HashSet::new(),
@@ -793,6 +795,10 @@ fn dropped_vars(t: &Term) -> HashSet<String> {
 }
 
 struct Verifier<'a> {
+    /// every function's per-parameter container key and heap-leaf type (from its signature): a
+    /// parameter with one that the callee does not borrow is one it OWNS (`consume`)
+    callee_keys: &'a HashMap<String, Vec<Option<String>>>,
+    callee_leaf: &'a HashMap<String, Vec<Option<String>>>,
     /// values freed by a FULL keyed (deep) drop — not a shell free, not a skip-destructor that
     /// leaves shared slots alone (see the reverse double-free check in `do_drop`)
     deep_freed: HashSet<String>,
@@ -994,6 +1000,38 @@ impl Verifier<'_> {
             Op::CallDirect(g, args, _) if !g.starts_with("axion_copy_") => Some((g, args)),
             _ => None,
         };
+        // A closure's capture stays the closure's (the cell holds it for the next call): handing it
+        // to a parameter the callee owns — not borrowed, of a heap type — frees what the closure
+        // still holds, once per call (`map (\i -> … bump cap …)`, a `let`-bound function called
+        // twice). Directly or through a `let` alias of the capture.
+        if let Some((g, args)) = direct {
+            if !self.captures.is_empty() {
+                let borrowed = self.ba.get(g);
+                for (i, a) in args.iter().enumerate() {
+                    let Atom::Var(v) = a else {
+                        continue;
+                    };
+                    let captured = self.captures.contains(v) && !st.contains_key(v)
+                        || st.get(v).is_some_and(|val| {
+                            !val.owned && val.borrows.iter().any(|b| self.captures.contains(b))
+                        });
+                    let owns = !borrowed.is_some_and(|b| b.contains(&i))
+                        && (self
+                            .callee_leaf
+                            .get(g)
+                            .and_then(|ps| ps.get(i))
+                            .is_some_and(Option::is_some)
+                            || self
+                                .callee_keys
+                                .get(g)
+                                .and_then(|ps| ps.get(i))
+                                .is_some_and(Option::is_some));
+                    if captured && owns {
+                        self.finding(Cat::DropOfAlias, v, sp);
+                    }
+                }
+            }
+        }
         if let Some((g, args)) = direct {
             let borrowed_pos = self.ba.get(g);
             let alias_ret = self.summaries.get(g);
