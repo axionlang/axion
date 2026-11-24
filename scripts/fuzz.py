@@ -2111,6 +2111,9 @@ def gen_total(rng):
 
 def gen(rng):
     r = rng.random()                    # distinct heap-resource surfaces
+    if r < 0.05:
+        return gen_clauses(rng)         # clause heads: constructor/literal/Bool tests, fall-through
+    r = (r - 0.05) / 0.95
     if r < 0.08:
         return gen_sharing(rng)         # axmpv's shapes: shared-field updates, branch ownership
     r = (r - 0.08) / 0.92
@@ -2233,12 +2236,116 @@ def gen_capture(rng):
             "  putStrLn (showInt (getArray cap 0))"]
     return "\n".join(prog) + "\n"
 
+def gen_clauses(rng):
+    """Functions defined by several clauses whose heads mix constructor, tuple, literal and Bool
+    patterns (nested too), over heap and scalar arguments; a body returns an Int, or a heap tree
+    built from what its head bound. Full differential + ASan: the clause chain (core.rs
+    `Lower::clauses`) must pick the same clause as the interpreter and free the same values."""
+    counter = iter(range(10_000))
+
+    def pat(ty, depth):
+        """A pattern for `ty` and the variables it binds, as (name, type)."""
+        r = rng.random()
+        if r < 0.2:
+            return "_", []
+        if r < 0.35:
+            n = f"v{next(counter)}"
+            return n, [(n, ty)]
+        if ty == "Int":
+            return str(rng.randint(0, 3)), []
+        if ty == "Bool":
+            return rng.choice(["True", "False"]), []
+        if ty == "Maybe Int":
+            if rng.random() < 0.4:
+                return "Nothing", []
+            p, b = pat("Int", depth + 1)
+            return f"(Just {p})", b
+        if ty == "(Int, Bool)":
+            p1, b1 = pat("Int", depth + 1)
+            p2, b2 = pat("Bool", depth + 1)
+            return f"({p1}, {p2})", b1 + b2
+        c = rng.choice(["A", "B", "C"] if depth < 2 else ["A", "B"])
+        if c == "A":
+            return "A", []
+        if c == "B":
+            p, b = pat("Int", depth + 1)
+            return f"(B {p})", b
+        p1, b1 = pat("T", depth + 1)
+        p2, b2 = pat("T", depth + 1)
+        return f"(C {p1} {p2})", b1 + b2
+
+    def val(ty, depth=0):
+        if ty == "Int":
+            return str(rng.randint(0, 3))
+        if ty == "Bool":
+            return rng.choice(["True", "False"])
+        if ty == "Maybe Int":
+            return "Nothing" if rng.random() < 0.4 else f"(Just {rng.randint(0, 3)})"
+        if ty == "(Int, Bool)":
+            return f"({rng.randint(0, 3)}, {rng.choice(['True', 'False'])})"
+        c = rng.choice(["A", "B", "C"] if depth < 3 else ["A", "B"])
+        if c == "A":
+            return "A"
+        if c == "B":
+            return f"(B {rng.randint(0, 3)})"
+        return f"(C {val('T', depth + 1)} {val('T', depth + 1)})"
+
+    def int_of(name, ty):
+        return {"Int": name, "Bool": f"bval {name}", "Maybe Int": f"mval {name}",
+                "(Int, Bool)": f"tval {name}", "T": f"size {name}"}[ty]
+
+    ptys = [rng.choice(["Int", "Bool", "T", "Maybe Int", "(Int, Bool)", "T"])
+            for _ in range(rng.randint(1, 3))]
+    heap_ret = "T" in ptys and rng.random() < 0.4
+    ret = "T" if heap_ret else "Int"
+    clauses = []
+    for k in range(rng.randint(1, 4)):
+        pats, bound = [], []
+        for ty in ptys:
+            p, b = pat(ty, 0)
+            pats.append(p)
+            bound += b
+        if heap_ret:
+            trees = [n for n, t in bound if t == "T"]
+            rng.shuffle(trees)
+            ints = " + ".join([str(k)] + [int_of(n, t) for n, t in bound if t != "T"])
+            if len(trees) >= 2 and rng.random() < 0.5:
+                body = f"C {trees[0]} {trees[1]}"           # each bound tree used once
+            elif trees and rng.random() < 0.6:
+                body = trees[0]
+            else:
+                body = f"B ({ints})"
+        else:
+            body = " + ".join([str(k * 10)] + [int_of(n, t) for n, t in bound])
+        clauses.append(f"f {' '.join(pats)} = {body}")
+    # the catch-all clause: every call matches some clause, so no run-time failure to compare
+    clauses.append(f"f {' '.join('_' for _ in ptys)} = {'B 99' if heap_ret else '99'}")
+    sig = " -> ".join(ptys + [ret])
+    calls = []
+    for _ in range(4):
+        call = f"f {' '.join(val(t) for t in ptys)}"
+        calls.append(f"  putStrLn (showInt ({'size (' + call + ')' if heap_ret else call}))")
+    prog = ["-- fuzz:clauses",
+            "data T = A | B Int | C T T",
+            "size :: T -> Int",
+            "size t = case t of\n  A -> 1\n  B k -> k\n  C l r -> size l + size r + 1",
+            "mval :: Maybe Int -> Int",
+            "mval m = case m of\n  Nothing -> 7\n  Just k -> k",
+            "tval :: (Int, Bool) -> Int",
+            "tval p = case p of\n  (k, True) -> k\n  (k, False) -> 0 - k",
+            "bval :: Bool -> Int",
+            "bval b = if b then 1 else 0",
+            f"f :: {sig}", *clauses,
+            "main :: IO ()", "main = do", *calls]
+    return "\n".join(prog) + "\n"
+
 def _safe_by_construction(prog):
     """Generators whose every program is safe value-semantics code: a native AX0910/AX0911 on one is
     a reclamation GAP (hard finding), not a sound rejection — `gen_sharing`, `gen_closure_values`,
-    `gen_nested_patterns`, `gen_local_fns`, `gen_tuple_acc`."""
+    `gen_nested_patterns`, `gen_local_fns`, `gen_tuple_acc`, `gen_clauses`."""
     return ("fuzz:sharing" in prog or "fuzz:closures" in prog or "fuzz:nested" in prog
-            or "fuzz:locals" in prog or "fuzz:tuples" in prog or "fuzz:capread" in prog)
+            or "fuzz:locals" in prog or "fuzz:tuples" in prog or "fuzz:capread" in prog
+            or "fuzz:clauses" in prog)
 
 def run(args, want_bin=None, timeout=HANG_SECS):
     try:

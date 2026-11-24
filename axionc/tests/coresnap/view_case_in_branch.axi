@@ -14,11 +14,11 @@
         drop xs
         drop xs
         drop xs
+        let _t0 = + y 1  ; Δ{}
         let _t1 = + y 1  ; Δ{y ys}
-        let _t1 = + y 1  ; Δ{}
         ret b  ; Δ{}
+        ret con Cons _t0 ys  ; Δ{} · makes List$Int
         ret con Cons _t1 ys  ; Δ{y ys} · moves{ys} · makes List$Int
-        ret con Cons _t1 ys  ; Δ{} · makes List$Int
         ret con Nil  ; Δ{} · makes List$Int
         ret con Nil  ; Δ{} · makes List$Int
       Cons y ys ->
@@ -113,9 +113,9 @@
   let _dd7 = if _dd6 then
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _t0 = == _p0 0  ; Δ{}
-  let _t0 = == _p0 0  ; Δ{}
   let _t0 = == k 0  ; Δ{}
   let _t0 = con Nil  ; Δ{} · makes List$Int
+  let _t1 = == _p0 0  ; Δ{}
   let _t1 = con Cons 3 _t0  ; Δ{_t0} · moves{_t0} · makes List$Int
   let _t10 = call bumpIf 1 _t9  ; Δ{_t9} · moves{_t9} · makes List$Int
   let _t11 = call length _t10  ; Δ{_t10}
@@ -142,7 +142,7 @@
   ret case xs of
   ret if _t0 then
   ret if _t0 then
-  ret if _t0 then
+  ret if _t1 then
   ret rtcall axion_array_free _p  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =

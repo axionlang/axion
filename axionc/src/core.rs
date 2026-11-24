@@ -2042,10 +2042,29 @@ impl Lower<'_> {
                 {
                     return self.integer_case_rhs(sa, arms, buf);
                 }
-                let carms = arms
+                let mut carms: Vec<(CPat, Term)> = arms
                     .iter()
                     .map(|(p, body)| (lower_pat(p), self.term(body)))
                     .collect();
+                // `True -> …; False -> …` covers every Bool: its last arm is the catch-all the
+                // integer `case` needs natively
+                let bools: Vec<i64> = arms
+                    .iter()
+                    .filter_map(|(p, _)| match p {
+                        Pat::Con(c, subs, _) => bool_lit(c, subs),
+                        _ => None,
+                    })
+                    .collect();
+                if bools.contains(&0)
+                    && bools.contains(&1)
+                    && !carms
+                        .iter()
+                        .any(|(p, _)| matches!(p, CPat::Wild | CPat::Var(_)))
+                {
+                    if let Some(last) = carms.last_mut() {
+                        last.0 = CPat::Wild;
+                    }
+                }
                 Rhs::Case(sa, carms)
             }
             Expr::Let(binds, body, _) => {
@@ -2988,109 +3007,252 @@ impl Lower<'_> {
     }
 
     /// Desugars multi-clause into an `if` chain (requires a catch-all at the end).
-    fn clauses(&mut self, clauses: &[ast::Clause], params: &[String], i: usize) -> Term {
-        let clause = &clauses[i];
-        let lits: Vec<(usize, i64, Span)> = clause
+    /// A function's clauses as a chain, tried in order like the interpreter does: clause `i`
+    /// first computes whether its head matches the arguments (`matched`, from its literal,
+    /// constructor and tuple patterns, nested ones included), then either binds its variables and
+    /// runs its body or goes on to clause `i + 1`. Each later clause appears once (the test only
+    /// answers 1/0, so no code is copied per failing test), and past the last clause the call
+    /// fails at run time with the interpreter's message.
+    fn clauses(
+        &mut self,
+        fname: &str,
+        clauses: &[ast::Clause],
+        params: &[String],
+        i: usize,
+        single_con: &HashSet<String>,
+    ) -> Term {
+        let Some(clause) = clauses.get(i) else {
+            return self.match_fail(&format!(
+                "no clause of '{}' matched the arguments",
+                display_fn_name(fname)
+            ));
+        };
+        let refutable: Vec<(String, Pat)> = clause
             .pats
             .iter()
             .enumerate()
-            .filter_map(|(j, p)| match p {
-                Pat::Int(n, sp) => Some((j, *n, *sp)),
+            .filter(|(_, p)| !matches!(p, Pat::Var(..) | Pat::Wild(_)))
+            .map(|(j, p)| (params[j].clone(), p.clone()))
+            .collect();
+        // binds the clause's patterns to the parameters and emits the body
+        let mut body = self.clause_body(clause);
+        for (j, p) in clause.pats.iter().enumerate().rev() {
+            body = self.destructure(&params[j], p, body);
+        }
+        if refutable.is_empty() {
+            return body;
+        }
+        // only literals (`fib 0 = …`): one comparison per literal, joined with `band` — the
+        // test needs no `case`, so it is the condition itself
+        let lits: Option<Vec<(String, i64, Span)>> = refutable
+            .iter()
+            .map(|(v, p)| match p {
+                Pat::Int(n, sp) => Some((v.clone(), *n, *sp)),
+                Pat::Con(c, subs, _) => bool_lit(c, subs).map(|b| (v.clone(), b, NO_SPAN)),
                 _ => None,
             })
             .collect();
-
-        // binds this clause's variable patterns to the parameters and emits the body
-        let body_term = |me: &mut Self| -> Term {
-            let mut inner = me.clause_body(clause);
-            for (j, p) in clause.pats.iter().enumerate() {
-                if let Pat::Var(n, sp) = p {
-                    inner = Term::Let(
-                        n.clone(),
-                        Rhs::Op(Op::Atom(Atom::Var(params[j].clone()))),
-                        *sp,
-                        Box::new(inner),
-                    );
-                }
+        if let Some(lits) = lits {
+            let mut buf = Vec::new();
+            let mut cond: Option<Atom> = None;
+            for (v, n, sp) in &lits {
+                let c = self.lit_eq(v, *n, *sp, &mut buf);
+                cond = Some(match cond {
+                    None => c,
+                    Some(prev) => {
+                        let a = self.fresh();
+                        buf.push((
+                            a.clone(),
+                            Rhs::Op(Op::Prim("band".into(), prev, c)),
+                            NO_SPAN,
+                        ));
+                        Atom::Var(a)
+                    }
+                });
             }
-            inner
-        };
-
-        if lits.is_empty() {
-            return body_term(self);
-        }
-        if i + 1 >= clauses.len() {
-            return Term::Ret(
-                Rhs::Op(Op::Unsupported(
-                    "function without a catch-all clause".into(),
-                )),
-                NO_SPAN,
+            let else_t = self.clauses(fname, clauses, params, i + 1, single_con);
+            let cond = cond.unwrap_or(Atom::Int(1));
+            return wrap_spanned(
+                buf,
+                Term::Ret(Rhs::If(cond, Box::new(body), Box::new(else_t)), NO_SPAN),
             );
         }
-
-        // cond = band(param_j == lit, …)
-        let mut buf: Vec<(String, Rhs, Span)> = Vec::new();
-        let mut cond: Option<Atom> = None;
-        for (j, lit, sp) in &lits {
-            let c = self.fresh();
-            if self.integer_pats.contains(sp) {
-                // Integer literal pattern: box the literal and compare by bignum
-                // equality (the scrutinee is a boxed BigInt pointer, not an i64).
-                let boxed = self.fresh();
-                buf.push((
-                    boxed.clone(),
-                    Rhs::Op(Op::RtCall {
-                        func: "axion_bignum_from_i64".into(),
-                        args: vec![Atom::Int(*lit)],
-                        returns: true,
-                    }),
-                    NO_SPAN,
-                ));
-                buf.push((
-                    c.clone(),
-                    Rhs::Op(Op::RtCall {
-                        func: "axion_bignum_eq".into(),
-                        args: vec![Atom::Var(params[*j].clone()), Atom::Var(boxed)],
-                        returns: true,
-                    }),
-                    NO_SPAN,
-                ));
-            } else {
-                buf.push((
-                    c.clone(),
-                    Rhs::Op(Op::Prim(
-                        "==".into(),
-                        Atom::Var(params[*j].clone()),
-                        Atom::Int(*lit),
-                    )),
-                    NO_SPAN,
-                ));
-            }
-            cond = Some(match cond {
-                None => Atom::Var(c),
-                Some(prev) => {
-                    let a = self.fresh();
-                    buf.push((
-                        a.clone(),
-                        Rhs::Op(Op::Prim("band".into(), prev, Atom::Var(c))),
-                        NO_SPAN,
-                    ));
-                    Atom::Var(a)
-                }
-            });
-        }
-        let then_t = body_term(self);
-        let else_t = self.clauses(clauses, params, i + 1);
-        wrap_spanned(
-            buf,
+        let test = self.match_test(&refutable, single_con);
+        let m = self.fresh();
+        let else_t = self.clauses(fname, clauses, params, i + 1, single_con);
+        bind_term(
+            &m,
+            test,
             Term::Ret(
-                Rhs::If(
-                    cond.unwrap_or_else(|| panic!("no condition")),
-                    Box::new(then_t),
-                    Box::new(else_t),
-                ),
+                Rhs::If(Atom::Var(m.clone()), Box::new(body), Box::new(else_t)),
                 NO_SPAN,
             ),
+        )
+    }
+
+    /// 1 if every `(variable, pattern)` pair matches, else 0: flat one-level `case`s and literal
+    /// comparisons, each success going on to the next pair (the sub-patterns of a constructor
+    /// join the pairs still to test).
+    fn match_test(&mut self, pairs: &[(String, Pat)], single_con: &HashSet<String>) -> Term {
+        let Some(((v, p), rest)) = pairs.split_first() else {
+            return Term::Ret(Rhs::Op(Op::Atom(Atom::Int(1))), NO_SPAN);
+        };
+        let no = || Term::Ret(Rhs::Op(Op::Atom(Atom::Int(0))), NO_SPAN);
+        match p {
+            Pat::Var(..) | Pat::Wild(_) => self.match_test(rest, single_con),
+            Pat::Int(n, sp) => {
+                let mut buf = Vec::new();
+                let c = self.lit_eq(v, *n, *sp, &mut buf);
+                let yes = self.match_test(rest, single_con);
+                wrap_spanned(
+                    buf,
+                    Term::Ret(Rhs::If(c, Box::new(yes), Box::new(no())), NO_SPAN),
+                )
+            }
+            Pat::Str(..) => {
+                unreachable!("string patterns are desugared to `if`-chains before core")
+            }
+            Pat::Con(c, subs, _) if bool_lit(c, subs).is_some() => {
+                let lit = bool_lit(c, subs).unwrap_or(0);
+                let mut buf = Vec::new();
+                let t = self.lit_eq(v, lit, NO_SPAN, &mut buf);
+                let yes = self.match_test(rest, single_con);
+                wrap_spanned(
+                    buf,
+                    Term::Ret(Rhs::If(t, Box::new(yes), Box::new(no())), NO_SPAN),
+                )
+            }
+            Pat::Con(_, subs, _) | Pat::Tuple(subs, _) => {
+                let mut next: Vec<(String, Pat)> = Vec::new();
+                let csubs: Vec<CPat> = subs
+                    .iter()
+                    .map(|q| {
+                        if matches!(q, Pat::Var(..) | Pat::Wild(_)) {
+                            CPat::Wild
+                        } else {
+                            let f = self.fresh();
+                            next.push((f.clone(), q.clone()));
+                            CPat::Var(f)
+                        }
+                    })
+                    .collect();
+                next.extend(rest.iter().cloned());
+                let yes = self.match_test(&next, single_con);
+                match p {
+                    Pat::Con(c, ..) => {
+                        let mut arms = vec![(CPat::Con(c.clone(), csubs), yes)];
+                        if !single_con.contains(c) {
+                            arms.push((CPat::Wild, no()));
+                        }
+                        Term::Ret(Rhs::Case(Atom::Var(v.clone()), arms), NO_SPAN)
+                    }
+                    _ => Term::Ret(
+                        Rhs::Case(Atom::Var(v.clone()), vec![(CPat::Tuple(csubs), yes)]),
+                        NO_SPAN,
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Binds the variables of pattern `p` (already known to match `v`) around `body`: a variable
+    /// is `let`-bound to `v`, a constructor or tuple is taken apart by a one-arm `case` (one level
+    /// at a time, a nested pattern through a fresh variable), a literal binds nothing.
+    fn destructure(&mut self, v: &str, p: &Pat, body: Term) -> Term {
+        // the test already checked it: a pattern that binds nothing needs no `case`
+        if !binds_any(p) {
+            return body;
+        }
+        match p {
+            Pat::Var(n, sp) => Term::Let(
+                n.clone(),
+                Rhs::Op(Op::Atom(Atom::Var(v.to_string()))),
+                *sp,
+                Box::new(body),
+            ),
+            Pat::Wild(_) | Pat::Int(..) | Pat::Str(..) => body,
+            Pat::Con(c, subs, _) if bool_lit(c, subs).is_some() => body,
+            Pat::Con(_, subs, _) | Pat::Tuple(subs, _) => {
+                let mut inner = body;
+                let mut csubs = Vec::with_capacity(subs.len());
+                let mut nested = Vec::new();
+                // every field is named, the unused ones too (as the `case` compiler does): the
+                // reclamation frees a field it can name, and refuses an unnamed heap field
+                for q in subs {
+                    match q {
+                        Pat::Var(n, _) => csubs.push(CPat::Var(n.clone())),
+                        _ => {
+                            let f = self.fresh();
+                            if binds_any(q) {
+                                nested.push((f.clone(), q));
+                            }
+                            csubs.push(CPat::Var(f));
+                        }
+                    }
+                }
+                for (f, q) in nested.into_iter().rev() {
+                    inner = self.destructure(&f, q, inner);
+                }
+                let cp = match p {
+                    Pat::Con(c, ..) => CPat::Con(c.clone(), csubs),
+                    _ => CPat::Tuple(csubs),
+                };
+                Term::Ret(
+                    Rhs::Case(Atom::Var(v.to_string()), vec![(cp, inner)]),
+                    NO_SPAN,
+                )
+            }
+        }
+    }
+
+    /// `v == lit` (an `Integer` literal compares by bignum equality: the scrutinee is a boxed
+    /// BigInt, not an i64).
+    fn lit_eq(&mut self, v: &str, lit: i64, sp: Span, buf: &mut Vec<(String, Rhs, Span)>) -> Atom {
+        let c = self.fresh();
+        if self.integer_pats.contains(&sp) {
+            let boxed = self.fresh();
+            buf.push((
+                boxed.clone(),
+                Rhs::Op(Op::RtCall {
+                    func: "axion_bignum_from_i64".into(),
+                    args: vec![Atom::Int(lit)],
+                    returns: true,
+                }),
+                NO_SPAN,
+            ));
+            buf.push((
+                c.clone(),
+                Rhs::Op(Op::RtCall {
+                    func: "axion_bignum_eq".into(),
+                    args: vec![Atom::Var(v.to_string()), Atom::Var(boxed)],
+                    returns: true,
+                }),
+                NO_SPAN,
+            ));
+        } else {
+            buf.push((
+                c.clone(),
+                Rhs::Op(Op::Prim(
+                    "==".into(),
+                    Atom::Var(v.to_string()),
+                    Atom::Int(lit),
+                )),
+                NO_SPAN,
+            ));
+        }
+        Atom::Var(c)
+    }
+
+    /// A match that cannot fail silently: print the interpreter's run-time error and abort (as a
+    /// failed bounds check or contract does).
+    fn match_fail(&mut self, msg: &str) -> Term {
+        Term::Ret(
+            Rhs::Op(Op::RtCall {
+                func: "axion_contract_fail".into(),
+                args: vec![Atom::Str(format!("runtime error: {msg}"))],
+                returns: true,
+            }),
+            NO_SPAN,
         )
     }
 
@@ -3103,12 +3265,9 @@ impl Lower<'_> {
 
     /// Guards → chain of `if`: `| g0 = r0 | g1 = r1 | otherwise = rn` becomes
     /// `if g0 then r0 else if g1 then r1 else rn`. `otherwise`/`True` are
-    /// unconditional; if no guard covers, it is exhaustion (unsupported).
+    /// unconditional; when none holds, the call fails at run time, as in the interpreter.
     fn guarded(&mut self, arms: &[(Expr, Expr)]) -> Term {
-        let mut acc = Term::Ret(
-            Rhs::Op(Op::Unsupported("non-exhaustive guards".into())),
-            NO_SPAN,
-        );
+        let mut acc = self.match_fail("no guard was true");
         for (g, r) in arms.iter().rev() {
             let uncond = matches!(g, Expr::Var(n, _) if n == "otherwise")
                 || matches!(g, Expr::Con(n, _) if n == "True");
@@ -3135,7 +3294,58 @@ fn lower_pat(p: &Pat) -> CPat {
         Pat::Int(n, _) => CPat::Int(*n),
         Pat::Str(_, _) => unreachable!("string patterns are desugared to `if`-chains before core"),
         Pat::Tuple(ps, _) => CPat::Tuple(ps.iter().map(lower_pat).collect()),
-        Pat::Con(n, ps, _) => CPat::Con(n.clone(), ps.iter().map(lower_pat).collect()),
+        // a Bool is the integer 1 or 0 natively, not a tagged constructor: a `True` pattern
+        // lowered as a constructor matched any value (the first arm always won)
+        Pat::Con(n, ps, _) => match bool_lit(n, ps) {
+            Some(b) => CPat::Int(b),
+            None => CPat::Con(n.clone(), ps.iter().map(lower_pat).collect()),
+        },
+    }
+}
+
+/// Does the pattern bind a variable (anywhere inside it)?
+fn binds_any(p: &Pat) -> bool {
+    match p {
+        Pat::Var(..) => true,
+        Pat::Wild(_) | Pat::Int(..) | Pat::Str(..) => false,
+        Pat::Con(_, subs, _) | Pat::Tuple(subs, _) => subs.iter().any(binds_any),
+    }
+}
+
+/// `True`/`False` as a pattern: the integer a Bool is natively.
+fn bool_lit(con: &str, subs: &[Pat]) -> Option<i64> {
+    match (con, subs.is_empty()) {
+        ("True", true) => Some(1),
+        ("False", true) => Some(0),
+        _ => None,
+    }
+}
+
+/// The name the user wrote for a lowered function, as the interpreter reports it: a
+/// higher-order clone (`f$$g`) and a type specialization (`f$Int`) are `f`; a lifted local
+/// (`outer$go`, `outer$go#2`) is `go`.
+fn display_fn_name(name: &str) -> &str {
+    let base = name.split("$$").next().unwrap_or(name);
+    let mut out = base;
+    for seg in base.split('$').skip(1) {
+        if seg.starts_with(|c: char| c.is_lowercase() || c == '_') {
+            out = seg;
+        }
+    }
+    if out == base {
+        out = base.split('$').next().unwrap_or(base);
+    }
+    out.split('#').next().unwrap_or(out)
+}
+
+/// `let name = <t's value> in cont`: `t`'s own `let`s first, then `name` bound to its result.
+fn bind_term(name: &str, t: Term, cont: Term) -> Term {
+    match t {
+        Term::Ret(rhs, sp) => Term::Let(name.to_string(), rhs, sp, Box::new(cont)),
+        Term::Let(n, r, sp, rest) => Term::Let(n, r, sp, Box::new(bind_term(name, *rest, cont))),
+        Term::Drop(x, k, skip, sp, rest) => {
+            Term::Drop(x, k, skip, sp, Box::new(bind_term(name, *rest, cont)))
+        }
     }
 }
 
@@ -3350,12 +3560,11 @@ fn lower_func(
     // DESTRUCTURING the parameter through a one-arm `case` (which binds the field
     // variables — the multi-clause `if`-chain desugar below only binds `Var`
     // params, so `label (Named s k) = …` left `s`/`k` unbound → native "variable
-    // not bound"). A REFUTABLE single-clause head (a `Con` of a MULTI-constructor
-    // type, or a literal) is a PARTIAL function — there is NO exhaustiveness check
-    // on clause heads (AX0202 covers only `case`) — so it must NOT be destructured
-    // natively (matching a mismatched constructor is memory-unsafe, and a dropped
-    // literal test is a miscompile). It is excluded from native (`Unsupported`), so
-    // the interpreter reports the no-match at runtime.
+    // not bound"). A REFUTABLE head (a `Con` of a MULTI-constructor type, or a
+    // literal), in one clause or several, goes through the clause chain: destructuring
+    // a mismatched constructor would be memory-unsafe, so each head is TESTED first
+    // (`Lower::clauses`), and a call no clause matches fails at run time with the
+    // interpreter's message.
     let single_irrefutable = f.clauses.len() == 1
         && f.clauses[0]
             .pats
@@ -3386,38 +3595,11 @@ fn lower_func(
             }
         }
         (params, body)
-    } else if f.clauses.len() == 1 {
-        // partial single clause (refutable head) → interp-only.
-        let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
-        let body = Term::Ret(
-            Rhs::Op(Op::Unsupported(
-                "partial single-clause head pattern (refutable) — interpreter only".into(),
-            )),
-            NO_SPAN,
-        );
-        (params, body)
-    } else if f.clauses.iter().any(|c| {
-        c.pats
-            .iter()
-            .any(|p| matches!(p, Pat::Con(..) | Pat::Tuple(..)))
-    }) {
-        // multi-clause with a constructor/tuple head pattern: the `if`-chain desugar
-        // (`lw.clauses`) dispatches only on Int literals, NOT on Con tags — it would
-        // select clause 0 unconditionally (a silent miscompile: `fj Nothing = 0;
-        // fj (Just x) = x` returns 0 for `fj (Just 5)`) or leave a field binder
-        // unbound. Exclude from native (interpreter only) — the documented "write
-        // the match with `case`" limitation, now SAFE instead of a miscompile.
-        let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
-        let body = Term::Ret(
-            Rhs::Op(Op::Unsupported(
-                "constructor pattern in a multi-clause function head — interpreter only".into(),
-            )),
-            NO_SPAN,
-        );
-        (params, body)
     } else {
+        // several clauses, or one with a refutable head (a partial function): the clause chain,
+        // which tests each head before binding it and fails at run time when none matches
         let params: Vec<String> = (0..arity).map(|k| format!("_p{k}")).collect();
-        let body = lw.clauses(&f.clauses, &params, 0);
+        let body = lw.clauses(&f.name, &f.clauses, &params, 0, single_con);
         (params, body)
     };
     // `%1` heap-typed parameters → the callee owns them and frees them.

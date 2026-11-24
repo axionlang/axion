@@ -6611,43 +6611,59 @@ fn generic_container_reclaims_heap_elements() {
 }
 
 #[test]
-fn refutable_single_clause_head_is_interpreter_only() {
-    // A single-clause function with a REFUTABLE head (`fromJust (Just x) = x` — a
-    // Con of a multi-constructor type) is a partial function; there is no
-    // clause-head exhaustiveness check, so it must be EXCLUDED from native, never
-    // destructured (matching `Nothing` as `Just` is memory-unsafe; an Int literal
-    // head would drop the comparison). Interpreter runs it; `--backend` fails loudly.
-    let fx = fixture("refutable_head_interp_only.axi");
-    let interp = axionc().arg(&fx).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&interp.stdout), "5\n");
-    let native = axionc()
-        .args(["--backend", "cranelift", &fx])
-        .output()
-        .unwrap();
-    assert!(
-        !native.status.success(),
-        "a refutable single-clause head must fail natively, not miscompile"
+fn refutable_and_constructor_clause_heads_compile_natively() {
+    // A refutable single-clause head (`fromJust (Just x) = x`) and constructor patterns across
+    // several clauses (`fj Nothing = 0; fj (Just x) = x`): natively each head is tested before
+    // it is taken apart, the clauses in order (these used to be interpreter-only, after a silent
+    // miscompile that always took clause 0).
+    agree_across_backends("refutable_head.axi", "5\n");
+    agree_across_backends("multiclause_con_head.axi", "5\n");
+    // constructor, nested, tuple, literal and Bool heads; guards; a where-local; Bool `case`s
+    agree_across_backends(
+        "clause_heads.axi",
+        "2\n-3\n12\n310\n123\n2130\n15\nbig circle,circle,square,rect,dot\n7\n",
     );
 }
 
 #[test]
-fn multiclause_constructor_head_is_interpreter_only() {
-    // A multi-clause function matching constructors in its head (`fj Nothing = 0;
-    // fj (Just x) = x`) is the documented `case`-in-body limitation. The if-chain
-    // desugar dispatches only on Int literals, not Con tags, so native SILENTLY
-    // returned clause 0 (`fj (Just 5)` → 0, a miscompile). It is now excluded from
-    // native; the interpreter returns the correct 5, `--backend` fails loudly.
-    let fx = fixture("multiclause_con_head_interp_only.axi");
-    let interp = axionc().arg(&fx).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&interp.stdout), "5\n");
-    let native = axionc()
-        .args(["--backend", "cranelift", &fx])
-        .output()
-        .unwrap();
-    assert!(
-        !native.status.success(),
-        "a multi-clause constructor head must fail natively, not silently return clause 0"
-    );
+fn a_call_no_clause_matches_fails_natively_as_in_the_interpreter() {
+    // a partial function called outside its clauses, a guard that does not hold, a literal
+    // chain with no catch-all: the interpreter's run-time error, natively too (then an abort,
+    // as for a failed bounds check), after the output printed so far
+    let dir = std::env::temp_dir().join(format!("axion_nomatch_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    for (tag, src, msg) in [
+        (
+            "head",
+            "first :: List Int -> Int\nfirst (Cons x _) = x\n\nmain :: IO ()\nmain = do\n  \
+             putStrLn (showInt (first [7, 8]))\n  putStrLn (showInt (first []))\n",
+            "runtime error: no clause of 'first' matched the arguments",
+        ),
+        (
+            "guard",
+            "sign :: Int -> Int\nsign n\n  | n > 0 = 1\n  | n < 0 = 0 - 1\n\nmain :: IO ()\n\
+             main = do\n  putStrLn (showInt (sign 5))\n  putStrLn (showInt (sign 0))\n",
+            "runtime error: no guard was true",
+        ),
+        (
+            "literal",
+            "name :: Int -> String\nname 0 = \"zero\"\nname 1 = \"one\"\n\nmain :: IO ()\n\
+             main = do\n  putStrLn (name 1)\n  putStrLn (name 2)\n",
+            "runtime error: no clause of 'name' matched the arguments",
+        ),
+    ] {
+        let p = dir.join(format!("{tag}.axi"));
+        std::fs::write(&p, src).unwrap();
+        for backend in [&[][..], &["--backend", "cranelift"][..]] {
+            let out = axionc().args(backend).arg(&p).output().unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success(), "{tag} {backend:?}: {stdout}{stderr}");
+            assert!(stderr.contains(msg), "{tag} {backend:?}: {stderr}");
+            assert_eq!(stdout.lines().count(), 1, "{tag} {backend:?}: {stdout}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -7997,12 +8013,7 @@ fn total_matches_emit_coverage_certificates() {
     let out = axionc().arg(fixture("total_reject.axi")).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
     assert!(text.contains("error[AX0701]"), "{text}");
-    // the interpreter runs it (constructor patterns in multi-clause heads are not native yet)
-    let out = axionc().arg(fixture("total_cover.axi")).output().unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "3\n10\nzeroonemany\n17\n10\n"
-    );
+    agree_across_backends("total_cover.axi", "3\n10\nzeroonemany\n17\n10\n");
 }
 
 #[test]

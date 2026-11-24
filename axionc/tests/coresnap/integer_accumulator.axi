@@ -8,8 +8,8 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 1  ; Δ{}
-    False ->
-    True ->
+    1 ->
+    _ ->
     drop _t2 : Integer
     drop acc : Integer
     else

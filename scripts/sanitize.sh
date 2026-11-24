@@ -122,6 +122,10 @@ NATIVE=(
   axionc/tests/fixtures/tuple_extract_escape.axi
   axionc/tests/fixtures/land_borrowing_copier.axi
   axionc/tests/fixtures/clause_param_borrow.axi
+  axionc/tests/fixtures/clause_heads.axi
+  axionc/tests/fixtures/multiclause_con_head.axi
+  axionc/tests/fixtures/refutable_head.axi
+  axionc/tests/fixtures/total_cover.axi
   axionc/tests/fixtures/view_case_in_branch.axi
   axionc/tests/fixtures/tuple_param_borrow.axi
   axionc/tests/fixtures/filter_in_case_scrutinee.axi

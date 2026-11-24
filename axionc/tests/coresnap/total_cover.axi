@@ -28,6 +28,9 @@
                   let _t51 = showInt _t50  ; Δ{} · makes String
                   ret _d1000000  ; Δ{}
                 _ ->
+                let _t2 = call zipLen xs ys  ; Δ{}
+                ret + 1 _t2  ; Δ{}
+              LCons _t3 ys ->
               drop _t0 : tuple2$Bool$Bool
               drop _t0 : tuple2$Bool$Bool
               drop _t0 : tuple2$Bool$Bool
@@ -52,15 +55,21 @@
               let _t43 = showInt _t42  ; Δ{} · makes String
               let _t44 = putStrLn _t43  ; Δ{_t43}
               ret 0  ; Δ{}
+              ret 0  ; Δ{}
+              ret 1  ; Δ{}
               ret 1  ; Δ{}
               ret 2  ; Δ{}
               ret 3  ; Δ{}
               ret case _t44 of
-            False ->
-            False ->
-            True ->
-            True ->
+            1 ->
+            1 ->
+            LCons _ _ ->
             _ ->
+            _ ->
+            _ ->
+            _ ->
+            ret case _p1 of
+          LCons _t4 xs ->
           drop _t23 : String
           drop _t24 : String
           drop _t25 : String
@@ -72,22 +81,41 @@
           let _t26 = rtcall axion_strcat _t24 _t25  ; Δ{_t23 _t24 _t25} · makes String
           let _t27 = rtcall axion_strcat _t23 _t26  ; Δ{_t23 _t26} · makes String
           let _t28 = putStrLn _t27  ; Δ{_t27}
+          ret 0  ; Δ{}
           ret case $nf2 of
           ret case $nf2 of
+          ret case _p1 of
           ret case _t28 of
+          ret r  ; Δ{}
           ret x  ; Δ{}
           ret y  ; Δ{}
-        False ->
+        1 ->
+        Circle r ->
+        LCons _ _ ->
         LCons y _ ->
         LNil ->
-        True ->
         _ ->
+        _ ->
+        _ ->
+        ret * w h  ; Δ{}
+        ret 0  ; Δ{}
+        ret 0  ; Δ{}
+        ret 1  ; Δ{}
+        ret 1  ; Δ{}
+        ret case _p0 of
+        ret rtcall axion_contract_fail "runtime error: no clause of 'zipLen' matched the arguments"  ; Δ{}
+      Circle _ ->
+      LNil ->
+      Rect w h ->
+      _ ->
+      _ ->
       drop _t13 : Shape
       drop _t15 : Shape
       drop _t18 : Shape
       drop _t21 : String
       drop m
       drop m
+      else
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
       let _dd0 = loadraw _p+16  ; Δ{}
@@ -108,6 +136,7 @@
       let _t20 = + _t17 _t19  ; Δ{}
       let _t21 = showInt _t20  ; Δ{} · makes String
       let _t22 = putStrLn _t21  ; Δ{_t21}
+      let _t5 = case _p0 of
       ret "many"  ; Δ{}
       ret "one"  ; Δ{}
       ret "zero"  ; Δ{}
@@ -121,11 +150,19 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 0  ; Δ{}
+      ret 1  ; Δ{}
+      ret 1  ; Δ{}
+      ret 1  ; Δ{}
       ret call foldl$$hoflam11 _t0 ys  ; Δ{}
       ret case $nf1 of
       ret case $nf1 of
+      ret case _p1 of
       ret case _t22 of
       ret d  ; Δ{}
+      ret if _t5 then
       ret r  ; Δ{}
       ret x  ; Δ{x} · moves{x}
       ret z  ; Δ{}
@@ -139,11 +176,17 @@
     Just x ->
     LCons x $nf1 ->
     LNil ->
+    LNil ->
     Nil ->
     Nothing ->
+    Rect _ _ ->
     Rect w h ->
     _ ->
     _ ->
+    _ ->
+    _ ->
+    else
+    else
     else
     else
     else
@@ -157,6 +200,8 @@
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
     let _dfree = rtcall axion_free _p  ; Δ{}
+    let _t1 = case _p1 of
+    let _t1 = case _p1 of
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
     let _tag = loadraw _p+0  ; Δ{}
@@ -169,10 +214,29 @@
     ret 0  ; Δ{}
     ret 0  ; Δ{}
     ret 0  ; Δ{}
+    ret 0  ; Δ{}
+    ret case _p0 of
+    ret if _t1 then
+    ret if _t1 then
   ; Δ{_t0}
   ; Δ{_t0}
   ; Δ{_t0}
   ; Δ{_t0}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
+  ; Δ{}
   ; Δ{}
   ; Δ{}
   ; Δ{}
@@ -199,6 +263,8 @@
   else
   else
   else
+  else
+  else
   let _dd0 = band _p 1  ; Δ{}
   let _dd1 = if _dd0 then
   let _dd4 = band _p 1  ; Δ{}
@@ -209,6 +275,8 @@
   let _dd7 = if _dd6 then
   let _dfree = rtcall axion_free _p  ; Δ{}
   let _dfree = rtcall axion_free _p  ; Δ{}
+  let _t0 = case _p0 of
+  let _t0 = case _p0 of
   let _t0 = con LNil  ; Δ{} · makes Lst
   let _t0 = tuple a b  ; Δ{} · makes heap
   let _t1 = con LCons 2 _t0  ; Δ{_t0} · moves{_t0} · makes Lst
@@ -229,8 +297,6 @@
   ret 0  ; Δ{}
   ret 0  ; Δ{}
   ret 0  ; Δ{}
-  ret <unsupported: constructor pattern in a multi-clause function head — interpreter only>  ; Δ{}
-  ret <unsupported: constructor pattern in a multi-clause function head — interpreter only>  ; Δ{}
   ret call foldl$$hoflam11 0 ps  ; Δ{}
   ret case _p1 of
   ret case _t0 of
@@ -240,6 +306,8 @@
   ret case n of
   ret case s of
   ret case xs of
+  ret if _t0 then
+  ret if _t0 then
   ret rtcall axion_array_free _p  ; Δ{}
 axion_drop_Array _p  =
 axion_drop_List _p  =

@@ -9,8 +9,8 @@
       ret 0  ; Δ{}
       ret 0  ; Δ{}
       ret 1  ; Δ{}
-    False ->
-    True ->
+    1 ->
+    _ ->
     else
     let _dd2 = == _tag 1  ; Δ{}
     let _dd3 = if _dd2 then

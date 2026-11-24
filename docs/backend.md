@@ -153,12 +153,12 @@ main = fib 20
 - Sessions/concurrency (`spawn`/`send`/`recv`/`close`) and arenas' interpreter
   fallbacks: sessions are interpreter-only (the native concurrency road is future
   work).
-- Constructor patterns in function heads that need tag dispatch — a multi-clause
-  head (`eq Red Red = …`) or a refutable single-clause head (`fromJust (Just x) =
-  x`) — are interpreter-only; write the match with `case` for native. (These are
-  excluded from native and fail loudly under `--backend`; an irrefutable
-  single-clause head like `label (Named s k) = …` — a single-constructor type or a
-  tuple — compiles natively.)
+- (Clause heads compile natively whatever their patterns: constructors, nested
+  ones, tuples, literals and `True`/`False`, in one clause or several. The clauses
+  are tried in order, each head tested before it is taken apart, as in the
+  interpreter. A call that no clause matches, or whose guards all fail, stops with
+  the interpreter's run-time error — `no clause of 'f' matched the arguments`,
+  `no guard was true` — and aborts, like a failed bounds check.)
 - (Non-exhaustive `case`/clauses are now rejected at compile time — `AX0202` —
   before reaching the backend; an exhaustive `case` compiles with its last arm as
   the fallback, no explicit wildcard needed.)
