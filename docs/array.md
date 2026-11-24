@@ -36,6 +36,22 @@ main = imperative $ do
   getArray a 0             -- returns 10
 ```
 
+The array given to `setArray` is gone: using it again is refused on every backend, before code
+generation. Rebinding the name, as above (or `let a = setArray a 0 10 in …`), is the way to
+continue:
+
+```haskell
+let a = setArray cap 0 1 in
+let b = setArray cap 0 2 in …    -- AX0001: 'cap' consumed 2 times
+let a = setArray cap 0 1 in
+getArray cap 0                   -- AX0004: 'cap' used after it was moved
+```
+
+The same holds for `parFor`, the SIMD stores, and a function that writes its `Array` parameter
+in place (`bump a i = setArray a 0 i`): it owns that parameter, as if declared `%1`. A function
+that only reads the array (`getArray`, `lenArray`) borrows it, and can be called with it any
+number of times.
+
 ## Element types
 
 Scalar elements (`Int`, `Float`, `Bool`, `Char`, a `data` type whose constructors take no

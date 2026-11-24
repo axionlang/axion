@@ -1684,6 +1684,13 @@ fn check_func(
                     uam: use_after_move(clause, name, ctx),
                     death: last_occurrence_clause(clause, name),
                 };
+                if use_.consumes > 1 {
+                    if let Some(d) = clone_capture_given_away(&f.name, name, ctx) {
+                        diags.push(d);
+                        lin.insert(name.clone(), class);
+                        continue;
+                    }
+                }
                 report_resource(name, &class, *span, &use_, &f.name, diags, out);
                 lin.insert(name.clone(), class);
             }
@@ -1869,6 +1876,12 @@ fn check_plain_lets(e: &Expr, tracked: &HashSet<String>, ctx: &Ctx, diags: &mut 
 fn moved_into_heap_param(e: &Expr, x: &str, ctx: &Ctx) -> bool {
     if let Expr::App(..) = e {
         let (head, args) = spine(e);
+        // `setArray a …`: the array is written in place and handed on — `a` is gone
+        if let (Expr::Var(f, _), Some(Expr::Var(v, _))) = (head, args.first()) {
+            if writes_array(f) && v == x {
+                return true;
+            }
+        }
         if let Expr::Var(f, _) = head {
             if let Some(sig) = ctx.fn_sigs.get(f).filter(|sig| {
                 !f.contains("$$")
@@ -2370,7 +2383,9 @@ fn consume_sites(name: &str, e: &Expr, ctx: &Ctx, out: &mut Vec<(String, Span)>)
                     }
                 }
             }
-            consume_sites(name, body, ctx, out);
+            if !rebinds(binds, name) {
+                consume_sites(name, body, ctx, out);
+            }
         }
         Expr::Case(scrut, arms, _) => {
             consume_sites(name, scrut, ctx, out);
@@ -2397,6 +2412,35 @@ fn clause_exprs(c: &Clause) -> Vec<&Expr> {
         Body::Plain(e) => vec![e],
         Body::Guarded(arms) => arms.iter().flat_map(|(g, r)| [g, r]).collect(),
     }
+}
+
+/// `map$$hoflamc3 _cap0 xs`, the clone of a higher-order function specialized for a lambda that
+/// captured `cap`, consumes its `_cap0` more than once: the lambda gives away what it captured,
+/// and the function may run it more than once. Said at the lambda, with the name the user wrote
+/// (the clone and its parameters are the compiler's).
+fn clone_capture_given_away(func: &str, param: &str, ctx: &Ctx) -> Option<Diagnostic> {
+    let (hof, rest) = func.split_once("$$")?;
+    let lam = rest.rsplit("$$").next()?.split('$').next()?;
+    let k: usize = param.strip_prefix("_cap")?.parse().ok()?;
+    let (caps, span) = ctx.lifted.get(lam)?;
+    let cap = caps.get(k)?;
+    let hof = hof.split('$').next().unwrap_or(hof);
+    Some(
+        Diagnostic::error(
+            "AX0001",
+            format!("heap value '{cap}' is given away by a lambda that may run more than once"),
+        )
+        .label(
+            span.0,
+            span.1,
+            format!("this lambda gives away '{cap}', which it captured, each time it runs"),
+        )
+        .with_help(format!(
+            "`{hof}` may call the lambda any number of times, and each call would give away the \
+             same '{cap}' again. A lambda may only read what it captured: pass the value in as an \
+             argument instead, or copy it inside the lambda (§2)."
+        )),
+    )
 }
 
 /// Emits the diagnostic or records the drop, applying the linearity rule to a
@@ -2728,6 +2772,9 @@ struct Ctx {
     /// functions whose RESULT is a heap value (`data`/tuple) — so `let z = f a`
     /// binds a heap value that must not be contracted (moved into two owned slots).
     fn_ret_heap: HashSet<String>,
+    /// A lambda lifted for a higher-order call (`hoflamcN`, `hoflamcapN`): the names it captured
+    /// (its first parameters) and the lambda's span in the source.
+    lifted: HashMap<String, (Vec<String>, Span)>,
     /// user and foreign functions whose declared RESULT has no destructor (`Handle a`, an
     /// endpoint…) → that type's head, so `let h = openDev 7` is tracked like a `%1` parameter.
     fn_ret_must_use: HashMap<String, String>,
@@ -2743,7 +2790,25 @@ struct Ctx {
 /// NOT heap here — its heap-ness is unknown until monomorphization (conservative:
 /// no false positive on a copyable `Int` element).
 fn is_heap_ty(ty: &Type, ctx: &Ctx) -> bool {
-    matches!(ty, Type::Tuple(_)) || ty.head_con().is_some_and(|h| ctx.data_names.contains(h))
+    matches!(ty, Type::Tuple(_))
+        || ty
+            .head_con()
+            .is_some_and(|h| ctx.data_names.contains(h) || h == "Array")
+}
+
+/// Built-ins that return a fresh (or the same, written in place) `Array`: a `let` of one owns it.
+const ARRAY_MAKERS: &[&str] = &["newArray", "arrayIota", "setArray", "parFor"];
+
+/// Built-ins that write the array they are given in place: they consume their first argument.
+pub const ARRAY_WRITERS: &[&str] = &["setArray", "parFor"];
+
+/// A built-in that consumes the array in its first argument (also the SIMD stores).
+fn writes_array(f: &str) -> bool {
+    ARRAY_WRITERS.contains(&f)
+        || matches!(
+            crate::simd::builtin(f),
+            Some(crate::simd::Builtin::Store(_))
+        )
 }
 
 fn build_ctx(module: &Module) -> Ctx {
@@ -2941,10 +3006,13 @@ fn build_ctx(module: &Module) -> Ctx {
             f.sig.as_ref().is_some_and(|s| {
                 let rt = crate::core::result_type(s);
                 matches!(rt, Type::Tuple(_))
-                    || rt.head_con().is_some_and(|h| data_names.contains(h))
+                    || rt
+                        .head_con()
+                        .is_some_and(|h| data_names.contains(h) || h == "Array")
             })
         })
         .map(|f| f.name.clone())
+        .chain(ARRAY_MAKERS.iter().map(|n| (*n).to_string()))
         .collect();
     let must_use_types = build_must_use_types(module);
     let no_drop_types = build_no_drop_types(module);
@@ -2996,6 +3064,23 @@ fn build_ctx(module: &Module) -> Ctx {
             .filter_map(|f| Some((f.name.clone(), f.sig.clone()?)))
             .collect(),
         fn_ret_heap,
+        lifted: module
+            .funcs
+            .iter()
+            .filter(|f| f.name.starts_with("hoflamc")) // `hoflamcN` and `hoflamcapN`
+            .filter_map(|f| {
+                let c = f.clauses.first()?;
+                let names = c
+                    .pats
+                    .iter()
+                    .map(|p| match p {
+                        Pat::Var(n, _) => n.clone(),
+                        _ => String::new(),
+                    })
+                    .collect();
+                Some((f.name.clone(), (names, f.span)))
+            })
+            .collect(),
         fn_ret_must_use,
         no_drop_types,
         fn_ret_scalar,
@@ -3122,6 +3207,10 @@ fn analyze_with(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, pick: fn(Uses, Uses) -
                 .flat_map(|b| &b.clauses)
                 .map(|c| analyze_clause_with(c, x, ctx, pick))
                 .fold((0, 0), add);
+            // `let x = f x in …`: the body's `x` is the new one (a value `let` is not recursive)
+            if rebinds(binds, x) {
+                return in_binds;
+            }
             add(in_binds, analyze(body, x, mode, ctx))
         }
         // a returned tuple makes ownership of the components flow outward
@@ -3160,6 +3249,11 @@ const RUNS_ITS_LAMBDA_ONCE: &[&str] = &[
     "bound",
     "imperative",
 ];
+
+/// True if a `let` binds the name `x` again: from there on, `x` is the new binding.
+fn rebinds(binds: &[Func], x: &str) -> bool {
+    binds.iter().any(|b| b.name == x)
+}
 
 /// True if any of the patterns binds the name `x` (shadowing).
 fn binds_var(pats: &[Pat], x: &str) -> bool {
@@ -3391,6 +3485,9 @@ fn walk(e: &Expr, x: &str, mode: Mode, ctx: &Ctx, mut st: MoveState) -> MoveStat
                 if analyze_clause(c, x, ctx).0 > 0 {
                     st.moved = st.moved.or(Some(c.span));
                 }
+            }
+            if rebinds(binds, x) {
+                return st; // the body's `x` is the new binding
             }
             walk(body, x, mode, ctx, st)
         }

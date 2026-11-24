@@ -48,11 +48,11 @@ What the kernel reads is never written during the loop, and what it writes is ne
 another thread, so the result cannot depend on scheduling. The interpreter runs the same loop
 sequentially, and every backend prints the same output.
 
-A kernel writing a captured array in place is also caught natively by the drop verifier: the
-write's result is the closure's own capture, and freeing it is a corruption finding (AX0910).
-The same holds for any closure that runs more than once (`let f = \i -> … setArray cap …`
-called twice, or `map (\i -> … setArray cap …) xs`), and for a write reached through a helper
-that owns its argument (`\i -> getArray (bump cap i) 0`).
+A kernel writing a captured array in place is also a linearity error (AX0001): a lambda that
+runs more than once would give the same array away on each run. The same holds for any closure
+that may run more than once (`let f = \i -> … setArray cap …`, or `map (\i -> … setArray cap
+…) xs`), and for a write reached through a helper that owns its argument (`\i -> getArray (bump
+cap i) 0`), on every backend. Natively, the drop verifier would refuse it too (AX0910).
 
 The check needs to see the kernel itself. A function passed in as a value and called by the
 kernel (`f` in `tabulate n f = parFor (newArray n 0) (\i _ -> f i)`) is not looked into: its

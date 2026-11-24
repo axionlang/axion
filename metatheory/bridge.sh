@@ -23,6 +23,11 @@ echo "== Refinement certificates: Lean's AxionRefine.check accepts every proof t
 "$here/refine-trace.sh"
 
 echo
+echo "== Totality certificates: Lean's AxionSct.check / AxionCover.check accept every decision =="
+"$here/sct-trace.sh"
+"$here/cover-trace.sh"
+
+echo
 echo "== Bounded-exhaustive (M4): model agrees with the verifier on EVERY program up to size k =="
 "$here/exhaustive.sh"
 

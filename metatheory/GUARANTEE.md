@@ -126,8 +126,11 @@ and well-mitigated this list is.
 6. **Totality** (`total.rs`, docs/totality.md) — opt-in, and not part of the memory-safety
    guarantee. Each accepted recursive group's size-change closure is a certificate that
    `sct-trace.sh` re-checks with Lean (`AxionSct.lean` proves what an accepted one means; the
-   size-change theorem itself is cited, not proven). Trusted: the pattern-coverage check and
-   reading the size-change graphs off the program.
+   size-change theorem itself is cited, not proven). The arithmetic of each decrease and
+   non-zero/in-range proof is a refinement certificate, re-checked with Lean by `refine-trace.sh`.
+   Each match's pattern-coverage decision is a coverage tree that `cover-trace.sh` re-checks with
+   Lean (`AxionCover.lean` proves an accepted tree covers every well-typed value). Trusted: reading
+   the rows, the size-change graphs and the facts off the program.
 7. **SIMD vector lowering** (`simd.rs`, docs/simd.md) — vectors are plain values (nothing to
    reclaim), so the ownership guarantee is untouched; what is trusted is their representation.
    `simd::analyze` decides which values live in vector registers and rejects a vector anywhere only

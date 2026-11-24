@@ -116,6 +116,7 @@ enum Emit {
     ModelTrace,
     RefineCerts,
     SctCerts,
+    CoverCerts,
     Contracts,
     CodegenTv,
     CodegenTvClif,
@@ -282,6 +283,7 @@ pub fn run_cli() -> ExitCode {
                     Some("model-trace") => emit = Emit::ModelTrace,
                     Some("refine-certs") => emit = Emit::RefineCerts,
                     Some("sct-certs") => emit = Emit::SctCerts,
+                    Some("cover-certs") => emit = Emit::CoverCerts,
                     Some("contracts") => emit = Emit::Contracts,
                     Some("codegen-tv") => emit = Emit::CodegenTv,
                     Some("codegen-tv-clif") => emit = Emit::CodegenTvClif,
@@ -386,8 +388,12 @@ pub fn run_cli() -> ExitCode {
         };
         resolve_imports_with(&mut module, &path, &mut diags, &disk_import_resolver);
         contracts::attach(&mut module, &mut diags);
-        let out = refine::check_with(&module, &mut diags, true);
-        print!("{}", refine::certs_lean(&out.certs));
+        let mut certs = refine::check_with(&module, &mut diags, true).certs;
+        // and totality's own arithmetic (decreases, bounds, divisors), from the front end's run
+        refine::collect_total_certs();
+        let _ = compile_front(&src, &path, &mut Diagnostics::new());
+        certs.extend(refine::take_total_certs());
+        print!("{}", refine::certs_lean(&certs));
         return ExitCode::SUCCESS;
     }
     if emit == Emit::SctCerts {
@@ -396,6 +402,16 @@ pub fn run_cli() -> ExitCode {
         total::collect_certs();
         let _ = compile_front(&src, &path, &mut diags);
         for c in total::take_certs() {
+            println!("{c}");
+        }
+        return ExitCode::SUCCESS;
+    }
+    if emit == Emit::CoverCerts {
+        // every accepted pattern match of a total function's coverage certificate, as Lean
+        // `example`s for `AxionCover.check` (metatheory/cover-trace.sh)
+        total::collect_cover_certs();
+        let _ = compile_front(&src, &path, &mut diags);
+        for c in total::take_cover_certs() {
             println!("{c}");
         }
         return ExitCode::SUCCESS;
@@ -4102,6 +4118,16 @@ fn infer_consumed_ownership(module: &mut ast::Module) -> std::collections::HashS
             }
         }
     }
+    // The built-ins that write an array in place consume it (their first argument): a function
+    // handing its `Array` parameter to one owns that parameter (`bump a i = setArray a 0 i`), as
+    // native code already treats it — so `bump cap 1` then `bump cap 2` is AX0001 here, not a
+    // verifier failure later.
+    for w in check::ARRAY_WRITERS {
+        consuming.entry((*w).to_string()).or_default().insert(0);
+    }
+    for n in simd::names().filter(|n| matches!(simd::builtin(n), Some(simd::Builtin::Store(_)))) {
+        consuming.entry(n.to_string()).or_default().insert(0);
+    }
     // (func idx, param idx) pairs to force `%1`.
     let mut apply: Vec<(usize, usize)> = Vec::new();
     // Rule A — CONCRETE consumers: SOME extracted heap field is EMBEDDED in the result
@@ -4364,6 +4390,24 @@ fn hands_off_whole(
                         idxs.contains(&j) && matches!(a, ast::Expr::Var(x, _) if x == v)
                     });
                     if hit {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    // `let c = v in … c …`: `c` is `v` under another name, so handing `c` off hands off `v`
+    if let ast::Expr::Let(binds, body, _) = e {
+        for b in binds {
+            if let [c] = b.clauses.as_slice() {
+                if let (true, ast::Body::Plain(ast::Expr::Var(x, _))) = (c.pats.is_empty(), &c.body)
+                {
+                    let others_bind_v = binds.iter().any(|o| o.name == v);
+                    if x == v
+                        && b.name != v
+                        && !others_bind_v
+                        && hands_off_whole(&b.name, body, me, consuming, shadow)
+                    {
                         return true;
                     }
                 }
@@ -8026,6 +8070,7 @@ fn print_usage() {
          axionc --emit verify <file>    drop-balance verifier: prove no double-free/UAF\n  \
          axionc --emit contracts <file> each contract obligation: proven, or checked at run time\n  \
          axionc --emit sct-certs <file> totality's size-change certificates (Lean, AxionSct)\n  \
+         axionc --emit cover-certs <file> totality's pattern-coverage certificates (Lean, AxionCover)\n  \
          axionc --emit extract-tags <f> ownership tags on heap-field case-extractions (report)\n  \
          axionc --emit tag-check <file> second-opinion tag-checker: double-free report (non-gating)\n  \
          axionc --emit ffi <file>       every FFI import and call site: C symbol, ownership, effects\n  \

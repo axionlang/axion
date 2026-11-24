@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Refinement certificates under Lean: every proof the refinement checker (axionc/src/refine.rs)
 # makes over the corpus — each refined call, each refined result, each array access proven in
-# bounds, each "this sum does not overflow" — carries a certificate. This script emits them all
+# bounds, each "this sum does not overflow", and totality's decreases, divisors and in-range
+# proofs (docs/totality.md) — carries a certificate. This script emits them all
 # (`axionc --emit refine-certs`) and has Lean check each one with `AxionRefine.check`, whose
 # soundness (`AxionRefine.sound`: an accepted certificate means the facts and the negated goal
 # have no integer solution) is proven in metatheory/AxionRefine.lean. So no arithmetic decision

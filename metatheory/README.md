@@ -246,7 +246,9 @@ over integers.
 `sound` uses only `propext` and `Quot.sound`. The code ↔ model link is twofold: the Rust checker
 `refine::check_cert` is the same algorithm (and `refine.rs`'s tests feed it tampered certificates),
 and `refine-trace.sh` emits every certificate over the corpus (`axionc --emit refine-certs`) and
-checks each with this file's `check` by `rfl`.
+checks each with this file's `check` by `rfl`. Totality's own arithmetic (each decrease, divisor
+and in-range proof of a `{-# TOTAL #-}` function) is included: `--emit refine-certs` also runs the
+front end and prints the certificates of the totality walk.
 
 ## Size-change certificates (`AxionSct.lean`)
 
@@ -264,6 +266,27 @@ certificate of the corpus by `rfl`.
 `sound` uses only `propext` and `Quot.sound`. Those two facts are the hypothesis of the
 size-change theorem (Lee, Jones and Ben-Amram, POPL 2001, Theorem 4), which is cited, not proven
 here: its proof needs Ramsey's theorem.
+
+## Pattern-coverage certificates (`AxionCover.lean`)
+
+Totality also needs every match of a total function to cover every value. `total.rs` decides it
+with Maranget's usefulness algorithm, and its decision is a coverage tree, the trace of that
+algorithm: `leaf` (a row of wildcards), `split ty` (one subtree per constructor of the column's
+type, over the rows specialized to it), `skip` (a column its constructors do not cover: keep the
+rows with a wildcard there). Each accepted match emits its rows and tree (`axionc --emit
+cover-certs`); `AxionCover.check` re-checks one, and `cover-trace.sh` checks every certificate of
+the corpus (deduplicated) by `rfl`.
+
+| Theorem | Statement |
+|---|---|
+| `specRow_back` | a row of the specialized matrix that matches gives back a matching row of the original |
+| `specRow_agree` | specializing to the value's own constructor keeps rows and values agreeing |
+| `sound` | `check sig rows tree = true` → every vector of well-formed values agreeing with the rows is matched by some row |
+
+Constructors are numbered by type (`con ty k`), and the signature lists each type's arities.
+"Agreeing" (`agreeL`) says a constructor pattern meets a constructor of the same type, which is
+what typing guarantees; reading the rows, their types and the signature off the program is
+`total.rs`, not modelled. `sound` uses `propext`, `Quot.sound` and `Classical.choice`.
 
 ## Scope & remaining work
 

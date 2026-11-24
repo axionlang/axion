@@ -9,8 +9,8 @@
 #
 # SCOPE: the closure and the decision on it. That these hypotheses imply termination is the
 # size-change theorem (Lee, Jones and Ben-Amram, POPL 2001), cited, not proven here; reading the
-# graphs off the program (which measures shrink at a call) is total.rs and refine.rs; each such
-# arithmetic step is checked by refine.rs's certificate checker, but is not yet in the Lean trace.
+# graphs off the program (which measures shrink at a call) is total.rs and refine.rs; the
+# arithmetic of each such step carries a certificate that refine-trace.sh checks with Lean.
 # Exit 0 = Lean accepts every certificate.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

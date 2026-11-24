@@ -315,61 +315,213 @@ fn specialize(rows: &[Vec<P>], c: &Ctor) -> Vec<Vec<P>> {
     out
 }
 
-fn useful(rows: &[Vec<P>], q: &[P], cons: &Cons) -> bool {
-    let Some(q0) = q.first() else {
-        return rows.is_empty();
-    };
-    if let Some(c) = head(q0) {
-        let mut nq = match q0 {
-            P::Con(_, a) | P::Tup(a) => a.clone(),
-            _ => Vec::new(),
-        };
-        nq.extend(q[1..].iter().cloned());
-        return useful(&specialize(rows, &c), &nq, cons);
+/// The type a split is on: a `data` type, or the tuples of one width.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum TyKey {
+    Data(String),
+    Tup(usize),
+}
+
+/// The trace of Maranget's usefulness check of a wildcard row against `rows`: a tree exists
+/// exactly when the rows cover every value. `Split` lists one subtree per constructor of the
+/// column's type, in declaration order; `Skip` drops a column that its constructors do not cover
+/// (keeping the rows with a wildcard there). `metatheory/AxionCover.lean` re-checks it.
+#[derive(Debug)]
+enum CTree {
+    Leaf,
+    Split(TyKey, Vec<CTree>),
+    Skip(Box<CTree>),
+}
+
+/// The constructors of the first column's type, when the rows' heads name all of them.
+fn complete(heads: &HashSet<Ctor>, cons: &Cons) -> Option<(TyKey, Vec<Ctor>)> {
+    if let Some(Ctor::Tup(n)) = heads.iter().next() {
+        return Some((TyKey::Tup(*n), vec![Ctor::Tup(*n)]));
+    }
+    let tys: HashSet<&String> = heads
+        .iter()
+        .filter_map(|h| match h {
+            Ctor::Con(c, _) => cons.of.get(c),
+            _ => None,
+        })
+        .collect();
+    match (tys.len(), heads.is_empty()) {
+        (1, false) if heads.iter().all(|h| matches!(h, Ctor::Con(..))) => {
+            let ty = tys.into_iter().next().cloned().unwrap_or_default();
+            let all: Vec<Ctor> = cons.all[&ty]
+                .iter()
+                .map(|(c, a)| Ctor::Con(c.clone(), *a))
+                .collect();
+            all.iter()
+                .all(|c| heads.contains(c))
+                .then_some((TyKey::Data(ty), all))
+        }
+        _ => None,
+    }
+}
+
+/// `rows` (each `width` wide) cover every value: the coverage tree, or `None`.
+fn cover_tree(rows: &[Vec<P>], width: usize, cons: &Cons) -> Option<CTree> {
+    if rows.is_empty() {
+        return None;
+    }
+    if width == 0 {
+        return Some(CTree::Leaf);
     }
     let heads: HashSet<Ctor> = rows.iter().filter_map(|r| head(&r[0])).collect();
-    // the constructors of the column's type, when the rows name all of them
-    let complete: Option<Vec<Ctor>> = if let Some(Ctor::Tup(n)) = heads.iter().next() {
-        Some(vec![Ctor::Tup(*n)])
-    } else {
-        let tys: HashSet<&String> = heads
-            .iter()
-            .filter_map(|h| match h {
-                Ctor::Con(c, _) => cons.of.get(c),
-                _ => None,
-            })
-            .collect();
-        match (tys.len(), heads.is_empty()) {
-            (1, false) if heads.iter().all(|h| matches!(h, Ctor::Con(..))) => {
-                let ty = tys.into_iter().next().cloned().unwrap_or_default();
-                let all: Vec<Ctor> = cons.all[&ty]
-                    .iter()
-                    .map(|(c, a)| Ctor::Con(c.clone(), *a))
-                    .collect();
-                all.iter().all(|c| heads.contains(c)).then_some(all)
+    match complete(&heads, cons) {
+        Some((key, all)) => {
+            let mut subs = Vec::with_capacity(all.len());
+            for c in &all {
+                subs.push(cover_tree(
+                    &specialize(rows, c),
+                    arity(c) + width - 1,
+                    cons,
+                )?);
             }
-            _ => None,
+            Some(CTree::Split(key, subs))
         }
-    };
-    match complete {
-        Some(all) => all.iter().any(|c| {
-            let mut nq = vec![P::Any; arity(c)];
-            nq.extend(q[1..].iter().cloned());
-            useful(&specialize(rows, c), &nq, cons)
-        }),
         None => {
             let def: Vec<Vec<P>> = rows
                 .iter()
                 .filter(|r| matches!(r[0], P::Any))
                 .map(|r| r[1..].to_vec())
                 .collect();
-            useful(&def, &q[1..], cons)
+            Some(CTree::Skip(Box::new(cover_tree(&def, width - 1, cons)?)))
         }
     }
 }
 
 fn covers(rows: &[Vec<P>], width: usize, cons: &Cons) -> bool {
-    !useful(rows, &vec![P::Any; width], cons)
+    match cover_tree(rows, width, cons) {
+        Some(t) => {
+            record_cover(rows, &t, cons);
+            true
+        }
+        None => false,
+    }
+}
+
+thread_local! {
+    /// When set, each accepted match's coverage certificate, as a Lean `example`.
+    static COVER_CERTS: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Start collecting coverage certificates (`--emit cover-certs`).
+pub fn collect_cover_certs() {
+    COVER_CERTS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+/// The coverage certificates collected since `collect_cover_certs`.
+pub fn take_cover_certs() -> Vec<String> {
+    COVER_CERTS.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
+/// Numbers types, constructors and literals for `AxionCover.lean`: constructor `k` of type `t`
+/// is `.con t k`, and `sig[t]` lists the arities of `t`'s constructors.
+#[derive(Default)]
+struct CoverEnc {
+    sig: Vec<Vec<usize>>,
+    tys: HashMap<TyKey, usize>,
+    unknown: HashMap<String, usize>,
+    lits: HashMap<String, usize>,
+}
+
+impl CoverEnc {
+    fn ty(&mut self, key: &TyKey, cons: &Cons) -> usize {
+        if let Some(&t) = self.tys.get(key) {
+            return t;
+        }
+        let arities = match key {
+            TyKey::Data(d) => cons.all[d].iter().map(|(_, a)| *a).collect(),
+            TyKey::Tup(n) => vec![*n],
+        };
+        self.sig.push(arities);
+        self.tys.insert(key.clone(), self.sig.len() - 1);
+        self.sig.len() - 1
+    }
+
+    fn pat(&mut self, p: &P, cons: &Cons) -> String {
+        let list = |e: &mut Self, ps: &[P]| {
+            let xs: Vec<String> = ps.iter().map(|q| e.pat(q, cons)).collect();
+            format!("[{}]", xs.join(", "))
+        };
+        match p {
+            P::Any => ".any".into(),
+            P::Lit(l) => {
+                let n = self.lits.len();
+                format!("(.lit {})", *self.lits.entry(l.clone()).or_insert(n))
+            }
+            P::Tup(ps) => {
+                let t = self.ty(&TyKey::Tup(ps.len()), cons);
+                format!("(.con {t} 0 {})", list(self, ps))
+            }
+            P::Con(c, ps) => {
+                let (t, k) = match cons.of.get(c) {
+                    Some(d) => {
+                        let t = self.ty(&TyKey::Data(d.clone()), cons);
+                        let k = cons.all[d].iter().position(|(n, _)| n == c).unwrap_or(0);
+                        (t, k)
+                    }
+                    // a constructor of no known type: a type of its own, never split on
+                    None => {
+                        let t = match self.unknown.get(c) {
+                            Some(&t) => t,
+                            None => {
+                                self.sig.push(vec![ps.len()]);
+                                self.unknown.insert(c.clone(), self.sig.len() - 1);
+                                self.sig.len() - 1
+                            }
+                        };
+                        (t, 0)
+                    }
+                };
+                format!("(.con {t} {k} {})", list(self, ps))
+            }
+        }
+    }
+
+    fn tree(&mut self, t: &CTree, cons: &Cons) -> String {
+        match t {
+            CTree::Leaf => ".leaf".into(),
+            CTree::Skip(t) => format!("(.skip {})", self.tree(t, cons)),
+            CTree::Split(key, subs) => {
+                let ty = self.ty(key, cons);
+                let xs: Vec<String> = subs.iter().map(|s| self.tree(s, cons)).collect();
+                format!("(.split {ty} [{}])", xs.join(", "))
+            }
+        }
+    }
+}
+
+fn record_cover(rows: &[Vec<P>], t: &CTree, cons: &Cons) {
+    COVER_CERTS.with(|c| {
+        if let Some(v) = c.borrow_mut().as_mut() {
+            let mut enc = CoverEnc::default();
+            let rs: Vec<String> = rows
+                .iter()
+                .map(|r| {
+                    let ps: Vec<String> = r.iter().map(|p| enc.pat(p, cons)).collect();
+                    format!("[{}]", ps.join(", "))
+                })
+                .collect();
+            let tree = enc.tree(t, cons);
+            let sig: Vec<String> = enc
+                .sig
+                .iter()
+                .map(|a| {
+                    let xs: Vec<String> = a.iter().map(usize::to_string).collect();
+                    format!("[{}]", xs.join(", "))
+                })
+                .collect();
+            v.push(format!(
+                "example : AxionCover.check [{}] [{}] {tree} = true := by rfl",
+                sig.join(", "),
+                rs.join(", ")
+            ));
+        }
+    });
 }
 
 /// Every `case` and lambda pattern in a function (its locals included) that may not match.

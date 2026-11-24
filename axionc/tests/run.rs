@@ -7860,7 +7860,37 @@ fn parallel_loop_kernels_with_effects_are_refused() {
             "missing {code} `{what}`:\n{text}"
         );
     }
-    assert_eq!(text.matches("error[").count(), 6, "{text}");
+    // the capture-writing kernel is also AX0001: the lambda runs per element, consuming `cap`
+    // each time
+    assert!(
+        text.contains("error[AX0001]: linear resource 'cap' consumed"),
+        "{text}"
+    );
+    assert_eq!(text.matches("error[").count(), 7, "{text}");
+}
+
+#[test]
+fn an_array_is_used_once_after_it_is_written() {
+    // every backend refuses these up front (natively they used to reach the verifier, and the
+    // interpreter ran them with the two results aliasing)
+    let out = axionc()
+        .arg(fixture("array_linear_reject.axi"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        text.matches("error[AX0001]: heap value 'cap' consumed 2 times")
+            .count(),
+        2,
+        "{text}"
+    );
+    assert!(
+        text.contains("error[AX0004]: use of 'cap' after ownership was moved"),
+        "{text}"
+    );
+    // threading the array through `let`s that rebind its name is fine
+    agree_across_backends("array_thread_let.axi", "4950\n");
 }
 
 #[test]
@@ -7872,10 +7902,11 @@ fn a_program_function_shadows_a_builtin_of_the_same_name() {
 #[test]
 fn a_closure_writing_an_array_it_captured_is_not_compiled() {
     // A lambda that runs more than once and writes, in place, an array it captured would free what
-    // the closure still holds, once per run: a double free natively. The verifier refuses it
-    // however the lambda runs (a `let`-bound function called twice, `map` specialized for the
-    // lambda) and however the write is reached (`setArray` on the capture, or a helper that owns
-    // its argument). A lambda that only reads the array compiles.
+    // the closure still holds, once per run: a double free natively. The linear checker refuses it
+    // on every backend (the interpreter too), however the lambda runs (a `let`-bound function
+    // called twice, `map` specialized for the lambda) and however the write is reached
+    // (`setArray` on the capture, or a helper that owns its argument); the drop verifier would
+    // refuse it natively as well. A lambda that only reads the array compiles.
     let dir = std::env::temp_dir().join(format!("axion_capwrite_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let head = "sumL :: List Int -> Int\nsumL xs = case xs of\n  Nil -> 0\n  \
@@ -7904,6 +7935,12 @@ fn a_closure_writing_an_array_it_captured_is_not_compiled() {
             true,
         ),
         (
+            "alias",
+            "putStrLn (showInt (sumL (map (\\i -> let c = cap in getArray (setArray c 0 i) 0) \
+             [1, 2])))",
+            true,
+        ),
+        (
             "read",
             "putStrLn (showInt (sumL (map (\\i -> getArray cap 0 + i) [1, 2])))",
             false,
@@ -7911,22 +7948,77 @@ fn a_closure_writing_an_array_it_captured_is_not_compiled() {
     ] {
         let p = dir.join(format!("{tag}.axi"));
         std::fs::write(&p, format!("{head}{body}\n")).unwrap();
-        let out = axionc()
-            .args(["--backend", "cranelift"])
-            .arg(&p)
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
-        if refused {
-            assert!(
-                !out.status.success() && text.contains("error[AX0910]"),
-                "{tag}: {text}"
-            );
-        } else {
-            assert!(out.status.success(), "{tag}: {text}");
+        for backend in [&[][..], &["--backend", "cranelift"][..]] {
+            let out = axionc().args(backend).arg(&p).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+            if refused {
+                assert!(
+                    !out.status.success() && text.contains("error[AX0001]: heap value 'cap'"),
+                    "{tag} {backend:?}: {text}"
+                );
+                // through `map`, said at the lambda (not at `map`'s specialized clone)
+                if tag.starts_with("map") {
+                    assert!(
+                        text.contains("given away by a lambda that may run more than once")
+                            && !text.contains("'_cap"),
+                        "{tag} {backend:?}: {text}"
+                    );
+                }
+            } else {
+                assert!(out.status.success(), "{tag} {backend:?}: {text}");
+            }
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn total_matches_emit_coverage_certificates() {
+    // one Lean `AxionCover.check` example per accepted match (metatheory/cover-trace.sh re-checks
+    // them with Lean): the three-constructor `classify` splits once, one leaf per constructor;
+    // `describe`'s literals are skipped to its wildcard
+    let out = axionc()
+        .args(["--emit", "cover-certs", &fixture("total_cover.axi")])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.lines().any(|l| l.contains(
+            "[[1, 2, 0]] [[(.con 0 0 [.any])], [(.con 0 1 [.any, .any])], [(.con 0 2 [])]] \
+             (.split 0 [(.skip .leaf), (.skip (.skip .leaf)), .leaf])"
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("[[(.lit 0)], [(.lit 1)], [.any]] (.skip .leaf) = true := by rfl"),
+        "{text}"
+    );
+    // a match that does not cover has no certificate, and is refused
+    let out = axionc().arg(fixture("total_reject.axi")).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(text.contains("error[AX0701]"), "{text}");
+    // the interpreter runs it (constructor patterns in multi-clause heads are not native yet)
+    let out = axionc().arg(fixture("total_cover.axi")).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "3\n10\nzeroonemany\n17\n10\n"
+    );
+}
+
+#[test]
+fn totality_arithmetic_is_in_the_refinement_certificates() {
+    // total.axi has no refinements of its own: every certificate here is totality's (a decrease,
+    // a divisor, an index in range), re-checked with Lean by metatheory/refine-trace.sh
+    let out = axionc()
+        .args(["--emit", "refine-certs", &fixture("total.axi")])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let n = text
+        .lines()
+        .filter(|l| l.starts_with("example : AxionRefine.check ["))
+        .count();
+    assert!(n >= 20, "{text}");
 }
 
 #[test]

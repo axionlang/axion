@@ -2899,6 +2899,23 @@ impl Checker<'_> {
     }
 }
 
+thread_local! {
+    /// `--emit refine-certs`: the certificates of totality's own arithmetic (its decreases, bounds
+    /// and divisors), kept while `collect_total_certs` has switched collection on.
+    static TOTAL_CERTS: std::cell::RefCell<Option<Vec<Cert>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Keep the certificates of every proof the totality walk makes, until `take_total_certs`.
+pub fn collect_total_certs() {
+    TOTAL_CERTS.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+/// The certificates kept since `collect_total_certs`; collection stops.
+pub fn take_total_certs() -> Vec<Cert> {
+    TOTAL_CERTS.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
 /// The totality walk (`total.rs`) over the `needed` top-level functions of `module`: every
 /// use of a function or built-in, every partial operation, and the size-change graph of every
 /// call inside a recursive group.
@@ -2943,7 +2960,7 @@ pub fn total_walk(module: &Module, needed: &HashSet<String>, mut tw: TotWalk) ->
         diags: &mut scratch,
         proven: HashSet::new(),
         user: module.funcs.iter().map(|f| f.name.clone()).collect(),
-        certs: std::cell::RefCell::new(None),
+        certs: std::cell::RefCell::new(TOTAL_CERTS.with(|c| c.borrow().is_some()).then(Vec::new)),
         tot: Some(tw),
         cur_fn: String::new(),
         dynamic: crate::contracts::Dynamic::default(),
@@ -2952,6 +2969,13 @@ pub fn total_walk(module: &Module, needed: &HashSet<String>, mut tw: TotWalk) ->
     };
     for f in module.funcs.iter().filter(|f| needed.contains(&f.name)) {
         ck.check_func(f);
+    }
+    if let Some(mine) = ck.certs.borrow_mut().take() {
+        TOTAL_CERTS.with(|c| {
+            if let Some(all) = c.borrow_mut().as_mut() {
+                all.extend(mine);
+            }
+        });
     }
     ck.tot.take().unwrap_or_default()
 }

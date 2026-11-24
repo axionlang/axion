@@ -2192,9 +2192,9 @@ HANG_RC = 124           # subprocess timeout → this return code (checked by `c
 def gen_capture(rng):
     """A lambda that captures an array and runs more than once (`map`, `foldl`, a function applied
     twice, a `let`-bound function called twice). It READS the array (`fuzz:capread`: safe, so a
-    native refusal is a gap) or WRITES it in place (`fuzz:capwrite`: each run would free what the
-    closure still holds — native must refuse it, AX0910, however the write is reached: directly,
-    through a `let` alias, or through a helper function)."""
+    native refusal is a gap) or WRITES it in place (`fuzz:capwrite`: each run would give away what
+    the closure still holds — every backend must refuse it in the linear checker, AX0001, however
+    the write is reached: directly, through a `let` alias, or through a helper function)."""
     write = rng.random() < 0.5
     n = rng.randint(1, 12)
     if write:
@@ -2300,15 +2300,18 @@ def check(prog, work):
     if "fuzz:contracts" in prog:
         return check_contracts(prog, src)
     if "fuzz:capwrite" in prog:
-        # a closure that writes an array it captured and runs again: native code must refuse it
-        for be in (["--backend", "cranelift"], ["--release"]):
+        # a closure that writes an array it captured and runs again: the linear checker refuses
+        # it on EVERY backend (the interpreter too — running it there would alias the array), so
+        # the backends agree; a native build that reaches the verifier is a front-end gap
+        for be in ([], ["--backend", "cranelift"], ["--release"]):
             rc, o, e = run([AXIONC, *be, str(src)])
             if rc == HANG_RC:
                 return ("hang", f"{be} exceeded {HANG_SECS}s")
-            if "error[AX0910]" not in (o + e) and "error[AX0800]" not in (o + e):
-                return ("corruption", f"{be}: a closure writing its captured array was compiled:\n"
-                                      f"{(o + e)[-500:]}")
-        return ("ax0910", None)
+            if not any(f"error[{c}]" in (o + e) for c in ("AX0001", "AX0004", "AX0800")):
+                bad = "corruption" if "error[AX0910]" not in (o + e) else "divergence"
+                return (bad, f"{be or 'interp'}: a closure writing its captured array was not "
+                             f"refused by the linear checker:\n{prog}\n{(o + e)[-500:]}")
+        return ("reject", None)
     ri, oi, ei = run([AXIONC, str(src)])
     # A hang on ANY invocation is the worst-masked class: two hanging runs would otherwise look
     # like a "consistent reject". Flag it the moment it happens, with the program for a repro.
